@@ -6,6 +6,16 @@ const effortLabel = (effort: string | undefined): string | undefined => {
   return effort.length === 0 ? undefined : `${effort[0]!.toUpperCase()}${effort.slice(1)}`;
 };
 
+/**
+ * Normalize effort values for comparison. Providers report the "off" thinking
+ * level as either "off" or "none"; route-label.ts presents "none" as "off",
+ * so the attribution footer should treat them as equivalent.
+ */
+const canonicalEffort = (effort: string): string => {
+  const lower = effort.toLowerCase();
+  return lower === "none" ? "off" : lower;
+};
+
 const routeLabel = (model: string | undefined, effort: string | undefined): string => {
   const effortText = effortLabel(effort);
   if (model === undefined) return effortText === undefined ? "route not reported" : effortText;
@@ -29,19 +39,45 @@ export function runAttributionSummary(
 
 type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" | "interrupted";
 
+/**
+ * Only a run that DEVIATED from what was asked keeps this footer: a fallback,
+ * a recorded transition or retry, an effort the provider did not honour, or an
+ * unsettled run already attempting another model than the requested one.
+ *
+ * Running on a different model than the one the conversation is set to right
+ * now is not a deviation — the operator switched the route afterwards, and the
+ * transcript rules that switch where it happened (see {@link ModelMarkers}). So
+ * the currently selected model deliberately has no say here; an ordinary turn
+ * carries no footer however often the selection moves under it.
+ *
+ * The unsettled arm exists because the server settles `fallback` only when a
+ * run completes: while a turn is running, failed or cancelled, a route that
+ * already left the requested one is visible on the attempt alone.
+ */
 export function shouldShowMessageRunAttribution(
   attribution: RunAttributionValue | undefined,
-  selectedModel: string | null | undefined,
+  status: RunStatus | WebMessageStatus,
 ): boolean {
   if (attribution === undefined) return false;
   if (attribution.disposition === "fallback") return true;
-  const runModel = (attribution.executed ?? attribution.attempted ?? attribution.requested).model;
-  return runModel !== undefined
-    && runModel.length > 0
-    && selectedModel !== undefined
-    && selectedModel !== null
-    && selectedModel.length > 0
-    && !sameModel(runModel, selectedModel);
+  if (attribution.transitions.length > 0 || attribution.retries.length > 0) return true;
+  const run = attribution.executed ?? attribution.attempted;
+  const requestedEffort = attribution.requested.effort;
+  if (
+    run?.effectiveEffort !== undefined
+    && requestedEffort !== undefined
+    && canonicalEffort(run.effectiveEffort) !== canonicalEffort(requestedEffort)
+  ) {
+    return true;
+  }
+  const attemptedModel = run?.model;
+  const requestedModel = attribution.requested.model;
+  return status !== "complete"
+    && attemptedModel !== undefined
+    && attemptedModel.length > 0
+    && requestedModel !== undefined
+    && requestedModel.length > 0
+    && !sameModel(attemptedModel, requestedModel);
 }
 
 export function RunAttribution({
@@ -56,7 +92,7 @@ export function RunAttribution({
   const effectiveEffort = effortLabel((attribution.executed ?? attribution.attempted)?.effectiveEffort);
   const requestedEffort = effortLabel(attribution.requested.effort);
   const effortChanged = effectiveEffort !== undefined
-    && (requestedEffort === undefined || effectiveEffort.toLowerCase() !== requestedEffort.toLowerCase());
+    && (requestedEffort === undefined || canonicalEffort(effectiveEffort) !== canonicalEffort(requestedEffort));
   const hasDetails = attribution.transitions.length > 0
     || attribution.retries.length > 0
     || attribution.truncated === true

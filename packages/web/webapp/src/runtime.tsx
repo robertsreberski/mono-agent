@@ -459,7 +459,6 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
 };
 
 interface ConvertWebMessageOptions {
-  readonly selectedModel?: string | null;
   readonly processJobEvents?: readonly ProcessJobActivityEvent[];
   readonly processJobs?: ReadonlyMap<string, ProcessJobProjection>;
 }
@@ -554,10 +553,7 @@ export const convertWebMessage = (
         ...(message.liveInputStatus === undefined ? {} : { liveInputStatus: message.liveInputStatus }),
         ...(message.quote === undefined ? {} : { quote: message.quote }),
         ...(message.attribution === undefined ? {} : { attribution: message.attribution }),
-        showRunAttribution: shouldShowMessageRunAttribution(
-          message.attribution,
-          options.selectedModel,
-        ),
+        showRunAttribution: shouldShowMessageRunAttribution(message.attribution, message.status),
         runStatus: message.status,
       },
     },
@@ -827,27 +823,24 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
             && (message.modelTransitions?.length ?? 0) === 0
             && convertWebMessage(message).content?.length === 0)),
       ),
-      { selectedModel: store.effectiveModel, threadId: store.selectedThreadId },
+      { threadId: store.selectedThreadId },
     ),
     [
       store.detail?.messages,
       store.detail?.modelTransitions,
       store.detail?.projectTransitions,
-      store.effectiveModel,
       store.selectedThreadId,
     ],
   );
-  // Changing the selected model deliberately gives assistant-ui a new converter,
-  // which reconverts every loaded message so its transient attribution visibility
-  // stays current. Message ids survive that accepted full-cache refresh, so rows
-  // update in place rather than remounting.
+  // What a message shows now depends only on the message itself, so switching
+  // the conversation's model no longer rebuilds the converter or reconverts the
+  // loaded transcript.
   const convertMessage = useCallback(
     (message: WebMessage) => convertWebMessage(message, {
-      selectedModel: store.effectiveModel,
       processJobEvents: presentation.eventsByMessageId.get(message.id),
       processJobs: presentation.jobsById,
     }),
-    [presentation.eventsByMessageId, presentation.jobsById, store.effectiveModel],
+    [presentation.eventsByMessageId, presentation.jobsById],
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,

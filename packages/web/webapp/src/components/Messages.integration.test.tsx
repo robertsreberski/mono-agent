@@ -52,23 +52,20 @@ afterEach(() => {
 function MessagesHarness({
   messages,
   onRuntime,
-  selectedModel = "provider:primary",
 }: {
   readonly messages: readonly WebMessage[];
   readonly onRuntime?: (runtime: AssistantRuntime) => void;
-  readonly selectedModel?: string | null;
 }) {
   const presentation = projectProcessJobPresentation(
     coalesceMonitorWakeMessages(messages),
-    { selectedModel, threadId: messages[0]?.threadId ?? null },
+    { threadId: messages[0]?.threadId ?? null },
   );
   const convertMessage = useCallback(
     (message: WebMessage) => convertWebMessage(message, {
-      selectedModel,
       processJobEvents: presentation.eventsByMessageId.get(message.id),
       processJobs: presentation.jobsById,
     }),
-    [presentation.eventsByMessageId, presentation.jobsById, selectedModel],
+    [presentation.eventsByMessageId, presentation.jobsById],
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,
@@ -106,14 +103,8 @@ function MessagesHarness({
   );
 }
 
-function MessageHarness({
-  message,
-  selectedModel,
-}: {
-  readonly message: WebMessage;
-  readonly selectedModel?: string | null;
-}) {
-  return <MessagesHarness messages={[message]} selectedModel={selectedModel} />;
+function MessageHarness({ message }: { readonly message: WebMessage }) {
+  return <MessagesHarness messages={[message]} />;
 }
 
 const assistantMessage = (
@@ -248,8 +239,8 @@ describe("AssistantMessage grouped parts", () => {
     ],
   });
 
-  it("keeps completed fallback attribution visible when it equals the selected model", () => {
-    render(<MessageHarness selectedModel="provider:fallback" message={{
+  it("keeps completed fallback attribution visible with its whole routing history", () => {
+    render(<MessageHarness message={{
       ...assistantMessage("complete"),
       attribution: {
         requested: { model: "provider:primary", effort: "high" },
@@ -269,43 +260,60 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.getByText("Older routing entries were omitted.")).toBeInTheDocument();
   });
 
-  it("reconverts unchanged messages without remounting their ids when the selected model changes", async () => {
-    const attribution = {
-      requested: { model: "provider:primary", effort: "high" },
-      attempted: { model: "provider:other", effort: "high", effectiveEffort: "max" },
-      executed: { model: "provider:other", effort: "high", effectiveEffort: "max" },
-      disposition: "requested" as const,
-      transitions: [],
-      retries: [],
-    };
-    const message = { ...assistantMessage("complete"), attribution };
+  it("leaves a settled run that did what it was asked without any attribution footer", () => {
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      attribution: {
+        requested: { model: "provider:other", effort: "high" },
+        attempted: { model: "provider:other", effort: "high", effectiveEffort: "high" },
+        executed: { model: "provider:other", effort: "high", effectiveEffort: "high" },
+        disposition: "requested",
+        transitions: [],
+        retries: [],
+      },
+    }} />);
 
-    let runtime: AssistantRuntime | undefined;
-    const onRuntime = (current: AssistantRuntime) => { runtime = current; };
-    const view = render(
-      <MessagesHarness
-        messages={[message]}
-        onRuntime={onRuntime}
-        selectedModel="provider:primary"
-      />,
-    );
-    await waitFor(() => expect(runtime).toBeDefined());
+    // The conversation is on provider:primary now; the transcript's route rule
+    // already said so, so this older turn says nothing about its own model.
+    expect(screen.queryByText("Ran with provider:other · High")).toBeNull();
+    expect(screen.queryByText("Routing details")).toBeNull();
+  });
+
+  it("keeps attribution on a run whose effort the provider did not honour", () => {
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      attribution: {
+        requested: { model: "provider:other", effort: "high" },
+        attempted: { model: "provider:other", effort: "high", effectiveEffort: "max" },
+        executed: { model: "provider:other", effort: "high", effectiveEffort: "max" },
+        disposition: "requested",
+        transitions: [],
+        retries: [],
+      },
+    }} />);
+
     expect(screen.getByText("Ran with provider:other · High")).toBeVisible();
     expect(screen.getByText("Requested High → effective Max")).toBeVisible();
     expect(screen.getByText("Routing details")).toBeVisible();
-    const messageIds = runtime!.thread.getState().messages.map(({ id }) => id);
+  });
 
-    view.rerender(
-      <MessagesHarness
-        messages={[message]}
-        onRuntime={onRuntime}
-        selectedModel="provider:other"
-      />,
-    );
-    await waitFor(() => expect(screen.queryByText("Ran with provider:other · High")).toBeNull());
-    expect(screen.queryByText("Requested High → effective Max")).toBeNull();
-    expect(screen.queryByText("Routing details")).toBeNull();
-    expect(runtime!.thread.getState().messages.map(({ id }) => id)).toEqual(messageIds);
+  it("keeps attribution on a retried run that stayed on the requested route", () => {
+    const rendered = render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      attribution: {
+        requested: { model: "provider:primary", effort: "high" },
+        attempted: { model: "provider:primary", effort: "high", effectiveEffort: "high" },
+        executed: { model: "provider:primary", effort: "high", effectiveEffort: "high" },
+        disposition: "requested",
+        transitions: [],
+        retries: [{ model: "provider:primary", retryIndex: 1, reason: "overloaded" }],
+      },
+    }} />);
+
+    expect(screen.getByText("Ran with provider:primary · High")).toBeVisible();
+    expect(screen.getByText("Routing details")).toBeVisible();
+    expect(rendered.container.querySelector("ol[aria-label='Provider retries']")?.textContent)
+      .toContain("Retried provider:primary");
   });
 
   it("never claims an exhausted fallback run answered", () => {
@@ -1473,18 +1481,27 @@ describe("message actions", () => {
         retries: [],
       },
     };
-    const rendered = render(<MessageHarness message={attributed} selectedModel="provider:primary" />);
+    const rendered = render(<MessageHarness message={attributed} />);
 
     expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(0);
     expect(rendered.container.querySelectorAll(".message-actions")).toHaveLength(0);
     expect(rendered.container.querySelectorAll(".process-job-stack")).toHaveLength(1);
 
-    rendered.rerender(<MessageHarness message={attributed} selectedModel="provider:other" />);
+    rendered.rerender(<MessageHarness message={{
+      ...attributed,
+      attribution: {
+        ...attributed.attribution!,
+        attempted: { model: "provider:fallback" },
+        executed: { model: "provider:fallback" },
+        disposition: "fallback",
+        transitions: [{ from: "provider:primary", to: "provider:fallback", reason: "overloaded" }],
+      },
+    }} />);
     await act(async () => { await Promise.resolve(); });
 
     expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(1);
     expect(rendered.container.querySelectorAll(".message-actions")).toHaveLength(1);
-    expect(screen.getByText("Ran with provider:primary")).toBeVisible();
+    expect(screen.getByText("Fallback: provider:primary → provider:fallback · overloaded")).toBeVisible();
     expect(rendered.container.querySelectorAll(".activity-row.is-job")).toHaveLength(1);
   });
 
