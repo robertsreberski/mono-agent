@@ -690,6 +690,18 @@ describe("validateMonoAgentFolder", () => {
     expect(section.details.join("\n")).not.toContain(jobId);
   });
 
+  it.each([undefined, "exec"])("fails closed on malformed child ownership with non-internal kind %s", async (kind) => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "process-jobs"); const recordsDir = join(stateDir, "records-v1");
+    await mkdir(recordsDir, { recursive: true, mode: 0o700 }); await chmod(stateDir, 0o700); await chmod(recordsDir, 0o700);
+    const jobId = "55555555-5555-4555-8555-555555555555";
+    await writeFile(join(recordsDir, `${jobId}.json`), `${JSON.stringify({ jobId, state: "interrupted", ...(kind ? { kind } : {}), subagentOwnership: { privateCanary: join(dir, "private") } })}\n`, { mode: 0o600 });
+    const configPath = await writeConfig({ runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "./IDENTITY.md" }, processJobs: { enabled: true } });
+    const section = sectionById(await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false }), "process-jobs");
+    expect(section.status).toBe("error"); expect(section.details.join("\n")).toContain("record child ownership is invalid");
+    expect(section.details.join("\n")).not.toContain(join(dir, "private"));
+  });
+
   it("reports quarantined unreplayable process-job transactions as a degraded incident", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const stateDir = join(dir, ".mono-agent", "process-jobs");

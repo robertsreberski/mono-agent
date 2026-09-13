@@ -128,7 +128,9 @@ export async function observeSubagentVerification(target: SubagentVerificationTa
     const checked = await registerSubagentVerification({ workdir: target.workdir, ...(target.reportPath ? { reportPath: target.reportPath } : {}) }, input, privateRoots);
     if (checked.workdir !== target.workdir || checked.device !== target.device || checked.inode !== target.inode) throw new Error("observation_inconsistent");
     const before = await metadata(target.workdir, input, privateRoots);
-    if (!current.sandboxPolicy || !current.sandboxEngine || !current.runProbe || !await current.sandboxEngine.isAvailable()) throw new Error("observation_unavailable");
+    // The app supplies its trusted SRT capability. A caller-provided prepared
+    // argv suffix alone is not authority to execute an arbitrary wrapper.
+    if (!current.sandboxPolicy || current.sandboxEngine?.id !== "srt" || !current.runProbe || !await current.sandboxEngine.isAvailable()) throw new Error("observation_unavailable");
     const policy: SandboxPolicy = { ...current.sandboxPolicy, mode: "native", writableRoots: [],
       protectedRoots: [...privateRoots, ...(current.sandboxPolicy.protectedRoots ?? [])], network: { mode: "none", allowlist: [] }, fallback: "fail-closed", unsafeAllowHostProcess: false };
     const deadline = capturedAt + 6000;
@@ -163,9 +165,12 @@ export async function observeSubagentVerification(target: SubagentVerificationTa
     };
     // Names only: never collect remote URLs, credentials, or arbitrary config values.
     const names = (await git(["config", "--name-only", "--null", "--list", "--includes"])).split("\0");
-    if (names.some((name) => name.toLowerCase().startsWith("filter."))) throw new Error("observation_unavailable");
+    if (names.some((name) => {
+      const normalized = name.toLowerCase();
+      return normalized.startsWith("filter.") || normalized === "include.path" || (normalized.startsWith("includeif.") && normalized.endsWith(".path"));
+    })) throw new Error("observation_unavailable");
     const headBefore = (await git(["rev-parse", "--verify", "HEAD"])).trim();
-    const status = await git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]);
+    const status = await git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all"]);
     const headAfter = (await git(["rev-parse", "--verify", "HEAD"])).trim();
     if (headBefore !== headAfter || before !== await metadata(target.workdir, input, privateRoots)) throw new Error("observation_inconsistent");
     const paths: { path: string; status: "tracked" | "untracked" }[] = [];

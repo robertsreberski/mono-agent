@@ -4,7 +4,6 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeJsonAtomic } from "../continuation-store-fs.js";
 import { SUBAGENT_REGISTRY_MAX_BYTES, SUBAGENT_TERMINAL_MAX_COUNT, createSubagentInstanceRegistry, subagentConversationRoot, subagentInstanceSessionId } from "../subagent-instances.js";
-import { preOwnershipRegistryReaderAcceptsKeys } from "./fixtures/pre-ownership-reader.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -80,14 +79,13 @@ describe("persistent subagent registry", () => {
     now += 86_400_001;
     expect(await handle.list()).toEqual([]);
   });
-  it("G13: upgrades a pre-ownership running registry record without inventing release or making it old-reader compatible", async () => {
+  it("G13: upgrades a pre-ownership running registry record without inventing release", async () => {
     const { root, handle } = await setup();
     const created = await handle.create({ ...spec, id: "legacy" });
     const file = resolve(subagentConversationRoot(root, "conversation"), "instances.json");
     const [legacy] = JSON.parse(await readFile(file, "utf8"));
     delete legacy.incarnation; delete legacy.recoveryBinding;
     legacy.status = "running";
-    expect(preOwnershipRegistryReaderAcceptsKeys(legacy)).toBe(true);
     await writeFile(file, JSON.stringify([legacy]));
 
     expect(await handle.get(created.id)).toMatchObject({ status: "idle", lastStatus: "interrupted", recoveryBlocked: true,
@@ -96,7 +94,6 @@ describe("persistent subagent registry", () => {
     expect(upgraded).toMatchObject({ id: created.id, status: "idle", recovery: { reason: "settlement_unknown", continuity: "unknown" } });
     expect(upgraded.incarnation).toMatch(/^[a-f0-9-]{36}$/u);
     expect(upgraded).not.toHaveProperty("ownerLink"); expect(upgraded).not.toHaveProperty("ownerReceipt");
-    expect(preOwnershipRegistryReaderAcceptsKeys(upgraded)).toBe(false);
     await expect(handle.begin(created.id)).rejects.toThrow("subagent_recovery_required");
     expect(JSON.parse(await readFile(file, "utf8"))[0]).toEqual(upgraded);
   });

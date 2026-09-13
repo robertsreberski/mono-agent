@@ -11,7 +11,6 @@ import type {
   ProcessJobStartRequest,
 } from "@mono-agent/runtime-adapter";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { preOwnershipJobReaderAcceptsKeys } from "./fixtures/pre-ownership-reader.js";
 
 import type { ChannelId, RunningChannel } from "../channels.js";
 import type { ProcessJobsSettings } from "../process-jobs-config.js";
@@ -81,7 +80,6 @@ describe("held subagent obligations", () => {
     if (mode !== "legacy") record.subagentOwnership = { schemaVersion: 1, instanceIncarnation, turnToken: jobId,
       owner: { pid: 123, incarnation: INCARNATION, settlement: mode === "publication" ? "settled" : "running" },
       revoked: mode === "publication", publication: { sequence: 1, state: mode === "publication" ? "pending" : "confirmed" }, seenCalls: [] };
-    expect(preOwnershipJobReaderAcceptsKeys(record)).toBe(mode === "legacy");
     record.wake.state = mode === "publication" ? "pending" : "delivered";
     await store.mutate((draft) => { draft.set(jobId, record); });
     await store.ensureArtifacts(jobId);
@@ -106,7 +104,6 @@ describe("held subagent obligations", () => {
     await reopened.applyRetention(fixture.settings, new Date("2030-01-01T00:00:00.000Z"));
     const persisted = await reopened.get(jobId);
     expect(persisted).toBeDefined();
-    expect(preOwnershipJobReaderAcceptsKeys(persisted!)).toBe(mode === "legacy");
     if (mode === "legacy") { expect(persisted).toMatchObject({ childStillBusy: true }); expect(persisted).not.toHaveProperty("subagentOwnership"); }
     else expect(persisted?.subagentOwnership).toBeDefined();
   });

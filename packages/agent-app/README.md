@@ -102,6 +102,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   gap; runtime executable access does not authorize repository/private data. The
   prepared command must retain the selected executable and declared observation
   cwd, while root or Git-metadata replacement yields an inconsistent observation.
+  Repository config includes are unsupported and fail closed before status;
+  initialized submodules are not traversed, so nested changes are not reported.
 - Opt in to Pi-native host-owned watches through `monitors.*`. Telegram, Slack,
   and existing web conversations receive coalesced event batches as exact-origin
   tool-capable wake turns; web uses ordinary assistant turns rather than a

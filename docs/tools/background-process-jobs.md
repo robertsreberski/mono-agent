@@ -753,7 +753,11 @@ platform yields `observation_unavailable`. Existing sandbox runtime-read allowan
 for the executable do not grant repository/private-root read authority; explicit
 protection of the selected executable denies observation before preparation.
 The prepared native command must preserve the selected executable and exact
-declared observation cwd. Unsupported alternates, denied paths, replaced roots,
+declared observation cwd. Repository config includes are unsupported and fail
+closed before status, preventing an included file from changing helper policy
+between probes. Status ignores all initialized submodules, so nested repository
+changes are outside the observation and nested clean filters are not executed.
+Unsupported alternates, denied paths, replaced roots,
 changed Git metadata/executable identity/HEAD and unavailable sandboxing produce
 typed gaps. Report metadata records only a relative path and presence, never
 content or a hash.

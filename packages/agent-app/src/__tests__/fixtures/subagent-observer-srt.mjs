@@ -29,17 +29,31 @@ const root = await mkdtemp(resolve(ROOT, ".mono-agent/verification/observer-srt-
 const repository = resolve(root, "repository");
 const worktree = resolve(root, "worktree");
 const agentRoot = resolve(root, "agent");
-await mkdir(repository); await mkdir(agentRoot);
+const submoduleSource = resolve(root, "submodule-source");
+await mkdir(repository); await mkdir(agentRoot); await mkdir(submoduleSource);
 const nativeGit = await resolveSubagentObservationGit();
 // Fixture preparation is not observer evidence; avoid the platform shim here too.
 const git = (cwd, args) => execFileSync(nativeGit.path, ["-C", cwd, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", ...args], {
   cwd: ROOT, env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", LC_ALL: "C" }, timeout: 10_000, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
 }).trim();
+git(submoduleSource, ["init", "--quiet"]); await writeFile(resolve(submoduleSource, "filtered.txt"), "original\n");
+await writeFile(resolve(submoduleSource, ".gitattributes"), "filtered.txt filter=canary\n");
+git(submoduleSource, ["add", "filtered.txt", ".gitattributes"]); git(submoduleSource, ["commit", "--quiet", "-m", "submodule fixture"]);
 git(repository, ["init", "--quiet"]); await writeFile(resolve(repository, "tracked.txt"), "original\n");
 git(repository, ["add", "tracked.txt"]); git(repository, ["commit", "--quiet", "-m", "fixture"]);
+git(repository, ["-c", "protocol.file.allow=always", "submodule", "add", "--quiet", submoduleSource, "nested"]); git(repository, ["commit", "--quiet", "-am", "add nested fixture"]);
 git(repository, ["worktree", "add", "--quiet", "-b", "observation", worktree]);
+git(worktree, ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--quiet"]);
 const head = git(worktree, ["rev-parse", "HEAD"]);
 await writeFile(resolve(worktree, "tracked.txt"), "changed\n");
+const filterMarker = resolve(root, "submodule-filter-executed"); const filterHelper = resolve(root, "filter-helper.mjs");
+await writeFile(filterHelper, `import { appendFileSync } from "node:fs"; appendFileSync(${JSON.stringify(filterMarker)}, "ran\\n"); process.stdin.pipe(process.stdout);\n`);
+git(resolve(worktree, "nested"), ["config", "filter.canary.clean", `\"${process.execPath}\" \"${filterHelper}\"`]);
+await writeFile(resolve(worktree, "nested", "filtered.txt"), "dirty\n");
+const nativeSubmoduleStatus = git(worktree, ["status", "--porcelain=v1", "--untracked-files=all", "--no-renames"]);
+assert(nativeSubmoduleStatus.includes("nested"), "Native Git control must observe the dirty initialized submodule.");
+const nativeControlExecutedFilter = await readFile(filterMarker, "utf8").then(() => true, (error) => { if (error.code === "ENOENT") return false; throw error; });
+await rm(filterMarker, { force: true });
 await writeFile(resolve(worktree, "report.md"), "THIS REPORT CONTENT MUST NOT BE RETURNED", { mode: 0o000 });
 const common = resolve(repository, ".git");
 // Only repository authority is declared here. The existing sandbox engine
@@ -122,6 +136,8 @@ try {
   assert(!JSON.stringify(observed).includes("THIS REPORT CONTENT"));
   assert.equal(process.cwd(), ROOT); assert.equal(providerCalls, 1);
   assert.equal((await service.get(receipt.details.jobId)).subagentObservation, undefined);
+  assert.equal(await readFile(filterMarker, "utf8").catch((error) => error.code === "ENOENT" ? "" : Promise.reject(error)), "",
+    "The observer status probe must not traverse the initialized dirty submodule or execute its filter helper.");
   // A local include outside the declared worktree/common-metadata authority is
   // followed by real Git but denied by SRT. No cached observation or host
   // fallback may turn that denial into facts.
@@ -189,7 +205,9 @@ try {
   protectedRoots = [agentRoot];
   assert.equal((await inspect()).facts.status, "observed");
   assert.equal(providerCalls, 3);
-  console.log(JSON.stringify({ kind: "subagent-observer-real-srt", root, result: "passed", authorizedLinkedWorktree: true, gitIncludeEscape: true, providerCommitLostAnswer: true, policyRevocation: true, unsafeAlternates: true, privateReportEscape: true, deniedRuntime: true, inspectionProviderCalls: 0 }));
+  console.log(JSON.stringify({ kind: "subagent-observer-real-srt", root, result: "passed", authorizedLinkedWorktree: true, gitIncludeEscape: true,
+    dirtyInitializedSubmodule: true, nativeControlExecutedFilter, observerExecutedFilter: false, providerCommitLostAnswer: true, policyRevocation: true,
+    unsafeAlternates: true, privateReportEscape: true, deniedRuntime: true, inspectionProviderCalls: 0 }));
 } finally {
   try { await service?.stop(); ownership.release(); } finally { clearInterval(keepAlive); }
 }

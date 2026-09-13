@@ -2430,10 +2430,13 @@ async function inspectProcessJobState(cwd: string, stateDir: string): Promise<{
         throw new Error("record identity or state is invalid");
       }
       counts[raw.state] = (counts[raw.state] ?? 0) + 1;
+      if (raw.subagentOwnership !== undefined && !isSubagentExecutionOwnership(raw.subagentOwnership)) {
+        throw new Error("record child ownership is invalid");
+      }
+      if (raw.subagentOwnership !== undefined && raw.kind !== "internal") {
+        throw new Error("record child ownership kind is invalid");
+      }
       if (raw.kind === "internal") {
-        if (raw.subagentOwnership !== undefined && !isSubagentExecutionOwnership(raw.subagentOwnership)) {
-          throw new Error("record child ownership is invalid");
-        }
         const ownership = isSubagentExecutionOwnership(raw.subagentOwnership) ? raw.subagentOwnership : undefined;
         const record = { kind: "internal" as const, childStillBusy: raw.childStillBusy === true, ...(ownership ? { subagentOwnership: ownership } : {}) };
         if (hasSubagentObligation(record)) childOwnership.retained++;

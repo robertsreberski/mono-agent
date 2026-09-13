@@ -18,8 +18,8 @@ afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root,
 const spec = { id: "helper", name: "helper", systemPrompt: "Review", definition: { name: "helper", description: "Review", systemPrompt: "Review" } };
 async function fixture(continuity: "retained" | "lost" | "unknown" = "retained") {
   const root = await mkdtemp(resolve(process.cwd(), "node_modules/.recovery-ack-")); roots.push(root);
-  let allowed = true;
-  const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {},
+  let allowed = true; let retireFailure: Error | undefined;
+  const registry = createSubagentInstanceRegistry({ root, retireSession: async () => { if (retireFailure) throw retireFailure; },
     ownerForReservation: (jobId) => ({ jobId, storeRoot: root }), authorizeRecovery: async () => allowed,
     resolveOwner: async (identity) => ({ state: "released", identity, sequence: 7, continuity, reason: "timeout" }),
   });
@@ -27,9 +27,9 @@ async function fixture(continuity: "retained" | "lost" | "unknown" = "retained")
   const jobId = randomUUID(); await handle.reserve(spec.id, jobId); await handle.begin(spec.id, jobId);
   const identity: SubagentOwnerIdentity = { storeRoot: root, jobId, conversationId: "conversation", instanceId: spec.id, instanceIncarnation: created.incarnation!, turnToken: jobId };
   await handle.publishOwned("confirm", { identity, sequence: 7, disposition: { status: "timeout", reason: "timeout", continuity }, released: true });
-  return { root, handle, registry, identity, deny: () => { allowed = false; }, file: resolve(subagentConversationRoot(root, "conversation"), "instances.json") };
+  return { root, handle, registry, identity, deny: () => { allowed = false; }, failRetirement: (error: Error) => { retireFailure = error; }, file: resolve(subagentConversationRoot(root, "conversation"), "instances.json") };
 }
-it.each(["detached", "foreground", "registry", "read", "write"])("G11: real Pi AgentSend private-state failure cannot disclose paths or consume acknowledgement (%s)", async (mode) => {
+it.each(["detached", "foreground", "registry", "read", "write", "parse"])("G11: real Pi AgentSend private-state failure cannot disclose paths or consume acknowledgement (%s)", async (mode) => {
   const detached = mode !== "foreground";
   const f = await fixture(); const owner = createMonoRuntime();
   if (!detached) { await f.handle.close(spec.id); await f.handle.create(spec); }
@@ -45,6 +45,7 @@ it.each(["detached", "foreground", "registry", "read", "write"])("G11: real Pi A
   const backup = `${f.file}.g11-backup`;
   if (mode === "read") { await rename(f.file, backup); await mkdir(f.file); }
   if (mode === "write") await chmod(directory, 0o500);
+  if (mode === "parse") await writeFile(f.file, `{\"${key}\":\"${f.root}\"`);
   try {
     const piPath = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
     const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import(piPath);
@@ -66,11 +67,56 @@ it.each(["detached", "foreground", "registry", "read", "write"])("G11: real Pi A
   } finally {
     if (mode === "write") await chmod(directory, 0o700);
     if (mode === "read") { await rm(f.file, { recursive: true }); await rename(backup, f.file); }
+    if (mode === "parse") await writeFile(f.file, JSON.stringify(disk));
     await lock?.release(); await owner.disposeAllSessions?.();
   }
   expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding.consumed).toBeUndefined();
-  if (detached) await expect(f.handle.reserve(spec.id, randomUUID(), { ack: request.ack!, message: request.message, background: true })).resolves.toMatchObject({ status: "queued" });
+  if (detached) {
+    const retry = mode === "parse" ? await f.handle.inspect(spec.id) : undefined;
+    await expect(f.handle.reserve(spec.id, randomUUID(), { ack: retry?.ack ?? request.ack!, message: request.message, background: true })).resolves.toMatchObject({ status: "queued" });
+  }
   else { await f.handle.begin(spec.id); await f.handle.finish(spec.id, { status: "ok" }); }
+}, 10_000);
+
+it("G11: abandoned foreground lock I/O failure is path-free at the real Pi AgentSend boundary", async () => {
+  const f = await fixture(); const disk = JSON.parse(await readFile(f.file, "utf8")); const key = "dead".repeat(16);
+  disk[0].status = "running"; disk[0].activeTurn = { token: randomUUID(), kind: "foreground", settlementPending: true };
+  disk[0].recoveryBinding.key = key; delete disk[0].recovery; delete disk[0].ownerReceipt; delete disk[0].ownerLink; delete disk[0].reservation;
+  await writeFile(f.file, JSON.stringify(disk));
+  const turnLocks = resolve(subagentConversationRoot(f.root, "conversation"), "turn-locks"); await mkdir(turnLocks, { recursive: true });
+  await rm(resolve(turnLocks, spec.id), { recursive: true, force: true }); await writeFile(resolve(turnLocks, spec.id), "not-a-directory");
+  const run = vi.fn(); const startInternal = vi.fn(); const owner = createMonoRuntime(); let input: any;
+  try {
+    const piPath = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
+    const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import(piPath);
+    const model = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" };
+    const faux = fauxProvider({ provider: model.provider, models: [{ id: model.model }], tokensPerSecond: undefined }); const models = createModels(); models.setProvider(faux.provider);
+    faux.setResponses([fauxAssistantMessage([fauxToolCall("AgentSend", { id: spec.id, inspect: true })]),
+      (value: any) => { input = value; return fauxAssistantMessage([fauxText("Unavailable.")]); }]);
+    const result = await generatePiNativeResponse("Inspect once.", { model, cwd: f.root, sessionId: "abandoned-privacy", sessionKeepAlive: true,
+      piSessionsRoot: resolve(f.root, "parent-sessions"), messages: [{ role: "user", content: "Inspect." }], allowedTools: ["Agent", "AgentSend"],
+      subagents: { instances: f.handle, run, backgroundSubagentController: { startInternal } }, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+    expect(result.error).toBeFalsy(); expect(JSON.stringify(input)).not.toContain(f.root); expect(JSON.stringify(input)).not.toContain(key);
+    expect(JSON.stringify(input)).toContain("subagent_owner_unavailable"); expect(run).not.toHaveBeenCalled(); expect(startInternal).not.toHaveBeenCalled();
+  } finally { await owner.disposeAllSessions?.(); }
+}, 10_000);
+
+it("G11: required session retirement failure is path-free at the real Pi Agent boundary", async () => {
+  const f = await fixture(); await f.handle.close(spec.id); const key = "face".repeat(16); f.failRetirement(new Error(`cleanup ${f.root}/${key}`));
+  const run = vi.fn(); const owner = createMonoRuntime(); let input: any;
+  try {
+    const piPath = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
+    const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import(piPath);
+    const model = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" };
+    const faux = fauxProvider({ provider: model.provider, models: [{ id: model.model }], tokensPerSecond: undefined }); const models = createModels(); models.setProvider(faux.provider);
+    faux.setResponses([fauxAssistantMessage([fauxToolCall("Agent", { name: "helper", persist: true, id: spec.id, prompt: "Continue once." })]),
+      (value: any) => { input = value; return fauxAssistantMessage([fauxText("Unavailable.")]); }]);
+    const result = await generatePiNativeResponse("Create once.", { model, cwd: f.root, sessionId: "retirement-privacy", sessionKeepAlive: true,
+      piSessionsRoot: resolve(f.root, "parent-sessions"), messages: [{ role: "user", content: "Create." }], allowedTools: ["Agent", "AgentSend"],
+      subagents: { instances: f.handle, definitions: [spec.definition], run }, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+    expect(result.error).toBeFalsy(); expect(JSON.stringify(input)).toContain("subagent_owner_unavailable");
+    expect(JSON.stringify(input)).not.toContain(f.root); expect(JSON.stringify(input)).not.toContain(key); expect(run).not.toHaveBeenCalled();
+  } finally { await owner.disposeAllSessions?.(); }
 }, 10_000);
 function requestWithoutId({ id: _id, ...request }: { id: string; ack: string; message: string; background: boolean }) { return request; }
 

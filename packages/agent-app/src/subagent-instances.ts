@@ -255,6 +255,9 @@ export function createSubagentInstanceRegistry(options: {
       const retire = async (record: SubagentInstance): Promise<void> => {
         try { await options.retireSession(record.sessionId, sessionsRoot); } catch { /* Terminal record stays retired even if provider cleanup fails. */ }
       };
+      const retireForReuse = async (sessionId: string): Promise<void> => {
+        await privateRegistryIo(async () => await options.retireSession(sessionId, sessionsRoot));
+      };
       const publish = async (records: StoredSubagentInstance[]): Promise<void> => {
         for (const record of records) if (!validRecord(record, conversationId, sessionsRoot)) throw new Error("Invalid subagent instance registry record.");
         const terminal = records.filter((record) => !isLiveSubagentInstance(record) && !record.activeTurn && !record.recovery && (!receiptHeld(record))).sort((a, b) => a.updatedAt - b.updatedAt);
@@ -325,7 +328,7 @@ export function createSubagentInstanceRegistry(options: {
             if (access?.existingOnly) throw new SubagentRecoveryError("subagent_owner_unavailable");
             records = [];
           } else {
-            const raw: unknown = JSON.parse(contents);
+            const raw: unknown = await privateRegistryIo(async () => JSON.parse(contents));
             if (!Array.isArray(raw)) throw new Error("Invalid subagent instance registry.");
             records = raw as StoredSubagentInstance[];
           }
@@ -363,7 +366,9 @@ export function createSubagentInstanceRegistry(options: {
                   delete record.activeTurn;
                 }
               } catch (error) {
-                if (!String(error).includes("already owned by another live process")) throw error;
+                if (!String(error).includes("already owned by another live process")) {
+                  throw new SubagentRecoveryError("subagent_owner_unavailable");
+                }
               }
             }
             if ((!receiptHeld(record)) && !record.activeTurn && !record.recovery && ["idle", "awaiting_reply"].includes(record.status) && record.updatedAt + (options.idleTtlMs ?? DAY) < now()) {
@@ -527,11 +532,11 @@ export function createSubagentInstanceRegistry(options: {
           if (previous) {
             if (receiptHeld(previous)) throw new SubagentRecoveryError("subagent_owner_unavailable");
             // A reused id has the same durable session key: require successful cleanup before creating it.
-            await options.retireSession(previous.sessionId, sessionsRoot);
+            await retireForReuse(previous.sessionId);
             records.splice(records.indexOf(previous), 1);
           }
           // Retention may have removed an earlier record with this deterministic session id.
-          if (!previous) await options.retireSession(subagentInstanceSessionId(conversationId, id), sessionsRoot);
+          if (!previous) await retireForReuse(subagentInstanceSessionId(conversationId, id));
           const record: StoredSubagentInstance = { ...structuredClone(retainedSpec), ...(verificationTarget ? { verificationTarget } : {}), id, incarnation: randomUUID(), recoveryBinding: newSubagentRecoveryBinding(), conversationId, sessionId: subagentInstanceSessionId(conversationId, id), sessionsRoot,
             status: "idle", turns: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 }, createdAt: now(), updatedAt: now() };
           records.push(record);

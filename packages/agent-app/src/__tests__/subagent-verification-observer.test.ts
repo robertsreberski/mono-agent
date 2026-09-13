@@ -61,6 +61,21 @@ it("refuses filter helpers using config names, without collecting values", async
   expect((await observeSubagentVerification(f.target, f.access, [])).status).toBe("observation_unavailable"); expect(f.runProbe).toHaveBeenCalledOnce();
   expect(f.prepareCommand.mock.calls[0]![0].args).toContain("--name-only");
 });
+it.each(["include.path", "includeIf.gitdir:private.path"])('refuses repository config includes before later probes (%s)', async (name) => {
+  const f = await fixture(); f.runProbe.mockResolvedValueOnce(completed(`${name}\0`));
+  expect((await observeSubagentVerification(f.target, f.access, [])).status).toBe("observation_unavailable");
+  expect(f.runProbe).toHaveBeenCalledOnce();
+});
+it("ignores initialized submodules during the fixed status probe", async () => {
+  const f = await fixture(); await observeSubagentVerification(f.target, f.access, []);
+  const status = f.prepareCommand.mock.calls.find(([spec]) => spec.args?.includes("status"))?.[0];
+  expect(status?.args).toContain("--ignore-submodules=all");
+});
+it("requires the host's trusted SRT capability instead of trusting a prepared argv suffix", async () => {
+  const f = await fixture(); (f.access.sandboxEngine as { id: string }).id = "synthetic-wrapper";
+  expect((await observeSubagentVerification(f.target, f.access, [])).status).toBe("observation_unavailable");
+  expect(f.prepareCommand).not.toHaveBeenCalled();
+});
 it.each(["missing-engine", "unsandboxed"])("never falls back to host execution for %s", async (mode) => {
   const f = await fixture();
   if (mode === "missing-engine") f.access.sandboxEngine.isAvailable.mockResolvedValue(false);

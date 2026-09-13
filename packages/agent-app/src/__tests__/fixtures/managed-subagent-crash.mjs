@@ -57,12 +57,19 @@ async function open(root, options = {}) {
     verify: async (identity) => (await registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
     publish: async (phase, publication) => {
       const instances = await registry.open(publication.identity.conversationId, { existingOnly: true });
-      if (phase === "finalize" && options.certificateBoundary) {
-        if (options.certificateBoundary === "certificate-lost-ack") await instances.publishOwned(phase, publication);
+      const pauseBefore = phase === "finalize" && options.certificateBoundary === "certificate-before-write"
+        || phase === "acknowledge" && options.certificateBoundary === "certificate-after-copy";
+      const pauseAfter = phase === "finalize" && options.certificateBoundary === "certificate-lost-ack"
+        || phase === "acknowledge" && options.certificateBoundary === "certificate-after-ack";
+      if (pauseBefore) {
         certificate = publication;
         await new Promise(() => {}); // Only the proof parent may SIGKILL this owner.
       }
       await instances.publishOwned(phase, publication);
+      if (pauseAfter) {
+        certificate = publication;
+        await new Promise(() => {}); // Only the proof parent may SIGKILL this owner.
+      }
     },
   });
   await service.activateWakes();
@@ -126,7 +133,10 @@ async function owner(root, scenario) {
   if (shortCommand) assert.equal(record.subagentOwnership.command.state, "released");
   if (certificateScenario) {
     const records = JSON.parse(await readFile(resolve(subagentConversationRoot(resolve(root, "children"), origin.conversationId), "instances.json"), "utf8"));
-    assert.equal(records[0].ownerReceipt.finalized, scenario === "certificate-lost-ack");
+    assert.equal(records[0].ownerReceipt.finalized, scenario !== "certificate-before-write");
+    assert.equal(records[0].ownerReceipt.acknowledged, scenario === "certificate-after-ack");
+    assert.equal(record.subagentOwnership.publication.receiptRecorded === record.subagentOwnership.publication.sequence,
+      scenario === "certificate-after-copy" || scenario === "certificate-after-ack");
     assert.equal(record.wake.state, "delivered"); assert.equal(f.wakes(), 1);
   }
   const evidence = { jobId: record.jobId, command: record.subagentOwnership.command, targetStarted: !phase, wakes: f.wakes(), certificateScenario, scenario };
@@ -198,7 +208,7 @@ function child(args) {
 if (mode === "owner") await owner(resolve(process.argv[3]), process.argv[4]);
 else if (mode === "recover") await recover(resolve(process.argv[3]), Number(process.argv[4]), Number(process.argv[5]));
 else {
-  assert(["running", "terminal", "preparing", "attested", "release-fence", "certificate-before-write", "certificate-lost-ack"].includes(mode));
+  assert(["running", "terminal", "preparing", "attested", "release-fence", "certificate-before-write", "certificate-lost-ack", "certificate-after-copy", "certificate-after-ack"].includes(mode));
   await mkdir(verification, { recursive: true });
   const root = await mkdtemp(resolve(verification, "managed-crash-"));
   const host = child(["owner", root, mode]);
@@ -211,11 +221,11 @@ else {
     host.process.kill("SIGKILL");
     assert.equal((await host.exited).signal, "SIGKILL");
     if (mode === "running") process.kill(-proof.command.pgid, 0); // Survives the owner, really needs recovery.
-    if (mode !== "certificate-lost-ack") {
+    if (!["certificate-lost-ack", "certificate-after-ack"].includes(mode)) {
       const unavailable = await createSubagentInstanceRegistry({ root: resolve(root, "children"), retireSession: async () => {} }).open(origin.conversationId, { existingOnly: true });
       await assert.rejects(unavailable.begin("proof"), { code: "subagent_owner_unavailable" });
       await assert.rejects(unavailable.create({ ...spec, id: "bypass" }), { code: "subagent_owner_unavailable" });
-    } // Lost-ack already has a positive certificate; do not mutate it via an unrelated host.
+    } // Acknowledged registry receipts are positive certificates; do not mutate them via an unrelated host.
     for (const [attempt, expectedWakes] of [proof.wakes ? 0 : 1, 0].entries()) {
       helper = child(["recover", root, String(expectedWakes), String(attempt)]);
       const result = await helper.exited;
