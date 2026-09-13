@@ -1,3 +1,4 @@
+import { retainSubagentCommandReceipt, subagentCommandReceipt, type SubagentCommandReceipts } from "./subagent-command-receipts.js";
 import { randomUUID } from "node:crypto";
 import type { OwnedForegroundProcessRequest, OwnedForegroundProcesses, ProcessJobProcessHandle, ProcessJobProcessResult } from "@mono-agent/runtime-adapter";
 import type { ProcessIncarnation } from "./process-incarnation.js";
@@ -8,7 +9,7 @@ export interface SubagentOwnedCommandsPort {
   readonly maxOutputBytes: number;
   now(): number;
   /** Service serialization; only mutate the matching immutable job/turn. */
-  mutate(operation: (ownership: SubagentExecutionOwnership) => void): Promise<void>;
+  mutate(operation: (ownership: SubagentExecutionOwnership, receipts: SubagentCommandReceipts) => void): Promise<void>;
   readIncarnation(pid: number): Promise<ProcessIncarnation | undefined>;
   /** Runs outside service mutation serialization. */
   changed(): Promise<void>;
@@ -53,7 +54,7 @@ export function createSubagentOwnedCommands(port: SubagentOwnedCommandsPort): {
             owner.seenCalls.push(key);
             owner.command = { id, callKey: key, tool: request.tool, state: "preparing", cwd: request.prepared.cwd,
               sandboxSettingsPath: request.prepared.sandboxSettingsPath ?? null,
-              pid: null, pgid: null, incarnation: null, deadlineAt: port.now() + remaining };
+              pid: null, pgid: null, incarnation: null, budgetMs: remaining, deadlineAt: port.now() + remaining };
           });
           admitted = true;
           const signal = request.signal ? AbortSignal.any([abort.signal, request.signal]) : abort.signal;
@@ -77,9 +78,10 @@ export function createSubagentOwnedCommands(port: SubagentOwnedCommandsPort): {
           result = await handle.completion;
           if (result.groupExitConfirmed !== true) throw new Error("Subagent command group cleanup remains unresolved.");
           await cleanup();
-          await port.mutate((owner) => {
+          await port.mutate((owner, receipts) => {
             if (owner.command?.id !== id) throw new Error("Subagent command identity changed.");
             owner.command.state = "released";
+            retainSubagentCommandReceipt(receipts, subagentCommandReceipt(owner.command, port.now(), result));
           });
           await port.changed();
           return result;
@@ -91,10 +93,11 @@ export function createSubagentOwnedCommands(port: SubagentOwnedCommandsPort): {
           // No target before launch, or actual group-settlement proof afterwards.
           if (!handle || result?.groupExitConfirmed === true) await cleanup().catch(() => undefined);
           if (admitted) {
-            await port.mutate((owner) => {
+            await port.mutate((owner, receipts) => {
               if (owner.command?.id !== id) throw new Error("Subagent command identity changed.");
               owner.command.state = cleaned ? "released" : "cleanup_unknown";
               owner.revoked = true;
+              retainSubagentCommandReceipt(receipts, subagentCommandReceipt(owner.command, port.now(), result));
             }).catch(() => undefined); // A failed durable write retains the earlier ownership fence.
             revoke();
             await port.changed().catch(() => undefined);

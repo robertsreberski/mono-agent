@@ -120,6 +120,11 @@ async function recover(root, expectedWakes) {
     const record = await until(async () => { const record = await f.store.get(proof.jobId); return record?.subagentOwnership?.publication.state === "confirmed" && record.wake.state === "delivered" && record; });
     assert.equal(record.subagentOwnership.owner.settlement, "dead");
     assert.equal(record.subagentOwnership.command.state, "released");
+    assert.equal(record.subagentCommandReceipts.commands.length, 1);
+    assert.equal(record.subagentCommandReceipts.commands[0].cleanup, "confirmed");
+    assert.equal(record.subagentCommandReceipts.commands[0].completion, proof.wakes ? "observed" : "unobserved");
+    assert.equal(record.subagentCommandReceipts.commands[0].exitCode, proof.wakes ? 0 : null);
+    assert.equal((await f.service.get(proof.jobId)).subagentCommandReceipts, undefined);
     assert.equal(record.state, proof.wakes ? "timed_out" : "interrupted");
     assert.equal(f.wakes(), expectedWakes);
     if (proof.command.pgid !== null) assert.throws(() => process.kill(-proof.command.pgid, 0), { code: "ESRCH" });

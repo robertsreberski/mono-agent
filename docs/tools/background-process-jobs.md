@@ -688,3 +688,13 @@ publication, not merely provider return. A lost registry-confirmation receipt
 keeps continuation/close/reuse fenced until the registered owner confirms the
 same publication sequence. Private owner roots and publication receipts are not
 included in instance handle results.
+
+The private store retains at most 32 command receipts (12 KiB aggregate), with an
+omitted count under pressure. These contain actual tool/cwd/budget/exit/signal,
+timeout/cancel/truncation and cleanup measurements, never raw argv, environment,
+stdout, provider answer or a fabricated "checks passed" verdict. Optional facts
+are trimmed before they can exceed the job's real serialized-record budget;
+mandatory ownership and the non-evicting call ledger are never trimmed for them.
+Crash recovery can add positive group-cleanup evidence while leaving the exit
+unobserved. It cannot turn OS cleanup or a matching command label into successful
+verification. These private receipts do not widen ProcessJob/wake projections.

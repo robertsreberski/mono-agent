@@ -30,6 +30,7 @@ export interface SubagentOwnedCommand {
   pgid: number | null;
   incarnation: ProcessIncarnation | null;
   deadlineAt: number;
+  budgetMs?: number;
 }
 
 export const SUBAGENT_OWNERSHIP_MAX_BYTES = 40 * 1024;
@@ -87,10 +88,10 @@ export function isSubagentExecutionOwnership(value: unknown): value is SubagentE
 }
 
 export function isSubagentOwnedCommand(value: unknown): value is SubagentOwnedCommand {
-  if (!object(value) || !exact(value, ["id", "callKey", "tool", "state", "cwd", "sandboxSettingsPath", "pid", "pgid", "incarnation", "deadlineAt"])
+  if (!object(value) || !exact(value, ["id", "callKey", "tool", "state", "cwd", "sandboxSettingsPath", "pid", "pgid", "incarnation", "deadlineAt", ...(Object.hasOwn(value, "budgetMs") ? ["budgetMs"] : [])])
     || !uuid(value.id) || !text(value.callKey, 512) || !["Exec", "Bash"].includes(String(value.tool))
     || !["preparing", "attested", "running", "terminating", "cleanup_unknown", "released"].includes(String(value.state))
-    || !canonicalPath(value.cwd) || !positive(value.deadlineAt)
+    || !canonicalPath(value.cwd) || !positive(value.deadlineAt) || (value.budgetMs !== undefined && !positive(value.budgetMs))
     || !(value.pid === null || positive(value.pid)) || value.pgid !== value.pid
     || !(value.incarnation === null || incarnation(value.incarnation))
     || ((value.pid === null) !== (value.incarnation === null))

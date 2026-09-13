@@ -78,7 +78,10 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   original job slot; registry admission identity, actual provider settlement and
   terminal publication are distinct fences. Failed command ownership never
   falls back to an untracked foreground process. Foreground persistent turns
-  do not gain supervised process ownership.
+  do not gain supervised process ownership. Bounded private command receipts
+  retain actual exit/budget/cleanup measurements without argv, environment,
+  output prose or inferred verification success; optional receipts yield space
+  to mandatory ownership. Restart cleanup does not invent an exit receipt.
 - Opt in to Pi-native host-owned watches through `monitors.*`. Telegram, Slack,
   and existing web conversations receive coalesced event batches as exact-origin
   tool-capable wake turns; web uses ordinary assistant turns rather than a

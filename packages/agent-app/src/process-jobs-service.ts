@@ -1,3 +1,5 @@
+import { boundSubagentCommandReceipts } from "./process-jobs-store.js";
+import { emptySubagentCommandReceipts, retainSubagentCommandReceipt, subagentCommandReceipt } from "./subagent-command-receipts.js";
 import { createSubagentOwnedCommands } from "./subagent-owned-commands.js";
 import type { ManagedSubagentExecution, ManagedSubagentRegistry, SubagentDisposition, SubagentRegistryPublication } from "./subagent-managed-turn.js";
 import type { InstanceOutcome } from "./subagent-instances.js";
@@ -590,9 +592,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     const commands = createSubagentOwnedCommands({ deadlineAt, maxOutputBytes: this.settings.maxOutputBytes, now: () => this.now().getTime(),
       readIncarnation: this.readIncarnation,
       mutate: async (operation) => await this.withManagedLock(async () => await this.storeMutate("subagent.command", (records) => {
-        const owner = requireRecord(records, jobId).subagentOwnership;
+        const record = requireRecord(records, jobId);
+        const owner = record.subagentOwnership;
         if (!owner) throw new Error("Managed subagent ownership is unavailable.");
-        operation(owner);
+        operation(owner, record.subagentCommandReceipts ??= emptySubagentCommandReceipts());
         if (owner.disposition) { owner.publication.sequence++; owner.publication.state = "pending"; }
       })),
       changed: async () => { await this.publishManaged(jobId); },
@@ -722,6 +725,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
               ownership.publication.sequence++; ownership.publication.state = "pending";
             }
             current.subagentOwnership = ownership;
+            if (ownership.command) retainSubagentCommandReceipt(current.subagentCommandReceipts ??= emptySubagentCommandReceipts(), subagentCommandReceipt(ownership.command, this.now().getTime()));
           }
           else if (["starting", "running"].includes(current.state)) current.childStillBusy = true;
           transitionTerminal(current, "interrupted", this.now(), "process_job_agent_restarted", "Subagent interrupted by restart; never replayed.");
@@ -1913,6 +1917,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       const result = await this.store.mutate(async (records) => {
         try {
           const value = await mutate(records);
+          for (const record of records.values()) if (record.subagentCommandReceipts) boundSubagentCommandReceipts(record);
           desired = captureMutationSnapshot(records);
           return value;
         } catch (error) {
