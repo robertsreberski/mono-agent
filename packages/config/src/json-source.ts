@@ -180,6 +180,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly enabled?: boolean;
     readonly maxConcurrent?: number;
     readonly maxPerTurn?: number;
+    readonly commandTimeoutMs?: number;
     readonly timeoutMs?: number;
     readonly maxTurns?: number;
     /**

@@ -134,6 +134,10 @@ Persistent Agent/AgentSend can run detached through the app-private in-process
 ProcessJobs lane. Durable admission reserves the child; completion and AskParent
 wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
+Detached children receive a foreground Bash/Exec ceiling bounded by their own
+job’s remaining runtime and `subagents.commandTimeoutMs` (default 30 minutes).
+The job deadline remains authoritative; child-owned background commands are
+unsupported. Interactive and foreground-child caps, and NodeRepl, are unchanged.
 See [background subagents](../../docs/tools/background-process-jobs.md#detached-persistent-children).
 
 ## Install / Usage

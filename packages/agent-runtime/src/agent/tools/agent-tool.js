@@ -406,9 +406,9 @@ export function createAgentTool(subagents, context = {}, continuation) {
             timeoutMs: positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS)),
             // The identity is host-validated; raw prompts and tool parameters never enter job metadata.
             cleanup: () => instances.releaseReservation(retained.id, reservation),
-            run: async (childSignal, _writeOutput, reportProgress) => {
+            run: async (childSignal, _writeOutput, reportProgress, execution) => {
               try {
-                const result = await runTurn(childSignal, reportProgress);
+                const result = await runTurn(childSignal, reportProgress, execution);
                 return { answer: result.answer, status: result.details.subagent.status, ...(result.details.subagent.question ? { question: result.details.subagent.question } : {}), childStillBusy: result.details.subagent.childStillBusy === true,
                   output: JSON.stringify({ instanceId: retained.id, ...result.details.subagent,
                     answer: result.content[0].text, artifacts: result.details.tool_payload_saved_paths ?? [] }) };
@@ -424,9 +424,12 @@ export function createAgentTool(subagents, context = {}, continuation) {
       }
       return await runTurn(signal);
 
-      /** @param {AbortSignal} [signal]
-       * @param {(event: *) => void} [reportProgress] */
-      async function runTurn(signal, reportProgress) {
+      /**
+       * @param {AbortSignal} [signal]
+       * @param {(event: *) => void} [reportProgress]
+       * @param {{deadlineAt: number}} [execution]
+       */
+      async function runTurn(signal, reportProgress, execution) {
         if (!detached && slots.inFlight() >= maxConcurrent && !budget.warnedQueued) {
           budget.warnedQueued = true;
           context.onEvent?.({
@@ -509,6 +512,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         let abandoned = false;
         try {
           const running = subagents.run({
+            ...(detached && execution ? { detached: true, deadlineAt: execution.deadlineAt } : {}),
             ...(instance ? { instance: { id: instance.id, sessionId: instance.sessionId, sessionsRoot: instance.sessionsRoot } } : {}),
             systemPrompt: instance?.systemPrompt ?? profile.systemPrompt,
             prompt: params.prompt,

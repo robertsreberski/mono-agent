@@ -341,6 +341,7 @@ function createBuiltinTool(name, label, description, parameters, execute, {
       const shouldTrackWrite = name === "Write" && typeof normalized.file_path === "string" && normalized.file_path.length > 0;
       const beforeWrite = shouldTrackWrite ? readFileChangeSnapshot(normalized.file_path) : null;
       const raw = await execute(normalized, {
+        toolLimits,
         signal,
         sandboxPolicy,
         sandboxEngine,
@@ -521,10 +522,11 @@ export function getPiBuiltinTools(allowedTools, {
   const backgroundLimitMs = processJobsController?.limits?.maxRuntimeMs;
   const processJobsDiagnostic = processJobsAvailability === undefined ? ""
     : ` Background process-job request budget: chainDepth=${processJobsAvailability.chainDepth}, maxChainDepth=${processJobsAvailability.maxChainDepth}, remainingStarts=${processJobsAvailability.remainingStarts}${processJobsAvailability.unavailableReason === undefined ? "" : `, unavailableReason=${processJobsAvailability.unavailableReason}`}. This is a lineage budget, not approval; never reset or bypass it.`;
+  const foregroundTimeoutDescription = `Foreground commands have a ${formatDurationForModel(foregroundTimeoutLimitMs)} ceiling; an owning process-job deadline may stop them sooner.`;
   const processTimeoutSchema = {
     type: "integer",
     minimum: 1,
-    description: `Exact timeout in milliseconds. A foreground run is capped at ${formatDurationForModel(foregroundTimeoutLimitMs)} and is killed at that point, so anything longer belongs in the background${
+    description: `Exact timeout in milliseconds. A foreground run is capped at ${formatDurationForModel(foregroundTimeoutLimitMs)} and is killed at that point${processJobsController ? ", so anything longer belongs in the background" : ". Background commands are unavailable for this run"}${
       backgroundLimitMs === undefined
         ? ""
         : `, where this host allows up to ${formatDurationForModel(backgroundLimitMs)}`
@@ -605,7 +607,7 @@ export function getPiBuiltinTools(allowedTools, {
       max_matches: { type: "integer" },
       max_output_chars: textLimitSchema,
     }, ["pattern"]), grepToolImpl, toolContext),
-    Bash: createBuiltinTool("Bash", "Bash", "Execute a shell command for pipelines, redirection, conditionals, or other shell syntax. Prefer Exec for one executable with an argv array. This is macOS: do not assume GNU-only commands or flags.", objectSchema({
+    Bash: createBuiltinTool("Bash", "Bash", "Execute a shell command for pipelines, redirection, conditionals, or other shell syntax. Prefer Exec for one executable with an argv array. This is macOS: do not assume GNU-only commands or flags." + " " + foregroundTimeoutDescription, objectSchema({
       command: { type: "string" },
       workdir: { type: "string" },
       description: { ...processDescriptionSchema, description: processDescriptionSchema.description + processJobsDiagnostic },
@@ -614,7 +616,7 @@ export function getPiBuiltinTools(allowedTools, {
       max_output_chars: bashLimitSchema,
       ...(processJobsController ? { background: backgroundSchema, wake_on_completion: { type: "boolean", description: "Only with background=true. Defaults to true. Set false explicitly to update the terminal lifecycle card without waking this conversation." } } : {}),
     }, ["command"]), bashToolRun, toolContext),
-    Exec: createBuiltinTool("Exec", "Exec", "Execute one program directly from an argv array without shell parsing. Prefer this for ordinary commands; use Bash only when shell syntax is required.", objectSchema({
+    Exec: createBuiltinTool("Exec", "Exec", "Execute one program directly from an argv array without shell parsing. Prefer this for ordinary commands; use Bash only when shell syntax is required." + " " + foregroundTimeoutDescription, objectSchema({
       executable: { type: "string", minLength: 1 },
       args: { type: "array", items: { type: "string" }, maxItems: 256 },
       workdir: { type: "string" },

@@ -587,6 +587,19 @@ describe("loadMonoAgentConfig", () => {
     } })).toThrow(expected);
   });
 
+  it.each([1, 900_000, Number.MAX_SAFE_INTEGER])("reads detached commandTimeoutMs=%s", (commandTimeoutMs) => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
+      MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, commandTimeoutMs }),
+    } });
+    expect(config.subagents?.commandTimeoutMs).toBe(commandTimeoutMs);
+  });
+
+  it.each([0, -1, 1.5, "900000", null, Number.MAX_SAFE_INTEGER + 1, Infinity])("rejects invalid commandTimeoutMs=%s", (commandTimeoutMs) => {
+    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
+      MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ commandTimeoutMs }),
+    } })).toThrow(/commandTimeoutMs must be an integer/);
+  });
+
   it("is absent when no subagents are configured", () => {
     expect(loadMonoAgentConfig({ cwd: "/repo", env: baseEnv }).subagents).toBeUndefined();
   });

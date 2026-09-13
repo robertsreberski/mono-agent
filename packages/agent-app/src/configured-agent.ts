@@ -696,6 +696,8 @@ function inlineSubagentCeiling(config: MonoAgentConfig): readonly string[] {
 }
 
 interface SubagentRunRequest {
+  readonly detached?: true;
+  readonly deadlineAt?: number;
   readonly instance?: { readonly id: string; readonly sessionId: string; readonly sessionsRoot: string };
   readonly model?: RuntimeModelReference;
   readonly effort?: string;
@@ -849,7 +851,13 @@ export function buildSubagentsOptions(
         }
         subagentQuestion = structuredClone(question);
       } } : undefined;
+    // Snapshot the command ceiling after child setup/queueing. The owning job
+    // signal remains authoritative as its remaining runtime decreases.
+    const commandTimeoutMs = request.detached === true && Number.isFinite(request.deadlineAt)
+      ? Math.max(1, Math.min(Math.floor(request.deadlineAt! - Date.now()), subagents.commandTimeoutMs ?? 1_800_000))
+      : undefined;
     const result = await runtime.run(childSystemPrompt, {
+      ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
       ...(askParentController === undefined ? {} : { askParentController }),
       ...(request.instance === undefined ? {} : {
         sessionId: request.instance.sessionId,

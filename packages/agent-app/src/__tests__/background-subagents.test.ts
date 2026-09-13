@@ -469,3 +469,66 @@ it("does not append private progress or the UI answer to the internal stdout lan
     } }, 1_000, 8_000);
   expect(await launched.completion).toMatchObject({ stdout: output, answer: "Separate UI report" });
 });
+
+it("propagates only detached Agent/AgentSend admitted deadlines, not foreground ones", async () => {
+  const f = await fixture({ maxRuntimeMs: 900_000 });
+  const run = vi.fn(async (_r: any) => ({ text: "done" }));
+  const { agent, send } = tools(f, run, { timeoutMs: 1_800_000 });
+  const first = await agent.execute("start", { persist: true, background: true, id: "helper", prompt: "work" });
+  await done(f.service, first.details.jobId);
+  const firstJob = (await f.store.get(first.details.jobId))!;
+  expect(run.mock.calls[0]![0]).toMatchObject({ detached: true, deadlineAt: Date.parse(firstJob.runtimeDeadlineAt!) });
+  expect(firstJob.maxRuntimeMs).toBe(900_000);
+  const second = await send.execute("resume", { id: "helper", background: true, message: "more" });
+  await done(f.service, second.details.jobId);
+  const secondJob = (await f.store.get(second.details.jobId))!;
+  expect(run.mock.calls[1]![0]).toMatchObject({ detached: true, deadlineAt: Date.parse(secondJob.runtimeDeadlineAt!) });
+  await send.execute("foreground", { id: "helper", message: "more" });
+  expect(run.mock.calls[2]![0]).not.toHaveProperty("detached");
+  expect(run.mock.calls[2]![0]).not.toHaveProperty("deadlineAt");
+  await agent.execute("foreground-agent", { prompt: "work" });
+  expect(run.mock.calls[3]![0]).not.toHaveProperty("deadlineAt");
+});
+
+it.each([
+  [undefined, 3_600_000, true, 1_800_000],
+  [900_000, 3_600_000, true, 900_000],
+  [900_000, 30_000, true, 30_000],
+  [undefined, 30_000, true, 30_000],
+  [undefined, -1, true, 1],
+  [undefined, undefined, true, undefined],
+  [undefined, NaN, true, undefined],
+  [900_000, 3_600_000, false, undefined],
+] as const)("derives child command ceiling config=%s remaining=%s detached=%s", async (commandTimeoutMs, remaining, detached, expected) => {
+  vi.useFakeTimers(); vi.setSystemTime(1_000_000);
+  const config = loadMonoAgentConfig({ cwd: process.cwd(), env: {
+    MONO_AGENT_IDENTITY_PATH: resolve(process.cwd(), "IDENTITY.md"),
+    MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
+    MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, commandTimeoutMs }),
+  } });
+  const run = vi.fn(async (_prompt: string, _options: any) => ({ text: "done" }));
+  const subagents: any = buildSubagentsOptions(config, { runtime: { run } as never, baseModel: config.runtime.model })!.subagents;
+  await subagents.run({ systemPrompt: "Work", prompt: "test", definition: { name: "helper", allowedTools: ["Bash", "Exec"] },
+    maxTurns: 2, depth: 1, abortSignal: new AbortController().signal,
+    ...(detached ? { detached: true } : {}),
+    ...(remaining === undefined ? {} : { deadlineAt: Date.now() + remaining }),
+  });
+  const options = run.mock.calls[0]![1];
+  if (expected === undefined) expect(options).not.toHaveProperty("toolLimits");
+  else expect(options.toolLimits).toEqual({ bashTimeoutMs: expected });
+  expect(options).not.toHaveProperty("processJobsController");
+});
+
+it("gives the child the absolute launch deadline and aborts at that deadline", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(1_000_000);
+  let observed: { deadlineAt: number } | undefined;
+  const launched = launchInternalProcessJob({ kind: "internal", tool: "Agent", jobId: "deadline", instanceId: "helper", cleanup: async () => {},
+    run: async (signal, _write, _progress, execution) => {
+      observed = execution;
+      return new Promise((resolve) => signal.addEventListener("abort", () => resolve({ status: "timeout", output: "" }), { once: true }));
+    } }, 900_000, 64, 5, undefined, undefined, Date.now() + 30_000);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(observed).toEqual({ deadlineAt: 1_030_000 });
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(await launched.completion).toMatchObject({ timedOut: true, durationMs: 30_000 });
+});

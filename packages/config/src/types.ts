@@ -278,6 +278,8 @@ export interface MonoAgentSubagentsConfig {
   readonly maxPerTurn?: number;
   /** Default per-subagent wall clock in ms. Default 300000. */
   readonly timeoutMs?: number;
+  /** Detached child foreground Bash/Exec ceiling in ms. Default 1800000; bounded by its job deadline. */
+  readonly commandTimeoutMs?: number;
   /** Default per-subagent turn cap. Default 100. */
   readonly maxTurns?: number;
   readonly definitions?: readonly MonoAgentSubagentConfig[];
