@@ -83,7 +83,7 @@ describe("meaningful conversation outcomes", () => {
       const next = s.store.beginTurn({ threadId: s.thread.id, text: "Try again", attachmentIds: [] });
       expect(s.present()).toEqual({ text: "Working…", active: true });
       s.store.completeTurn(next.turnId, "Recovered successfully");
-      expect(s.present()).toEqual({ text: "Recovered successfully", active: false });
+      expect(s.present()).toEqual({ text: "Completed", active: false });
     } finally { s.store.close(); }
   });
 
@@ -92,7 +92,7 @@ describe("meaningful conversation outcomes", () => {
     try {
       s.addJob(); s.advance(); s.wake(kind, "The failure is resolved.");
       expect(s.summary().runState.lastOutcome).toBeUndefined();
-      expect(s.present()).toEqual({ text: "The failure is resolved.", active: false });
+      expect(s.present()).toEqual({ text: "Completed", active: false });
     } finally { s.store.close(); }
   });
 

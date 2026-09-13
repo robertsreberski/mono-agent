@@ -8,7 +8,10 @@ export function ConversationTags() {
   const tags = (tagsByAgent?.[selectedThread.sourceId] ?? []).filter((tag) => selectedThread.tagIds?.includes(tag.id));
   return (
     <div className="conversation-tags" aria-label="Conversation tag line">
-      {tags.map((tag) => <TagChip key={tag.id} tag={tag} />)}
+      <span className="tag-separator" aria-hidden="true">·</span>
+      <div className="conversation-tag-chips">
+        {tags.map((tag) => <TagChip key={tag.id} tag={tag} />)}
+      </div>
       <TagMenu thread={selectedThread} />
     </div>
   );
