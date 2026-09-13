@@ -330,6 +330,22 @@ describe("App mobile screens", () => {
     }
   });
 
+  it("stays on the dashboard for an empty notification thread value", () => {
+    // No thread is named, so there is no conversation to open: a bare
+    // `?thread=` must leave the phone on its entrance screen, matching the
+    // provider which ignores empty deep-link values.
+    window.history.replaceState(null, "", "/?thread=");
+    try {
+      const { container } = render(<App />);
+
+      expect(chat(container)).not.toHaveClass("is-open");
+      expect(chat(container)).toHaveAttribute("inert");
+      expect(panel(container)).not.toHaveAttribute("inert");
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
+  });
+
   it("brings the dashboard slot back when a project opens from the conversation", () => {
     storeMock.openProjectId = null;
     const { container, rerender } = render(<App />);

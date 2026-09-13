@@ -93,7 +93,9 @@ type MobileScreen = "dashboard" | "conversation";
 const initialMobileScreen = (): MobileScreen => {
   if (/^\/agents\//u.test(window.location.pathname)) return "conversation";
   try {
-    if (new URL(window.location.href).searchParams.has("thread")) return "conversation";
+    // Mirror the provider's deep-link guard: only a non-empty thread value
+    // names a conversation, so a bare `?thread=` stays on the dashboard.
+    if (new URL(window.location.href).searchParams.get("thread")) return "conversation";
   } catch {
     return "dashboard";
   }
