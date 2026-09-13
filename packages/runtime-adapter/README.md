@@ -175,6 +175,10 @@ suppresses unrelated same-ID callback owners.
 | `src/mcp-servers.ts` / `src/runtime-policies.ts` | MCP normalization and legacy-policy migration |
 | `src/process-jobs.ts` | Typed host controller, kernel-shape bridge, launch/result contracts, and conformance boundary |
 
+SRT command preparation terminates the sandbox CLI's options with `--` before
+forwarding the exact target argv. Target flags such as Git's `-c` must not become
+SRT's own shell-command option.
+
 ## Public API
 
 ### Start here
