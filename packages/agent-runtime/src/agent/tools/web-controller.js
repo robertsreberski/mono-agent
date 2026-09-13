@@ -1,8 +1,7 @@
 // @ts-check
 
 import { createHash, randomUUID } from "node:crypto";
-import { readToolRuntime } from "./shared/runtime-context.js";
-import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 import { performWebFetch, formatWebFetchDocument } from "./web-fetch.js";
 import { performWebSearch } from "./web-search.js";
 import { createWebSearchRunState, webSearchBudgetSnapshot } from "./web-search-state.js";
@@ -129,7 +128,7 @@ export function createWebToolController({
       // policy merged with the request policy, so keying on the request half
       // alone would let a run whose context denies network read entries a
       // network-allowed run had populated. Resolved per call because
-      // readToolRuntime() is mutable process state.
+      // the owning runtime may update its explicit tool context.
       //
       // The snapshot is then handed to performWebSearch as the request policy
       // rather than letting it re-resolve. Execution is deferred by a microtask
@@ -138,7 +137,7 @@ export function createWebToolController({
       // network-allowed result under a denied key. Merging is monotonic, so
       // passing the snapshot back in means enforcement can only be at least as
       // strict as the key claims.
-      const resolvedCtx = ctx ?? readToolRuntime();
+      const resolvedCtx = requireToolContext(ctx);
       const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
       const key = stableKey({ params, searchConfig: safeSearchCacheIdentity(searchConfig), policy, coordination: coordinator?.scope });
       return cachedSearch(key, params.query, async () => performWebSearch(params, {
@@ -155,7 +154,7 @@ export function createWebToolController({
 
     async fetch(params, execution = {}) {
       if (execution.signal?.aborted) return { text: "Error: WebFetch was aborted.", error: true, outcome: { status: "error", code: "aborted" } };
-      const resolvedCtx = ctx ?? readToolRuntime();
+      const resolvedCtx = requireToolContext(ctx);
       const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
       const { start_line, max_lines, max_output_chars, ...request } = params;
       if ((start_line !== undefined && (!Number.isSafeInteger(start_line) || start_line < 1))

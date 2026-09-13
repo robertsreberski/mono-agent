@@ -14,11 +14,11 @@ All catalog-publishable packages release in lockstep.
 version to equal the tag and every internal dependency to use the exact matching
 workspace range.
 
-**Lockstep set:** all **23 `publishable: true` packages** in
+**Lockstep set:** all **24 `publishable: true` packages** in
 `scripts/package-catalog.mjs` release together: 16 core packages (entries without
 a `tier`), 1 `tier: "alias"` package (`create-mono-agent` under `packages/*`), and
-6 `tier: "plugin"` extras under `extras/*` (a2a-adapter, agent-orchestrator,
-docs-mcp, memory-supermemory, messenger-adapter, and whatsapp-adapter). Plugin extras are version-bumped and
+7 `tier: "plugin"` extras under `extras/*` (a2a-adapter, agent-orchestrator,
+docs-mcp, memory-supermemory, messenger-adapter, observability-phoenix, and whatsapp-adapter). Plugin extras are version-bumped and
 published alongside core.
 
 ## 1. Bump in a worktree

@@ -25,7 +25,7 @@ export interface ReScoreInput {
 }
 
 /** Final relevance: rank/evidence first, with small salience/insight tie-breakers. */
-export function reScore(input: ReScoreInput, weights: RecallWeights, _decayGamma: number, _now: Date): number {
+export function reScore(input: ReScoreInput, weights: RecallWeights): number {
   return (
     weights.rrf * input.rrfScore +
     weights.salience * input.salience +

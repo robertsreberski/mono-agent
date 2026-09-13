@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractCapturePlan, extractCapturePlanStrict } from "../capture-batch.js";
+import { extractCapturePlanStrict } from "../capture-batch.js";
 import {
   MAX_KNOWN_ENTITY_HINTS,
   renderKnownEntityHints,
@@ -132,7 +132,7 @@ describe("capture extraction with reuse hints", () => {
       },
     };
 
-    await extractCapturePlan(
+    await extractCapturePlanStrict(
       "The blackout curtain parcel arrives today.",
       llm,
       undefined,
@@ -155,18 +155,17 @@ describe("capture extraction with reuse hints", () => {
       },
     };
 
-    await extractCapturePlan("A brand new subject.", llm);
+    await extractCapturePlanStrict("A brand new subject.", llm);
 
     expect(prompts[0]).not.toContain("KNOWN ENTITIES");
     expect(prompts[0]).toContain("TURN:");
   });
 
-  it("keeps a reused id through both the lenient and strict paths", async () => {
+  it("keeps a reused id through strict completed-turn extraction", async () => {
     const hints = selectKnownEntityHints("curtains", CURTAIN_GRAPH);
-    const lenient = await extractCapturePlan("curtains", fakeLlm([["Extract one bounded", response]]), undefined, hints);
     const strict = await extractCapturePlanStrict("curtains", fakeLlm([["Extract one bounded", response]]), undefined, hints);
 
-    for (const plan of [lenient, strict]) {
+    for (const plan of [strict]) {
       expect(plan.entities.map((entity) => entity.id)).toEqual(["project:black-curtains"]);
       expect(plan.candidates[0]?.entityIds).toEqual(["project:black-curtains"]);
     }

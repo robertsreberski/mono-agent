@@ -79,7 +79,6 @@ vi.mock("../process-jobs-root-registry.js", async (importOriginal) => ({
 }));
 
 const { createConfiguredAgentHarness } = await import("../index.js");
-const { createConfiguredAgentResponderForApp } = await import("../configured-agent.js");
 
 const PRIMARY = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } as const;
 const HAIKU = { provider: "anthropic", model: "claude-haiku-4-5", reference: "anthropic:claude-haiku-4-5" } as const;

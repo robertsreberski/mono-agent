@@ -118,7 +118,7 @@ agent folder. The retired `memory-bujo` executable is no longer packaged.
 ### Explicit remember writes
 
 `BujoMemoryStore.remember(conversationId, text)` durably stores one explicitly
-stated fact. Unlike `appendHostSummary` it writes the curated `daily/` source on
+stated fact. Unlike completed-turn summaries it writes the curated `daily/` source on
 every tier and indexes in the same critical section, so the fact is recallable as
 soon as the call returns.
 
@@ -162,19 +162,13 @@ await store.persistCompletedTurn({
 
 ### BuJo capture paths
 
-The bundled `@mono-agent/agent-harness` never calls `scheduleCapture` on
-`BujoMemoryStore`. BuJo implements `persistCompletedTurn`, so the harness always
-takes the strong, run-idempotent branch; `writeMode: "capture"` passes the
-approved turn text through that durable intake and the strict capture parser.
-
-`scheduleCapture`, direct `capture()`, and the loose capture primitives exported
-from `@mono-agent/memory/bujo` remain explicit opt-in compatibility/composition
-surfaces for direct embedders and offline calibration tooling. No bundled host
-invokes them. The `scheduleCapture` queue is allocated lazily on its first direct
-call. Creating a writable BuJo store through the bundled host therefore leaves
-that best-effort queue absent, rather than creating an idle queue that no shipped
-trigger can feed. New host integrations should implement or call
-`persistCompletedTurn`; they should not route BuJo turns through the legacy pair.
+`persistCompletedTurn` is the sole host write protocol. Summary-only turns omit
+`captureText`; capture mode includes the full host-approved turn. Both modes
+cross durable admission before background projection. Direct embedders should
+retain the run id when retrying and call `flush()` before expecting downstream
+curation or Journal vectors to be complete. The strict `captureTurnStrict` and
+`extractCapturePlanStrict` primitives remain available for controlled low-level
+uses; normal completed turns should enter durable intake.
 
 The built-in store keeps `.capture-intake/{pending,dead,resolved}` private
 (`0700` directories, `0600` files). Filenames are SHA-256 run keys and contain
@@ -413,7 +407,6 @@ ExplicitMemoryForgetRestoreResult
 ExportMemoryBundleOptions
 ExtractedEntity
 ExtractedRelation
-Extraction
 GraphBatchInput
 GraphBatchResult
 JournalBrowseCapableStore
@@ -486,7 +479,6 @@ applyMemoryBundleImport
 auditBujoMemoryHealth
 auditCanonicalGraphParity
 auditCompletedTurnIntake
-captureTurn
 captureTurnStrict
 composeRecallBlock
 createBujoMemoryStore
@@ -494,7 +486,6 @@ createIdFactory
 createOllamaLlm
 dailyFilePath
 exportMemoryBundle
-extractCapturePlan
 extractCapturePlanStrict
 findCanonicalMemoryBullet
 inspectCompletedTurnIntake
@@ -588,7 +579,6 @@ MemoryStoreAudit
 MemoryStoreStats
 MemoryStoreStatsOptions
 MemoryType
-MemoryWriteResult
 RecallHit
 RecallOptions
 RecallWeights

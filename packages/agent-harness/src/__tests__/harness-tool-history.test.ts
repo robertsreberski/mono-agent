@@ -66,7 +66,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       .toThrow(/schema is unsupported/iu);
     const prompts: string[] = [];
     const runtime = {
-      async run(prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
         prompts.push((options.messages ?? []).map((message) => message.content).join("\n"));
         return { text: "safe answer" };
       },
@@ -121,7 +121,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     const prompts: string[] = [];
     let call = 0;
     const runtime = {
-      async run(prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
         prompts.push((options.messages ?? []).map((message) => message.content).join("\n"));
         call += 1;
         if (call === 1) {

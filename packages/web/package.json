@@ -35,15 +35,16 @@
     "@mono-agent/agent-contracts": "workspace:0.21.1",
     "@mono-agent/config": "workspace:0.21.1",
     "@mono-agent/observability": "workspace:0.21.1",
+    "@mono-agent/operator-adapter": "workspace:0.21.1",
     "compression": "1.8.1",
     "express": "^5.1.0",
-    "undici": "8.9.0",
     "web-push": "3.6.7"
   },
   "devDependencies": {
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.2",
-    "@types/web-push": "3.6.4"
+    "@types/web-push": "3.6.4",
+    "undici": "8.9.0"
   },
   "publishConfig": {
     "access": "public"

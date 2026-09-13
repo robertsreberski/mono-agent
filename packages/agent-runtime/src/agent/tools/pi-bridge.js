@@ -1,3 +1,4 @@
+import { DEFAULT_RUNTIME_BRAND } from "../../runtime-brand.js";
 import { Type } from "@earendil-works/pi-ai";
 import { randomUUID } from "node:crypto";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
@@ -7,7 +8,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import {
   bashToolRun,
   editToolImpl,
@@ -33,8 +34,7 @@ import { MAX_TOOL_RESULT_BYTES, summarisePayload, wrapToolsWithBloatGuard } from
 import { wrapToolsWithApprovalGate } from "../approval.js";
 import { normalizeImageForModel } from "./shared/image.js";
 import { isInsidePath } from "./shared/path-resolver.js";
-import { readToolRuntime } from "./shared/runtime-context.js";
-import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 import { createAskParentTool } from "./ask-parent-tool.js";
 import { createAgentSendTool } from "./agent-send-tool.js";
 import { createAgentTool } from "./agent-tool.js";
@@ -112,7 +112,7 @@ function artifactFilename(filename, outputDir) {
 export function normalizeMcpToolParams(_serverName, toolName, params, { qaOutputDir, ctx } = {}) {
   if (!params || typeof params !== "object" || Array.isArray(params)) return params;
   if (!PLAYWRIGHT_FILENAME_TOOLS.has(toolName) || !params.filename || isAbsolute(String(params.filename))) return params;
-  const dir = qaOutputDir ?? (ctx ?? readToolRuntime()).qaOutputDir;
+  const dir = qaOutputDir ?? ctx?.qaOutputDir;
   return {
     ...params,
     filename: artifactFilename(params.filename, dir),
@@ -120,7 +120,7 @@ export function normalizeMcpToolParams(_serverName, toolName, params, { qaOutput
 }
 
 function normalizeWorkdir(value, cwd, ctx) {
-  const base = resolve(cwd || (ctx ?? readToolRuntime()).workspace || process.cwd());
+  const base = resolve(cwd || ctx?.workspace || process.cwd());
   const resolved = value ? resolve(absolutizePath(value, base)) : base;
   return isInsidePath(base, resolved) ? resolved : base;
 }
@@ -320,7 +320,7 @@ function createBuiltinTool(name, label, description, parameters, execute, {
     description,
     parameters,
     executionMode: forceSequential || ALWAYS_SEQUENTIAL_BUILTINS.has(name) ? "sequential" : undefined,
-    async execute(toolCallId, params, signal) {
+    async execute(_toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("tool execution aborted");
       const normalized = normalizePiBuiltinToolParams(name, params, { cwd, toolLimits, ctx });
       if (processJobsController && params?.background === true && (name === "Bash" || name === "Exec")) {
@@ -780,16 +780,16 @@ export function resolveMcpStdioCwd(cfg = {}, cwd = null) {
 }
 
 export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPolicy = null, sandboxEngine = null, ctx = null } = {}) {
-  const resolvedCtx = ctx ?? readToolRuntime();
+  const resolvedCtx = requireToolContext(ctx);
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const appOwnedLocalBinding = cfg[Symbol.for("@mono-agent/app-owned-local-binding")] === true;
   return sandbox.prepareCommand({
     policy: resolveSandboxPolicy(resolvedCtx, sandboxPolicy),
-    engine: sandboxEngine ?? undefined,
+    engine: sandboxEngine ?? resolvedCtx.sandboxEngine ?? undefined,
     command: {
       command: cfg.command,
       args: cfg.args || [],
-      cwd: resolveMcpStdioCwd(cfg, cwd),
+      cwd: resolveMcpStdioCwd(cfg, cwd ?? resolvedCtx.workspace),
       ...(cfg.env && typeof cfg.env === "object" ? { env: cfg.env } : {}),
       ...(appOwnedLocalBinding ? { allowLocalBinding: true } : {}),
     },
@@ -802,7 +802,7 @@ export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPoli
  * @param {{cwd?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, mcpApps?: any}} [options]
  */
 async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, ctx, mcpApps } = {}) {
-  const brand = (ctx ?? readToolRuntime()).runtimeBrand;
+  const brand = requireToolContext(ctx).runtimeBrand ?? DEFAULT_RUNTIME_BRAND;
   const privateCapabilityUrl = cfg?.[PRIVATE_CAPABILITY_URL] === true;
   const client = new McpClient(
     { name: `${brand.mcpClientName}/${name}`, version: brand.mcpClientVersion },
@@ -833,7 +833,7 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, 
       const prepared = await prepareMcpStdioCommand(cfg, { cwd, sandboxPolicy, sandboxEngine, ctx });
       transport = new StdioClientTransport({
         command: prepared.command,
-        args: prepared.args || [],
+        args: [...(prepared.args || [])],
         cwd: prepared.cwd,
         env: { ...process.env, ...(prepared.env || {}) },
       });

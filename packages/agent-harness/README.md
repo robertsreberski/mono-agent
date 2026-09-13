@@ -92,11 +92,12 @@ lease, so a custom runtime's stale callback cannot settle a newer attempt. The
 opaque logical-owner identity lets the standard runtime refresh that lease
 without granting callback ownership to an unrelated same-ID duplicate.
 
-For `append-host-summary` and `capture` write modes, a memory store that implements
-`persistCompletedTurn` receives one awaited, run-idempotent admission before the successful turn
-returns. The provider answer remains successful if admission rejects; the harness emits
-`memory_persistence_degraded` and invokes the configured warning sink. Stores without the strong
-method keep the legacy awaited `appendHostSummary` plus optional best-effort `scheduleCapture` path.
+For `append-host-summary` and `capture` write modes, the store must implement
+`persistCompletedTurn`; harness construction rejects an incompatible store.
+Each successful turn awaits one run-idempotent admission. The provider answer
+remains successful if admission rejects; the harness emits
+`memory_persistence_degraded` and invokes the configured warning sink.
+Read-only stores need only `load` and use `memoryWriteMode: "disabled"` or omit it.
 
 The built-in default soul adds only a compact evidence router: active dialogue
 for what was just said, `MemoryRecall` for a targeted durable fact or decision,

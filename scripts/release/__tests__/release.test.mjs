@@ -586,8 +586,8 @@ describe("current launch manifest", () => {
     // memory-mcp was retired: the BuJo recall tool is now auto-provisioned in-app
     // from the single config.memory block (no separate stdio MCP package).
     expect(publishableNames).not.toContain("@mono-agent/memory-mcp");
-    // operator-console was retired: Phoenix export is exposed from
-    // @mono-agent/observability/otel and config is JSON-first, applied on
+    // operator-console was retired: Phoenix export is an optional extra
+    // @mono-agent/observability-phoenix and config is JSON-first, applied on
     // `mono-agent restart`.
     expect(publishableNames).not.toContain("@mono-agent/operator-console");
     expect(publishableNames).not.toContain(`@mono-agent/${"sandbox"}`);
@@ -600,10 +600,10 @@ describe("current launch manifest", () => {
     expect(publishableNames).toContain("@mono-agent/observability");
   });
 
-  test("keeps Supermemory publishable but outside the default app dependency closure", () => {
-    const plugin = packageCatalog.find((entry) => entry.name === "@mono-agent/memory-supermemory");
+  test.each(["memory-supermemory", "observability-phoenix"])("keeps %s publishable but outside the default app dependency closure", (name) => {
+    const plugin = packageCatalog.find((entry) => entry.name === `@mono-agent/${name}`);
     expect(plugin).toMatchObject({
-      path: "extras/memory-supermemory",
+      path: `extras/${name}`,
       publishable: true,
       tier: "plugin",
     });
@@ -613,7 +613,7 @@ describe("current launch manifest", () => {
       "utf8",
     ));
     for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
-      expect(app[section]?.["@mono-agent/memory-supermemory"]).toBeUndefined();
+      expect(app[section]?.[`@mono-agent/${name}`]).toBeUndefined();
     }
   });
 

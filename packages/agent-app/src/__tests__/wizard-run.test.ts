@@ -88,6 +88,13 @@ const discoveryMock = vi.hoisted(() => ({
   }),
 }));
 
+const phoenixPluginMock = vi.hoisted(() => ({ installed: true }));
+
+vi.mock("../phoenix-plugin.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../phoenix-plugin.js")>(),
+  isPhoenixPluginInstalled: () => phoenixPluginMock.installed,
+}));
+
 const memoryEmbeddingMock = vi.hoisted(() => ({
   discover: vi.fn(async (options: { provider: "ollama" | "lmstudio" }) =>
     options.provider === "ollama"
@@ -169,6 +176,7 @@ import {
 } from "../wizard/run.js";
 
 beforeEach(() => {
+  phoenixPluginMock.installed = true;
   for (const queue of [
     promptMock.selectAnswers,
     promptMock.autocompleteAnswers,
@@ -206,6 +214,27 @@ async function withTtyStdin<T>(run: () => Promise<T>): Promise<T> {
 }
 
 describe("wizard production flow", () => {
+  it("keeps Phoenix off without its optional package and shows the exact installation command", async () => {
+    phoenixPluginMock.installed = false;
+    promptMock.selectAnswers.push("create");
+    const result = await runSetupRepairWizard({
+      cwd: "/tmp/agent-without-phoenix",
+      initialStep: 7,
+      answers: defaultAnswers({ observability: true }),
+      runProviderSetup: false,
+      providerSetupSecrets: {},
+      providerEnvironmentSecrets: {},
+      piApiKeyPersistenceByProvider: {},
+      credentialStates: {},
+      moduleSecrets: {},
+    });
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.answers.observability).toBe(false);
+    expect(promptMock.confirmCalls.some((call) => String(call.message).includes("Export traces to Phoenix"))).toBe(false);
+    expect(promptMock.notes.some((note) => /npm install @mono-agent\/observability-phoenix@\d+\.\d+\.\d+/u.test(note.message))).toBe(true);
+  });
+
   it("accepts canonical guided provider references and rejects malformed references", () => {
     expect(guidedModelRefProblem("openai-codex:gpt-5.6-sol")).toBeUndefined();
     expect(guidedModelRefProblem("anthropic:claude-sonnet-5")).toBeUndefined();

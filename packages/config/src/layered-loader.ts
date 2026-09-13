@@ -792,9 +792,6 @@ export function layerJsonOntoEnv(
   if (json.runtime?.effort !== undefined) {
     fromJson.MONO_AGENT_EFFORT = json.runtime.effort;
   }
-  if (json.runtime?.permissionMode !== undefined) {
-    fromJson.MONO_AGENT_PERMISSION_MODE = json.runtime.permissionMode;
-  }
   if (json.runtime?.maxTurns !== undefined) {
     fromJson.MONO_AGENT_MAX_TURNS = String(json.runtime.maxTurns);
   }

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { readFile, rm } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -313,10 +313,10 @@ export async function runWebCommand(
     } catch (error) {
       if (!isSystemdUserManagerUnavailable(error) || (action !== undefined && action !== "status")) throw error;
       if (action === undefined) {
-        await statusWeb(options, deps, false);
+        await statusWeb(deps, false);
         return 0;
       }
-      return await statusWeb(options, deps, true);
+      return await statusWeb(deps, true);
     }
   }
 
@@ -334,7 +334,7 @@ export async function runWebCommand(
 
   if (action === undefined) {
     stdout.write(renderWebHelp());
-    await statusWeb(options, deps, false);
+    await statusWeb(deps, false);
     return 0;
   }
   switch (action) {
@@ -347,7 +347,7 @@ export async function runWebCommand(
     case "stop":
       return await stopWebBackground(options, deps);
     case "status":
-      return await statusWeb(options, deps, true);
+      return await statusWeb(deps, true);
     case "logs":
       return await tailWebLogs(options, deps);
     case "reset":
@@ -577,7 +577,7 @@ async function startWebBackground(
         }
       }
       stdout.write(ui.style.dim("mono-agent web is already managed by launchd.\n"));
-      return await statusWeb(options, deps, true);
+      return await statusWeb(deps, true);
     }
     const recordRead = await readServiceRecord(paths.recordPath);
     if (recordRead.kind === "invalid") {
@@ -937,7 +937,6 @@ async function stopWebBackground(options: RunWebCommandOptions, deps: RunWebComm
 }
 
 async function statusWeb(
-  options: RunWebCommandOptions,
   deps: RunWebCommandDeps,
   strictExit: boolean,
 ): Promise<number> {

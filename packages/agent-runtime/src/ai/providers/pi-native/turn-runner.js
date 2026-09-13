@@ -14,7 +14,6 @@ import {
 } from "../../../agent/tools/pi-bridge.js";
 import { createNodeReplController } from "../../../agent/tools/node-repl.js";
 import { createWebToolController } from "../../../agent/tools/web-controller.js";
-import { readToolRuntime } from "../../../agent/tools/shared/runtime-context.js";
 import { formatLiveInputGuidance } from "../../live-input-prompt.js";
 import { createPiHarnessAdapter } from "./harness-adapter.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
@@ -69,7 +68,7 @@ export async function buildTurnTools(runState, {
   // router projects configureTools before each attempt, never mid-run.
   const runCtx = options.sandbox || persistArtifact
     ? {
-      ...(options.toolContext ?? readToolRuntime()),
+      ...options.toolContext,
       ...(options.sandbox ? { sandbox: options.sandbox } : {}),
       ...(persistArtifact ? { persistArtifact } : {}),
     }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 import { buildTurnTools, thinkingLevelForEffort } from "../../ai/providers/pi-native/turn-runner.js";
 
 describe("thinkingLevelForEffort", () => {
@@ -15,7 +16,8 @@ it("forwards the effective turn model and effort through the real Agent tool bui
   const requests = [];
   const model = { provider: "anthropic", model: "parent", reference: "anthropic:parent" };
   const built = await buildTurnTools({}, {
-    options: { model, effort: "xhigh", allowedTools: ["Agent"],
+    // The Pi provider always hands buildTurnTools an explicit per-run context.
+    options: { model, effort: "xhigh", allowedTools: ["Agent"], toolContext: createToolContext(),
       subagents: { run: async (request) => { requests.push(request); return { text: "ok" }; } },
     },
     capabilities: {}, toolLimits: {}, runtime: {}, resolved: model,

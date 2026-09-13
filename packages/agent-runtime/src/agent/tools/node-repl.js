@@ -6,8 +6,7 @@ import { resolve } from "node:path";
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { capChars } from "./shared/output-truncation.js";
 import { killProcessGroup } from "./shared/process-runner.js";
-import { readToolRuntime } from "./shared/runtime-context.js";
-import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 
 const DEFAULT_NODE_REPL_TIMEOUT_MS = 120_000;
 const NODE_REPL_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
@@ -325,7 +324,7 @@ export function createNodeReplController({
   sandboxEngine,
   ctx,
 } = {}) {
-  const resolvedCtx = ctx ?? readToolRuntime();
+  const resolvedCtx = requireToolContext(ctx);
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   const workdir = resolve(cwd || resolvedCtx.workspace || process.cwd());

@@ -16,9 +16,8 @@ import {
   writeToolImpl,
 } from "@mono-agent/agent-runtime/agent/tools/index.js";
 import {
-  configureToolRuntime,
-  resetToolRuntime,
-} from "@mono-agent/agent-runtime/agent/tools/shared/runtime-context.js";
+  createToolContext,
+} from "@mono-agent/agent-runtime/agent/tools/shared/tool-context.js";
 
 import {
   SandboxUnavailableError,
@@ -73,7 +72,6 @@ async function fakeProofSrtExecutable(suffix: string): Promise<{ root: string; p
 }
 
 afterEach(async () => {
-  resetToolRuntime();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -622,15 +620,15 @@ describe("srt integration contract", () => {
       const attachmentPath = join(privateRoot, "artifacts", "attachments", "input.txt");
       await mkdir(dirname(attachmentPath), { recursive: true });
       await writeFile(attachmentPath, "attachment-readable\n");
-      configureToolRuntime({
+      const ctx = createToolContext({
         workspace,
         sandbox: monoSandboxImpl,
         sandboxEngine: engine,
         sandboxPolicy: policy,
       });
-      const hostRead = await readToolImpl({ file_path: siblingPath });
-      const attachmentRead = await readToolImpl({ file_path: attachmentPath });
-      const hostGlob = await globToolImpl({ pattern: "**/*", path: workspace });
+      const hostRead = await readToolImpl({ file_path: siblingPath }, { ctx });
+      const attachmentRead = await readToolImpl({ file_path: attachmentPath }, { ctx });
+      const hostGlob = await globToolImpl({ pattern: "**/*", path: workspace }, { ctx });
       const hostGreps = await Promise.all([
         "content",
         "files_with_matches",
@@ -640,14 +638,14 @@ describe("srt integration contract", () => {
         pattern: "EXACT_PROCESS_JOB_SECRET|sibling-readable",
         path: workspace,
         ...(output_mode === undefined ? {} : { output_mode }),
-      })));
+      }, { ctx })));
       const hostToolOutput = join(workspace, "host-tool-output.txt");
-      const hostWrite = await writeToolImpl({ file_path: hostToolOutput, content: "host-write" });
+      const hostWrite = await writeToolImpl({ file_path: hostToolOutput, content: "host-write" }, { ctx });
       const hostEdit = await editToolImpl({
         file_path: hostToolOutput,
         old_string: "host-write",
         new_string: "host-edited",
-      });
+      }, { ctx });
       expect(hostRead).toContain("sibling-readable");
       expect(attachmentRead).toContain("attachment-readable");
       expect(hostGlob).not.toContain("process-jobs-secret");
@@ -679,13 +677,13 @@ describe("srt integration contract", () => {
       const racedResults: string[] = [];
       try {
         for (let attempt = 0; attempt < 12; attempt += 1) {
-          racedResults.push(String(await readToolImpl({ file_path: racePath })));
-          racedResults.push(String(await writeToolImpl({ file_path: racePath, content: "race-write" })));
+          racedResults.push(String(await readToolImpl({ file_path: racePath }, { ctx })));
+          racedResults.push(String(await writeToolImpl({ file_path: racePath, content: "race-write" }, { ctx })));
           racedResults.push(String(await editToolImpl({
             file_path: racePath,
             old_string: "EXACT_PROCESS_JOB_SECRET",
             new_string: "corrupted",
-          })));
+          }, { ctx })));
         }
       } finally {
         clearInterval(swap);

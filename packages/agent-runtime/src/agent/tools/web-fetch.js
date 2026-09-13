@@ -4,8 +4,7 @@ import { withWebDeadline, coordinatedWebRequest, webRequestFailure } from "./web
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "./shared/constants.js";
 import { capChars } from "./shared/output-truncation.js";
-import { readToolRuntime } from "./shared/runtime-context.js";
-import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 import { renderWithAgentBrowser } from "./web-browser-render.js";
 import { contentKind, decodeWebBytes, extractWebDocument, markdownToText, shouldAutoRender } from "./web-document-extractor.js";
 import { assertNoWebAccessInterstitial } from "./web-access-interstitial.js";
@@ -56,6 +55,7 @@ export async function webFetchToolImpl(params, options = {}) {
  * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 export async function performWebFetch(params, options = {}) {
+  requireToolContext(options.ctx);
   const started = Date.now();
   try {
     return await withWebDeadline(options.signal, 45_000, async (signal) => {
@@ -139,7 +139,7 @@ async function performFetch(
   }
 
   const maxChars = positiveInteger(max_output_chars, DEFAULT_MAX_TOOL_OUTPUT_CHARS);
-  const resolvedCtx = ctx ?? readToolRuntime();
+  const resolvedCtx = requireToolContext(ctx);
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   if (requestedRender === "always") {

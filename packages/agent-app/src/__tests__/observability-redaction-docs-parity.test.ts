@@ -115,9 +115,6 @@ function interfaceFieldDoc(relativePath: string, interfaceName: string, fieldNam
   return declarationFieldDoc(relativePath, `export interface ${interfaceName} {`, fieldName);
 }
 
-function typeFieldDoc(relativePath: string, typeName: string, fieldName: string): string {
-  return declarationFieldDoc(relativePath, `export type ${typeName} =`, fieldName);
-}
 
 function functionDoc(relativePath: string, functionName: string): string {
   const source = readRepoFile(relativePath);
@@ -271,7 +268,7 @@ describe("observability redaction docs parity", () => {
       interfaceFieldDoc("packages/observability/src/types.ts", "RunExportContext", "contentPatternRedaction"),
       interfaceFieldDoc("packages/observability/src/types.ts", "PhoenixExporterConfig", "contentPatternRedaction"),
       functionDoc("packages/observability/src/run-export-mapping.ts", "toContentString"),
-      functionDoc("packages/observability/src/otel/spans.ts", "buildRunReadableSpans"),
+      functionDoc("extras/observability-phoenix/src/spans.ts", "buildRunReadableSpans"),
     ];
     for (const surface of implementationSurfaces) {
       expect(surface).toContain("high-confidence");
@@ -282,7 +279,7 @@ describe("observability redaction docs parity", () => {
   it("keeps persisted backfill input forwarding and its export bound explicit", () => {
     const surfaces = [
       interfaceFieldDoc("packages/observability/src/types.ts", "RunExportContext", "userInput"),
-      functionDoc("packages/observability/src/otel/spans.ts", "buildRunReadableSpans"),
+      functionDoc("extras/observability-phoenix/src/spans.ts", "buildRunReadableSpans"),
       functionDoc("packages/agent-app/src/backfill.ts", "backfillRuns"),
     ];
 
@@ -294,7 +291,7 @@ describe("observability redaction docs parity", () => {
 
     const implementationDocs = normalized([
       readRepoFile("packages/observability/src/types.ts"),
-      readRepoFile("packages/observability/src/otel/spans.ts"),
+      readRepoFile("extras/observability-phoenix/src/spans.ts"),
       readRepoFile("packages/agent-app/src/backfill.ts"),
     ].join("\n"));
     expect(implementationDocs).not.toMatch(/absent for backfill|backfill lacks it|not recorded in artifacts/iu);

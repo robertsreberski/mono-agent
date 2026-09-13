@@ -8,8 +8,7 @@ import {
   workspaceRoot,
 } from "./shared/path-resolver.js";
 import { handOffMonitor, handOffMonitorStop } from "./shared/monitors.js";
-import { readToolRuntime } from "./shared/runtime-context.js";
-import { requestToolProcessEnvironment, resolveSandboxPolicy } from "./shared/tool-context.js";
+import { requestToolProcessEnvironment, requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 import { cleanBashEnvironment } from "./shared/bash-environment.js";
 
 /** Claude-Code-compatible defaults: 5 minutes, never below one second. */
@@ -63,7 +62,7 @@ export async function monitorToolRun(
     || (wake_on === "exit" && (dedupe !== "none" || min_wake_interval_ms !== 0))) {
     return failed("Error: Invalid Monitor wake policy; exit-only requires dedupe none and interval 0.", "monitor_invalid", startedAt);
   }
-  const resolvedCtx = ctx ?? readToolRuntime();
+  const resolvedCtx = requireToolContext(ctx);
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   const pathOptions = { sandboxPolicy: policy, ctx: resolvedCtx };

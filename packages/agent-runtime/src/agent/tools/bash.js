@@ -16,8 +16,7 @@ import {
 } from "./shared/process-runner.js";
 import { cleanBashEnvironment } from "./shared/bash-environment.js";
 import { handOffProcessJob } from "./shared/process-jobs.js";
-import { readToolRuntime } from "./shared/runtime-context.js";
-import { requestToolProcessEnvironment, resolveSandboxPolicy } from "./shared/tool-context.js";
+import { requestToolProcessEnvironment, requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
 
@@ -117,7 +116,7 @@ export async function bashToolRun(
   if (command.includes("\0")) {
     return failed("Error: Bash command must not contain NUL characters.", "invalid_command", startedAt);
   }
-  const resolvedCtx = ctx ?? readToolRuntime();
+  const resolvedCtx = requireToolContext(ctx);
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   const pathOptions = { sandboxPolicy: policy, ctx: resolvedCtx };

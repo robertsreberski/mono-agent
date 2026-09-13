@@ -28,6 +28,7 @@ import {
   type ProviderCredentialState,
 } from "../provider-setup.js";
 import { isSupermemoryPluginInstalled } from "../supermemory-plugin.js";
+import { isPhoenixPluginInstalled, missingPhoenixPluginMessage } from "../phoenix-plugin.js";
 import {
   alwaysOnTools,
   composeWizardPlan,
@@ -712,10 +713,15 @@ async function collectInteractiveFromSeed(
           advanceAfter(6);
           break;
         case 7:
-          draft.observability = await confirm({
-            message: "Export traces to Phoenix (best-effort OTLP, sensitive data excluded)?",
-            initialValue: draft.observability,
-          });
+          if (isPhoenixPluginInstalled({ cwd: ctx.cwd })) {
+            draft.observability = await confirm({
+              message: "Export traces to Phoenix (best-effort OTLP, sensitive data excluded)?",
+              initialValue: draft.observability,
+            });
+          } else {
+            p.note(`${missingPhoenixPluginMessage()} Phoenix tracing stays off in this configuration.`, "Optional Phoenix tracing");
+            draft.observability = false;
+          }
           advanceAfter(7);
           break;
         case 8: {
@@ -1476,40 +1482,6 @@ async function composePlanForCwd(answers: WizardAnswers, cwd: string): Promise<W
   });
 }
 
-/** Offer auth/preflight for every runtime and hidden memory model dependency. */
-async function promptProviderSetup(
-  plan: WizardPlan,
-  ctx: { readonly cwd: string; readonly piAuthPath?: string },
-  credentialStates: Readonly<Record<string, ProviderCredentialState>> = {},
-): Promise<{
-  readonly runProviderSetup: boolean;
-  readonly providerSetupSecrets: Readonly<Record<string, string>>;
-  readonly providerEnvironmentSecrets: Readonly<Record<string, string>>;
-  readonly piApiKeyPersistenceByProvider: Readonly<Record<string, "secure-store" | "environment">>;
-}> {
-  const modelRefs = referencedSetupModelRefs(plan);
-  p.note(modelRefs.join("\n"), "Models and services to verify");
-  const preliminarySetupPlan = providerSetupPlan(plan, ctx, credentialStates);
-  if (preliminarySetupPlan.actions.length === 0) {
-    return { runProviderSetup: false, providerSetupSecrets: {}, providerEnvironmentSecrets: {}, piApiKeyPersistenceByProvider: {} };
-  }
-  const piApiKeyPersistenceByProvider = await selectPiApiKeyPersistence(preliminarySetupPlan);
-  const setupPlan = providerSetupPlan(plan, ctx, credentialStates, piApiKeyPersistenceByProvider);
-  p.note(
-    setupPlan.actions
-      .map(providerSetupActionReviewLine)
-      .join("\n"),
-    "Provider setup",
-  );
-  const runProviderSetup = await confirm({
-    message: setupPlan.actions.some((action) => action.id.startsWith("pi-login:"))
-      ? "Run provider auth/preflight now? (detected credentials are reused and verified by live readiness; Pi OAuth may update the auth store)"
-      : "Run provider auth/preflight now? (detected credentials are reused and verified by live readiness)",
-    initialValue: false,
-  });
-  return collectProviderSetup(setupPlan, runProviderSetup, piApiKeyPersistenceByProvider);
-}
-
 type PlannedProviderSetup = ReturnType<typeof planProviderSetup>;
 
 function providerSetupPlan(
@@ -1601,13 +1573,6 @@ async function selectPiApiKeyPersistence(
     });
   }
   return selected;
-}
-
-function providerSetupActionReviewLine(action: PlannedProviderSetup["actions"][number]): string {
-  if (isProviderSetupPiApiKeyAction(action) && action.persistence === "environment") {
-    return `${action.label}: read ${action.envVar} from the durable agent environment; Pi auth.json remains unchanged (cwd: ${action.cwd})`;
-  }
-  return `${action.label}: ${providerSetupActionCommandLine(action)} (cwd: ${action.cwd})`;
 }
 
 /** Seed a mutable draft from immutable answers (defaults or a preset). */

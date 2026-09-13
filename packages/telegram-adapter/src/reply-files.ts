@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 
-import type {
-  AgentReplyAttachmentPart,
-  AgentReplyPart,
-  AgentResponder,
+import {
+  assertMatchingReplyAttachment,
+  collectExactReplyArtifactBytes,
+  type AgentReplyAttachmentPart,
+  type AgentReplyPart,
+  type AgentResponder,
 } from "@mono-agent/agent-contracts";
 
 import type { TelegramMessageStreamLogger } from "./message-stream.js";
@@ -96,8 +98,8 @@ export class TelegramReplyFileDelivery {
       reference: part.reference,
       expectedIntegrityId: part.integrityId,
     });
-    assertMatchingAttachment(part, opened.attachment);
-    const document = await collectExactBytes(opened.body, part.sizeBytes, target.signal);
+    assertMatchingReplyAttachment(part, opened.attachment);
+    const document = await collectExactReplyArtifactBytes(opened.body, part.sizeBytes, target.signal);
     const requestOptions = target.signal === undefined ? undefined : { signal: target.signal };
     await sendDocument.call(
       this.sender,
@@ -131,42 +133,4 @@ function deliveryKey(
     .update("\0")
     .update(replyToMessageId === undefined ? "" : String(replyToMessageId))
     .digest("hex");
-}
-
-function assertMatchingAttachment(
-  expected: AgentReplyAttachmentPart,
-  actual: AgentReplyAttachmentPart,
-): void {
-  if (
-    actual.reference.id !== expected.reference.id
-    || actual.integrityId !== expected.integrityId
-    || actual.sizeBytes !== expected.sizeBytes
-    || actual.name !== expected.name
-    || actual.mediaType !== expected.mediaType
-  ) {
-    throw new Error("Authorized reply artifact metadata did not match the reply part.");
-  }
-}
-
-async function collectExactBytes(
-  body: AsyncIterable<Uint8Array>,
-  expectedBytes: number,
-  signal: AbortSignal | undefined,
-): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for await (const chunk of body) {
-    if (signal?.aborted === true) throw signal.reason ?? new Error("Reply-file upload aborted.");
-    total += chunk.byteLength;
-    if (total > expectedBytes) throw new Error("Reply artifact exceeded its declared size.");
-    chunks.push(chunk);
-  }
-  if (total !== expectedBytes) throw new Error("Reply artifact did not match its declared size.");
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return result;
 }

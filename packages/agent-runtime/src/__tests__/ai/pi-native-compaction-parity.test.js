@@ -35,20 +35,20 @@ describe("proactive compaction trigger — old (>=) vs new (shouldCompact) parit
   // resolveAgentCompactionPolicy's model.contextWindow (clamped to [32k, 10M]).
   const scenarios = [
     // 128k: ratioTrigger=89.6k is below the 96k headroom trigger.
-    { name: "ratio-dominant window (128k)", modelWindow: 128_000, settings: {}, expectTrigger: 89_600 },
+    { name: "ratio-dominant window (128k)", modelWindow: 128_000, policies: {}, expectTrigger: 89_600 },
     // 1M: safety headroom caps at 96k, while the 0.70 ratio fires at 700k.
-    { name: "ratio-dominant window (1M)", modelWindow: 1_000_000, settings: {}, expectTrigger: 700_000 },
+    { name: "ratio-dominant window (1M)", modelWindow: 1_000_000, policies: {}, expectTrigger: 700_000 },
     // tiny: clamps to the 32k floor; 16k minimum headroom wins over 70%.
-    { name: "tiny window (32k floor)", modelWindow: 1_000, settings: {}, expectTrigger: 16_000 },
+    { name: "tiny window (32k floor)", modelWindow: 1_000, policies: {}, expectTrigger: 16_000 },
     // huge: clamps to the 10M ceiling and the 0.70 ratio remains dominant.
-    { name: "huge window (10M clamp)", modelWindow: 50_000_000, settings: {}, expectTrigger: 7_000_000 },
+    { name: "huge window (10M clamp)", modelWindow: 50_000_000, policies: {}, expectTrigger: 7_000_000 },
     // custom ratio still resolves to an integer trigger via Math.floor.
-    { name: "custom ratio 0.5 on 200k", modelWindow: 200_000, settings: { agent_compaction_trigger_ratio: 0.5 }, expectTrigger: 100_000 },
+    { name: "custom ratio 0.5 on 200k", modelWindow: 200_000, policies: { compaction: { triggerRatio: 0.5 } }, expectTrigger: 100_000 },
   ];
 
   for (const sc of scenarios) {
     describe(sc.name, () => {
-      const policy = resolveAgentCompactionPolicy(sc.settings, { contextWindow: sc.modelWindow });
+      const policy = resolveAgentCompactionPolicy(sc.policies, { contextWindow: sc.modelWindow });
 
       it(`resolves the expected integer triggerTokens (${sc.expectTrigger})`, () => {
         expect(policy.triggerTokens).toBe(sc.expectTrigger);
@@ -88,12 +88,12 @@ describe("proactive compaction trigger — old (>=) vs new (shouldCompact) parit
   }
 
   describe("compaction disabled", () => {
-    const policy = resolveAgentCompactionPolicy({ agent_compaction_enabled: false }, { contextWindow: 128_000 });
+    const policy = resolveAgentCompactionPolicy({ compaction: { enabled: false } }, { contextWindow: 128_000 });
 
     it("never fires regardless of estimate (both branches)", () => {
       expect(policy.enabled).toBe(false);
       // The kernel short-circuits on !policy.enabled before evaluating the estimate;
-      // pi's shouldCompact independently returns false when settings.enabled is false.
+      // pi's shouldCompact independently returns false when policies.enabled is false.
       for (const est of [0, policy.triggerTokens, policy.triggerTokens + 1, policy.contextWindow * 2]) {
         expect(newDecision(est, policy)).toBe(false);
       }

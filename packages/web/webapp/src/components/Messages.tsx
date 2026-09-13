@@ -29,8 +29,8 @@ import { useDocumentVisible } from "../document-visibility";
 import type {
   AskAnswer,
   AskSnapshot,
+  CachedMonitorProjection,
   CronReplyContextPart as CronReplyContextValue,
-  MonitorProjection,
   ToolCallArtifact,
   RunAttribution as RunAttributionValue,
 } from "../types";
@@ -1196,7 +1196,7 @@ function InlineSteerPart({ data }: DataMessagePartProps) {
 
 const monitorStateLabel = (state: string): string => state.replaceAll("_", " ");
 
-const monitorActivityStatus = (monitors: readonly MonitorProjection[]): ActivityStatus => {
+const monitorActivityStatus = (monitors: readonly CachedMonitorProjection[]): ActivityStatus => {
   if (monitors.some((monitor) => monitor.state === "starting" || monitor.state === "running")) return "running";
   return monitors.some((monitor) => monitor.lastError !== null) ? "failed" : "complete";
 };
@@ -1207,7 +1207,7 @@ function MonitorActivityPart({ data }: DataMessagePartProps) {
   const entries = Array.isArray(payload.monitors)
     ? payload.monitors.flatMap((raw) => {
         const entry = asRecord(raw);
-        const projection = asRecord(entry.projection) as unknown as MonitorProjection;
+        const projection = asRecord(entry.projection) as unknown as CachedMonitorProjection;
         const deliveryKeys = Array.isArray(entry.deliveryKeys)
           ? entry.deliveryKeys.filter((key): key is string => typeof key === "string")
           : [];

@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { agentAppPackageVersion } from "../package-version.js";
 import { resolveConfiguredManagedRuntimePackages } from "../managed-runtime-packages.js";
 
 const directories: string[] = [];
@@ -81,4 +82,41 @@ describe("configured managed-runtime packages", () => {
         packageSource: await realpath(packageSource),
       }]);
   });
+
+  it("captures the matching explicit Phoenix plugin only when configured", async () => {
+    const { cwd, configPath } = await scaffold({
+      runtime: { model: "openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
+      observability: { exporters: [{ type: "phoenix" }] },
+    });
+    const packageSource = join(cwd, "node_modules", "@mono-agent", "observability-phoenix");
+    await mkdir(packageSource, { recursive: true });
+    await writeFile(join(packageSource, "package.json"), JSON.stringify({
+      name: "@mono-agent/observability-phoenix",
+      version: agentAppPackageVersion(),
+      exports: { "./package.json": "./package.json" },
+    }));
+    await expect(resolveConfiguredManagedRuntimePackages({ cwd, configPath, env: {} })).resolves.toEqual([{
+      packageName: "@mono-agent/observability-phoenix",
+      packageSource: await realpath(packageSource),
+    }]);
+  });
+
+  it("rejects mismatched Phoenix code before capturing a managed closure", async () => {
+    const { cwd, configPath } = await scaffold({
+      runtime: { model: "openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
+      observability: { exporters: [{ type: "phoenix" }] },
+    });
+    const packageSource = join(cwd, "node_modules", "@mono-agent", "observability-phoenix");
+    await mkdir(packageSource, { recursive: true });
+    await writeFile(join(packageSource, "package.json"), JSON.stringify({
+      name: "@mono-agent/observability-phoenix",
+      version: "9.9.9",
+      exports: { "./package.json": "./package.json" },
+    }));
+    await expect(resolveConfiguredManagedRuntimePackages({ cwd, configPath, env: {} }))
+      .rejects.toThrow("does not match @mono-agent/agent-app");
+  });
+
 });

@@ -7,7 +7,7 @@
 // pi-agent-core's AgentHarness, which owns compaction via harness.compact().
 // What remains here are two pure helpers the bridge still consumes:
 //   - resolveAgentCompactionPolicy: derives the context-window compaction
-//     trigger and the tool-output payload limits from settings + the running
+//     trigger and the tool-output payload limits from typed policies + the running
 //     model. Pure (no Agent loop), so the bridge computes it directly.
 //   - isLikelyContextTermination: classifies a provider error/termination as a
 //     context-pressure event.
@@ -80,15 +80,15 @@ function clampInteger(value, fallback, min, max) {
 }
 
 /**
- * @param {Object<string, *>} [settings]
+ * @param {{toolLimits?: import('../ai/types.js').RuntimeToolLimits, compaction?: import('../ai/types.js').RuntimeCompactionPolicy}} [options]
  * @param {Object} [model]
  * @param {number} [model.contextWindow]
  * @returns {AgentCompactionPolicy}
  */
-export function resolveAgentCompactionPolicy(settings = {}, model = {}) {
+export function resolveAgentCompactionPolicy({ toolLimits = {}, compaction = {} } = {}, model = {}) {
   const contextWindow = clampInteger(model?.contextWindow, DEFAULT_CONTEXT_WINDOW, 32000, 10_000_000);
   const triggerRatio = clampNumber(
-    settings.agent_compaction_trigger_ratio,
+    compaction.triggerRatio,
     DEFAULT_TRIGGER_RATIO,
     0.2,
     0.95,
@@ -103,18 +103,18 @@ export function resolveAgentCompactionPolicy(settings = {}, model = {}) {
   const adaptiveSummaryMaxTokens = clampInteger(contextWindow * 0.04, 2000, 2000, 12000);
   const adaptiveMinSavingsTokens = clampInteger(contextWindow * 0.10, 4000, 4000, 20000);
   return {
-    enabled: settings.agent_compaction_enabled !== false,
+    enabled: compaction.enabled !== false,
     contextWindow,
     triggerRatio,
     triggerTokens: Math.min(ratioTrigger, reserveTrigger),
     keepRecentTokens: clampInteger(
-      settings.agent_compaction_keep_recent_tokens,
+      compaction.keepRecentTokens,
       adaptiveKeepRecentTokens,
       4000,
       200000,
     ),
     summaryMaxTokens: clampInteger(
-      settings.agent_compaction_summary_max_tokens,
+      compaction.summaryMaxTokens,
       adaptiveSummaryMaxTokens,
       1000,
       64000,
@@ -122,148 +122,27 @@ export function resolveAgentCompactionPolicy(settings = {}, model = {}) {
     // ON by default; the proactive fixed-overhead correction (system prompt +
     // tool schemas + per-turn message) is disabled only when explicitly false.
     // Read by the compaction driver off the resolved policy so it never has to
-    // re-sniff the raw settings/policy inputs.
-    fixedOverheadEnabled: settings.agent_compaction_fixed_overhead_enabled !== false,
+    // re-sniff the raw policy inputs.
+    fixedOverheadEnabled: compaction.fixedOverheadEnabled !== false,
     compactionMinSavingsTokens: clampInteger(
-      settings.agent_compaction_min_savings_tokens,
+      compaction.minSavingsTokens,
       adaptiveMinSavingsTokens,
       0,
       500000,
     ),
-    toolTextLimitChars: clampInteger(settings.agent_tool_text_limit_chars, DEFAULT_TOOL_TEXT_LIMIT_CHARS, 1000, 200000),
-    bashOutputLimitChars: clampInteger(settings.agent_bash_output_limit_chars, DEFAULT_BASH_OUTPUT_LIMIT_CHARS, 1000, 200000),
-    mcpTextLimitChars: clampInteger(settings.agent_mcp_text_limit_chars, DEFAULT_MCP_TEXT_LIMIT_CHARS, 1000, 200000),
-    searchResultLimit: clampInteger(settings.agent_search_result_limit, DEFAULT_SEARCH_RESULT_LIMIT, 10, 1000),
-    imageInlineMaxBytes: clampInteger(settings.agent_image_inline_max_bytes, DEFAULT_IMAGE_INLINE_MAX_BYTES, 0, 10 * 1024 * 1024),
-    toolPayloadMaxBytes: clampInteger(settings.agent_tool_payload_max_bytes, DEFAULT_TOOL_PAYLOAD_MAX_BYTES, 0, 16 * 1024 * 1024),
-    mcpCallTimeoutMs: clampInteger(settings.agent_mcp_call_timeout_ms, DEFAULT_MCP_CALL_TIMEOUT_MS, 1000, Number.MAX_SAFE_INTEGER),
+    toolTextLimitChars: clampInteger(toolLimits.toolTextLimitChars, DEFAULT_TOOL_TEXT_LIMIT_CHARS, 1000, 200000),
+    bashOutputLimitChars: clampInteger(toolLimits.bashOutputLimitChars, DEFAULT_BASH_OUTPUT_LIMIT_CHARS, 1000, 200000),
+    mcpTextLimitChars: clampInteger(toolLimits.mcpTextLimitChars, DEFAULT_MCP_TEXT_LIMIT_CHARS, 1000, 200000),
+    searchResultLimit: clampInteger(toolLimits.searchResultLimit, DEFAULT_SEARCH_RESULT_LIMIT, 10, 1000),
+    imageInlineMaxBytes: clampInteger(toolLimits.imageInlineMaxBytes, DEFAULT_IMAGE_INLINE_MAX_BYTES, 0, 10 * 1024 * 1024),
+    toolPayloadMaxBytes: clampInteger(toolLimits.toolPayloadMaxBytes, DEFAULT_TOOL_PAYLOAD_MAX_BYTES, 0, 16 * 1024 * 1024),
+    mcpCallTimeoutMs: clampInteger(toolLimits.mcpCallTimeoutMs, DEFAULT_MCP_CALL_TIMEOUT_MS, 1000, Number.MAX_SAFE_INTEGER),
     mcpCallMaxTotalTimeoutMs: clampInteger(
-      settings.agent_mcp_call_max_total_timeout_ms,
+      toolLimits.mcpCallMaxTotalTimeoutMs,
       DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
       1000,
       Number.MAX_SAFE_INTEGER,
     ),
-  };
-}
-
-// --- Typed policy objects <-> deprecated `settings` shim -------------------
-//
-// RuntimeRunOptions now carries typed `toolLimits` / `compaction` policy
-// objects. The DEPRECATED `settings` bag remains a per-group fallback: it is
-// consumed only when the corresponding typed object is ABSENT, and consuming it
-// surfaces one `deprecated_settings_option` runtime_warning per run.
-//
-// resolveAgentCompactionPolicy stays the canonical settings->policy clamp/mapper
-// (its signature is unchanged — worklab deep-imports it). The helpers below
-// project the typed objects back onto the same snake_case settings keys so the
-// resolution goes through that one clamp path unchanged, whether the values came
-// from a typed object or the legacy settings bag.
-
-// Typed toolLimits field -> settings key. `bashTimeoutMs` is intentionally
-// ABSENT: no `agent_bash_*_timeout` setting exists today and this phase does not
-// invent new timeout behavior, so the field is documented on the RuntimeToolLimits
-// typedef but not wired through the settings shim or any tool.
-const TOOL_LIMIT_SETTINGS_KEYS = /** @type {const} */ ({
-  toolTextLimitChars: "agent_tool_text_limit_chars",
-  bashOutputLimitChars: "agent_bash_output_limit_chars",
-  mcpTextLimitChars: "agent_mcp_text_limit_chars",
-  searchResultLimit: "agent_search_result_limit",
-  imageInlineMaxBytes: "agent_image_inline_max_bytes",
-  toolPayloadMaxBytes: "agent_tool_payload_max_bytes",
-  mcpCallTimeoutMs: "agent_mcp_call_timeout_ms",
-  mcpCallMaxTotalTimeoutMs: "agent_mcp_call_max_total_timeout_ms",
-});
-
-// Typed compaction field -> settings key. `contextWindowOverride` is ABSENT: it
-// has no legacy settings equivalent and is applied directly at the live-window
-// resolution site (resolveLiveCompactionPolicy), not through this shim.
-const COMPACTION_SETTINGS_KEYS = /** @type {const} */ ({
-  enabled: "agent_compaction_enabled",
-  triggerRatio: "agent_compaction_trigger_ratio",
-  keepRecentTokens: "agent_compaction_keep_recent_tokens",
-  summaryMaxTokens: "agent_compaction_summary_max_tokens",
-  minSavingsTokens: "agent_compaction_min_savings_tokens",
-  fixedOverheadEnabled: "agent_compaction_fixed_overhead_enabled",
-});
-
-export const DEPRECATED_SETTINGS_WARNING_KIND = "deprecated_settings_option";
-
-/**
- * @param {Object<string, *>|null|undefined} group
- * @param {Record<string, string>} keyMap
- * @param {Object<string, *>} out
- */
-function copyTypedGroup(group, keyMap, out) {
-  for (const [field, settingKey] of Object.entries(keyMap)) {
-    if (group && group[field] !== undefined) out[settingKey] = group[field];
-  }
-}
-
-/**
- * @param {Object<string, *>|null|undefined} settings
- * @param {Record<string, string>} keyMap
- * @param {Object<string, *>} out
- * @param {Array<string>} consumed
- */
-function copySettingsGroup(settings, keyMap, out, consumed) {
-  if (!settings || typeof settings !== "object") return;
-  for (const settingKey of Object.values(keyMap)) {
-    if (settings[settingKey] !== undefined) {
-      out[settingKey] = settings[settingKey];
-      consumed.push(settingKey);
-    }
-  }
-}
-
-/**
- * Fold the typed `toolLimits` / `compaction` policy objects and the deprecated
- * `settings` bag into ONE settings-like object resolveAgentCompactionPolicy
- * consumes, honoring PER-GROUP precedence: when a typed object is present its
- * fields win and the legacy settings keys for that group are ignored entirely;
- * when the typed object is absent, that group's settings keys are consumed (and
- * reported in `consumedSettingsKeys` so the caller can emit exactly one
- * deprecation warning per run).
- * @param {{toolLimits?: Object<string, *>, compaction?: Object<string, *>, settings?: Object<string, *>}} [options]
- * @returns {{settingsLike: Object<string, *>, consumedSettingsKeys: Array<string>}}
- */
-export function resolveRuntimePolicyInputs({ toolLimits, compaction, settings } = {}) {
-  /** @type {Object<string, *>} */
-  const settingsLike = {};
-  /** @type {Array<string>} */
-  const consumedSettingsKeys = [];
-
-  if (toolLimits && typeof toolLimits === "object") {
-    copyTypedGroup(toolLimits, TOOL_LIMIT_SETTINGS_KEYS, settingsLike);
-  } else {
-    copySettingsGroup(settings, TOOL_LIMIT_SETTINGS_KEYS, settingsLike, consumedSettingsKeys);
-  }
-
-  if (compaction && typeof compaction === "object") {
-    copyTypedGroup(compaction, COMPACTION_SETTINGS_KEYS, settingsLike);
-  } else {
-    copySettingsGroup(settings, COMPACTION_SETTINGS_KEYS, settingsLike, consumedSettingsKeys);
-  }
-
-  return { settingsLike, consumedSettingsKeys };
-}
-
-/**
- * Build the one-per-run deprecation warning fired when the legacy `settings`
- * bag was consumed as a policy fallback. Shape matches the other pi/claude
- * bridge runtime warnings ({warning_kind, source, message}).
- * @param {ReadonlyArray<string>} consumedKeys
- * @returns {{warning_kind: string, source: string, message: string, settings_keys: Array<string>}}
- */
-export function deprecatedSettingsWarning(consumedKeys) {
-  const keys = Array.from(consumedKeys || []);
-  return {
-    warning_kind: DEPRECATED_SETTINGS_WARNING_KIND,
-    source: "runtime",
-    message:
-      "runOptions.settings is deprecated; pass the typed `toolLimits` / `compaction` policy objects instead "
-      + "(host migration helper: resolveRuntimePolicies in @mono-agent/runtime-adapter). Consumed settings keys: "
-      + `${keys.join(", ")}.`,
-    settings_keys: keys,
   };
 }
 

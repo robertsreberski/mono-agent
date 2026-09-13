@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { openMemoryDb } from "../../store/index.js";
 import { fakeEmbeddings } from "./helpers.js";
 import { composeRecallBlock, selectAutomaticRecallHits } from "../recall.js";
-import { automaticRecallEvidenceProfile, hasAutomaticRecallEvidence } from "../recall-evidence.js";
+import { selectAnswerBearingRecallHits } from "../recall-evidence.js";
 
 describe("selectAutomaticRecallHits", () => {
   it("keeps a strong multi-hit answer cluster while dropping high-similarity adjacent noise", () => {
@@ -83,7 +83,7 @@ describe("selectAutomaticRecallHits", () => {
   });
 });
 
-describe("hasAutomaticRecallEvidence", () => {
+describe("selectAnswerBearingRecallHits", () => {
   const records = [
     "Morgan selected cobalt as the deployment color.",
     "Database rollouts use a blue-green deployment strategy.",
@@ -106,7 +106,7 @@ describe("hasAutomaticRecallEvidence", () => {
     "What color is Morgan's car?",
     "Where does Morgan work?",
   ])("keeps a canonical direct fact: %s", (query) => {
-    expect(hasAutomaticRecallEvidence(query, records)).toBe(true);
+    expect(Boolean(selectAnswerBearingRecallHits(query, records).length)).toBe(true);
   });
 
   it.each([
@@ -122,64 +122,58 @@ describe("hasAutomaticRecallEvidence", () => {
     "Who chose the database vendor?",
     "What did you send in the last message?",
   ])("rejects unsupported, missing, or conversation-relative evidence: %s", (query) => {
-    expect(hasAutomaticRecallEvidence(query, records)).toBe(false);
+    expect(Boolean(selectAnswerBearingRecallHits(query, records).length)).toBe(false);
   });
 
-  it("exposes a deterministic profile without record or provider identifiers", () => {
-    expect(automaticRecallEvidenceProfile("What is Morgan's phone number?")).toEqual({
-      anchors: ["morgan"],
-      required: ["phone"],
-    });
-  });
 
   it("does not split decimal or abbreviated time values as clause boundaries", () => {
-    expect(hasAutomaticRecallEvidence("What time does the release train leave?", [{ record: {
+    expect(Boolean(selectAnswerBearingRecallHits("What time does the release train leave?", [{ record: {
       text: "The release train leaves at 8 a.m.",
-    } }])).toBe(true);
+    } }]).length)).toBe(true);
   });
 
   it("never synthesizes automatic evidence across records or clauses", () => {
-    expect(hasAutomaticRecallEvidence("What is Morgans phone number?", [
+    expect(Boolean(selectAnswerBearingRecallHits("What is Morgans phone number?", [
       { record: { text: "Morgan's office is in Amsterdam." } },
       { record: { text: "Taylor's phone number is 555-0100." } },
-    ])).toBe(false);
+    ]).length)).toBe(false);
 
-    expect(hasAutomaticRecallEvidence("Who approved the blue-green deployment strategy?", [
+    expect(Boolean(selectAnswerBearingRecallHits("Who approved the blue-green deployment strategy?", [
       { record: { text: "Database rollouts use a blue-green deployment strategy." } },
       { record: { text: "Taylor approved the travel policy." } },
-    ])).toBe(false);
+    ]).length)).toBe(false);
 
-    expect(hasAutomaticRecallEvidence("What color is Morgans car?", [
+    expect(Boolean(selectAnswerBearingRecallHits("What color is Morgans car?", [
       { record: { text: "Morgan selected cobalt as the deployment color." } },
       { record: { text: "Morgan drives a hatchback car." } },
-    ])).toBe(false);
+    ]).length)).toBe(false);
 
-    expect(hasAutomaticRecallEvidence("What color is Morgans car?", [{ record: {
+    expect(Boolean(selectAnswerBearingRecallHits("What color is Morgans car?", [{ record: {
       text: "Morgan selected cobalt as the deployment color and Morgan drives a hatchback car.",
-    } }])).toBe(false);
-    expect(hasAutomaticRecallEvidence("What is Morgans phone number?", [{ record: {
+    } }]).length)).toBe(false);
+    expect(Boolean(selectAnswerBearingRecallHits("What is Morgans phone number?", [{ record: {
       text: "Morgan works in Amsterdam; Taylors phone number is 555-0100.",
-    } }])).toBe(false);
-    expect(hasAutomaticRecallEvidence("What is Morgans phone number?", [{ record: {
+    } }]).length)).toBe(false);
+    expect(Boolean(selectAnswerBearingRecallHits("What is Morgans phone number?", [{ record: {
       text: "Morgan works in Amsterdam, Taylor's phone number is 555-0100.",
-    } }])).toBe(false);
-    expect(hasAutomaticRecallEvidence("Who approved the blue-green deployment strategy?", [{ record: {
+    } }]).length)).toBe(false);
+    expect(Boolean(selectAnswerBearingRecallHits("Who approved the blue-green deployment strategy?", [{ record: {
       text: "Database rollouts use a blue-green deployment strategy; Taylor approved the travel policy.",
-    } }])).toBe(false);
+    } }]).length)).toBe(false);
 
     // Even a plausible named-entity chain can have the inverse direction. The
     // explicit MemoryRecall tool may expose both records for model reasoning;
     // automatic context must not guess which side of the relation is requested.
-    expect(hasAutomaticRecallEvidence("Where is Morgans manager based?", [
+    expect(Boolean(selectAnswerBearingRecallHits("Where is Morgans manager based?", [
       { record: { text: "Morgan manages Taylor." } },
       { record: { text: "Taylor is based in Paris." } },
-    ])).toBe(false);
+    ]).length)).toBe(false);
     expect(selectAutomaticRecallHits([
       { score: 0.94, record: { text: "Morgan leads Taylor." } },
       { score: 0.9, record: { text: "Taylor is based in Paris." } },
     ], { query: "Where is the person who leads Morgan based?" })).toEqual([]);
 
-    expect(hasAutomaticRecallEvidence("Which city is the person leading Atlas based in?", records)).toBe(false);
+    expect(Boolean(selectAnswerBearingRecallHits("Which city is the person leading Atlas based in?", records).length)).toBe(false);
   });
 
   it.each([
@@ -208,7 +202,7 @@ describe("hasAutomaticRecallEvidence", () => {
       "Morgan's phone number is unknown.",
     ],
   ])("abstains on ambiguous or unsafe binding: %s", (query, text) => {
-    expect(hasAutomaticRecallEvidence(query, [{ record: { text } }])).toBe(false);
+    expect(Boolean(selectAnswerBearingRecallHits(query, [{ record: { text } }]).length)).toBe(false);
   });
 });
 

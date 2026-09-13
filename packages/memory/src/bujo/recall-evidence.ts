@@ -121,10 +121,6 @@ export function selectAnswerBearingRecallHits<T extends RecallEvidenceHit>(
   return hits.filter((hit) => matchesDirectFact(directFact, hit.record.text));
 }
 
-export function hasAutomaticRecallEvidence(query: string, hits: readonly RecallEvidenceHit[]): boolean {
-  return selectAnswerBearingRecallHits(query, hits).length > 0;
-}
-
 function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
   const query = normalizeQuestion(rawQuery);
   if (query === undefined || ACTOR_OR_RELATION_QUERY.test(query)) return undefined;
@@ -313,24 +309,6 @@ function canonicalPredicate(value: string): string {
 
 function canonicalPhrase(text: string): string {
   return [...concepts(text)].join(" ");
-}
-
-export function automaticRecallEvidenceProfile(query: string): {
-  readonly anchors: readonly string[];
-  readonly required: readonly string[];
-} {
-  const anchors = properNameConcepts(query);
-  const required = concepts(query);
-  for (const anchor of anchors) required.delete(anchor);
-  if (/\bwho\b/iu.test(query)) required.add("actor");
-  if (/\bwhere\b|\bcity\b|\bvenue\b|\bheld\b/iu.test(query)) required.add("location");
-  if (/\bwhen\b|\bwhat\s+day\b/iu.test(query)) required.add("temporal");
-  if (/\bwhat\s+time\b/iu.test(query)) {
-    required.delete("temporal");
-    required.add("time_of_day");
-  }
-  if (/\bphone\s+number\b/iu.test(query)) required.delete("number");
-  return { anchors: [...anchors].sort(), required: [...required].sort() };
 }
 
 function concepts(text: string): Set<string> {

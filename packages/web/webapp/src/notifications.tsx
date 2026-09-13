@@ -1,3 +1,4 @@
+import { webPushPreview } from "../../src/push-preview";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./api";
 import { Icon } from "./components/Icon";
@@ -65,7 +66,7 @@ export const responsePreview = (detail: ThreadDetail, turnId: string): string | 
   const text = message?.parts
     .flatMap((part) => part.type === "text" ? [part.text] : [])
     .join(" ");
-  return text ? plainNotificationPreview(text) : undefined;
+  return text ? webPushPreview(text, "") : undefined;
 };
 
 export const responseNotificationTitle = (agentLabel: string, thread: ThreadSummary): string =>
@@ -476,125 +477,4 @@ function isPendingPushDetail(value: unknown): value is PendingPushDetail {
   return typeof record.eventId === "string"
     && typeof record.threadId === "string"
     && typeof record.ackToken === "string";
-}
-
-function plainNotificationPreview(value: string): string {
-  let text = decodeNotificationEntities([...value].slice(0, 8_192).join(""))
-    .replace(/\b(basic|bearer|token)[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\p{Cf}\p{Default_Ignorable_Code_Point}]+(?=[a-z\d._~+\/-])/giu, "$1 ")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")
-    .replace(/```[^\n]*\n?/gu, " ")
-    .replace(/~~~[^\n]*\n?/gu, " ")
-    .replace(/!\[([^\]]*)\]\([^)]*\)/gu, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/gu, "$1")
-    .replace(/<https?:\/\/[^>]+>/giu, " ")
-    .replace(/<[^>]*>/gu, " ")
-    .replace(/^\s{0,3}(?:#{1,6}|>|[-+*]|\d+[.)])\s+/gmu, "")
-    .replace(/(^|\s)[*_~]{1,3}([^\s][\s\S]*?)[*_~]{1,3}(?=\s|$|[.,!?;:])/gu, "$1$2")
-    .replace(/`+/gu, "");
-  text = redactNotificationSecrets(text)
-    .replace(/\s+/gu, " ")
-    .trim();
-  text = redactNotificationSecrets(text);
-  const points = [...text];
-  return points.length <= 180 ? text : `${points.slice(0, 179).join("").trimEnd()}…`;
-}
-
-function redactNotificationSecrets(value: string): string {
-  let text = value
-    .replace(/(https?:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/giu, "$1[redacted]@")
-    .replace(/([?&](?:access_token|api[_-]?key|auth|key|password|secret|signature|token)=)[^&#\s]*/giu, "$1[redacted]")
-    .replace(/\b(authorization\s*:\s*)(?:basic|bearer|token)\s+[^\s,;]+/giu, "$1[redacted]")
-    .replace(/\b(basic|bearer|token)\s+[a-z\d._~+\/-]{8,}={0,2}\b/giu, "$1 [redacted]");
-  text = redactNotificationCredentialAssignments(text);
-  return text.replace(/\b(?:gh[opusr]_[a-z\d]{20,}|sk-[a-z\d_-]{20,}|xox[baprs]-[a-z\d-]{20,})\b/giu, "[redacted]");
-}
-
-function redactNotificationCredentialAssignments(value: string): string {
-  return redactNotificationValuesAfterPrefixes(
-    value,
-    /(^|[\s,.;:{}()[\]])(?:(['"])(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)\2[ \t]*[:=][ \t]*|--(?:api[_-]?key|token|password|secret)(?:=|[ \t]+)|(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)[ \t]*[:=][ \t]*)/gimu,
-  );
-}
-
-function redactNotificationValuesAfterPrefixes(value: string, pattern: RegExp): string {
-  let cursor = 0;
-  let output = "";
-  const anchoredPattern = new RegExp(pattern.source, pattern.flags.replace("g", "y"));
-  pattern.lastIndex = 0;
-  for (let match = pattern.exec(value); match !== null; match = pattern.exec(value)) {
-    if (match.index < cursor) continue;
-    const valueStart = match.index + match[0].length;
-    const scanned = scanNotificationCredentialValue(value, valueStart, anchoredPattern);
-    if (scanned.end === valueStart) continue;
-    output += value.slice(cursor, valueStart);
-    output += scanned.quote === undefined ? "[redacted]" : `${scanned.quote}[redacted]${scanned.quote}`;
-    cursor = scanned.end;
-    pattern.lastIndex = scanned.end;
-  }
-  return cursor === 0 ? value : output + value.slice(cursor);
-}
-
-function scanNotificationCredentialValue(
-  value: string,
-  start: number,
-  credentialPrefix: RegExp,
-): { readonly end: number; readonly quote?: "\"" | "'" } {
-  let cursor = start;
-  let segmentCount = 0;
-  let soleClosedQuote: "\"" | "'" | undefined;
-  while (cursor < value.length) {
-    const character = value[cursor]!;
-    if (/\s/u.test(character) || /[,;]/u.test(character) || (segmentCount > 0 && /[}\])]/u.test(character))) break;
-    segmentCount += 1;
-    if (character !== "\"" && character !== "'") {
-      soleClosedQuote = undefined;
-      while (cursor < value.length) {
-        const unquoted = value[cursor]!;
-        if (/\s/u.test(unquoted) || /[,;]/u.test(unquoted) || unquoted === "\"" || unquoted === "'") break;
-        if (/[.:{}()[\]]/u.test(unquoted)) {
-          credentialPrefix.lastIndex = cursor;
-          if (credentialPrefix.exec(value) !== null) return { end: cursor };
-        }
-        cursor += unquoted === "\\" ? Math.min(2, value.length - cursor) : 1;
-      }
-      continue;
-    }
-    const quote = character;
-    cursor += 1;
-    let closed = false;
-    while (cursor < value.length) {
-      const quoted = value[cursor]!;
-      if (quoted === "\\") {
-        cursor += Math.min(2, value.length - cursor);
-        continue;
-      }
-      if (quoted === quote) {
-        cursor += 1;
-        closed = true;
-        break;
-      }
-      cursor += 1;
-    }
-    if (!closed) return { end: cursor };
-    soleClosedQuote = segmentCount === 1 ? quote : undefined;
-  }
-  return soleClosedQuote === undefined
-    ? { end: cursor }
-    : { end: cursor, quote: soleClosedQuote };
-}
-
-function decodeNotificationEntities(value: string): string {
-  const named: Readonly<Record<string, string>> = {
-    amp: "&", apos: "'", gt: ">", lt: "<", nbsp: " ", quot: "\"",
-  };
-  return value.replace(/&(?:#(\d{1,7})|#x([\da-f]{1,6})|([a-z]+));/giu, (match, decimal, hex, name) => {
-    if (typeof name === "string") return named[name.toLowerCase()] ?? match;
-    const codePoint = Number.parseInt((decimal ?? hex) as string, decimal === undefined ? 16 : 10);
-    if (!Number.isSafeInteger(codePoint) || codePoint <= 0 || codePoint > 0x10ffff) return " ";
-    try {
-      return String.fromCodePoint(codePoint);
-    } catch {
-      return " ";
-    }
-  });
 }

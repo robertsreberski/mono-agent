@@ -65,20 +65,6 @@ export function getPiOAuthAuth(providerId) {
 }
 
 /**
- * Every Pi provider id that supports OAuth. Replaces
- * `getOAuthProviders().map((provider) => provider.id)`.
- *
- * @returns {string[]}
- */
-export function getPiOAuthProviderIds() {
-  const ids = [];
-  for (const [id, provider] of providerIndex()) {
-    if (provider.auth?.oauth !== undefined) ids.push(id);
-  }
-  return ids;
-}
-
-/**
  * Resolve an API key from stored OAuth credentials, refreshing first when the
  * token has expired.
  *

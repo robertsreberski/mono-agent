@@ -1532,7 +1532,6 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       }
       // Strip the keyboard so the question cannot be answered twice (best-effort).
       await stripCallbackKeyboardQuietly(ctx);
-      const conversationId = `telegram:${String(chatId)}`;
       const question = ctx.callbackQuery.message?.text;
       const syntheticText =
         question !== undefined && question.trim().length > 0

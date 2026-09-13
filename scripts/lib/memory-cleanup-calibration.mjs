@@ -7,12 +7,10 @@ import { isDeepStrictEqual } from "node:util";
 import {
   appendGraphBatch,
   appendBullet,
-  captureTurn,
   createBujoMemoryStore,
   dailyFilePath,
   readGraph,
 } from "../../packages/memory/dist/bujo/index.js";
-import { assertCanonicalGraphRepairBaseParity } from "../../packages/memory/dist/bujo/rebuild.js";
 import {
   prepareAndPublishReplayProjectionDelta,
   replayProjectionAuthorityId,
@@ -115,12 +113,13 @@ async function runCaptureCalibration() {
       throw new Error(`unexpected capture label ${String(label)}`);
     },
   };
-  const db = openMemoryDb({
+  let db = openMemoryDb({
     path: join(root, "memory.db"),
     embeddings,
     dim: 2,
     clock: () => FIXED_NOW,
   });
+  let store;
   try {
     for (const seed of fixture.seeds) {
       const bullet = {
@@ -142,18 +141,49 @@ async function runCaptureCalibration() {
       });
     }
 
-    let sequence = 0;
-    const result = await captureTurn(fixture.turnText, {
-      db,
-      root,
-      llm,
-      nextId: () => `new-${++sequence}`,
-      now: () => FIXED_NOW,
-      canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+    db.close();
+    store = createBujoMemoryStore({ root, embeddings, dim: 2, llm, clock: () => FIXED_NOW });
+    const admission = await store.persistCompletedTurn({
+      runId: "memory-cleanup-calibration",
+      conversationId: "calibration",
+      summary: "Host completed the deterministic mixed memory fixture.",
+      captureText: fixture.turnText,
+    });
+    await store.flush();
+    const intake = store.queueSnapshot().intake;
+    if (intake?.resolved !== 1 || intake.pending !== 0 || intake.dead !== 0) {
+      throw new Error("calibration completed-turn intake did not resolve successfully");
+    }
+    db = openMemoryDb({ path: join(root, "memory.db"), readOnly: true, embeddings, dim: 2 });
+    const records = db.allMemories();
+    // Admission now derives ids from the run. Normalize only those observed ids
+    // to the historical baseline's sequence labels; compare actual persisted
+    // rows, supersession edges and graph associations, not requested decisions.
+    const seedIds = new Set(fixture.seeds.map(({ id }) => id));
+    const generatedIds = records.filter(({ id }) => !seedIds.has(id)).map(({ id }) => id).sort();
+    const baselineIds = new Map(generatedIds.map((id, index) => [id, `new-${index + 1}`]));
+    const normalizeId = (id) => baselineIds.get(id) ?? id;
+    const actions = fixture.candidates.map((candidate) => {
+      const record = records.find(({ text, status }) => text === candidate.text && status !== "invalidated");
+      if (record === undefined) throw new Error("calibration candidate is absent from the persisted index");
+      const existingSeed = fixture.seeds.find(({ id }) => id === record.id);
+      if (existingSeed !== undefined) {
+        return { kind: existingSeed.text === record.text ? "noop" : "update", id: record.id };
+      }
+      const superseded = records.find(({ supersededBy }) => supersededBy === record.id);
+      return superseded === undefined
+        ? { kind: "add", id: normalizeId(record.id) }
+        : { kind: "supersede", oldId: superseded.id, newId: normalizeId(record.id) };
     });
     const graph = readGraph(root);
+    const result = {
+      actions,
+      entities: graph.entities.length,
+      relations: graph.relations.length,
+      associations: graph.associations.length,
+    };
     const actualAssociations = graph.associations
-      .map(({ memoryId, entityId, provenance }) => ({ memoryId, entityId, provenance }))
+      .map(({ memoryId, entityId, provenance }) => ({ memoryId: normalizeId(memoryId), entityId, provenance }))
       .sort(compareAssociation);
     const expectedAssociations = [
       { memoryId: "seed-deploy", entityId: "person:morgan", provenance: "capture" },
@@ -195,6 +225,8 @@ async function runCaptureCalibration() {
       },
       candidate: {
         fixtureSha256,
+        admissionStatus: admission.admissionStatus,
+        intakeResolved: intake.resolved,
         calls: labels.length,
         labels,
         callReduction,
@@ -250,6 +282,7 @@ async function runCaptureCalibration() {
     return { metrics, gates, passed: gatesPassed(gates) };
   } finally {
     db.close();
+    await store?.close();
     await rm(root, { recursive: true, force: true });
   }
 }

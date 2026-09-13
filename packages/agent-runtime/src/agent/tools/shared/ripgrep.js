@@ -1,3 +1,4 @@
+import { DEFAULT_RUNTIME_BRAND } from "../../../runtime-brand.js";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, join } from "node:path";
@@ -9,14 +10,13 @@ import {
 } from "./constants.js";
 import { boundedInt } from "./dedup.js";
 import { writeToolArtifact } from "./output-truncation.js";
-import { readToolRuntime } from "./runtime-context.js";
 
 const requireFromHere = createRequire(import.meta.url);
 
 // Lazy so the message respects whatever runtimeBrand the host configured.
 export function ripgrepMissingMessage(ctx) {
-  const brand = (ctx ?? readToolRuntime()).runtimeBrand;
-  return `Error: ripgrep (rg) is not available. Configure ripgrepPath via configureToolRuntime() or install ripgrep on PATH; run \`${brand.doctorCommand}\` for details.`;
+  const brand = ctx?.runtimeBrand ?? DEFAULT_RUNTIME_BRAND;
+  return `Error: ripgrep (rg) is not available. Configure ripgrepPath on your runtime or explicit tool context or install ripgrep on PATH; run \`${brand.doctorCommand}\` for details.`;
 }
 
 // Mutable cache of the resolved ripgrep binary path. Stored on an object so
@@ -73,7 +73,7 @@ function rgFromPath() {
  */
 export function resolveRgPath({ refresh = false, ctx } = {}) {
   if (!refresh && cachedRgPath.value !== undefined) return cachedRgPath.value;
-  const { ripgrepPath } = ctx ?? readToolRuntime();
+  const { ripgrepPath } = ctx ?? {};
   if (ripgrepPath) {
     cachedRgPath.value = existsSync(ripgrepPath) ? ripgrepPath : null;
   } else {

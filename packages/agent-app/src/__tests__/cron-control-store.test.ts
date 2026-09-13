@@ -21,7 +21,6 @@ import {
 import { MAX_CRON_OPERATOR_RESPONSE_BYTES } from "@mono-agent/operator-adapter";
 
 import {
-  CronControlStoreError,
   cronActionRequestHash,
   inspectCronControlStore,
   openCronControlStore,

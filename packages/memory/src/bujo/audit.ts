@@ -581,15 +581,7 @@ function inspectRuntime(
     if (snapshot.queues.index?.recoveryFilesRemaining !== 0 || counts.missingVectors > 0) {
       issues.add("mutation_in_progress");
     }
-    if (snapshot.queues.capture !== undefined) issues.add("runtime_invalid");
-  } else if (mode === "bujo") {
-    // The legacy best-effort queue is lazy and absent in the bundled strong-write path. When a
-    // direct compatibility caller has activated it, its operational state remains authoritative.
-    if ((snapshot.queues.capture !== undefined && !queueOperational(snapshot.queues.capture))
-      || snapshot.queues.index !== undefined) {
-      issues.add("runtime_invalid");
-    }
-  } else if (snapshot.queues.index !== undefined || snapshot.queues.capture !== undefined) {
+  } else if (snapshot.queues.index !== undefined) {
     issues.add("runtime_invalid");
   }
 }

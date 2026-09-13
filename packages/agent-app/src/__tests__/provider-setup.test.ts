@@ -15,7 +15,6 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 import {
-  credentialNeutralProviderStatusEnvironment,
   detectProviderCredentialStates,
   executeProviderSetupPlan,
   piAuthPathForSetup,

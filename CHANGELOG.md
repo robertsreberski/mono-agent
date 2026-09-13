@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Breaking: simplify framework configuration, runtime and memory contracts.**
+  Remove inert permission/recall options, prose-triggered effort escalation,
+  process-global tool configuration, legacy flat runtime settings, the legacy
+  memory-write protocol and the standalone memory-recall binary. Phoenix moves
+  to the explicitly installed, matching-version `@mono-agent/observability-phoenix`
+  extra. Operator streaming, wire types, previews and channel redaction share
+  canonical implementations. See the [migration guide](./docs/reference/framework-simplification-migration.md)
+  before upgrading an existing consumer.
+
 - Persistent Agent/AgentSend support detached process-job execution and exact-origin wakes, retaining busy ownership after unresolved cancellation.
 
 - Let persistent children ask their parent for direction with child-only
@@ -124,6 +133,7 @@
   run-directory identity after opening, and removes identity-proven files after
   final validation failure; Node's lack
   of fd-relative `openat` leaves a documented residual same-user rename window.
+
 - **Breaking: framework self-configuration has been removed.** The dedicated
   SELF-CONFIG session, `ProposeAgentConfiguration`, `mono-agent tui --configure`,
   `/configure`, host-side proposal review/apply/restart transaction, and bundled

@@ -421,7 +421,7 @@ describe("resolveLiveCompactionPolicy — window recognition", () => {
       harness,
       runtime: { model: { id: "m" } },
       resolved: { reference: "faux:m" },
-      settings: {},
+      compaction: {},
     });
     expect(policy.contextWindow).toBe(100_000);
     expect(policy.enabled).toBe(true);
@@ -433,7 +433,7 @@ describe("resolveLiveCompactionPolicy — window recognition", () => {
       harness: {},
       runtime: { model: { id: "m", contextWindow: 40_000 } },
       resolved: {},
-      settings: {},
+      compaction: {},
     });
     expect(policy.contextWindow).toBe(40_000);
   });
@@ -443,7 +443,7 @@ describe("resolveLiveCompactionPolicy — window recognition", () => {
       harness: { getModel: () => ({ id: "override-only", contextWindow: 128_000 }) },
       runtime: { model: { id: "override-only", contextWindow: 128_000 } },
       resolved: { reference: "faux:override-only" },
-      settings: {},
+      compaction: {},
       contextWindowOverride: 272_000,
     });
     expect(policy).toMatchObject({
@@ -472,7 +472,7 @@ describe("runProactiveCompaction — trigger math", () => {
     const runState = freshRunState(fakeSession(), { policy: policy({ enabled: false }) });
     const harness = { waitForIdle: vi.fn(), compact: vi.fn() };
     await runProactiveCompaction(runState, {
-      harness, systemPrompt: "s", options: { settings: {} }, tools: [],
+      harness, systemPrompt: "s", options: { compaction: {} }, tools: [],
       promptText: "hi", promptImages: [], reference: "faux:m", onEvent: () => {}, runtimeWarnings: [],
     });
     expect(harness.compact).not.toHaveBeenCalled();
@@ -487,7 +487,7 @@ describe("runProactiveCompaction — trigger math", () => {
     const harness = { waitForIdle: vi.fn(), compact: vi.fn(async () => ({ tokensBefore: 1 })) };
     await runProactiveCompaction(runState, {
       harness, systemPrompt: "s",
-      options: { settings: { agent_compaction_fixed_overhead_enabled: false } },
+      options: { compaction: { fixedOverheadEnabled: false } },
       tools: [], promptText: "hi", promptImages: [], reference: "faux:m", onEvent: () => {}, runtimeWarnings: [],
     });
     expect(harness.compact).not.toHaveBeenCalled();
@@ -504,7 +504,7 @@ describe("runProactiveCompaction — trigger math", () => {
     const runState = freshRunState(fixture.session, { policy: policy() });
     await runProactiveCompaction(runState, {
       harness: fixture.harness, systemPrompt: "s",
-      options: { settings: {} }, // fixed overhead ON
+      options: { compaction: {} }, // fixed overhead ON
       tools: [{ name: "Bash", description: "x".repeat(4000), parameters: {} }],
       promptText: "hi", promptImages: [], reference: "faux:m", onEvent: () => {}, runtimeWarnings: [],
     });
@@ -613,7 +613,7 @@ describe("runReactiveCompaction — overflow recovery", () => {
       harness: fixture.harness,
       runtime: { model: { id: "m", contextWindow: 128_000 } },
       resolved: { reference },
-      settings: {},
+      compaction: {},
       contextWindowOverride: 200_000,
     });
     expect(nextPolicy.contextWindow).toBe(Math.floor(failedEstimate * 0.90));

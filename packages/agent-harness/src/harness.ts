@@ -138,6 +138,10 @@ export class MonoAgentHarness implements AgentHarness {
 
   constructor(options: AgentHarnessOptions, internalOptions: MonoAgentHarnessInternalOptions = {}) {
     validateOptions(options);
+    if ((options.memoryWriteMode === "append-host-summary" || options.memoryWriteMode === "capture")
+      && typeof options.memory?.persistCompletedTurn !== "function") {
+      throw new TypeError("Memory write modes require a store implementing persistCompletedTurn; use memoryWriteMode: \"disabled\" for a read-only store.");
+    }
     this.options = options;
     this.runtimeForSession = createSessionRuntimeResolver(options);
     const shutdownDrainTimeoutMs = internalOptions.shutdownDrainTimeoutMs ?? DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;

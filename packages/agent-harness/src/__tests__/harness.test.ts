@@ -996,7 +996,6 @@ describe("AgentHarness", () => {
     const memoryTurns: MemoryCompletedTurn[] = [];
     const memory: MemoryStore = {
       load: async () => undefined,
-      appendHostSummary: async (conversationId) => ({ conversationId, source: "unused", bytesWritten: 0 }),
       persistCompletedTurn: async (turn) => {
         memoryTurns.push(turn);
         return {
@@ -1441,7 +1440,7 @@ describe("AgentHarness", () => {
       async load() {
         return { kind: "markdown" as const, content: "Remember: terse.", source: join(dir, "memory.md"), truncated: false };
       },
-      async appendHostSummary() {
+      async persistCompletedTurn(): Promise<MemoryCompletedTurnResult> {
         throw new Error("memory writes should be disabled by default");
       },
     };
@@ -1638,9 +1637,17 @@ describe("AgentHarness", () => {
         async load() {
           return undefined;
         },
-        async appendHostSummary(_conversationId: string, summary: string) {
+        async persistCompletedTurn(turn: MemoryCompletedTurn) {
+          const summary = turn.summary;
           summaries.push(summary);
-          return { conversationId: "telegram:42#today", source: "memory.md", bytesWritten: summary.length };
+          return {
+            source: "memory.md",
+            bytesWritten: summary.length,
+            id: turn.runId,
+            runId: turn.runId,
+            conversationId: turn.conversationId,
+            admissionStatus: "admitted" as const,
+          };
         },
       },
       turnHistoryEnricher: {
@@ -1889,8 +1896,15 @@ describe("AgentHarness", () => {
         recalls.push({ conversationId, query, ...(options?.turnId === undefined ? {} : { turnId: options.turnId }) });
         return undefined;
       },
-      async appendHostSummary() {
-        return { conversationId: "telegram:1", source: "", bytesWritten: 0 };
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        return {
+          source: "",
+          bytesWritten: 0,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
       },
       releaseTurn(turnId: string) {
         releasedTurns.push(turnId);
@@ -1927,8 +1941,15 @@ describe("AgentHarness", () => {
       async load() {
         return undefined;
       },
-      async appendHostSummary() {
-        return { conversationId: "telegram:1", source: "", bytesWritten: 0 };
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        return {
+          source: "",
+          bytesWritten: 0,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
       },
     };
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
@@ -1958,9 +1979,17 @@ describe("AgentHarness", () => {
       async load() {
         return { kind: "markdown" as const, content: "## Memory (recalled)\n- [ ] ship the docs", source: "memory.md", truncated: false };
       },
-      async appendHostSummary(_id: string, summary: string) {
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const summary = turn.summary;
         summaries.push(summary);
-        return { conversationId: "telegram:1", source: "memory.md", bytesWritten: summary.length };
+        return {
+          source: "memory.md",
+          bytesWritten: summary.length,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
       },
     };
     const historyStore = createInMemoryHistoryStore({ maxMessages: 4 });
@@ -2102,6 +2131,30 @@ describe("AgentHarness", () => {
     });
   });
 
+  it.each(["append-host-summary", "capture"] as const)(
+    "rejects %s writing when the memory store has no completed-turn admission method",
+    (memoryWriteMode) => {
+      const base = { identityPath: "/tmp/unused-identity.md", runtime: createFakeRuntime(async () => ({ text: "unused" })).runtime, model, memoryWriteMode };
+      expect(() => createAgentHarness({ ...base, memory: { load: async () => undefined } })).toThrow(/persistCompletedTurn/);
+      expect(() => createAgentHarness(base)).toThrow(/persistCompletedTurn/);
+    },
+  );
+
+  it.each([undefined, "disabled"] as const)("accepts a read-only store in %s write mode", async (memoryWriteMode) => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "The read-only memory was available." }));
+    const harness = createAgentHarness({
+      identityPath, runtime: fake.runtime, model,
+      memory: { load: async () => ({ kind: "markdown", source: "read-only", content: "A durable read-only fact.", truncated: false }) },
+      ...(memoryWriteMode === undefined ? {} : { memoryWriteMode }),
+    });
+    const response = await harness.run({ conversationId: "read-only", userMessage: "Recall the fact.", abortSignal: new AbortController().signal });
+    expect(response.text).toBe("The read-only memory was available.");
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).toContain("A durable read-only fact.");
+  });
+
   it("appends a deterministic host summary when memoryWriteMode is append-host-summary", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -2111,9 +2164,18 @@ describe("AgentHarness", () => {
       async load() {
         return undefined;
       },
-      async appendHostSummary(conversationId: string, summary: string) {
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const conversationId = turn.conversationId;
+        const summary = turn.summary;
         summaries.push({ conversationId, summary });
-        return { conversationId, source: "memory.md", bytesWritten: summary.length };
+        return {
+          source: "memory.md",
+          bytesWritten: summary.length,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
       },
     };
     const fake = createFakeRuntime(async () => ({ text: "The build is green." }));
@@ -2144,14 +2206,9 @@ describe("AgentHarness", () => {
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
     const admissions: MemoryCompletedTurn[] = [];
-    const legacyCalls: string[] = [];
     const memory: MemoryStore = {
       load: async () => undefined,
-      appendHostSummary: async (conversationId) => {
-        legacyCalls.push(`append:${conversationId}`);
-        return { conversationId, source: "legacy", bytesWritten: 0 };
-      },
-      scheduleCapture: (conversationId) => { legacyCalls.push(`capture:${conversationId}`); },
+
       async persistCompletedTurn(turn): Promise<MemoryCompletedTurnResult> {
         admissions.push(turn);
         return {
@@ -2189,7 +2246,6 @@ describe("AgentHarness", () => {
       ].join("\n"),
       captureText: "User: Is the build ok?\nAssistant: The build is green.",
     }]);
-    expect(legacyCalls).toEqual([]);
   });
 
   // Recall is already global across conversations, so attributing the captured
@@ -2201,7 +2257,6 @@ describe("AgentHarness", () => {
     const admissions: MemoryCompletedTurn[] = [];
     const memory: MemoryStore = {
       load: async () => undefined,
-      appendHostSummary: async () => { throw new Error("legacy append must not run"); },
       async persistCompletedTurn(turn): Promise<MemoryCompletedTurnResult> {
         admissions.push(turn);
         return {
@@ -2303,8 +2358,7 @@ describe("AgentHarness", () => {
     const admissions: MemoryCompletedTurn[] = [];
     const memory: MemoryStore = {
       load: async () => undefined,
-      appendHostSummary: async () => { throw new Error("legacy append must not run"); },
-      scheduleCapture: () => { throw new Error("legacy capture must not run"); },
+
       async persistCompletedTurn(turn) {
         admissions.push(turn);
         return {
@@ -2342,7 +2396,6 @@ describe("AgentHarness", () => {
     const admissionPending = new Promise<void>((resolve) => { finishAdmission = resolve; });
     const memory: MemoryStore = {
       load: async () => undefined,
-      appendHostSummary: async () => { throw new Error("legacy append must not run"); },
       persistCompletedTurn: async (turn) => {
         enterAdmission();
         await admissionPending;
@@ -2387,7 +2440,6 @@ describe("AgentHarness", () => {
       let admissions = 0;
       const memory: MemoryStore = {
         load: async () => undefined,
-        appendHostSummary: async (conversationId) => ({ conversationId, source: "legacy", bytesWritten: 0 }),
         persistCompletedTurn: async (turn) => {
           admissions += 1;
           return {
@@ -2424,9 +2476,16 @@ describe("AgentHarness", () => {
       async load() {
         return undefined;
       },
-      async appendHostSummary() {
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
         appendCount += 1;
-        return { conversationId: "c", source: "memory.md", bytesWritten: 0 };
+        return {
+          source: "memory.md",
+          bytesWritten: 0,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
       },
     };
     const fake = createFakeRuntime(async () => ({ text: "Done." }));
@@ -2442,19 +2501,29 @@ describe("AgentHarness", () => {
     expect(appendCount).toBe(0);
   });
 
-  it("writeMode 'capture' writes the rapid-log AND schedules an async capture", async () => {
+  it("writeMode 'capture' admits the summary and full capture text together", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
     const calls: string[] = [];
     const memory = {
       load: async () => undefined,
-      appendHostSummary: async (id: string) => {
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const id = turn.conversationId;
         calls.push(`append:${id}`);
-        return { conversationId: id, source: "memory.md", bytesWritten: 1 };
-      },
-      scheduleCapture: (id: string, text: string) => {
-        calls.push(`schedule:${id}:${text.includes("Assistant") ? "turn" : "?"}`);
+        if (turn.captureText !== undefined) {
+          const id = turn.conversationId;
+          const text = turn.captureText;
+          calls.push(`schedule:${id}:${text.includes("Assistant") ? "turn" : "?"}`);
+        }
+        return {
+          source: "memory.md",
+          bytesWritten: 1,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
       },
       flush: async () => {},
     };
@@ -2488,12 +2557,21 @@ describe("AgentHarness", () => {
       const captures: string[] = [];
       const memory = {
         load: async () => undefined,
-        appendHostSummary: async (id: string, summary: string) => {
+        async persistCompletedTurn(turn: MemoryCompletedTurn) {
+          const summary = turn.summary;
           summaries.push(summary);
-          return { conversationId: id, source: "memory.md", bytesWritten: summary.length };
-        },
-        scheduleCapture: (_id: string, text: string) => {
-          captures.push(text);
+          if (turn.captureText !== undefined) {
+            const text = turn.captureText;
+            captures.push(text);
+          }
+          return {
+            source: "memory.md",
+            bytesWritten: summary.length,
+            id: turn.runId,
+            runId: turn.runId,
+            conversationId: turn.conversationId,
+            admissionStatus: "admitted" as const,
+          };
         },
         flush: async () => {},
       };
@@ -2536,12 +2614,21 @@ describe("AgentHarness", () => {
         const calls: string[] = [];
         const memory = {
           load: async () => undefined,
-          appendHostSummary: async (id: string) => {
+          async persistCompletedTurn(turn: MemoryCompletedTurn) {
+            const id = turn.conversationId;
             calls.push(`append:${id}`);
-            return { conversationId: id, source: "memory.md", bytesWritten: 1 };
-          },
-          scheduleCapture: (id: string) => {
-            calls.push(`schedule:${id}`);
+            if (turn.captureText !== undefined) {
+              const id = turn.conversationId;
+              calls.push(`schedule:${id}`);
+            }
+            return {
+              source: "memory.md",
+              bytesWritten: 1,
+              id: turn.runId,
+              runId: turn.runId,
+              conversationId: turn.conversationId,
+              admissionStatus: "admitted" as const,
+            };
           },
           flush: async () => {},
         };
@@ -2574,12 +2661,21 @@ describe("AgentHarness", () => {
         const calls: string[] = [];
         const memory = {
           load: async () => undefined,
-          appendHostSummary: async (id: string) => {
+          async persistCompletedTurn(turn: MemoryCompletedTurn) {
+            const id = turn.conversationId;
             calls.push(`append:${id}`);
-            return { conversationId: id, source: "memory.md", bytesWritten: 1 };
-          },
-          scheduleCapture: (id: string) => {
-            calls.push(`schedule:${id}`);
+            if (turn.captureText !== undefined) {
+              const id = turn.conversationId;
+              calls.push(`schedule:${id}`);
+            }
+            return {
+              source: "memory.md",
+              bytesWritten: 1,
+              id: turn.runId,
+              runId: turn.runId,
+              conversationId: turn.conversationId,
+              admissionStatus: "admitted" as const,
+            };
           },
           flush: async () => {},
         };
@@ -2605,12 +2701,21 @@ describe("AgentHarness", () => {
       const calls: string[] = [];
       const memory = {
         load: async () => undefined,
-        appendHostSummary: async (id: string) => {
+        async persistCompletedTurn(turn: MemoryCompletedTurn) {
+          const id = turn.conversationId;
           calls.push(`append:${id}`);
-          return { conversationId: id, source: "memory.md", bytesWritten: 1 };
-        },
-        scheduleCapture: (id: string) => {
-          calls.push(`schedule:${id}`);
+          if (turn.captureText !== undefined) {
+            const id = turn.conversationId;
+            calls.push(`schedule:${id}`);
+          }
+          return {
+            source: "memory.md",
+            bytesWritten: 1,
+            id: turn.runId,
+            runId: turn.runId,
+            conversationId: turn.conversationId,
+            admissionStatus: "admitted" as const,
+          };
         },
         flush: async () => {},
       };
@@ -2641,12 +2746,22 @@ describe("AgentHarness", () => {
     const calls: string[] = [];
     const memory = {
       load: async () => undefined,
-      appendHostSummary: async (id: string) => {
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const id = turn.conversationId;
         calls.push(`append:${id}`);
-        return { conversationId: id, source: "memory.md", bytesWritten: 1 };
-      },
-      scheduleCapture: (id: string, text: string) => {
-        calls.push(`schedule:${id}:${text}`);
+        if (turn.captureText !== undefined) {
+          const id = turn.conversationId;
+          const text = turn.captureText;
+          calls.push(`schedule:${id}:${text}`);
+        }
+        return {
+          source: "memory.md",
+          bytesWritten: 1,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
       },
       flush: async () => {},
     };
@@ -2672,12 +2787,22 @@ describe("AgentHarness", () => {
     const calls: string[] = [];
     const memory = {
       load: async () => undefined,
-      appendHostSummary: async (id: string) => {
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const id = turn.conversationId;
         calls.push(`append:${id}`);
-        return { conversationId: id, source: "memory.md", bytesWritten: 1 };
-      },
-      scheduleCapture: (id: string, text: string) => {
-        calls.push(`schedule:${id}:${text}`);
+        if (turn.captureText !== undefined) {
+          const id = turn.conversationId;
+          const text = turn.captureText;
+          calls.push(`schedule:${id}:${text}`);
+        }
+        return {
+          source: "memory.md",
+          bytesWritten: 1,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
       },
       flush: async () => {},
     };
@@ -2703,12 +2828,22 @@ describe("AgentHarness", () => {
     const calls: string[] = [];
     const memory = {
       load: async () => undefined,
-      appendHostSummary: async (id: string) => {
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const id = turn.conversationId;
         calls.push(`append:${id}`);
-        return { conversationId: id, source: "memory.md", bytesWritten: 1 };
-      },
-      scheduleCapture: (id: string, text: string) => {
-        calls.push(`schedule:${id}:${text}`);
+        if (turn.captureText !== undefined) {
+          const id = turn.conversationId;
+          const text = turn.captureText;
+          calls.push(`schedule:${id}:${text}`);
+        }
+        return {
+          source: "memory.md",
+          bytesWritten: 1,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
       },
       flush: async () => {},
     };
@@ -2727,19 +2862,27 @@ describe("AgentHarness", () => {
     expect(calls).toContain("schedule:telegram:9:User: test deploy\nAssistant: works");
   });
 
-  it("writeMode 'append-host-summary' does NOT schedule a capture", async () => {
+  it("writeMode 'append-host-summary' omits capture text", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
     const calls: string[] = [];
     const memory = {
       load: async () => undefined,
-      appendHostSummary: async (id: string) => {
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const id = turn.conversationId;
         calls.push(`append:${id}`);
-        return { conversationId: id, source: "memory.md", bytesWritten: 1 };
-      },
-      scheduleCapture: () => {
-        calls.push("schedule");
+        if (turn.captureText !== undefined) {
+          calls.push("schedule");
+        }
+        return {
+          source: "memory.md",
+          bytesWritten: 1,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
       },
       flush: async () => {},
     };
@@ -2832,7 +2975,7 @@ describe("AgentHarness", () => {
           mcpServers: { authenticated_request: { command: "request-only" } },
         },
         runtimeOptions: {
-          permissionMode: "plan",
+          effort: "low",
           // Tool-shaped fields in the same extension cannot escape the
           // authoritative request boundary.
           allowedTools: ["Bash"],
@@ -2847,7 +2990,7 @@ describe("AgentHarness", () => {
     expect(fake.calls[0]?.options).toMatchObject({
       allowedTools: ["ReadSkill", "CustomProposalTool"],
       disallowedTools: [],
-      permissionMode: "plan",
+      effort: "low",
       mcpServers: { authenticated_request: { command: "request-only" } },
     });
     expect(fake.calls[0]?.options.mcpConfigPath).toBeUndefined();

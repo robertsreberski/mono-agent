@@ -287,7 +287,7 @@ export async function validateMonoAgentFolder(
     sections.push(await sandboxSection(coreConfig, options.sandboxEngine));
   }
 
-  sections.push(await exporterSection(options, liveness));
+  sections.push(await exporterSection(options, liveness, options.preferAppPluginInstall === true));
   sections.push(await runsSection(options, coreConfig));
   sections.push(await launchdLogsSection(options.configPath));
 

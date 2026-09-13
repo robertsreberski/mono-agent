@@ -33,7 +33,7 @@ describe.skipIf(!baseUrl)("supermemory live round-trip", () => {
     });
 
     const marker = `blue-green-${process.pid}`;
-    store.scheduleCapture("e2e-conv", `The deploy pipeline uses ${marker} releases on Fridays.`);
+    await store.persistCompletedTurn({ runId: marker, conversationId: "e2e-conv", summary: `The deploy pipeline uses ${marker} releases on Fridays.`, captureText: `The deploy pipeline uses ${marker} releases on Fridays.` });
     await store.flush();
 
     const deadline = Date.now() + INGEST_DEADLINE_MS;

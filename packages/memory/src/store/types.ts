@@ -167,7 +167,6 @@ export interface IndexMetadata {
 
 export interface RecallWeights {
   readonly rrf: number;
-  readonly recency: number;
   readonly salience: number;
   readonly insight: number;
 }
@@ -175,7 +174,6 @@ export interface RecallWeights {
 export interface RecallOptions {
   readonly topK?: number;
   readonly candidates?: number;
-  readonly expandHops?: number;
   readonly includeInvalid?: boolean;
   readonly trackAccess?: boolean;
   readonly now?: Date;
@@ -234,7 +232,6 @@ export interface MemoryDbOptions {
   readonly dim?: number;
   readonly k?: number;
   readonly weights?: Partial<RecallWeights>;
-  readonly decayGamma?: number;
   readonly clock?: () => Date;
 }
 
@@ -247,14 +244,8 @@ export const DEFAULT_VEC_DIM = 768;
  */
 export const DEFAULT_WEIGHTS: RecallWeights = {
   rrf: 1.0,
-  // Access time is telemetry, never relevance. Keep the field for config/API
-  // compatibility but make its effective default zero and do not feed it into
-  // the scorer.
-  recency: 0,
   // Relevance must dominate these deterministic tie-breakers.
   salience: 0.01,
   insight: 0.01,
 };
 export const DEFAULT_RRF_K = 60;
-/** Retained for API compatibility; access-recency scoring is disabled. */
-export const DEFAULT_DECAY_GAMMA = 0.995;

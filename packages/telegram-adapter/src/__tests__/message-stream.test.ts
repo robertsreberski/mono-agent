@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  splitTelegramText,
   TelegramDeliveryError,
   TelegramMessageStream,
 } from "../message-stream.js";
@@ -478,7 +477,7 @@ describe("TelegramMessageStream", () => {
 
     await stream.finish(finalText);
 
-    const expectedChunks = splitTelegramText(finalText, 32);
+    const expectedChunks = ["a".repeat(32), "a".repeat(32), "a".repeat(6)];
     expect(api.editMessageTextCalls).toEqual([
       { chat_id: 99, message_id: 100, text: expectedChunks[0], parse_mode: "MarkdownV2" },
     ]);
@@ -857,10 +856,3 @@ function telegramApiError(
     ...(overrides?.retryAfterMs === undefined ? {} : { retryAfterMs: overrides.retryAfterMs }),
   });
 }
-
-describe("splitTelegramText", () => {
-  it("splits text without dropping characters", () => {
-    expect(splitTelegramText("abcdef", 2)).toEqual(["ab", "cd", "ef"]);
-    expect(splitTelegramText("abc", 10)).toEqual(["abc"]);
-  });
-});

@@ -1,6 +1,5 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { listRecordedRuns } from "@mono-agent/observability";
-import { serializeTraceSpans } from "@mono-agent/observability/otel";
 
 import {
   describeSensitiveDataExportWarning,
@@ -11,6 +10,7 @@ import {
 } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { ValidationSection } from "./doctor-types.js";
+import { loadPhoenixPlugin } from "./phoenix-plugin.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 
 const EXPORTER_PROBE_TIMEOUT_MS = 3_000;
@@ -40,6 +40,7 @@ export async function runsSection(
 export async function exporterSection(
   input: MonoAgentAppConfigInput,
   liveness: boolean,
+  preferAppPluginInstall = false,
 ): Promise<ValidationSection> {
   let exporters;
   try {
@@ -58,6 +59,15 @@ export async function exporterSection(
     };
   }
 
+  let plugin;
+  try {
+    plugin = await loadPhoenixPlugin({ cwd: input.cwd, preferAppInstall: preferAppPluginInstall });
+  } catch (error) {
+    return {
+      id: "observability", label: "Observability exporter", status: "error",
+      details: [error instanceof Error ? error.message : String(error), LOCAL_ARTIFACTS_NOTE],
+    };
+  }
   const exporter = exporters[0]!;
   const details: string[] = [`Exporter: ${exporter.type} -> ${exporter.endpoint}`];
   const appUrl = phoenixAppBaseUrl(exporter.endpoint);
@@ -69,7 +79,7 @@ export async function exporterSection(
     return { id: "observability", label: "Observability exporter", status: "ok", details };
   }
 
-  const probeError = await probeExporterEndpoint(exporter.endpoint);
+  const probeError = await probeExporterEndpoint(exporter.endpoint, plugin.serializeEmptyTrace());
   if (probeError !== undefined) {
     details.push(
       `[WARN] Phoenix export not confirmed at ${exporter.endpoint} (${probeError}); exports will fail until it accepts OTLP protobuf. This is non-fatal.`,
@@ -82,14 +92,14 @@ export async function exporterSection(
   return { id: "observability", label: "Observability exporter", status: "ok", details };
 }
 
-async function probeExporterEndpoint(endpoint: string): Promise<string | undefined> {
+async function probeExporterEndpoint(endpoint: string, body: Uint8Array): Promise<string | undefined> {
   const controller = new AbortController();
   const timer = setTimeout(() => { controller.abort(); }, EXPORTER_PROBE_TIMEOUT_MS);
   try {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "content-type": "application/x-protobuf" },
-      body: serializeTraceSpans([]),
+      body,
       signal: controller.signal,
     });
     return response.ok ? undefined : `HTTP ${response.status}`;

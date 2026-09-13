@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const executeMock = vi.fn();
 const resolveRuntimeBridgeMock = vi.fn();
@@ -9,9 +9,6 @@ vi.mock("../ai/runtime/registry.js", () => ({
 
 const { createRuntime } = await import("../runtime.js");
 const { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } = await import("../runtime-brand.js");
-const { configureToolRuntime, readRuntimeBrand, resetToolRuntime } = await import(
-  "../agent/tools/shared/runtime-context.js"
-);
 const { createToolContext } = await import("../agent/tools/shared/tool-context.js");
 
 const TEST_MODEL = { provider: "anthropic", model: "x", reference: "anthropic:x" };
@@ -20,12 +17,8 @@ beforeEach(() => {
   executeMock.mockReset();
   resolveRuntimeBridgeMock.mockReset();
   resolveRuntimeBridgeMock.mockResolvedValue({ id: "stub", execute: executeMock });
-  resetToolRuntime();
 });
 
-afterEach(() => {
-  resetToolRuntime();
-});
 
 describe("resolveRuntimeBrand", () => {
   it("returns the defaults when input is missing or not an object", () => {
@@ -57,11 +50,11 @@ describe("resolveRuntimeBrand", () => {
 });
 
 describe("createRuntime + runtimeBrand", () => {
-  it("leaves the global default brand untouched when a runtime is created", () => {
+  it("leaves independently created contexts on their default brand", () => {
     // createRuntime no longer publishes the brand to the process-global default
     // context; the resolved brand lives on the per-instance tool context instead.
     createRuntime({ runtimeBrand: { schemaPrefix: "demo" } });
-    expect(readRuntimeBrand()).toEqual(DEFAULT_RUNTIME_BRAND);
+    expect(createToolContext().runtimeBrand).toEqual(DEFAULT_RUNTIME_BRAND);
   });
 
   it("threads host.runtimeBrand overrides onto the per-instance tool context", async () => {
@@ -111,14 +104,12 @@ describe("brand-aware modules", () => {
     expect(ripgrepMissingMessage(ctx)).toContain("`instance doctor`");
   });
 
-  it("ripgrep error message falls back to the default-context brand (deep/worklab path)", async () => {
-    configureToolRuntime({ runtimeBrand: { doctorCommand: "demo doctor" } });
+  it("ripgrep error message uses the immutable default brand when no context is supplied", async () => {
     const { ripgrepMissingMessage } = await import("../agent/tools/shared/ripgrep.js");
-    expect(ripgrepMissingMessage()).toContain("`demo doctor`");
+    expect(ripgrepMissingMessage()).toContain(`\`${DEFAULT_RUNTIME_BRAND.doctorCommand}\``);
   });
 
   it("default brand uses neutral schema strings", async () => {
-    resetToolRuntime();
     const { buildTranscriptTailSnapshot } = await import("../agent/transcript.js");
     const events = [
       { type: "assistant", message: { content: [{ type: "text", text: "hello" }] } },
