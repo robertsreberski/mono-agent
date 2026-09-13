@@ -24,8 +24,9 @@ describe("model transition sidecars", () => {
     const summary = thread("t", "a");
     cache.upsertFull({ thread: summary, messages: [message("new")], modelTransitions: [transition(3, "new")], messagesNextCursor: "older" });
     cache.prependOlder("t", { messages: [message("old")], modelTransitions: [transition(1, "old"), transition(2, "old")] });
-    cache.upsertFull({ thread: summary, messages: [message("new")], modelTransitions: [transition(3, "new")], messagesNextCursor: "older" });
+    cache.upsertFull({ thread: summary, messages: [message("new")], modelTransitions: [transition(3, "new")], messagesNextCursor: "older" }, { reset: true });
     expect(cache.get("t")?.modelTransitions?.map((item) => item.id)).toEqual([1, 2, 3]);
+    expect(cache.get("t")?.messages.map((item) => item.id)).toEqual(["old", "new"]);
     const restored = createThreadCache();
     restored.restore(cache.get("t")!);
     expect(restored.get("t")?.modelTransitions).toEqual(cache.get("t")?.modelTransitions);

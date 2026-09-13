@@ -661,3 +661,26 @@ describe("synthetic detached subagent evidence", () => {
     clock.mockRestore();
   });
 });
+
+
+describe("reasoning-split reply in Chromium", () => {
+  it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)(
+    "renders the complete answer at %ipx (%s)", async (width, height, label) => {
+      await page.viewport(width, height);
+      const response: WebMessage = {
+        ...steeredResponse,
+        parts: [
+          { type: "reasoning", text: "Checking the answer." },
+          { type: "text", text: "Tot" },
+          { type: "reasoning", text: "." },
+          { type: "text", text: "ally fair — the reply stays intact." },
+        ],
+      };
+      const { container } = render(<SteerHarness width={Math.min(width, 760)} messages={[response]} />);
+      expect(screen.getByText("Totally fair — the reply stays intact.")).toBeVisible();
+      expect(container.querySelector(".activity-note")).toBeNull();
+      const directory = import.meta.env.VITE_TRANSCRIPT_SHOTS as string | undefined;
+      if (directory) await page.screenshot({ path: `${directory}/synthetic-transcript-${label}.png` });
+    },
+  );
+});
