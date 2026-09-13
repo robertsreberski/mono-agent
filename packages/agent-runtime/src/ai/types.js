@@ -339,7 +339,7 @@
  * @typedef {Object} RuntimeSubagentsOptions
  * @property {ReadonlyArray<RuntimeSubagentDefinition>} [definitions] Named profiles.
  * @property {ReadonlyArray<{name: string, model: RuntimeModelRef, key: string}>} [models] Call-time model choices. Absent means no model parameter.
- * @property {{startInternal(request: {kind: "internal", tool: "Agent"|"AgentSend", jobId: string, instanceId: string, timeoutMs: number, cleanup(): Promise<void>, run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: *) => void): Promise<{answer?: string, output: string, status: string, childStillBusy?: boolean, question?: {question: string, options?: string[]}}>}): Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null}>}} [backgroundSubagentController]
+ * @property {{startInternal(request: {kind: "internal", tool: "Agent"|"AgentSend", jobId: string, instanceId: string, description?: string, timeoutMs: number, cleanup(): Promise<void>, run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: *) => void): Promise<{answer?: string, output: string, status: string, childStillBusy?: boolean, question?: {question: string, options?: string[]}}>}): Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null}>}} [backgroundSubagentController]
  * @property {RuntimeSubagentInstances} [instances] Conversation-scoped persistence; absent preserves stateless Agent.
  * @property {RuntimeInlineSubagentsOptions} [inline] Call-time authoring policy.
  * @property {number} [maxConcurrent] In-flight subagents per parent turn. Default 5.

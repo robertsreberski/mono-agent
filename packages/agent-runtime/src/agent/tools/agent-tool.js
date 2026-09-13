@@ -401,6 +401,8 @@ export function createAgentTool(subagents, context = {}, continuation) {
         try {
           const started = await background.startInternal({ kind: "internal", tool: continuation ? "AgentSend" : "Agent",
             jobId: reservation, instanceId: retained.id,
+            // `description` is the model-authored activity label (never the prompt); it names the job card.
+            ...(typeof params.description === "string" && params.description.trim() ? { description: params.description } : {}),
             timeoutMs: positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS)),
             // The identity is host-validated; raw prompts and tool parameters never enter job metadata.
             cleanup: () => instances.releaseReservation(retained.id, reservation),

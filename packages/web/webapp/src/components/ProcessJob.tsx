@@ -8,7 +8,7 @@ import type { MessagePart, ProcessJobProjection, ProcessJobState } from "../type
 import type { ProcessJobActivityEvent } from "../process-job-presentation";
 import { ActivityRow, type ActivityStatus } from "./ActivityRow";
 import { ActivityElapsed, type ActivityTiming } from "./assistant-ui/ActivityElapsed";
-import { ProcessJobSubagentProgress } from "./ProcessJobSubagentProgress";
+import { ProcessJobSubagentFacts, ProcessJobSubagentProgress } from "./ProcessJobSubagentProgress";
 import { formatToolDuration } from "./duration";
 
 export const TERMINAL_PROCESS_JOB_STATES: ReadonlySet<ProcessJobState> = new Set<ProcessJobState>([
@@ -508,6 +508,7 @@ export function ProcessJobCard({
           {live.exitCode !== null && <div><dt>Exit</dt><dd>{live.exitCode}</dd></div>}
           {live.signal !== null && <div><dt>Signal</dt><dd>{live.signal}</dd></div>}
           <div><dt>Wake</dt><dd>{wakeLabel(live.wake)}</dd></div>
+          {live.kind === "internal" && <ProcessJobSubagentFacts progress={progress} />}
         </dl>
         {live.kind === "internal" ? <ProcessJobSubagentProgress key={live.jobId} progress={progress} open={open} /> : live.output.preview.length > 0 && (
           <>

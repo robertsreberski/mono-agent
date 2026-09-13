@@ -1982,7 +1982,9 @@ function processJobSummary(
     fallback: "Process job",
     maxChars: PROCESS_JOB_DESCRIPTION_MAX_CHARS,
   });
-  return `Purpose: ${sanitized}`;
+  // A subagent's description is already a label ("Plan then implement issue-885"),
+  // so the card reads it directly; command jobs keep the explicit "Purpose:" prefix.
+  return isInternal(request) ? sanitized : `Purpose: ${sanitized}`;
 }
 
 function captureMutationSnapshot(draft: ProcessJobStoreMutationDraft): ProcessJobMutationSnapshot {

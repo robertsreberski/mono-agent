@@ -1613,13 +1613,16 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .tag-settings-sheet { max-width: 100%; }
 }
 
-/* Child telemetry scrolls inside its card, never widening the conversation. */
-.process-job-subagent-progress { max-height: min(24vh, 200px); min-width: 0; max-width: 100%; overflow-y: auto; overflow-x: hidden; overflow-anchor: none; overscroll-behavior: contain; overflow-wrap: anywhere; }
+/* A detached child's progress: the transcript's own step/payload primitives,
+   scrolling inside the card so a long run never widens or lengthens the stack. */
+.process-job-subagent-progress { max-height: min(22vh, 184px); min-width: 0; max-width: 100%; margin: 0 -8px 0 -34px; padding: 0 4px 4px 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none; overscroll-behavior: contain; border-radius: 8px; }
 .process-job-subagent-progress:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.process-job-subagent-progress pre { max-height: none; overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; max-width: 100%; }
-.process-job-subagent-summary { margin: 0 0 8px; }
-.process-job-subagent-calls { list-style: none; padding: 0 8px; margin: 4px 0; }
-.process-job-subagent-calls li { display: flex; gap: 12px; justify-content: space-between; }
-.process-job-subagent-calls li > span:first-child { min-width: 0; }
-.process-job-subagent-calls li > span:last-child { flex-shrink: 0; }
-.process-job-subagent-report { padding: 12px 4px 4px; }
+.process-job-subagent-progress > .activity-steps { margin: 0 0 0 24px; padding-bottom: 6px; }
+.process-job-subagent-progress .activity-payload { padding: 0 8px 8px; }
+.process-job-subagent-progress .activity-payload pre { max-height: none; overflow: visible; }
+.process-job-subagent-calls { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.process-job-subagent-calls li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+.process-job-subagent-call { min-width: 0; overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.process-job-subagent-status { flex: none; font-family: var(--font-mono); font-size: 9px; }
+.process-job-subagent-calls li[data-status="failed"] .process-job-subagent-status { color: var(--danger); }
+.process-job-subagent-calls li[data-status="running"] .process-job-subagent-status { color: var(--accent); }

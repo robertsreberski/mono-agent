@@ -289,16 +289,18 @@ export function ActivityStep({
   summary,
   failed,
   duration,
+  defaultOpen = false,
   children,
 }: {
   readonly toolName: string;
   readonly summary?: string;
   readonly failed?: string;
   readonly duration?: string;
+  readonly defaultOpen?: boolean;
   readonly children: ReactNode;
 }) {
   return (
-    <details className="activity-step">
+    <details className="activity-step" open={defaultOpen || undefined}>
       <summary>
         <span className="activity-step-tool">{toolName}</span>
         <span className="activity-step-summary">{summary}</span>

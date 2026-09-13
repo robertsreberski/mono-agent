@@ -76,6 +76,20 @@ describe("detached persistent subagents", () => {
     expect(f.signalProcess).not.toHaveBeenCalled();
   });
 
+  it("names the job after the model-authored description, never the prompt, and falls back to the instance", async () => {
+    const f = await fixture(); const gate = deferred<any>();
+    const { agent, send } = tools(f, () => gate.promise);
+    const receipt = await agent.execute("a", { persist: true, background: true, id: "helper", prompt: "PRIVATE_PROMPT_MARKER", description: "Plan then implement issue-885" });
+    expect((await f.service.get(receipt.details.jobId))?.summary).toBe("Plan then implement issue-885");
+    gate.resolve({ text: "answer" });
+    await done(f.service, receipt.details.jobId);
+    const second = await send.execute("b", { id: "helper", message: "PRIVATE_PROMPT_MARKER", background: true });
+    expect((await f.service.get(second.details.jobId))?.summary).toBe("Persistent subagent helper");
+    expect((await f.service.get(second.details.jobId))?.summary).not.toContain("PRIVATE_PROMPT_MARKER");
+    gate.resolve({ text: "answer" });
+    await done(f.service, second.details.jobId);
+  });
+
   it("reserves queued sends, cancels without executing or charging turns, and rolls back rejected admission", async () => {
     const f = await fixture({ maxConcurrent: 1, maxQueued: 1, maxActivePerConversation: 3 });
     const gate = deferred<any>(); const run = vi.fn(() => gate.promise); const { agent, send } = tools(f, run);
