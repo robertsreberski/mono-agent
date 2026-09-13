@@ -65,6 +65,27 @@ describe("registry ownership fences independent of process-job service availabil
     await handle.finish("child", { status: "ok" });
     expect((await handle.get("child"))?.recovery).toBeUndefined();
   });
+  it("treats an old released certificate as a no-op against a newer active replacement", async () => {
+    const root = await mkdtemp(resolve(process.cwd(), ".registry-certificate-noop-")); roots.push(root);
+    const storeRoot = resolve(root, "jobs"); const oldJob = randomUUID();
+    let proof: SubagentOwnerResolution = { state: "unavailable" };
+    const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {},
+      ownerForReservation: (jobId) => ({ jobId, storeRoot }), resolveOwner: async () => proof });
+    const handle = await registry.open("conversation");
+    const created = await handle.create(spec); await handle.reserve("child", oldJob); await handle.begin("child", oldJob);
+    const identity: SubagentOwnerIdentity = { conversationId: "conversation", instanceId: "child", instanceIncarnation: created.incarnation!,
+      turnToken: oldJob, jobId: oldJob, storeRoot };
+    const publication = { identity, sequence: 1, disposition: { status: "ok" as const, continuity: "retained" as const }, released: true,
+      outcome: { status: "ok" as const } };
+    await handle.publishOwned("intent", publication); await handle.publishOwned("confirm", publication);
+    proof = { state: "released", identity, sequence: 1, continuity: "retained", receiptRecorded: true };
+    await handle.publishOwned("finalize", publication); await handle.publishOwned("acknowledge", publication);
+    await handle.close("child"); const replacement = await handle.create(spec); const active = await handle.begin("child");
+    expect(replacement.incarnation).not.toBe(identity.instanceIncarnation);
+    await expect(handle.publishOwned("acknowledge", publication)).resolves.toBeUndefined();
+    expect(await handle.get("child")).toMatchObject({ incarnation: replacement.incarnation, status: "running", activeTurn: active.activeTurn });
+    await handle.finish("child", { status: "ok" });
+  });
   it("fails creation closed when retained history cannot be indexed, even without a registry record", async () => {
     const root = await mkdtemp(resolve(process.cwd(), ".registry-index-")); roots.push(root);
     const index = vi.fn(async () => "unavailable" as const);

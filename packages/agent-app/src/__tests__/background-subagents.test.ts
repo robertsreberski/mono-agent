@@ -77,6 +77,49 @@ async function managedFixture(retireSession: (id: string, root: string) => Promi
 }
 
 describe("managed detached production execution", () => {
+  it("G05: failed admission after active intent remains fenced without starting the provider", async () => {
+    const f = await managedFixture(); const run = vi.fn(async () => ({ text: "must not run" }));
+    failMutationOnce(f, (records) => [...records.values()].some((record) => record.kind === "internal" && record.state === "queued"));
+    const { agent, send } = tools(f, run);
+    await expect(agent.execute("admission-write-fault", { persist: true, background: true, id: "helper", prompt: "work" }))
+      .rejects.toMatchObject({ code: "subagent_owner_unavailable" });
+    expect(run).not.toHaveBeenCalled(); expect(f.wake).not.toHaveBeenCalled();
+    expect(await f.instances.get("helper")).toMatchObject({ status: "queued" });
+    await expect(send.execute("blocked-send", { id: "helper", message: "must not run", background: true })).rejects.toThrow();
+    await expect(f.instances.close("helper")).rejects.toThrow(/busy/u);
+    expect(run).not.toHaveBeenCalled(); expect(f.wake).not.toHaveBeenCalled();
+  });
+
+  it.each(["registry-reason-intent", "job-reason-write"])("G05: %s failure never exposes resumable idle or wakes before a durable reason", async (fault) => {
+    const f = await managedFixture(); const run = vi.fn(async () => { throw new Error("provider failed once"); });
+    let reasonIntent = false;
+    f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
+      verify: async (identity) => await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        if (phase === "intent" && publication.disposition.reason) {
+          reasonIntent = true;
+          if (fault === "registry-reason-intent") throw new Error("injected registry reason-intent failure");
+        }
+        await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+      },
+    });
+    if (fault === "job-reason-write") {
+      failMutationOnce(f, (records) => [...records.values()].some((record) => record.subagentOwnership?.disposition?.reason));
+    }
+    const { agent, send } = tools(f, run);
+    const receipt = await agent.execute(`reason-write-${fault}`, { persist: true, background: true, id: "helper", prompt: "fail once" });
+    await vi.waitFor(() => expect(reasonIntent).toBe(true));
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    expect(f.wake).not.toHaveBeenCalled();
+    const instance = await f.instances.get("helper");
+    expect(instance).toMatchObject({ status: "running" });
+    await expect(send.execute("blocked-after-reason-fault", { id: "helper", message: "must not rerun", background: true })).rejects.toThrow();
+    await expect(f.instances.close("helper")).rejects.toThrow();
+    expect(run).toHaveBeenCalledOnce(); expect(f.wake).not.toHaveBeenCalled();
+    const stored = await f.store.get(receipt.details.jobId).catch(() => undefined);
+    if (stored) expect(stored.state).not.toBe("succeeded");
+  });
+
   it.each(["ok", "failed"])("G11: actual managed %s job and delivered wake omit private command/observation canaries", async (mode) => {
     const f = await managedFixture(); const release = deferred<void>(); const entered = deferred<void>();
     const privatePath = "PRIVATE-OBSERVATION-CANARY"; const body = "PRIVATE-REPORT-BODY-CANARY"; const pid = 991827364;

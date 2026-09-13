@@ -78,6 +78,25 @@ it("reports changing HEAD as inconsistent rather than acceptance", async () => {
   f.runProbe.mockImplementation(async (prepared) => completed(prepared.args.includes("config") ? "" : prepared.args.includes("status") ? "" : (++heads === 1 ? sha : "b".repeat(40))));
   expect((await observeSubagentVerification(f.target, f.access, [])).status).toBe("observation_inconsistent");
 });
+it("returns a typed gap for an unborn repository without disclosing partial facts", async () => {
+  const f = await fixture();
+  f.runProbe.mockImplementation(async (prepared) => prepared.args.includes("rev-parse")
+    ? { ...completed(""), code: 128, stderr: "fatal: Needed a single revision" }
+    : completed(prepared.args.includes("config") ? "" : ""));
+  const result = await observeSubagentVerification(f.target, f.access, []);
+  expect(result).toMatchObject({ status: "observation_unavailable" });
+  expect(result).not.toHaveProperty("workdir"); expect(result).not.toHaveProperty("paths");
+});
+it("preserves a maximum-size Unicode status path and rejects an over-limit path atomically", async () => {
+  const f = await fixture(); const maximum = "é".repeat(256);
+  f.runProbe.mockImplementation(async (prepared) => completed(prepared.args.includes("config") ? "" : prepared.args.includes("status") ? `?? ${maximum}\0` : sha));
+  const observed = await observeSubagentVerification(f.target, f.access, []);
+  expect(observed).toMatchObject({ status: "observed", paths: [{ path: maximum, status: "untracked" }] });
+  const excessive = `${maximum}é`;
+  f.runProbe.mockImplementation(async (prepared) => completed(prepared.args.includes("config") ? "" : prepared.args.includes("status") ? `?? ${excessive}\0` : sha));
+  const rejected = await observeSubagentVerification(f.target, f.access, []);
+  expect(rejected).toMatchObject({ status: "observation_unavailable" }); expect(rejected).not.toHaveProperty("paths");
+});
 it("reports a replaced observation root and mid-probe Git metadata mutation as inconsistent", async () => {
   const replaced = await fixture();
   await rm(replaced.root, { recursive: true }); await mkdir(replaced.root); roots.splice(roots.indexOf(replaced.root), 1); roots.push(replaced.root);

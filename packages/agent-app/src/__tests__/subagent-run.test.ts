@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -527,6 +528,70 @@ it("G11: configured registry callback through actual harness Session context exc
     expect(JSON.stringify(runtimeOptions)).not.toContain(observationPath);
     expect(JSON.stringify(runtimeOptions)).not.toContain("recoveryBinding");
   } finally { await harness?.dispose?.(); await rm(root, { recursive: true, force: true }); }
+});
+
+it.each(["disabled", "failed-start", "undefined-standalone"])("G02: configured %s ProcessJobs composition keeps an abandoned child fenced", async (mode) => {
+  const root = await mkdtemp(resolve(process.cwd(), "node_modules/.configured-owner-fence-"));
+  let responder: Awaited<ReturnType<typeof createConfiguredAgentResponderForApp>> | undefined;
+  try {
+    const instancesRoot = resolve(root, "children"); const jobsRoot = resolve(root, "jobs"); const jobId = randomUUID();
+    const moduleUrl = new URL("../../dist/subagent-instances.js", import.meta.url).href;
+    execFileSync(process.execPath, ["--input-type=module", "-e", `
+      import { createSubagentInstanceRegistry } from ${JSON.stringify(moduleUrl)};
+      const handle = await createSubagentInstanceRegistry({ root: ${JSON.stringify(instancesRoot)}, retireSession: async () => {},
+        ownerForReservation: (token) => ({ jobId: token, storeRoot: ${JSON.stringify(jobsRoot)} }) }).open("conversation");
+      await handle.create({ id: "child", name: "child", systemPrompt: "Review", definition: { name: "child", description: "Review", systemPrompt: "Review" } });
+      await handle.reserve("child", ${JSON.stringify(jobId)});
+      await handle.begin("child", ${JSON.stringify(jobId)});
+      process.exit(0);
+    `], { cwd: root, timeout: 10_000 });
+    const base = monoConfig({ enabled: true, instances: { root: instancesRoot } }, { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] });
+    const config = { ...base, runtime: { ...base.runtime, workspace: root }, context: { ...base.context, identityPath: resolve(root, "IDENTITY.md") },
+      artifacts: { ...base.artifacts, dir: resolve(root, "artifacts") }, traceability: { ...base.traceability, registryDir: resolve(root, "trace") },
+      processJobs: { enabled: mode !== "disabled" } } as MonoAgentConfig;
+    await writeFile(config.context.identityPath, "Keep abandoned ownership fenced.");
+    harnessMock.mockClear();
+    const runtime = { run: vi.fn(async (_prompt: string, options: Record<string, unknown>) => ({ text: "must not run", providerSessionId: options.sessionId })) };
+    const registry = { kind: "ready", agentRoot: root, registryDir: resolve(root, "roots"), manifestPath: resolve(root, "roots/registry.json"),
+      mutationLockPath: resolve(root, "roots.lock"), generation: { id: "generation", rootKeys: ["root"] },
+      roots: [{ canonicalPath: jobsRoot }], protectedRoots: [jobsRoot] } as never;
+    const hooks = mode === "undefined-standalone" ? undefined : { processJobs: { registry, service: undefined, channelId: "slack",
+      protectionPosture: { kind: mode === "disabled" ? "inactive" : "unavailable", retainedRoots: true, requiresPiNative: true,
+        suppressSyntheticSandbox: false, unsafeAllowUnprotectedState: false } } };
+    responder = hooks
+      ? await createConfiguredAgentResponderForApp({ config, runtime: runtime as never } as never, hooks as never)
+      : await createConfiguredAgentResponderForApp({ config, runtime: runtime as never } as never, {});
+    const options = harnessMock.mock.calls[0]![0] as { runtimeOptionsForRequest(input: unknown): Promise<{ runtimeOptions?: { subagents?: unknown } }> };
+    const extension = await options.runtimeOptionsForRequest({ request: { conversationId: "conversation", metadata: { channel: "slack" } }, runId: "run", context: { sections: [] } });
+    const scoped = extension.runtimeOptions!.subagents as never;
+    await expect(createAgentSendTool(scoped).execute("send", { id: "child", message: "must not run" }))
+      .rejects.toThrow(/busy|subagent_owner_unavailable/u);
+    await expect(createAgentTool(scoped).execute("replacement", { persist: true, id: "replacement", prompt: "must not run" }))
+      .rejects.toMatchObject({ code: "subagent_owner_unavailable" });
+    expect(runtime.run).not.toHaveBeenCalled();
+  } finally { await (responder as { dispose?: () => Promise<void> } | undefined)?.dispose?.(); await rm(root, { recursive: true, force: true }); }
+});
+
+it("G02: configured no-service composition preserves a clean foreground continuation", async () => {
+  const root = await mkdtemp(resolve(process.cwd(), "node_modules/.configured-clean-continuation-"));
+  let responder: Awaited<ReturnType<typeof createConfiguredAgentResponderForApp>> | undefined;
+  try {
+    const instancesRoot = resolve(root, "children");
+    const registry = createSubagentInstanceRegistry({ root: instancesRoot, retireSession: async () => {} });
+    await (await registry.open("conversation")).create({ id: "child", name: "child", systemPrompt: "Review", definition: { name: "child", description: "Review", systemPrompt: "Review" } });
+    const base = monoConfig({ enabled: true, instances: { root: instancesRoot } }, { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] });
+    const config = { ...base, runtime: { ...base.runtime, workspace: root }, context: { ...base.context, identityPath: resolve(root, "IDENTITY.md") },
+      artifacts: { ...base.artifacts, dir: resolve(root, "artifacts") }, traceability: { ...base.traceability, registryDir: resolve(root, "trace") },
+      processJobs: { enabled: false } } as MonoAgentConfig;
+    await writeFile(config.context.identityPath, "Continue clean children without ProcessJobs.");
+    harnessMock.mockClear();
+    const runtime = { run: vi.fn(async (_prompt: string, options: Record<string, unknown>) => ({ text: "continued once", providerSessionId: options.sessionId })) };
+    responder = await createConfiguredAgentResponderForApp({ config, runtime: runtime as never } as never, {});
+    const options = harnessMock.mock.calls[0]![0] as { runtimeOptionsForRequest(input: unknown): Promise<{ runtimeOptions?: { subagents?: unknown } }> };
+    const extension = await options.runtimeOptionsForRequest({ request: { conversationId: "conversation" }, runId: "run", context: { sections: [] } });
+    const result = await createAgentSendTool(extension.runtimeOptions!.subagents as never).execute("send", { id: "child", message: "continue" });
+    expect(result.details).toMatchObject({ subagent: { status: "ok" } }); expect(runtime.run).toHaveBeenCalledOnce();
+  } finally { await (responder as { dispose?: () => Promise<void> } | undefined)?.dispose?.(); await rm(root, { recursive: true, force: true }); }
 });
 
 it("wires the Session envelope to the current conversation's live registry", async () => {
