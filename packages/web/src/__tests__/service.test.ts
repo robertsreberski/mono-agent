@@ -7073,6 +7073,16 @@ describe("authenticated console project callback", () => {
       expect(tagEvents.at(-1)).toMatchObject({ type: "threads.changed", payload: { thread: { tagIds: [tagResult.tagId] } } });
       await call({ operationId: randomUUID(), tool: "DeleteTag", args: { tagId: tagResult.tagId } });
       expect(tagEvents.at(-1)).toMatchObject({ type: "tags.changed", payload: { tagId: tagResult.tagId, removed: true } });
+      const readRevision = service.store.getThread(thread.id)!.revision;
+      const readOperation = { operationId: randomUUID(), tool: "MarkConversationRead" as const, args: {} };
+      expect(await call(readOperation)).toEqual({ conversationId: thread.id, readRevision });
+      expect(tagEvents.slice(-2)).toMatchObject([
+        { type: "thread.changed", payload: { thread: { id: thread.id, revision: readRevision, readRevision } } },
+        { type: "threads.changed", payload: { thread: { id: thread.id, revision: readRevision, readRevision } } },
+      ]);
+      const afterRead = tagEvents.length;
+      await call(readOperation);
+      expect(tagEvents).toHaveLength(afterRead);
       unlistenTags();
       const operation = { operationId: randomUUID(), tool: "CreateProject" as const, args: { name: "Created by tool", color: "rose", attachCurrentConversation: true } };
       const result = await call(operation);

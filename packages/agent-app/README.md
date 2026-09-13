@@ -710,7 +710,7 @@ than redacted, so a mangled value is never persisted behind a success result.
 Writable web turns, typed or woken by a background host job or monitor, can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
 `SearchConversations`, `CreateConversation`, `SetConversationProject`, `ListTags`,
-`CreateTag`, `UpdateTag`, `DeleteTag`, and `UpdateConversationTags` under
+`CreateTag`, `UpdateTag`, `DeleteTag`, `UpdateConversationTags`, and `MarkConversationRead` under
 per-tool allow/deny policy. The app authenticates through owner-private console discovery; metadata
 alone never authorizes a callback. Tools return real IDs and applied/pending
 results, restrict all targets to the originating agent, and reject late calls.
@@ -720,6 +720,17 @@ palette and belong to one agent; `UpdateConversationTags` idempotently adds/remo
 IDs on the current or named conversation without replacing other tags. Tag changes
 apply immediately and reach the next turn's context snapshot. The MCP server name
 and policy aliases remain `mono-agent-console-projects`. See [Console project tools](../../docs/tools/mcp.md#console-project-tools).
+
+`MarkConversationRead({ conversationId? })` clears the unread dot for one of the
+calling agent's conversations (the current conversation by default). It returns
+`conversationId` and `readRevision`, persisting the current revision as an explicit
+server read watermark without changing conversation revision or recent ordering.
+Each console adopts this signal upward into its device-local seen map when it
+receives the summary; disconnected consoles catch up on their next summary read.
+Opening a conversation remains device-local, and later activity can make it
+unread again, including the rest of the calling turn. Replaying an operation
+returns its original receipt rather than marking newer activity read. There is
+no mark-all operation.
 
 ### Web conversation titles
 
