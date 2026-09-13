@@ -1153,8 +1153,10 @@ export const createThreadCache = (
             ? held.thread
             : newerProjection(held.thread, detail.thread),
           messages,
-          projectTransitions: mergeProjectTransitions(reset ? [] : held.projectTransitions, detail.projectTransitions),
-          modelTransitions: mergeModelTransitions(reset ? [] : held.modelTransitions, detail.modelTransitions),
+          // Reset replaces the latest message window, not immutable sidecars
+          // belonging to older pages that remain loaded.
+          projectTransitions: mergeProjectTransitions(held.projectTransitions, detail.projectTransitions),
+          modelTransitions: mergeModelTransitions(held.modelTransitions, detail.modelTransitions),
           stale,
           syncedAt: now(),
           repairedToolCallIds: held.repairedToolCallIds,
