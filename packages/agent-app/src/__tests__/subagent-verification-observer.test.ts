@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rename, writeFile, rm, symlink } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, rename, writeFile, rm, symlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createSandboxPolicy, type ProcessJobProcessResult, type SandboxCommandSpec, type SandboxPolicy } from "@mono-agent/runtime-adapter";
@@ -49,7 +49,8 @@ it("distinguishes absence from denied or unsafe report targets", async () => {
 it("does not authorize a linked worktree's common Git root by admitting its workdir", async () => {
   const f = await fixture(); await rm(resolve(f.root, ".git"), { recursive: true });
   await writeFile(resolve(f.root, ".git"), "gitdir: ../not-authorized/common\n");
-  const result = await observeSubagentVerification(f.target, f.access, []);
+  const linkedTarget = await registerSubagentVerification({ workdir: f.root, reportPath: "report.md" }, f.access, []);
+  const result = await observeSubagentVerification(linkedTarget, f.access, []);
   expect(result.status).toBe("observation_policy_denied"); expect(result.workdir).toBeUndefined(); expect(f.runProbe).not.toHaveBeenCalled();
 });
 it("refuses unsupported object alternates before executing Git", async () => {
@@ -125,7 +126,12 @@ it("preserves a maximum-size Unicode status path and rejects an over-limit path 
 it("reports a replaced observation root and mid-probe Git metadata mutation as inconsistent", async () => {
   const replaced = await fixture();
   await rm(replaced.root, { recursive: true }); await mkdir(replaced.root); roots.splice(roots.indexOf(replaced.root), 1); roots.push(replaced.root);
-  expect((await observeSubagentVerification(replaced.target, replaced.access, [])).status).toBe("observation_inconsistent");
+  // Linux commonly reuses the just-deleted directory inode. Force that exact
+  // identity collision on every platform: the registered `.git` entry still
+  // proves this empty replacement is not the original observation root.
+  const reused = await lstat(replaced.root, { bigint: true });
+  const reusedRootIdentity = { ...replaced.target, device: String(reused.dev), inode: String(reused.ino) };
+  expect((await observeSubagentVerification(reusedRootIdentity, replaced.access, [])).status).toBe("observation_inconsistent");
   expect(replaced.runProbe).not.toHaveBeenCalled();
 
   const mutated = await fixture(); let changed = false;

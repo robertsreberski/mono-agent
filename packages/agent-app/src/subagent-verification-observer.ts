@@ -6,7 +6,13 @@ import { isAbsolute, relative, resolve } from "node:path";
 import type { PreparedSandboxCommand, ProcessJobProcessResult, SandboxEngine, SandboxPolicy } from "@mono-agent/runtime-adapter";
 
 export interface SubagentVerificationDeclaration { readonly workdir: string; readonly reportPath?: string }
-export interface SubagentVerificationTarget extends SubagentVerificationDeclaration { readonly device: string; readonly inode: string }
+interface SubagentVerificationGitEntryIdentity { readonly device: string; readonly inode: string }
+export interface SubagentVerificationTarget extends SubagentVerificationDeclaration {
+  readonly device: string;
+  readonly inode: string;
+  /** Stable identity of the root's `.git` entry, or null when absent at registration. */
+  readonly gitEntry: SubagentVerificationGitEntryIdentity | null;
+}
 export interface SubagentVerificationObservation {
   readonly schemaVersion: 1;
   readonly capturedAt: number;
@@ -32,9 +38,12 @@ const path = (value: unknown): value is string => typeof value === "string" && v
 const reportPath = (value: unknown): value is string => typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= 512 && !value.includes("\0") && !isAbsolute(value) && value.split(/[\\/]/u).every((part) => part && part !== "." && part !== "..");
 const inside = (root: string, target: string): boolean => { const rel = relative(root, target); return rel === "" || (!rel.startsWith("../") && rel !== ".." && !isAbsolute(rel)); };
 export function isSubagentVerificationTarget(value: unknown): value is SubagentVerificationTarget {
-  return object(value) && Object.keys(value).every((key) => ["workdir", "reportPath", "device", "inode"].includes(key)) && path(value.workdir)
+  return object(value) && Object.keys(value).every((key) => ["workdir", "reportPath", "device", "inode", "gitEntry"].includes(key)) && path(value.workdir)
     && (value.reportPath === undefined || reportPath(value.reportPath)) && typeof value.device === "string" && /^[0-9]{1,32}$/u.test(value.device)
-    && typeof value.inode === "string" && /^[0-9]{1,32}$/u.test(value.inode);
+    && typeof value.inode === "string" && /^[0-9]{1,32}$/u.test(value.inode)
+    && (value.gitEntry === null || (object(value.gitEntry) && Object.keys(value.gitEntry).length === 2
+      && typeof value.gitEntry.device === "string" && /^[0-9]{1,32}$/u.test(value.gitEntry.device)
+      && typeof value.gitEntry.inode === "string" && /^[0-9]{1,32}$/u.test(value.gitEntry.inode)));
 }
 export function isSubagentVerificationObservation(value: unknown): value is SubagentVerificationObservation {
   return object(value) && Object.keys(value).every((key) => ["schemaVersion", "capturedAt", "policyRevision", "status", "workdir", "headBefore", "headAfter", "paths", "omitted", "report"].includes(key))
@@ -73,7 +82,22 @@ export async function registerSubagentVerification(declaration: SubagentVerifica
   const stat = await lstat(workdir, { bigint: true });
   if (!stat.isDirectory()) throw new Error("Invalid observation-only verification target.");
   if (declaration.reportPath && !lexicalAllowed(resolve(workdir, declaration.reportPath), access(input), privateRoots)) throw new Error("observation_policy_denied");
-  return { workdir, device: String(stat.dev), inode: String(stat.ino), ...(declaration.reportPath ? { reportPath: declaration.reportPath } : {}) };
+  const gitEntry = await lstat(resolve(workdir, ".git"), { bigint: true })
+    .then((entry) => ({ device: String(entry.dev), inode: String(entry.ino) }), (error: unknown) => {
+      if (absent(error)) return null;
+      throw error;
+    });
+  return { workdir, device: String(stat.dev), inode: String(stat.ino), gitEntry, ...(declaration.reportPath ? { reportPath: declaration.reportPath } : {}) };
+}
+
+export function sameSubagentVerificationTargetIdentity(
+  left: SubagentVerificationTarget,
+  right: SubagentVerificationTarget,
+): boolean {
+  return left.workdir === right.workdir && left.device === right.device && left.inode === right.inode
+    && (left.gitEntry === null
+      ? right.gitEntry === null
+      : right.gitEntry !== null && left.gitEntry.device === right.gitEntry.device && left.gitEntry.inode === right.gitEntry.inode);
 }
 async function readMetadata(file: string, input: unknown, privateRoots: readonly string[]): Promise<string> {
   if (await authorizeSubagentObservationPath(file, input, privateRoots) !== file) throw new Error("observation_policy_denied");
@@ -126,7 +150,7 @@ export async function observeSubagentVerification(target: SubagentVerificationTa
   try {
     const current = access(input);
     const checked = await registerSubagentVerification({ workdir: target.workdir, ...(target.reportPath ? { reportPath: target.reportPath } : {}) }, input, privateRoots);
-    if (checked.workdir !== target.workdir || checked.device !== target.device || checked.inode !== target.inode) throw new Error("observation_inconsistent");
+    if (!sameSubagentVerificationTargetIdentity(checked, target)) throw new Error("observation_inconsistent");
     const before = await metadata(target.workdir, input, privateRoots);
     // The app supplies its trusted SRT capability. A caller-provided prepared
     // argv suffix alone is not authority to execute an arbitrary wrapper.

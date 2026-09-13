@@ -19,6 +19,11 @@ const harnessMock = vi.fn((options: Record<string, unknown>) => ({
   run: vi.fn(),
   dispose: vi.fn(async () => undefined),
 }));
+const availableOwnerFenceSandboxEngine = {
+  id: "configured-owner-fence-test",
+  async isAvailable() { return true; },
+  async prepareCommand(command: unknown) { return command; },
+} as never;
 
 // The single-runtime app describes every parseable model as the Pi backend,
 // which supports skills. The skills guard below still has to fail closed for a
@@ -512,7 +517,7 @@ it("G11: configured registry callback through actual harness Session context exc
     const disk = JSON.parse(await readFile(file, "utf8"));
     // Valid synthetic persisted private fields; no owner release is inferred.
     disk[0].recoveryBinding.key = key; disk[0].recovery = { turnToken: randomUUID(), sequence: 1, reason: "timeout", continuity: "unknown" };
-    disk[0].verificationTarget = { workdir: observationPath, reportPath: "report.txt", device: "1", inode: "2" };
+    disk[0].verificationTarget = { workdir: observationPath, reportPath: "report.txt", device: "1", inode: "2", gitEntry: null };
     await writeFile(file, JSON.stringify(disk));
     const options = harnessMock.mock.calls[0]![0];
     const actual = await vi.importActual<typeof import("@mono-agent/agent-harness")>("@mono-agent/agent-harness");
@@ -565,9 +570,13 @@ it.each(["disabled", "failed-start", "undefined-standalone", "retained-history"]
     const hooks = mode === "undefined-standalone" ? undefined : { processJobs: { registry, service: undefined, channelId: "slack",
       protectionPosture: { kind: mode === "disabled" ? "inactive" : "unavailable", retainedRoots: true, requiresPiNative: true,
         suppressSyntheticSandbox: false, unsafeAllowUnprotectedState: false } } };
+    // This matrix proves retained owner fencing, not host SRT discovery. Supply
+    // the explicit available engine that production composition requires; the
+    // missing/unavailable-engine provider-zero contract has unconditional tests.
+    const responderOptions = { config, runtime: runtime as never, sandboxEngine: availableOwnerFenceSandboxEngine } as never;
     responder = hooks
-      ? await createConfiguredAgentResponderForApp({ config, runtime: runtime as never } as never, hooks as never)
-      : await createConfiguredAgentResponderForApp({ config, runtime: runtime as never } as never, {});
+      ? await createConfiguredAgentResponderForApp(responderOptions, hooks as never)
+      : await createConfiguredAgentResponderForApp(responderOptions, {});
     const options = harnessMock.mock.calls[0]![0] as { runtimeOptionsForRequest(input: unknown): Promise<{ runtimeOptions?: { subagents?: unknown } }> };
     const extension = await options.runtimeOptionsForRequest({ request: { conversationId: "conversation", metadata: { channel: "slack" } }, runId: "run", context: { sections: [] } });
     const scoped = extension.runtimeOptions!.subagents as never;

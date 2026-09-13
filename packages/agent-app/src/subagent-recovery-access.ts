@@ -1,4 +1,4 @@
-import { authorizeSubagentVerificationMetadata, authorizeSubagentObservationPath, observeSubagentVerification, registerSubagentVerification } from "./subagent-verification-observer.js";
+import { authorizeSubagentVerificationMetadata, authorizeSubagentObservationPath, observeSubagentVerification, registerSubagentVerification, sameSubagentVerificationTargetIdentity } from "./subagent-verification-observer.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import type { SubagentRecoveryFacts, SubagentRecoverySubject } from "./subagent-instances.js";
 import type { SubagentVerificationDeclaration } from "./subagent-verification-observer.js";
@@ -27,7 +27,7 @@ export function createSubagentRecoveryAccess(options: {
       if (subject.verification) {
         const target = subject.verification;
         const current = await registerSubagentVerification({ workdir: target.workdir, ...(target.reportPath ? { reportPath: target.reportPath } : {}) }, access, roots);
-        if (current.device !== target.device || current.inode !== target.inode || current.workdir !== target.workdir) return false;
+        if (!sameSubagentVerificationTargetIdentity(current, target)) return false;
         await authorizeSubagentVerificationMetadata(target, access, roots);
         if (!input.sandboxPolicy || !input.sandboxEngine || !await input.sandboxEngine.isAvailable()) return "unavailable";
       }
