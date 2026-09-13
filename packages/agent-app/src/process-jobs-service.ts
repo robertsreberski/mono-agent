@@ -2047,7 +2047,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
 
   private async storeMutate<T>(
     operation: string,
-    mutate: (records: Map<string, DurableProcessJobRecord>) => T | Promise<T>,
+    mutate: (records: ProcessJobStoreMutationDraft) => T | Promise<T>,
     deferDegradation = false,
   ): Promise<T> {
     let callbackFailed = false;
@@ -2056,7 +2056,13 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       const result = await this.store.mutate(async (records) => {
         try {
           const value = await mutate(records);
-          for (const record of records.values()) if (record.subagentCommandReceipts || record.subagentObservation) boundSubagentCommandReceipts(record);
+          // Bounding is a write concern for touched records only. Iterating the
+          // draft's Map view would clone every retained record, destroy the
+          // proportional mutation contract and misclassify every terminal row
+          // as a failed overlay when the eventual commit rejects.
+          for (const [, record] of records.candidateEntries()) {
+            if (record.subagentCommandReceipts || record.subagentObservation) boundSubagentCommandReceipts(record);
+          }
           desired = captureMutationSnapshot(records);
           return value;
         } catch (error) {
