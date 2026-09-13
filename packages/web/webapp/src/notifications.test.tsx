@@ -27,6 +27,7 @@ vi.mock("./api", async (importOriginal) => {
 import { api, ApiError } from "./api";
 import {
   NOTIFICATIONS_STORAGE_KEY,
+  NOTIFICATION_OPEN_CONVERSATION_EVENT,
   PUSH_PENDING_DELETE_STORAGE_KEY,
   PUSH_SUBSCRIPTION_ENDPOINT_DIGEST_STORAGE_KEY,
   PUSH_SUBSCRIPTION_ID_STORAGE_KEY,
@@ -691,5 +692,97 @@ describe("response notifications", () => {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
 
     expect(api.pushSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it("selects and opens the conversation when the service worker delivers a notification click", async () => {
+    // Warm PWA window: notificationclick focuses this client and posts
+    // `mono-agent:select-thread`. Selection alone leaves the chat behind the
+    // mobile dashboard, so the provider must also ask the shell to show it.
+    window.history.replaceState(null, "", "/");
+    const store = createStore(running);
+    storeMock.current = store;
+    const opened: string[] = [];
+    const onOpen = (event: Event) => {
+      opened.push((event as CustomEvent<{ threadId?: unknown }>).detail?.threadId as string);
+    };
+    window.addEventListener(NOTIFICATION_OPEN_CONVERSATION_EVENT, onOpen);
+    try {
+      render(
+        <NotificationsProvider>
+          <NotificationBell />
+        </NotificationsProvider>,
+      );
+      await waitFor(() => expect(serviceWorker.addEventListener).toHaveBeenCalled());
+      const onMessage = serviceWorker.addEventListener.mock.calls
+        .filter(([type]) => type === "message")
+        .map(([, handler]) => handler as (event: MessageEvent<unknown>) => void)
+        .at(-1);
+      expect(onMessage).toBeTypeOf("function");
+
+      onMessage?.({ data: { type: "mono-agent:select-thread", threadId: "target-thread" } } as MessageEvent);
+
+      await waitFor(() => expect(store.selectThread).toHaveBeenCalledWith("target-thread"));
+      await waitFor(() => expect(opened).toEqual(["target-thread"]));
+    } finally {
+      window.removeEventListener(NOTIFICATION_OPEN_CONVERSATION_EVENT, onOpen);
+    }
+  });
+
+  it("selects and opens the conversation from a cold-start notification deep link", async () => {
+    // Cold start: the service worker opened `/?thread=<id>`. Same contract as
+    // the warm message -- select the thread and ask the shell to show it --
+    // then clean the address so a reload lands on the entrance screen.
+    window.history.replaceState(null, "", "/?thread=deep-thread");
+    const store = createStore(running);
+    storeMock.current = store;
+    const opened: string[] = [];
+    const onOpen = (event: Event) => {
+      opened.push((event as CustomEvent<{ threadId?: unknown }>).detail?.threadId as string);
+    };
+    window.addEventListener(NOTIFICATION_OPEN_CONVERSATION_EVENT, onOpen);
+    try {
+      render(
+        <NotificationsProvider>
+          <NotificationBell />
+        </NotificationsProvider>,
+      );
+
+      await waitFor(() => expect(store.selectThread).toHaveBeenCalledWith("deep-thread"));
+      await waitFor(() => expect(opened).toEqual(["deep-thread"]));
+      expect(new URL(window.location.href).searchParams.get("thread")).toBeNull();
+    } finally {
+      window.removeEventListener(NOTIFICATION_OPEN_CONVERSATION_EVENT, onOpen);
+      window.history.replaceState(null, "", "/");
+    }
+  });
+
+  it("ignores service-worker messages without a notification thread", async () => {
+    window.history.replaceState(null, "", "/");
+    const store = createStore(running);
+    storeMock.current = store;
+    const onOpen = vi.fn();
+    window.addEventListener(NOTIFICATION_OPEN_CONVERSATION_EVENT, onOpen);
+    try {
+      render(
+        <NotificationsProvider>
+          <NotificationBell />
+        </NotificationsProvider>,
+      );
+      await waitFor(() => expect(serviceWorker.addEventListener).toHaveBeenCalled());
+      const onMessage = serviceWorker.addEventListener.mock.calls
+        .filter(([type]) => type === "message")
+        .map(([, handler]) => handler as (event: MessageEvent<unknown>) => void)
+        .at(-1);
+      expect(onMessage).toBeTypeOf("function");
+
+      onMessage?.({ data: { type: "mono-agent:select-thread" } } as MessageEvent);
+      onMessage?.({ data: { type: "something-else", threadId: "target-thread" } } as MessageEvent);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+
+      expect(store.selectThread).not.toHaveBeenCalled();
+      expect(onOpen).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(NOTIFICATION_OPEN_CONVERSATION_EVENT, onOpen);
+    }
   });
 });
