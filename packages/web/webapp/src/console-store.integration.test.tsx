@@ -486,15 +486,17 @@ describe("ConsoleStoreProvider integration", () => {
       );
 
       expect(await screen.findByText("Alpha first second answer")).toBeInTheDocument();
-      expect(screen.getByText("Ran with provider/other")).toBeInTheDocument();
+      // The first answer ran on a model the agent is no longer set to; only the
+      // fallback turn carries attribution.
+      expect(screen.queryByText("Ran with provider/other")).not.toBeInTheDocument();
       expect(screen.getByText("Fallback: provider/requested → provider/alpha · overloaded")).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Open Alpha second" }));
       expect(await screen.findByText("Alpha second second answer")).toBeInTheDocument();
-      expect(screen.getByText("Ran with provider/other")).toBeInTheDocument();
+      expect(screen.queryByText("Ran with provider/other")).not.toBeInTheDocument();
       expect(screen.getByText("Fallback: provider/requested → provider/alpha · overloaded")).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Beta, online" }));
       expect(await screen.findByText("Beta first second answer")).toBeInTheDocument();
-      expect(screen.getByText("Ran with provider/other")).toBeInTheDocument();
+      expect(screen.queryByText("Ran with provider/other")).not.toBeInTheDocument();
       expect(screen.getByText("Fallback: provider/requested → provider/beta · overloaded")).toBeInTheDocument();
 
       expect(uncaught).not.toHaveBeenCalled();

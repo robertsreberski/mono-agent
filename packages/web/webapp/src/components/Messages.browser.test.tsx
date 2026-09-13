@@ -135,7 +135,7 @@ const cronReplyMessage: WebMessage = {
 function Harness({ width }: { readonly width: number }) {
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: [message("consumed", "applied"), message("uncertain", "uncertain")],
-    convertMessage: (value) => convertWebMessage(value, { selectedModel: "provider:primary" }),
+    convertMessage: (value) => convertWebMessage(value),
     onNew: async () => undefined,
     adapters: {
       threadList: {
@@ -252,7 +252,7 @@ function ErrorHarness({ width, errorMessage }: { readonly width: number; readonl
 function CronHarness({ width }: { readonly width: number }) {
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: [cronMessage],
-    convertMessage: (value) => convertWebMessage(value, { selectedModel: "provider:primary" }),
+    convertMessage: (value) => convertWebMessage(value),
     onNew: async () => undefined,
   });
   return (
@@ -478,12 +478,11 @@ const steeredTwiceResponse: WebMessage = {
 function SteerHarness({ width, messages }: { readonly width: number; readonly messages: readonly WebMessage[] }) {
   const presentation = projectProcessJobPresentation(
     coalesceMonitorWakeMessages(messages),
-    { selectedModel: "provider:primary", threadId: "thread" },
+    { threadId: "thread" },
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,
     convertMessage: (value) => convertWebMessage(value, {
-      selectedModel: "provider:primary",
       processJobEvents: presentation.eventsByMessageId.get(value.id),
       processJobs: presentation.jobsById,
     }),
