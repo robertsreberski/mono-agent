@@ -69,6 +69,7 @@ describe("subagent tool names", () => {
 
   it("recognizes the launch tool regardless of case or namespace", () => {
     expect(isSubagentLaunchToolName("Agent")).toBe(true);
+    expect(isSubagentLaunchToolName("AgentSend")).toBe(true);
     expect(isSubagentLaunchToolName("agent")).toBe(true);
     expect(isSubagentLaunchToolName("mcp__helper__task")).toBe(true);
     expect(isSubagentLaunchToolName("Read")).toBe(false);
@@ -76,6 +77,7 @@ describe("subagent tool names", () => {
   });
 
   it("formats a launch as a header naming the profile", () => {
+    expect(formatToolActivityLine("AgentSend", { id: "critic-1", message: "Review again" })).toBe('🤖 Continuing agent "critic-1"');
     expect(formatToolActivityLine("Agent", { name: "researcher", prompt: "find X" }))
       .toBe('🤖 Starting agent "researcher"');
     expect(formatToolActivityLine("Agent", { prompt: "find X" })).toBe("🤖 Starting a subagent");
@@ -576,4 +578,10 @@ describe("formatProviderStatusLine", () => {
     expect(formatProviderStatusLine({ type: "provider_status", kind: "retry_started" }))
       .toBe("⏳ Retrying ? — attempt 2");
   });
+});
+
+it("renders AskParent as child activity, not another launch", () => {
+  expect(toolHintFor("critic▸AskParent")).toBe("Asking parent…");
+  expect(isSubagentLaunchToolName("AskParent")).toBe(false);
+  expect(formatToolActivityLine("AskParent", { question: "Which scope?" })).toContain("❓ Asking parent:");
 });

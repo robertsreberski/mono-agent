@@ -1,3 +1,4 @@
+import { ConversationTags } from "./tag/ConversationTags";
 import { ProjectBadge, StartProjectMarkers } from "./project/ProjectIdentity";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { Menu } from "@base-ui/react/menu";
@@ -584,6 +585,7 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
               {status}
             </span>
           </div>
+          <ConversationTags />
         </div>
         <div className="chat-header-actions">
           <ConversationActions />

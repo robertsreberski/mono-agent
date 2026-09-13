@@ -9,6 +9,7 @@ import {
   ADAPTER_SEND_TOOL_NAMES,
   APP_TOOL_NAMES,
   BUILTIN_TOOL_NAMES,
+  CHILD_ONLY_TOOL_NAMES,
 } from "../modules/known-tools.js";
 import { STATIC_MODEL_CANDIDATES, type WizardModelCandidate } from "./model-discovery.js";
 import { PRESET_CATALOG } from "./presets.js";
@@ -135,6 +136,11 @@ const APP_TOOL_HINTS: Readonly<Record<string, string>> = {
   RunHistory: "inspect safe evidence from prior runs in this conversation",
   SessionHistory: "search bounded tool calls and results retained for this session",
   SetConversationTitle: "maintain semantic titles for writable web conversations",
+  ListTags: "list the originating agent's tags",
+  CreateTag: "create a named colored conversation tag",
+  UpdateTag: "edit a tag name or color",
+  DeleteTag: "delete a tag while retaining its conversations",
+  UpdateConversationTags: "add or remove tags immediately for the next turn",
   ListProjects: "list the originating agent's console projects",
   GetProject: "read a console project and its shared context",
   CreateProject: "create a console project and optionally attach this conversation",
@@ -333,7 +339,7 @@ export function creationReviewOptions(options: { readonly setupRequired: boolean
  * (deduped, in channel order), and finally the channel-agnostic `AskUser`.
  */
 export function toolMultiselectOptions(selectedChannelIds: readonly string[]): WizardSelectOption[] {
-  const options: WizardSelectOption[] = BUILTIN_TOOL_NAMES.map((name) => ({
+  const options: WizardSelectOption[] = BUILTIN_TOOL_NAMES.filter((name) => !CHILD_ONLY_TOOL_NAMES.includes(name)).map((name) => ({
     value: name,
     label: name,
     ...(BUILTIN_TOOL_HINTS[name] === undefined ? {} : { hint: BUILTIN_TOOL_HINTS[name] }),

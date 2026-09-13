@@ -27,3 +27,7 @@ describe("toolResultErrorOverride", () => {
     expect(toolResultErrorOverride({ tool: "Agent", subagent: { status: "ok" } })).toBeUndefined();
   });
 });
+
+it("treats awaiting_reply as success for both parent tools", () => {
+  for (const tool of ["Agent", "AgentSend"]) expect(toolResultErrorOverride({ tool, subagent: { status: "awaiting_reply" } })).toBeUndefined();
+});

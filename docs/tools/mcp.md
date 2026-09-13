@@ -462,7 +462,8 @@ For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/po
 
 Writable interactive web turns can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
-`SearchConversations`, `CreateConversation`, and `SetConversationProject`. They
+`SearchConversations`, `CreateConversation`, `SetConversationProject`,
+`ListTags`, `CreateTag`, `UpdateTag`, `DeleteTag`, and `UpdateConversationTags`. They
 require no new config.
 Each tool honors its bare name, `mcp__mono-agent-console-projects__<name>`,
 `mcp__mono-agent-console-projects__*`, and `*` in allow/deny policy; deny wins.
@@ -485,8 +486,31 @@ with changes. Unknown delivery is an error and is never automatically retried.
 Project and conversation listings return at most twenty rows by default, with a
 truncation flag for projects and a cursor for conversations. `ListConversations`
 lists the agent's chats newest first (active by default, `archived: true` for
-archived ones, optionally within a project) and accepts `limit` up to fifty.
+archived ones, optionally within a project or carrying a `tagId`) and accepts
+`limit` up to fifty. Conversation summaries include `tags: [{id, name}]`.
 `SearchConversations` is the console search bar's own full-text search — FTS5
 over message text plus title matches, ranked the same way — over the agent's
 chats including archived ones; it returns conversation ids with title, project,
 a plain-text snippet and match counts. Neither read writes an operation receipt.
+
+`ListTags` returns all of the originating agent's tags (at most fifty).
+`CreateTag` accepts `name` and optional `color`; `UpdateTag` accepts `tagId`
+and a name or color change. Names are trimmed, unique per agent ignoring ASCII
+case, and limited to one non-empty line of 120 characters without controls.
+The tag palette is `default`, `blue`, `purple`, `amber`, `rose`, `green`, `teal`,
+or `red`; the project palette is unchanged. `DeleteTag` removes membership
+without deleting conversations. Tags are deleted, never archived.
+
+`UpdateConversationTags` accepts an optional `conversationId` (current conversation
+by default), and at least one of `add` or `remove`, each containing at most 20 tag IDs. It is
+idempotent and preserves other tags; removal wins when an ID appears in both
+arrays. A conversation can carry at most ten tags. Unknown or foreign tags
+return `tag_not_found` (404), duplicate names `tag_exists` (409), and either
+limit `tag_limit` (409).
+
+Tag changes apply immediately, including during an active turn. Each admitted
+turn snapshots its tags and receives one `<conversation_tags>"planning", "reviewing"</conversation_tags>`
+line alongside any project context. Steering retains that snapshot; the next
+turn gets fresh tags. Stored user messages stay unprefixed. There is no pending
+tag membership or separate enablement key: the MCP server remains
+`mono-agent-console-projects` so existing policy aliases keep working.

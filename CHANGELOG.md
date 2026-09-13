@@ -11,6 +11,17 @@
   canonical implementations. See the [migration guide](./docs/reference/framework-simplification-migration.md)
   before upgrading an existing consumer.
 
+- Let persistent children ask their parent for direction with child-only
+  `AskParent`. Questions are durable before the child turn ends, and Agent results
+  return successful `awaiting_reply` with structured question details. Reply with
+  ordinary `AgentSend` in the same session; failed replies preserve the question.
+
+- Keep a subagent's own context across conversation turns with
+  `Agent({persist: true})` and `AgentSend`. Persistent instances survive restarts,
+  appear in the Session envelope, and enforce idle expiry, capacity, turn limits,
+  and exclusive execution. `AgentSend` can close an instance when work is done;
+  `restart --clear-sessions` clears their registries and transcripts.
+
 - Let `Agent` calls select a model from `subagents.models` and set effort for
   configured, authored, or general-purpose helpers. Call-time values override
   profile pins; unpinned children inherit the parent's effective model and effort.

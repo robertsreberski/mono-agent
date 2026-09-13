@@ -299,6 +299,21 @@ and comes back after the reload, so it no longer holds a new build back.
 
 ## Agents, threads, and turns
 
+Conversations can carry agent-scoped tags with a name and palette color. Recent,
+project-member and archived rows show up to three chips plus a remainder count.
+The chat header keeps tags on their own horizontally scrolling line beneath the
+title, with a tag button (Add tag when empty). Its menu toggles existing tags,
+creates and assigns a new tag, and opens Edit tags for name, color, or deletion.
+Deleting a tag keeps conversations. There is no tag page or dashboard tag filter.
+
+An agent can own 50 tags and a conversation can carry 10. Tags can use default,
+blue, purple, amber, rose, green, teal, or red. Tag changes are immediate, and
+an admitted turn keeps its snapshot even when tags change mid-turn; the next
+turn receives fresh tags as a compact context line. Stored messages remain
+unchanged. Agents can manage the same tags through the existing
+[Console project tools](/tools/mcp/#console-project-tools).
+
+
 One **Dashboard** carries all navigation: a fixed 340-pixel left column on desktop and the entrance screen at 900 pixels and below. Top to bottom it holds the console name and connection state, the selected agent with the notifications, agent-settings and new-conversation controls, a horizontally scrolling strip of auto-discovered trace sources showing their current health, conversation search, a **Running** section, a **Projects** section, the **Recent** listing, and a footer with the data-mode indicator and the archive shelf. There is no rail width to choose and no stored layout preference.
 
 **Running** lists what the whole fleet has in flight — a foreground turn, or a queued, starting or running background job — grouped by agent, two cards per agent with the rest behind an inline `+N more` control. Selecting a card switches agent, archive shelf and conversation in one action, including for a conversation this browser has never loaded. The membership is the service's, from `GET /api/v1/threads/active`, described under [What the browser fetches](#what-the-browser-fetches): every discovered agent, both archive shelves, counted before it is capped. The count beside the label is the count of the whole qualifying set, so a capped section says `Showing 50 of 63` underneath rather than quietly reporting fifty, and the badge on an agent square is that agent's own count from the same answer.
@@ -594,7 +609,7 @@ await fetch(`/api/v1/threads/${threadId}/turns`, {
 
 ## Response notifications
 
-Use the bell in the Dashboard header to opt into durable Web Push. The permission prompt and initial subscription are triggered only by that click. The server notifies for a completed response (including a cron/webhook-created **CRON** or **WEBHOOK** thread), a blocking `AskUser` question, and failed, cancelled, or interrupted runs. A test notification is queued immediately after registration. Notification clicks focus or open the exact same-origin conversation.
+Use the bell in the Dashboard header to opt into durable Web Push. The permission prompt and initial subscription are triggered only by that click. The server notifies for a completed response (including a cron/webhook-created **CRON** or **WEBHOOK** thread), a blocking `AskUser` question, and failed, cancelled, or interrupted runs. An automation run answered explicitly to the web console (a `web:new` delivery) notifies through the same completed-response push on its durable Automations thread. Runs answered to Telegram or Slack stay visible in Automation history but do not also create a browser push. A test notification is queued immediately after registration. Notification clicks focus or open the exact same-origin conversation.
 
 The opt-in is stored per browser origin, so localhost, a LAN hostname, and a Tailscale HTTPS hostname have independent preferences and permissions. The browser keeps only the opaque server subscription id and a one-way digest of its endpoint, then reconciles its `PushManager` subscription with the server on load. A browser-reported subscription rotation is registered from the service worker even with no console window open and atomically retires the old endpoint; transient repair failures receive bounded in-event retries, and the page digest repairs rotations on the next load when that lifecycle event is unavailable or the retry window is exhausted. Application-server-key rotation unsubscribes and reconnects when browser permission allows it. Disabling the bell records the local opt-out first, retires the server subscription, and unsubscribes locally; an interrupted server deletion is retried on the next load, and an already-deleted record counts as complete cleanup. Browsers without a confirmed active push subscription keep the older hidden/unfocused response-notification path while the page is alive, avoiding a silent regression and disabling that fallback as soon as push is confirmed.
 

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE } from "@mono-agent/agent-contracts";
 
 import type { WebAgentSummary, WebCronRun, WebCronRunSummary } from "../contracts.js";
-import { WebStore } from "../store.js";
+import { notificationPushLogicalKey, WebStore } from "../store.js";
 import { temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
@@ -1487,5 +1487,149 @@ describe("cron Reply operation storage", () => {
     expect(store.cronReplyOperation(operationId))
       .toMatchObject({ kind: "tombstoned", operation: { operationId, failureReason: "thread_deleted" } });
     store.close();
+  });
+});
+
+describe("automation delivery and push boundary", () => {
+  const SOURCE = "agent-one";
+  const JOB = "daily:brief";
+
+  async function fixture(): Promise<{ store: WebStore }> {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]);
+    return { store };
+  }
+
+  function subscribePush(store: WebStore): void {
+    store.registerWebPushSubscription({
+      endpoint: "https://push.example.test/automation-boundary",
+      p256dh: "p256dh",
+      auth: "auth",
+      siteOrigin: "https://console.example.test",
+      keyFingerprint: "fingerprint",
+    });
+  }
+
+  function pushCount(store: WebStore): number {
+    const database = new DatabaseSync(store.paths.database, { readOnly: true });
+    try {
+      return (database.prepare("SELECT COUNT(*) AS count FROM push_events").get() as { count: number }).count;
+    } finally {
+      database.close();
+    }
+  }
+
+  function overviewJobWithRun(lastRun: WebCronRunSummary) {
+    return {
+      jobId: JOB,
+      expression: "*/5 * * * *",
+      timezone: "Europe/Amsterdam",
+      conversationId: `cron:${JOB}`,
+      configured: true,
+      declaredEnabled: true,
+      effectiveEnabled: true,
+      nextRunAt: "2026-08-14T10:05:00.000Z",
+      health: "healthy" as const,
+      lastRun,
+    };
+  }
+
+  it("keeps externally delivered runs visible in history without any notification row", async () => {
+    // Runs answered to Telegram, Slack, or nowhere leave no
+    // notification_deliveries row: history must not depend on one.
+    const { store } = await fixture();
+    try {
+      const threadId = syncCronJob(store).jobs[0]!.threadId;
+      const meaningful = cronRun({ runId: "cron:external:one", sequence: 1, text: "Telegram digest" });
+      const failed = cronRun({
+        runId: "cron:external:two",
+        sequence: 2,
+        status: "failed",
+        startedAt: "2026-08-14T10:01:01.000Z",
+        completedAt: "2026-08-14T10:01:02.000Z",
+        text: "Partial output",
+        error: "Provider exploded.",
+        failureKind: "provider_error",
+      });
+      const bareFailure = cronRun({
+        runId: "cron:external:three",
+        sequence: 3,
+        status: "failed",
+        startedAt: "2026-08-14T10:02:01.000Z",
+        completedAt: "2026-08-14T10:02:02.000Z",
+      });
+      const silent = cronRun({ runId: "cron:external:four", sequence: 4, text: "NOTHING_TO_REPORT" });
+      store.reconcileCronRuns(SOURCE, JOB, [meaningful, failed, bareFailure, silent]);
+
+      const detail = store.getThreadDetail(threadId)!;
+      const texts = detail.messages.flatMap((message) => message.parts.flatMap((part) =>
+        part.type === "text" ? [part.text] : []));
+      expect(texts).toContain("Telegram digest");
+      expect(texts).toContain("Partial output");
+      // A bare failure carries only synthetic state text, but it is still visible.
+      expect(detail.messages).toHaveLength(3);
+      expect(store.storedCronRuns(SOURCE, JOB).runs).toHaveLength(4);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("enqueues one browser push for a web:new automation delivery", async () => {
+    const { store } = await fixture();
+    try {
+      subscribePush(store);
+      const threadId = syncCronJob(store).jobs[0]!.threadId;
+      const runId = "cron:daily%3Abrief:2026-08-14T10:00:00.000Z";
+      const deliveryKey = `${runId}:success`;
+      const reservation = store.reserveNotification({
+        sourceId: SOURCE,
+        triggerKind: "cron",
+        deliveryKey,
+        jobId: JOB,
+        runId,
+        text: "Morning brief",
+      });
+      expect(reservation.threadId).toBe(threadId);
+      expect(store.completeNotification(reservation)).toMatchObject({ thread: { id: threadId }, duplicate: false });
+      expect(store.webPushEventByLogicalKey(notificationPushLogicalKey(SOURCE, deliveryKey))).toMatchObject({
+        kind: "response.ready",
+        threadId,
+        sourceId: SOURCE,
+      });
+      expect(pushCount(store)).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("produces no push from overview syncs or history reconciliation alone", async () => {
+    const { store } = await fixture();
+    try {
+      subscribePush(store);
+      const threadId = syncCronJob(store).jobs[0]!.threadId;
+      // A completed meaningful run learned purely through operator reads —
+      // the shape a Telegram/Slack-targeted run takes on this console.
+      const run = cronRun({
+        runId: "cron:external:five",
+        sequence: 5,
+        startedAt: "2026-08-14T10:05:01.000Z",
+        completedAt: "2026-08-14T10:05:02.000Z",
+        text: "Telegram digest",
+      });
+      store.syncCronOverview({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:05:00.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJobWithRun(run)],
+      });
+      store.reconcileCronRuns(SOURCE, JOB, [run]);
+      expect(pushCount(store)).toBe(0);
+      // ... but the run is still visible history.
+      expect(store.getThreadDetail(threadId)!.messages).toHaveLength(1);
+    } finally {
+      store.close();
+    }
   });
 });

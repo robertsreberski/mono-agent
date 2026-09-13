@@ -78,6 +78,7 @@ export interface PurgeConversationStateResult {
   readonly sessions: PurgeSessionsResult;
   readonly history: PurgeConversationHistoryResult;
   readonly acpSessions: PurgeAcpSessionAuthorizationsResult;
+  readonly subagents: { readonly root?: string; readonly removed: boolean; readonly registries: number; readonly sessions: number };
 }
 
 export interface PurgeConversationStateOptions {
@@ -175,10 +176,11 @@ export async function purgeConversationState(
       assertProcessJobsConfigSnapshotUnchanged(snapshot),
       assertConversationStatePurgePlanUnchanged(plan),
     ]);
-    const [sessions, history, acpSessions] = await Promise.all([
+    const [sessions, history, acpSessions, subagents] = await Promise.all([
       inspectSessionsRoot(plan.sessions),
       inspectConversationHistoryRoot(plan.history),
       inspectAcpSessionAuthorizationsRoot(plan.acpSessions),
+      inspectSubagentRoot(plan.subagents),
     ]);
     await Promise.all([
       assertProcessJobsConfigSnapshotUnchanged(snapshot),
@@ -200,8 +202,16 @@ export async function purgeConversationState(
         ]);
       },
     );
-    return { sessions, history, acpSessions };
+    return { sessions, history, acpSessions, subagents };
   });
+}
+
+async function inspectSubagentRoot(root: ResolvedConversationStatePurgeRoot | undefined): Promise<PurgeConversationStateResult["subagents"]> {
+  if (root === undefined) return { removed: false, registries: 0, sessions: 0 };
+  if (root.target === undefined) return { root: root.path, removed: false, registries: 0, sessions: 0 };
+  return { root: root.path, removed: true,
+    registries: await countFilesWithSuffix(root.path, "instances.json"),
+    sessions: await countFilesWithSuffix(root.path, ".jsonl") };
 }
 
 async function inspectSessionsRoot(
@@ -975,7 +985,8 @@ function sameWireIdentity(
 function isPurgeKind(value: unknown): value is ResolvedConversationStatePurgeRoot["kind"] {
   return value === "Pi provider sessions"
     || value === "durable session/tool history"
-    || value === "ACP sessions";
+    || value === "ACP sessions"
+    || value === "persistent subagent instances";
 }
 
 async function assertMissing(path: string, message: string): Promise<void> {

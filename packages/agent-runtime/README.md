@@ -788,10 +788,22 @@ values override profile pins, then inherit the parent's effective turn values.
 Pinned or overridden routes appear in the result header and `details.subagent.requested`;
 `details.subagent.executed` records the successful child route when available.
 
+Hosts may inject a conversation-scoped `subagents.instances` facade to enable
+`Agent({persist: true, id?})` and `AgentSend({id, message?, close?})`. Continuations
+retain the child’s selected profile and use `sessionId`, `piSessionsRoot`, and
+`sessionKeepAlive` for true durable resume. Both tools share caps and deny child
+recursion. A persistent child's host injects `askParentController.submit(question)`
+to publish a bounded question durably before `AskParent` returns `terminate: true`.
+The enclosing result carries `subagentQuestion`, surfaced by Agent/AgentSend as
+successful `awaiting_reply` with structured question/options. AgentSend replies
+resume the same transcript; failed replies preserve the pending question.
+AskParent is child-only and automatic unless denied by global/profile policy.
+Without the facade, `Agent` stays stateless and `AgentSend` is absent.
+
 ### Built-in tools
 
 The agent kernel's managed tools are `Read`, `Write`, `Edit`, `Glob`, `Grep`,
-`Exec`, `Bash`, `NodeRepl`, `WebFetch`, and `WebSearch`.
+`Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`, `Agent`, `AgentSend`, and child-only `AskParent`.
 `Exec({ executable, args })` invokes one executable directly; `Bash` is the
 clean non-interactive shell surface for pipelines, redirection, and other shell
 syntax. Both preserve bounded partial stdout/stderr and structured exit,

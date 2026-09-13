@@ -12,6 +12,7 @@ import { BrandMark } from "./components/BrandMark";
 import { Chat } from "./components/Chat";
 import { Dashboard } from "./components/dashboard/Dashboard";
 import { Icon, type IconName } from "./components/Icon";
+import { TagSettingsSheet, type TagSettingsState } from "./components/tag/TagSettingsSheet";
 import { ProjectSettingsSheet, type ProjectSettingsState } from "./components/project/ProjectSettingsSheet";
 import { useConsoleStore } from "./console-store";
 import {
@@ -370,6 +371,9 @@ export function App() {
   const [mobile, setMobile] = useState(isMobileViewport);
   const [palette, setPalette] = useState(false);
   const [agentSettings, setAgentSettings] = useState(false);
+  const [tagSettings, setTagSettings] = useState<TagSettingsState | null>(null);
+  const tagSettingsRef = useRef<HTMLElement>(null);
+  const closeTagSettings = useCallback(() => setTagSettings(null), []);
   const [projectSettings, setProjectSettings] = useState<ProjectSettingsState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [leanOffer, setLeanOffer] = useState(false);
@@ -454,6 +458,7 @@ export function App() {
   }, []);
 
   useModalFocus(agentSettings, agentSettingsRef, closeAgentSettings);
+  useModalFocus(tagSettings !== null, tagSettingsRef, closeTagSettings);
   useModalFocus(projectSettings !== null, projectSettingsRef, closeProjectSettings);
 
   // Neither screen is a modal: nothing traps focus, and nothing needs to be
@@ -488,6 +493,10 @@ export function App() {
       setPalette(false);
       setAgentSettings(true);
     };
+    const onTagSettings = (event: Event) => {
+      const detail = (event as CustomEvent<TagSettingsState | undefined>).detail;
+      if (detail !== undefined) { setPalette(false); setTagSettings(detail); }
+    };
     const onProjectSettings = (event: Event) => {
       setPalette(false);
       const detail = (event as CustomEvent<ProjectSettingsState | undefined>).detail;
@@ -497,11 +506,13 @@ export function App() {
     window.addEventListener("mono-agent:command", onCommand);
     window.addEventListener("mono-agent:notice", onNotice);
     window.addEventListener("mono-agent:agent-settings", onAgentSettings);
+    window.addEventListener("mono-agent:tag-settings", onTagSettings);
     window.addEventListener("mono-agent:project-settings", onProjectSettings);
     return () => {
       window.removeEventListener("mono-agent:command", onCommand);
       window.removeEventListener("mono-agent:notice", onNotice);
       window.removeEventListener("mono-agent:agent-settings", onAgentSettings);
+      window.removeEventListener("mono-agent:tag-settings", onTagSettings);
       window.removeEventListener("mono-agent:project-settings", onProjectSettings);
     };
   }, [togglePalette]);
@@ -747,6 +758,7 @@ export function App() {
       )}
       <CommandPalette open={palette} onClose={closePalette} />
       <AgentSettingsDialog open={agentSettings} onClose={closeAgentSettings} dialogRef={agentSettingsRef} />
+      <TagSettingsSheet sheet={tagSettings} onClose={closeTagSettings} dialogRef={tagSettingsRef} />
       <ProjectSettingsSheet sheet={projectSettings} onClose={closeProjectSettings} dialogRef={projectSettingsRef} />
       {(notice || actionError) && (
         <div className="toast" role="alert">

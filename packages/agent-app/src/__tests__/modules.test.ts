@@ -107,10 +107,10 @@ describe("baseConfig", () => {
 
 describe("known-tools", () => {
   it("lists all thirteen built-in tools", () => {
-    expect(BUILTIN_TOOL_NAMES).toHaveLength(13);
+    expect(BUILTIN_TOOL_NAMES).toHaveLength(15);
     for (const name of [
       "Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec", "NodeRepl",
-      "Monitor", "MonitorStop", "WebFetch", "WebSearch", "Agent",
+      "Monitor", "MonitorStop", "WebFetch", "WebSearch", "Agent", "AgentSend",
     ]) {
       expect(BUILTIN_TOOL_NAMES).toContain(name);
     }
@@ -119,7 +119,7 @@ describe("known-tools", () => {
   it("keeps conditionally registered built-ins out of the safe defaults", () => {
     // Monitor runs an arbitrary command and holds host capacity after the turn;
     // Agent deploys subagents. Neither belongs in a new agent's pre-checked set.
-    for (const name of ["Monitor", "MonitorStop", "Agent"]) {
+    for (const name of ["Monitor", "MonitorStop", "Agent", "AgentSend"]) {
       expect(DEFAULT_SAFE_TOOLS as readonly string[]).not.toContain(name);
     }
   });
@@ -129,7 +129,7 @@ describe("known-tools", () => {
     expect(isKnownToolName("NodeRepl")).toBe(true);
     expect(isKnownToolName("read")).toBe(false);
     expect(isKnownToolName("AskUser")).toBe(true);
-    expect(APP_TOOL_NAMES).toEqual(["RunHistory", "SessionHistory", "SetConversationTitle", "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject", "MemoryJournal", "Remember"]);
+    expect(APP_TOOL_NAMES).toEqual(["RunHistory", "SessionHistory", "SetConversationTitle", "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject", "MemoryJournal", "Remember"]);
     expect(isKnownToolName("RunHistory")).toBe(true);
     expect(isKnownToolName("run_history")).toBe(true);
     expect(isKnownToolName("SessionHistory")).toBe(true);

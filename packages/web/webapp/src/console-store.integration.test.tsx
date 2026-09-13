@@ -112,6 +112,7 @@ vi.mock("./api", async (importOriginal) => ({
     submit: vi.fn(),
     submission: vi.fn(),
     threadJob: vi.fn(),
+    listTags: vi.fn(), createTag: vi.fn(), patchTag: vi.fn(), deleteTag: vi.fn(),
     projects: vi.fn(),
     createProject: vi.fn(),
     patchProject: vi.fn(),
@@ -323,11 +324,13 @@ describe("ConsoleStoreProvider integration", () => {
     vi.mocked(api.threads).mockResolvedValue({ threads: [] });
     vi.mocked(api.messages).mockResolvedValue({ messages: [] });
     vi.mocked(api.cronRuns).mockResolvedValue({ runs: [] });
+    vi.mocked(api.listTags).mockReset().mockResolvedValue([]);
     vi.mocked(api.projects).mockReset().mockResolvedValue([]);
     vi.mocked(api.projectThreads).mockReset().mockResolvedValue({ threads: [] });
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     resetServerClock();
     vi.unstubAllGlobals();
   });
@@ -335,15 +338,20 @@ describe("ConsoleStoreProvider integration", () => {
   it("keeps the server's clock from the stamp on every event", async () => {
     await renderStore();
     const before = Date.now();
+    // Only `Date` is faked, so React and Testing Library keep their real
+    // timers. Without this the drift is measured across two live readings of
+    // the wall clock, and a runner whose clock is being slewed can report
+    // 2,999 ms for a three-second-old stamp -- a property of NTP, not of the
+    // projection under test. Pinned, the expected drift is exact.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(before);
     act(() => FakeEventSource.latest?.emit("agents.changed", {
       id: "event-clock",
       version: 1,
       type: "agents.changed",
       at: new Date(before - 3_000).toISOString(),
     }));
-    const drift = Date.now() - serverNow();
-    expect(drift).toBeGreaterThanOrEqual(3_000);
-    expect(drift).toBeLessThan(3_500);
+    expect(Date.now() - serverNow()).toBe(3_000);
   });
 
   it("recovers a persisted submission reference with GET only and clears it after a known receipt", async () => {
@@ -1327,7 +1335,7 @@ describe("ConsoleStoreProvider integration", () => {
 
     const store = await renderStore();
 
-    await waitFor(() => expect(store.current.selectionError).toMatch(/not in the jobs loaded/iu));
+    await waitFor(() => expect(store.current.selectionError ?? "").toMatch(/not in the jobs loaded/iu));
     expect(store.current.selectedThreadId).toBeNull();
     expect(store.current.selectionLoading).toBe(false);
     expect(api.thread).not.toHaveBeenCalled();
@@ -1343,7 +1351,11 @@ describe("ConsoleStoreProvider integration", () => {
 
     const store = await renderStore();
 
-    await waitFor(() => expect(store.current.selectionError).toMatch(/does not expose first-class cron/iu));
+    // `?? ""` so a slow settle fails as "expected '' to match /…/" instead of
+    // `.toMatch() expects to receive a string, but got object` -- `typeof null`
+    // is "object", and that TypeError hid the actual state (still null) behind
+    // a matcher complaint every time this timed out on a loaded runner.
+    await waitFor(() => expect(store.current.selectionError ?? "").toMatch(/does not expose first-class cron/iu));
     expect(store.current.selectedThreadId).toBeNull();
     expect(store.current.selectionLoading).toBe(false);
     expect(api.cronOverview).toHaveBeenCalledWith("alpha");
@@ -9724,6 +9736,43 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.threads.some((candidate) => candidate.id === imported.id)).toBe(false);
       expect(store.current.selectedThreadId).not.toBe(imported.id);
       expect(store.current.detail?.thread.id).not.toBe(imported.id);
+    });
+  });
+
+  describe("conversation tags", () => {
+    const tag = { id: "tag", sourceId: "alpha", name: "planning", color: "green" as const, revision: 1, createdAt: "2026-09-12", updatedAt: "2026-09-12" };
+    it("seeds bootstrap tags, guards stale listings and removals, and writes memberships through the queue", async () => {
+      const member = thread("member", "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue({ ...bootstrap([agent("alpha")], [member], member.id), tags: [tag] });
+      vi.mocked(api.thread).mockResolvedValue(detail(member));
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.tagsByAgent.alpha).toEqual([tag]));
+      const updated = { ...tag, name: "reviewing", revision: 2 };
+      act(() => FakeEventSource.latest?.emit("tags.changed", { version: 1, type: "tags.changed", at: "2026-09-12", payload: { tag: updated } }));
+      await waitFor(() => expect(store.current.tagsByAgent.alpha).toEqual([updated]));
+      vi.mocked(api.listTags).mockResolvedValue([tag]);
+      await act(async () => { await store.current.loadTags("alpha"); });
+      expect(store.current.tagsByAgent.alpha).toEqual([updated]);
+      vi.mocked(api.patchThread).mockResolvedValue({ ...member, tagIds: [tag.id], revision: 2 });
+      await act(async () => { await store.current.setThreadTags(member.id, [tag.id]); });
+      expect(api.patchThread).toHaveBeenCalledWith(member.id, { tagIds: [tag.id] }, expect.any(AbortSignal));
+      expect(store.current.threads.find((item) => item.id === member.id)?.tagIds).toEqual([tag.id]);
+      act(() => FakeEventSource.latest?.emit("tags.changed", { version: 1, type: "tags.changed", at: "2026-09-12", payload: { tagId: tag.id, removed: true } }));
+      await waitFor(() => expect(store.current.tagsByAgent.alpha).toEqual([]));
+      await act(async () => { await store.current.loadTags("alpha"); });
+      expect(store.current.tagsByAgent.alpha).toEqual([]);
+    });
+
+    it("retains an event-created tag across an older in-flight listing", async () => {
+      const store = await renderStore();
+      let resolve: ((tags: typeof tag[]) => void) | undefined;
+      vi.mocked(api.listTags).mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+      let pending: Promise<readonly typeof tag[]> | undefined;
+      act(() => { pending = store.current.loadTags("alpha") as Promise<readonly typeof tag[]>; });
+      act(() => FakeEventSource.latest?.emit("tags.changed", { version: 1, type: "tags.changed", at: "2026-09-12", payload: { tag } }));
+      await waitFor(() => expect(store.current.tagsByAgent.alpha).toEqual([tag]));
+      await act(async () => { resolve?.([]); await pending; });
+      expect(store.current.tagsByAgent.alpha).toEqual([tag]);
     });
   });
 
