@@ -9,6 +9,16 @@ export const PUSH_SUBSCRIPTION_ID_STORAGE_KEY = "mono-agent.web.push-subscriptio
 export const PUSH_SUBSCRIPTION_ENDPOINT_DIGEST_STORAGE_KEY = "mono-agent.web.push-endpoint-sha256";
 export const PUSH_PENDING_DELETE_STORAGE_KEY = "mono-agent.web.push-pending-delete";
 const NOTIFICATION_MESSAGE_TYPE = "mono-agent:select-thread";
+/**
+ * Window event a notification deep link dispatches after selecting its thread.
+ *
+ * The shell owns the phone's one-at-a-time screen and opens the conversation
+ * only through the Dashboard's `onNavigate`, so selection alone leaves the
+ * chat behind the mobile dashboard. The App listens for this event and pushes
+ * the conversation screen; desktop ignores it. Kept as a literal in App.tsx
+ * to match the existing cross-file event convention.
+ */
+export const NOTIFICATION_OPEN_CONVERSATION_EVENT = "mono-agent:open-conversation";
 const PUSH_CHANGE_MESSAGE_TYPE = "mono-agent:push-subscription-change";
 const PUSH_PENDING_EVENT_TYPE = "mono-agent:push-pending";
 const SERVICE_WORKER_VERSION_REQUEST = "mono-agent:notification-sw-version";
@@ -90,6 +100,22 @@ const preference = (): NotificationPreference => {
 
 const dispatchNotice = (message: string): void => {
   window.dispatchEvent(new CustomEvent("mono-agent:notice", { detail: { message } }));
+};
+
+/**
+ * Select the notification's thread AND ask the shell to show it. Selection
+ * alone leaves the chat behind the mobile dashboard; the App pushes the
+ * conversation screen on this event. Desktop has no pushed screen, so the
+ * same dispatch is harmless there.
+ */
+const openNotificationConversation = (
+  selectThread: (threadId: string) => void,
+  threadId: string,
+): void => {
+  selectThread(threadId);
+  window.dispatchEvent(new CustomEvent(NOTIFICATION_OPEN_CONVERSATION_EVENT, {
+    detail: { threadId },
+  }));
 };
 
 interface NotificationsValue {
@@ -307,7 +333,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
       }
       if (payload.type !== NOTIFICATION_MESSAGE_TYPE || typeof payload.threadId !== "string") return;
       pendingThreadSelection.current = payload.threadId;
-      store.selectThread(payload.threadId);
+      openNotificationConversation(store.selectThread, payload.threadId);
       pendingThreadSelection.current = null;
     };
     navigator.serviceWorker?.addEventListener("message", onMessage);
@@ -317,7 +343,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
   useEffect(() => {
     const threadId = pendingThreadSelection.current;
     if (!threadId) return;
-    store.selectThread(threadId);
+    openNotificationConversation(store.selectThread, threadId);
     pendingThreadSelection.current = null;
   }, [store]);
 
@@ -326,7 +352,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
     const threadId = url.searchParams.get("thread");
     if (!threadId || handledDeepLink.current === threadId) return;
     handledDeepLink.current = threadId;
-    store.selectThread(threadId);
+    openNotificationConversation(store.selectThread, threadId);
     url.searchParams.delete("thread");
     window.history.replaceState(window.history.state, "", url);
   }, [store]);
