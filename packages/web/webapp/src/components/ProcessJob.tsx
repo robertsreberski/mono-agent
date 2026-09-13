@@ -248,6 +248,7 @@ export function ProcessJobActivityEventPart({ data }: DataMessagePartProps) {
   return (
     <ActivityRow
       variant="job"
+      jobIcon={event.tool === "Agent" || event.tool === "AgentSend" ? "agent" : "terminal"}
       status={terminal && TERMINAL_PROCESS_JOB_STATES.has(event.state)
         && event.state !== "succeeded" ? "failed" : "complete"}
       label={`${event.tool} job ${terminal ? stateLabel : "started"}`}

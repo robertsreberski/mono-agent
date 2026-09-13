@@ -252,6 +252,27 @@ describe("ProcessJobActivityEventPart", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each(["Agent", "AgentSend", "Bash", "Exec"] as const)("uses the correct glyph for both %s lifecycle rows", (tool) => {
+    const expected = render(<Icon name={tool === "Agent" || tool === "AgentSend" ? "agent" : "terminal"} />);
+    const glyph = expected.container.querySelector("svg")!.innerHTML;
+    for (const phase of ["started", "terminal"] as const) {
+      const view = render(eventPart({
+        schema: "mono-agent.process-job-activity-event.v1",
+        id: `process-job:job-1:${phase}`,
+        toolCallId: "launch-1",
+        jobId: "job-1",
+        tool,
+        summary: "Synthetic lifecycle fixture",
+        phase,
+        state: phase === "started" ? "running" : "succeeded",
+        occurredAt: "2026-09-13T10:00:01.000Z",
+      }));
+      const row = screen.getByRole("group", { name: `${tool} job ${phase === "started" ? "started" : "succeeded"}` });
+      expect(row.querySelector(".activity-job-icon")?.innerHTML).toBe(glyph);
+      view.unmount();
+    }
+  });
+
   it("renders abnormal terminal facts and rejects malformed data", () => {
     const { rerender } = render(eventPart({
       schema: "mono-agent.process-job-activity-event.v1",
