@@ -9,13 +9,13 @@ import { buildSubagentsOptions } from "../configured-agent.js";
 // @ts-expect-error Real Pi test seam; transport only is fake.
 import { generatePiNativeResponse } from "../../../agent-runtime/src/ai/providers/pi-native.js";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 import { openProcessJobsService, type ProcessJobsServiceHandle } from "../process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
-import { openProcessJobStore } from "../process-jobs-store.js";
+import { openProcessJobStore, PROCESS_JOB_TRANSACTION_FILE } from "../process-jobs-store.js";
 import { launchInternalProcessJob } from "../process-jobs-internal.js";
 // @ts-expect-error Private kernel test seam.
 import { createAgentTool, subagentUsageForRun } from "../../../agent-runtime/src/agent/tools/agent-tool.js";
@@ -169,6 +169,100 @@ describe("managed detached production execution", () => {
     expect((await instances.get("helper"))?.incarnation).toBe(replacement.incarnation);
     expect(f.wake).toHaveBeenCalledOnce();
   }, 20_000);
+
+  it.each(["absent", "stopped"])("F3: lost certificate acknowledgement survives %s service close and registry retention", async (resolver) => {
+    const f = await managedFixture(); let intercepted = false;
+    f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
+      verify: async (identity) => (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+        if (phase === "finalize") { intercepted = true; throw new Error("lost certificate acknowledgement"); }
+      },
+    });
+    const run = vi.fn(async () => ({ text: "settled once" }));
+    const { agent } = tools(f, run);
+    const receipt = await agent.execute("F3", { persist: true, background: true, id: "helper", prompt: "work" });
+    await vi.waitFor(() => expect(intercepted).toBe(true), { timeout: 5000 });
+    await f.service.stop();
+    const root = resolve(f.root, "children"); let clock = Date.now();
+    const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {}, now: () => clock,
+      ...(resolver === "stopped" ? { resolveOwner: (identity: import("../subagent-registry-ownership.js").SubagentOwnerIdentity) => f.service.resolveSubagentOwner!(identity) } : {}),
+    });
+    const unavailable = await registry.open(origin.conversationId, { existingOnly: true });
+    await expect(unavailable.close("helper")).rejects.toThrow("subagent_owner_unavailable");
+    clock += 3 * 86_400_000;
+    expect(await unavailable.get("helper")).toBeDefined();
+    const reopened = await openProcessJobsService(f.options); services.push(reopened);
+    const recoveredRegistry = createSubagentInstanceRegistry({ root, retireSession: async () => {}, resolveOwner: (identity) => reopened.resolveSubagentOwner!(identity) });
+    reopened.bindManagedSubagents!({ root,
+      verify: async (identity) => (await recoveredRegistry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => (await recoveredRegistry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
+    });
+    await vi.waitFor(async () => expect((await f.store.get(receipt.details.jobId))?.subagentOwnership?.publication.receiptPending).toBe(false));
+    await reopened.activateWakes(); await done(reopened, receipt.details.jobId);
+    await f.store.applyRetention({ ...reopened.settings, retention: { ...reopened.settings.retention, maxAgeMs: 1 } }, new Date(Date.now() + 10_000));
+    expect(await f.store.get(receipt.details.jobId)).toBeUndefined();
+    await reopened.stop();
+    // A positively acknowledged certificate remains usable without the job/service.
+    const offline = await createSubagentInstanceRegistry({ root, retireSession: async () => {} }).open(origin.conversationId);
+    await expect(offline.close("helper")).resolves.toMatchObject({ status: "closed" });
+    expect(run).toHaveBeenCalledOnce(); expect(f.wake).toHaveBeenCalledOnce();
+  }, 10_000);
+
+  it.each(["finalize", "acknowledge"] as const)("F3: actual %s-following journal write failure degrades service without losing release evidence", async (faultPhase) => {
+    const f = await managedFixture(); const root = resolve(f.root, "children");
+    const journal = resolve(f.store.stateDir, PROCESS_JOB_TRANSACTION_FILE); let injected = false;
+    f.service.bindManagedSubagents!({ root,
+      verify: async (identity) => (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+        if (phase === faultPhase && !injected) {
+          // A real filesystem type collision rejects the next atomic journal write;
+          // no mocked store rejection or registry exception establishes degradation.
+          await mkdir(journal); injected = true;
+        }
+      },
+    });
+    const run = vi.fn(async () => ({ text: "one settled result" }));
+    const receipt = await tools(f, run).agent.execute("disk-fault", { persist: true, background: true, id: "helper", prompt: "work" });
+    await vi.waitFor(() => expect(f.service.health.state).toBe("degraded"), { timeout: 5000 });
+    expect(injected).toBe(true);
+    await expect(f.service.stop()).rejects.toThrow("Process-job shutdown encountered failures");
+    services.splice(services.indexOf(f.service), 1); // The stopped service retains its rejected shutdown promise.
+    await rm(journal, { recursive: true });
+    let clock = Date.now();
+    const offline = await createSubagentInstanceRegistry({ root, retireSession: async () => {}, now: () => clock }).open(origin.conversationId);
+    if (faultPhase === "finalize") await expect(offline.close("helper")).rejects.toThrow("subagent_owner_unavailable");
+    else await expect(offline.close("helper")).resolves.toMatchObject({ status: "closed" });
+    clock += 3 * 86_400_000;
+    expect(await offline.get("helper")).toEqual(faultPhase === "acknowledge" ? undefined : expect.any(Object));
+    const store = await openProcessJobStore(f.root, f.store.stateDir);
+    expect(await store.get(receipt.details.jobId)).toMatchObject({ subagentOwnership: { publication: { receiptPending: true } } });
+    const reopened = await openProcessJobsService({ ...f.options, store }); services.push(reopened);
+    const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {}, resolveOwner: (identity) => reopened.resolveSubagentOwner!(identity) });
+    if (faultPhase === "acknowledge") {
+      const held = (await store.get(receipt.details.jobId))!; const owner = held.subagentOwnership!;
+      expect(owner.publication.receiptRecorded).toBe(owner.publication.sequence);
+      const publication = { identity: { storeRoot: f.store.stateDir, jobId: held.jobId, conversationId: origin.conversationId,
+        instanceId: "helper", instanceIncarnation: owner.instanceIncarnation, turnToken: owner.turnToken },
+        sequence: owner.publication.sequence, disposition: owner.disposition!, released: true };
+      const empty = await registry.open(origin.conversationId, { existingOnly: true });
+      for (const invalid of [
+        { ...publication, sequence: publication.sequence + 1 },
+        { ...publication, identity: { ...publication.identity, storeRoot: resolve(f.root, "wrong") } },
+        { ...publication, identity: { ...publication.identity, turnToken: randomUUID() } },
+        { ...publication, identity: { ...publication.identity, instanceIncarnation: randomUUID() } },
+      ]) await expect(empty.publishOwned("acknowledge", invalid)).rejects.toThrow("subagent_owner_unavailable");
+      expect((await store.get(held.jobId))?.subagentOwnership?.publication.receiptPending).toBe(true);
+    }
+    reopened.bindManagedSubagents!({ root,
+      verify: async (identity) => (await registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => (await registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
+    });
+    await vi.waitFor(async () => expect((await store.get(receipt.details.jobId))?.subagentOwnership?.publication.receiptPending).toBe(false), { timeout: 5000 });
+    await reopened.activateWakes(); expect((await done(reopened, receipt.details.jobId)).state).toBe("succeeded");
+    expect(run).toHaveBeenCalledOnce(); expect(f.wake).toHaveBeenCalledOnce();
+  }, 12_000);
 
   it("F2: retains a durable release certificate through startup retention without an intervening registry read", async () => {
     const f = await managedFixture();
@@ -346,6 +440,7 @@ describe("managed detached production execution", () => {
     expect(await f.instances.get("helper")).toMatchObject({ turns: 1, usage: { input: 7 }, recovery: { continuity: "unknown" } });
     expect(await f.service.get(receipt.details.jobId)).toMatchObject({ state: "timed_out", childStillBusy: false });
     expect(f.wake).toHaveBeenCalledOnce();
+    await vi.waitFor(async () => expect((await f.store.get(receipt.details.jobId))?.subagentOwnership?.publication.receiptPending).toBe(false), { timeout: 3000 });
     await expect(send.execute("not-retained", { id: "helper", message: "next" })).rejects.toThrow("subagent_recovery_required");
   }, 15_000);
 });

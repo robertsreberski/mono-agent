@@ -13,7 +13,7 @@ export interface SubagentExecutionOwnership {
   turnToken: string;
   owner: { pid: number; incarnation: ProcessIncarnation; settlement: "not_started" | "running" | "settled" | "dead" | "unknown" };
   revoked: boolean;
-  publication: { sequence: number; state: "pending" | "confirmed"; receiptPending?: boolean };
+  publication: { sequence: number; state: "pending" | "confirmed"; receiptPending?: boolean; receiptRecorded?: number };
   command?: SubagentOwnedCommand;
   /** Host-bound attempt/call keys. Never evict keys while the turn can execute. */
   seenCalls: string[];
@@ -84,7 +84,8 @@ export function isSubagentExecutionOwnership(value: unknown): value is SubagentE
     || !exact(value.owner, ["pid", "incarnation", "settlement"]) || !positive(value.owner.pid)
     || !incarnation(value.owner.incarnation)
     || !["not_started", "running", "settled", "dead", "unknown"].includes(String(value.owner.settlement))
-    || !object(value.publication) || !exact(value.publication, ["sequence", "state", ...(Object.hasOwn(value.publication, "receiptPending") ? ["receiptPending"] : [])])
+    || !object(value.publication) || !exact(value.publication, ["sequence", "state", ...(Object.hasOwn(value.publication, "receiptPending") ? ["receiptPending"] : []), ...(Object.hasOwn(value.publication, "receiptRecorded") ? ["receiptRecorded"] : [])])
+    || (value.publication.receiptRecorded !== undefined && (!Number.isSafeInteger(value.publication.receiptRecorded) || Number(value.publication.receiptRecorded) < 1 || Number(value.publication.receiptRecorded) > Number(value.publication.sequence)))
     || (value.publication.receiptPending !== undefined && typeof value.publication.receiptPending !== "boolean")
     || !positive(value.publication.sequence) || !["pending", "confirmed"].includes(String(value.publication.state))
     || !Array.isArray(value.seenCalls) || value.seenCalls.length > SUBAGENT_SEEN_CALLS_MAX_COUNT

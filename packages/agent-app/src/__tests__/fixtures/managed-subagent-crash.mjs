@@ -168,7 +168,7 @@ async function recover(root, expectedWakes, attempt) {
       console.log(JSON.stringify({ kind: "managed-certificate-reopen", attempt, retainedBeforeBind: attempt === 0, wakes: 0, result: "passed" }));
       return;
     }
-    const record = await until(async () => { const record = await f.store.get(proof.jobId); return record?.subagentOwnership?.publication.state === "confirmed" && record.wake.state === "delivered" && record; });
+    const record = await until(async () => { const record = await f.store.get(proof.jobId); return record?.subagentOwnership?.publication.state === "confirmed" && record.subagentOwnership.publication.receiptPending === false && record.wake.state === "delivered" && record; });
     assert.equal(record.subagentOwnership.owner.settlement, "dead");
     assert.equal(record.subagentOwnership.command.state, "released");
     assert.equal(record.subagentCommandReceipts.commands.length, 1);

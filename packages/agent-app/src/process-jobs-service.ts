@@ -629,7 +629,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (!isTerminalProcessJobState(record.state) || hasUnresolvedSubagentOwnership(record) || owner.publication.state !== "confirmed") return { state: "held" };
       // Positive job/disposition proof can certify the registry while its durable
       // acknowledgement still pins retention/capacity. It is not absence evidence.
-      return { state: "released", identity, sequence: owner.publication.sequence, receiptPending: hasPendingSubagentReleaseReceipt(record), continuity: owner.disposition?.continuity ?? "unknown",
+      return { state: "released", identity, sequence: owner.publication.sequence, receiptPending: hasPendingSubagentReleaseReceipt(record), receiptRecorded: owner.publication.receiptRecorded === owner.publication.sequence, continuity: owner.disposition?.continuity ?? "unknown",
         ...(owner.disposition?.reason ? { reason: owner.disposition.reason } : {}) };
     }).catch(() => ({ state: "unavailable" as const }));
   }
@@ -735,7 +735,18 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (publication.released) {
         // Never hold the service lock while entering the registry transaction.
         // It verifies the committed job proof and durably writes its certificate.
-        await this.managedRegistry.publish("finalize", publication);
+        if (owner.publication.receiptRecorded !== publication.sequence) {
+          await this.managedRegistry.publish("finalize", publication);
+          await this.withManagedLock(async () => await this.storeMutate("subagent.release_certificate_recorded", (records) => {
+            const current = requireRecord(records, jobId);
+            if (!sameSubagentOwner(publication.identity, this.managedIdentity(current))
+              || current.subagentOwnership!.publication.sequence !== publication.sequence) throw new Error("Managed certificate identity changed.");
+            current.subagentOwnership!.publication.receiptRecorded = publication.sequence;
+          }));
+        }
+        // Registry deletion is safe only after the job has durably copied its
+        // certificate. Reopen can finish this transfer even if that row is gone.
+        await this.managedRegistry.publish("acknowledge", publication);
         await this.withManagedLock(async () => {
           const occupied = this.runningOccupancy();
           await this.storeMutate("subagent.release_receipt_acknowledged", (records) => {

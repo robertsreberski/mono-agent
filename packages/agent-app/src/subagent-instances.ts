@@ -50,7 +50,7 @@ export interface SubagentInstance {
   lastStatus?: string;
   lastAnswerHead?: string;
 }
-interface StoredSubagentInstance extends SubagentInstance { verificationTarget?: SubagentVerificationTarget; recoveryBinding?: SubagentRecoveryBinding; ownerLink?: SubagentOwnerLink; ownerReceipt?: { jobId: string; storeRoot: string; turnToken: string; sequence: number; finalized: boolean } }
+interface StoredSubagentInstance extends SubagentInstance { verificationTarget?: SubagentVerificationTarget; recoveryBinding?: SubagentRecoveryBinding; ownerLink?: SubagentOwnerLink; ownerReceipt?: { jobId: string; storeRoot: string; turnToken: string; sequence: number; finalized: boolean; acknowledged: boolean } }
 
 export interface SubagentRecoverySubject {
   readonly conversationId: string;
@@ -81,7 +81,7 @@ export interface InstanceRegistryHandle {
   verifyOwner(identity: SubagentOwnerIdentity): Promise<{ retained: boolean; verification?: SubagentVerificationTarget }>;
   inspect(id: string, access?: unknown): Promise<SubagentRecoveryInspection>;
   checkAcknowledgement(id: string, acknowledgement: SubagentRecoveryAcknowledgement, access?: unknown): Promise<void>;
-  publishOwned(phase: "intent" | "confirm" | "finalize", publication: SubagentRegistryPublication): Promise<void>;
+  publishOwned(phase: "intent" | "confirm" | "finalize" | "acknowledge", publication: SubagentRegistryPublication): Promise<void>;
   list(): Promise<SubagentInstance[]>;
   get(id: string): Promise<SubagentInstance | undefined>;
   create(spec: InstanceSpec, access?: unknown): Promise<SubagentInstance>;
@@ -115,8 +115,9 @@ function validRecord(value: unknown, conversationId: string, sessionsRoot: strin
   if (!object(value) || !keys(value, ["id", "conversationId", "name", "systemPrompt", "definition", "sessionId", "sessionsRoot", "status", "turns", "usage", "createdAt", "updatedAt", "lastStatus", "lastAnswerHead", "pendingQuestion", "reservation", "incarnation", "activeTurn", "recovery", "ownerLink", "ownerReceipt", "recoveryBinding", "verificationTarget"])) return false;
   if (value.verificationTarget !== undefined && !isSubagentVerificationTarget(value.verificationTarget)) return false;
   if (value.recoveryBinding !== undefined && !isSubagentRecoveryBinding(value.recoveryBinding)) return false;
-  if (value.ownerReceipt !== undefined && (!object(value.ownerReceipt) || !keys(value.ownerReceipt, ["jobId", "storeRoot", "turnToken", "sequence", "finalized"])
-    || !isSubagentOwnerLink({ jobId: value.ownerReceipt.jobId, storeRoot: value.ownerReceipt.storeRoot }) || typeof value.ownerReceipt.finalized !== "boolean"
+  if (value.ownerReceipt !== undefined && (!object(value.ownerReceipt) || !keys(value.ownerReceipt, ["jobId", "storeRoot", "turnToken", "sequence", "finalized", "acknowledged"])
+    || !isSubagentOwnerLink({ jobId: value.ownerReceipt.jobId, storeRoot: value.ownerReceipt.storeRoot }) || typeof value.ownerReceipt.finalized !== "boolean" || typeof value.ownerReceipt.acknowledged !== "boolean"
+    || (value.ownerReceipt.acknowledged && !value.ownerReceipt.finalized)
     || !isSubagentUuid(value.ownerReceipt.jobId) || !isSubagentUuid(value.ownerReceipt.turnToken)
     || !integer(value.ownerReceipt.sequence) || value.ownerReceipt.sequence < 1)) return false;
   if (value.incarnation !== undefined && !isSubagentUuid(value.incarnation)) return false;
@@ -223,7 +224,7 @@ export function createSubagentInstanceRegistry(options: {
       // because its service is unavailable or its safely retained job is gone.
       const awaitingReceiptAcknowledgement = new WeakSet<StoredSubagentInstance>();
       const receiptHeld = (record: StoredSubagentInstance): boolean => record.ownerReceipt !== undefined
-        && (!record.ownerReceipt.finalized || awaitingReceiptAcknowledgement.has(record));
+        && (!record.ownerReceipt.acknowledged || awaitingReceiptAcknowledgement.has(record));
       const file = resolve(directory, "instances.json");
       const turnPath = (id: string): string => resolve(directory, "turn-locks", id);
       const retire = async (record: SubagentInstance): Promise<void> => {
@@ -317,7 +318,7 @@ export function createSubagentInstanceRegistry(options: {
                 instanceId: record.id, instanceIncarnation: record.incarnation, turnToken: receipt.turnToken };
               const proof = await options.resolveOwner(identity).catch(() => ({ state: "unavailable" as const }));
               if (proof.state === "held" || (proof.state === "released" && (proof.receiptPending || proof.sequence !== receipt.sequence || !sameSubagentOwner(identity, proof.identity)))) awaitingReceiptAcknowledgement.add(record);
-              if (proof.state === "released" && !proof.receiptPending && proof.sequence === receipt.sequence && sameSubagentOwner(identity, proof.identity)) receipt.finalized = true;
+              if (proof.state === "released" && !proof.receiptPending && proof.sequence === receipt.sequence && sameSubagentOwner(identity, proof.identity)) { receipt.finalized = true; receipt.acknowledged = true; }
             }
             if (["queued", "running"].includes(record.status) && !turns.has(turnPath(record.id))) {
               try {
@@ -357,7 +358,7 @@ export function createSubagentInstanceRegistry(options: {
             if (value && typeof value === "object" && "sessionId" in value) {
               const { ownerLink: _owner, ownerReceipt: _receipt, recoveryBinding: _binding, verificationTarget: _verification, ...publicRecord } = value as StoredSubagentInstance;
               return structuredClone({ ...publicRecord,
-                ...(publicRecord.recovery || (_receipt && !_receipt.finalized) ? { recoveryBlocked: true } : {}),
+                ...(publicRecord.recovery || (_receipt && !_receipt.acknowledged) ? { recoveryBlocked: true } : {}),
                 ...(_receipt && publicRecord.recovery?.turnToken === _receipt.turnToken ? { recoveryJobId: _receipt.jobId } : {}) });
             }
             return structuredClone(value);
@@ -413,6 +414,21 @@ export function createSubagentInstanceRegistry(options: {
           try { await transaction(async (records) => {
             const identity = publication.identity;
             const record = records.find((entry) => entry.id === identity.instanceId);
+            if (phase === "acknowledge") {
+              // The job durably copied this exact settled certificate before the
+              // registry may discard it. A missing/replaced row needs no mutation:
+              // this is positive job-held proof, never authority from absence.
+              const proof = await options.resolveOwner?.(identity);
+              if (proof?.state !== "released" || !proof.receiptRecorded || proof.sequence !== publication.sequence
+                || !publication.released || !sameSubagentOwner(identity, proof.identity)) throw new SubagentRecoveryError("subagent_owner_unavailable");
+              if (!record || record.incarnation !== identity.instanceIncarnation) return;
+              const receipt = record.ownerReceipt;
+              if (record.activeTurn || !receipt || receipt.jobId !== identity.jobId || receipt.storeRoot !== identity.storeRoot
+                || receipt.turnToken !== identity.turnToken || receipt.sequence !== publication.sequence) return; // Never mutate a newer turn/receipt.
+              if (!receipt.finalized) throw new SubagentRecoveryError("subagent_stale_turn");
+              receipt.acknowledged = true;
+              return;
+            }
             if (!record || record.incarnation !== identity.instanceIncarnation || record.conversationId !== identity.conversationId) throw new SubagentRecoveryError("subagent_stale_turn");
             if (phase === "finalize") {
               const receipt = record.ownerReceipt;
@@ -431,7 +447,7 @@ export function createSubagentInstanceRegistry(options: {
             if (disposition.reason) record.recovery = { turnToken: identity.turnToken, sequence: publication.sequence,
               reason: disposition.reason, continuity: disposition.continuity };
             if (phase === "intent") return;
-            record.ownerReceipt = { jobId: identity.jobId, storeRoot: identity.storeRoot, turnToken: identity.turnToken, sequence: publication.sequence, finalized: false };
+            record.ownerReceipt = { jobId: identity.jobId, storeRoot: identity.storeRoot, turnToken: identity.turnToken, sequence: publication.sequence, finalized: false, acknowledged: false };
             if (!publication.released) return;
             if (disposition.status === "ok" && disposition.closeAfterSuccess && record.verificationTarget
               && !await options.authorizeClosure?.(subjectOf(record)).catch(() => false)) throw new SubagentRecoveryError("subagent_recovery_policy_unavailable");
