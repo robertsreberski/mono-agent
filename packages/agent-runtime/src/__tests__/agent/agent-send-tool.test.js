@@ -172,3 +172,32 @@ it("closes an awaiting instance without running an answer, but keeps a new quest
   expect(second.instances.finish).toHaveBeenLastCalledWith("critic", expect.objectContaining({ status: "awaiting_reply", question: { question: "Another?" } }));
   expect(second.instances.close).not.toHaveBeenCalled();
 });
+
+describe("AgentSend recovery boundary", () => {
+  it("passes only host access to inspection and never invokes a provider", async () => {
+    const f = setup(); const recoveryAccess = { host: true };
+    f.instances.inspect = vi.fn(async () => ({ schema: "mono-agent.subagent-recovery.v1", status: "held" }));
+    const send = createAgentSendTool(f.options, { recoveryAccess });
+    const result = await send.execute("inspect", { id: "helper", inspect: true });
+    expect(result.details).toMatchObject({ executed: false, recovery: { status: "held" } });
+    expect(f.instances.inspect).toHaveBeenCalledWith("helper", recoveryAccess);
+    expect(f.instances.get).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it.each([{ message: "next" }, { close: false }, { background: false }, { ack: "token" }, { description: "purpose" }])(
+    "rejects mixed inspection semantics %j without execution", async (extra) => {
+      const f = setup(); f.instances.inspect = vi.fn();
+      await expect(createAgentSendTool(f.options).execute("inspect", { id: "helper", inspect: true, ...extra })).rejects.toThrow("inspect must be used alone");
+      expect(f.instances.inspect).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["subagent_recovery_already_consumed", "subagent_recovery_ack_conflict", "subagent_recovery_ack_stale"])(
+    "returns typed %s before busy lookup and never replays a receipt", async (code) => {
+      const f = setup(); f.instances.checkAcknowledgement = vi.fn(async () => { throw Object.assign(new Error(code), { code }); });
+      const request = { id: "helper", ack: "token", message: "exact bytes ", background: true, close: false, description: "purpose" };
+      const result = await createAgentSendTool(f.options).execute("ack", request);
+      expect(result.details).toEqual({ tool: "AgentSend", recovery: { code }, executed: false });
+      expect(f.instances.checkAcknowledgement).toHaveBeenCalledWith("helper", { ack: "token", message: "exact bytes ", background: true, close: false, description: "purpose" }, undefined);
+      expect(f.instances.get).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
+    },
+  );
+});

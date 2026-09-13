@@ -698,3 +698,28 @@ mandatory ownership and the non-evicting call ledger are never trimmed for them.
 Crash recovery can add positive group-cleanup evidence while leaving the exit
 unobserved. It cannot turn OS cleanup or a matching command label into successful
 verification. These private receipts do not widen ProcessJob/wake projections.
+
+### Explicit child recovery inspection and acknowledgement
+
+`AgentSend({id, inspect: true})` is separate from message/close/background/ack
+requests and invokes no provider. It can perform one bounded owner reconciliation
+pass, then returns held/unavailable or current-policy-authorized recovery facts.
+After independently verifying the work, a retained-only acknowledgement may be
+submitted with a message; recovery of a detached job requires `background: true`.
+The same token and request semantics return `subagent_recovery_already_consumed`
+without execution, even while the first continuation is busy. Changed semantics
+return conflict. Consumption and the new reservation are durable before admission.
+A proven rejected admission retains a not-started disposition; ambiguous absence
+never authorizes retry. Lost/unknown continuity cannot be acknowledged back into
+retained context: resolve ownership, then explicitly close/create instead.
+
+Persistent Agent's optional `verification: {workdir, reportPath?}` declares only
+an observation target. It changes neither command cwd nor policy/approval.
+Current readable/protected roots are checked at admission, capture and disclosure;
+linked common Git metadata outside those roots is not implicitly authorized.
+Fixed Git probes require an available read-only sandbox, disable external helper
+paths and never fall back to host execution. Unsupported alternates, denied paths,
+changed identity/HEAD and unavailable sandboxing produce typed gaps. Report
+metadata records only a relative path and presence, never content or a hash.
+Command facts and observations remain bounded; foreground-only recovery is marked
+`structured_job_recovery_unavailable`, not presented as a durable command job.

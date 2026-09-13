@@ -1,3 +1,4 @@
+import type { SubagentVerificationTarget } from "./subagent-verification-observer.js";
 import type { OwnedForegroundProcesses } from "@mono-agent/runtime-adapter";
 import type { InstanceOutcome } from "./subagent-instances.js";
 import type { SubagentContinuity, SubagentFailureReason, SubagentOwnerIdentity } from "./subagent-registry-ownership.js";
@@ -29,6 +30,6 @@ export interface SubagentRegistryPublication {
 }
 export interface ManagedSubagentRegistry {
   readonly root: string;
-  verify(identity: SubagentOwnerIdentity): Promise<void>;
+  verify(identity: SubagentOwnerIdentity): Promise<void | { readonly retained: boolean; readonly verification?: SubagentVerificationTarget }>;
   publish(phase: "intent" | "confirm", publication: SubagentRegistryPublication): Promise<void>;
 }

@@ -82,6 +82,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   retain actual exit/budget/cleanup measurements without argv, environment,
   output prose or inferred verification success; optional receipts yield space
   to mandatory ownership. Restart cleanup does not invent an exit receipt.
+  Recovery inspection reauthorizes bounded facts; retained-only acknowledgement
+  is consumed atomically with a new turn intent. Private keyed request bindings
+  never enter runtime handles, Session guidance or job/wake projections.
 - Opt in to Pi-native host-owned watches through `monitors.*`. Telegram, Slack,
   and existing web conversations receive coalesced event batches as exact-origin
   tool-capable wake turns; web uses ordinary assistant turns rather than a

@@ -1,3 +1,4 @@
+import { startPreparedProcess } from "./shared/process-runner.js";
 import { Type } from "@earendil-works/pi-ai";
 import { randomUUID } from "node:crypto";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
@@ -572,6 +573,22 @@ export function getPiBuiltinTools(allowedTools, {
     forceSequential: toolExecutionMode === "sequential",
     ctx,
   };
+  // Host-only, request-current observation capability; no raw environment or
+  // executable parameters are exposed through Agent/AgentSend schemas.
+  const recoveryAccess = {
+    workspace: (ctx ?? readToolRuntime()).workspace ?? (ctx ?? readToolRuntime()).repoRoot,
+    readableRoots: (ctx ?? readToolRuntime()).additionalReadRoots ?? [],
+    sandboxPolicy: resolveSandboxPolicy(ctx ?? readToolRuntime(), sandboxPolicy),
+    sandboxEngine: sandboxEngine ?? (ctx ?? readToolRuntime()).sandboxEngine,
+    runProbe: async (prepared, timeoutMs) => {
+      if (prepared?.sandboxed !== true) throw new Error("Readonly observation sandbox is unavailable.");
+      const handle = startPreparedProcess({ ...prepared, args: [...prepared.args] }, {
+        timeoutMs: Math.max(1, Math.min(1500, timeoutMs)), maxBufferBytes: 16384, exactEnvironment: true, waitForProcessGroup: true,
+      });
+      try { await handle.release(); return await handle.completion; }
+      catch { handle.cancel(); return { ...await handle.completion, spawnError: new Error("Readonly observation gate failed.") }; }
+    },
+  };
   const all = {
     Read: createBuiltinTool("Read", "Read", "Read a local file. Text files return line-numbered content; image files (PNG, JPEG, GIF, WebP, BMP) are returned as a viewable image you can see directly — use this to look at image attachments.", objectSchema({
       file_path: { type: "string" },
@@ -646,9 +663,9 @@ export function getPiBuiltinTools(allowedTools, {
     // with "Error:" is not reclassified as a tool failure, discarding its log.
     // The host artifact sink lets an over-cap subagent result spill its full
     // text to the run's tool-output directory instead of being cut.
-    Agent: createAgentTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled }),
+    Agent: createAgentTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled, recoveryAccess }),
     AskParent: createAskParentTool(askParentController),
-    AgentSend: createAgentSendTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled }),
+    AgentSend: createAgentSendTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled, recoveryAccess }),
     Monitor: monitorsController
       ? createBuiltinTool(
         "Monitor",

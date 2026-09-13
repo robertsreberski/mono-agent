@@ -217,8 +217,8 @@ function positiveInt(value, fallback) {
  * Build the `Agent` tool, or null when subagents are unavailable for this run.
  *
  * @param {RuntimeSubagentsOptions|null|undefined} subagents
- * @param {{instancesEnabled?: boolean, model?: *, effort?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
- * @param {{record: import("../../ai/types.js").RuntimeSubagentInstance, close?: boolean}} [continuation] Internal AgentSend dispatch; never model supplied.
+ * @param {{recoveryAccess?: unknown, instancesEnabled?: boolean, model?: *, effort?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
+ * @param {{record: import("../../ai/types.js").RuntimeSubagentInstance, close?: boolean, acknowledgement?: import("../../ai/types.js").RuntimeSubagentRecoveryRequest}} [continuation] Internal AgentSend dispatch; never model supplied.
  * @returns {*|null}
  */
 export function createAgentTool(subagents, context = {}, continuation) {
@@ -300,6 +300,9 @@ export function createAgentTool(subagents, context = {}, continuation) {
         description: `Run the subagent on this model instead of inheriting yours. Choices: ${models.map((choice) => `${choice.name} → ${choice.key}`).join(", ")}.`,
       } }),
       ...(instances ? {
+        verification: { type: "object", additionalProperties: false, required: ["workdir"], properties: {
+          workdir: { type: "string", maxLength: 2048 }, reportPath: { type: "string", maxLength: 512 },
+        }, description: "Optional observation-only worktree and relative report presence target. Does not change command cwd, widen permissions, authorize work, or establish verification success." },
         persist: { type: "boolean", description: "Keep this subagent alive so you can continue it with AgentSend." },
         id: { type: "string", pattern: INLINE_NAME_RE.source, description: "Instance id; only with persist." },
       } : {}),
@@ -326,7 +329,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
     executionMode: undefined,
     /**
      * @param {string} toolCallId
-     * @param {{prompt: string, name?: string, description?: string, systemPrompt?: string, tools?: ReadonlyArray<string>, effort?: string, model?: string, persist?: boolean, id?: string, background?: boolean}} params
+     * @param {{prompt: string, name?: string, description?: string, systemPrompt?: string, tools?: ReadonlyArray<string>, effort?: string, model?: string, persist?: boolean, id?: string, background?: boolean, verification?: {workdir: string, reportPath?: string}}} params
      * @param {AbortSignal} [signal]
      */
     async execute(toolCallId, params, signal) {
@@ -340,6 +343,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
       if (!instances && (params.persist !== undefined || params.id !== undefined)) {
         throw new Error("Error: persistent subagent instances are unavailable in this conversation.");
       }
+      if (params.verification !== undefined && params.persist !== true) throw new Error("Error: verification metadata requires persist: true and does not change cwd.");
       if (params.id !== undefined && params.persist !== true) throw new Error("Error: id requires persist: true.");
       if (params.persist !== undefined && typeof params.persist !== "boolean") throw new Error("Error: persist must be a boolean.");
       const authored = ceiling !== null && typeof params?.systemPrompt === "string" && params.systemPrompt.trim().length > 0;
@@ -391,13 +395,16 @@ export function createAgentTool(subagents, context = {}, continuation) {
         ? instances.finish(id, outcome) : instances.finish(id, outcome, reservation);
       const createInstance = async () => {
         const { mcpServers, ...retainedProfile } = profile;
-        return await instances.create({ ...(params.id === undefined ? {} : { id: params.id }),
+        const spec = { ...(params.id === undefined ? {} : { id: params.id }),
           name: profile.name, systemPrompt: profile.systemPrompt,
-          definition: { ...retainedProfile, mcpServerNames: profile.mcpServerNames ?? Object.keys(mcpServers ?? {}), model: profile.model ?? context.model, effort: profile.effort ?? context.effort } });
+          definition: { ...retainedProfile, mcpServerNames: profile.mcpServerNames ?? Object.keys(mcpServers ?? {}), model: profile.model ?? context.model, effort: profile.effort ?? context.effort } };
+        return params.verification ? await instances.create({ ...spec, verification: params.verification }, context.recoveryAccess) : await instances.create(spec);
       };
       if (detached) {
         const retained = continuation?.record ?? await createInstance();
-        instance = await instances.reserve(retained.id, reservation);
+        instance = continuation?.acknowledgement
+          ? await instances.reserve(retained.id, reservation, continuation.acknowledgement, context.recoveryAccess)
+          : await instances.reserve(retained.id, reservation);
         try {
           const started = await background.startInternal({ kind: "internal", tool: continuation ? "AgentSend" : "Agent",
             jobId: reservation, instanceId: retained.id,
@@ -449,7 +456,9 @@ export function createAgentTool(subagents, context = {}, continuation) {
         }
         try {
           if (detached) instance = await instances.begin(instance.id, reservation);
-          else if (continuation) instance = await instances.begin(continuation.record.id);
+          else if (continuation) instance = continuation.acknowledgement
+            ? await instances.begin(continuation.record.id, undefined, continuation.acknowledgement, context.recoveryAccess)
+            : await instances.begin(continuation.record.id);
           else if (params.persist) {
             const created = await createInstance();
             instance = await instances.begin(created.id);
@@ -511,6 +520,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         /** @type {unknown} */
         let thrown;
         let abandoned = false;
+        let recoveryUnavailable = false;
         try {
           await execution?.managed?.started();
           const underlying = Promise.resolve().then(() => subagents.run({
@@ -558,7 +568,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
             const pendingId = instance.id;
             // Keep the instance busy until the actual runner settles, even after the tool deadline.
             void Promise.resolve(running).then(
-              (late) => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled", answerHead: late?.text ?? "", ...(detached ? { usage: detachedUsage(late, collector.usage()) } : {}) }),
+              (late) => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled", ...(late?.failureKind === "session_continuity_lost" ? { failureKind: "session_continuity_lost" } : {}), answerHead: late?.text ?? "", ...(detached ? { usage: detachedUsage(late, collector.usage()) } : {}) }),
               () => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled", ...(detached ? { usage: detachedUsage(undefined, collector.usage()) } : {}) }),
             ).catch(() => undefined);
           }
@@ -577,6 +587,10 @@ export function createAgentTool(subagents, context = {}, continuation) {
           releaseSlot();
         }
 
+        if (instance && abandoned && !execution?.managed && instances.fence) {
+          try { await instances.fence(instance.id, { status: timedOut ? "timeout" : "cancelled" }, instance.activeTurn?.token ?? reservation); }
+          catch { recoveryUnavailable = true; } // The pre-existing active intent/lock stays held.
+        }
         if (instance && abandoned && execution?.managed) {
           await execution.managed.report({ status: timedOut ? "timeout" : "cancelled" });
         }
@@ -592,7 +606,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
             await execution.managed.report(instanceOutcome);
             instance = await instances.get(instance.id);
           } else instance = await finishInstance(instance.id, instanceOutcome);
-          if (!execution?.managed && continuation?.close && state.status === "ok" && !signal?.aborted) instance = await instances.close(instance.id);
+          if (!execution?.managed && continuation?.close && state.status === "ok" && !signal?.aborted) instance = context.recoveryAccess === undefined ? await instances.close(instance.id) : await instances.close(instance.id, context.recoveryAccess);
         }
         // The parent turn being cancelled is not a subagent outcome — surface it
         // as an aborted tool call the way every other built-in does. Close any
@@ -644,7 +658,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           content: [{ type: "text", text }],
           details: {
             tool: continuation ? "AgentSend" : "Agent",
-            subagent: { ...(detached ? { childStillBusy: abandoned, usage: detachedUsage(result, collector.usage()) } : {}), ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}), name: profile.name, callIndex, status: outcome.status, ...(outcome.question ? { question: outcome.question } : {}), toolCalls: collector.entries().length,
+            subagent: { ...(recoveryUnavailable ? { recoveryUnavailable: true } : {}), ...(detached ? { childStillBusy: abandoned, usage: detachedUsage(result, collector.usage()) } : {}), ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}), name: profile.name, callIndex, status: outcome.status, ...(outcome.question ? { question: outcome.question } : {}), toolCalls: collector.entries().length,
               ...(routeLabel ? { requested, ...(collector.attribution()?.executed === undefined ? {} : { executed: collector.attribution().executed }) } : {}),
             },
             ...(truncated ? { tool_payload_truncated: true } : {}),

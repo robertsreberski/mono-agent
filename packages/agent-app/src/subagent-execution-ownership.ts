@@ -121,7 +121,7 @@ function disposition(value: unknown): value is SubagentDisposition {
     && (value.closeAfterSuccess === undefined || typeof value.closeAfterSuccess === "boolean")
     && ["ok", "awaiting_reply", "failed", "timeout", "cancelled", "empty", "interrupted", "busy"].includes(String(value.status))
     && ["retained", "lost", "unknown"].includes(String(value.continuity))
-    && (value.reason === undefined || ["settlement_unknown", "session_continuity_lost", "timeout", "cancelled", "failed", "empty", "interrupted"].includes(String(value.reason)));
+    && (value.reason === undefined || ["continuation_not_started", "settlement_unknown", "session_continuity_lost", "timeout", "cancelled", "failed", "empty", "interrupted"].includes(String(value.reason)));
 }
 
 function usage(value: unknown): value is InstanceUsage {

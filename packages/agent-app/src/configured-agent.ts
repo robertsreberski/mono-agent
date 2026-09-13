@@ -1,3 +1,4 @@
+import { createSubagentRecoveryAccess } from "./subagent-recovery-access.js";
 import type { OwnedForegroundProcesses } from "@mono-agent/runtime-adapter";
 import { createSubagentInstanceRegistry, isLiveSubagentInstance, persistentSubagentsEnabled, subagentInstancesRoot, type InstanceRegistryHandle } from "./subagent-instances.js";
 import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
@@ -1212,10 +1213,22 @@ async function createConfiguredAgentHarnessInternal(
           : { onUnavailable: options.onMemoryRememberUnavailable }),
       });
   const subagentDeps = { runtime, baseModel: model, ...(runtimeForModel === undefined ? {} : { runtimeForModel }) };
+  const subagentRecoveryAccess = createSubagentRecoveryAccess({
+    ...(internalHooks.processJobs?.service ? { service: internalHooks.processJobs.service } : {}),
+    privateRoots: async () => {
+      const loaded = await loadProcessJobsRootRegistryProtection(ownership.agentRoot, config.runtime.workspace);
+      if (loaded.kind === "failed") throw new Error("Subagent observation policy is unavailable.");
+      const current = await attestProcessJobsRootRegistrySnapshot(loaded, config.runtime.workspace);
+      return [...processJobsProtectionPolicyRoots(current), subagentInstancesRoot(config)];
+    },
+    hostAccess: () => ({ workspace: config.runtime.workspace, readableRoots: [...(config.tools.filesystem?.readableRoots ?? [])],
+      sandboxPolicy: mergeSandboxPolicies(harnessSandboxPolicy, clearSessionsSandboxPolicy(clearSessionsBoundaryOptions)), sandboxEngine }),
+  });
   const instanceRegistry = persistentSubagentsEnabled(config)
     ? createSubagentInstanceRegistry({
         root: subagentInstancesRoot(config),
         ...config.subagents?.instances,
+        ...subagentRecoveryAccess,
         ...(internalHooks.processJobs?.service?.bindManagedSubagents ? {
           ownerForReservation: (jobId: string) => ({ jobId, storeRoot: internalHooks.processJobs!.service!.settings.stateDir }),
           resolveOwner: (identity: import("./subagent-registry-ownership.js").SubagentOwnerIdentity) => internalHooks.processJobs!.service!.resolveSubagentOwner!(identity),
@@ -1397,7 +1410,8 @@ async function createConfiguredAgentHarnessInternal(
     ...(instanceRegistry === undefined ? {} : { subagentInstancesFor: async ({ request }: { request: AgentHarnessRequest }) =>
       (await (await instanceRegistry.open(request.conversationId)).list()).filter(isLiveSubagentInstance).slice(0, 12).map((record) => ({
         id: record.id, name: record.name, status: record.status, turns: record.turns,
-        ...(record.reservation ? { jobId: record.reservation.token } : {}),
+        ...(record.reservation || record.recoveryJobId ? { jobId: record.reservation?.token ?? record.recoveryJobId } : {}),
+        ...(record.recoveryBlocked ? { recoveryBlocked: true } : {}),
         ...(record.pendingQuestion ? { pendingQuestion: record.pendingQuestion } : {}),
         ageMs: Math.max(0, Date.now() - record.updatedAt),
         route: [record.definition.model?.reference, record.definition.effort].filter(Boolean).join("/"),

@@ -1,6 +1,6 @@
 import { isAbsolute, resolve } from "node:path";
 
-export type SubagentFailureReason = "settlement_unknown" | "session_continuity_lost" | "timeout" | "cancelled" | "failed" | "empty" | "interrupted";
+export type SubagentFailureReason = "continuation_not_started" | "settlement_unknown" | "session_continuity_lost" | "timeout" | "cancelled" | "failed" | "empty" | "interrupted";
 export type SubagentContinuity = "retained" | "lost" | "unknown";
 export interface SubagentTurnIntent {
   readonly token: string;
@@ -26,14 +26,14 @@ export type SubagentOwnerResolution =
   | { readonly state: "released" | "not_admitted"; readonly identity: SubagentOwnerIdentity; readonly sequence: number; readonly reason?: SubagentFailureReason; readonly continuity: SubagentContinuity };
 
 export class SubagentRecoveryError extends Error {
-  constructor(readonly code: "subagent_owner_unavailable" | "subagent_ownership_held" | "subagent_recovery_required" | "subagent_stale_turn") {
+  constructor(readonly code: "subagent_owner_unavailable" | "subagent_ownership_held" | "subagent_recovery_required" | "subagent_stale_turn" | "subagent_recovery_ack_invalid" | "subagent_recovery_ack_stale" | "subagent_recovery_already_consumed" | "subagent_recovery_ack_conflict" | "subagent_recovery_not_retained" | "subagent_recovery_background_required" | "subagent_recovery_policy_unavailable" | "subagent_recovery_policy_denied") {
     super(code);
     this.name = "SubagentRecoveryError";
   }
 }
 export const isSubagentUuid = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(value);
 export const isSubagentFailureReason = (value: unknown): value is SubagentFailureReason => typeof value === "string"
-  && ["settlement_unknown", "session_continuity_lost", "timeout", "cancelled", "failed", "empty", "interrupted"].includes(value);
+  && ["continuation_not_started", "settlement_unknown", "session_continuity_lost", "timeout", "cancelled", "failed", "empty", "interrupted"].includes(value);
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const exact = (value: Record<string, unknown>, keys: string[]): boolean => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 export function isSubagentTurnIntent(value: unknown): value is SubagentTurnIntent {

@@ -325,17 +325,23 @@
  * @property {{input: number, output: number, cacheRead: number, cacheWrite: number, costUsd: number}} usage
  */
 /**
+ * @typedef {{ack: string, message: string, background?: boolean, close?: boolean, description?: string}} RuntimeSubagentRecoveryRequest
+ */
+/**
  * Host-owned, conversation-scoped persistent instance facade. No filesystem implementation belongs in the kernel.
  * @typedef {Object} RuntimeSubagentInstances
  * @property {() => Promise<RuntimeSubagentInstance[]>} list
  * @property {(id: string) => Promise<RuntimeSubagentInstance|undefined>} get
- * @property {(spec: {id?: string, name: string, systemPrompt: string, definition: RuntimeSubagentDefinition}) => Promise<RuntimeSubagentInstance>} create
+ * @property {(spec: {id?: string, name: string, systemPrompt: string, definition: RuntimeSubagentDefinition, verification?: {workdir: string, reportPath?: string}}, access?: unknown) => Promise<RuntimeSubagentInstance>} create
+ * @property {(id: string, outcome: {status: "timeout"|"cancelled"}, turnToken?: string) => Promise<void>} [fence]
  * @property {(id: string, question: {question: string, options?: string[]}) => Promise<RuntimeSubagentInstance>} markAwaiting
- * @property {(id: string, token: string) => Promise<RuntimeSubagentInstance>} [reserve]
+ * @property {(id: string, access?: unknown) => Promise<unknown>} [inspect]
+ * @property {(id: string, acknowledgement: RuntimeSubagentRecoveryRequest, access?: unknown) => Promise<void>} [checkAcknowledgement]
+ * @property {(id: string, token: string, acknowledgement?: RuntimeSubagentRecoveryRequest, access?: unknown) => Promise<RuntimeSubagentInstance>} [reserve]
  * @property {(id: string, token: string) => Promise<void>} [releaseReservation]
- * @property {(id: string, token?: string) => Promise<RuntimeSubagentInstance>} begin
+ * @property {(id: string, token?: string, acknowledgement?: RuntimeSubagentRecoveryRequest, access?: unknown) => Promise<RuntimeSubagentInstance>} begin
  * @property {(id: string, outcome: {status: string, failureKind?: "session_continuity_lost", question?: {question: string, options?: string[]}, usage?: {input?: number, output?: number, cacheRead?: number, cacheWrite?: number, costUsd?: number}, answerHead?: string}, token?: string) => Promise<RuntimeSubagentInstance>} finish
- * @property {(id: string) => Promise<RuntimeSubagentInstance>} close
+ * @property {(id: string, access?: unknown) => Promise<RuntimeSubagentInstance>} close
  */
 
 /**

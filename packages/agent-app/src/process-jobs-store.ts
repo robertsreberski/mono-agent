@@ -1,3 +1,4 @@
+import { isSubagentVerificationTarget, isSubagentVerificationObservation, type SubagentVerificationTarget, type SubagentVerificationObservation } from "./subagent-verification-observer.js";
 import { isSubagentCommandReceipts, type SubagentCommandReceipts } from "./subagent-command-receipts.js";
 import { hasSubagentObligation, hasUnresolvedSubagentOwnership, isSubagentExecutionOwnership, type SubagentExecutionOwnership } from "./subagent-execution-ownership.js";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
@@ -93,6 +94,8 @@ export interface DurableProcessJobRecord {
   childStillBusy?: boolean;
   subagentOwnership?: SubagentExecutionOwnership;
   subagentCommandReceipts?: SubagentCommandReceipts;
+  subagentVerification?: SubagentVerificationTarget;
+  subagentObservation?: SubagentVerificationObservation;
   subagentProgress?: ProcessJobSubagentProgress;
   subagentQuestion?: { readonly question: string; readonly options?: string[] };
   state: ProcessJobState;
@@ -1134,7 +1137,7 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
   if (!isRecord(value)
     || !hasExactKeys(value, [
       "schemaVersion", "generation", "jobId", "tool", "state", "summary", "agentIncarnation",
-      ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "subagentProgress", "subagentOwnership", "subagentCommandReceipts"].filter((key) => Object.prototype.hasOwnProperty.call(value, key)),
+      ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "subagentProgress", "subagentOwnership", "subagentCommandReceipts", "subagentVerification", "subagentObservation"].filter((key) => Object.prototype.hasOwnProperty.call(value, key)),
       ...(Object.prototype.hasOwnProperty.call(value, "processIncarnation") ? ["processIncarnation"] : []),
       "pid", "pgid", "sandboxSettingsPath", "argvSummary", "cwd", "envKeys", "origin", "chainDepth",
       ...(Object.prototype.hasOwnProperty.call(value, "wakeOnCompletion") ? ["wakeOnCompletion"] : []),
@@ -1147,6 +1150,8 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
     || !isJobId(value.jobId)
     || (value.kind === "internal" ? !["Agent", "AgentSend"].includes(String(value.tool))
       || typeof value.instanceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(value.instanceId)
+      || (value.subagentVerification !== undefined && (value.kind !== "internal" || !value.subagentOwnership || !isSubagentVerificationTarget(value.subagentVerification)))
+      || (value.subagentObservation !== undefined && (value.kind !== "internal" || !value.subagentOwnership || !isSubagentVerificationObservation(value.subagentObservation)))
       || (value.subagentCommandReceipts !== undefined && (value.kind !== "internal" || value.subagentOwnership === undefined || !isSubagentCommandReceipts(value.subagentCommandReceipts)))
     || (value.subagentOwnership !== undefined && !isSubagentExecutionOwnership(value.subagentOwnership))
       || (value.subagentProgress !== undefined && !isProcessJobSubagentProgress(value.subagentProgress))
@@ -1603,10 +1608,11 @@ function validSubagentJobQuestion(value: unknown): boolean {
 /** Optional command facts must never crowd mandatory ownership out of a record. */
 export function boundSubagentCommandReceipts(record: DurableProcessJobRecord): void {
   const receipts = record.subagentCommandReceipts;
-  if (!receipts) return;
+  if (!receipts && !record.subagentObservation) return;
   const bytes = (): number => Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`);
-  while (receipts.commands.length && bytes() > MAX_RECORD_BYTES) {
+  while (receipts?.commands.length && bytes() > MAX_RECORD_BYTES) {
     receipts.commands.shift(); receipts.omitted = Math.min(Number.MAX_SAFE_INTEGER, receipts.omitted + 1);
   }
   if (bytes() > MAX_RECORD_BYTES) delete record.subagentCommandReceipts;
+  if (bytes() > MAX_RECORD_BYTES) delete record.subagentObservation;
 }

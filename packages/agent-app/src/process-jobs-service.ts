@@ -1,3 +1,5 @@
+import type { SubagentVerificationTarget, SubagentVerificationObservation } from "./subagent-verification-observer.js";
+import type { SubagentCommandReceipts } from "./subagent-command-receipts.js";
 import { boundSubagentCommandReceipts } from "./process-jobs-store.js";
 import { emptySubagentCommandReceipts, retainSubagentCommandReceipt, subagentCommandReceipt } from "./subagent-command-receipts.js";
 import { createSubagentOwnedCommands } from "./subagent-owned-commands.js";
@@ -161,10 +163,18 @@ export interface OpenProcessJobsServiceOptions {
   readonly store?: ProcessJobStore;
 }
 
+export interface SubagentRecoverySnapshot {
+  readonly commands?: SubagentCommandReceipts;
+  readonly verification?: SubagentVerificationTarget;
+  readonly observation?: SubagentVerificationObservation;
+}
 export interface ProcessJobsServiceHandle {
   readonly settings: ProcessJobsSettings;
   readonly operatorToken: string;
   readonly health: ProcessJobsHealth;
+  inspectSubagentRecovery?(identity: SubagentOwnerIdentity): Promise<SubagentRecoverySnapshot | undefined>;
+  recordSubagentObservation?(identity: SubagentOwnerIdentity, observation: SubagentVerificationObservation): Promise<void>;
+  refreshSubagentOwner?(identity: SubagentOwnerIdentity): Promise<void>;
   bindManagedSubagents?(registry: ManagedSubagentRegistry): void;
   resolveSubagentOwner?(identity: SubagentOwnerIdentity): Promise<SubagentOwnerResolution>;
   checkSubagentOwnerIndex?(conversationId: string, known: readonly SubagentKnownOwner[]): Promise<"clear" | "held" | "unavailable">;
@@ -265,6 +275,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   readonly operatorToken: string;
   readonly health: ProcessJobsHealth;
   private readonly mutableHealth: MutableProcessJobsHealth;
+  // Only in-flight verifier/admission calls, not a historical execution ledger.
+  // Retain through negative publication so a delayed verified call cannot race
+  // around a durable not-admitted tombstone and its registry release.
+  private readonly managedAdmissionTickets = new Set<string>();
   private managedWritesClosed = false;
   private managedRegistry: ManagedSubagentRegistry | undefined;
   private readonly managedCommands = new Map<string, ReturnType<typeof createSubagentOwnedCommands>>();
@@ -562,6 +576,50 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     for (const record of this.recordSnapshot.values()) if (record.subagentOwnership?.publication.state === "pending" && isTerminalProcessJobState(record.state)) this.scheduleManagedPublication(record.jobId);
   }
 
+  async inspectSubagentRecovery(identity: SubagentOwnerIdentity): Promise<SubagentRecoverySnapshot | undefined> {
+    return await this.withManagedLock(async () => {
+      if (!this.storageOperational || this.stopping || identity.storeRoot !== this.settings.stateDir) return undefined;
+      const record = await this.storeGet(identity.jobId, "subagent.inspect");
+      if (!record?.subagentOwnership || !sameSubagentOwner(identity, this.managedIdentity(record))) return undefined;
+      return { ...(record.subagentCommandReceipts ? { commands: structuredClone(record.subagentCommandReceipts) } : {}),
+        ...(record.subagentVerification ? { verification: structuredClone(record.subagentVerification) } : {}),
+        ...(record.subagentObservation ? { observation: structuredClone(record.subagentObservation) } : {}) };
+    }).catch(() => undefined);
+  }
+
+  async recordSubagentObservation(identity: SubagentOwnerIdentity, observation: SubagentVerificationObservation): Promise<void> {
+    await this.withManagedLock(async () => {
+      if (!this.storageOperational || this.stopping || identity.storeRoot !== this.settings.stateDir) throw new Error("Subagent owner unavailable.");
+      await this.storeMutate("subagent.observation", (records) => {
+        const record = requireRecord(records, identity.jobId);
+        if (!record.subagentOwnership || !sameSubagentOwner(identity, this.managedIdentity(record))) throw new Error("Subagent owner unavailable.");
+        record.subagentObservation = structuredClone(observation);
+      });
+    });
+  }
+
+  async refreshSubagentOwner(identity: SubagentOwnerIdentity): Promise<void> {
+    await this.withManagedLock(async () => {
+      if (!this.storageOperational || this.stopping || identity.storeRoot !== this.settings.stateDir) return;
+      const record = await this.storeGet(identity.jobId, "subagent.refresh");
+      if (!record?.subagentOwnership || !sameSubagentOwner(identity, this.managedIdentity(record)) || !isTerminalProcessJobState(record.state) || !hasSubagentObligation(record)) return;
+      const ownership = await reconcileSubagentExecutionOwnership(record.subagentOwnership, {
+        currentIncarnation: this.agentIncarnation, readIncarnation: this.readIncarnation,
+        sameIncarnation: async (pid, expected) => await this.sameIncarnation(pid, expected), groupAbsent: (pgid) => this.ownedProcessGroupIsAbsent(pgid),
+        signalGroup: (pgid, signal) => this.signalOwned(pgid, signal), grace: async () => await this.sleep(RECOVERY_KILL_GRACE_MS),
+        waitForGroupExit: async (pgid) => await this.waitForOwnedProcessGroupExit(pgid), cleanup: cleanupPersistedSandboxSettings,
+      });
+      await this.storeMutate("subagent.refresh_observation", (records) => {
+        const current = requireRecord(records, identity.jobId); current.subagentOwnership = ownership;
+        current.childStillBusy = hasUnresolvedSubagentOwnership(current);
+        if (ownership.command) retainSubagentCommandReceipt(current.subagentCommandReceipts ??= emptySubagentCommandReceipts(), subagentCommandReceipt(ownership.command, this.now().getTime()));
+      });
+    });
+    // Inspection holds the registry transaction: publish only after it can return,
+    // never create a store->registry->store lock cycle here.
+    this.scheduleManagedPublication(identity.jobId);
+  }
+
   async resolveSubagentOwner(identity: SubagentOwnerIdentity): Promise<SubagentOwnerResolution> {
     return await this.withManagedLock(async (): Promise<SubagentOwnerResolution> => {
       if (!this.storageOperational || this.stopping || identity.storeRoot !== this.settings.stateDir) return { state: "unavailable" };
@@ -820,22 +878,37 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     request: ServiceStartRequest,
   ): Promise<ProcessJobStartResult> {
     let handedOff = false;
+    let admissionTicket: string | undefined;
+    let rejectedManagedJob: string | undefined;
+    let retainedBeforeAdmission = false;
+    let verification: SubagentVerificationTarget | undefined;
     const pending = pendingRequest(isInternal(request) && request.managed ? { ...request, cleanup: async () => {} } : request);
     try {
       if (isInternal(request) && request.managed) {
         if (!this.managedRegistry) throw new ProcessJobServiceError("process_job_controller_unavailable");
-        await this.managedRegistry.verify({ storeRoot: this.settings.stateDir, jobId: request.jobId, conversationId: origin.conversationId,
+        await this.withManagedLock(async () => {
+          this.assertAvailable(origin, chainDepth, request);
+          if (this.managedAdmissionTickets.has(request.jobId) || this.managedAdmissionTickets.size >= 128) throw new ProcessJobServiceError("process_job_conflict");
+          this.managedAdmissionTickets.add(request.jobId); admissionTicket = request.jobId;
+        });
+        const verified = await this.managedRegistry.verify({ storeRoot: this.settings.stateDir, jobId: request.jobId, conversationId: origin.conversationId,
           instanceId: request.instanceId, instanceIncarnation: request.managed.instanceIncarnation, turnToken: request.managed.turnToken });
+        retainedBeforeAdmission = verified?.retained === true;
+        verification = verified?.verification;
       }
       const result = await this.withLock(async () => {
         this.assertAvailable(origin, chainDepth, request);
         const jobId = isInternal(request) ? request.jobId : this.randomId();
         const admissionRecords = await this.storeList("admission.list");
-        enforceAdmission(
-          new Map(admissionRecords.map((record) => [record.jobId, record])),
-          origin.normalizedReplyTarget,
-          this.settings,
-        );
+        // Reject before even touching artifact paths owned by an existing job.
+        if (admissionRecords.some((record) => record.jobId === jobId)) throw new ProcessJobServiceError("process_job_conflict");
+        let notAdmitted: ProcessJobServiceError | undefined;
+        try {
+          enforceAdmission(new Map(admissionRecords.map((record) => [record.jobId, record])), origin.normalizedReplyTarget, this.settings);
+        } catch (error) {
+          if (!isInternal(request) || !request.managed || !(error instanceof ProcessJobServiceError)) throw error;
+          notAdmitted = error;
+        }
         this.assertLiveSnapshotAdmissionCapacity();
         const artifacts = await this.storeEnsureArtifacts(jobId);
         const admittedAt = this.now();
@@ -849,7 +922,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         const record: DurableProcessJobRecord = {
           schemaVersion: 1,
           ...(isInternal(request) ? { kind: "internal" as const, instanceId: request.instanceId, childStillBusy: false,
-            ...(request.managed ? { subagentOwnership: this.newManagedOwnership(request) } : {}) } : {}),
+            ...(request.managed ? { subagentOwnership: this.newManagedOwnership(request), ...(verification ? { subagentVerification: verification } : {}) } : {}) } : {}),
           generation: randomUUID(),
           jobId,
           tool: request.tool,
@@ -864,7 +937,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           envKeys: effectiveEnvironmentKeys(request.prepared?.env),
           origin,
           chainDepth,
-          wakeOnCompletion: request.wakeOnCompletion ?? true,
+          wakeOnCompletion: notAdmitted ? false : request.wakeOnCompletion ?? true,
           maxRuntimeMs,
           maxOutputBytes: this.settings.maxOutputBytes,
           previewChars,
@@ -895,6 +968,12 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           },
           lastError: null,
         };
+        if (notAdmitted) {
+          transitionTerminal(record, "failed", this.now(), "process_job_failed", "The child drive was not admitted; no provider or command started.");
+          record.wake.state = "failed";
+          record.subagentOwnership!.revoked = true;
+          record.subagentOwnership!.disposition = { status: "failed", reason: "continuation_not_started", continuity: retainedBeforeAdmission ? "retained" : "unknown" };
+        }
         try {
           await this.storeMutate("admission.persist", (records) => {
             if (records.has(jobId)) throw new ProcessJobServiceError("process_job_conflict");
@@ -904,6 +983,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           await this.storeDiscardArtifacts(jobId).catch(() => undefined);
           throw error;
         }
+        if (notAdmitted) { rejectedManagedJob = jobId; throw notAdmitted; }
         this.pending.set(jobId, pending);
         handedOff = true;
         if (this.runningOccupancy() < this.settings.maxConcurrent) {
@@ -915,6 +995,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       await this.updateInitialSurface(result.jobId);
       return result;
     } catch (error) {
+      if (rejectedManagedJob) await this.publishManaged(rejectedManagedJob).catch(() => undefined); // P remains pinned on publication failure.
       let cleanupIncomplete = false;
       if (!handedOff) {
         try { await pending.cleanup(); } catch { cleanupIncomplete = true; }
@@ -927,6 +1008,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       }
       if (error instanceof ProcessJobServiceError) throw error;
       throw new ProcessJobServiceError("process_job_store_error");
+    } finally {
+      if (admissionTicket) this.managedAdmissionTickets.delete(admissionTicket);
     }
   }
 
@@ -1917,7 +2000,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       const result = await this.store.mutate(async (records) => {
         try {
           const value = await mutate(records);
-          for (const record of records.values()) if (record.subagentCommandReceipts) boundSubagentCommandReceipts(record);
+          for (const record of records.values()) if (record.subagentCommandReceipts || record.subagentObservation) boundSubagentCommandReceipts(record);
           desired = captureMutationSnapshot(records);
           return value;
         } catch (error) {
