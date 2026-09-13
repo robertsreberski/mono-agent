@@ -598,8 +598,12 @@ completion response.
 `mono-agent validate` / `doctor` reports whether the feature is disabled or
 unsupported on Windows, then inspects only bounded local record counts and
 owner-only modes, including any quarantined transaction count and the bounded
-runtime health marker. It does not probe or mutate the live controller and
-never creates a missing store.
+runtime health marker. For valid internal child records it also reports path-free
+retained-ownership, unresolved-ownership, and owner-unavailable counts. The
+owner-unavailable count is the conservative subset whose persisted owner is
+unknown (including legacy busy records without structured ownership); it is not
+a live process probe. Doctor does not expose job ids, registry roots, or command
+paths, does not mutate the live controller, and never creates a missing store.
 
 ### Detached persistent children
 
@@ -655,9 +659,107 @@ replay a started job. Message plus close closes only after a successful answer.
 Timeout/cancellation requests abort and waits through the Agent grace period.
 If execution remains unresolved, the terminal job reports `childStillBusy:true`.
 The instance stays busy and retains its turn lock and independent runtime
-protection lease until actual settlement or process death. A late settlement
-updates only the instance and never sends another wake or changes the terminal
-job. The retained card describes the terminal observation; Session context shows
+protection lease until actual settlement. Process death alone does not prove
+that command descendants exited. A late settlement never sends another wake or
+changes the terminal outcome, and leaves a recovery fence when session continuity
+is unknown. Do not send a new message merely because the running lock disappeared. The retained card describes the terminal observation; Session context shows
 the current instance state. Service shutdown does not wait indefinitely for an
 abandoned child. Restart interrupts stored work and wakes its origin without
 replaying it; pending questions survive recovery.
+
+Persistent registry failures retain a minimal typed reason and turn identity.
+Lost or unknown continuity requires explicit close/create after ownership is
+resolved, not an implicit retry of unretained prose. Foreground persistent turns
+retain the ordinary command timeout and do not gain durable command ownership.
+Unresolved ownership or registry publication pins terminal records and their
+artifacts independently of wake delivery, age, and admission limits. Legacy
+`childStillBusy:true` is conservative unknown evidence, not proof of cleanup.
+A disabled service or an unavailable retained-root index cannot authorize new
+persistent instances around forgotten work. Do not delete ownership records to
+bypass this fence. Older runtimes reject records containing the new ownership or
+registry-intent fields; stripping those fields is not a safe downgrade. Existing
+legacy command cleanup cannot be retroactively proven from an interrupted job.
+
+For managed detached turns, Bash/Exec still returns its ordinary awaited tool
+result. The host persists preparation and PID/group incarnation before releasing
+the gated target, and borrows the existing child job slot rather than scheduling
+a second job. Overlapping commands and repeated host call identities reject
+without execution; no rejected owner falls back to an untracked command. Registry
+reservation identity is verified before admission. The provider's actual promise
+settlement is observed before the reporting race; reporting timeout cannot erase
+an unresolved lease or command. Clean instance release waits for terminal job
+publication, not merely provider return. A lost registry-confirmation receipt
+keeps continuation/close/reuse fenced until the registered owner confirms the
+same publication sequence. Private owner roots and publication receipts are not
+included in instance handle results.
+
+The private store retains at most 32 command receipts (12 KiB aggregate), with an
+omitted count under pressure. These contain actual tool/cwd/budget/exit/signal,
+timeout/cancel/truncation and cleanup measurements, never raw argv, environment,
+stdout, provider answer or a fabricated "checks passed" verdict. Optional facts
+are trimmed before they can exceed the job's real serialized-record budget;
+mandatory ownership and the non-evicting call ledger are never trimmed for them.
+Crash recovery can add positive group-cleanup evidence while leaving the exit
+unobserved. It cannot turn OS cleanup or a matching command label into successful
+verification. These private receipts do not widen ProcessJob/wake projections.
+
+### Explicit child recovery inspection and acknowledgement
+
+`AgentSend({id, inspect: true})` is separate from message/close/background/ack
+requests and invokes no provider. It can perform one bounded owner reconciliation
+pass, then returns held/unavailable or current-policy-authorized recovery facts.
+After independently verifying the work, a retained-only acknowledgement may be
+submitted with a message; recovery of a detached job requires `background: true`.
+The same token and request semantics return `subagent_recovery_already_consumed`
+without execution, even while the first continuation is busy. Changed semantics
+return conflict. Consumption and the new reservation are durable before admission.
+A requested `close:true` retires the child only after that acknowledged
+continuation succeeds. If it fails, any pending AskParent question and the child
+instance remain available for explicit recovery; repeating the consumed request
+does not execute it again.
+A proven rejected admission retains a not-started disposition; ambiguous absence
+never authorizes retry. Lost/unknown continuity cannot be acknowledged back into
+retained context: resolve ownership, then explicitly close/create instead.
+
+The configured foreground persistent path currently classifies failures as
+`lost` (a native response outside the selected session) or `unknown` (including
+late timeout settlement). It does not establish a retained failure epoch eligible
+for acknowledgement. While the original runtime is unresolved, inspection is
+`held` and close/continuation remain blocked. After settlement, authorized
+inspection reports `structured_job_recovery_unavailable` with the minimal registry
+fence, not a ProcessJob, command checkpoint or acknowledgement token. Explicitly
+close the instance and create another with the necessary context. A late answer
+or existing JSONL file does not upgrade unknown continuity. Ordinary successful
+foreground continuation and AskParent replies still resume their retained session
+without a recovery acknowledgement.
+
+For a managed detached failure explicitly classified as retained, an accepted
+acknowledgement resumes the same durable session; it does not replay the failed
+request or authorize a new provider epoch. Inspection and duplicate consumed
+acknowledgements invoke no provider and append no continuation message.
+
+Persistent Agent's optional `verification: {workdir, reportPath?}` declares only
+an observation target. It changes neither command cwd nor policy/approval.
+Current readable/protected roots are checked at admission, capture and disclosure;
+linked common Git metadata outside those roots is not implicitly authorized.
+Fixed Git probes require an available read-only sandbox, disable external helper
+paths and never fall back to host execution. The host selects root-installed native
+Git: `/Library/Developer/CommandLineTools/usr/bin/git` on macOS and `/usr/bin/git`
+on Linux. It checks canonical secure ancestry, ownership, executable format and
+identity before/after probes; it never consults model-supplied paths or `PATH`,
+executes macOS's `/usr/bin/git` bootstrap shim, installs tooling or changes the
+active developer directory. Missing/redirected/untrusted tooling or an unsupported
+platform yields `observation_unavailable`. Existing sandbox runtime-read allowances
+for the executable do not grant repository/private-root read authority; explicit
+protection of the selected executable denies observation before preparation.
+The prepared native command must preserve the selected executable and exact
+declared observation cwd. Repository config includes are unsupported and fail
+closed before status, preventing an included file from changing helper policy
+between probes. Status ignores all initialized submodules, so nested repository
+changes are outside the observation and nested clean filters are not executed.
+Unsupported alternates, denied paths, replaced roots,
+changed Git metadata/executable identity/HEAD and unavailable sandboxing produce
+typed gaps. Report metadata records only a relative path and presence, never
+content or a hash.
+Command facts and observations remain bounded; foreground-only recovery is marked
+`structured_job_recovery_unavailable`, not presented as a durable command job.

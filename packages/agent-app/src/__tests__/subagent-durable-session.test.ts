@@ -1,11 +1,12 @@
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { loadMonoAgentConfig } from "@mono-agent/config";
-import { createMonoRuntime } from "@mono-agent/runtime-adapter";
+import { createMonoRuntime, createSandboxPolicy } from "@mono-agent/runtime-adapter";
+import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
 import { buildSubagentsOptions, createSubagentsRuntimeExtension } from "../configured-agent.js";
-import { createSubagentInstanceRegistry } from "../subagent-instances.js";
+import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 // @ts-expect-error Private kernel test seam; no new public tool export.
 import { createAgentTool } from "../../../agent-runtime/src/agent/tools/agent-tool.js";
 // @ts-expect-error Private kernel test seam; no new public tool export.
@@ -17,6 +18,78 @@ const piPath: string = fileURLToPath(new URL("../../../agent-runtime/node_module
 const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import(piPath);
 
 describe("app persistent subagent durable sessions", () => {
+  it.each(["loss", "late-timeout"])("G07: configured foreground Pi %s stays registry-only and requires explicit replacement", async (mode) => {
+    const root = await mkdtemp(resolve(process.cwd(), "node_modules/.foreground-recovery-")); const owner = createMonoRuntime();
+    let deliver!: () => void; const delivery = new Promise<void>((done) => { deliver = done; });
+    let nativeReturned = false;
+    try {
+      const config = loadMonoAgentConfig({ cwd: root, env: {
+        MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend", MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"),
+        MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, timeoutMs: mode === "late-timeout" ? 1500 : 10_000,
+          inline: { enabled: false }, instances: { root: resolve(root, "children") } }),
+      } });
+      const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
+      const models = createModels(); models.setProvider(faux.provider);
+      const calls: Record<string, unknown>[] = [];
+      const runtime = { run: async (prompt: string, options: Record<string, unknown>) => {
+        calls.push(options);
+        const first = calls.length === 1;
+        // Fault at the real native handoff: execute outside the requested epoch,
+        // rather than fabricating a retained/lost registry status or result id.
+        const result = await generatePiNativeResponse(prompt, { ...options, allowedTools: [],
+          ...(first && mode === "loss" ? { sessionId: `outside-${String(options.sessionId)}` } : {}),
+          piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+        nativeReturned = true;
+        if (first && mode === "late-timeout") await delivery; // Native answer exists; host delivery ignores abort.
+        return result;
+      } };
+      const access = { workspace: root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root }) };
+      const registry = createSubagentInstanceRegistry({ root: resolve(root, "children"),
+        ...createSubagentRecoveryAccess({ privateRoots: async () => [resolve(root, "children")], hostAccess: () => access }),
+        retireSession: async (id, sessionsRoot) => owner.retireDurableSession!(id, sessionsRoot),
+      });
+      const handle = await registry.open("foreground-recovery");
+      const options = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
+        { conversationId: "foreground-recovery", runId: "parent", instances: handle })!.subagents;
+      const context = { model: config.runtime.model, recoveryAccess: access };
+      const agent = createAgentTool(options, context); const send = createAgentSendTool(options, context);
+      expect(options).not.toHaveProperty("backgroundSubagentController");
+      faux.setResponses([fauxAssistantMessage([fauxText("first native answer is not continuation authority")])]);
+      const failed = await agent.execute("foreground", { id: "critic", persist: true, prompt: "first foreground task" });
+      expect(nativeReturned).toBe(true); expect(failed.details.jobId).toBeUndefined();
+      expect(failed.details.subagent.status).toBe(mode === "loss" ? "failed" : "timeout");
+      const original = (await handle.get("critic"))!;
+      if (mode === "late-timeout") {
+        expect(original.status).toBe("running");
+        const held = await send.execute("inspect-pending", { id: "critic", inspect: true });
+        expect(held.details.recovery).toMatchObject({ status: "held", recovery: { continuity: "unknown" } });
+        await expect(send.execute("close-pending", { id: "critic", close: true })).rejects.toThrow(/busy/);
+        await expect(send.execute("replay-pending", { id: "critic", message: "do not replay" })).rejects.toThrow();
+        expect(calls).toHaveLength(1);
+        deliver(); await vi.waitFor(async () => expect((await handle.get("critic"))?.status).toBe("idle"), { timeout: 3000 });
+      }
+      const inspected = await send.execute("inspect-settled", { id: "critic", inspect: true });
+      expect(inspected.details).toMatchObject({ executed: false, recovery: { status: "structured_job_recovery_unavailable",
+        recovery: { reason: mode === "loss" ? "session_continuity_lost" : "timeout", continuity: mode === "loss" ? "lost" : "unknown" } } });
+      expect(inspected.details.recovery.ack).toBeUndefined(); expect(inspected.details.recovery.jobId).toBeUndefined();
+      expect(inspected.details.recovery.facts).toBeUndefined();
+      const persisted = JSON.parse(await readFile(resolve(subagentConversationRoot(resolve(root, "children"), "foreground-recovery"), "instances.json"), "utf8"))[0];
+      expect(persisted.ownerLink).toBeUndefined(); expect(persisted.ownerReceipt).toBeUndefined();
+      expect(calls[0]?.ownedForegroundProcesses).toBeUndefined(); expect(calls[0]?.toolLimits).toBeUndefined();
+      await expect(send.execute("replay-settled", { id: "critic", message: "must not infer retained context" })).rejects.toThrow("subagent_recovery_required");
+      expect(calls).toHaveLength(1);
+      await send.execute("close", { id: "critic", close: true });
+      let replacementContext: unknown;
+      faux.setResponses([(input: unknown) => { replacementContext = input; return fauxAssistantMessage([fauxText("explicit replacement succeeded")]); }]);
+      const replacement = await agent.execute("replacement", { id: "critic", persist: true, prompt: "explicitly supplied fresh context" });
+      expect(replacement.details.subagent.status).toBe("ok"); expect(calls).toHaveLength(2);
+      expect(JSON.stringify(replacementContext)).toContain("explicitly supplied fresh context");
+      expect(JSON.stringify(replacementContext)).not.toContain("first foreground task");
+      expect((await handle.get("critic"))!.incarnation).not.toBe(original.incarnation);
+      await send.execute("close-replacement", { id: "critic", close: true });
+    } finally { deliver(); await owner.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
+  }, 15_000);
+
   it("creates and resumes a real Pi transcript through AgentSend after warm-session disposal, then retires it", async () => {
     const root = await mkdtemp(resolve(process.cwd(), ".durable-subagent-test-"));
     const owner = createMonoRuntime();

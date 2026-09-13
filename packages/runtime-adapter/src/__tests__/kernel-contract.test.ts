@@ -69,7 +69,8 @@ type RuntimeRunComparableKeys =
   | "toolLimits"
   | "compaction"
   | "prompts"
-  | "processJobs";
+  | "processJobs"
+  | "ownedForegroundProcesses";
 type RuntimeRunComparableOptions = Pick<RuntimeRunOptions, RuntimeRunComparableKeys>;
 type KnownKeys<T> = {
   [K in keyof T]: string extends K

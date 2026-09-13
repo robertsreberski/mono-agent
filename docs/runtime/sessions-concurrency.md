@@ -340,9 +340,10 @@ is retained on disk, while an in-flight task is not automatically restarted.
 `AskParent` persists a pending question under the turn lock before its terminating
 tool result returns. `Agent`/`AgentSend` expose it as successful `awaiting_reply`;
 the parent answers through ordinary `AgentSend` in the same durable transcript.
-Failed replies preserve the pending question, successful replies clear it, and
-another question replaces it. Idle expiry includes awaiting children but never
-interrupts a running child. `restart --clear-sessions` purges
+Failed replies preserve the pending question and a minimal recovery fence;
+they are not permission to retry the same transcript. Successful replies clear
+the question, and another question replaces it. Idle expiry includes clean
+awaiting children but never interrupts a running or recovery-fenced child. `restart --clear-sessions` purges
 this configured root with other conversation state and reports removed registry
 and child-session file counts, even when no other store existed. See
 [persistent subagent configuration](./tools-and-guards.md#persistent-subagents)
@@ -352,5 +353,8 @@ Detached persistent child turns hold their own runtime generation lease after th
 parent returns. Their queued reservation prevents duplicate admission. After an
 unresolved timeout/cancellation, the reporting job may be terminal with
 `childStillBusy:true` while the child still owns its lock and lease. Only actual
-settlement or process death releases that ownership; a late result cannot emit a
-second wake. See [detached persistent children](/tools/background-process-jobs/#detached-persistent-children).
+settlement can release the provider lease; process death alone does not prove
+command-group cleanup. A late result cannot emit a second wake or make unknown
+continuity resumable. Registry incarnations and turn intents prevent abandoned
+locks from silently authorizing a successor. Unresolved linked owners require
+their registered service; disabled, failed or missing owners fail closed. See [detached persistent children](/tools/background-process-jobs/#detached-persistent-children).
