@@ -83,7 +83,11 @@ export interface DurableProcessJobRecord {
   readonly schemaVersion: typeof PROCESS_JOB_RECORD_SCHEMA;
   generation: string;
   readonly jobId: string;
-  readonly tool: "Exec" | "Bash";
+  readonly tool: "Exec" | "Bash" | "Agent" | "AgentSend";
+  readonly kind?: "internal";
+  readonly instanceId?: string;
+  childStillBusy?: boolean;
+  subagentQuestion?: { readonly question: string; readonly options?: string[] };
   state: ProcessJobState;
   readonly summary: string;
   readonly agentIncarnation: ProcessIncarnation;
@@ -709,7 +713,7 @@ export function projectProcessJob(record: DurableProcessJobRecord): ProcessJobPr
   return {
     schema: "mono-agent.process-job-projection.v1",
     jobId: record.jobId,
-    tool: record.tool,
+    ...(record.kind === "internal" ? { tool: record.tool as "Agent" | "AgentSend", kind: record.kind, instanceId: record.instanceId!, childStillBusy: record.childStillBusy === true, ...(record.subagentQuestion ? { subagentQuestion: record.subagentQuestion } : {}) } : { tool: record.tool as "Exec" | "Bash" }),
     state: record.state,
     summary: record.summary,
     origin: {
@@ -1123,6 +1127,7 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
   if (!isRecord(value)
     || !hasExactKeys(value, [
       "schemaVersion", "generation", "jobId", "tool", "state", "summary", "agentIncarnation",
+      ...["kind", "instanceId", "childStillBusy", "subagentQuestion"].filter((key) => Object.prototype.hasOwnProperty.call(value, key)),
       ...(Object.prototype.hasOwnProperty.call(value, "processIncarnation") ? ["processIncarnation"] : []),
       "pid", "pgid", "sandboxSettingsPath", "argvSummary", "cwd", "envKeys", "origin", "chainDepth",
       ...(Object.prototype.hasOwnProperty.call(value, "wakeOnCompletion") ? ["wakeOnCompletion"] : []),
@@ -1133,7 +1138,12 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
     || value.schemaVersion !== 1
     || !isUuid(value.generation)
     || !isJobId(value.jobId)
-    || (value.tool !== "Exec" && value.tool !== "Bash")
+    || (value.kind === "internal" ? !["Agent", "AgentSend"].includes(String(value.tool))
+      || typeof value.instanceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(value.instanceId)
+      || typeof value.childStillBusy !== "boolean" || (value.subagentQuestion !== undefined && !validSubagentJobQuestion(value.subagentQuestion)) || value.pid !== null || value.pgid !== null
+      || value.processIncarnation !== undefined || value.sandboxSettingsPath !== null
+      : value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined
+        || (value.tool !== "Exec" && value.tool !== "Bash"))
     || !isProcessJobState(value.state)
     || !boundedString(value.summary, 8_000)
     || processIncarnationFromJson(value.agentIncarnation) === undefined
@@ -1141,7 +1151,7 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
     || !nullablePositiveInteger(value.pid)
     || !nullablePositiveInteger(value.pgid)
     || (value.pgid !== null && value.pgid !== value.pid)
-    || (value.state === "running"
+    || (value.kind !== "internal" && value.state === "running"
       && (value.pid === null || value.pgid !== value.pid || value.processIncarnation === undefined))
     || !nullableSandboxSettingsPath(value.sandboxSettingsPath)
     || !boundedString(value.argvSummary, 8_000)
@@ -1188,9 +1198,9 @@ function validDurableLifecycle(value: Record<string, unknown>): boolean {
     && value.processIncarnation === undefined
     && value.startedAt === null
     && value.runtimeDeadlineAt === null;
-  const completeProcessOwner = typeof value.pid === "number"
-    && value.pgid === value.pid
-    && value.processIncarnation !== undefined
+  const completeProcessOwner = (value.kind === "internal"
+    ? value.pid === null && value.pgid === null && value.processIncarnation === undefined
+    : typeof value.pid === "number" && value.pgid === value.pid && value.processIncarnation !== undefined)
     && typeof value.startedAt === "string"
     && typeof value.runtimeDeadlineAt === "string";
   if (value.state === "queued" && !noProcessOwner) return false;
@@ -1568,4 +1578,14 @@ function nullableArtifactRef(value: unknown, jobId: string, name: string): boole
 
 function isErrno(error: unknown, code: string): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === code;
+}
+
+function validSubagentJobQuestion(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return Object.keys(record).every((key) => key === "question" || key === "options")
+    && typeof record.question === "string" && record.question.trim().length > 0 && record.question.length <= 2000
+    && (record.options === undefined || (Array.isArray(record.options) && record.options.length >= 2 && record.options.length <= 5
+      && record.options.every((option) => typeof option === "string" && option.trim().length > 0 && option.length <= 200)
+      && new Set(record.options).size === record.options.length));
 }

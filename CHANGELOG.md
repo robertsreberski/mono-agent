@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Persistent Agent/AgentSend support detached process-job execution and exact-origin wakes, retaining busy ownership after unresolved cancellation.
+
 - Let persistent children ask their parent for direction with child-only
   `AskParent`. Questions are durable before the child turn ends, and Agent results
   return successful `awaiting_reply` with structured question details. Reply with

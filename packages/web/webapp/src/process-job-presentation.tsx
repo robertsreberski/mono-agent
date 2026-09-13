@@ -32,7 +32,7 @@ export interface ProcessJobPresentation {
 export interface ProcessJobStartReceipt {
   readonly schema: "mono-agent.process-job-start-receipt.v1";
   readonly jobId: string;
-  readonly tool: "Exec" | "Bash";
+  readonly tool: "Exec" | "Bash" | "Agent" | "AgentSend";
   readonly state: "queued" | "starting" | "running";
   readonly startedAt: string | null;
   readonly maxRuntimeMs?: number;
@@ -43,7 +43,7 @@ export interface ProcessJobActivityEvent {
   readonly id: string;
   readonly toolCallId: string;
   readonly jobId: string;
-  readonly tool: "Exec" | "Bash";
+  readonly tool: "Exec" | "Bash" | "Agent" | "AgentSend";
   readonly summary: string;
   readonly phase: "started" | "terminal";
   readonly state: ProcessJobProjection["state"];
@@ -101,7 +101,7 @@ export const parseProcessJobStartReceipt = (
       || keys.some((key) => !allowed.includes(key))
       || keys.length !== required.length + (Object.prototype.hasOwnProperty.call(value, "maxRuntimeMs") ? 1 : 0)
       || value.schema !== "mono-agent.process-job-start-receipt.v1"
-      || (value.tool !== "Exec" && value.tool !== "Bash")
+      || !["Exec", "Bash", "Agent", "AgentSend"].includes(String(value.tool))
       || value.tool !== containingTool
       || typeof value.jobId !== "string"
       || value.jobId.trim().length === 0

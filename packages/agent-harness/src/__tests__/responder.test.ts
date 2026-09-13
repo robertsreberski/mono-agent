@@ -1466,7 +1466,7 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     }, { toolNames });
   };
 
-  it.each(["Exec", "Bash"])("lifts an exact %s background-start outcome into a canonical receipt", (name) => {
+  it.each(["Exec", "Bash", "Agent", "AgentSend"])("lifts an exact %s background-start outcome into a canonical receipt", (name) => {
     expect(completedBackgroundTool(name, backgroundOutcome())).toEqual({
       type: "tool_call_completed",
       id: "background-1",

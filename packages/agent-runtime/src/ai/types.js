@@ -315,6 +315,7 @@
  * @property {string} sessionsRoot
  * @property {string} status
  * @property {{question: string, options?: string[]}} [pendingQuestion]
+ * @property {{token: string}} [reservation]
  * @property {number} turns
  * @property {number} createdAt
  * @property {number} updatedAt
@@ -327,8 +328,10 @@
  * @property {(id: string) => Promise<RuntimeSubagentInstance|undefined>} get
  * @property {(spec: {id?: string, name: string, systemPrompt: string, definition: RuntimeSubagentDefinition}) => Promise<RuntimeSubagentInstance>} create
  * @property {(id: string, question: {question: string, options?: string[]}) => Promise<RuntimeSubagentInstance>} markAwaiting
- * @property {(id: string) => Promise<RuntimeSubagentInstance>} begin
- * @property {(id: string, outcome: {status: string, question?: {question: string, options?: string[]}, usage?: {input?: number, output?: number, cacheRead?: number, cacheWrite?: number, costUsd?: number}, answerHead?: string}) => Promise<RuntimeSubagentInstance>} finish
+ * @property {(id: string, token: string) => Promise<RuntimeSubagentInstance>} [reserve]
+ * @property {(id: string, token: string) => Promise<void>} [releaseReservation]
+ * @property {(id: string, token?: string) => Promise<RuntimeSubagentInstance>} begin
+ * @property {(id: string, outcome: {status: string, question?: {question: string, options?: string[]}, usage?: {input?: number, output?: number, cacheRead?: number, cacheWrite?: number, costUsd?: number}, answerHead?: string}, token?: string) => Promise<RuntimeSubagentInstance>} finish
  * @property {(id: string) => Promise<RuntimeSubagentInstance>} close
  */
 
@@ -336,6 +339,7 @@
  * @typedef {Object} RuntimeSubagentsOptions
  * @property {ReadonlyArray<RuntimeSubagentDefinition>} [definitions] Named profiles.
  * @property {ReadonlyArray<{name: string, model: RuntimeModelRef, key: string}>} [models] Call-time model choices. Absent means no model parameter.
+ * @property {{startInternal(request: {kind: "internal", tool: "Agent"|"AgentSend", jobId: string, instanceId: string, timeoutMs: number, cleanup(): Promise<void>, run(signal: AbortSignal): Promise<{output: string, status: string, childStillBusy?: boolean, question?: {question: string, options?: string[]}}>}): Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null}>}} [backgroundSubagentController]
  * @property {RuntimeSubagentInstances} [instances] Conversation-scoped persistence; absent preserves stateless Agent.
  * @property {RuntimeInlineSubagentsOptions} [inline] Call-time authoring policy.
  * @property {number} [maxConcurrent] In-flight subagents per parent turn. Default 5.

@@ -788,6 +788,15 @@ resume the same transcript; failed replies preserve the pending question.
 AskParent is child-only and automatic unless denied by global/profile policy.
 Without the facade, `Agent` stays stateless and `AgentSend` is absent.
 
+Persistent Agent/AgentSend can run detached through the app-private in-process
+ProcessJobs lane. Durable admission reserves the child; completion and AskParent
+wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
+while retaining the child lock and runtime lease through actual settlement.
+Detached usage belongs to the durable child outcome and bounded job result; it
+does not change the finalized parent run totals. Process-job deadlines retain
+timeout status in both the job and child instance, distinct from cancellation.
+See [background subagents](../../docs/tools/background-process-jobs.md#detached-persistent-children).
+
 ### Built-in tools
 
 The agent kernel's managed tools are `Read`, `Write`, `Edit`, `Glob`, `Grep`,
