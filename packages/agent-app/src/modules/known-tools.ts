@@ -41,7 +41,7 @@ export const APP_TOOL_NAMES = [
   "RunHistory",
   "SessionHistory",
   "SetConversationTitle",
-  "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags",
+  "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead",
   "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject",
   "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject",
   "MemoryJournal",

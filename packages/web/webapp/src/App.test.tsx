@@ -163,6 +163,42 @@ describe("App viewport layout", () => {
     expect(document.title).toBe("console-host · mono-agent");
     expect(document.documentElement).toHaveAttribute("data-console-theme", "ocean");
   });
+
+  it("keeps both panels drawn when a notification arrives on desktop", () => {
+    // The notification bridge pushes the phone's conversation screen. Desktop
+    // draws both panels at once, so the same event must leave it alone.
+    window.history.replaceState(null, "", "/");
+    const { container } = render(<App />);
+    const panel = container.querySelector<HTMLElement>(".dashboard-panel");
+    const chatRegion = container.querySelector<HTMLElement>(".chat-region");
+    expect(panel).not.toBeNull();
+    expect(chatRegion).not.toBeNull();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("mono-agent:open-conversation", {
+        detail: { threadId: "thread-1" },
+      }));
+    });
+
+    expect(chatRegion!).not.toHaveClass("is-open");
+    expect(panel!).not.toHaveAttribute("inert");
+    expect(panel!).not.toHaveAttribute("aria-hidden");
+    expect(chatRegion!).not.toHaveAttribute("inert");
+  });
+
+  it("does not hide the dashboard for a notification deep link on desktop", () => {
+    window.history.replaceState(null, "", "/?thread=thread-1");
+    try {
+      const { container } = render(<App />);
+      const panel = container.querySelector<HTMLElement>(".dashboard-panel");
+      const chatRegion = container.querySelector<HTMLElement>(".chat-region");
+
+      expect(panel).not.toHaveAttribute("inert");
+      expect(chatRegion).not.toHaveAttribute("inert");
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
+  });
 });
 
 describe("App mobile screens", () => {
@@ -259,6 +295,55 @@ describe("App mobile screens", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back to dashboard" }));
     expect(chat(container)).not.toHaveClass("is-open");
     expect(panel(container)).not.toHaveAttribute("inert");
+  });
+
+  it("opens the conversation when a notification names a thread", () => {
+    // Warm notification click: the provider selects the thread and dispatches
+    // this event. The shell must push the chat over the dashboard instead of
+    // leaving the selection behind it.
+    const { container } = render(<App />);
+    expect(chat(container)).not.toHaveClass("is-open");
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("mono-agent:open-conversation", {
+        detail: { threadId: "thread-1" },
+      }));
+    });
+
+    expect(chat(container)).toHaveClass("is-open");
+    expect(chat(container)).not.toHaveAttribute("inert");
+    expect(panel(container)).toHaveAttribute("aria-hidden", "true");
+    expect(panel(container)).toHaveAttribute("inert");
+  });
+
+  it("lands on the conversation when the address carries a notification thread", () => {
+    // Cold start: the service worker opened `/?thread=<id>`. The phone must
+    // land on the chat directly, the same as for a cron channel address.
+    window.history.replaceState(null, "", "/?thread=thread-1");
+    try {
+      const { container } = render(<App />);
+
+      expect(chat(container)).toHaveClass("is-open");
+      expect(panel(container)).toHaveAttribute("inert");
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
+  });
+
+  it("stays on the dashboard for an empty notification thread value", () => {
+    // No thread is named, so there is no conversation to open: a bare
+    // `?thread=` must leave the phone on its entrance screen, matching the
+    // provider which ignores empty deep-link values.
+    window.history.replaceState(null, "", "/?thread=");
+    try {
+      const { container } = render(<App />);
+
+      expect(chat(container)).not.toHaveClass("is-open");
+      expect(chat(container)).toHaveAttribute("inert");
+      expect(panel(container)).not.toHaveAttribute("inert");
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
   });
 
   it("brings the dashboard slot back when a project opens from the conversation", () => {

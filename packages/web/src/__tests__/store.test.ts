@@ -6420,3 +6420,72 @@ describe("WebStore conversation tags", () => {
     } finally { store.close(); }
   });
 });
+
+
+describe("WebStore conversation read watermark", () => {
+  it("marks the current revision durably and idempotently without changing revisions or recent ordering", async () => {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const stateDir = join(root, "state");
+    const store = await WebStore.open({ stateDir });
+    let id: string;
+    let revision: number;
+    try {
+      store.replaceAgents([agent()]);
+      const target = store.createThread("agent-one");
+      id = target.id;
+      const origin = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: origin.id, text: "Clear the dot", attachmentIds: [] });
+      const scope = { sourceId: "agent-one", threadId: origin.id, turnId: turn.turnId };
+      const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+      try {
+        database.prepare("UPDATE threads SET updated_at = '2020-01-01T00:00:00.000Z' WHERE id = ?").run(id);
+        const before = store.getThread(id)!;
+        revision = before.revision;
+        const listing = () => store.listThreadsPage({ sourceId: "agent-one", archived: false }).threads.map((t) => ({ id: t.id, updatedAt: t.updatedAt, revision: t.revision }));
+        const ordered = listing();
+        expect(ordered.map((t) => t.id)).toEqual([origin.id, id]);
+        const revisions = database.prepare("SELECT * FROM revisions ORDER BY id").all();
+        const operation = { tool: "MarkConversationRead" as const, args: { conversationId: id }, operationId: "mark-read-operation" };
+        const commit = store.consoleToolOperation(scope, operation);
+        expect(commit.result).toEqual({ conversationId: id, readRevision: revision });
+        expect(commit.threads).toEqual([id]);
+        expect(store.getThread(id)).toEqual({ ...before, readRevision: revision });
+        expect(store.consoleToolOperation(scope, operation)).toMatchObject({ result: commit.result, threads: [] });
+        expect(store.consoleToolOperation(scope, { ...operation, operationId: "mark-read-another-call" })).toMatchObject({ result: commit.result, threads: [] });
+        expect(listing()).toEqual(ordered);
+        expect(database.prepare("SELECT * FROM revisions ORDER BY id").all()).toEqual(revisions);
+        // A retry is the original receipt, not permission to dismiss later activity.
+        store.patchThread(id, { title: "Later activity" });
+        expect(store.consoleToolOperation(scope, operation).result).toEqual(commit.result);
+        expect(store.getThread(id)).toMatchObject({ readRevision: revision, revision: revision + 1 });
+      } finally { database.close(); }
+    } finally { store.close(); }
+    const reopened = await WebStore.open({ stateDir });
+    try { expect(reopened.getThread(id!)).toMatchObject({ readRevision: revision! }); }
+    finally { reopened.close(); }
+  });
+
+  it("defaults to the calling conversation and rejects foreign, unknown and invalid targets", async () => {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    try {
+      store.replaceAgents([agent(), agent("agent-two")]);
+      const origin = store.createThread("agent-one");
+      const foreign = store.createThread("agent-two");
+      const turn = store.beginTurn({ threadId: origin.id, text: "Clear the dot", attachmentIds: [] });
+      const scope = { sourceId: "agent-one", threadId: origin.id, turnId: turn.turnId };
+      let operation = 0;
+      const run = (args: Record<string, unknown>) => store.consoleToolOperation(scope, {
+        tool: "MarkConversationRead", args, operationId: `mark-read-operation-${String(++operation)}`,
+      });
+      expect(run({}).result).toEqual({ conversationId: origin.id, readRevision: store.getThread(origin.id)!.revision });
+      for (const conversationId of [foreign.id, "missing-conversation"]) {
+        expect(() => run({ conversationId })).toThrowError(expect.objectContaining({ code: "thread_not_found", status: 404 }));
+      }
+      expect(store.getThread(foreign.id)?.readRevision).toBe(0);
+      for (const args of [{ conversationId: null }, { conversationId: "" }, { conversationId: 7 }, { all: true }, { sourceId: "agent-two" }]) {
+        expect(() => run(args)).toThrowError(expect.objectContaining({ code: "invalid_console_tool" }));
+      }
+    } finally { store.close(); }
+  });
+});

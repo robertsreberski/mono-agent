@@ -14,6 +14,7 @@ const tagName = z.string().refine((value) => !/[\u0000-\u001f\u007f\u0085\u2028\
 const tagColor = z.enum(["default", "blue", "purple", "amber", "rose", "green", "teal", "red"]);
 const color = z.enum(["default", "blue", "purple", "amber", "rose"]);
 export const CONSOLE_PROJECT_SCHEMAS = {
+  MarkConversationRead: z.object({ conversationId: id.optional() }).strict(),
   ListTags: z.object({}).strict(),
   CreateTag: z.object({ name: tagName, color: tagColor.optional() }).strict(),
   UpdateTag: z.object({ tagId: id, name: tagName.optional(), color: tagColor.optional() }).strict()
@@ -40,6 +41,7 @@ export function isConsoleProjectToolAllowed(tool: ToolName, policy: Policy): boo
 }
 
 const descriptions: Record<ToolName, string> = {
+  MarkConversationRead: "Mark one of this agent's conversations read at its current revision (this conversation by default). Clears the console unread dot on connected devices without opening it or changing recency; later updates can make it unread again. Returns conversationId and readRevision.",
   ListTags: "List this agent's tags with their names, colors, and IDs.",
   CreateTag: "Create a named tag for this agent with an optional palette color.",
   UpdateTag: "Change a tag's name or color for this agent.",

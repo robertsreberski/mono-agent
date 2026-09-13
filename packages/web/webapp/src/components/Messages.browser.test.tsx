@@ -135,7 +135,7 @@ const cronReplyMessage: WebMessage = {
 function Harness({ width }: { readonly width: number }) {
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: [message("consumed", "applied"), message("uncertain", "uncertain")],
-    convertMessage: (value) => convertWebMessage(value, { selectedModel: "provider:primary" }),
+    convertMessage: (value) => convertWebMessage(value),
     onNew: async () => undefined,
     adapters: {
       threadList: {
@@ -252,7 +252,7 @@ function ErrorHarness({ width, errorMessage }: { readonly width: number; readonl
 function CronHarness({ width }: { readonly width: number }) {
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: [cronMessage],
-    convertMessage: (value) => convertWebMessage(value, { selectedModel: "provider:primary" }),
+    convertMessage: (value) => convertWebMessage(value),
     onNew: async () => undefined,
   });
   return (
@@ -478,12 +478,11 @@ const steeredTwiceResponse: WebMessage = {
 function SteerHarness({ width, messages }: { readonly width: number; readonly messages: readonly WebMessage[] }) {
   const presentation = projectProcessJobPresentation(
     coalesceMonitorWakeMessages(messages),
-    { selectedModel: "provider:primary", threadId: "thread" },
+    { threadId: "thread" },
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,
     convertMessage: (value) => convertWebMessage(value, {
-      selectedModel: "provider:primary",
       processJobEvents: presentation.eventsByMessageId.get(value.id),
       processJobs: presentation.jobsById,
     }),
@@ -661,4 +660,27 @@ describe("synthetic detached subagent evidence", () => {
     poll.mockRestore();
     clock.mockRestore();
   });
+});
+
+
+describe("reasoning-split reply in Chromium", () => {
+  it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)(
+    "renders the complete answer at %ipx (%s)", async (width, height, label) => {
+      await page.viewport(width, height);
+      const response: WebMessage = {
+        ...steeredResponse,
+        parts: [
+          { type: "reasoning", text: "Checking the answer." },
+          { type: "text", text: "Tot" },
+          { type: "reasoning", text: "." },
+          { type: "text", text: "ally fair — the reply stays intact." },
+        ],
+      };
+      const { container } = render(<SteerHarness width={Math.min(width, 760)} messages={[response]} />);
+      expect(screen.getByText("Totally fair — the reply stays intact.")).toBeVisible();
+      expect(container.querySelector(".activity-note")).toBeNull();
+      const directory = import.meta.env.VITE_TRANSCRIPT_SHOTS as string | undefined;
+      if (directory) await page.screenshot({ path: `${directory}/synthetic-transcript-${label}.png` });
+    },
+  );
 });

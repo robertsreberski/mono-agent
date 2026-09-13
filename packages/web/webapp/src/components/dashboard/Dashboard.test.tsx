@@ -256,7 +256,7 @@ describe("Dashboard conversation rows", () => {
     expect(screen.getByText(emptyCopy)).toBeVisible();
   });
 
-  it("renders active jobs on an unselected conversation and clears activity at completion", () => {
+  it("renders active jobs on an unselected conversation and omits status at completion", () => {
     const running = thread("worker", "agent-one", {
       title: "Background work",
       messageCount: 5,
@@ -279,7 +279,8 @@ describe("Dashboard conversation rows", () => {
       } },
     }]);
     rerender(<Dashboard />);
-    expect(row).toHaveTextContent("Completed");
+    expect(row).not.toHaveTextContent("Completed");
+    expect(row.querySelector(".thread-preview-text")?.textContent).toBe("");
     expect(row).not.toHaveTextContent("Results are ready");
     expect(within(row).queryByRole("img", { name: /running|Working/u })).toBeNull();
   });
@@ -568,6 +569,43 @@ describe("Dashboard running section", () => {
 });
 
 describe("Dashboard search", () => {
+  it("shows only conversation results while a search is active", async () => {
+    const running = thread("running", "agent-one", {
+      title: "Running chat",
+      runState: { status: "running" },
+    });
+    storeMock.current = {
+      ...createStore(),
+      activeThreads: {
+        threads: [running],
+        total: 1,
+        truncated: false,
+        runningCounts: { "agent-one": 1 },
+        authoritative: true,
+      },
+    };
+    render(<Dashboard />);
+
+    expect(screen.getByRole("heading", { name: "Running, 1" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Projects" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Recent" })).toBeVisible();
+
+    type("tailscale");
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(await screen.findByRole("heading", { name: "Conversations" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: /Running/u })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Projects" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Recent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Chats" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open older title" })).toBeVisible();
+
+    type("");
+    expect(screen.getByRole("heading", { name: "Running, 1" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Projects" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Recent" })).toBeVisible();
+  });
+
   it("leaves the conversation list alone until the query is worth running", async () => {
     render(<Dashboard />);
 
@@ -594,11 +632,10 @@ describe("Dashboard search", () => {
     expect(screen.queryByText(SEARCH_HIGHLIGHT_OPEN)).toBeNull();
     // Paging belongs to the list, not to a result set the server already ranked.
     expect(screen.queryByRole("button", { name: "Load older conversations" })).toBeNull();
-    // The chips stay: the list's other face is one tap away during a search,
-    // and switching to it retires the query, which meant something else.
-    expect(screen.getByRole("button", { name: "Chats" })).toHaveAttribute("aria-pressed", "true");
-    fireEvent.click(screen.getByRole("button", { name: /^Automations/u }));
-    expect(store().setNavigationDestination).toHaveBeenCalledWith("automations");
+    // Search results own the scroll area: list navigation returns when the
+    // query is cleared instead of competing with the result set.
+    expect(screen.queryByRole("button", { name: "Chats" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Automations/u })).toBeNull();
   });
 
   it("still finds a project's conversations, and says which project they are in", async () => {

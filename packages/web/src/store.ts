@@ -152,6 +152,7 @@ export interface PatchStoredProjectInput {
 }
 
 interface ThreadRow {
+  read_revision: number;
   id: string;
   source_id: string;
   project_id: string | null;
@@ -3458,6 +3459,13 @@ export class WebStore {
     });
   }
 
+  /** A read signal is not conversation activity: neither recency nor transcript revisions move. */
+  markConversationRead(threadId: string): number {
+    this.requireThread(threadId);
+    this.database.prepare("UPDATE threads SET read_revision = revision WHERE id = ?").run(threadId);
+    return this.requireThread(threadId).revision;
+  }
+
   private pendingProjectDto(threadId: string): Pick<WebThread, "pendingProject"> {
     const row = this.database.prepare("SELECT project_id, turn_id FROM pending_project_memberships WHERE thread_id = ?")
       .get(threadId) as { project_id: string | null; turn_id: string } | undefined;
@@ -6082,6 +6090,7 @@ export class WebStore {
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         revision: row.revision,
+        readRevision: row.read_revision,
         ...(row.trigger_kind === "cron"
           ? {
               trigger: {
@@ -6978,7 +6987,7 @@ function priorOutcomeCandidateSql(): string {
 function threadSelectSql(suffix: string): string {
   return `
     SELECT t.id, t.source_id, t.project_id, p.name AS project_name,
-           t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
+           t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision, t.read_revision,
            t.run_model, t.run_effort,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
            CASE WHEN t.trigger_kind = 'cron' THEN 0

@@ -229,7 +229,7 @@ describe.each([
       expect(line.getBoundingClientRect().top).toBeLessThan(preview.getBoundingClientRect().bottom);
     }
     expect(document.querySelectorAll(".thread-preview .tag-chip")).toHaveLength(4);
-    expect(screen.getByText("Completed")).toBeVisible();
+    expect(screen.queryByText("Completed")).toBeNull();
     expect(screen.queryByText("Do not show this excerpt")).toBeNull();
     expect(getComputedStyle(document.querySelector(".dashboard-footer")!).borderTopWidth).toBe("0px");
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);

@@ -77,43 +77,48 @@ export function RecentSection({
   const visibleCount = visibleThreads.filter(isRecentThread).length;
 
   return (
-    <section className="dashboard-section" aria-labelledby="dashboard-recent-label">
-      <div className="dashboard-section-head">
-        <h2 className="dashboard-section-label" id="dashboard-recent-label">
-          {automations ? "Automations" : showArchived ? "Archived" : "Recent"}
-        </h2>
-        {/* The list's two faces, side by side where the design keeps its
-            chips. Automations are the agent's cron jobs, read from the
-            overview rather than the conversation page. */}
-        <div className="dashboard-chips" role="group" aria-label="Show">
-          <button
-            type="button"
-            className={`dashboard-chip${automations ? "" : " is-active"}`}
-            aria-pressed={!automations}
-            onClick={() => setNavigationDestination("chats")}
-          >
-            Chats
-          </button>
-          <button
-            type="button"
-            className={`dashboard-chip${automations ? " is-active" : ""}`}
-            aria-pressed={automations}
-            aria-label={jobs === undefined
-              ? "Automations"
-              : `Automations, ${String(jobs)} ${jobs === 1 ? "job" : "jobs"}`}
-            onClick={() => setNavigationDestination("automations")}
-          >
-            <Icon name="clock" size={11} />
-            Automations
-            {jobs !== undefined && <span className="dashboard-chip-count">{jobs}</span>}
-          </button>
+    <section
+      className="dashboard-section"
+      {...(searching ? {} : { "aria-labelledby": "dashboard-recent-label" })}
+    >
+      {!searching && (
+        <div className="dashboard-section-head">
+          <h2 className="dashboard-section-label" id="dashboard-recent-label">
+            {automations ? "Automations" : showArchived ? "Archived" : "Recent"}
+          </h2>
+          {/* The list's two faces, side by side where the design keeps its
+              chips. Automations are the agent's cron jobs, read from the
+              overview rather than the conversation page. */}
+          <div className="dashboard-chips" role="group" aria-label="Show">
+            <button
+              type="button"
+              className={`dashboard-chip${automations ? "" : " is-active"}`}
+              aria-pressed={!automations}
+              onClick={() => setNavigationDestination("chats")}
+            >
+              Chats
+            </button>
+            <button
+              type="button"
+              className={`dashboard-chip${automations ? " is-active" : ""}`}
+              aria-pressed={automations}
+              aria-label={jobs === undefined
+                ? "Automations"
+                : `Automations, ${String(jobs)} ${jobs === 1 ? "job" : "jobs"}`}
+              onClick={() => setNavigationDestination("automations")}
+            >
+              <Icon name="clock" size={11} />
+              Automations
+              {jobs !== undefined && <span className="dashboard-chip-count">{jobs}</span>}
+            </button>
+          </div>
         </div>
-      </div>
+      )}
       {automations ? (
         <AutomationsList query={query} onSelect={onNavigate} highlightSelected={highlightSelected} />
       ) : (
       <>
-      {threadListError !== null && (
+      {!searching && threadListError !== null && (
         <div className="thread-list-error" role="alert">
           <span>Conversations could not be refreshed. {threadListError}</span>
           <button type="button" onClick={retryThreadList}>Retry conversations</button>

@@ -375,11 +375,14 @@ const completeAttachment = (attachment: WebAttachment): CompleteAttachment => {
  * repairs history rather than only protecting new turns. Concatenation is
  * verbatim: the parts were one continuous stream of deltas.
  */
-const joinAdjacentText = (parts: readonly ConvertedPart[]): ConvertedPart[] =>
+const joinAdjacentText = (parts: readonly ConvertedPart[], joinReasoning = false): ConvertedPart[] =>
   parts.reduce<ConvertedPart[]>((joined, part) => {
     if (part.type === "text") {
       let previousIndex = joined.length - 1;
-      while (joined[previousIndex]?.type === "data-monitor-activity") previousIndex -= 1;
+      // Reasoning can split a single answer even mid-word. Only settled
+      // replies may reorder it; every other visible part remains a barrier.
+      while (joined[previousIndex]?.type === "data-monitor-activity"
+        || (joinReasoning && joined[previousIndex]?.type === "reasoning")) previousIndex -= 1;
       const previous = joined[previousIndex];
       if (previous?.type === "text") {
         joined[previousIndex] = { ...previous, text: `${previous.text}${part.text}` };
@@ -459,7 +462,6 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
 };
 
 interface ConvertWebMessageOptions {
-  readonly selectedModel?: string | null;
   readonly processJobEvents?: readonly ProcessJobActivityEvent[];
   readonly processJobs?: ReadonlyMap<string, ProcessJobProjection>;
 }
@@ -512,7 +514,7 @@ export const convertWebMessage = (
         data: jsonObject(event),
       })),
     ];
-  }));
+  }), message.role === "assistant" && message.status === "complete" && !hasCronReplyContext);
   const converted = joined.filter((part) => part.type !== "data-assistant-message-boundary");
   // Only a COMPLETED turn is known to have an answer. Streaming is still
   // writing one, and a cancelled/failed/interrupted turn was stopped with none
@@ -554,10 +556,7 @@ export const convertWebMessage = (
         ...(message.liveInputStatus === undefined ? {} : { liveInputStatus: message.liveInputStatus }),
         ...(message.quote === undefined ? {} : { quote: message.quote }),
         ...(message.attribution === undefined ? {} : { attribution: message.attribution }),
-        showRunAttribution: shouldShowMessageRunAttribution(
-          message.attribution,
-          options.selectedModel,
-        ),
+        showRunAttribution: shouldShowMessageRunAttribution(message.attribution, message.status),
         runStatus: message.status,
       },
     },
@@ -827,27 +826,24 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
             && (message.modelTransitions?.length ?? 0) === 0
             && convertWebMessage(message).content?.length === 0)),
       ),
-      { selectedModel: store.effectiveModel, threadId: store.selectedThreadId },
+      { threadId: store.selectedThreadId },
     ),
     [
       store.detail?.messages,
       store.detail?.modelTransitions,
       store.detail?.projectTransitions,
-      store.effectiveModel,
       store.selectedThreadId,
     ],
   );
-  // Changing the selected model deliberately gives assistant-ui a new converter,
-  // which reconverts every loaded message so its transient attribution visibility
-  // stays current. Message ids survive that accepted full-cache refresh, so rows
-  // update in place rather than remounting.
+  // What a message shows now depends only on the message itself, so switching
+  // the conversation's model no longer rebuilds the converter or reconverts the
+  // loaded transcript.
   const convertMessage = useCallback(
     (message: WebMessage) => convertWebMessage(message, {
-      selectedModel: store.effectiveModel,
       processJobEvents: presentation.eventsByMessageId.get(message.id),
       processJobs: presentation.jobsById,
     }),
-    [presentation.eventsByMessageId, presentation.jobsById, store.effectiveModel],
+    [presentation.eventsByMessageId, presentation.jobsById],
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,

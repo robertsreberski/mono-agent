@@ -463,7 +463,7 @@ For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/po
 Writable web turns can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
 `SearchConversations`, `CreateConversation`, `SetConversationProject`,
-`ListTags`, `CreateTag`, `UpdateTag`, `DeleteTag`, and `UpdateConversationTags`. They
+`ListTags`, `CreateTag`, `UpdateTag`, `DeleteTag`, `UpdateConversationTags`, and `MarkConversationRead`. They
 require no new config.
 Each tool honors its bare name, `mcp__mono-agent-console-projects__<name>`,
 `mcp__mono-agent-console-projects__*`, and `*` in allow/deny policy; deny wins.
@@ -503,6 +503,17 @@ case, and limited to one non-empty line of 120 characters without controls.
 The tag palette is `default`, `blue`, `purple`, `amber`, `rose`, `green`, `teal`,
 or `red`; the project palette is unchanged. `DeleteTag` removes membership
 without deleting conversations. Tags are deleted, never archived.
+
+`MarkConversationRead({ conversationId? })` clears the unread dot for one of the
+calling agent's conversations (the current conversation by default). It returns
+`conversationId` and `readRevision`, persisting the current revision as an explicit
+server read watermark without changing conversation revision or recent ordering.
+Each console adopts this signal upward into its device-local seen map when it
+receives the summary; disconnected consoles catch up on their next summary read.
+Opening a conversation remains device-local, and later activity can make it
+unread again, including the rest of the calling turn. Replaying an operation
+returns its original receipt rather than marking newer activity read. There is
+no mark-all operation.
 
 `UpdateConversationTags` accepts an optional `conversationId` (current conversation
 by default), and at least one of `add` or `remove`, each containing at most 20 tag IDs. It is

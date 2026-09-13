@@ -336,7 +336,7 @@ describe("projectProcessJobPresentation", () => {
       attribution: directAttribution,
     });
 
-    const projected = projectProcessJobPresentation([source], { selectedModel: "provider:selected" });
+    const projected = projectProcessJobPresentation([source]);
 
     expect(projected.messages).toEqual([]);
     expect(projected.jobs).toEqual([{ messageId: source.id, part: source.parts[0] }]);
@@ -348,7 +348,7 @@ describe("projectProcessJobPresentation", () => {
       id: "attributed",
       role: "assistant",
       parts: [{ type: "process-job", job: processJob({ jobId: "job-attributed" }) }],
-      attribution: directAttribution,
+      attribution: { ...directAttribution, disposition: "fallback" as const },
     });
     const failed = message({
       id: "failed",
@@ -367,10 +367,7 @@ describe("projectProcessJobPresentation", () => {
       attachments: [attachment("reply")],
     });
 
-    const projected = projectProcessJobPresentation(
-      [visibleAttribution, failed, rich],
-      { selectedModel: "provider:other" },
-    );
+    const projected = projectProcessJobPresentation([visibleAttribution, failed, rich]);
 
     expect(projected.messages.map(({ id }) => id)).toEqual(["attributed", "failed", "rich"]);
     expect(projected.messages[0]?.parts).toEqual([]);
@@ -809,30 +806,31 @@ describe("live input placement", () => {
 });
 
 describe("convertWebMessage", () => {
-  it("derives transient run-attribution visibility from the selected model", () => {
-    const requested = {
-      requested: { model: "provider:requested" },
-      attempted: { model: "provider:executed" },
-      executed: { model: "provider:executed" },
+  it("marks run attribution visible only for a run that deviated from its request", () => {
+    const ran = {
+      requested: { model: "provider:requested", effort: "high" },
+      attempted: { model: "provider:requested", effort: "high", effectiveEffort: "high" },
+      executed: { model: "provider:requested", effort: "high", effectiveEffort: "high" },
       disposition: "requested" as const,
       transitions: [],
       retries: [],
     };
-    const attributed = message({ role: "assistant", attribution: requested });
 
-    expect(convertWebMessage(
-      attributed,
-      { selectedModel: "provider:selected" },
-    ).metadata?.custom?.showRunAttribution).toBe(true);
-    expect(convertWebMessage(
-      attributed,
-      { selectedModel: "provider:executed" },
-    ).metadata?.custom?.showRunAttribution).toBe(false);
-    expect(convertWebMessage(attributed).metadata?.custom?.showRunAttribution).toBe(false);
+    expect(convertWebMessage(message({ role: "assistant", attribution: ran }))
+      .metadata?.custom?.showRunAttribution).toBe(false);
     expect(convertWebMessage(message()).metadata?.custom?.showRunAttribution).toBe(false);
     expect(convertWebMessage(message({
       role: "assistant",
-      attribution: { ...requested, disposition: "fallback" },
+      attribution: { ...ran, disposition: "fallback" },
+    })).metadata?.custom?.showRunAttribution).toBe(true);
+    expect(convertWebMessage(message({
+      role: "assistant",
+      attribution: { ...ran, retries: [{ model: "provider:requested", retryIndex: 1 }] },
+    })).metadata?.custom?.showRunAttribution).toBe(true);
+    expect(convertWebMessage(message({
+      role: "assistant",
+      status: "failed",
+      attribution: { ...ran, executed: undefined, attempted: { model: "provider:other" } },
     })).metadata?.custom?.showRunAttribution).toBe(true);
   });
 
@@ -1191,6 +1189,47 @@ describe("convertWebMessage", () => {
       "data-subagent",
       "text",
     ]);
+  });
+
+  it.each(["complete", "running", "cancelled", "failed", "interrupted"] as const)(
+    "preserves reasoning-split text for %s replies", (status) => {
+      const converted = convertWebMessage(message({ role: "assistant", status, parts: [
+        { type: "text", text: "Tot" },
+        { type: "reasoning", text: "." },
+        { type: "text", text: "ally fair." },
+      ] }));
+      if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+      expect(converted.content).toEqual(status === "complete" ? [
+        { type: "reasoning", text: "." }, { type: "text", text: "Totally fair." },
+      ] : [
+        { type: "text", text: "Tot" }, { type: "reasoning", text: "." },
+        { type: "text", text: "ally fair." },
+      ]);
+    },
+  );
+
+  it("keeps answer fragments together across reasoning, without joining tool narration", () => {
+    const converted = convertWebMessage(message({
+      role: "assistant", status: "complete",
+      parts: [
+        { type: "text", text: "Looking." },
+        { type: "tool-call", toolCallId: "t1", toolName: "Search", args: {}, status: "complete" },
+        { type: "reasoning", text: "Checking" },
+        { type: "text", text: "Tot" },
+        { type: "reasoning", text: "." },
+        { type: "text", text: "ally" },
+        { type: "reasoning", text: "More" },
+        { type: "text", text: " " },
+        { type: "reasoning", text: "Done" },
+        { type: "text", text: "fair — yes." },
+      ],
+    }));
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content.filter((part) => part.type === "text"))
+      .toEqual([{ type: "text", text: "Totally fair — yes." }]);
+    expect(converted.content.filter((part) => part.type === "data-note"))
+      .toEqual([{ type: "data-note", data: { text: "Looking." } }]);
+    expect(converted.content.filter((part) => part.type === "reasoning")).toHaveLength(4);
   });
 
   it("folds a settled turn into one run of activity over the answer", () => {

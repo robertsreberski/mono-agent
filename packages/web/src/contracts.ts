@@ -369,6 +369,8 @@ export interface WebThread {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly revision: number;
+  /** Explicit agent read signal; devices adopt upward without reporting their own reads. */
+  readonly readRevision?: number;
   /** The project this conversation belongs to, or null when it belongs to the agent directly. */
   readonly tagIds: readonly string[];
   readonly projectId: string | null;

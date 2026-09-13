@@ -199,6 +199,9 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
       CREATE INDEX IF NOT EXISTS thread_tags_by_tag ON thread_tags(tag_id, thread_id);
     `);
   } },
+  { version: 30, name: "conversation-read-watermark", up: ({ database }) => {
+    addColumn(database, "threads", "read_revision", "INTEGER NOT NULL DEFAULT 0 CHECK (read_revision >= 0 AND read_revision <= revision)");
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -245,7 +248,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
   try {
     const required: Readonly<Record<string, readonly string[]>> = {
       agents: ["cron_read", "cron_actions", "ask_by_id", "providers_json", "discovered", "supports_provider_auth"],
-      threads: ["trigger_kind", "run_model", "run_effort", "project_id"],
+      threads: ["trigger_kind", "run_model", "run_effort", "project_id", "read_revision"],
       console_tool_operations: ["operation_id", "thread_id", "turn_id", "payload_sha256", "result_json"],
       pending_project_memberships: ["thread_id", "project_id", "turn_id"],
       project_transitions: ["thread_id", "after_message_id", "turn_id", "before_json", "after_json", "created_at"],
@@ -270,6 +273,15 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ],
     };
     for (const [table, names] of Object.entries(required)) assertColumns(database, table, names);
+    const readRevision = (database.prepare("PRAGMA table_info(threads)").all() as Array<{
+      name: string; type: string; notnull: number; dflt_value: string | null;
+    }>).find((column) => column.name === "read_revision");
+    const threadDdl = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'threads'").get() as { sql: string };
+    if (readRevision?.type !== "INTEGER" || readRevision.notnull !== 1 || readRevision.dflt_value !== "0"
+      || !/CHECK\s*\(read_revision\s*>=\s*0\s+AND\s+read_revision\s*<=\s*revision\)/iu.test(threadDdl.sql)
+      || database.prepare("SELECT 1 FROM threads WHERE read_revision < 0 OR read_revision > revision LIMIT 1").get() !== undefined) {
+      throw new Error("Invalid conversation read watermark.");
+    }
     const tagDdl = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'tags'").get() as { sql: string };
     if (!/UNIQUE\s*\(\s*source_id\s*,\s*name\s*\)/iu.test(tagDdl.sql)
       || !/\bname\s+TEXT\s+NOT\s+NULL\s+COLLATE\s+NOCASE\b/iu.test(tagDdl.sql)) {

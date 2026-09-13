@@ -180,16 +180,13 @@ const partHasTranscriptPresentation = (part: MessagePart): boolean => {
   }
 };
 
-const messageHasTranscriptPresentation = (
-  message: WebMessage,
-  selectedModel: string | null | undefined,
-): boolean => {
+const messageHasTranscriptPresentation = (message: WebMessage): boolean => {
   if (message.role !== "assistant") return true;
   if (message.attachments.length > 0) return true;
   if (message.status === "failed" || message.status === "interrupted") {
     return true;
   }
-  if (shouldShowMessageRunAttribution(message.attribution, selectedModel)) return true;
+  if (shouldShowMessageRunAttribution(message.attribution, message.status)) return true;
   return message.parts.some(partHasTranscriptPresentation);
 };
 
@@ -276,7 +273,7 @@ export const orderLiveInputsAfterTheirTurn = (
  */
 export const projectProcessJobPresentation = (
   messages: readonly WebMessage[],
-  options: { readonly selectedModel?: string | null; readonly threadId?: string | null } = {},
+  options: { readonly threadId?: string | null } = {},
 ): ProcessJobPresentation => {
   // The inline steer duplicates its user message; shape the transcript without
   // the duplicate before cards, events and visibility are derived from it, and
@@ -351,7 +348,7 @@ export const projectProcessJobPresentation = (
     }
 
     const projected = { ...message, parts: remainingParts };
-    if (messageHasTranscriptPresentation(projected, options.selectedModel)) {
+    if (messageHasTranscriptPresentation(projected)) {
       projectedMessages.push(projected);
     }
   }

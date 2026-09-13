@@ -209,9 +209,19 @@ it still draws as running; see Process-job card reconciliation below.
 **Unread.** A Recent row shows a dot, and an agent square a muted count, for a
 conversation that has moved since this device last looked at it. It is
 device-local: the service is not told, and each browser keeps its own. A
-conversation this browser has never seen is not unread, and the mark clears only
-while the conversation is on screen — on a phone, the conversation screen rather
-than the Dashboard. A running badge takes the agent square; the unread count
+conversation this browser has never seen is not unread. Opening it clears the
+mark only while the conversation is on screen — on a phone, the conversation
+screen rather than the Dashboard. The explicit exception is the agent's
+`MarkConversationRead({ conversationId? })` console tool: it marks one of that
+agent's conversations at its current revision, defaulting to the calling
+conversation, and returns `conversationId` and `readRevision`. Its persisted
+server watermark neither advances the conversation revision nor changes recent
+ordering. Connected consoles adopt it upward into their device-local seen map
+through the normal thread-summary events; disconnected devices adopt it when
+they next receive that summary. A later revision can make the dot return,
+including activity later in the calling turn. Local reads never move backward
+and are never sent to the server; this explicit signal can clear multiple
+devices, but opening a conversation still clears only the local device. A running badge takes the agent square; the unread count
 comes back when the work ends. It is stored with the rest of this origin's
 console data and is cleared with it.
 
@@ -287,8 +297,12 @@ launch-adjacent placement only as a fallback when no wake marker was retained;
 ordinary adjacent same-tool calls retain their existing clustering.
 
 The picker is labelled **Next turn**. The conversation header carries no run
-attribution. Below an assistant message, a normal route marker appears only when
-the model that ran differs from the conversation's current selection. A fallback
+attribution. Below an assistant message, a route marker appears only when that
+run deviated from its request: a fallback, a recorded route transition or
+same-model retry, an effective thinking level the provider did not honour, or an
+unsettled run already attempting another model. The conversation's current
+selection never decides it, so a later model switch neither adds nor removes a
+marker on an older turn — the transcript's route rule carries that switch. A fallback
 warning always appears there, even when its answering model matches the current
 selection, and names requested and answering models plus the classified reason
 when the runtime supplied one. Expanding the marker shows the bounded route
