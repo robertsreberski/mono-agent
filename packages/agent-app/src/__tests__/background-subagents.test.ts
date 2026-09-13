@@ -60,8 +60,8 @@ const done = async (service: ProcessJobsServiceHandle, id: string) => {
   return job;
 };
 
-async function managedFixture(retireSession: (id: string, root: string) => Promise<unknown> = async () => {}) {
-  const f = await fixture({ maxConcurrent: 1, maxQueued: 0 }, retireSession);
+async function managedFixture(retireSession: (id: string, root: string) => Promise<unknown> = async () => {}, overrides = {}) {
+  const f = await fixture({ maxConcurrent: 1, maxQueued: 0, ...overrides }, retireSession);
   const registry = createSubagentInstanceRegistry({ root: resolve(f.root, "children"), retireSession,
     ...createSubagentRecoveryAccess({ service: f.service, privateRoots: async () => [resolve(f.root, "jobs"), resolve(f.root, "children")],
       hostAccess: () => ({ workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) }) }),
@@ -76,6 +76,65 @@ async function managedFixture(retireSession: (id: string, root: string) => Promi
 }
 
 describe("managed detached production execution", () => {
+  it.each(["ordinary", "late-provider"])("F1: drains queued managed work after %s publication releases capacity", async (mode) => {
+    const f = await managedFixture(undefined, { maxQueued: 1, maxActivePerConversation: 3, maxQueueAgeMs: 3000 });
+    const gate = deferred<any>(); const firstRun = vi.fn(() => gate.promise);
+    const first = tools(f, firstRun, { timeoutMs: mode === "ordinary" ? 20_000 : 1500 });
+    const nextRun = vi.fn(async () => ({ text: "queued child actually ran" }));
+    const next = tools(f, nextRun, { timeoutMs: 20_000 });
+    // A reported failure correctly blocks creating arbitrary replacement instances;
+    // this independently existing idle child still has its own admission authority.
+    if (mode === "late-provider") await f.instances.create({ ...spec, id: "second" });
+    try {
+      const a = await first.agent.execute("A", { persist: true, background: true, id: "first", prompt: "hold" });
+      await vi.waitFor(() => expect(firstRun).toHaveBeenCalledOnce());
+      if (mode === "late-provider") {
+        // The reporting boundary includes its existing bounded abandonment grace.
+        await vi.waitFor(async () => expect((await f.service.get(a.details.jobId))?.wake.state).toBe("delivered"), { timeout: 9000 });
+        expect((await f.service.get(a.details.jobId))?.state).toBe("timed_out");
+        expect((await f.store.get(a.details.jobId))?.subagentOwnership?.owner.settlement).toBe("running");
+      }
+      const b = mode === "late-provider"
+        ? await next.send.execute("B", { background: true, id: "second", message: "queued" })
+        : await next.agent.execute("B", { persist: true, background: true, id: "second", prompt: "queued" });
+      expect((await f.service.get(b.details.jobId))?.state).toBe("queued"); expect(nextRun).not.toHaveBeenCalled();
+      gate.resolve({ text: "first finished" });
+      await vi.waitFor(async () => {
+        const owner = (await f.store.get(a.details.jobId))?.subagentOwnership;
+        expect(owner).toMatchObject({ owner: { settlement: "settled" }, publication: { state: "confirmed" } });
+      });
+      const completed = await done(f.service, b.details.jobId);
+      expect(completed.state).toBe("succeeded"); expect(nextRun).toHaveBeenCalledOnce();
+      expect((await f.service.get(a.details.jobId))?.state).toBe(mode === "ordinary" ? "succeeded" : "timed_out");
+      expect(f.wake).toHaveBeenCalledTimes(2); // Late release adds no second wake for A.
+    } finally { gate.resolve({ text: "cleanup" }); }
+  }, 12_000);
+
+  // Confirmed open review finding, not a correctness pass. Remove `.fails` when
+  // durable registry certificate acknowledgement participates in retention.
+  it.fails("F2: retains a durable release certificate through startup retention without an intervening registry read", async () => {
+    const f = await managedFixture();
+    const { agent } = tools(f, async () => ({ text: "done without a registry-reading wake" }));
+    const receipt = await agent.execute("retention", { persist: true, background: true, id: "helper", prompt: "work" });
+    await done(f.service, receipt.details.jobId);
+    // done() reads only the service projection. The wake callback never reads
+    // instances; do not let get/list opportunistically repair this certificate.
+    const registryFile = resolve(subagentConversationRoot(resolve(f.root, "children"), origin.conversationId), "instances.json");
+    const before = JSON.parse(await readFile(registryFile, "utf8"));
+    expect(before[0].ownerReceipt).toMatchObject({ jobId: receipt.details.jobId });
+    await f.service.stop();
+    const reopened = await openProcessJobsService({ ...f.options,
+      now: () => new Date(Date.now() + 10_000),
+      settings: { ...f.options.settings, retention: { ...PROCESS_JOBS_DEFAULTS.retention, maxAgeMs: 1 } },
+    }); services.push(reopened);
+    expect(await f.store.get(receipt.details.jobId)).toBeUndefined(); // Startup retained no U/P obligation.
+    const registry = createSubagentInstanceRegistry({ root: resolve(f.root, "children"), retireSession: async () => {},
+      resolveOwner: (identity) => reopened.resolveSubagentOwner!(identity),
+    });
+    const instances = await registry.open(origin.conversationId, { existingOnly: true });
+    await expect(instances.create({ ...spec, id: "after-retention" })).resolves.toMatchObject({ id: "after-retention" });
+  }, 10_000);
+
   it.each([false, true])("inspects retained failure and consumes acknowledgement exactly once (admissionRejected=%s)", async (admissionRejected) => {
     const f = await managedFixture(); const release = deferred<void>(); let delayed = false;
     const sessions: string[] = [];

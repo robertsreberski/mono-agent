@@ -721,10 +721,17 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         outcome: { status: owner.disposition.status, ...(owner.usage ? { usage: owner.usage } : {}), ...(record.subagentQuestion ? { question: record.subagentQuestion } : {}) } };
       await this.managedRegistry.publish("intent", publication);
       await this.managedRegistry.publish("confirm", publication);
-      await this.withManagedLock(async () => await this.storeMutate("subagent.publication_confirmed", (records) => {
-        const current = requireRecord(records, jobId).subagentOwnership!;
-        if (current.publication.sequence === publication.sequence) current.publication.state = "confirmed";
-      }));
+      await this.withManagedLock(async () => {
+        const occupied = this.runningOccupancy();
+        await this.storeMutate("subagent.publication_confirmed", (records) => {
+          const current = requireRecord(records, jobId).subagentOwnership!;
+          if (current.publication.sequence === publication.sequence) current.publication.state = "confirmed";
+        });
+        // complete() could not drain this slot while P still pinned it. The
+        // matching durable acknowledgement (including late settlement) owns
+        // the capacity transition, not a later queue-expiry timer or wake.
+        if (this.runningOccupancy() < occupied) await this.drainQueue();
+      });
       if (publication.released) this.managedCommands.delete(jobId);
       this.scheduleWake(jobId);
     });
