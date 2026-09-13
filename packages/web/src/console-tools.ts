@@ -9,7 +9,7 @@ export interface ConsoleToolScope {
   readonly threadId: string;
   readonly turnId: string;
 }
-export const CONSOLE_TOOL_NAMES = ["ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject", "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags"] as const;
+export const CONSOLE_TOOL_NAMES = ["ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject", "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead"] as const;
 export type ConsoleToolName = typeof CONSOLE_TOOL_NAMES[number];
 /** Tools that never change state: no operation receipt is written for them. */
 export const CONSOLE_READ_TOOL_NAMES: ReadonlySet<ConsoleToolName> = new Set<ConsoleToolName>(["ListTags", "ListProjects", "GetProject", "ListConversations", "SearchConversations"]);
@@ -54,6 +54,7 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
   const keys: Record<ConsoleToolName, readonly string[]> = {
     ListTags: [], CreateTag: ["name", "color"], UpdateTag: ["tagId", "name", "color"], DeleteTag: ["tagId"],
     UpdateConversationTags: ["conversationId", "add", "remove"],
+    MarkConversationRead: ["conversationId"],
     ListProjects: [], GetProject: ["projectId"], CreateProject: ["name", "context", "color", "attachCurrentConversation"],
     UpdateProject: ["projectId", "name", "context", "color", "archived"], DeleteProject: ["projectId"],
     ListConversations: ["tagId", "projectId", "archived", "limit", "cursor"], SearchConversations: ["query", "limit"], CreateConversation: ["title", "projectId"], SetConversationProject: ["conversationId", "projectId"],
@@ -115,6 +116,14 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
         store.patchThread(current.id, { tagIds: next }); threads.push(current.id);
       }
       result = { conversationId: current.id, tagIds: store.getThread(current.id)!.tagIds, disposition: "applied" }; break;
+    }
+    case "MarkConversationRead": {
+      const current = conversation(args.conversationId);
+      if (current.readRevision !== current.revision) {
+        store.markConversationRead(current.id);
+        threads.push(current.id);
+      }
+      result = { conversationId: current.id, readRevision: current.revision }; break;
     }
     case "ListProjects": {
       const list = store.listProjects(scope.sourceId);

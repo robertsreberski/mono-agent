@@ -3,12 +3,11 @@ import type { ThreadSummary } from "./types";
 /**
  * Which conversations have moved since THIS DEVICE last looked at them.
  *
- * Device-local on purpose. The server has no idea what a person has read: the
- * same account is a phone, a laptop and a tab left open on a second monitor,
- * and a marker the server owned would clear on all three the moment one of them
- * was looked at. So this is one browser's memory of one number per conversation
- * -- the `revision` it was last SEEN at -- and nothing about it leaves the
- * device.
+ * Device-local on purpose: opening a conversation on a phone does not clear
+ * the laptop's dot. This browser remembers the `revision` it last SEEN, and
+ * nothing about that reading leaves the device. The one explicit exception is
+ * an agent's MarkConversationRead signal: a server watermark is adopted upward
+ * on each device that hears it, without replacing that device's own memory.
  *
  * What follows from that, and is not a defect:
  *
@@ -52,6 +51,8 @@ export interface UnreadMarker {
    * moved, so a caller can decide whether to redraw.
    */
   readonly adopt: (seen: readonly SeenRevision[]) => boolean;
+  /** Adopt explicit server signals upward, after first sight has seeded local memory. */
+  readonly adoptReadWatermarks: (threads: readonly ThreadSummary[]) => boolean;
   /** What to write back, least-recently-touched first. */
   readonly entries: () => readonly SeenRevision[];
   /** Whether this summary has moved since this device saw it. */
@@ -121,13 +122,24 @@ export const createUnreadMarker = (): UnreadMarker => {
       }
       return moved;
     },
+    adoptReadWatermarks: (threads) => {
+      let moved = false;
+      for (const thread of threads) {
+        const marked = seen.get(thread.id);
+        const watermark = thread.readRevision;
+        if (marked === undefined || watermark === undefined || !Number.isSafeInteger(watermark) || watermark <= marked) continue;
+        touch(thread.id, watermark);
+        moved = true;
+      }
+      return moved;
+    },
     entries: () => [...seen].map(([id, revision]) => ({ id, revision })),
     unread: (thread) => {
       const marked = seen.get(thread.id);
       return marked !== undefined && thread.revision > marked;
     },
     see: (thread) => {
-      if (seen.get(thread.id) === thread.revision) return false;
+      if ((seen.get(thread.id) ?? -Infinity) >= thread.revision) return false;
       touch(thread.id, thread.revision);
       return true;
     },
