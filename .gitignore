@@ -32,3 +32,6 @@ AGENTS.local.md
 
 # Worktree-local dependency caches and verification artifacts
 .worklab-tmp/
+
+# Local synthetic screenshots and verification logs
+/output/

@@ -432,6 +432,7 @@ ProcessJobProjectionOutput
 ProcessJobProjectionTimestamps
 ProcessJobProjectionWake
 ProcessJobState
+ProcessJobSubagentProgress
 ProcessJobWakeDeliveryInput
 ProcessJobWakeDeliveryResult
 ProcessJobWakeDisposition
@@ -507,6 +508,7 @@ isMonitorErrorCode
 isMonitorState
 isProcessJobErrorCode
 isProcessJobState
+isProcessJobSubagentProgress
 isSubagentLaunchToolName
 isTerminalMonitorState
 isTerminalProviderAuthSessionState

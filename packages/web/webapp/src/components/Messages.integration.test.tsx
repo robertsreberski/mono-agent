@@ -1394,6 +1394,49 @@ describe("message actions", () => {
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
   });
 
+  it.each(["Agent", "AgentSend"] as const)("renders causally attributed lifecycle rows in response Activity without duplicating the stack card", (tool) => {
+    const baseJob = processJob();
+    const job = { ...baseJob, kind: "internal" as const, tool, instanceId: "helper", childStillBusy: false };
+    const origin: WebMessage = {
+      ...assistantMessage("complete"),
+      id: "origin",
+      parts: [
+        { type: "reasoning", text: "Prepare the background launch." },
+        {
+          type: "tool-call",
+          toolCallId: "launch",
+          toolName: tool,
+          status: "complete",
+          structuredResult: {
+            schema: "mono-agent.process-job-start-receipt.v1",
+            jobId: job.jobId,
+            tool,
+            state: "running",
+            startedAt: job.timestamps.startedAt,
+          },
+        },
+        { type: "text", text: "The report is ready." },
+      ],
+    };
+    const carrier: WebMessage = {
+      ...origin,
+      id: "card",
+      parts: [{ type: "process-job", job }],
+    };
+    render(<MessagesHarness messages={[origin, carrier]} />);
+
+    expect(screen.getByRole("button", { name: "Activity" })).toHaveTextContent("4 steps");
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.getByRole("group", { name: `${tool} job started` })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: `${tool} job succeeded` })).toBeInTheDocument();
+    expect(document.querySelectorAll(".process-job-event")).toHaveLength(2);
+    expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
+    expect(document.querySelectorAll(".message-actions")).toHaveLength(1);
+    expect(screen.getByText("The report is ready.")).toBeVisible();
+    expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible();
+    expect(screen.queryByRole("group", { name: `${tool} background job succeeded` })).toBeNull();
+  });
+
   it("renders a job wake terminal row in place without a synthetic Steered row", () => {
     const job = processJob();
     const wake: WebMessage = {

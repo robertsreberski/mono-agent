@@ -2149,7 +2149,7 @@ export class WebStore {
 
   /** Append or update exactly one retained card for a web-origin process job. */
   upsertProcessJobCard(input: UpsertWebProcessJobCardInput): UpsertWebProcessJobCardResult {
-    const projection = parseProcessJobProjection(input.processJob);
+    let projection = parseProcessJobProjection(input.processJob);
     const thread = this.requireThread(input.threadId);
     if (thread.sourceId !== input.sourceId) {
       throw new WebConsoleError("invalid_notification", "The process job does not belong to this agent thread.", 409);
@@ -2170,7 +2170,7 @@ export class WebStore {
       SELECT * FROM process_job_cards WHERE source_id = ? AND job_id = ?
     `).get(input.sourceId, projection.jobId) as unknown as ProcessJobCardRow | undefined;
     const projectionJson = JSON.stringify(projection);
-    const projectionSha256 = createHash("sha256").update(projectionJson).digest("hex");
+    let projectionSha256 = createHash("sha256").update(projectionJson).digest("hex");
     const now = this.now();
     if (existing === undefined) {
       const messageId = randomUUID();
@@ -2233,6 +2233,11 @@ export class WebStore {
       throw new WebConsoleError("storage_corrupt", "A retained process-job card has invalid content.", 500);
     }
     assertProcessJobCardTransition(priorPart.job, projection);
+    if (priorPart.job.kind === "internal" && projection.kind === "internal" && priorPart.job.subagentProgress
+      && (projection.subagentProgress === undefined || projection.subagentProgress.revision < priorPart.job.subagentProgress.revision)) {
+      projection = { ...projection, subagentProgress: priorPart.job.subagentProgress };
+      projectionSha256 = createHash("sha256").update(JSON.stringify(projection)).digest("hex");
+    }
     const hasPriorWakeResponse = existing.response_text !== null || priorReplyParts.length > 0;
     if (hasPriorWakeResponse
       && input.responseText !== undefined
@@ -7541,6 +7546,7 @@ function applyEvent(
     const historyUpdate = canonicalEventHistoryUpdate(event.history);
     const subagent = subagentOf(event);
     if (subagent !== undefined) {
+      if (hasDetachedSubagentReceipt(parts, subagent.id)) return;
       const group = ensureSubagentPart(parts, subagent);
       // The bookend only announces the subagent; the group it belongs to is the
       // whole of its contribution here.
@@ -7604,6 +7610,7 @@ function applyEvent(
     const executionMs = canonicalExecutionMs(event.executionMs);
     const subagent = subagentOf(event);
     if (subagent !== undefined) {
+      if (hasDetachedSubagentReceipt(parts, subagent.id)) return;
       const group = ensureSubagentPart(parts, subagent);
       if (event.metadata?.subagentLifecycle === true) {
         replaceSubagentPart(parts, withEventHistoryUpdate({
@@ -7806,6 +7813,24 @@ function withEventHistoryUpdate<T extends WebToolCall | SubagentPart>(
  * the operator wire, so a malformed payload must fall through to an ordinary
  * tool-call part instead of keying a group on a non-string.
  */
+/** Late child stream events cannot replace a canonical detached launch receipt. */
+function hasDetachedSubagentReceipt(parts: readonly WebMessagePart[], id: string): boolean {
+  const part = parts.find((candidate) => candidate.type === "tool-call" && candidate.toolCallId === id);
+  if (part?.type !== "tool-call" || (part.toolName !== "Agent" && part.toolName !== "AgentSend")) return false;
+  const value = part.structuredResult;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const receipt = value as Record<string, unknown>;
+  const required = ["schema", "jobId", "tool", "state", "startedAt"];
+  if (!required.every((key) => Object.hasOwn(receipt, key))
+    || Object.keys(receipt).some((key) => ![...required, "maxRuntimeMs"].includes(key))
+    || receipt.schema !== "mono-agent.process-job-start-receipt.v1" || receipt.tool !== part.toolName
+    || typeof receipt.jobId !== "string" || !receipt.jobId.trim() || receipt.jobId.length > 256
+    || !["queued", "starting", "running"].includes(String(receipt.state))
+    || (Object.hasOwn(receipt, "maxRuntimeMs") && (!Number.isSafeInteger(receipt.maxRuntimeMs) || Number(receipt.maxRuntimeMs) <= 0))) return false;
+  return receipt.startedAt === null || (typeof receipt.startedAt === "string"
+    && Number.isFinite(Date.parse(receipt.startedAt)) && new Date(receipt.startedAt).toISOString() === receipt.startedAt);
+}
+
 function subagentOf(
   event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
 ): {
@@ -8994,6 +9019,7 @@ function assertProcessJobCardTransition(
   next: ProcessJobProjection,
 ): void {
   if (previous.tool !== next.tool
+    || (previous.kind === "internal" && next.kind === "internal" && previous.instanceId !== next.instanceId)
     || previous.summary !== next.summary
     || previous.origin.conversationId !== next.origin.conversationId
     || previous.origin.channel !== next.origin.channel

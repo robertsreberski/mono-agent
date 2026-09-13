@@ -8,6 +8,7 @@ import type { MessagePart, ProcessJobProjection, ProcessJobState } from "../type
 import type { ProcessJobActivityEvent } from "../process-job-presentation";
 import { ActivityRow, type ActivityStatus } from "./ActivityRow";
 import { ActivityElapsed, type ActivityTiming } from "./assistant-ui/ActivityElapsed";
+import { ProcessJobSubagentFacts, ProcessJobSubagentProgress } from "./ProcessJobSubagentProgress";
 import { formatToolDuration } from "./duration";
 
 export const TERMINAL_PROCESS_JOB_STATES: ReadonlySet<ProcessJobState> = new Set<ProcessJobState>([
@@ -61,6 +62,7 @@ const immutableProcessJobIdentityMatches = (
 ): boolean => current.schema === next.schema
   && current.jobId === next.jobId
   && current.tool === next.tool
+  && (current.kind !== "internal" || next.kind !== "internal" || current.instanceId === next.instanceId)
   && current.summary === next.summary
   && current.origin.conversationId === next.origin.conversationId
   && current.origin.channel === next.origin.channel
@@ -120,6 +122,9 @@ export const mergeProcessJobProjection = (
 
   const merged: ProcessJobProjection = {
     ...next,
+    ...(current.kind === "internal" && next.kind === "internal" && current.subagentProgress
+      && (next.subagentProgress === undefined || current.subagentProgress.revision > next.subagentProgress.revision)
+      ? { subagentProgress: current.subagentProgress } : {}),
     timestamps: {
       ...next.timestamps,
       startedAt: preserveFact(current.timestamps.startedAt, next.timestamps.startedAt),
@@ -243,6 +248,7 @@ export function ProcessJobActivityEventPart({ data }: DataMessagePartProps) {
   return (
     <ActivityRow
       variant="job"
+      jobIcon={event.tool === "Agent" || event.tool === "AgentSend" ? "agent" : "terminal"}
       status={terminal && TERMINAL_PROCESS_JOB_STATES.has(event.state)
         && event.state !== "succeeded" ? "failed" : "complete"}
       label={`${event.tool} job ${terminal ? stateLabel : "started"}`}
@@ -354,6 +360,7 @@ export function ProcessJobCard({
   const followOutput = useRef(true);
   const threadId = initial === undefined ? undefined : processJobThreadId(initial);
   const jobId = initial?.jobId;
+  const progress = live?.kind === "internal" ? live.subagentProgress : undefined;
   const terminal = live === undefined || TERMINAL_PROCESS_JOB_STATES.has(live.state);
   /**
    * When the store last handed this card a projection that SAID something new.
@@ -393,10 +400,10 @@ export function ProcessJobCard({
   }, [live, onProjectionChange]);
 
   useEffect(() => {
-    if (live?.state !== "running" || live.output.preview.length === 0 || autoOpened.current) return;
+    if (live?.state !== "running" || (live.output.preview.length === 0 && !progress?.toolCalls) || autoOpened.current) return;
     autoOpened.current = true;
     if (!manuallyCollapsed.current) setOpen(true);
-  }, [live?.output.preview, live?.state]);
+  }, [live?.output.preview, live?.state, progress?.toolCalls]);
 
   useLayoutEffect(() => {
     const output = outputRef.current;
@@ -482,6 +489,7 @@ export function ProcessJobCard({
   return (
     <ActivityRow
       variant="job"
+      jobIcon={live.kind === "internal" ? "agent" : "terminal"}
       status={status}
       label={`${live.tool} job`}
       summary={live.summary}
@@ -500,8 +508,9 @@ export function ProcessJobCard({
           {live.exitCode !== null && <div><dt>Exit</dt><dd>{live.exitCode}</dd></div>}
           {live.signal !== null && <div><dt>Signal</dt><dd>{live.signal}</dd></div>}
           <div><dt>Wake</dt><dd>{wakeLabel(live.wake)}</dd></div>
+          {live.kind === "internal" && <ProcessJobSubagentFacts progress={progress} />}
         </dl>
-        {live.output.preview.length > 0 && (
+        {live.kind === "internal" ? <ProcessJobSubagentProgress key={live.jobId} progress={progress} open={open} /> : live.output.preview.length > 0 && (
           <>
             <span>Output{live.output.truncated ? " (truncated)" : ""}</span>
             <pre

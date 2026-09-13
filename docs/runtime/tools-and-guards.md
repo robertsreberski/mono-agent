@@ -100,10 +100,13 @@ retained text names that file directly under its header
 (`[result truncated; full result saved to: …]`) so the main agent can `Read` it.
 Without a configured artifact sink the text says the full result was not saved.
 
-**What operators see.** Every subagent tool call streams live to the TUI and web
+**What operators see.** Foreground subagent tool calls stream live to the TUI and web
 console as its own entry, named `<profile>▸<tool>` and bracketed by the
 subagent's own start/finish rows. The subagent's thinking and prose stay
 internal — only its final answer reaches the parent, through the tool result.
+Detached persistent children instead publish bounded, redacted tool progress and
+a terminal report in the web Background jobs card, with a subagent glyph and
+scrollable body; the parent Activity keeps the launch and terminal job rows.
 
 **Limits.** `maxConcurrent` (default 5) is an upper bound on simultaneous
 subagents; the provider may schedule fewer. In particular, Pi 0.85 exposes only
@@ -202,8 +205,9 @@ answers outside the retained durable session, the tool reports
 `session_continuity_lost` rather than claiming the turn was retained. Close that
 instance and create another with the context it needs.
 
-There is no cross-conversation reuse or detached
-subagent execution. Persistence grants no additional authority. Bare runtime
+There is no cross-conversation reuse. Persistent children can run detached
+with `background: true` through the host-owned ProcessJobs lane; see
+[detached persistent children](../tools/background-process-jobs.md#detached-persistent-children). Persistence grants no additional authority. Bare runtime
 hosts without a conversation registry retain stateless `Agent` and reject
 `persist`/`id` if passed directly.
 

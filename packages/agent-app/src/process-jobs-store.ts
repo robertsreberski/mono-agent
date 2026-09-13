@@ -16,6 +16,8 @@ import { isDeepStrictEqual } from "node:util";
 import {
   isProcessJobErrorCode,
   isProcessJobState,
+  isProcessJobSubagentProgress,
+  type ProcessJobSubagentProgress,
   processJobPublicError,
   type ProcessJobErrorCode,
   type ProcessJobProjection,
@@ -87,6 +89,7 @@ export interface DurableProcessJobRecord {
   readonly kind?: "internal";
   readonly instanceId?: string;
   childStillBusy?: boolean;
+  subagentProgress?: ProcessJobSubagentProgress;
   subagentQuestion?: { readonly question: string; readonly options?: string[] };
   state: ProcessJobState;
   readonly summary: string;
@@ -713,7 +716,7 @@ export function projectProcessJob(record: DurableProcessJobRecord): ProcessJobPr
   return {
     schema: "mono-agent.process-job-projection.v1",
     jobId: record.jobId,
-    ...(record.kind === "internal" ? { tool: record.tool as "Agent" | "AgentSend", kind: record.kind, instanceId: record.instanceId!, childStillBusy: record.childStillBusy === true, ...(record.subagentQuestion ? { subagentQuestion: record.subagentQuestion } : {}) } : { tool: record.tool as "Exec" | "Bash" }),
+    ...(record.kind === "internal" ? { tool: record.tool as "Agent" | "AgentSend", kind: record.kind, instanceId: record.instanceId!, childStillBusy: record.childStillBusy === true, ...(record.subagentProgress ? { subagentProgress: record.subagentProgress } : {}), ...(record.subagentQuestion ? { subagentQuestion: record.subagentQuestion } : {}) } : { tool: record.tool as "Exec" | "Bash" }),
     state: record.state,
     summary: record.summary,
     origin: {
@@ -1127,7 +1130,7 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
   if (!isRecord(value)
     || !hasExactKeys(value, [
       "schemaVersion", "generation", "jobId", "tool", "state", "summary", "agentIncarnation",
-      ...["kind", "instanceId", "childStillBusy", "subagentQuestion"].filter((key) => Object.prototype.hasOwnProperty.call(value, key)),
+      ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "subagentProgress"].filter((key) => Object.prototype.hasOwnProperty.call(value, key)),
       ...(Object.prototype.hasOwnProperty.call(value, "processIncarnation") ? ["processIncarnation"] : []),
       "pid", "pgid", "sandboxSettingsPath", "argvSummary", "cwd", "envKeys", "origin", "chainDepth",
       ...(Object.prototype.hasOwnProperty.call(value, "wakeOnCompletion") ? ["wakeOnCompletion"] : []),
@@ -1140,9 +1143,10 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
     || !isJobId(value.jobId)
     || (value.kind === "internal" ? !["Agent", "AgentSend"].includes(String(value.tool))
       || typeof value.instanceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(value.instanceId)
+      || (value.subagentProgress !== undefined && !isProcessJobSubagentProgress(value.subagentProgress))
       || typeof value.childStillBusy !== "boolean" || (value.subagentQuestion !== undefined && !validSubagentJobQuestion(value.subagentQuestion)) || value.pid !== null || value.pgid !== null
       || value.processIncarnation !== undefined || value.sandboxSettingsPath !== null
-      : value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined
+      : value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined || value.subagentProgress !== undefined
         || (value.tool !== "Exec" && value.tool !== "Bash"))
     || !isProcessJobState(value.state)
     || !boundedString(value.summary, 8_000)
