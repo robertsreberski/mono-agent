@@ -73,7 +73,7 @@ export function normalizeBackgroundBashTimeoutMs(value) {
  * Compatibility wrapper retained for direct callers and tests.
  *
  * @param {{command: string, description?: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: import("./shared/process-jobs.js").ProcessJobsController}} [options]
+ * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../ai/types.js").RuntimeToolLimits, ctx?: any, processJobsController?: import("./shared/process-jobs.js").ProcessJobsController}} [options]
  */
 export async function bashToolImpl(params, options = {}) {
   return (await bashToolRun(params, options)).text;
@@ -83,7 +83,7 @@ export async function bashToolImpl(params, options = {}) {
  * Structured Bash execution used by the Pi bridge.
  *
  * @param {{command: string, description?: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: import("./shared/process-jobs.js").ProcessJobsController}} [options]
+ * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../ai/types.js").RuntimeToolLimits, ctx?: any, processJobsController?: import("./shared/process-jobs.js").ProcessJobsController}} [options]
  */
 export async function bashToolRun(
   {
@@ -100,6 +100,7 @@ export async function bashToolRun(
     signal,
     sandboxPolicy,
     sandboxEngine,
+    toolLimits,
     ctx,
     processJobsController,
   } = {},
@@ -135,8 +136,8 @@ export async function bashToolRun(
   const maxChars = finitePositiveInteger(max_output_chars, DEFAULT_MAX_BASH_OUTPUT_CHARS);
   const legacyTimeoutUsed = timeout_ms === undefined && timeout !== undefined;
   const timeoutMs = timeout_ms === undefined
-    ? normalizeBashTimeoutMs(timeout, DEFAULT_BASH_TIMEOUT_MS)
-    : normalizeProcessTimeoutMs(timeout_ms, DEFAULT_BASH_TIMEOUT_MS);
+    ? normalizeBashTimeoutMs(timeout, toolLimits?.bashTimeoutMs)
+    : normalizeProcessTimeoutMs(timeout_ms, toolLimits?.bashTimeoutMs);
   let prepared;
   try {
     prepared = await sandbox.prepareCommand({

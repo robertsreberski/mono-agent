@@ -633,6 +633,17 @@ unavailable. Upgrade host and console together: the optional internal-only
 populated records or projections. This adds no new state directory or web
 SQLite migration; ordinary process-job retention still owns the data.
 
+Detached children can run long **foreground** Bash/Exec commands: `timeout_ms`
+is capped at the smaller of the owning job's remaining runtime at child-run
+setup and `subagents.commandTimeoutMs` (positive integer milliseconds; default
+`1800000`, or 30 minutes). Tool descriptions report this effective ceiling;
+the job's abort signal still stops commands when its deadline arrives, including
+commands started later in the turn. Raising the command ceiling does not extend
+`subagents.timeoutMs`, profile timeouts, or `processJobs.maxRuntimeMs`.
+Interactive turns and foreground children retain the 120-second cap, and
+NodeRepl retains its fixed 120-second timer. Child-owned background commands
+remain unsupported and are explicitly out of scope.
+
 The child runs inside the owning host, using the existing process-job admission,
 queue, runtime/output limits, lineage, lifecycle card and exact-origin wake.
 A queued child is reserved before the receipt returns, so another send or close

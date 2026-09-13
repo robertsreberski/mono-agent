@@ -546,7 +546,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // resolved settings-like inputs and pass it into the tool builders + display
     // normalization. Restores configurable clamping (toolTextLimitChars,
     // searchResultLimit, ...) on top of the 256KB hard ceiling.
-    const toolLimits = resolveAgentCompactionPolicy(settingsLike, runtime.model);
+    const toolLimits = {
+      ...resolveAgentCompactionPolicy(settingsLike, runtime.model),
+      // This per-run execution budget has no legacy settings equivalent.
+      ...(options.toolLimits?.bashTimeoutMs === undefined ? {} : { bashTimeoutMs: options.toolLimits.bashTimeoutMs }),
+    };
     const toolExecution = resolvePiToolExecutionMode(options);
     for (const warning of toolExecution.warnings) {
       runtimeWarnings.push(warning);

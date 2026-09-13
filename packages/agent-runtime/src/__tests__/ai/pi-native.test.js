@@ -1592,6 +1592,43 @@ describe("pi-native typed policy objects + deprecated settings shim", () => {
     }
   }
 
+  it.each([undefined, 900_000, 30_000])("preserves the typed command budget through the real Pi harness: %s", async (bashTimeoutMs) => {
+    const root = mkdtempSync(join(tmpdir(), "pi-native-command-budget-"));
+    const timer = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const model = setup();
+      const advertised = [];
+      faux.setResponses([
+        (context) => {
+          advertised.push(...context.tools);
+          return fauxAssistantMessage([
+            fauxToolCall("Bash", { command: "echo bash", timeout_ms: 3_600_000 }, { id: "budget-bash" }),
+            fauxToolCall("Exec", { executable: process.execPath, args: ["--version"], timeout_ms: 3_600_000 }, { id: "budget-exec" }),
+          ]);
+        },
+        fauxAssistantMessage([fauxText("done")]),
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        cwd: root, toolContext: createToolContext({ workspace: root }), allowedTools: ["Bash", "Exec"],
+        messages: [{ role: "user", content: "run" }],
+        ...(bashTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs } }),
+      }));
+      expect(result.error).toBeNull();
+      expect(deprecationWarnings(result)).toEqual([]);
+      const cap = bashTimeoutMs ?? 120_000;
+      for (const name of ["Bash", "Exec"]) {
+        const tool = advertised.find((tool) => tool.name === name);
+        expect(tool.description).toContain(`${cap} ms`);
+        expect(tool.parameters.properties.timeout_ms.description).toContain(`${cap} ms`);
+        expect(tool.parameters.properties).not.toHaveProperty("background");
+      }
+      expect(timer.mock.calls.filter(([, ms]) => ms === cap)).toHaveLength(2);
+    } finally {
+      timer.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("applies typed toolLimits clamps to tool params, with no deprecation warning", async () => {
     const { result, toolUse } = await grepClampRun({
       toolLimits: { toolTextLimitChars: 1000, searchResultLimit: 25 },

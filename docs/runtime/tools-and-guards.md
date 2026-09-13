@@ -118,6 +118,15 @@ hitting the concurrency cap. Each subagent gets `maxTurns` (default 100) and
 `timeoutMs` (default 5 minutes), and its timeout starts only once it actually
 begins, not while queued.
 
+Detached persistent children (`Agent` / `AgentSend` with `background: true`)
+get a foreground Bash/Exec `timeout_ms` ceiling of the smaller of their own
+process job’s remaining runtime at child-run setup and
+`subagents.commandTimeoutMs` (positive integer milliseconds, default 30 minutes).
+Their tool descriptions show that ceiling; the job deadline can stop a command
+sooner as time elapses. Interactive turns and foreground children keep the
+120-second cap. NodeRepl keeps its fixed 120-second timer. Child-owned background
+commands remain unsupported and are out of scope for this rule.
+
 **Guardrails.** A subagent is read-only unless its profile enumerates more (or,
 for one built at call time, unless its `tools` request survives the ceiling), and
 it never receives `Agent`, `AgentSend`, `AskUser`, or any channel-send tool — it cannot

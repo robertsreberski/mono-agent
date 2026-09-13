@@ -791,7 +791,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       }
       const progress = new SubagentJobProgress(pending.redactionSecrets);
       const handle = launchInternalProcessJob(pending.request, current.maxRuntimeMs, current.maxOutputBytes, undefined,
-        (chunk) => outputTail.writeStdout(chunk), (event) => this.reportSubagentProgress(jobId, event));
+        (chunk) => outputTail.writeStdout(chunk), (event) => this.reportSubagentProgress(jobId, event), Date.parse(startedAt) + current.maxRuntimeMs);
       this.active.set(jobId, { ...pending, handle, outputTail, progress });
       const settlement = handle.completion.then((result) => this.complete(jobId, result))
         .catch((error: unknown) => { if (this.stopping) this.shutdownFailures.push(error); })

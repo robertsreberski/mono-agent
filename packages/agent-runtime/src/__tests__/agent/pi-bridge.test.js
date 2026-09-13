@@ -1501,3 +1501,15 @@ describe("stable MCP discovery surface", () => {
     } finally { connect.mockRestore(); close.mockRestore(); list.mockRestore(); }
   });
 });
+
+it.each([1, 30_000, 1_800_000])("advertises and normalizes a per-run command ceiling of %s ms", (bashTimeoutMs) => {
+  for (const name of ["Bash", "Exec"]) {
+    const toolLimits = { bashTimeoutMs };
+    const tool = getPiBuiltinTools([name], { toolLimits }).find((t) => t.name === name);
+    expect(tool.description).toContain(`${bashTimeoutMs} ms`);
+    expect(tool.parameters.properties.timeout_ms.description).toContain(`${bashTimeoutMs} ms`);
+    expect(tool.parameters.properties.timeout_ms.description).toContain("Background commands are unavailable");
+    expect(normalizePiBuiltinToolParams(name, { timeout_ms: 3_600_000 }, { toolLimits }).timeout_ms).toBe(bashTimeoutMs);
+    expect(normalizePiBuiltinToolParams(name, {}, { toolLimits }).timeout_ms).toBe(bashTimeoutMs);
+  }
+});

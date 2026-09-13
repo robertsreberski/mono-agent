@@ -150,7 +150,13 @@ Persistent in-process helpers use `Agent({persist: true, id?})` followed by
 `maxPerConversation` defaults 8, `idleTtlMs` defaults one day, and `maxTurns`
 defaults 60 child turns. Registries and Pi transcripts survive restarts and are
 removed by `restart --clear-sessions`. Instances are conversation-scoped and
-serialized; no detached runs or cross-conversation reuse are supported.
+serialized; cross-conversation reuse is unsupported. With ProcessJobs enabled,
+persistent Agent/AgentSend can detach with `background: true`. Their foreground
+Bash/Exec ceiling is the smaller of remaining job runtime at child-run setup and
+`subagents.commandTimeoutMs` (positive integer ms, default 1800000); the job
+deadline can stop commands sooner. This does not extend the whole-child
+`subagents.timeoutMs` or job budget. Child-owned background commands remain
+unsupported; foreground children and NodeRepl keep their 120-second caps.
 Disabling instances preserves stateless `Agent`.
 
 ### Persistent child questions
