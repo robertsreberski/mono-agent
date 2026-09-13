@@ -530,7 +530,7 @@ it("G11: configured registry callback through actual harness Session context exc
   } finally { await harness?.dispose?.(); await rm(root, { recursive: true, force: true }); }
 });
 
-it.each(["disabled", "failed-start", "undefined-standalone"])("G02: configured %s ProcessJobs composition keeps an abandoned child fenced", async (mode) => {
+it.each(["disabled", "failed-start", "undefined-standalone", "retained-history"])("G02/G03: configured %s ProcessJobs composition keeps an abandoned child fenced", async (mode) => {
   const root = await mkdtemp(resolve(process.cwd(), "node_modules/.configured-owner-fence-"));
   let responder: Awaited<ReturnType<typeof createConfiguredAgentResponderForApp>> | undefined;
   try {
@@ -540,15 +540,22 @@ it.each(["disabled", "failed-start", "undefined-standalone"])("G02: configured %
       import { createSubagentInstanceRegistry } from ${JSON.stringify(moduleUrl)};
       const handle = await createSubagentInstanceRegistry({ root: ${JSON.stringify(instancesRoot)}, retireSession: async () => {},
         ownerForReservation: (token) => ({ jobId: token, storeRoot: ${JSON.stringify(jobsRoot)} }) }).open("conversation");
-      await handle.create({ id: "child", name: "child", systemPrompt: "Review", definition: { name: "child", description: "Review", systemPrompt: "Review" } });
+      const created = await handle.create({ id: "child", name: "child", systemPrompt: "Review", definition: { name: "child", description: "Review", systemPrompt: "Review" } });
       await handle.reserve("child", ${JSON.stringify(jobId)});
       await handle.begin("child", ${JSON.stringify(jobId)});
+      if (${JSON.stringify(mode === "retained-history")}) {
+        const publication = { identity: { storeRoot: ${JSON.stringify(jobsRoot)}, jobId: ${JSON.stringify(jobId)}, conversationId: "conversation",
+          instanceId: "child", instanceIncarnation: created.incarnation, turnToken: ${JSON.stringify(jobId)} }, sequence: 1,
+          disposition: { status: "ok", continuity: "retained" }, released: true, outcome: { status: "ok" } };
+        await handle.publishOwned("intent", publication);
+        await handle.publishOwned("confirm", publication);
+      }
       process.exit(0);
     `], { cwd: root, timeout: 10_000 });
     const base = monoConfig({ enabled: true, instances: { root: instancesRoot } }, { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] });
     const config = { ...base, runtime: { ...base.runtime, workspace: root }, context: { ...base.context, identityPath: resolve(root, "IDENTITY.md") },
       artifacts: { ...base.artifacts, dir: resolve(root, "artifacts") }, traceability: { ...base.traceability, registryDir: resolve(root, "trace") },
-      processJobs: { enabled: mode !== "disabled" } } as MonoAgentConfig;
+      processJobs: { enabled: mode !== "disabled" && mode !== "undefined-standalone" } } as MonoAgentConfig;
     await writeFile(config.context.identityPath, "Keep abandoned ownership fenced.");
     harnessMock.mockClear();
     const runtime = { run: vi.fn(async (_prompt: string, options: Record<string, unknown>) => ({ text: "must not run", providerSessionId: options.sessionId })) };

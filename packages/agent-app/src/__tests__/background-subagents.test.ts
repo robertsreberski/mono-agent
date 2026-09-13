@@ -120,6 +120,25 @@ describe("managed detached production execution", () => {
     if (stored) expect(stored.state).not.toBe("succeeded");
   });
 
+  it("G05: a late observation persistence failure degrades storage without changing the settled result or waking twice", async () => {
+    const f = await managedFixture(); const run = vi.fn(async () => ({ text: "settled result" }));
+    const receipt = await tools(f, run).agent.execute("observation-write-fault", { persist: true, background: true, id: "helper", prompt: "work" });
+    await done(f.service, receipt.details.jobId);
+    const privateJob = (await f.store.get(receipt.details.jobId))!; const owner = privateJob.subagentOwnership!;
+    const identity = { storeRoot: f.store.stateDir, jobId: privateJob.jobId, conversationId: origin.conversationId,
+      instanceId: "helper", instanceIncarnation: owner.instanceIncarnation, turnToken: owner.turnToken };
+    const privatePath = "PRIVATE-LATE-OBSERVATION";
+    failMutationOnce(f, (records) => records.get(privateJob.jobId)?.subagentObservation?.paths[0]?.path === privatePath);
+    await expect(f.service.recordSubagentObservation!(identity, { schemaVersion: 1, capturedAt: Date.now(), policyRevision: "ab".repeat(32),
+      status: "observed", workdir: f.root, headBefore: "a".repeat(40), headAfter: "a".repeat(40),
+      paths: [{ path: privatePath, status: "untracked" }], omitted: 0 })).rejects.toThrow("injected persistence failure");
+    expect(f.service.health.state).toBe("degraded");
+    expect((await f.store.get(privateJob.jobId))?.subagentObservation).toBeUndefined();
+    expect(await f.instances.get("helper")).toMatchObject({ status: "idle", turns: 1 });
+    expect(run).toHaveBeenCalledOnce(); expect(f.wake).toHaveBeenCalledOnce();
+    await f.service.stop().catch(() => undefined); services.splice(services.indexOf(f.service), 1);
+  });
+
   it.each(["ok", "failed"])("G11: actual managed %s job and delivered wake omit private command/observation canaries", async (mode) => {
     const f = await managedFixture(); const release = deferred<void>(); const entered = deferred<void>();
     const privatePath = "PRIVATE-OBSERVATION-CANARY"; const body = "PRIVATE-REPORT-BODY-CANARY"; const pid = 991827364;
@@ -335,6 +354,33 @@ describe("managed detached production execution", () => {
     expect(await instances.get("helper")).toMatchObject({ status: "idle", incarnation: identity!.instanceIncarnation });
     expect(await store.list()).toEqual([]); expect(denied).not.toHaveBeenCalled(); expect(run).toHaveBeenCalledOnce(); expect(f.wake).not.toHaveBeenCalled();
     if (mode === "changed-root") await expect(stat(f.store.stateDir)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 10_000);
+
+  it("G03: a corrupt matching job keeps the retained registry certificate fenced without opening a fallback root", async () => {
+    const f = await managedFixture(undefined, {}, true); const root = resolve(f.root, "children"); let held = false;
+    f.service.bindManagedSubagents!({ root,
+      verify: async (owner) => (await f.registry.open(owner.conversationId, { existingOnly: true })).verifyOwner(owner),
+      publish: async (phase, publication) => {
+        if (phase === "finalize") { held = true; throw new Error("retain unacknowledged certificate"); }
+        await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+      },
+    });
+    const run = vi.fn(async () => ({ text: "settled once" }));
+    const receipt = await tools(f, run).agent.execute("corrupt-owner", { persist: true, background: true, id: "helper", prompt: "work" });
+    await vi.waitFor(() => expect(held).toBe(true), { timeout: 5000 }); await f.service.stop();
+    services.splice(services.indexOf(f.service), 1);
+    const recordPath = resolve(f.store.recordsDir, `${receipt.details.jobId}.json`);
+    await writeFile(recordPath, "{\"schemaVersion\":1,\"corrupt\":true}\n", { mode: 0o600 });
+    await expect(openProcessJobStore(f.root, f.store.stateDir)).rejects.toThrow();
+    const fallbackRoot = resolve(f.root, "fallback-jobs"); const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {},
+      resolveOwner: async () => ({ state: "unavailable" }), checkOwnerIndex: async () => "unavailable" });
+    const instances = await registry.open(origin.conversationId, { existingOnly: true });
+    await expect(instances.begin("helper")).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
+    await expect(instances.reserve("helper", randomUUID())).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
+    await expect(instances.close("helper")).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
+    await expect(instances.create({ ...spec, id: "replacement" })).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
+    expect(await instances.get("helper")).toMatchObject({ status: "idle", recoveryBlocked: true });
+    expect(run).toHaveBeenCalledOnce(); expect(f.wake).not.toHaveBeenCalled(); await expect(stat(fallbackRoot)).rejects.toMatchObject({ code: "ENOENT" });
   }, 10_000);
 
   it.each(["ordinary", "late-provider"])("F1: drains queued managed work after %s publication releases capacity", async (mode) => {

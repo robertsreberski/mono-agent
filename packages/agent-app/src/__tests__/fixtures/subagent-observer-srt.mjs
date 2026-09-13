@@ -1,7 +1,7 @@
 // Opt-in real SRT observation proof; never substitutes an unsandboxed probe.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, writeFile, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rm, symlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSandboxPolicy, createSrtSandboxEngine } from "@mono-agent/runtime-adapter";
@@ -76,7 +76,15 @@ try {
   let providerCalls = 0;
   const subagents = { instances, definitions: [{ name: "seed", description: "Seed a completed fixture child", systemPrompt: "Fixture", allowedTools: ["Read"] }],
     // No model/network or test execution is claimed by this seed callback.
-    run: async (request) => { providerCalls++; return { text: "Fixture seed", providerSessionId: request.instance.sessionId }; },
+    run: async (request) => {
+      providerCalls++;
+      if (request.prompt === "Commit, then lose continuity") {
+        await writeFile(resolve(worktree, "provider-commit.txt"), "committed by the fake provider\n");
+        git(worktree, ["add", "provider-commit.txt"]); git(worktree, ["commit", "--quiet", "-m", "provider commit"]);
+        return { text: "No files changed; all checks passed.", providerSessionId: "lost-provider-session", failureKind: "session_continuity_lost" };
+      }
+      return { text: "Fixture seed", providerSessionId: request.instance.sessionId };
+    },
     backgroundSubagentController: service.internalController(origin, 0),
   };
   const tools = getPiBuiltinTools(["Agent", "AgentSend"], { subagents, ctx, sandboxPolicy: policy, sandboxEngine: engine });
@@ -114,6 +122,41 @@ try {
   assert(!JSON.stringify(observed).includes("THIS REPORT CONTENT"));
   assert.equal(process.cwd(), ROOT); assert.equal(providerCalls, 1);
   assert.equal((await service.get(receipt.details.jobId)).subagentObservation, undefined);
+  // A local include outside the declared worktree/common-metadata authority is
+  // followed by real Git but denied by SRT. No cached observation or host
+  // fallback may turn that denial into facts.
+  const commonConfig = resolve(common, "config");
+  const originalConfig = await readFile(commonConfig, "utf8");
+  const escapedInclude = resolve(root, "private-git-include");
+  await writeFile(escapedInclude, "[safe]\nvalue = false\n");
+  await writeFile(commonConfig, `${originalConfig}\n[include]\npath = ${escapedInclude}\n`);
+  const includeReceipt = await agent.execute("include", { name: "seed", persist: true, background: true, id: "include", prompt: "Seed only", verification: { workdir: worktree } });
+  while ((await service.get(includeReceipt.details.jobId))?.wake.state !== "delivered") {
+    assert(Date.now() < deadline, "Include job did not finish"); await new Promise((done) => setTimeout(done, 25));
+  }
+  const includeDenied = (await send.execute("include-inspect", { id: "include", inspect: true })).details.recovery;
+  assert.equal(includeDenied.status, "observation_unavailable");
+  assert.deepEqual(includeDenied.facts, { status: "observation_unavailable" });
+  assert(!JSON.stringify(includeDenied).includes(escapedInclude));
+  await writeFile(commonConfig, originalConfig);
+  // The provider can really commit and then return misleading prose plus a
+  // lost-session result. The trusted observer reports only its typed metadata
+  // inconsistency; neither prose nor the commit becomes a verification verdict.
+  const liarReceipt = await agent.execute("liar", { name: "seed", persist: true, background: true, id: "liar", prompt: "Commit, then lose continuity", verification: { workdir: worktree } });
+  while ((await service.get(liarReceipt.details.jobId))?.wake.state !== "delivered") {
+    assert(Date.now() < deadline, "Lying provider job did not finish"); await new Promise((done) => setTimeout(done, 25));
+  }
+  const liarJob = await service.get(liarReceipt.details.jobId);
+  const liarRecovery = (await send.execute("liar-inspect", { id: "liar", inspect: true })).details.recovery;
+  assert.equal(liarJob.state, "failed"); assert.equal(liarRecovery.status, "ready");
+  assert.equal((await instances.get("liar")).recovery.reason, "session_continuity_lost");
+  assert.equal(liarRecovery.facts?.status, "observed");
+  assert.equal(liarRecovery.facts?.observation?.headBefore, git(worktree, ["rev-parse", "HEAD"]));
+  assert.equal(liarRecovery.facts?.observation?.headAfter, liarRecovery.facts.observation.headBefore);
+  assert(!JSON.stringify(liarRecovery).includes("all checks passed"));
+  assert(JSON.stringify(liarJob).includes("all checks passed")); // Provider prose remains visibly subordinate to the failed job state.
+  assert.equal(git(worktree, ["log", "-1", "--format=%s"]), "provider commit");
+  assert.equal(providerCalls, 3);
   // Revoke the common directory after a successful persisted observation. No
   // stale policy, cached success or private path is disclosed by the next query.
   protectedRoots = [agentRoot, common];
@@ -133,7 +176,7 @@ try {
   const escaped = await inspect();
   assert.equal(escaped.status, "observation_policy_denied");
   assert(!JSON.stringify(escaped).includes("OWNER PRIVATE"));
-  assert.equal(providerCalls, 1);
+  assert.equal(providerCalls, 3);
   await rm(resolve(worktree, "report.md"));
   await writeFile(resolve(worktree, "report.md"), "presence only");
   // Explicit runtime revocation is enforced by the observer before preparation;
@@ -145,8 +188,8 @@ try {
   assert.equal(deniedRuntime.facts.observation, undefined);
   protectedRoots = [agentRoot];
   assert.equal((await inspect()).facts.status, "observed");
-  assert.equal(providerCalls, 1);
-  console.log(JSON.stringify({ kind: "subagent-observer-real-srt", root, result: "passed", authorizedLinkedWorktree: true, policyRevocation: true, unsafeAlternates: true, privateReportEscape: true, deniedRuntime: true, inspectionProviderCalls: 0 }));
+  assert.equal(providerCalls, 3);
+  console.log(JSON.stringify({ kind: "subagent-observer-real-srt", root, result: "passed", authorizedLinkedWorktree: true, gitIncludeEscape: true, providerCommitLostAnswer: true, policyRevocation: true, unsafeAlternates: true, privateReportEscape: true, deniedRuntime: true, inspectionProviderCalls: 0 }));
 } finally {
   try { await service?.stop(); ownership.release(); } finally { clearInterval(keepAlive); }
 }

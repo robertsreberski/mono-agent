@@ -143,11 +143,15 @@ export async function observeSubagentVerification(target: SubagentVerificationTa
     const git = async (args: string[]): Promise<string> => {
       if (Date.now() >= deadline) throw new Error("observation_unavailable");
       await attest();
+      const requestedArgs = [`--work-tree=${target.workdir}`, "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.untrackedCache=false", ...args];
       const prepared = await current.sandboxEngine!.prepareCommand({ command: executable.path, cwd: target.workdir,
-        args: [`--work-tree=${target.workdir}`, "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.untrackedCache=false", ...args],
+        args: requestedArgs,
         env: { PATH: "/usr/bin:/bin", HOME: "/nonexistent", XDG_CONFIG_HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" },
       }, policy);
-      if (!prepared.sandboxed || prepared.command !== executable.path || prepared.cwd !== target.workdir || Date.now() >= deadline) {
+      const separator = prepared.args.lastIndexOf("--");
+      const direct = prepared.command === executable.path && same(prepared.args, requestedArgs);
+      const wrapped = separator >= 0 && same(prepared.args.slice(separator + 1), [executable.path, ...requestedArgs]);
+      if (!prepared.sandboxed || (!direct && !wrapped) || prepared.cwd !== target.workdir || Date.now() >= deadline) {
         await prepared.cleanup?.(); throw new Error("observation_unavailable");
       }
       const result = await current.runProbe!(prepared, Math.min(1500, deadline - Date.now()));
@@ -185,6 +189,10 @@ export async function observeSubagentVerification(target: SubagentVerificationTa
     const message = error instanceof Error ? error.message : "";
     return { ...base, status: (["observation_policy_denied", "observation_inconsistent", "observation_truncated"].includes(message) ? message : "observation_unavailable") as SubagentVerificationObservation["status"] };
   }
+}
+
+function same(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 export async function authorizeSubagentVerificationMetadata(target: SubagentVerificationTarget, input: unknown, privateRoots: readonly string[]): Promise<void> {

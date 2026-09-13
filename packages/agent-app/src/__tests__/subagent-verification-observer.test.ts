@@ -73,6 +73,16 @@ it("refuses a prepared native command whose cwd differs from the declared observ
   expect((await observeSubagentVerification(f.target, f.access, [])).status).toBe("observation_unavailable");
   expect(f.runProbe).not.toHaveBeenCalled(); expect(f.cleanup).toHaveBeenCalledOnce();
 });
+it("accepts the exact native Git target behind a sandbox wrapper and rejects a substituted target", async () => {
+  const wrapped = await fixture();
+  wrapped.prepareCommand.mockImplementation(async (spec) => ({ command: "/trusted/srt", args: ["--settings", "/private/settings", "--", spec.command, ...(spec.args ?? [])], cwd: spec.cwd!, sandboxed: true, cleanup: wrapped.cleanup }));
+  expect((await observeSubagentVerification(wrapped.target, wrapped.access, [])).status).toBe("observed");
+
+  const substituted = await fixture();
+  substituted.prepareCommand.mockImplementation(async (spec) => ({ command: "/trusted/srt", args: ["--settings", "/private/settings", "--", "/different/git", ...(spec.args ?? [])], cwd: spec.cwd!, sandboxed: true, cleanup: substituted.cleanup }));
+  expect((await observeSubagentVerification(substituted.target, substituted.access, [])).status).toBe("observation_unavailable");
+  expect(substituted.runProbe).not.toHaveBeenCalled(); expect(substituted.cleanup).toHaveBeenCalledOnce();
+});
 it("reports changing HEAD as inconsistent rather than acceptance", async () => {
   const f = await fixture(); let heads = 0;
   f.runProbe.mockImplementation(async (prepared) => completed(prepared.args.includes("config") ? "" : prepared.args.includes("status") ? "" : (++heads === 1 ? sha : "b".repeat(40))));
