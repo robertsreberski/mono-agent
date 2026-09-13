@@ -69,7 +69,7 @@ describe("meaningful conversation outcomes", () => {
     } finally { s.store.close(); }
   });
 
-  it.each(["monitor", "process"] as const)("retains an older foreground failure through late %s settlement", async (kind) => {
+  it.each(["monitor", "process"] as const)("clears an older foreground failure through late %s settlement and omits idle status", async (kind) => {
     const s = await setup();
     try {
       if (kind === "process") s.addJob();
@@ -83,16 +83,16 @@ describe("meaningful conversation outcomes", () => {
       const next = s.store.beginTurn({ threadId: s.thread.id, text: "Try again", attachmentIds: [] });
       expect(s.present()).toEqual({ text: "Working…", active: true });
       s.store.completeTurn(next.turnId, "Recovered successfully");
-      expect(s.present()).toEqual({ text: "Completed", active: false });
+      expect(s.present()).toEqual({ text: "", active: false });
     } finally { s.store.close(); }
   });
 
-  it.each(["monitor", "process"] as const)("lets a meaningful %s wake resolve a job failure", async (kind) => {
+  it.each(["monitor", "process"] as const)("lets a meaningful %s wake resolve a job failure and omits idle status", async (kind) => {
     const s = await setup();
     try {
       s.addJob(); s.advance(); s.wake(kind, "The failure is resolved.");
       expect(s.summary().runState.lastOutcome).toBeUndefined();
-      expect(s.present()).toEqual({ text: "Completed", active: false });
+      expect(s.present()).toEqual({ text: "", active: false });
     } finally { s.store.close(); }
   });
 
@@ -108,7 +108,7 @@ describe("meaningful conversation outcomes", () => {
     } finally { s.store.close(); }
   });
 
-  it("keeps rich reply failures meaningful and textless user outcomes authoritative", async () => {
+  it("keeps rich reply failures meaningful and omits idle status for authoritative textless user outcomes", async () => {
     const s = await setup();
     try {
       s.addJob(); s.advance();
@@ -120,7 +120,7 @@ describe("meaningful conversation outcomes", () => {
       const user = s.store.beginTurn({ threadId: s.thread.id, text: "New request", attachmentIds: [] });
       s.store.completeTurn(user.turnId, "");
       expect(s.summary().runState.lastOutcome).toBeUndefined();
-      expect(s.present()).toEqual({ text: "Completed", active: false });
+      expect(s.present()).toEqual({ text: "", active: false });
     } finally { s.store.close(); }
   });
 
