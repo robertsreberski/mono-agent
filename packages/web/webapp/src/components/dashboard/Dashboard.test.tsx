@@ -279,7 +279,8 @@ describe("Dashboard conversation rows", () => {
       } },
     }]);
     rerender(<Dashboard />);
-    expect(row).toHaveTextContent("Results are ready");
+    expect(row).toHaveTextContent("Completed");
+    expect(row).not.toHaveTextContent("Results are ready");
     expect(within(row).queryByRole("img", { name: /running|Working/u })).toBeNull();
   });
 

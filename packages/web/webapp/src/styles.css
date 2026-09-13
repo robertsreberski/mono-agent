@@ -386,7 +386,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
    conversation as it now stands. */
 .thread-unread { width: 6px; height: 6px; flex: none; background: var(--accent); border-radius: 999px; }
 .thread-preview { min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.thread-preview-text { min-width: 0; flex: 1; overflow: hidden; font: inherit; line-height: inherit; text-overflow: ellipsis; white-space: nowrap; }
+.thread-preview-text { min-width: 0; max-width: 55%; flex: 0 0 auto; overflow: hidden; font: inherit; line-height: inherit; text-overflow: ellipsis; white-space: nowrap; }
 .thread-running { width: 6px; height: 6px; flex: none; align-self: center; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); animation: pulse 1.4s ease infinite; }
 .thread-load-more { min-height: 31px; margin: 8px 0 0; padding: 0 9px; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 10px; font-weight: 650; }
 .thread-load-more:hover { color: var(--text); background: var(--surface-hover); }
@@ -459,10 +459,10 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
    the `.thread-footer` gradient above the bar so the last row of a scrolled
    list is never cut on it. The scroll region's own bottom padding is the same
    28px, so a list scrolled to its end rests clear of the fade. */
-.dashboard-footer { position: relative; z-index: 2; min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; padding: 0 calc(var(--gutter-right) - 7px) max(0px, env(safe-area-inset-bottom)) calc(var(--gutter-left) - 7px); border-top: 1px solid var(--line); }
+.dashboard-footer { position: relative; z-index: 2; min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; padding: 0 calc(var(--gutter-right) - 7px) max(0px, env(safe-area-inset-bottom)) calc(var(--gutter-left) - 7px); }
 /* Same padding-box rule as `.dashboard-search::after`, from the other side:
    without the pixel the fade covers the footer's own top border. */
-.dashboard-footer::before { content: ""; position: absolute; bottom: calc(100% + 1px); left: 0; right: 0; height: 28px; background: linear-gradient(to top, var(--panel) 0, color-mix(in srgb, var(--panel) 94%, transparent) 14px, transparent 28px); pointer-events: none; }
+.dashboard-footer::before { content: ""; position: absolute; bottom: 100%; left: 0; right: 0; height: 28px; background: linear-gradient(to top, var(--panel) 0, color-mix(in srgb, var(--panel) 94%, transparent) 14px, transparent 28px); pointer-events: none; }
 .archive-toggle, .data-mode-indicator { min-width: 0; height: 32px; display: flex; align-items: center; gap: 6px; flex: none; padding: 0 7px; color: var(--text-muted); background: transparent; border-radius: 8px; cursor: pointer; font-size: 10.5px; text-align: left; white-space: nowrap; }
 .archive-toggle:hover, .archive-toggle.is-active, .data-mode-indicator:hover { color: var(--text); background: var(--surface-subtle); }
 .archive-count { min-width: 14px; color: var(--text-muted); font-size: 10px; text-align: right; font-variant-numeric: tabular-nums; }
@@ -1581,12 +1581,20 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 [data-tag-color="green"] { --project-ink: light-dark(#28613c, #a0d7ae); --project-tint: light-dark(#e3f2e7, #233d2b); }
 [data-tag-color="teal"] { --project-ink: light-dark(#196467, #91d6d8); --project-tint: light-dark(#dff1f1, #203d3e); }
 [data-tag-color="red"] { --project-ink: light-dark(#a23832, #f4aaa3); --project-tint: light-dark(#fbe6e3, #492a28); }
-.conversation-tags { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; overflow-x: auto; flex-wrap: nowrap; padding: 4px 5px; }
+.chat-metadata-row { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.chat-metadata-row .chat-project-identity { flex: 0 0 auto; max-width: 45%; }
+.conversation-tags > .tag-separator { display: none; }
+.chat-project-identity + .conversation-tags > .tag-separator { display: inline; }
+.conversation-tags { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; flex: 0 1 auto; }
+.conversation-tag-chips { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; }
+.conversation-tag-chips:empty { display: none; }
+.tag-separator { flex: none; color: var(--text-muted); }
 .tag-chip { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; max-width: 140px; min-width: 0; padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; color: var(--text-soft); background: transparent; font-size: 10px; font-weight: 500; line-height: 1.4; vertical-align: middle; }
 .tag-chip::before { content: ""; width: 5px; height: 5px; flex: none; border-radius: 50%; background: var(--project-ink); }
 .tag-chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.conversation-tags .tag-chip { flex-shrink: 0; }
-.thread-tags { display: flex; align-items: center; gap: 10px; min-width: 0; margin-top: 5px; overflow: hidden; }
+.conversation-tags .tag-chip { flex-shrink: 0; border: 0; border-radius: 999px; padding: 4px 10px; background: var(--surface-subtle); color: var(--text); }
+.thread-tags { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; flex: 0 1 auto; }
+.thread-preview .route-badge { margin-left: auto; }
 .thread-tags .tag-chip { padding: 0; border: 0; border-radius: 0; }
 .tag-overflow { flex: none; font-size: 10px; color: var(--text-muted); }
 .conversation-tags-trigger { display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: none; min-width: 28px; min-height: 28px; padding: 4px; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); font-size: 10px; cursor: pointer; white-space: nowrap; }

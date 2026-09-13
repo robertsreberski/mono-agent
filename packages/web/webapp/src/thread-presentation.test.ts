@@ -81,17 +81,17 @@ describe("conversation status presentation", () => {
       runState: { status: "complete", finishedAt: later },
       lastMessagePreview: "Recovered successfully",
       jobActivity: jobs({ latestTerminal: { state: "failed", completedAt: ended } }),
-    })).toEqual({ text: "Recovered successfully", active: false });
+    })).toEqual({ text: "Completed", active: false });
   });
 
-  it("uses a completed job's reply even when its card is older than the latest message", () => {
+  it("shows Completed rather than a completed job reply", () => {
     expect(present({
       runState: { status: "failed", finishedAt: ended },
       lastMessagePreview: "Older message",
       jobActivity: jobs({ latestTerminal: {
         state: "succeeded", completedAt: later, replyPreview: "Worker results",
       } }),
-    })).toEqual({ text: "Worker results", active: false });
+    })).toEqual({ text: "Completed", active: false });
   });
 
   it("uses Completed for a textless job instead of reusing an older reply", () => {
@@ -106,16 +106,16 @@ describe("conversation status presentation", () => {
       runState: { status: "complete", finishedAt: "2026-09-07T12:00:00.000+02:00" },
       lastMessagePreview: "Final answer",
       jobActivity: jobs({ latestTerminal: { state: "failed", completedAt: ended } }),
-    })).toEqual({ text: "Final answer", active: false });
+    })).toEqual({ text: "Completed", active: false });
   });
 
   it("uses meaningful fallbacks without job metadata, including older cached summaries", () => {
     expect(present()).toEqual({ text: "New conversation", active: false });
-    expect(present({ messageCount: 2 })).toEqual({ text: "No reply yet", active: false });
+    expect(present({ messageCount: 2, lastMessagePreview: "Private prompt excerpt" })).toEqual({ text: "No reply yet", active: false });
     expect(present({ runState: { status: "running" } })).toEqual({ text: "Working…", active: true });
     expect(present({ runState: { status: "complete" }, messageCount: 2 }))
       .toEqual({ text: "Completed", active: false });
     expect(present({ runState: { status: "complete" }, lastMessagePreview: "Answer" }))
-      .toEqual({ text: "Answer", active: false });
+      .toEqual({ text: "Completed", active: false });
   });
 });

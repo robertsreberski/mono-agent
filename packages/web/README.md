@@ -49,7 +49,7 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   content deltas plus rate-limited change hints over SSE so any connected browser
   can catch up without reloading what it already holds.
 - Project foreground outcomes and retained background-job activity into conversation
-  rows. Current work and failures take priority over reply previews, including for
+  rows using status labels rather than message excerpts. Current work and failures take priority over completion, including for
   closed conversations and job cards outside the loaded message page.
   Silent assistant-only host wakes retain the previous meaningful outcome for
   this priority, without changing their actual run status or completion time.
