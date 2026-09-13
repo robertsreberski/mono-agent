@@ -24,6 +24,7 @@ const storeMock = vi.hoisted(() => ({
   selectedThread: null,
   hasRunningThread: false,
   openProjectId: null as string | null,
+  closeProject: vi.fn(),
   showArchived: false,
   showOfflineAgents: false,
   hiddenOfflineAgentCount: 0,
@@ -79,6 +80,7 @@ beforeEach(() => {
   storeMock.selectionError = null;
   storeMock.selectedAgent = null;
   storeMock.openProjectId = null;
+  storeMock.closeProject.mockClear();
   storeMock.createThread.mockReset().mockResolvedValue(undefined);
 });
 
@@ -368,7 +370,7 @@ describe("App mobile screens", () => {
 
   it("owns no gesture on the entrance screen, so its strip keeps every swipe", () => {
     // The agent strip is a horizontal scroller and the lists scroll; a swipe
-    // on the Dashboard is theirs. Only the pushed conversation has a back.
+    // on the plain Dashboard is theirs. Only pushed surfaces have a back.
     const { container } = render(<App />);
     const shell = container.querySelector(".app-shell");
     expect(shell).not.toBeNull();
@@ -378,6 +380,60 @@ describe("App mobile screens", () => {
 
     expect(chat(container)).not.toHaveClass("is-open");
     expect(panel(container)).not.toHaveAttribute("inert");
+    expect(storeMock.closeProject).not.toHaveBeenCalled();
+  });
+
+  it("closes the open project after a deliberate right swipe across it", () => {
+    // The project page lives in the dashboard slot; its visible Back control
+    // calls closeProject, and the same swipe must do the same.
+    storeMock.openProjectId = "project-web";
+    const { container } = render(<App />);
+    const shell = container.querySelector(".app-shell");
+    expect(shell).not.toBeNull();
+
+    swipe(shell!, { x: 40, y: 200 }, { x: 130, y: 204 });
+
+    expect(storeMock.closeProject).toHaveBeenCalledTimes(1);
+    expect(chat(container)).not.toHaveClass("is-open");
+    expect(panel(container)).not.toHaveAttribute("inert");
+  });
+
+  it("leaves the open project alone for short drags, vertical scrolls and claimed surfaces", () => {
+    storeMock.openProjectId = "project-web";
+    const { container } = render(<App />);
+    const shell = container.querySelector(".app-shell");
+    expect(shell).not.toBeNull();
+
+    swipe(shell!, { x: 180, y: 240 }, { x: 243, y: 245 });
+    swipe(shell!, { x: 180, y: 240 }, { x: 250, y: 320 });
+    expect(storeMock.closeProject).not.toHaveBeenCalled();
+
+    const control = screen.getByRole("button", { name: "Open a conversation" });
+    swipe(control, { x: 12, y: 30 }, { x: 100, y: 32 });
+    expect(storeMock.closeProject).not.toHaveBeenCalled();
+
+    (document.activeElement as HTMLElement | null)?.blur();
+    const selected = document.createElement("p");
+    selected.textContent = "Selected project text";
+    shell!.append(selected);
+    const range = document.createRange();
+    range.selectNodeContents(selected);
+    window.getSelection()?.addRange(range);
+    swipe(selected, { x: 40, y: 200 }, { x: 130, y: 204 });
+    window.getSelection()?.removeAllRanges();
+    expect(storeMock.closeProject).not.toHaveBeenCalled();
+
+    const scroller = document.createElement("div");
+    const scrollContent = document.createElement("span");
+    scroller.style.overflowX = "auto";
+    Object.defineProperties(scroller, {
+      clientWidth: { configurable: true, value: 120 },
+      scrollWidth: { configurable: true, value: 240 },
+    });
+    scroller.append(scrollContent);
+    shell!.append(scroller);
+    swipe(scrollContent, { x: 40, y: 240 }, { x: 130, y: 244 });
+    expect(storeMock.closeProject).not.toHaveBeenCalled();
   });
 });
 
