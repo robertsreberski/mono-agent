@@ -526,7 +526,7 @@ it("gives the child the absolute launch deadline and aborts at that deadline", a
     run: async (signal, _write, _progress, execution) => {
       observed = execution;
       return new Promise((resolve) => signal.addEventListener("abort", () => resolve({ status: "timeout", output: "" }), { once: true }));
-    } }, 900_000, 64, 5, undefined, Date.now() + 30_000);
+    } }, 900_000, 64, 5, undefined, undefined, Date.now() + 30_000);
   await vi.advanceTimersByTimeAsync(0);
   expect(observed).toEqual({ deadlineAt: 1_030_000 });
   await vi.advanceTimersByTimeAsync(30_000);
