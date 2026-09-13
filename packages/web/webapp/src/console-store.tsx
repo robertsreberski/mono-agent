@@ -5121,13 +5121,23 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * an entry the device restored carries the revision of the last visit, and
    * seeding from it would make a conversation that moved since then read.
    */
+  const observedActiveThreads = activeThreads?.threads;
+  const observedDetailThread = detail?.thread;
   const observedThreads = useMemo(() => {
     const byId = new Map<string, ThreadSummary>();
-    for (const thread of threads) byId.set(thread.id, thread);
-    for (const thread of activeThreads?.threads ?? []) byId.set(thread.id, thread);
-    if (detail !== null) byId.set(detail.thread.id, detail.thread);
+    const observe = (thread: ThreadSummary) => {
+      const watermark = byId.get(thread.id)?.readRevision;
+      // Detail still owns the displayed summary, but a stale detail must not
+      // hide a stronger explicit read signal already carried by the listing.
+      byId.set(thread.id, watermark !== undefined && watermark > (thread.readRevision ?? 0)
+        ? { ...thread, readRevision: watermark }
+        : thread);
+    };
+    for (const thread of threads) observe(thread);
+    for (const thread of observedActiveThreads ?? []) observe(thread);
+    if (observedDetailThread !== undefined) observe(observedDetailThread);
     return [...byId.values()];
-  }, [activeThreads, detail, threads]);
+  }, [observedActiveThreads, observedDetailThread, threads]);
   /**
    * Which conversations have moved since this device saw them, recomputed
    * whenever the console is told about any of them.
@@ -5140,6 +5150,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * having looked at one of them again.
    */
   useEffect(() => {
+    if (!mountedRef.current) return;
     const marker = unreadRef.current;
     // First sight seeds, and only seeds: a fresh console where the whole fleet
     // is unread is a console whose unread marker means nothing.
@@ -5148,6 +5159,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       const selected = observedThreads.find((thread) => thread.id === selectedThreadId);
       if (selected !== undefined) moved = marker.see(selected) || moved;
     }
+    // The device is still the reader. Only this explicit server signal may
+    // clear another device's dot, and it never lowers local memory. First
+    // sight seeds before adoption; observed summaries retain the highest signal.
+    moved = marker.adoptReadWatermarks(observedThreads) || moved;
     const unread = marker.unreadIds(observedThreads);
     setUnreadThreadIds((current) => sameThreadIds(current, unread) ? current : unread);
     const counts = unreadCountsBySource(observedThreads, unread);

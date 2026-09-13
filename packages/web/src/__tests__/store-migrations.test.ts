@@ -59,6 +59,26 @@ const historical = [...Array.from({ length: 21 }, (_, version) => ({ version, se
   { version: 17, sequenced17: true }];
 
 describe("web storage migration history", () => {
+  it("upgrades schema 29 with an unset read watermark and asserts its current-version shape", async () => {
+    const stateDir = await seeded(18);
+    const current = await WebStore.open({ stateDir });
+    current.close();
+    const legacy = new DatabaseSync(join(stateDir, "state.sqlite"));
+    legacy.exec("ALTER TABLE threads DROP COLUMN read_revision; PRAGMA user_version = 29");
+    legacy.close();
+    const migrated = await WebStore.open({ stateDir });
+    try { expect(migrated.getThread("fixture-thread")?.readRevision).toBe(0); }
+    finally { migrated.close(); }
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 30 });
+      expect(() => database.exec("UPDATE threads SET read_revision = -1")).toThrow();
+      database.exec("ALTER TABLE threads DROP COLUMN read_revision; ALTER TABLE threads ADD COLUMN read_revision TEXT");
+      expect(() => validateWebStorageShape(database)).toThrowError(expect.objectContaining({ code: "storage_corrupt" }));
+    } finally { database.close(); }
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
+  });
+
   it.each(historical)("preserves real layout $version (sequenced17=$sequenced17) and reopens", async ({ version, sequenced17 }) => {
     const stateDir = await seeded(version, sequenced17);
     const freshDir = await seeded(0);
@@ -406,8 +426,8 @@ describe("web storage migration history", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 29 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(29);
+  it("is immutable and derives schema 30 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(30);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);
@@ -506,7 +526,7 @@ describe("migration 19 silent history", () => {
 
 
 describe("conversation tags migration", () => {
-  it("upgrades a real v27 database to v29, preserves content, validates shape, and reopens", async () => {
+  it("upgrades a real v27 database to the current schema, preserves content, validates shape, and reopens", async () => {
     const stateDir = await seeded(0);
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     database.exec(await readFile(new URL("./fixtures/storage-v27.sql", import.meta.url), "utf8"));
@@ -522,7 +542,7 @@ describe("conversation tags migration", () => {
       if (attempt === 0) store.patchThread(thread.id, { tagIds: [store.createTag({ sourceId: "v27-agent", name: "planning", color: "green" }).id] });
       store.close();
       const inspected = new DatabaseSync(join(stateDir, "state.sqlite"));
-      expect(inspected.prepare("PRAGMA user_version").get()).toEqual({ user_version: 29 });
+      expect(inspected.prepare("PRAGMA user_version").get()).toEqual({ user_version: WEB_STORAGE_SCHEMA_VERSION });
       expect(() => validateWebStorageShape(inspected)).not.toThrow();
       expect((inspected.prepare("PRAGMA index_info(thread_tags_by_tag)").all() as Array<{ name: string }>).map((row) => row.name)).toEqual(["tag_id", "thread_id"]);
       expect(inspected.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });

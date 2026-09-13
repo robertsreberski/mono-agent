@@ -140,6 +140,7 @@ const APP_TOOL_HINTS: Readonly<Record<string, string>> = {
   CreateTag: "create a named colored conversation tag",
   UpdateTag: "edit a tag name or color",
   DeleteTag: "delete a tag while retaining its conversations",
+  MarkConversationRead: "clear a conversation unread dot at its current revision",
   UpdateConversationTags: "add or remove tags immediately for the next turn",
   ListProjects: "list the originating agent's console projects",
   GetProject: "read a console project and its shared context",

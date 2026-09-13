@@ -9454,6 +9454,37 @@ describe("ConsoleStoreProvider integration", () => {
       expect([...store.current.unreadCountByAgent]).toEqual([["alpha", 1]]);
     });
 
+    it("adopts an equal-revision server read event without opening the conversation", async () => {
+      const store = await renderStore();
+      const updated = moved(two);
+      emit("thread.changed", { threadId: two.id, payload: { thread: updated } });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([two.id]));
+      emit("thread.changed", { threadId: two.id, payload: { thread: { ...updated, readRevision: updated.revision } } });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([]));
+      expect(store.current.selectedThreadId).toBe(one.id);
+      // A delayed pre-mark summary cannot undo the explicit signal.
+      emit("thread.changed", { threadId: two.id, payload: { thread: updated } });
+      await act(async () => { await Promise.resolve(); });
+      expect([...store.current.unreadThreadIds]).toEqual([]);
+      emit("thread.changed", { threadId: two.id, payload: { thread: { ...moved(updated), readRevision: updated.revision } } });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([two.id]));
+    });
+
+    it("keeps a listing read watermark when equal-revision detail has not heard it", async () => {
+      const store = await renderStore();
+      const updated = moved(one);
+      emit("thread.changed", { threadId: one.id, payload: { thread: updated } });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([one.id]));
+      vi.mocked(api.activeThreads).mockResolvedValue({
+        threads: [{ ...updated, readRevision: updated.revision }],
+        total: 1, truncated: false, runningCounts: { alpha: 1 },
+      });
+      emit("thread.changed", { threadId: one.id, payload: { thread: updated } });
+      await waitFor(() => expect(store.current.activeThreads?.threads[0]?.readRevision).toBe(updated.revision));
+      expect(store.current.detail?.thread.readRevision).toBeUndefined();
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([]));
+    });
+
     it("clears the marker only while the conversation is actually on screen", async () => {
       const store = await renderStore();
       await waitFor(() => expect(store.current.selectedThreadId).toBe(one.id));
