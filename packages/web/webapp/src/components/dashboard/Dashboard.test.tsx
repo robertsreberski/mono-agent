@@ -256,7 +256,7 @@ describe("Dashboard conversation rows", () => {
     expect(screen.getByText(emptyCopy)).toBeVisible();
   });
 
-  it("renders active jobs on an unselected conversation and clears activity at completion", () => {
+  it("renders active jobs on an unselected conversation and omits status at completion", () => {
     const running = thread("worker", "agent-one", {
       title: "Background work",
       messageCount: 5,
@@ -279,7 +279,8 @@ describe("Dashboard conversation rows", () => {
       } },
     }]);
     rerender(<Dashboard />);
-    expect(row).toHaveTextContent("Completed");
+    expect(row).not.toHaveTextContent("Completed");
+    expect(row.querySelector(".thread-preview-text")?.textContent).toBe("");
     expect(row).not.toHaveTextContent("Results are ready");
     expect(within(row).queryByRole("img", { name: /running|Working/u })).toBeNull();
   });

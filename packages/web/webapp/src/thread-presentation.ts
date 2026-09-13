@@ -85,9 +85,11 @@ export function threadPresentation(thread: ThreadSummary): { readonly text: stri
     return { text: [...(error === undefined ? [] : [error]), ...jobs].join(" · "), active: true };
   }
   if (error !== undefined) return { text: error, active: false };
-  if (jobIsLatest && terminal !== undefined) return { text: "Completed", active: false };
+  // An idle success says nothing: the row keeps its project badge and tags,
+  // but omits the "Completed" label.
+  if (jobIsLatest && terminal !== undefined) return { text: "", active: false };
   return {
-    text: outcome?.status === "complete" ? "Completed"
+    text: outcome?.status === "complete" ? ""
       : thread.messageCount > 0 ? "No reply yet" : "New conversation",
     active: false,
   };

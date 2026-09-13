@@ -5172,13 +5172,13 @@ describe("ConsoleStoreProvider integration", () => {
       } };
       emit("thread.changed", { threadId: other.id, payload: { thread: complete } });
       await waitFor(() => expect(threadPresentation(row())).toEqual({
-        text: "Completed", active: false,
+        text: "", active: false,
       }));
       emit("threads.changed", { threadId: other.id, payload: { thread: running } });
       emit("thread.changed", { threadId: other.id, payload: { thread: running } });
       await quiet();
       expect(row().revision).toBe(3);
-      expect(threadPresentation(row())).toEqual({ text: "Completed", active: false });
+      expect(threadPresentation(row())).toEqual({ text: "", active: false });
       expect(store.current.selectedThreadId).toBe(selected.id);
       expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
       expect(api.threads).not.toHaveBeenCalled();
@@ -7948,7 +7948,7 @@ describe("ConsoleStoreProvider integration", () => {
       await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
       await waitFor(() => expect(store.current.threads.find((item) => item.id === beta.id)?.revision).toBe(3));
       expect(threadPresentation(store.current.threads.find((item) => item.id === beta.id)!))
-        .toEqual({ text: "Completed", active: false });
+        .toEqual({ text: "", active: false });
     });
 
     it("repairs a device-restored idle row after the first stream subscribes", async () => {
