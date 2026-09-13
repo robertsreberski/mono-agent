@@ -98,6 +98,11 @@ export function ThreadListItem({
             <span className="thread-preview-text" title={presentation.text}>
               {presentation.text}
             </span>
+            {tags.length > 0 && <span className="thread-tags" aria-label="Conversation tags">
+              <span className="tag-separator" aria-hidden="true">·</span>
+              {tags.slice(0, 3).map((tag) => <TagChip key={tag.id} tag={tag} />)}
+              {tags.length > 3 && <span className="tag-overflow" aria-label={`${String(tags.length - 3)} more tags`}>+{tags.length - 3}</span>}
+            </span>}
             <RouteBadge
               modelShort={route.modelShort}
               effortShort={route.effortShort}
@@ -106,10 +111,6 @@ export function ThreadListItem({
               title={route.title}
             />
           </span>
-          {tags.length > 0 && <span className="thread-tags" aria-label="Conversation tags">
-            {tags.slice(0, 3).map((tag) => <TagChip key={tag.id} tag={tag} />)}
-            {tags.length > 3 && <span className="tag-overflow" aria-label={`${String(tags.length - 3)} more tags`}>+{tags.length - 3}</span>}
-          </span>}
         </span>
       </ThreadListItemPrimitive.Trigger>
     </ThreadListItemPrimitive.Root>
