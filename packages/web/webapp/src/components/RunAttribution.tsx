@@ -6,6 +6,16 @@ const effortLabel = (effort: string | undefined): string | undefined => {
   return effort.length === 0 ? undefined : `${effort[0]!.toUpperCase()}${effort.slice(1)}`;
 };
 
+/**
+ * Normalize effort values for comparison. Providers report the "off" thinking
+ * level as either "off" or "none"; route-label.ts presents "none" as "off",
+ * so the attribution footer should treat them as equivalent.
+ */
+const canonicalEffort = (effort: string): string => {
+  const lower = effort.toLowerCase();
+  return lower === "none" ? "off" : lower;
+};
+
 const routeLabel = (model: string | undefined, effort: string | undefined): string => {
   const effortText = effortLabel(effort);
   if (model === undefined) return effortText === undefined ? "route not reported" : effortText;
@@ -56,7 +66,7 @@ export function shouldShowMessageRunAttribution(
   if (
     run?.effectiveEffort !== undefined
     && requestedEffort !== undefined
-    && run.effectiveEffort.toLowerCase() !== requestedEffort.toLowerCase()
+    && canonicalEffort(run.effectiveEffort) !== canonicalEffort(requestedEffort)
   ) {
     return true;
   }
@@ -82,7 +92,7 @@ export function RunAttribution({
   const effectiveEffort = effortLabel((attribution.executed ?? attribution.attempted)?.effectiveEffort);
   const requestedEffort = effortLabel(attribution.requested.effort);
   const effortChanged = effectiveEffort !== undefined
-    && (requestedEffort === undefined || effectiveEffort.toLowerCase() !== requestedEffort.toLowerCase());
+    && (requestedEffort === undefined || canonicalEffort(effectiveEffort) !== canonicalEffort(requestedEffort));
   const hasDetails = attribution.transitions.length > 0
     || attribution.retries.length > 0
     || attribution.truncated === true

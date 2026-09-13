@@ -99,6 +99,38 @@ describe("RunAttribution", () => {
     }, "complete")).toBe(false);
   });
 
+  it("treats requested none and effective off as an ordinary, non-deviating run", () => {
+    const ran = {
+      requested: { model: "provider:primary", effort: "none" },
+      attempted: { model: "provider:primary", effort: "none", effectiveEffort: "off" },
+      executed: { model: "provider:primary", effort: "none", effectiveEffort: "off" },
+      disposition: "requested" as const,
+      transitions: [],
+      retries: [],
+    };
+
+    expect(shouldShowMessageRunAttribution(ran, "complete")).toBe(false);
+    expect(shouldShowMessageRunAttribution(ran, "running")).toBe(false);
+    render(<RunAttribution attribution={ran} status="complete" />);
+    expect(screen.queryByText("Requested None → effective Off")).toBeNull();
+    expect(screen.getByText("Routing details")).toBeInTheDocument();
+  });
+
+  it("still surfaces a genuine effort mismatch", () => {
+    const ran = {
+      requested: { model: "provider:primary", effort: "none" },
+      attempted: { model: "provider:primary", effort: "none", effectiveEffort: "low" },
+      executed: { model: "provider:primary", effort: "none", effectiveEffort: "low" },
+      disposition: "requested" as const,
+      transitions: [],
+      retries: [],
+    };
+
+    expect(shouldShowMessageRunAttribution(ran, "complete")).toBe(true);
+    render(<RunAttribution attribution={ran} status="complete" />);
+    expect(screen.getByText("Requested None → effective Low")).toBeVisible();
+  });
+
   it("shows an unsettled run that is already off the requested model", () => {
     const deviating = {
       requested: { model: "provider:primary" },
