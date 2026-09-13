@@ -168,8 +168,12 @@ commit, the harness seals the accepted partial assistant/tool prefix, releases
 the conversation lane, and runs one bounded continuity finalizer. A
 per-conversation barrier prevents the next turn from assembling context until
 that finalizer publishes the 48 KiB account and either recovers or retires the provider epoch.
+The wait lasts until the publication settles and is cancellable: aborting the
+waiting turn returns the standard cancelled response and leaves the barrier
+installed for the next waiter. Recorder/exporter finalization runs after the
+publication and never delays the next turn.
 Cancellation closes the mailbox and rejects the live caller immediately; the
-publication barrier allows up to 1,000 ms by default for the provider to settle before
+publication still allows up to 1,000 ms by default for the provider to settle before
 choosing retirement. Recovery itself completes its persistence transaction
 before the barrier opens. Late text and tool
 events from that call are quarantined. Cancellation retains its typed host abort
@@ -177,7 +181,15 @@ reason. Failure records trusted host settlement fields and keeps raw
 runtime/provider code and detail only as bounded, redacted untrusted evidence.
 Isolated proactive/continuation runs remain outside shared history, and a queued
 request cancelled before admission publishes no account. If publication fails,
-later turns fail closed with the outcome-specific continuity error. Hosts may override the window with
+the next turn (or reset) republishes the already-built account once through a
+fresh transaction that never re-begins a provider turn or re-attempts recovery;
+a still-failing store reports the outcome-specific continuity error carrying a
+redacted cause, and the following message retries again. A waiter parked longer
+than 5,000 ms emits one `turn_continuity_publication_slow` runtime warning with
+the conversation id, the previous outcome, and the elapsed milliseconds; the
+warning never changes the wait. Resetting the conversation after a failed
+publication discards the unpublished account and clears the barrier once the
+reset itself succeeds. Hosts may override the window with
 `AgentHarnessOptions.session.terminalRecoverySettlementMs`, a positive safe integer,
 or the top-level `terminalRecoverySettlementMs` option of
 `createConfiguredAgentHarness`. Tests may use a longer window; this is not a
@@ -263,7 +275,8 @@ without the capability retain retirement. Clear-sessions, retention removal,
 host-only appends, model changes and unreconciled dirty fences still reseed.
 If retirement races an abort-ignoring provider, the late result cleans only its
 captured old id, including any recreated headerless JSONL. Retirement uncertainty
-fails the publication barrier closed.
+keeps the publication barrier closed until a later turn republishes the lost
+retirement (or a reset discards it).
 
 Each clean record also carries the durable provider transcript revision. A process saves that revision with its warm handle. If another process commits the same epoch first, the revision mismatch forces the stale process-local handle to close and reopen the current JSONL (or rebuild from canonical history) before it can omit history. The same strict refresh runs for an unconfirmed durable resume when a newly constructed harness has no local mapping, preventing a module-global provider registry from reviving older process memory. Cross-process serialization therefore protects both disk writes and in-memory provider state.
 

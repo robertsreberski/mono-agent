@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { RuntimeEventLike } from "@mono-agent/observability";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
 import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
@@ -386,20 +387,27 @@ describe("failed turn natural continuity", () => {
     });
   });
 
-  it("fails later turns closed when failed-turn publication fails", async () => {
+  it("retries a rejected failed-turn publication on the next turn and self-heals", async () => {
     const identityPath = await identityFixture();
     let runtimeCalls = 0;
+    let failAppend = true;
+    const appended: HistoryMessage[][] = [];
     const harness = createAgentHarness({
       identityPath,
       model,
       historyStore: {
         async load() { return []; },
-        async append() { throw new Error("history unavailable"); },
+        async append(_conversationId: string, messages: readonly HistoryMessage[]) {
+          if (failAppend) throw new Error("history unavailable");
+          appended.push([...messages]);
+        },
       },
       runtime: {
         async run(): Promise<RuntimeResult> {
           runtimeCalls += 1;
-          return { failureKind: "provider_unavailable", error: "terminated" };
+          return runtimeCalls === 1
+            ? { failureKind: "provider_unavailable", error: "terminated" }
+            : { text: "recovered answer" };
         },
       },
     });
@@ -407,13 +415,81 @@ describe("failed turn natural continuity", () => {
     await expect(harness.run(request("failed-publication", "first"))).resolves.toMatchObject({
       failure: { kind: "provider_unavailable" },
     });
-    await expect(harness.run(request("failed-publication", "second"))).resolves.toMatchObject({
-      failure: {
-        kind: "failure_continuity_unavailable",
-        message: expect.stringContaining("previous failed turn"),
-      },
+    // The store is still down: the next turn retries the publication once and
+    // reports the retryable residual error instead of running the provider.
+    const blocked = await harness.run(request("failed-publication", "second"));
+    expect(blocked.failure).toMatchObject({
+      kind: "failure_continuity_unavailable",
+      message: expect.stringContaining("retry"),
+    });
+    expect(blocked.failure?.details).toMatchObject({
+      cause: { name: "Error", message: "history unavailable" },
     });
     expect(runtimeCalls).toBe(1);
+    // Once the store recovers, the following turn republishes the account and runs.
+    failAppend = false;
+    await expect(harness.run(request("failed-publication", "third"))).resolves.toMatchObject({
+      text: "recovered answer",
+    });
+    expect(runtimeCalls).toBe(2);
+    expect(appended).toHaveLength(2);
+    expect(appended[0]).toHaveLength(2);
+    expect(appended[0]![0]).toMatchObject({ role: "user", content: "first" });
+    expect(appended.filter((messages) => messages.some((message) => message.content.includes("failed_turn_data")))).toHaveLength(1);
+  });
+
+  it("republishes a once-rejected failed account exactly once and reseeds the session", async () => {
+    const identityPath = await identityFixture();
+    let runtimeCalls = 0;
+    let failAppend = true;
+    const stored: HistoryMessage[] = [];
+    const boundaries: RuntimeEventLike[] = [];
+    const disposedSessions: string[] = [];
+    const harness = createAgentHarness({
+      identityPath,
+      model,
+      historyStore: {
+        async load() { return stored; },
+        async append(_conversationId: string, messages: readonly HistoryMessage[]) {
+          if (failAppend) throw new Error("history unavailable");
+          stored.push(...messages);
+        },
+      },
+      session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
+      runtime: {
+        async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+          runtimeCalls += 1;
+          return runtimeCalls === 1
+            ? { failureKind: "provider_unavailable", error: "terminated", providerSessionId: "ps-failed" }
+            : { text: "recovered answer", providerSessionId: "ps-next" };
+        },
+        async disposeSession(providerSessionId: string): Promise<boolean> {
+          disposedSessions.push(providerSessionId);
+          return true;
+        },
+        async disposeAllSessions(): Promise<void> {},
+      },
+    });
+
+    await expect(harness.run(request("failed-republish", "failed request"))).resolves.toMatchObject({
+      failure: { kind: "provider_unavailable" },
+    });
+    failAppend = false;
+    const next = await harness.run({
+      ...request("failed-republish", "follow-up"),
+      onEvent: (event) => { boundaries.push(event); },
+    });
+    expect(next.text).toBe("recovered answer");
+    expect(runtimeCalls).toBe(2);
+    // The account was appended exactly once even though publication failed first.
+    expect(stored).toHaveLength(4);
+    expect(stored.filter((message) => message.content.includes("failed_turn_data"))).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ role: "user", content: "failed request" });
+    // The republish retired the stale session and marked the reseed.
+    expect(disposedSessions).toContain("ps-failed");
+    expect(boundaries.filter((event) =>
+      event.type === "session_boundary" && (event as { reason?: string }).reason === "failed_turn_reseed",
+    )).toHaveLength(1);
   });
 
   it("keeps an already queued turn behind failed publication and then supplies the account", async () => {
