@@ -80,7 +80,9 @@ const isMobileViewport = (): boolean =>
 /**
  * The two screens a phone shows one at a time. The Dashboard is the entrance;
  * a conversation is pushed over it and popped with the header's back control
- * or a right swipe. Only a cron channel has an address of its own, so only a
+ * or a right swipe. An open project page lives in the Dashboard slot and is
+ * closed with its own header back control or the same right swipe.
+ * Only a cron channel has an address of its own, so only a
  * URL that names one lands on the conversation directly.
  */
 type MobileScreen = "dashboard" | "conversation";
@@ -88,7 +90,7 @@ const initialMobileScreen = (): MobileScreen =>
   /^\/agents\//u.test(window.location.pathname) ? "conversation" : "dashboard";
 
 interface DrawerGestureStart extends DrawerGesturePoint {
-  readonly intent: "back";
+  readonly intent: "back" | "close-project";
 }
 
 function useModalFocus(
@@ -361,6 +363,7 @@ export function App() {
     actionError,
     clearActionError,
     clearError,
+    closeProject,
     hasServerSnapshot,
     hasRunningThread,
     openProjectId,
@@ -425,10 +428,16 @@ export function App() {
     if (!touch) return;
     const target = event.target instanceof Element ? event.target : null;
     const selection = window.getSelection();
-    // Only the pushed conversation has somewhere to go back to; the entrance
-    // screen owns no shell gesture, so its agent strip and lists keep every
-    // horizontal swipe for themselves.
-    if (screen !== "conversation") return;
+    // Two pushed surfaces have somewhere to go back to: the conversation pops
+    // to the Dashboard, and an open project page closes to the agent's
+    // conversations. The plain entrance screen owns no shell gesture, so its
+    // agent strip and lists keep every horizontal swipe for themselves.
+    const intent = screen === "conversation"
+      ? "back" as const
+      : screen === "dashboard" && openProjectId !== null
+        ? "close-project" as const
+        : null;
+    if (intent === null) return;
     const excluded = target?.closest(DRAWER_SWIPE_EXCLUDED) ?? null;
     if (excluded !== null) return;
     if (
@@ -436,8 +445,8 @@ export function App() {
       || (selection !== null && !selection.isCollapsed)
     ) return;
 
-    drawerGestureRef.current = { x: touch.clientX, y: touch.clientY, intent: "back" };
-  }, [screen]);
+    drawerGestureRef.current = { x: touch.clientX, y: touch.clientY, intent };
+  }, [openProjectId, screen]);
 
   const finishDrawerGesture = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
     const start = drawerGestureRef.current;
@@ -450,8 +459,9 @@ export function App() {
     if (!isMobileDrawerSwipe(start, end, "right")) return;
 
     event.preventDefault();
-    showDashboard();
-  }, [showDashboard]);
+    if (start.intent === "close-project") closeProject();
+    else showDashboard();
+  }, [closeProject, showDashboard]);
 
   const cancelDrawerGesture = useCallback(() => {
     drawerGestureRef.current = null;
