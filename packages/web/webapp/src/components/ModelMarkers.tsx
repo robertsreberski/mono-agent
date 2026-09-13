@@ -16,7 +16,8 @@ import { effortFullName, effortToken, shortModelName } from "./route-label";
  *
  * What a run ACTUALLY executed with -- a provider fallback, a lowered effort --
  * is not a route change and is not shown here; that stays on the message it
- * happened to, in its run attribution.
+ * happened to, in its run attribution. A turn that merely ran before the latest
+ * switch is told by this rule alone and carries nothing of its own.
  */
 const shortRoute = (selection: RouteSelection): string => {
   const model = selection.model === null ? "" : shortModelName(selection.model);

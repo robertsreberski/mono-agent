@@ -284,8 +284,12 @@ launch-adjacent placement only as a fallback when no wake marker was retained;
 ordinary adjacent same-tool calls retain their existing clustering.
 
 The picker is labelled **Next turn**. The conversation header carries no run
-attribution. Below an assistant message, a normal route marker appears only when
-the model that ran differs from the conversation's current selection. A fallback
+attribution. Below an assistant message, a route marker appears only when that
+run deviated from its request: a fallback, a recorded route transition or
+same-model retry, an effective thinking level the provider did not honour, or an
+unsettled run already attempting another model. The conversation's current
+selection never decides it, so a later model switch neither adds nor removes a
+marker on an older turn — the transcript's route rule carries that switch. A fallback
 warning always appears there, even when its answering model matches the current
 selection, and names requested and answering models plus the classified reason
 when the runtime supplied one. Expanding the marker shows the bounded route

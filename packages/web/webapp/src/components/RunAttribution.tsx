@@ -29,19 +29,45 @@ export function runAttributionSummary(
 
 type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" | "interrupted";
 
+/**
+ * Only a run that DEVIATED from what was asked keeps this footer: a fallback,
+ * a recorded transition or retry, an effort the provider did not honour, or an
+ * unsettled run already attempting another model than the requested one.
+ *
+ * Running on a different model than the one the conversation is set to right
+ * now is not a deviation — the operator switched the route afterwards, and the
+ * transcript rules that switch where it happened (see {@link ModelMarkers}). So
+ * the currently selected model deliberately has no say here; an ordinary turn
+ * carries no footer however often the selection moves under it.
+ *
+ * The unsettled arm exists because the server settles `fallback` only when a
+ * run completes: while a turn is running, failed or cancelled, a route that
+ * already left the requested one is visible on the attempt alone.
+ */
 export function shouldShowMessageRunAttribution(
   attribution: RunAttributionValue | undefined,
-  selectedModel: string | null | undefined,
+  status: RunStatus | WebMessageStatus,
 ): boolean {
   if (attribution === undefined) return false;
   if (attribution.disposition === "fallback") return true;
-  const runModel = (attribution.executed ?? attribution.attempted ?? attribution.requested).model;
-  return runModel !== undefined
-    && runModel.length > 0
-    && selectedModel !== undefined
-    && selectedModel !== null
-    && selectedModel.length > 0
-    && !sameModel(runModel, selectedModel);
+  if (attribution.transitions.length > 0 || attribution.retries.length > 0) return true;
+  const run = attribution.executed ?? attribution.attempted;
+  const requestedEffort = attribution.requested.effort;
+  if (
+    run?.effectiveEffort !== undefined
+    && requestedEffort !== undefined
+    && run.effectiveEffort.toLowerCase() !== requestedEffort.toLowerCase()
+  ) {
+    return true;
+  }
+  const attemptedModel = run?.model;
+  const requestedModel = attribution.requested.model;
+  return status !== "complete"
+    && attemptedModel !== undefined
+    && attemptedModel.length > 0
+    && requestedModel !== undefined
+    && requestedModel.length > 0
+    && !sameModel(attemptedModel, requestedModel);
 }
 
 export function RunAttribution({

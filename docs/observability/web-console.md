@@ -633,9 +633,14 @@ offers to reset back to the agent default. It uses a searchable model picker wit
 
 The picker is labelled **Next turn** because it is not evidence about the run
 already on screen. The conversation header carries no run attribution. Below an
-assistant message, the server-owned route marker appears for a normal run only
-when the model that ran differs from the conversation's current selection. A
-fallback warning always appears there, even when its answering model matches the
+assistant message, the server-owned route marker appears only when that run
+deviated from what was asked of it: a fallback, a recorded route transition or
+same-model retry, an effective thinking level the provider did not honour, or an
+unsettled run already attempting a different model than the requested one. The
+conversation's current selection has no say in that decision, so changing the
+model later never adds or removes a marker on an older turn; the transcript's own
+route marker records that switch where it happened. A fallback warning always
+appears there, even when its answering model matches the
 current selection, and names the requested and answering models plus the
 runtime's classified reason when one was reported. Its disclosure shows the
 bounded route chain, same-model retries, route effort, and Pi's effective thinking
