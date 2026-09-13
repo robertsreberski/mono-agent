@@ -1267,3 +1267,30 @@ async function within(promise, timeoutMs) {
     if (timer !== undefined) clearTimeout(timer);
   }
 }
+
+// Inspect the real process runner's timer without spending minutes in a test.
+describe("per-run foreground command ceilings", () => {
+  for (const [name, run, params] of [
+    ["Bash", bashToolRun, { command: `"${process.execPath}" --version` }],
+    ["Exec", execToolRun, { executable: process.execPath, args: ["--version"] }],
+  ]) {
+    it.each([undefined, 900_000, 5_000])(`${name} direct and Pi execution use the same ceiling %s`, async (bashTimeoutMs) => {
+      const workspace = tempWorkspace();
+      const toolLimits = bashTimeoutMs === undefined ? {} : { bashTimeoutMs };
+      const cap = bashTimeoutMs ?? 120_000;
+      const timer = vi.spyOn(globalThis, "setTimeout");
+      const tool = getPiBuiltinTools([name], { ...options(workspace), toolLimits }).find((t) => t.name === name);
+      expect(tool.description).toContain(`${cap} ms`);
+      expect(tool.parameters.properties.timeout_ms.description).toContain(`${cap} ms`);
+      expect(tool.parameters.properties).not.toHaveProperty("background");
+      for (const timeout_ms of [undefined, 3_600_000]) {
+        timer.mockClear();
+        expect((await run({ ...params, timeout_ms }, { ...options(workspace), toolLimits })).outcome.status).toBe("ok");
+        expect(timer.mock.calls.some(([, ms]) => ms === cap)).toBe(true);
+        timer.mockClear();
+        await tool.execute("ceiling", { ...params, timeout_ms });
+        expect(timer.mock.calls.some(([, ms]) => ms === cap)).toBe(true);
+      }
+    });
+  }
+});

@@ -13,7 +13,8 @@ export interface InternalProcessJobRequest {
   readonly wakeOnCompletion?: boolean;
   readonly prepared?: never;
   readonly launch?: never;
-  run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: SubagentProgressEvent) => void): Promise<{ answer?: string; output: string; status: string; childStillBusy?: boolean; question?: { question: string; options?: string[] } }>;
+  /** Argument three receives progress events; execution metadata stays additive in argument four. */
+  run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: SubagentProgressEvent) => void, execution?: { deadlineAt: number }): Promise<{ answer?: string; output: string; status: string; childStillBusy?: boolean; question?: { question: string; options?: string[] } }>;
   /** Releases only this job's unstarted reservation; idempotent after begin. */
   cleanup(): Promise<void>;
 }
@@ -32,6 +33,7 @@ export function launchInternalProcessJob(
   graceMs = 5_100,
   onOutput?: (chunk: Buffer) => void,
   onProgress?: (event: SubagentProgressEvent) => void,
+  deadlineAt = Date.now() + timeoutMs,
 ): { cancel(): void; completion: Promise<InternalProcessJobResult> } {
   const controller = new AbortController();
   const start = Date.now();
@@ -55,7 +57,7 @@ export function launchInternalProcessJob(
     controller.abort(timedOut ? new DOMException("Process-job runtime deadline exceeded", "TimeoutError") : undefined);
     grace = setTimeout(() => finish({ output: "", status: timedOut ? "timeout" : "cancelled", childStillBusy: true }), graceMs);
   };
-  const timer = setTimeout(() => { timedOut = true; cancel(); }, timeoutMs);
+  const timer = setTimeout(() => { timedOut = true; cancel(); }, Math.max(1, deadlineAt - Date.now()));
   const completion = new Promise<InternalProcessJobResult>((resolve) => {
     finish = (value) => {
       if (settled) return;
@@ -77,7 +79,7 @@ export function launchInternalProcessJob(
     };
   });
   // The caller has durably published running and active ownership before this microtask.
-  void Promise.resolve().then(() => request.run(controller.signal, writeOutput, (event) => { if (!settled) onProgress?.(event); })).then(finish)
+  void Promise.resolve().then(() => request.run(controller.signal, writeOutput, (event) => { if (!settled) onProgress?.(event); }, { deadlineAt })).then(finish)
     .catch(() => finish({ output: "Subagent execution failed.", status: "failed" }));
   return { cancel, completion };
 }

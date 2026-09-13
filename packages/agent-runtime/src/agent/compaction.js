@@ -160,9 +160,8 @@ export function resolveAgentCompactionPolicy(settings = {}, model = {}) {
 // from a typed object or the legacy settings bag.
 
 // Typed toolLimits field -> settings key. `bashTimeoutMs` is intentionally
-// ABSENT: no `agent_bash_*_timeout` setting exists today and this phase does not
-// invent new timeout behavior, so the field is documented on the RuntimeToolLimits
-// typedef but not wired through the settings shim or any tool.
+// ABSENT: no `agent_bash_*_timeout` setting exists. The Pi-native bridge passes
+// this typed per-run execution budget directly to tools, outside this shim.
 const TOOL_LIMIT_SETTINGS_KEYS = /** @type {const} */ ({
   toolTextLimitChars: "agent_tool_text_limit_chars",
   bashOutputLimitChars: "agent_bash_output_limit_chars",

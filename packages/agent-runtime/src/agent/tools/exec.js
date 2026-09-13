@@ -19,14 +19,13 @@ import { handOffProcessJob } from "./shared/process-jobs.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { requestToolProcessEnvironment, resolveSandboxPolicy } from "./shared/tool-context.js";
 
-const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 const MAX_EXEC_ARGS = 256;
 
 /** @typedef {import("./shared/process-jobs.js").ProcessJobsController} ProcessJobsController */
 
 /**
  * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: ProcessJobsController}} [options]
+ * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../ai/types.js").RuntimeToolLimits, ctx?: any, processJobsController?: ProcessJobsController}} [options]
  */
 export async function execToolImpl(params, options = {}) {
   return (await execToolRun(params, options)).text;
@@ -36,7 +35,7 @@ export async function execToolImpl(params, options = {}) {
  * Execute an argv vector directly, without shell parsing.
  *
  * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: ProcessJobsController}} [options]
+ * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../ai/types.js").RuntimeToolLimits, ctx?: any, processJobsController?: ProcessJobsController}} [options]
  */
 export async function execToolRun(
   {
@@ -53,6 +52,7 @@ export async function execToolRun(
     signal,
     sandboxPolicy,
     sandboxEngine,
+    toolLimits,
     ctx,
     processJobsController,
   } = {},
@@ -84,7 +84,7 @@ export async function execToolRun(
     return failed(`Error: Working directory not found: ${cwd}`, "workdir_not_found", startedAt);
   }
 
-  const timeoutMs = normalizeProcessTimeoutMs(timeout_ms, DEFAULT_EXEC_TIMEOUT_MS);
+  const timeoutMs = normalizeProcessTimeoutMs(timeout_ms, toolLimits?.bashTimeoutMs);
   const maxChars = positiveInteger(max_output_chars, DEFAULT_MAX_BASH_OUTPUT_CHARS);
   let prepared;
   try {
