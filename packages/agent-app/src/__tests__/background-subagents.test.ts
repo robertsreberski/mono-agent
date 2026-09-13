@@ -9,9 +9,10 @@ import { buildSubagentsOptions } from "../configured-agent.js";
 // @ts-expect-error Real Pi test seam; transport only is fake.
 import { generatePiNativeResponse } from "../../../agent-runtime/src/ai/providers/pi-native.js";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { writeJsonAtomic } from "../continuation-store-fs.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 import { openProcessJobsService, type ProcessJobsServiceHandle } from "../process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
@@ -33,7 +34,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
-async function fixture(overrides = {}, retireSession: (id: string, root: string) => Promise<unknown> = async () => undefined, surfaceUpdate?: (job: ProcessJobProjection) => Promise<void>) {
+async function fixture(overrides = {}, retireSession: (id: string, root: string) => Promise<unknown> = async () => undefined, surfaceUpdate?: (job: ProcessJobProjection) => Promise<void>, realOwner = false) {
   const root = await mkdtemp(resolve(process.cwd(), "node_modules/.background-subagents-")); roots.push(root);
   const wake = vi.fn(async (_input: unknown) => ({ delivered: true as const }));
   const signalProcess = vi.fn();
@@ -42,7 +43,7 @@ async function fixture(overrides = {}, retireSession: (id: string, root: string)
     settings: { ...PROCESS_JOBS_DEFAULTS, configured: true, enabled: true, stateDir: resolve(root, "jobs"), ...overrides },
     ...(surfaceUpdate ? { surfaceUpdate } : {}),
     registration: {} as never, attestRegistration: async () => ({} as never), wake, signalProcess,
-    acquireLock: async () => ({ release: async () => undefined }) as never };
+    ...(realOwner ? {} : { acquireLock: async () => ({ release: async () => undefined }) as never }) };
   const service = await openProcessJobsService(options); services.push(service); await service.activateWakes();
   const registry = createSubagentInstanceRegistry({ root: resolve(root, "children"), retireSession });
   const instances = await registry.open(origin.conversationId);
@@ -60,9 +61,9 @@ const done = async (service: ProcessJobsServiceHandle, id: string) => {
   return job;
 };
 
-async function managedFixture(retireSession: (id: string, root: string) => Promise<unknown> = async () => {}, overrides = {}) {
-  const f = await fixture({ maxConcurrent: 1, maxQueued: 0, ...overrides }, retireSession);
-  const registry = createSubagentInstanceRegistry({ root: resolve(f.root, "children"), retireSession,
+async function managedFixture(retireSession: (id: string, root: string) => Promise<unknown> = async () => {}, overrides = {}, realOwner = false, writeRegistry?: typeof writeJsonAtomic) {
+  const f = await fixture({ maxConcurrent: 1, maxQueued: 0, ...overrides }, retireSession, undefined, realOwner);
+  const registry = createSubagentInstanceRegistry({ root: resolve(f.root, "children"), retireSession, ...(writeRegistry ? { writeRegistry } : {}),
     ...createSubagentRecoveryAccess({ service: f.service, privateRoots: async () => [resolve(f.root, "jobs"), resolve(f.root, "children")],
       hostAccess: () => ({ workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) }) }),
     ownerForReservation: (jobId) => ({ jobId, storeRoot: f.service.settings.stateDir }),
@@ -76,6 +77,149 @@ async function managedFixture(retireSession: (id: string, root: string) => Promi
 }
 
 describe("managed detached production execution", () => {
+  it.each(["retained", "job-removed", "registry-removed", "degraded"])("G01/G04/G06: live managed provider cannot regain write authority after same-process reopen (%s)", async (mode) => {
+    let oldServiceStopped = false; let writesAfterStop = 0;
+    const f = await managedFixture(undefined, {}, true, async (...args) => { if (oldServiceStopped) writesAfterStop++; await writeJsonAtomic(...args); });
+    const provider = deferred<any>(); const observed = deferred<void>(); const reported = deferred<void>();
+    const controller = f.service.internalController(origin, 0);
+    let settlementError: unknown;
+    const backgroundSubagentController = { ...controller,
+      startInternal: (request: Parameters<typeof controller.startInternal>[0]) => controller.startInternal({ ...request,
+        run: async (signal, output, progress, execution) => {
+          if (!execution?.managed) throw new Error("Expected actual managed execution");
+          const managed = execution.managed;
+          try { return await request.run(signal, output, progress, { ...execution, managed: { ...managed,
+            settled: async (outcome) => {
+              try { await managed.settled(outcome); } catch (error) { settlementError = error; throw error; }
+              finally { observed.resolve(); }
+            },
+          } }); } finally { reported.resolve(); }
+        },
+      }),
+    };
+    let providerSignal: AbortSignal | undefined; let providerReturned = false;
+    const run = vi.fn(async (request: { abortSignal?: AbortSignal }) => { providerSignal = request.abortSignal; const result = await provider.promise; providerReturned = true; return result; });
+    const { agent } = tools(f, run, { backgroundSubagentController });
+    try {
+      const receipt = await agent.execute("live-owner", { persist: true, background: true, id: "helper", prompt: "ignore abort until explicitly released" });
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      // Default real owner-private lifetime lock, not fixture's no-op lock.
+      await expect(openProcessJobsService(f.options)).rejects.toMatchObject({ code: "process_job_controller_unavailable" });
+      if (mode === "degraded") {
+        const journal = resolve(f.store.stateDir, PROCESS_JOB_TRANSACTION_FILE); await mkdir(journal);
+        await expect(f.store.mutate((records) => { records.get(receipt.details.jobId)!.cancelRequested = true; })).rejects.toThrow();
+        await expect(f.service.stop()).rejects.toThrow("Process-job shutdown encountered failures");
+        services.splice(services.indexOf(f.service), 1); await rm(journal, { recursive: true });
+      } else await f.service.stop();
+      await reported.promise; // Reporting frame is separate from the still-live provider.
+      expect(providerSignal?.aborted).toBe(true); expect(providerReturned).toBe(false);
+      oldServiceStopped = true;
+      const registryRoot = resolve(f.root, "children");
+      const registryFile = resolve(subagentConversationRoot(registryRoot, origin.conversationId), "instances.json");
+      const store = await openProcessJobStore(f.root, f.store.stateDir);
+      if (mode === "job-removed") await store.mutate((records) => { records.delete(receipt.details.jobId); });
+      if (mode === "registry-removed") await rm(registryFile);
+      const reopened = await openProcessJobsService({ ...f.options, store }); services.push(reopened);
+      const registry = createSubagentInstanceRegistry({ root: registryRoot, retireSession: async () => {},
+        resolveOwner: (identity) => reopened.resolveSubagentOwner!(identity),
+        checkOwnerIndex: (conversationId, known) => reopened.checkSubagentOwnerIndex!(conversationId, known),
+      });
+      reopened.bindManagedSubagents!({ root: registryRoot,
+        verify: async (identity) => (await registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+        publish: async (phase, publication) => (await registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
+      });
+      const instances = await registry.open(origin.conversationId);
+      if (mode === "registry-removed") {
+        expect(writesAfterStop, "old registry writer invoked after service stop and reporting settlement").toBe(0);
+        expect(await instances.list()).toEqual([]);
+        expect(await reopened.checkSubagentOwnerIndex!(origin.conversationId, [])).toBe("held");
+        const deniedRun = vi.fn(); const fresh = tools({ ...f, service: reopened, instances }, deniedRun);
+        for (const id of ["helper", "replacement"]) await expect(fresh.agent.execute(`reset-${id}`, { persist: true, background: true, id, prompt: "must not run" })).rejects.toThrow("subagent_ownership_held");
+        expect(deniedRun).not.toHaveBeenCalled(); expect(await instances.list()).toEqual([]);
+        expect(await reopened.checkSubagentOwnerIndex!(origin.conversationId, [])).toBe("held");
+      } else if (mode !== "job-removed") {
+        await reopened.activateWakes(); await done(reopened, receipt.details.jobId);
+        await expect(reopened.internalController(origin, 0).startInternal({ kind: "internal", tool: "Agent", jobId: randomUUID(), instanceId: "blocked", run: async () => ({ status: "ok", output: "must not run" }), cleanup: async () => {} })).rejects.toThrow();
+      }
+      if (mode !== "job-removed") expect((await store.get(receipt.details.jobId))?.subagentOwnership?.owner.settlement).toBe("unknown");
+      const before = await store.get(receipt.details.jobId); const registryBefore = await readFile(registryFile, "utf8"); const wakes = f.wake.mock.calls.length;
+      const artifactFiles = ["stdout.log", "stderr.log"].map((name) => resolve(store.artifactsDir, receipt.details.jobId, name));
+      const artifactsBefore = await Promise.all(artifactFiles.map((path) => readFile(path, "utf8")));
+      const oldWrites = vi.spyOn(f.store, "mutate"); oldWrites.mockClear();
+      provider.resolve({ text: "late success must never release or recreate", usage: { input_tokens: 99 } });
+      await observed.promise; // Actual old managed.settled callback has returned/rejected.
+      expect(settlementError).toBeInstanceOf(Error); expect(String(settlementError)).toContain("ownership ended");
+      expect(oldWrites).not.toHaveBeenCalled();
+      expect(await store.get(receipt.details.jobId)).toEqual(before);
+      expect(await readFile(registryFile, "utf8")).toBe(registryBefore);
+      expect(await Promise.all(artifactFiles.map((path) => readFile(path, "utf8")))).toEqual(artifactsBefore);
+      expect(f.wake).toHaveBeenCalledTimes(wakes); expect(run).toHaveBeenCalledOnce(); expect(f.signalProcess).not.toHaveBeenCalled();
+      if (mode !== "job-removed") {
+        await store.applyRetention({ ...reopened.settings, retention: { ...reopened.settings.retention, maxAgeMs: 1 } }, new Date(Date.now() + 3 * 86_400_000));
+        expect(await store.get(receipt.details.jobId)).toBeDefined();
+      }
+    } finally {
+      await f.service.stop().catch(() => {});
+      if (services.includes(f.service)) services.splice(services.indexOf(f.service), 1);
+      provider.resolve({ text: "fixture cleanup" });
+      if (run.mock.calls.length) await Promise.all([observed.promise, reported.promise]);
+    }
+  }, 18_000);
+
+  it.each(["changed-root", "missing-job", "registry-reset"])("G03/G04: actual managed certificate remains fenced after %s without recreating historical state", async (mode) => {
+    const f = await managedFixture(undefined, {}, true); const root = resolve(f.root, "children"); let held = false;
+    let identity: import("../subagent-registry-ownership.js").SubagentOwnerIdentity | undefined;
+    f.service.bindManagedSubagents!({ root,
+      verify: async (owner) => (await f.registry.open(owner.conversationId, { existingOnly: true })).verifyOwner(owner),
+      publish: async (phase, publication) => {
+        identity = publication.identity;
+        if (phase === "finalize") { held = true; throw new Error("hold settled certificate before durable finalization"); }
+        await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+      },
+    });
+    const run = vi.fn(async () => ({ text: "settled once, not an authority bypass" }));
+    const receipt = await tools(f, run).agent.execute("old-store", { persist: true, background: true, id: "helper", prompt: "work" });
+    await vi.waitFor(() => expect(held).toBe(true), { timeout: 5000 });
+    expect((await f.store.get(receipt.details.jobId))?.subagentOwnership).toMatchObject({ owner: { settlement: "settled" }, publication: { receiptPending: true } });
+    await f.service.stop();
+    const stateDir = mode === "changed-root" ? resolve(f.root, "new-jobs") : f.store.stateDir;
+    if (mode === "changed-root") await rename(f.store.stateDir, resolve(f.root, "historical-jobs"));
+    const store = await openProcessJobStore(f.root, stateDir);
+    if (mode === "missing-job") await store.mutate((records) => { records.delete(receipt.details.jobId); });
+    if (mode === "registry-reset") await rm(resolve(subagentConversationRoot(root, origin.conversationId), "instances.json"));
+    const reopened = await openProcessJobsService({ ...f.options, store, settings: { ...f.options.settings, stateDir } }); services.push(reopened);
+    const resolveOwner = vi.fn((owner: import("../subagent-registry-ownership.js").SubagentOwnerIdentity) => reopened.resolveSubagentOwner!(owner));
+    const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {}, now: () => Date.now() + 3 * 86_400_000,
+      resolveOwner, checkOwnerIndex: (conversationId, known) => reopened.checkSubagentOwnerIndex!(conversationId, known),
+    });
+    reopened.bindManagedSubagents!({ root,
+      verify: async (owner) => (await registry.open(owner.conversationId, { existingOnly: true })).verifyOwner(owner),
+      publish: async (phase, publication) => (await registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
+    });
+    if (mode === "registry-reset") {
+      expect(await reopened.resolveSubagentOwner!(identity!)).toMatchObject({ state: "released", receiptPending: true });
+      const instances = await registry.open(origin.conversationId);
+      const denied = vi.fn(); const next = tools({ ...f, instances, service: reopened }, denied);
+      for (const id of ["helper", "replacement"]) await expect(next.agent.execute(`reset-${id}`, { id, persist: true, background: true, prompt: "must not run" })).rejects.toThrow("subagent_ownership_held");
+      expect(await instances.list()).toEqual([]); expect(denied).not.toHaveBeenCalled();
+      expect((await store.get(receipt.details.jobId))?.subagentOwnership).toMatchObject({ owner: { settlement: "settled" }, publication: { receiptPending: true } });
+      expect(run).toHaveBeenCalledOnce(); expect(f.wake).not.toHaveBeenCalled();
+      return;
+    }
+    expect(await reopened.resolveSubagentOwner!(identity!)).toEqual({ state: "unavailable" });
+    const instances = await registry.open(origin.conversationId, { existingOnly: true });
+    const denied = vi.fn(); const next = tools({ ...f, instances, service: reopened }, denied);
+    await expect(instances.begin("helper")).rejects.toThrow("subagent_owner_unavailable");
+    await expect(instances.reserve("helper", randomUUID())).rejects.toThrow("subagent_owner_unavailable");
+    await expect(next.send.execute("close", { id: "helper", close: true })).rejects.toThrow("subagent_owner_unavailable");
+    await expect(next.send.execute("continue", { id: "helper", message: "must not run", background: true })).rejects.toThrow("subagent_owner_unavailable");
+    await expect(next.agent.execute("replace", { id: "replacement", persist: true, background: true, prompt: "must not run" })).rejects.toThrow("subagent_owner_unavailable");
+    expect(resolveOwner).toHaveBeenCalledWith(identity);
+    expect(await instances.get("helper")).toMatchObject({ status: "idle", incarnation: identity!.instanceIncarnation });
+    expect(await store.list()).toEqual([]); expect(denied).not.toHaveBeenCalled(); expect(run).toHaveBeenCalledOnce(); expect(f.wake).not.toHaveBeenCalled();
+    if (mode === "changed-root") await expect(stat(f.store.stateDir)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 10_000);
+
   it.each(["ordinary", "late-provider"])("F1: drains queued managed work after %s publication releases capacity", async (mode) => {
     const f = await managedFixture(undefined, { maxQueued: 1, maxActivePerConversation: 3, maxQueueAgeMs: 3000 });
     const gate = deferred<any>(); const firstRun = vi.fn(() => gate.promise);
