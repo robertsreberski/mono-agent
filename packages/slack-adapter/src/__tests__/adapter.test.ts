@@ -936,6 +936,24 @@ describe("SlackAdapter", () => {
     expect(api.postMessageCalls[1]).toMatchObject({ channel: "C1", thread_ts: "171.5" });
   });
 
+  it.each(["timed_out", "succeeded"] as const)("retains bounded internal busy and question state without Slack formatting (%s)", async (state) => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({ api, allowAllChannels: true, responder: responderFrom(async () => ({ text: "unused" })) });
+    const internal: ProcessJobProjection = { ...processJobProjection("running"), kind: "internal", tool: "AgentSend",
+      instanceId: "helper", childStillBusy: false };
+    await adapter.updateProcessJob("C1", "171.5", internal);
+    await adapter.updateProcessJob("C1", "171.5", { ...internal, state, childStillBusy: state === "timed_out",
+      subagentQuestion: { question: "<!channel> *choose* " + "x".repeat(1900), options: ["<@U1>", "two"] } });
+    const update = api.updateCalls.at(-1)!;
+    expect(update).toMatchObject({ mrkdwn: false });
+    expect(String(update.text).includes("childStillBusy:true")).toBe(state === "timed_out");
+    expect(update.text).toContain("Pending question (child text)");
+    expect(update.text).toContain("&lt;!channel&gt;");
+    expect(update.text).not.toContain("<@U1>");
+    expect([...update.text!].length).toBeLessThanOrEqual(3000);
+    expect(api.postMessageCalls).toHaveLength(1);
+  });
+
   it("does not republish an original terminal card after the former 256-entry eviction pressure", async () => {
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({

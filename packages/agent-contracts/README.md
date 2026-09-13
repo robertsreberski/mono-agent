@@ -561,6 +561,18 @@ writeSettingsJson
 
 <!-- public-api-inventory:end -->
 
+Persistent Agent/AgentSend can run detached through the app-private in-process
+ProcessJobs lane. Durable admission reserves the child; completion and AskParent
+wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
+while retaining the child lock and runtime lease through actual settlement.
+See [background subagents](../../docs/tools/background-process-jobs.md#detached-persistent-children).
+
+Process-job projection v1 is a local owner API deployed lockstep with its operator
+clients. New readers continue to accept old external Exec/Bash stored records
+without a `kind` field. Mixed-version network clients are not promised compatibility
+with internal Agent/AgentSend projections, whose discriminant and instance identity
+are required.
+
 ## Dependency Boundary
 
 This package has no workspace or provider dependency. It must remain adapter-neutral and should not mention transport-specific packages, host config semantics, or runtime implementations.

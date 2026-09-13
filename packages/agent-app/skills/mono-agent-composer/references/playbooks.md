@@ -321,3 +321,12 @@ minutes.
 **Steps:** configure explicit local or hosted `ollama`, or provision an operator-owned loopback SearXNG instance with JSON responses enabled → keep a named backend strict or choose `auto` for explicitly configured Ollama, configured SearXNG, ChatGPT-subscription Codex, then keyless fallback → keep the default four-request run budget → keep config render `never`, or install `agent-browser >=0.33.1` and opt into config render `auto` for SPA pages; use per-call `WebFetch` `render: "always"` only when a known page must be browser-first → `validate` → `start`.
 **Boundary:** local SearXNG and Ollama search are private infrastructure, not offline indexes; they contact public services and WebFetch contacts result sites. Hosted Ollama credentials are bound to the exact official origin. `localhost` permits a local companion but blocks public fetches. Rendering does not bypass authentication or access challenges.
 **Smoke:** ask for one broad query and one official-page fetch; require canonical ranked URLs, request-budget metadata, untrusted-content boundaries, bounded timing metadata without query/URL leakage, and no duplicate network work for an identical call in the run. The researcher must not sleep or retry after a cooldown.
+
+### Detached persistent delegation
+
+Enable persistent Agent/AgentSend and ProcessJobs on an exact-conversation Pi
+route. Use `Agent` with `persist:true, background:true`, then `AgentSend` with a
+message and optional `background:true`. A durable started receipt schedules an
+exact-origin wake, including AskParent questions. Do not poll or replay; a
+terminal job with `childStillBusy:true` does not permit another send until the
+child actually settles. Restart interrupts and wakes without replay.

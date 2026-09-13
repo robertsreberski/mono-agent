@@ -252,6 +252,23 @@ describe("createTelegramBot notify (proactive)", () => {
     expect(sends[1]?.payload.chat_id).toBe(42);
   });
 
+  it.each(["timed_out", "succeeded"] as const)("retains bounded internal busy and question state as plain Telegram text (%s)", async (state) => {
+    const { controller, calls } = buildNotifiableBot({ async respond() { return { text: "unused" }; } });
+    const internal: ProcessJobProjection = { ...processJobProjection("running"), kind: "internal", tool: "AgentSend",
+      instanceId: "helper", childStillBusy: false };
+    await controller.updateProcessJob(42, internal);
+    await controller.updateProcessJob(42, { ...internal, state, childStillBusy: state === "timed_out",
+      subagentQuestion: { question: "<b>choose</b> " + "x".repeat(1900), options: ["*one*", "two"] } });
+    const update = calls.filter((call) => call.method === "editMessageText").at(-1)!.payload;
+    expect(update.parse_mode).toBeUndefined();
+    expect(String(update.text).includes("childStillBusy:true")).toBe(state === "timed_out");
+    expect(update.text).toContain("Pending question (child text)");
+    expect(update.text).toContain("<b>choose</b>");
+    expect(update.text).toContain('Options: "*one*", "two"');
+    expect([...String(update.text)].length).toBeLessThanOrEqual(3500);
+    expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(1);
+  });
+
   it("attempts a missing-ref terminal fallback only once even when Telegram rejects it", async () => {
     const { controller, calls } = buildNotifiableBot({
       async respond() { return { text: "unused" }; },

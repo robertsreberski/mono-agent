@@ -9,7 +9,7 @@ import {
   type ProcessJobProjection,
 } from "../process-jobs.js";
 
-function projection(): ProcessJobProjection {
+function projection(): Extract<ProcessJobProjection, { tool: "Exec" | "Bash" }> {
   return {
     schema: "mono-agent.process-job-projection.v1",
     jobId: "pj_01JTEST",
@@ -63,6 +63,19 @@ describe("process-job contracts", () => {
     const value = projection();
     expect(parseProcessJobProjection(value)).toEqual(value);
     expect(parseProcessJobProjections([value])).toEqual([value]);
+  });
+
+  it("discriminates private subagent projections and bounds structured questions", () => {
+    const internal = { ...projection(), kind: "internal", tool: "AgentSend", instanceId: "helper", childStillBusy: true,
+      subagentQuestion: { question: "Which branch?", options: ["one", "two"] } };
+    expect(parseProcessJobProjection(internal)).toEqual(internal);
+    for (const invalid of [
+      { ...internal, kind: undefined }, { ...internal, tool: "Exec" },
+      { ...internal, childStillBusy: undefined }, { ...internal, instanceId: "../helper" },
+      { ...internal, subagentQuestion: { question: "x".repeat(2001) } },
+      { ...internal, subagentQuestion: { question: "q", options: ["same", "same"] } },
+      { ...projection(), childStillBusy: false },
+    ]) expect(() => parseProcessJobProjection(invalid)).toThrow(TypeError);
   });
 
   it("accepts the configured retention plus transient active-record boundary", () => {
@@ -163,4 +176,16 @@ describe("process-job contracts", () => {
     expect(parseProcessJobProjection(raw).lastError)
       .toEqual(processJobPublicError("process_job_store_error"));
   });
+});
+
+it("requires internal identity in the public TypeScript discriminated union", () => {
+  // @ts-expect-error Internal tools cannot omit their required identity.
+  const missing: ProcessJobProjection = { ...projection(), tool: "Agent" };
+  // @ts-expect-error External tools cannot carry internal identity.
+  const external: ProcessJobProjection = { ...projection(), tool: "Exec", kind: "internal", instanceId: "helper", childStillBusy: false };
+  expect(() => parseProcessJobProjection(missing)).toThrow(TypeError);
+  expect(() => parseProcessJobProjection(external)).toThrow(TypeError);
+  const internal: ProcessJobProjection = { ...projection(), tool: "Agent", kind: "internal", instanceId: "helper", childStillBusy: false };
+  const id: string = internal.instanceId;
+  expect(id).toBe("helper");
 });

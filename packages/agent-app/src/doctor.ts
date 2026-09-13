@@ -2307,9 +2307,12 @@ async function processJobsSection(
     }
     posture = undefined;
   }
-  const protectionDetail = posture === undefined
-    ? []
-    : [`Private-state protection: ${posture.kind}${posture.retainedRoots ? " (roots retained)" : ""}.`];
+  const protectionDetail = [
+    ...(posture === undefined ? [] : [`Private-state protection: ${posture.kind}${posture.retainedRoots ? " (roots retained)" : ""}.`]),
+    persistentSubagentsEnabled(config) && settings.enabled && process.platform !== "win32"
+      ? "Background subagents: configured for Pi-native, exact-conversation ProcessJobs routes; live availability also requires a healthy controller and remaining lineage."
+      : "Background subagents unavailable: persistent Agent/AgentSend and supported, enabled ProcessJobs are required.",
+  ];
   if (!settings.enabled) {
     return {
       id: "process-jobs",
@@ -2338,7 +2341,7 @@ async function processJobsSection(
     `Owner-only local state: ${settings.stateDir}.`,
     `Concurrency: ${String(settings.maxConcurrent)} global, ${String(settings.maxActivePerConversation)} per conversation, ${String(settings.maxQueued)} queued.`,
     `Caps: runtime=${String(settings.maxRuntimeMs)}ms, queue-age=${String(settings.maxQueueAgeMs)}ms, output=${String(settings.maxOutputBytes)} bytes, chain-depth=${String(settings.maxChainDepth)}.`,
-    `Runtime availability: Pi-native Exec/Bash only; configured primary provider is ${displayText(config.runtime.model.provider)}.`,
+    `Runtime availability: Pi-native Exec/Bash and enabled persistent Agent/AgentSend; configured primary provider is ${displayText(config.runtime.model.provider)}.`,
   ];
   const inspection = await inspectProcessJobState(input.cwd, settings.stateDir);
   return {

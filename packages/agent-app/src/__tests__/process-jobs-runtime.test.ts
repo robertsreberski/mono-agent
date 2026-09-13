@@ -995,3 +995,29 @@ describe("process-job request availability", () => {
     expect(respond).not.toHaveBeenCalled();
   });
 });
+
+
+it("detached child holds an independent generation lease after parent settlement and abort", async () => {
+  const coreConfig = { runtime: { model: CLAUDE_MODEL, workspace: "/agent" },
+    tools: { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] }, subagents: { enabled: true } } as never;
+  const boundary = processJobsBoundary(coreConfig);
+  const releases: ReturnType<typeof vi.fn>[] = [];
+  const ownership = { coordinator: { acquireRequestLease: () => {
+    const releaseAfterSettlement = vi.fn(); releases.push(releaseAfterSettlement); return { releaseAfterSettlement };
+  } } } as never;
+  let finish!: () => void; const pending = new Promise<void>((resolve) => { finish = resolve; });
+  const startInternal = vi.fn();
+  const extension = createProcessJobsRuntimeExtension({ ...boundary, ownership, channelId: "slack", sandboxEngine: availableSandboxEngine,
+    service: { settings: { maxChainDepth: 4 }, internalController: () => ({ startInternal }) } as never,
+    next: async () => ({ runtimeOptions: { subagents: { instances: {}, run: () => pending } } }),
+  });
+  const built = await extension({ request: { conversationId: "slack:C1:1.1", text: "hello" }, runId: "p" } as never);
+  const subagents = built.runtimeOptions!.subagents as any;
+  expect(subagents.backgroundSubagentController.startInternal).toBe(startInternal);
+  const cancellation = new AbortController();
+  const child = subagents.run({ abortSignal: cancellation.signal }); expect(releases).toHaveLength(2);
+  cancellation.abort();
+  await built.cleanup?.(); await built.settleCleanup?.();
+  expect(releases[0]).toHaveBeenCalledOnce(); expect(releases[1]).not.toHaveBeenCalled();
+  finish(); await child; expect(releases[1]).toHaveBeenCalledOnce();
+});

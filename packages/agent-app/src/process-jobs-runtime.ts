@@ -1,3 +1,4 @@
+import { persistentSubagentsEnabled } from "./subagent-instances.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
@@ -136,6 +137,24 @@ export function createProcessJobsRuntimeExtension(
             ),
           };
         }
+      }
+      // Every actual child drive holds an independent generation lease, even after
+      // its reporting tool/job abandons it. A queued closure does not invoke providers.
+      const subagents = runtimeOptions.subagents as { instances?: unknown; run?: (...args: unknown[]) => Promise<unknown> } | undefined;
+      if (subagents?.instances && typeof subagents.run === "function" && persistentSubagentsEnabled(options.coreConfig)) {
+        const run = subagents.run;
+        const origin = processJobOriginForRequest(input, options.channelId, options.conversationScheme);
+        const wake = processJobWakeContextForRequest(input.request);
+        const depth = wake.kind === "resolved" ? wake.context.chainDepth : 0;
+        const controller = origin && options.service && backgroundSubagentsAvailableForRequest(input, options)
+          ? options.service.internalController(origin, steeringTarget?.chainDepth ?? depth) : undefined;
+        runtimeOptions = { ...runtimeOptions, subagents: { ...subagents,
+          ...(controller ? { backgroundSubagentController: controller } : {}),
+          run: async (...args: unknown[]) => {
+            const childLease = options.ownership.coordinator.acquireRequestLease(attested.generation);
+            try { return await run(...args); } finally { childLease.releaseAfterSettlement(); }
+          },
+        } };
       }
       const heldLease = lease;
       return {
@@ -305,4 +324,17 @@ function matchesChannel(conversationId: string, channel: string): boolean {
 
 function normalizeReplyTarget(conversationId: string): string {
   return (conversationId.split("#", 1)[0] ?? conversationId).trim();
+}
+
+/** Same exact-origin/lineage gate used by schema composition and Session guidance. */
+export function backgroundSubagentsAvailableForRequest(
+  input: Pick<AgentHarnessRuntimeOptionsInput, "request" | "runId">,
+  options: ProcessJobsAvailabilityOptions,
+): boolean {
+  if (!persistentSubagentsEnabled(options.coreConfig) || !options.service
+    || options.service.health?.failureOperation !== undefined
+    || options.routesOnlyPiNative?.(input.request.metadata) === false) return false;
+  const wake = processJobWakeContextForRequest(input.request);
+  return wake.kind !== "missed" && processJobOriginForRequest(input, options.channelId, options.conversationScheme) !== undefined
+    && (wake.kind === "resolved" ? wake.context.chainDepth : 0) < options.service.settings.maxChainDepth;
 }

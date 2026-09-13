@@ -52,6 +52,7 @@ export async function prepareHarnessContext(
       userMessage: request.userMessage,
       session: sessionContextBlock(request, {
         ...(options.subagentInstancesFor === undefined ? {} : { subagentInstances: await options.subagentInstancesFor({ request, runId: contextOptions.turnId }) }),
+        backgroundSubagents: options.backgroundSubagentsAvailable?.({ request, runId: contextOptions.turnId }) === true,
         hostManagedMemory: options.memory !== undefined,
         backgroundProcessJobs: options.backgroundProcessJobsAvailable?.({
           request,
