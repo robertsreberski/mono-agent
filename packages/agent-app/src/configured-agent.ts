@@ -1,3 +1,5 @@
+import { createSubagentRecoveryAccess } from "./subagent-recovery-access.js";
+import type { OwnedForegroundProcesses } from "@mono-agent/runtime-adapter";
 import { createSubagentInstanceRegistry, isLiveSubagentInstance, persistentSubagentsEnabled, subagentInstancesRoot, type InstanceRegistryHandle } from "./subagent-instances.js";
 import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
 import {
@@ -696,6 +698,7 @@ function inlineSubagentCeiling(config: MonoAgentConfig): readonly string[] {
 }
 
 interface SubagentRunRequest {
+  readonly ownedForegroundProcesses?: OwnedForegroundProcesses;
   readonly detached?: true;
   readonly deadlineAt?: number;
   readonly instance?: { readonly id: string; readonly sessionId: string; readonly sessionsRoot: string };
@@ -902,6 +905,7 @@ export function buildSubagentsOptions(
         ? selectMcpServers((toolPolicyInput(config).mcpServers ?? {}) as Record<string, unknown>, request.definition.mcpServerNames ?? [], request.definition.name)
         : request.definition.mcpServers ?? {},
       abortSignal: request.abortSignal,
+      ...(request.ownedForegroundProcesses ? { ownedForegroundProcesses: request.ownedForegroundProcesses } : {}),
       onEvent: request.onEvent,
       // Depth propagation is the recursion lock the kernel also enforces.
       subagents: { depth: request.depth },
@@ -1209,16 +1213,46 @@ async function createConfiguredAgentHarnessInternal(
           : { onUnavailable: options.onMemoryRememberUnavailable }),
       });
   const subagentDeps = { runtime, baseModel: model, ...(runtimeForModel === undefined ? {} : { runtimeForModel }) };
+  const subagentRecoveryAccess = createSubagentRecoveryAccess({
+    ...(internalHooks.processJobs?.service ? { service: internalHooks.processJobs.service } : {}),
+    privateRoots: async () => {
+      const loaded = await loadProcessJobsRootRegistryProtection(ownership.agentRoot, config.runtime.workspace);
+      if (loaded.kind === "failed") throw new Error("Subagent observation policy is unavailable.");
+      const current = await attestProcessJobsRootRegistrySnapshot(loaded, config.runtime.workspace);
+      return [...processJobsProtectionPolicyRoots(current), subagentInstancesRoot(config)];
+    },
+    hostAccess: () => ({ workspace: config.runtime.workspace, readableRoots: [...(config.tools.filesystem?.readableRoots ?? [])],
+      sandboxPolicy: mergeSandboxPolicies(harnessSandboxPolicy, clearSessionsSandboxPolicy(clearSessionsBoundaryOptions)), sandboxEngine }),
+  });
   const instanceRegistry = persistentSubagentsEnabled(config)
     ? createSubagentInstanceRegistry({
         root: subagentInstancesRoot(config),
         ...config.subagents?.instances,
+        ...subagentRecoveryAccess,
+        ...(internalHooks.processJobs?.service?.bindManagedSubagents ? {
+          ownerForReservation: (jobId: string) => ({ jobId, storeRoot: internalHooks.processJobs!.service!.settings.stateDir }),
+          resolveOwner: (identity: import("./subagent-registry-ownership.js").SubagentOwnerIdentity) => internalHooks.processJobs!.service!.resolveSubagentOwner!(identity),
+        } : {}),
+        checkOwnerIndex: async (conversationId, known) => {
+          // Only existing registered history is authoritative. Never scan/open an old root here.
+          if (processJobsRegistry.kind === "empty") return "clear";
+          const service = internalHooks.processJobs?.service;
+          if (processJobsRegistry.kind !== "ready" || !service?.checkSubagentOwnerIndex
+            || processJobsRegistry.roots.some((root) => root.canonicalPath !== service.settings.stateDir)) return "unavailable";
+          return await service.checkSubagentOwnerIndex(conversationId, known);
+        },
         retireSession: async (id, root) => {
           if (!runtime.retireDurableSession) throw new Error("Runtime cannot retire durable subagent sessions.");
           await runtime.retireDurableSession(id, root);
         },
       })
     : undefined;
+  if (instanceRegistry && internalHooks.processJobs?.service?.bindManagedSubagents) {
+    internalHooks.processJobs.service.bindManagedSubagents({ root: subagentInstancesRoot(config),
+      verify: async (identity) => await (await instanceRegistry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => await (await instanceRegistry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
+    });
+  }
   const persistentSubagents = instanceRegistry === undefined ? undefined
     : createSubagentsRuntimeExtension(config, subagentDeps, instanceRegistry);
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
@@ -1376,7 +1410,8 @@ async function createConfiguredAgentHarnessInternal(
     ...(instanceRegistry === undefined ? {} : { subagentInstancesFor: async ({ request }: { request: AgentHarnessRequest }) =>
       (await (await instanceRegistry.open(request.conversationId)).list()).filter(isLiveSubagentInstance).slice(0, 12).map((record) => ({
         id: record.id, name: record.name, status: record.status, turns: record.turns,
-        ...(record.reservation ? { jobId: record.reservation.token } : {}),
+        ...(record.reservation || record.recoveryJobId ? { jobId: record.reservation?.token ?? record.recoveryJobId } : {}),
+        ...(record.recoveryBlocked ? { recoveryBlocked: true } : {}),
         ...(record.pendingQuestion ? { pendingQuestion: record.pendingQuestion } : {}),
         ageMs: Math.max(0, Date.now() - record.updatedAt),
         route: [record.definition.model?.reference, record.definition.effort].filter(Boolean).join("/"),

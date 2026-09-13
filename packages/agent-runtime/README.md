@@ -33,6 +33,13 @@ Using that field without `background: true` is invalid. Host-provided
 `processJobsAvailability` exposes lineage and exhaustion diagnostics even
 when a request has no start controller.
 
+An optional host `ownedForegroundProcesses` capability instead keeps Bash/Exec
+awaited while delegating gated process ownership and cleanup to that host. It
+carries tool-call identity through the Pi wrapper and does not enable background
+commands. The host must durably attest before releasing a target; a rejected or
+unresolved owned command never falls back to ordinary foreground execution. This
+seam alone is not a restart-recovery implementation.
+
 Create one runtime for a host, parse a model reference, and run a turn:
 
 ```js
@@ -172,6 +179,13 @@ Terminal states reuse the observability taxonomy: `success` has no failure kind;
 `cancelled`, `cancelled_user`, `cancelled_stale`, `cancelled_shutdown`, or
 `cancelled_signal`; `rejected`, `error`, `exit_nonzero`, and `timeout` use a
 provider-supplied known kind when available and otherwise `runtime_error`.
+
+Persistent Agent can declare observation-only `verification` metadata; it does
+not change the child cwd or authorize a command. Recovery-capable AgentSend
+supports mutually exclusive `inspect: true` and explicit message + `ack`.
+Inspection starts no provider. Consumed/conflicting acknowledgements return a
+typed non-executing response rather than replaying an execution receipt; the app
+owns current-policy inspection, continuity eligibility and durable consumption.
 
 ## Public API
 

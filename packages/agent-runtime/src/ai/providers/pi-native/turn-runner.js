@@ -133,6 +133,7 @@ export async function buildTurnTools(runState, {
       nodeReplController,
       webController,
       processJobsController: options.processJobs,
+      ownedForegroundProcessController: options.ownedForegroundProcesses?.forAttempt(),
       processJobsAvailability: options.processJobsAvailability,
       monitorsController: options.monitors,
       toolExecutionMode,

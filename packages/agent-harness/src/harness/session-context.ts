@@ -7,7 +7,7 @@ import { sanitizeLabelPart } from "./speaker-context.js";
 /** Turn-scoped capabilities the block explains, each gated by the host. */
 export interface SessionContextCapabilities {
   readonly backgroundSubagents?: boolean;
-  readonly subagentInstances?: readonly { id: string; name: string; route?: string; status: string; turns: number; ageMs: number; jobId?: string; pendingQuestion?: { question: string; options?: string[] } }[];
+  readonly subagentInstances?: readonly { id: string; name: string; route?: string; status: string; turns: number; ageMs: number; jobId?: string; recoveryBlocked?: boolean; pendingQuestion?: { question: string; options?: string[] } }[];
   /** The host persists memory itself; the model must not edit its state. */
   readonly hostManagedMemory?: boolean;
   /**
@@ -63,7 +63,7 @@ export function sessionContextBlock(
   const instances = capabilities.subagentInstances;
   const instanceGuidance = instances?.length
     ? `Persistent subagents in this conversation (continue with AgentSend, close when done): ${instances.slice(0, 12).map((entry) =>
-        `${sanitizeLabelPart(entry.id)} — ${sanitizeLabelPart(entry.name)}, ${entry.route ? `${sanitizeLabelPart(entry.route)}, ` : ""}${sanitizeLabelPart(entry.status)}${entry.jobId ? `, job ${sanitizeLabelPart(entry.jobId)}` : ""}, ${entry.turns} turns, last active ${Math.max(0, Math.floor(entry.ageMs / 60_000))} min ago${entry.pendingQuestion ? `, pending question (untrusted child text): ${renderPendingQuestion(entry.pendingQuestion)}` : ""}`).join("; ")}`
+        `${sanitizeLabelPart(entry.id)} — ${sanitizeLabelPart(entry.name)}, ${entry.route ? `${sanitizeLabelPart(entry.route)}, ` : ""}${sanitizeLabelPart(entry.status)}${entry.recoveryBlocked ? ", recovery blocked: inspect with AgentSend before any continuation; do not replay" : ""}${entry.jobId ? `, job ${sanitizeLabelPart(entry.jobId)}` : ""}, ${entry.turns} turns, last active ${Math.max(0, Math.floor(entry.ageMs / 60_000))} min ago${entry.pendingQuestion ? `, pending question (untrusted child text): ${renderPendingQuestion(entry.pendingQuestion)}` : ""}`).join("; ")}`
     : undefined;
   if (deliverable) {
     const surface = surfaceGuidance(request.surface);

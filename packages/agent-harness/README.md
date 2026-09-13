@@ -168,6 +168,10 @@ The harness is the request-to-runtime composition boundary:
 | `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history, including positive atomic v1 context import and non-provider exclusive turns |
 | `src/tool-history-*.ts` | Secure sidecar schema, single-writer worker/ownership, incremental lifecycle persistence, recovery, bounded read/query, and cold projection |
 
+Persistent-child Session guidance surfaces a blocked-recovery marker and safe
+job identity, not private owner roots, verification paths or acknowledgement
+binding material. It directs inspection before continuation and prohibits replay.
+
 ## Public API
 
 ### Start here

@@ -1,9 +1,11 @@
+import type { ManagedSubagentAdmission, ManagedSubagentExecution } from "./subagent-managed-turn.js";
 import type { SubagentProgressEvent } from "./process-job-subagent-progress.js";
 import type { ProcessJobProcessResult, ProcessJobStartResult } from "@mono-agent/runtime-adapter";
 
 /** App-private closure lane. Only the safe identity and lifecycle enter the store. */
 export interface InternalProcessJobRequest {
   readonly kind: "internal";
+  readonly managed?: ManagedSubagentAdmission;
   readonly tool: "Agent" | "AgentSend";
   readonly jobId: string;
   readonly instanceId: string;
@@ -14,12 +16,13 @@ export interface InternalProcessJobRequest {
   readonly prepared?: never;
   readonly launch?: never;
   /** Argument three receives progress events; execution metadata stays additive in argument four. */
-  run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: SubagentProgressEvent) => void, execution?: { deadlineAt: number }): Promise<{ answer?: string; output: string; status: string; childStillBusy?: boolean; question?: { question: string; options?: string[] } }>;
+  run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: SubagentProgressEvent) => void, execution?: { deadlineAt: number; managed?: ManagedSubagentExecution }): Promise<{ answer?: string; output: string; status: string; childStillBusy?: boolean; question?: { question: string; options?: string[] } }>;
   /** Releases only this job's unstarted reservation; idempotent after begin. */
   cleanup(): Promise<void>;
 }
 
 export interface InternalProcessJobsController {
+  readonly managed?: boolean;
   startInternal(request: InternalProcessJobRequest): Promise<ProcessJobStartResult>;
 }
 
@@ -34,6 +37,7 @@ export function launchInternalProcessJob(
   onOutput?: (chunk: Buffer) => void,
   onProgress?: (event: SubagentProgressEvent) => void,
   deadlineAt = Date.now() + timeoutMs,
+  managed?: ManagedSubagentExecution,
 ): { cancel(): void; completion: Promise<InternalProcessJobResult> } {
   const controller = new AbortController();
   const start = Date.now();
@@ -79,7 +83,7 @@ export function launchInternalProcessJob(
     };
   });
   // The caller has durably published running and active ownership before this microtask.
-  void Promise.resolve().then(() => request.run(controller.signal, writeOutput, (event) => { if (!settled) onProgress?.(event); }, { deadlineAt })).then(finish)
+  void Promise.resolve().then(() => request.run(controller.signal, writeOutput, (event) => { if (!settled) onProgress?.(event); }, { deadlineAt, ...(managed ? { managed } : {}) })).then(finish)
     .catch(() => finish({ output: "Subagent execution failed.", status: "failed" }));
   return { cancel, completion };
 }

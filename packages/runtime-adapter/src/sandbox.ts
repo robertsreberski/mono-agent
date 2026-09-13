@@ -491,7 +491,10 @@ export function createSrtSandboxEngine(options: SrtSandboxEngineOptions = {}): S
       return {
         ...spec,
         command: launch.command,
-        args: [...launch.prefixArgs, "--settings", settings.path, spec.command, ...(spec.args ?? [])],
+        // SRT owns -c/--command itself. End its option parsing before forwarding
+        // target argv (for example Git's -c), rather than silently executing an
+        // argument value as a different shell command.
+        args: [...launch.prefixArgs, "--settings", settings.path, "--", spec.command, ...(spec.args ?? [])],
         cwd,
         sandboxed: true,
         sandboxSettingsPath: settings.path,
