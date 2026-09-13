@@ -1,7 +1,7 @@
 // Opt-in real SRT observation proof; never substitutes an unsandboxed probe.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, writeFile, readFile, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm, symlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSandboxPolicy, createSrtSandboxEngine } from "@mono-agent/runtime-adapter";
@@ -14,6 +14,7 @@ import { openProcessJobsService } from "../../../dist/process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../../../dist/process-jobs-config.js";
 import { createSubagentInstanceRegistry } from "../../../dist/subagent-instances.js";
 import { createSubagentRecoveryAccess } from "../../../dist/subagent-recovery-access.js";
+import { resolveSubagentObservationGit } from "../../../dist/subagent-observation-git.js";
 const ROOT = fileURLToPath(new URL("../../../../../", import.meta.url)).replace(/\/$/, "");
 assert.equal(process.cwd(), ROOT);
 const local = resolve(ROOT, ".mono-agent/verification/srt-local");
@@ -29,7 +30,9 @@ const repository = resolve(root, "repository");
 const worktree = resolve(root, "worktree");
 const agentRoot = resolve(root, "agent");
 await mkdir(repository); await mkdir(agentRoot);
-const git = (cwd, args) => execFileSync("/usr/bin/git", ["-C", cwd, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", ...args], {
+const nativeGit = await resolveSubagentObservationGit();
+// Fixture preparation is not observer evidence; avoid the platform shim here too.
+const git = (cwd, args) => execFileSync(nativeGit.path, ["-C", cwd, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", ...args], {
   cwd: ROOT, env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", LC_ALL: "C" }, timeout: 10_000, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
 }).trim();
 git(repository, ["init", "--quiet"]); await writeFile(resolve(repository, "tracked.txt"), "original\n");
@@ -39,10 +42,9 @@ const head = git(worktree, ["rev-parse", "HEAD"]);
 await writeFile(resolve(worktree, "tracked.txt"), "changed\n");
 await writeFile(resolve(worktree, "report.md"), "THIS REPORT CONTENT MUST NOT BE RETURNED", { mode: 0o000 });
 const common = resolve(repository, ".git");
-// macOS /usr/bin/git is an xcode-select shim. Explicit fixture read authority
-// includes its installed toolchain/bootstrap; production policy is not widened.
-const developerRoot = execFileSync("/usr/bin/xcode-select", ["--print-path"], { cwd: ROOT, encoding: "utf8", timeout: 5000 }).trim();
-const extraReadRoots = [common, "/var/select", developerRoot];
+// Only repository authority is declared here. The existing sandbox engine
+// grants the selected native executable's separate read-only runtime access.
+const extraReadRoots = [common];
 const ownership = await acquireAgentRootOwnership(agentRoot);
 const keepAlive = setInterval(() => {}, 1000);
 let service;
@@ -132,7 +134,19 @@ try {
   assert.equal(escaped.status, "observation_policy_denied");
   assert(!JSON.stringify(escaped).includes("OWNER PRIVATE"));
   assert.equal(providerCalls, 1);
-  console.log(JSON.stringify({ kind: "subagent-observer-real-srt", root, result: "passed", authorizedLinkedWorktree: true, policyRevocation: true, unsafeAlternates: true, privateReportEscape: true, inspectionProviderCalls: 0 }));
+  await rm(resolve(worktree, "report.md"));
+  await writeFile(resolve(worktree, "report.md"), "presence only");
+  // Explicit runtime revocation is enforced by the observer before preparation;
+  // native process-exec is not equivalent to file-read permission on macOS.
+  protectedRoots = [agentRoot, nativeGit.path];
+  const deniedRuntime = await inspect();
+  assert.equal(deniedRuntime.status, "observation_policy_denied");
+  assert.equal(deniedRuntime.facts.status, "observation_policy_denied");
+  assert.equal(deniedRuntime.facts.observation, undefined);
+  protectedRoots = [agentRoot];
+  assert.equal((await inspect()).facts.status, "observed");
+  assert.equal(providerCalls, 1);
+  console.log(JSON.stringify({ kind: "subagent-observer-real-srt", root, result: "passed", authorizedLinkedWorktree: true, policyRevocation: true, unsafeAlternates: true, privateReportEscape: true, deniedRuntime: true, inspectionProviderCalls: 0 }));
 } finally {
   try { await service?.stop(); ownership.release(); } finally { clearInterval(keepAlive); }
 }

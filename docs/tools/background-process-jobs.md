@@ -718,7 +718,16 @@ an observation target. It changes neither command cwd nor policy/approval.
 Current readable/protected roots are checked at admission, capture and disclosure;
 linked common Git metadata outside those roots is not implicitly authorized.
 Fixed Git probes require an available read-only sandbox, disable external helper
-paths and never fall back to host execution. Unsupported alternates, denied paths,
+paths and never fall back to host execution. The host selects root-installed native
+Git: `/Library/Developer/CommandLineTools/usr/bin/git` on macOS and `/usr/bin/git`
+on Linux. It checks canonical secure ancestry, ownership, executable format and
+identity before/after probes; it never consults model-supplied paths or `PATH`,
+executes macOS's `/usr/bin/git` bootstrap shim, installs tooling or changes the
+active developer directory. Missing/redirected/untrusted tooling or an unsupported
+platform yields `observation_unavailable`. Existing sandbox runtime-read allowances
+for the executable do not grant repository/private-root read authority; explicit
+protection of the selected executable denies observation before preparation.
+Unsupported alternates, denied paths,
 changed identity/HEAD and unavailable sandboxing produce typed gaps. Report
 metadata records only a relative path and presence, never content or a hash.
 Command facts and observations remain bounded; foreground-only recovery is marked

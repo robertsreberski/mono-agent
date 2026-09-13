@@ -5,11 +5,14 @@ import { createSandboxPolicy, type ProcessJobProcessResult, type SandboxCommandS
 import { isSubagentVerificationObservation, observeSubagentVerification, registerSubagentVerification } from "../subagent-verification-observer.js";
 import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
+import { resolveSubagentObservationGit } from "../subagent-observation-git.js";
+vi.mock("../subagent-observation-git.js", () => ({ resolveSubagentObservationGit: vi.fn(async () => ({ path: "/trusted/native/git", identity: "installed" })) }));
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 const sha = "a".repeat(40);
 const completed = (stdout: string): ProcessJobProcessResult => ({ code: 0, signal: null, stdout, stderr: "", aborted: false, timedOut: false, bufferExceeded: false, truncated: false, bytes: stdout.length, storedBytes: stdout.length, spawnError: null, groupExitConfirmed: true, durationMs: 1 });
 async function fixture() {
+  vi.mocked(resolveSubagentObservationGit).mockReset().mockResolvedValue({ path: "/trusted/native/git", identity: "installed" });
   const root = await mkdtemp(resolve(process.cwd(), "node_modules/.verification-observer-")); roots.push(root);
   await mkdir(resolve(root, ".git/objects"), { recursive: true }); await mkdir(resolve(root, ".git/refs"));
   await writeFile(resolve(root, ".git/HEAD"), "ref: refs/heads/main\n"); await writeFile(resolve(root, ".git/config"), "[core]\nrepositoryformatversion = 0\n");
@@ -29,7 +32,9 @@ it("collects bounded fixed read-only probes and report presence, not report cont
   expect(JSON.stringify(result).includes("PRIVATE REPORT BODY")).toBe(false);
   expect(f.runProbe).toHaveBeenCalledTimes(4); expect(f.cleanup).toHaveBeenCalledTimes(4);
   for (const [spec, policy] of f.prepareCommand.mock.calls) {
-    expect(spec.command).toBe("/usr/bin/git"); expect(spec.cwd).toBe(f.root);
+    expect(spec.command).toBe("/trusted/native/git"); expect(spec.cwd).toBe(f.root);
+    expect(policy.readableRoots).toEqual(f.access.sandboxPolicy.readableRoots);
+    expect(f.access.readableRoots).toEqual([]); // Runtime access is not repository authority.
     expect(spec.args).toContain(`--work-tree=${f.root}`); // core.worktree cannot redirect the declared observation.
     expect(spec.env).toMatchObject({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_OPTIONAL_LOCKS: "0" });
     expect(spec.env).not.toHaveProperty("GIT_DIR"); expect(spec.env).not.toHaveProperty("NODE_OPTIONS");
@@ -73,6 +78,29 @@ it("bounds path count and aggregate bytes without truncating a path into a diffe
   const result = await observeSubagentVerification(f.target, f.access, []);
   expect(result.status).toBe("observed"); expect(result.paths!.length).toBeLessThanOrEqual(64); expect(result.omitted).toBeGreaterThan(0);
   expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(4096);
+});
+it.each(["private", "policy"])("checks explicit %s runtime protection before preparing a native probe", async (source) => {
+  const f = await fixture();
+  if (source === "policy") f.access.sandboxPolicy = { ...f.access.sandboxPolicy, protectedRoots: ["/trusted"] };
+  const result = await observeSubagentVerification(f.target, f.access, source === "private" ? ["/trusted/native/git"] : []);
+  expect(result.status).toBe("observation_policy_denied"); expect(result.workdir).toBeUndefined();
+  expect(f.prepareCommand).not.toHaveBeenCalled(); expect(f.runProbe).not.toHaveBeenCalled();
+});
+it("withholds observations when the trusted native executable is unavailable", async () => {
+  const f = await fixture();
+  vi.mocked(resolveSubagentObservationGit).mockRejectedValue(new Error("untrusted installation"));
+  expect((await observeSubagentVerification(f.target, f.access, [])).status).toBe("observation_unavailable");
+  expect(f.prepareCommand).not.toHaveBeenCalled(); expect(f.runProbe).not.toHaveBeenCalled();
+});
+it.each(["before-probe", "after-probe"])("withholds facts on native executable replacement %s", async (when) => {
+  const f = await fixture();
+  vi.mocked(resolveSubagentObservationGit).mockResolvedValue({ path: "/trusted/native/git", identity: "changed" })
+    .mockResolvedValueOnce({ path: "/trusted/native/git", identity: "installed" });
+  if (when === "after-probe") vi.mocked(resolveSubagentObservationGit).mockResolvedValueOnce({ path: "/trusted/native/git", identity: "installed" });
+  const result = await observeSubagentVerification(f.target, f.access, []);
+  expect(result.status).toBe("observation_unavailable"); expect(result.workdir).toBeUndefined();
+  expect(f.runProbe).toHaveBeenCalledTimes(when === "before-probe" ? 0 : 1);
+  expect(f.cleanup).toHaveBeenCalledTimes(when === "before-probe" ? 0 : 1);
 });
 it("reauthorizes disclosure after capture and withholds newly protected paths", async () => {
   const f = await fixture(); let reads = 0;

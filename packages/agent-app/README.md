@@ -85,6 +85,10 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   Recovery inspection reauthorizes bounded facts; retained-only acknowledgement
   is consumed atomically with a new turn intent. Private keyed request bindings
   never enter runtime handles, Session guidance or job/wake projections.
+  Observation uses only fixed root-installed native Git (macOS Command Line Tools
+  or Linux `/usr/bin/git`) through the read-only sandbox, never PATH wrappers or
+  the macOS developer-selection shim. Missing/untrusted tooling yields a typed
+  gap; runtime executable access does not authorize repository/private data.
 - Opt in to Pi-native host-owned watches through `monitors.*`. Telegram, Slack,
   and existing web conversations receive coalesced event batches as exact-origin
   tool-capable wake turns; web uses ordinary assistant turns rather than a

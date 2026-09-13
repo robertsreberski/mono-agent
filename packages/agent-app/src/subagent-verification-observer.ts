@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { resolveSubagentObservationGit } from "./subagent-observation-git.js";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -131,9 +132,18 @@ export async function observeSubagentVerification(target: SubagentVerificationTa
     const policy: SandboxPolicy = { ...current.sandboxPolicy, mode: "native", writableRoots: [],
       protectedRoots: [...privateRoots, ...(current.sandboxPolicy.protectedRoots ?? [])], network: { mode: "none", allowlist: [] }, fallback: "fail-closed", unsafeAllowHostProcess: false };
     const deadline = capturedAt + 6000;
+    const executable = await resolveSubagentObservationGit();
+    // Executable runtime access does not override an explicit protected path.
+    // File-read denial alone need not prohibit native process-exec on macOS.
+    if (policy.protectedRoots?.some((root) => inside(root, executable.path))) throw new Error("observation_policy_denied");
+    const attest = async () => {
+      const current = await resolveSubagentObservationGit();
+      if (current.path !== executable.path || current.identity !== executable.identity) throw new Error("observation_unavailable");
+    };
     const git = async (args: string[]): Promise<string> => {
       if (Date.now() >= deadline) throw new Error("observation_unavailable");
-      const prepared = await current.sandboxEngine!.prepareCommand({ command: "/usr/bin/git", cwd: target.workdir,
+      await attest();
+      const prepared = await current.sandboxEngine!.prepareCommand({ command: executable.path, cwd: target.workdir,
         args: [`--work-tree=${target.workdir}`, "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.untrackedCache=false", ...args],
         env: { PATH: "/usr/bin:/bin", HOME: "/nonexistent", XDG_CONFIG_HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" },
       }, policy);
@@ -142,6 +152,7 @@ export async function observeSubagentVerification(target: SubagentVerificationTa
       if (result.groupExitConfirmed === true) await prepared.cleanup?.();
       if (result.truncated || result.bufferExceeded) throw new Error("observation_truncated");
       if (result.code !== 0 || result.timedOut || result.aborted || result.spawnError || result.groupExitConfirmed !== true) throw new Error("observation_unavailable");
+      await attest();
       return result.stdout;
     };
     // Names only: never collect remote URLs, credentials, or arbitrary config values.
