@@ -557,7 +557,7 @@ The command refuses remote endpoints, derives an independent owner capability
 from the selected agent's private store, and exits `1` with
 `agent_unreachable` when the agent cannot be reached. Misuse exits `2`.
 
-Successful background `Exec`/`Bash` completions carry a bounded versioned start
+Successful background `Exec`/`Bash` and persistent `Agent`/`AgentSend` launches carry a bounded versioned start
 receipt in their machine-readable tool result. The receipt records the exact job
 id, tool, admission state, and real start stamp when one exists; the human result
 text is not an identity source. The web console uses that causal receipt only
@@ -609,6 +609,29 @@ durable started receipt. `AgentSend({id:"helper", message:"Continue", background
 continues the same child transcript. Both require the ordinary Agent/AgentSend
 policy. Close-only calls remain synchronous. Bare runtime hosts need a supplied
 background controller; unsupported calls fail clearly.
+
+In the web console, detached launches keep their receipt in the parent's Activity,
+which shows `Agent job started` / `Agent job succeeded` (or the actual terminal
+state); `AgentSend` uses the corresponding label. The child no longer streams
+foreground-style subagent rows into the parent response. Its Background jobs
+card uses the subagent glyph and a height-bounded scroll region with clustered
+tool calls, running/complete/failed status, durations, and a plain-text terminal
+report. State, Wake, and terminal facts remain on the card. Scrolling upward
+holds the reading position through later progress and report arrival.
+
+Progress is separate from stdout and from the parent's completion-wake output.
+The host retains at most 50 recent calls plus total/failed counts, redacts short
+argument summaries before persistence, and coalesces progress writes every
+250 ms. No prompts or tool result bodies enter progress. Identity/name fields
+and argument summaries are byte-bounded; the report is a redacted head of at
+most 8,000 UTF-8 bytes, explicitly marked when truncated. The original terminal
+output JSON and wake behavior are unchanged.
+
+Old records without progress remain readable and show that progress is
+unavailable. Upgrade host and console together: the optional internal-only
+`subagentProgress` field is strictly validated, and older binaries can reject
+populated records or projections. This adds no new state directory or web
+SQLite migration; ordinary process-job retention still owns the data.
 
 The child runs inside the owning host, using the existing process-job admission,
 queue, runtime/output limits, lineage, lifecycle card and exact-origin wake.

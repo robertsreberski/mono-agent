@@ -783,7 +783,7 @@ function reportDetachedProgress(event, report) {
     report({ type: "tool_started", id: event.id,
       toolName: event.name.slice(event.name.indexOf("▸") + 1),
       ...(summary === undefined ? {} : { argsSummary: summary }) });
-  } else if (event.phase === "completed" && !event.unknownCall) {
+  } else if (event.phase === "completed" && !event.name.endsWith("▸?")) {
     report({ type: "tool_completed", id: event.id, failed: event.isError === true,
       ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }) });
   }
@@ -991,7 +991,6 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
             phase: "completed",
             id: `agent:${callId}:${block.tool_use_id}`,
             name: `${profileName}▸${entry?.name ?? "?"}`,
-            ...(entry === undefined ? { unknownCall: true } : {}),
             isError,
             ...(ms === undefined ? {} : { executionMs: ms }),
             ...(summarizeForWire(block.content) === undefined ? {} : { content: summarizeForWire(block.content) }),

@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api";
 import { DATA_MODE_STORAGE_KEY } from "../data-mode";
+import { backgroundSubagentJob } from "../test/background-subagent-fixtures";
+import { Icon } from "./Icon";
 import { processJob } from "../test/fixtures";
 import type { ProcessJobState } from "../types";
 import {
@@ -815,4 +817,39 @@ describe("ProcessJobPart", () => {
 it("shows unresolved internal child ownership on a terminal job card", () => {
   render(part({ type: "process-job", job: processJob({ tool: "Agent", kind: "internal", instanceId: "helper", state: "timed_out", childStillBusy: true }) }));
   expect(screen.getByText("child still busy · awaiting actual settlement")).toBeInTheDocument();
+});
+
+
+describe("background native subagent cards", () => {
+  it.each(["Agent", "AgentSend"] as const)("renders %s clustered progress and report, never command output", (tool) => {
+    const job = backgroundSubagentJob(true, tool);
+    const view = render(part({ job: { ...job, output: { ...job.output, preview: "PRIVATE_RAW_JSON" } } }));
+    const card = screen.getByRole("group", { name: `${tool} background job succeeded` });
+    fireEvent.click(card.querySelector("summary")!);
+    expect(screen.getByRole("region", { name: "Subagent progress" })).toBeVisible();
+    expect(screen.getByText("Bash ×6")).toBeVisible();
+    expect(screen.getByText("Read ×3")).toBeVisible();
+    expect(screen.getByRole("region", { name: "Subagent report" })).toHaveTextContent("Synthetic report");
+    expect(screen.queryByText("PRIVATE_RAW_JSON")).toBeNull();
+    expect(view.container.querySelector(".process-job-output")).toBeNull();
+    const icon = render(<Icon name="agent" />);
+    expect(card.querySelector(".activity-job-icon")?.innerHTML).toBe(icon.container.querySelector("svg")?.innerHTML);
+    expect(screen.getByText("State")).toBeVisible();
+    expect(screen.getByText("Wake")).toBeVisible();
+  });
+
+  it("auto-opens on progress and preserves manual collapse and newer revisions", async () => {
+    const job = backgroundSubagentJob();
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const view = render(part({ job }));
+    const card = screen.getByRole("group", { name: "Agent background job running" });
+    expect(card).toHaveAttribute("open");
+    fireEvent.click(card.querySelector("summary")!);
+    view.rerender(part({ job: backgroundSubagentJob(true) }));
+    expect(card).not.toHaveAttribute("open");
+    const stale = { ...job, subagentProgress: { ...job.subagentProgress!, revision: 1, toolCalls: 0, recent: [] } };
+    expect(mergeProcessJobProjection(job, stale)).toEqual(job);
+    const { subagentProgress: _progress, ...legacy } = job;
+    expect(mergeProcessJobProjection(job, legacy)).toEqual(job);
+  });
 });

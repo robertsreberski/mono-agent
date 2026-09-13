@@ -62,6 +62,7 @@ export const failedLabel = (failedCount: number, clustered: boolean): string | u
  */
 export function ActivityRow({
   variant = "tool",
+  jobIcon = "terminal",
   status = "complete",
   label,
   summary,
@@ -74,6 +75,7 @@ export function ActivityRow({
   children,
 }: {
   /** `job` is a tool run detached into the background: terminal glyph and accented chrome distinguish it from tool rows. */
+  readonly jobIcon?: "terminal" | "agent";
   readonly variant?: "tool" | "thinking" | "subagent" | "job";
   readonly status?: ActivityStatus;
   readonly label?: string;
@@ -108,7 +110,7 @@ export function ActivityRow({
       >
         <span className="activity-row-glyph">
           {variant === "tool" && <i className="activity-dot" />}
-          {variant === "job" && <Icon className="activity-job-icon" name="terminal" size={14} />}
+          {variant === "job" && <Icon className="activity-job-icon" name={jobIcon} size={14} />}
           {variant === "thinking" && <Icon name="bulb" size={14} />}
           {variant === "subagent" && <Icon name="agent" size={14} />}
         </span>

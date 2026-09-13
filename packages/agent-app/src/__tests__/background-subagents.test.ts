@@ -1,4 +1,4 @@
-import { parseProcessJobProjection } from "@mono-agent/agent-contracts";
+import { parseProcessJobProjection, type ProcessJobProjection } from "@mono-agent/agent-contracts";
 import { fileURLToPath } from "node:url";
 import { loadMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime } from "@mono-agent/runtime-adapter";
@@ -30,13 +30,14 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
-async function fixture(overrides = {}, retireSession: (id: string, root: string) => Promise<unknown> = async () => undefined) {
+async function fixture(overrides = {}, retireSession: (id: string, root: string) => Promise<unknown> = async () => undefined, surfaceUpdate?: (job: ProcessJobProjection) => Promise<void>) {
   const root = await mkdtemp(resolve(process.cwd(), "node_modules/.background-subagents-")); roots.push(root);
   const wake = vi.fn(async (_input: unknown) => ({ delivered: true as const }));
   const signalProcess = vi.fn();
   const store = await openProcessJobStore(root, resolve(root, "jobs"));
   const options = { cwd: root, workspace: root, store,
     settings: { ...PROCESS_JOBS_DEFAULTS, configured: true, enabled: true, stateDir: resolve(root, "jobs"), ...overrides },
+    ...(surfaceUpdate ? { surfaceUpdate } : {}),
     registration: {} as never, attestRegistration: async () => ({} as never), wake, signalProcess,
     acquireLock: async () => ({ release: async () => undefined }) as never };
   const service = await openProcessJobsService(options); services.push(service); await service.activateWakes();
@@ -416,4 +417,41 @@ it("ignores private progress emitted after internal cancellation grace expires",
   emit({ type: "started", profile: "too late" });
   gate.resolve({ status: "ok", output: "late" });
   expect(progress).not.toHaveBeenCalled();
+});
+
+
+it("coalesces a burst of private progress and terminally persists the latest bounded snapshot", async () => {
+  const surface = vi.fn(async (_job: ProcessJobProjection) => {});
+  const f = await fixture({}, undefined, surface);
+  const gate = deferred<any>();
+  let emit!: (event: any) => void;
+  const id = randomUUID();
+  await f.service.internalController(origin, 0).startInternal({ kind: "internal", tool: "AgentSend", jobId: id, instanceId: "helper", cleanup: async () => {},
+    run: async (_signal, _write, report) => { emit = report; return gate.promise; } });
+  await vi.waitFor(() => expect(emit).toBeTypeOf("function"));
+  surface.mockClear();
+  for (let i = 0; i < 100; i++) {
+    emit({ type: "tool_started", id: String(i), toolName: "Read", argsSummary: "src/file.ts" });
+    emit({ type: "tool_completed", id: String(i), failed: i % 2 === 0 });
+  }
+  expect((await f.service.get(id) as any).subagentProgress).toMatchObject({ toolCalls: 100, failedCalls: 50 });
+  await vi.waitFor(async () => expect((await f.store.get(id))?.subagentProgress?.toolCalls).toBe(100));
+  await vi.waitFor(() => expect(surface).toHaveBeenCalled());
+  expect(surface.mock.calls.length).toBeLessThanOrEqual(2);
+  gate.resolve({ status: "ok", output: '{"answer":"original output"}', answer: "Separate report" });
+  const job = await done(f.service, id);
+  expect(job.subagentProgress?.recent).toHaveLength(50);
+  expect(job.subagentProgress?.answerHead).toBe("Separate report");
+  expect((await f.store.get(id))?.subagentProgress).toEqual(job.subagentProgress);
+  expect((f.wake.mock.calls[0]![0] as any).prompt).not.toContain("Separate report");
+});
+
+it("does not append private progress or the UI answer to the internal stdout lane", async () => {
+  const output = JSON.stringify({ instanceId: "helper", answer: "Original wake report", artifacts: [] });
+  const launched = launchInternalProcessJob({ kind: "internal", tool: "Agent", jobId: randomUUID(), instanceId: "helper", cleanup: async () => {},
+    run: async (_signal, _write, report) => {
+      report({ type: "started", profile: "helper" });
+      return { status: "ok", output, answer: "Separate UI report" };
+    } }, 1_000, 8_000);
+  expect(await launched.completion).toMatchObject({ stdout: output, answer: "Separate UI report" });
 });
