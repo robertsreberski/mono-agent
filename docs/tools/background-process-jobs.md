@@ -713,6 +713,23 @@ A proven rejected admission retains a not-started disposition; ambiguous absence
 never authorizes retry. Lost/unknown continuity cannot be acknowledged back into
 retained context: resolve ownership, then explicitly close/create instead.
 
+The configured foreground persistent path currently classifies failures as
+`lost` (a native response outside the selected session) or `unknown` (including
+late timeout settlement). It does not establish a retained failure epoch eligible
+for acknowledgement. While the original runtime is unresolved, inspection is
+`held` and close/continuation remain blocked. After settlement, authorized
+inspection reports `structured_job_recovery_unavailable` with the minimal registry
+fence, not a ProcessJob, command checkpoint or acknowledgement token. Explicitly
+close the instance and create another with the necessary context. A late answer
+or existing JSONL file does not upgrade unknown continuity. Ordinary successful
+foreground continuation and AskParent replies still resume their retained session
+without a recovery acknowledgement.
+
+For a managed detached failure explicitly classified as retained, an accepted
+acknowledgement resumes the same durable session; it does not replay the failed
+request or authorize a new provider epoch. Inspection and duplicate consumed
+acknowledgements invoke no provider and append no continuation message.
+
 Persistent Agent's optional `verification: {workdir, reportPath?}` declares only
 an observation target. It changes neither command cwd nor policy/approval.
 Current readable/protected roots are checked at admission, capture and disclosure;

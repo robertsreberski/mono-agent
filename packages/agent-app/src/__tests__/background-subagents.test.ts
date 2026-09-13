@@ -800,6 +800,66 @@ describe("detached persistent subagents", () => {
 });
 
 
+it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-session disposal", async () => {
+  const owner = createMonoRuntime(); const releaseConfirmation = deferred<void>(); let delayed = false;
+  const f = await managedFixture(async (id, root) => owner.retireDurableSession!(id, root));
+  try {
+    const config = loadMonoAgentConfig({ cwd: f.root, env: {
+      MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
+      MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, timeoutMs: 3000, instances: { root: resolve(f.root, "children") } }),
+    } });
+    const piPath = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
+    const { createModels, fauxProvider, fauxAssistantMessage, fauxText } = await import(piPath);
+    const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
+    const models = createModels(); models.setProvider(faux.provider); const calls: any[] = [];
+    const runtime = { run: async (prompt: string, options: any) => {
+      calls.push(options);
+      return generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+    } };
+    const subagents: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
+      { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
+    subagents.backgroundSubagentController = f.service.internalController(origin, 0);
+    const context = { model: config.runtime.model, recoveryAccess: { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) } };
+    const agent = createAgentTool(subagents, context); const send = createAgentSendTool(subagents, context);
+    f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
+      verify: async (identity) => (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        if (!delayed && phase === "confirm" && !publication.released && publication.disposition.status === "ok") {
+          delayed = true; await releaseConfirmation.promise;
+        }
+        await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+      },
+    });
+    faux.setResponses([fauxAssistantMessage([fauxText("native first answer retained before publication timeout")])]);
+    const first = await agent.execute("retained-failure", { id: "helper", persist: true, background: true, prompt: "first task in failed epoch" });
+    await vi.waitFor(async () => expect((await f.store.get(first.details.jobId))?.subagentOwnership?.disposition).toMatchObject({ reason: "timeout", continuity: "retained" }), { timeout: 12_000 });
+    releaseConfirmation.resolve(); expect((await done(f.service, first.details.jobId)).state).toBe("timed_out");
+    const record = (await f.instances.get("helper"))!;
+    const files = (await readdir(record.sessionsRoot, { recursive: true })).filter((file) => file.endsWith(".jsonl")); expect(files).toHaveLength(1);
+    const transcriptPath = resolve(record.sessionsRoot, files[0]!); const before = await readFile(transcriptPath, "utf8");
+    expect(before).toContain("first task in failed epoch"); expect(before).toContain("native first answer retained before publication timeout");
+    await owner.disposeSession!(record.sessionId);
+    await expect(send.execute("no-ack", { id: "helper", message: "must not replay", background: true })).rejects.toThrow("subagent_recovery_required");
+    const inspected = await send.execute("inspect", { id: "helper", inspect: true });
+    expect(inspected.details.recovery).toMatchObject({ status: "ready", recovery: { continuity: "retained" } }); expect(calls).toHaveLength(1);
+    expect(await readFile(transcriptPath, "utf8")).toBe(before);
+    let input: any;
+    faux.setResponses([(value: any) => { input = value; return fauxAssistantMessage([fauxText("acknowledged continuation retained")]); }]);
+    const request = { id: "helper", ack: inspected.details.recovery.ack, message: "explicit parent acknowledgement and new instructions", background: true };
+    const resumed = await send.execute("ack", request); expect((await done(f.service, resumed.details.jobId)).state).toBe("succeeded");
+    expect(calls).toHaveLength(2); expect(calls[1].sessionId).toBe(calls[0].sessionId); expect(calls[1].piSessionsRoot).toBe(record.sessionsRoot);
+    expect((await readdir(record.sessionsRoot, { recursive: true })).filter((file) => file.endsWith(".jsonl"))).toEqual(files);
+    const after = await readFile(transcriptPath, "utf8"); expect(after.startsWith(before)).toBe(true);
+    expect(after).toContain(request.message); expect(after).toContain("acknowledged continuation retained");
+    expect(JSON.stringify(input.messages)).toContain("first task in failed epoch");
+    expect(JSON.stringify(input.messages)).toContain("native first answer retained before publication timeout");
+    const duplicate = await send.execute("duplicate", request);
+    expect(duplicate.details).toMatchObject({ executed: false, recovery: { code: "subagent_recovery_already_consumed" } });
+    expect(calls).toHaveLength(2); expect(await readFile(transcriptPath, "utf8")).toBe(after); expect(f.wake).toHaveBeenCalledTimes(2);
+    await send.execute("close", { id: "helper", close: true });
+  } finally { releaseConfirmation.resolve(); await f.service.stop(); await owner.disposeAllSessions?.(); }
+}, 20_000);
+
 it.each([false, true])("real Pi fake transport: detached AskParent and background reply resume one JSONL, then close (managed=%s)", async (managed) => {
   const owner = createMonoRuntime();
   const retire = async (id: string, root: string) => owner.retireDurableSession!(id, root);

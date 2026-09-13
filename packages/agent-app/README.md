@@ -78,7 +78,12 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   original job slot; registry admission identity, actual provider settlement and
   terminal publication are distinct fences. Failed command ownership never
   falls back to an untracked foreground process. Foreground persistent turns
-  do not gain supervised process ownership. Bounded private command receipts
+  do not gain supervised process ownership. Their failures are currently lost or
+  unknown, not retained acknowledgement epochs; settled authorized inspection
+  returns `structured_job_recovery_unavailable`, and recovery requires explicit
+  close/create. A late answer or existing transcript does not promote continuity.
+  Ordinary successful foreground continuation and AskParent are unchanged.
+  Bounded private command receipts
   retain actual exit/budget/cleanup measurements without argv, environment,
   output prose or inferred verification success; optional receipts yield space
   to mandatory ownership. Restart cleanup does not invent an exit receipt.
