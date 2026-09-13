@@ -64,16 +64,64 @@ describe("web storage migration history", () => {
     const current = await WebStore.open({ stateDir });
     current.close();
     const legacy = new DatabaseSync(join(stateDir, "state.sqlite"));
-    legacy.exec("ALTER TABLE threads DROP COLUMN read_revision; PRAGMA user_version = 29");
+    legacy.exec("ALTER TABLE threads DROP COLUMN read_revision; UPDATE threads SET revision = 7; PRAGMA user_version = 29");
     legacy.close();
     const migrated = await WebStore.open({ stateDir });
-    try { expect(migrated.getThread("fixture-thread")?.readRevision).toBe(0); }
+    try { expect(migrated.getThread("fixture-thread")).toMatchObject({ revision: 7, readRevision: 0 }); }
     finally { migrated.close(); }
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     try {
       expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 30 });
       expect(() => database.exec("UPDATE threads SET read_revision = -1")).toThrow();
+      expect(() => database.exec("UPDATE threads SET read_revision = revision + 1")).toThrow();
+      database.exec("UPDATE threads SET read_revision = revision; UPDATE threads SET revision = revision + 1");
+      expect(database.prepare("SELECT revision, read_revision FROM threads WHERE id = 'fixture-thread'").get())
+        .toMatchObject({ revision: 8, read_revision: 7 });
+      expect(() => database.exec("UPDATE threads SET revision = read_revision - 1")).toThrow();
       database.exec("ALTER TABLE threads DROP COLUMN read_revision; ALTER TABLE threads ADD COLUMN read_revision TEXT");
+      expect(() => validateWebStorageShape(database)).toThrowError(expect.objectContaining({ code: "storage_corrupt" }));
+    } finally { database.close(); }
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
+  });
+
+  it("rolls back the watermark migration when an existing revision cannot satisfy its default", async () => {
+    const stateDir = await seeded(18);
+    const store = await WebStore.open({ stateDir });
+    store.close();
+    const legacy = new DatabaseSync(join(stateDir, "state.sqlite"));
+    legacy.exec("ALTER TABLE threads DROP COLUMN read_revision; UPDATE threads SET revision = -1; PRAGMA user_version = 29");
+    legacy.close();
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({
+      code: "storage_corrupt", message: "Web storage migration 30 (conversation-read-watermark) failed.",
+    });
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 29 });
+      expect(database.prepare("PRAGMA table_info(threads)").all().some((column) => column.name === "read_revision")).toBe(false);
+      expect(database.prepare("SELECT revision FROM threads WHERE id = 'fixture-thread'").get()).toMatchObject({ revision: -1 });
+    } finally { database.close(); }
+  });
+
+  it("rejects a current-schema watermark column missing its revision upper bound", async () => {
+    const stateDir = await seeded(18);
+    const store = await WebStore.open({ stateDir });
+    store.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      database.exec(`ALTER TABLE threads DROP COLUMN read_revision;
+        ALTER TABLE threads ADD COLUMN read_revision INTEGER NOT NULL DEFAULT 0 CHECK (read_revision >= 0)`);
+      expect(() => validateWebStorageShape(database)).toThrowError(expect.objectContaining({ code: "storage_corrupt" }));
+    } finally { database.close(); }
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
+  });
+
+  it("rejects retained watermarks beyond the conversation revision even when the current DDL is intact", async () => {
+    const stateDir = await seeded(18);
+    const store = await WebStore.open({ stateDir });
+    store.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      database.exec("PRAGMA ignore_check_constraints = ON; UPDATE threads SET read_revision = revision + 1; PRAGMA ignore_check_constraints = OFF");
       expect(() => validateWebStorageShape(database)).toThrowError(expect.objectContaining({ code: "storage_corrupt" }));
     } finally { database.close(); }
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });

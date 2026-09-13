@@ -250,8 +250,8 @@ const deafIndexedDb = (): IDBFactory => ({
   }) as unknown as IDBOpenDBRequest,
 }) as unknown as IDBFactory;
 
-/** A real open, answered late. */
-const slowIndexedDb = (delayMs: number): IDBFactory => ({
+/** A real open, answered late or held until the test explicitly releases it. */
+const slowIndexedDb = (delay: number | Promise<void>): IDBFactory => ({
   open: (name: string, version?: number) => {
     const inner = version === undefined
       ? realIndexedDb.open(name)
@@ -267,12 +267,16 @@ const slowIndexedDb = (delayMs: number): IDBFactory => ({
       proxy.result = inner.result;
       (proxy.onupgradeneeded as ((value: Event) => void) | null)?.(event);
     };
+    const answer = (callback: () => void) => {
+      if (typeof delay === "number") setTimeout(callback, delay);
+      else void delay.then(callback);
+    };
     inner.onsuccess = () => {
       proxy.result = inner.result;
-      setTimeout(() => (proxy.onsuccess as (() => void) | null)?.(), delayMs);
+      answer(() => (proxy.onsuccess as (() => void) | null)?.());
     };
     inner.onerror = () => {
-      setTimeout(() => (proxy.onerror as (() => void) | null)?.(), delayMs);
+      answer(() => (proxy.onerror as (() => void) | null)?.());
     };
     return proxy as unknown as IDBOpenDBRequest;
   },
@@ -8551,6 +8555,51 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.detail?.messages.map((item) => item.id)).toEqual(["m2"]);
       expect(store.current.visibleThreads.map((item) => item.id)).toEqual([alpha.id]);
       expect(vi.mocked(api.threadIfChanged)).not.toHaveBeenCalled();
+    });
+
+    it("persists an adopted read watermark after discarding late hydration and keeps it on offline reopen", async () => {
+      const oldEntry = entry(alpha, [kept("old", "last visit")]);
+      await previousVisit({ entries: [oldEntry], listing: [alpha, beta], openedOn: alpha.id });
+      await deviceStore.save({ entries: [oldEntry], seen: [{ id: beta.id, revision: 1 }] });
+      let releaseHydration!: () => void;
+      const hydrationGate = new Promise<void>((resolve) => { releaseHydration = resolve; });
+      vi.stubGlobal("indexedDB", slowIndexedDb(hydrationGate));
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(agents, [alpha, beta], alpha.id));
+      vi.mocked(api.thread).mockResolvedValue({ thread: alpha, messages: [kept("new", "from the server")] });
+      // No later fleet response may accidentally pay the deferred persistence debt.
+      vi.mocked(api.activeThreads).mockImplementation(() => new Promise(() => undefined));
+      try {
+        const store = openConsole();
+        await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true), {
+          timeout: HYDRATION_DEADLINE_MS + 3_000,
+        });
+        const updated = { ...beta, revision: 2 };
+        emit("thread.changed", { threadId: beta.id, payload: { thread: updated } });
+        await waitFor(() => expect(store.current.unreadThreadIds.has(beta.id)).toBe(true));
+        emit("thread.changed", { threadId: beta.id, payload: { thread: { ...updated, readRevision: 2 } } });
+        await waitFor(() => expect(store.current.unreadThreadIds.has(beta.id)).toBe(false));
+        // The signal arrived before persistence was enabled. The late hydration
+        // must flush current memory, not restore the old transcript or seen map.
+        expect((await deviceStore.hydrate())?.seen).toContainEqual({ id: beta.id, revision: 1 });
+        await act(async () => { releaseHydration(); });
+        await waitFor(async () => {
+          expect((await deviceStore.hydrate())?.seen).toContainEqual({ id: beta.id, revision: 2 });
+        }, { timeout: PERSIST_DEBOUNCE_MS + 2_000 });
+        expect(store.current.detail?.messages.map((message) => message.id)).toEqual(["new"]);
+        cleanupDom();
+
+        vi.stubGlobal("indexedDB", realIndexedDb);
+        vi.mocked(api.bootstrap).mockRejectedValue(new Error("Offline"));
+        vi.mocked(api.thread).mockRejectedValue(new Error("Offline"));
+        vi.mocked(api.threadIfChanged).mockRejectedValue(new Error("Offline"));
+        const reopened = openConsole();
+        await waitFor(() => expect(reopened.current.error).not.toBeNull());
+        expect(reopened.current.hasServerSnapshot).toBe(false);
+        expect(reopened.current.detail?.messages.map((message) => message.id)).toEqual(["new"]);
+        expect(reopened.current.visibleThreads.find((item) => item.id === beta.id)?.revision).toBe(2);
+        expect(reopened.current.unreadThreadIds.has(beta.id)).toBe(false);
+        expect((await deviceStore.hydrate())?.seen).toContainEqual({ id: beta.id, revision: 2 });
+      } finally { releaseHydration(); }
     });
 
     it("keeps the device's copy on screen when the snapshot fails and the device is slow", async () => {

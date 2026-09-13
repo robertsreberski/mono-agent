@@ -200,7 +200,7 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
     `);
   } },
   { version: 30, name: "conversation-read-watermark", up: ({ database }) => {
-    addColumn(database, "threads", "read_revision", "INTEGER NOT NULL DEFAULT 0 CHECK (read_revision >= 0)");
+    addColumn(database, "threads", "read_revision", "INTEGER NOT NULL DEFAULT 0 CHECK (read_revision >= 0 AND read_revision <= revision)");
   } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
@@ -278,8 +278,8 @@ export function validateWebStorageShape(database: DatabaseSync): void {
     }>).find((column) => column.name === "read_revision");
     const threadDdl = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'threads'").get() as { sql: string };
     if (readRevision?.type !== "INTEGER" || readRevision.notnull !== 1 || readRevision.dflt_value !== "0"
-      || !/CHECK\s*\(read_revision\s*>=\s*0\)/iu.test(threadDdl.sql)
-      || database.prepare("SELECT 1 FROM threads WHERE read_revision < 0 LIMIT 1").get() !== undefined) {
+      || !/CHECK\s*\(read_revision\s*>=\s*0\s+AND\s+read_revision\s*<=\s*revision\)/iu.test(threadDdl.sql)
+      || database.prepare("SELECT 1 FROM threads WHERE read_revision < 0 OR read_revision > revision LIMIT 1").get() !== undefined) {
       throw new Error("Invalid conversation read watermark.");
     }
     const tagDdl = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'tags'").get() as { sql: string };

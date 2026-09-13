@@ -2637,6 +2637,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // Whatever came back, the device store may now be written: a flush from
       // here on can only delete rows this tab genuinely stopped holding.
       persistReadyRef.current = true;
+      // A server read signal may have arrived while writes were gated. Pay
+      // that debt even when the late snapshot below is discarded: the existing
+      // scheduler writes current memory and refuses work after teardown.
+      if (seenDirtyRef.current) schedulePersistRef.current();
       if (restored === null) return;
       // TOO LATE: the SERVER has spoken. Everything below would put a
       // last-visit transcript over one the server just gave -- `restore`
