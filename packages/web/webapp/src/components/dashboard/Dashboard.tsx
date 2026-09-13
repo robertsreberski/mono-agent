@@ -147,20 +147,24 @@ export function Dashboard({
         label={chats ? "Search conversations" : "Search automations"}
       />
       <div className="dashboard-scroll">
-        <RunningSection
-          groups={groups}
-          expandedAgentIds={expandedAgentIds}
-          onToggleAgent={toggleAgentExpansion}
-          onOpen={openRunning}
-          {...(authoritative && activeThreads !== null
-            ? { total: activeThreads.total, truncated: activeThreads.truncated }
-            : {})}
-          authoritative={authoritative}
-          {...(catalogModels === undefined ? {} : { catalogModels })}
-          catalogSourceId={selectedAgentId ?? undefined}
-          projectsByAgent={projectsByAgent}
-        />
-        <ProjectsSection />
+        {!searching && (
+          <>
+            <RunningSection
+              groups={groups}
+              expandedAgentIds={expandedAgentIds}
+              onToggleAgent={toggleAgentExpansion}
+              onOpen={openRunning}
+              {...(authoritative && activeThreads !== null
+                ? { total: activeThreads.total, truncated: activeThreads.truncated }
+                : {})}
+              authoritative={authoritative}
+              {...(catalogModels === undefined ? {} : { catalogModels })}
+              catalogSourceId={selectedAgentId ?? undefined}
+              projectsByAgent={projectsByAgent}
+            />
+            <ProjectsSection />
+          </>
+        )}
         <RecentSection
           searching={searching}
           query={query}
