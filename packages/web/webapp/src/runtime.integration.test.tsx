@@ -277,7 +277,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     );
     const view = render(tree());
     await waitFor(() => expect(runtime?.thread.getState().messages[0]?.content?.map((part) => part.type))
-      .toEqual(["tool-call", "data"]));
+      .toEqual(["data"]));
     expect(presentation?.jobs).toHaveLength(1);
 
     storeMock.current = createStore(vi.fn(), {
@@ -285,7 +285,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     });
     view.rerender(tree());
     await waitFor(() => expect(runtime?.thread.getState().messages[0]?.content?.map((part) => part.type))
-      .toEqual(["tool-call", "data", "data"]));
+      .toEqual(["data", "data"]));
     expect(runtime?.thread.getState().messages[0]?.id).toBe("origin");
     expect(presentation?.jobs).toHaveLength(1);
   });

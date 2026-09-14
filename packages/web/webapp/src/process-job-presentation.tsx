@@ -51,6 +51,20 @@ export interface ProcessJobActivityEvent {
   readonly durationMs?: number;
   readonly exitCode?: number;
   readonly signal?: string;
+  /**
+   * The paired launch call's arguments, folded into the started row so the
+   * launch tool-call row can stay suppressed without losing its Input.
+   *
+   * Only the conversion sets this, and only on the started phase that replaces
+   * its launch call; the projection never carries it and the terminal row never
+   * needs it. Absent on retained events that predate the fold, which still
+   * render as job facts alone.
+   */
+  readonly launchArgs?: unknown;
+  /** The launch arguments arrived as a preview; see {@link ToolCall.argsTruncated}. */
+  readonly launchArgsTruncated?: boolean;
+  /** Character length of the untruncated launch arguments, when truncated. */
+  readonly launchArgsBytes?: number;
 }
 
 export const processJobTerminalEvent = (
