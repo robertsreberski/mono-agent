@@ -317,7 +317,12 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
             </div>
           </div>
           <div className="composer-hint">
-            {statusText ? `${statusText} · ` : ""}{/Mac|iPhone|iPad|iPod/i.test(navigator.platform) ? "⌘↵" : "Ctrl+↵"} to send · / commands · $ skills
+            {statusText ? <span className="composer-hint-status">{statusText}</span> : null}
+            {/* Keyboard affordances are meaningless on the phone layout, where the row
+                only costs vertical space; styles.css hides it below the mobile breakpoint. */}
+            <span className="composer-hint-keys">
+              {/Mac|iPhone|iPad|iPod/i.test(navigator.platform) ? "⌘↵" : "Ctrl+↵"} to send · / commands · $ skills
+            </span>
           </div>
         </ComposerPrimitive.AttachmentDropzone>
       </ComposerPrimitive.Root>
