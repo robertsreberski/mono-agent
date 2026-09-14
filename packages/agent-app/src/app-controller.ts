@@ -420,7 +420,7 @@ export class MonoAgentAppController implements MonoAgentApp {
     const path = config.providers?.piAuthPath ?? "";
     let service = this.providerUsageServices.get(path);
     if (service === undefined) {
-      service = createProviderUsageService({ ...(path ? { path } : {}) });
+      service = createProviderUsageService({ ...(path ? { path } : {}), outcomes: this.providerAuthObservations });
       this.providerUsageServices.set(path, service);
     }
     return service;

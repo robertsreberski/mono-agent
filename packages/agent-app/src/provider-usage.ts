@@ -4,6 +4,7 @@ import {
   PROVIDER_USAGE_ERRORS, PROVIDER_USAGE_IDS, PROVIDER_USAGE_LABELS, PROVIDER_USAGE_SCHEMA,
   type ProviderUsage, type ProviderUsageErrorCode, type ProviderUsageId, type ProviderUsageOperator,
 } from "@mono-agent/agent-contracts";
+import type { ProviderAuthObservationTracker } from "./provider-auth-observations.js";
 import { mapProviderUsage, usageRecord } from "./provider-usage-mappers.js";
 
 export const PROVIDER_USAGE_CACHE_MS = 300_000;
@@ -52,6 +53,8 @@ export function createProviderUsageService(options: {
   readonly fetch?: typeof fetch;
   readonly now?: () => number;
   readonly timeoutMs?: number;
+  /** Passive evidence only, once per retained vendor fetch (never on cache reads). */
+  readonly outcomes?: Pick<ProviderAuthObservationTracker, "generation" | "recordAccountSuccess" | "recordAccountFailure">;
 }): ProviderUsageOperator & { stop(): void } {
   const resolver = options.resolver ?? createPiOAuthApiKeyResolver({ ...(options.path === undefined ? {} : { path: options.path }) });
   const now = options.now ?? Date.now;
@@ -63,6 +66,7 @@ export function createProviderUsageService(options: {
     catch { return undefined; } // No usable credential evidence; never expose auth-file errors.
   }
   async function refresh(provider: ProviderUsageId, entry: Entry, initial: Credential): Promise<ProviderUsage | undefined> {
+    const generation = options.outcomes?.generation();
     const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(options.timeoutMs ?? 10_000)]);
     let credential = initial;
     try {
@@ -133,6 +137,11 @@ export function createProviderUsageService(options: {
     if (lifetime.signal.aborted || !current || identity(current) !== entry.identity) {
       if (entries.get(provider) === entry) entries.delete(provider);
       return undefined;
+    }
+    if (generation !== undefined && entry.value !== undefined) {
+      const observedAt = new Date(now()).toISOString();
+      if (entry.value.error === undefined) options.outcomes?.recordAccountSuccess(provider, generation, observedAt);
+      else if (entry.value.error.code === "auth_failed") options.outcomes?.recordAccountFailure(provider, generation, observedAt);
     }
     return entry.value;
   }

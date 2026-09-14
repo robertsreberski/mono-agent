@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { PROVIDER_USAGE_SCHEMA, parseProviderUsageSnapshot, type ProviderUsageId } from "@mono-agent/agent-contracts";
+import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
 import { mapProviderUsage } from "../provider-usage-mappers.js";
 import { createProviderUsageService, PROVIDER_USAGE_CACHE_MS } from "../provider-usage.js";
 const NOW = Date.parse("2026-09-14T12:00:00Z");
@@ -14,8 +15,10 @@ function fixture(provider: ProviderUsageId = "anthropic") {
   let credential: Record<string, unknown> | undefined = provider === "opencode-go" ? { type: "api_key", key: "fixture-key" } : { type: "oauth", access: "fixture-access", refresh: "fixture-refresh", expires: NOW + 86_400_000, ...(provider === "openai-codex" ? { accountId: "fixture-account" } : {}) };
   const resolver = Object.assign(vi.fn(async () => { credential = { ...credential, access: "fixture-new" }; return "fixture-new"; }), { readCredential: vi.fn(async (id: string) => id === provider ? credential : undefined) });
   const fetch = vi.fn(async (_url: unknown, _init?: RequestInit) => Response.json(bodies[provider]));
-  const service = createProviderUsageService({ resolver: resolver as never, fetch: fetch as never, now: () => time });
-  return { service, resolver, fetch, setCredential: (value: typeof credential) => { credential = value; }, advance: (ms = PROVIDER_USAGE_CACHE_MS) => { time += ms; } };
+  const tracker = createProviderAuthObservationTracker(() => time);
+  const outcomes = { generation: tracker.generation, recordAccountSuccess: vi.fn(tracker.recordAccountSuccess), recordAccountFailure: vi.fn(tracker.recordAccountFailure) };
+  const service = createProviderUsageService({ resolver: resolver as never, fetch: fetch as never, now: () => time, outcomes });
+  return { service, resolver, fetch, tracker, outcomes, setCredential: (value: typeof credential) => { credential = value; }, advance: (ms = PROVIDER_USAGE_CACHE_MS) => { time += ms; } };
 }
 async function settle() { for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0)); }
 
@@ -67,6 +70,9 @@ describe("shared provider usage cache and safe failures", () => {
     await f.service.snapshot();
     expect(f.fetch).toHaveBeenCalledTimes(1);
     expect(f.resolver).not.toHaveBeenCalled();
+    expect(f.outcomes.recordAccountSuccess).toHaveBeenCalledExactlyOnceWith(provider, 0, new Date(NOW).toISOString());
+    expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
+    expect(f.tracker.get(provider)).toEqual({ accountVerifiedAt: new Date(NOW).toISOString() });
   });
   it("returns stale last-good immediately and coalesces its refresh", async () => {
     const f = fixture();
@@ -87,6 +93,8 @@ describe("shared provider usage cache and safe failures", () => {
     expect(error.providers[0]).toMatchObject({ stale: true, error: { code: "rate_limited" }, windows: [{ usedPercent: 38 }, { usedPercent: 30 }, { usedPercent: 31 }] });
     f.advance(); await f.service.snapshot(); expect(f.fetch).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(error)).not.toContain("NEVER_RETURN");
+    expect(f.outcomes.recordAccountSuccess).toHaveBeenCalledTimes(1);
+    expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
     f.advance(1_800_000); await f.service.snapshot(); await settle(); expect(f.fetch).toHaveBeenCalledTimes(3);
   });
   it.each([401, 403])("refreshes one rejected OAuth token on %s then retries once", async (status) => {
@@ -96,17 +104,23 @@ describe("shared provider usage cache and safe failures", () => {
     expect(result.providers[0]?.error).toBeUndefined();
     expect(f.resolver).toHaveBeenCalledExactlyOnceWith("openai-codex", { rejectedAccessToken: "fixture-access", signal: expect.any(AbortSignal) });
     expect(f.fetch).toHaveBeenCalledTimes(2);
+    expect(f.outcomes.recordAccountSuccess).toHaveBeenCalledTimes(1);
+    expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
     await f.service.snapshot(); expect(f.fetch).toHaveBeenCalledTimes(2);
   });
   it("never loops on rejected OAuth credentials and keeps error cache", async () => {
     const f = fixture(); f.fetch.mockImplementation(async () => new Response("SECRET_BODY", { status: 403 }));
     expect((await f.service.snapshot()).providers[0]?.error?.code).toBe("auth_failed");
     await f.service.snapshot(); expect(f.fetch).toHaveBeenCalledTimes(2); expect(f.resolver).toHaveBeenCalledTimes(1);
+    expect(f.outcomes.recordAccountFailure).toHaveBeenCalledExactlyOnceWith("anthropic", 0, new Date(NOW).toISOString());
+    expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled();
   });
   it.each([[401, {}, "auth_failed"], [403, { error: { type: "EntitlementError", message: "SECRET" } }, "not_entitled"], [403, {}, "auth_failed"], [500, {}, "unavailable"]])("classifies Go %s safely", async (status, body, code) => {
     const f = fixture("opencode-go"); f.fetch.mockResolvedValueOnce(Response.json(body, { status: status as number }));
     const snapshot = await f.service.snapshot();
     expect(snapshot.providers[0]?.error?.code).toBe(code); expect(f.resolver).not.toHaveBeenCalled(); expect(JSON.stringify(snapshot)).not.toContain("SECRET");
+    expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled();
+    expect(f.outcomes.recordAccountFailure).toHaveBeenCalledTimes(code === "auth_failed" ? 1 : 0);
   });
   it("invalidates removed/replaced credentials and omits unsupported types", async () => {
     const f = fixture(); await f.service.snapshot();
@@ -124,6 +138,8 @@ describe("shared provider usage cache and safe failures", () => {
     const pending = f.service.snapshot(); await settle();
     f.setCredential(undefined); finish(Response.json(claude));
     expect((await pending).providers).toEqual([]);
+    expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled();
+    expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
   });
   it("normalizes network, invalid JSON and oversized bodies without exception details", async () => {
     for (const failure of ["network", "json", "large"] as const) {
@@ -133,11 +149,41 @@ describe("shared provider usage cache and safe failures", () => {
       const value = await f.service.snapshot();
       expect(value.providers[0]?.error?.code).toBe(failure === "network" ? "network_failed" : "invalid_response");
       expect(JSON.stringify(value)).not.toContain("SECRET");
+      expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled();
+      expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
+    }
+  });
+  it.each([200, 401])("drops %s evidence when the same credential is persisted in flight", async (status) => {
+    const f = fixture("opencode-go");
+    let finish!: (response: Response) => void;
+    f.fetch.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const pending = f.service.snapshot(); await settle();
+    f.tracker.credentialPersisted("opencode-go");
+    finish(Response.json(go, { status }));
+    expect((await pending).providers).toHaveLength(1); // unchanged identity retains usage, not auth evidence
+    expect(f.tracker.get("opencode-go")).toBeUndefined();
+    const sink = status === 200 ? f.outcomes.recordAccountSuccess : f.outcomes.recordAccountFailure;
+    expect(sink).toHaveBeenCalledExactlyOnceWith("opencode-go", 0, new Date(NOW).toISOString());
+  });
+  it.each([200, 401])("does not emit %s outcomes after credential replacement or shutdown", async (status) => {
+    for (const stopped of [false, true]) {
+      const f = fixture("opencode-go");
+      let finish!: (response: Response) => void;
+      f.fetch.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+      const pending = f.service.snapshot(); await settle();
+      if (stopped) f.service.stop();
+      else f.setCredential({ type: "api_key", key: "fixture-replacement" });
+      finish(Response.json(go, { status }));
+      expect((await pending).providers).toEqual([]);
+      expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled();
+      expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
     }
   });
   it("bounds a request deadline", async () => {
     const f = fixture();
-    const service = createProviderUsageService({ resolver: f.resolver as never, timeoutMs: 10, fetch: async (_url, init) => new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("private")), { once: true })) });
+    const service = createProviderUsageService({ resolver: f.resolver as never, outcomes: f.outcomes, timeoutMs: 10, fetch: async (_url, init) => new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("private")), { once: true })) });
     expect((await service.snapshot()).providers[0]?.error?.code).toBe("timeout");
+    expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled();
+    expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
   });
 });
