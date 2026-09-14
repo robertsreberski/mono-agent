@@ -252,7 +252,7 @@ describe("AgentSettingsDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Choose other model" }));
     fireEvent.click(screen.getByRole("button", { name: "Choose high effort" }));
     const save = screen.getByRole("button", { name: "Save for new conversations" });
-    expectDialogTypography(save, "11px");
+    expectDialogTypography(save, "12px");
     fireEvent.click(save);
 
     await vi.waitFor(() => {
@@ -350,12 +350,12 @@ describe("AgentSettingsDialog", () => {
     const providerState = screen.getByText("Needs action");
     expect(providerName).toBeVisible();
     expectDialogTypography(providerName, "12px");
-    expectDialogTypography(providerState, "9px");
+    expectDialogTypography(providerState, "10px");
     expect(screen.queryByText("opencode-go")).not.toBeInTheDocument();
     expect(screen.queryByText(/Used by/u)).not.toBeInTheDocument();
     expect(screen.queryByText(/No credential detected/u)).not.toBeInTheDocument();
     const authenticate = await screen.findByRole("button", { name: "Authenticate" });
-    expectDialogTypography(authenticate, "11px");
+    expectDialogTypography(authenticate, "12px");
     fireEvent.click(authenticate);
     const key = await screen.findByLabelText("Enter the OpenCode API key");
     expect(key).toHaveAttribute("type", "password");
@@ -371,7 +371,7 @@ describe("AgentSettingsDialog", () => {
     await vi.waitFor(() => expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(2));
     const notVerified = await screen.findByText("Not verified");
     expect(notVerified).toBeVisible();
-    expectDialogTypography(notVerified, "9px");
+    expectDialogTypography(notVerified, "10px");
   });
 
   it("polls an unchanged replacement to success and ignores the old poll when it completes late", async () => {
@@ -674,7 +674,7 @@ describe("AgentSettingsDialog", () => {
     expect(screen.getAllByRole("button", { name: "Re-authenticate" })).toHaveLength(2);
     const run = screen.getByRole("button", { name: "Run live checks for all displayed providers" });
     expect(run).toHaveTextContent("Run check");
-    expectDialogTypography(run, "11px");
+    expectDialogTypography(run, "12px");
     expect(window.getComputedStyle(run).minHeight).toBe("28px");
     expect(run).toHaveClass("provider-auth-neutral-button");
     expect(screen.getByText(/may use quota or refresh OAuth/u)).toBeVisible();
@@ -795,7 +795,7 @@ describe("AgentSettingsDialog", () => {
     const cancel = await screen.findByRole("button", { name: "Cancel live provider checks" });
     expect(cancel).toHaveTextContent("Cancel checks");
     expect(cancel).toHaveClass("provider-auth-neutral-button");
-    expectDialogTypography(cancel, "11px");
+    expectDialogTypography(cancel, "12px");
     expect(window.getComputedStyle(cancel).minHeight).toBe("28px");
     fireEvent.click(cancel);
     await vi.waitFor(() => expect(apiMock.cancelProviderAuthCheck).toHaveBeenCalledWith("alpha", "check-running"));
