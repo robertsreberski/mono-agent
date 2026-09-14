@@ -466,6 +466,27 @@ interface ConvertWebMessageOptions {
   readonly processJobs?: ReadonlyMap<string, ProcessJobProjection>;
 }
 
+/**
+ * Fold a background launch's arguments into the started row that replaces it.
+ *
+ * The started event is the single chronological anchor for the launch; the
+ * launch tool-call row disappears with it, so its Input must move. Only the
+ * preview the server shaped is carried — the row's repair control fetches the
+ * whole body by the same toolCallId the tool row used.
+ */
+const withLaunchArgs = (
+  event: ProcessJobActivityEvent,
+  launch: ToolCall,
+): ProcessJobActivityEvent => {
+  if (event.phase !== "started" || launch.args === undefined) return event;
+  return {
+    ...event,
+    launchArgs: jsonValue(launch.args),
+    ...(launch.argsTruncated === true ? { launchArgsTruncated: true as const } : {}),
+    ...(launch.argsBytes === undefined ? {} : { launchArgsBytes: launch.argsBytes }),
+  };
+};
+
 export const convertWebMessage = (
   message: WebMessage,
   options: ConvertWebMessageOptions = {},
@@ -507,13 +528,26 @@ export const convertWebMessage = (
       : part, options.processJobs);
     if (convertedPart == null) return [];
     if (part.type !== "tool-call") return [convertedPart];
-    return [
-      convertedPart,
-      ...(processJobEvents.get(part.toolCallId) ?? []).map((event) => ({
-        type: "data-process-job-event" as const,
-        data: jsonObject(event),
-      })),
-    ];
+    const launchEvents = processJobEvents.get(part.toolCallId) ?? [];
+    if (launchEvents.length === 0) return [convertedPart];
+    // The started event is the established pairing's single anchor: the launch
+    // call folds into it and its own row disappears. Anything without a started
+    // event — a failed launch, a terminal-only fallback, an ambiguous receipt —
+    // keeps the ordinary tool-call row so no launch evidence is lost.
+    const foldsLaunch = part.status === "complete" && launchEvents.some((event) => event.phase === "started");
+    if (!foldsLaunch) {
+      return [
+        convertedPart,
+        ...launchEvents.map((event) => ({
+          type: "data-process-job-event" as const,
+          data: jsonObject(event),
+        })),
+      ];
+    }
+    return launchEvents.map((event) => ({
+      type: "data-process-job-event" as const,
+      data: jsonObject(event.phase === "started" ? withLaunchArgs(event, part) : event),
+    }));
   }), message.role === "assistant" && message.status === "complete" && !hasCronReplyContext);
   const converted = joined.filter((part) => part.type !== "data-assistant-message-boundary");
   // Only a COMPLETED turn is known to have an answer. Streaming is still

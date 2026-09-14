@@ -1372,6 +1372,7 @@ describe("message actions", () => {
           toolCallId: "launch",
           toolName: "Exec",
           status: "complete",
+          args: { command: "node worker.js --launch" },
           structuredResult: {
             schema: "mono-agent.process-job-start-receipt.v1",
             jobId: job.jobId,
@@ -1390,9 +1391,12 @@ describe("message actions", () => {
     };
     render(<MessagesHarness messages={[origin, carrier]} />);
 
-    expect(screen.getByRole("button", { name: "Activity" })).toHaveTextContent("4 steps");
+    // The launch call folds into its start row: reasoning plus the two lifecycle
+    // facts, not a second tool-call row beside the start.
+    expect(screen.getByRole("button", { name: "Activity" })).toHaveTextContent("3 steps");
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    expect(screen.getByRole("group", { name: "Exec job started" })).toBeInTheDocument();
+    const started = screen.getByRole("group", { name: "Exec job started" });
+    expect(started).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Exec job succeeded" })).toBeInTheDocument();
     expect(document.querySelectorAll(".process-job-event")).toHaveLength(2);
     expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
@@ -1400,6 +1404,11 @@ describe("message actions", () => {
     expect(screen.getByText("The report is ready.")).toBeVisible();
     expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible();
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
+    // The surviving start row carries the launch arguments behind its disclosure.
+    fireEvent.click(started.querySelector("summary")!);
+    expect(within(started).getByText("Input")).toBeVisible();
+    expect(within(started).getByText(/node worker\.js --launch/u)).toBeVisible();
+    expect(within(started).getByText(job.jobId)).toBeInTheDocument();
   });
 
   it.each(["Agent", "AgentSend"] as const)("renders causally attributed lifecycle rows in response Activity without duplicating the stack card", (tool) => {
@@ -1415,6 +1424,7 @@ describe("message actions", () => {
           toolCallId: "launch",
           toolName: tool,
           status: "complete",
+          args: { prompt: "Review the change across the repo", description: "Review the change" },
           structuredResult: {
             schema: "mono-agent.process-job-start-receipt.v1",
             jobId: job.jobId,
@@ -1433,9 +1443,10 @@ describe("message actions", () => {
     };
     render(<MessagesHarness messages={[origin, carrier]} />);
 
-    expect(screen.getByRole("button", { name: "Activity" })).toHaveTextContent("4 steps");
+    expect(screen.getByRole("button", { name: "Activity" })).toHaveTextContent("3 steps");
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    expect(screen.getByRole("group", { name: `${tool} job started` })).toBeInTheDocument();
+    const started = screen.getByRole("group", { name: `${tool} job started` });
+    expect(started).toBeInTheDocument();
     expect(screen.getByRole("group", { name: `${tool} job succeeded` })).toBeInTheDocument();
     expect(document.querySelectorAll(".process-job-event")).toHaveLength(2);
     expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
@@ -1443,10 +1454,99 @@ describe("message actions", () => {
     expect(screen.getByText("The report is ready.")).toBeVisible();
     expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible();
     expect(screen.queryByRole("group", { name: `${tool} background job succeeded` })).toBeNull();
+    // A wall of prompt text folds into the start row instead of doubling it.
+    fireEvent.click(started.querySelector("summary")!);
+    expect(within(started).getByText("Input")).toBeVisible();
+    expect(within(started).getByText(/Review the change across the repo/u)).toBeVisible();
   });
 
-  it("renders a job wake terminal row in place without a synthetic Steered row", () => {
+  it("keeps both tool-call rows when duplicated receipts make the pairing ambiguous", () => {
     const job = processJob();
+    const receipt = {
+      schema: "mono-agent.process-job-start-receipt.v1",
+      jobId: job.jobId,
+      tool: "Exec",
+      state: "running",
+      startedAt: job.timestamps.startedAt,
+    } as const;
+    const origin: WebMessage = {
+      ...assistantMessage("complete"),
+      id: "origin",
+      parts: [
+        {
+          type: "tool-call",
+          toolCallId: "launch-one",
+          toolName: "Exec",
+          status: "complete",
+          args: { command: "first" },
+          structuredResult: receipt,
+        },
+        {
+          type: "tool-call",
+          toolCallId: "launch-two",
+          toolName: "Exec",
+          status: "complete",
+          args: { command: "second" },
+          structuredResult: receipt,
+        },
+        { type: "text", text: "The report is ready." },
+      ],
+    };
+    const carrier: WebMessage = {
+      ...origin,
+      id: "card",
+      parts: [{ type: "process-job", job }],
+    };
+    render(<MessagesHarness messages={[origin, carrier]} />);
+
+    // No unambiguous pairing, so no lifecycle row may claim either launch.
+    // The two adjacent launches cluster as ordinary tool calls do.
+    expect(screen.queryByRole("group", { name: "Exec job started" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Exec job succeeded" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.getByText("Exec ×2")).toBeInTheDocument();
+  });
+
+  it("keeps a failed launch as its ordinary error tool-call row", () => {
+    const job = processJob();
+    const origin: WebMessage = {
+      ...assistantMessage("complete"),
+      id: "origin",
+      parts: [
+        {
+          type: "tool-call",
+          toolCallId: "launch",
+          toolName: "Agent",
+          status: "failed",
+          args: { prompt: "Review the change" },
+          structuredResult: {
+            schema: "mono-agent.process-job-start-receipt.v1",
+            jobId: job.jobId,
+            tool: "Agent",
+            state: "running",
+            startedAt: job.timestamps.startedAt,
+          },
+        },
+        { type: "text", text: "The launch was rejected." },
+      ],
+    };
+    const carrier: WebMessage = {
+      ...origin,
+      id: "card",
+      parts: [{
+        type: "process-job",
+        job: { ...job, kind: "internal" as const, tool: "Agent" as const, instanceId: "helper", childStillBusy: false },
+      }],
+    };
+    render(<MessagesHarness messages={[origin, carrier]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    // The error row survives next to the lifecycle facts it would otherwise fold into.
+    expect(screen.getByText("failed")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Agent job started" })).toBeInTheDocument();
+  });
+
+  it("renders a job wake terminal row in place without a synthetic Steered row", () => {    const job = processJob();
     const wake: WebMessage = {
       ...assistantMessage("complete"),
       id: "wake",

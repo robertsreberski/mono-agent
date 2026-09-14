@@ -8,6 +8,7 @@ import { backgroundSubagentJob } from "../test/background-subagent-fixtures";
 import { Icon } from "./Icon";
 import { processJob } from "../test/fixtures";
 import { RouteCapabilitiesProvider } from "./route-capabilities";
+import { ToolCallRepairProvider } from "./tool-call-repair";
 import type { ProcessJobState } from "../types";
 import {
   ProcessJobPart,
@@ -293,6 +294,100 @@ describe("ProcessJobActivityEventPart", () => {
     expect(row.querySelector(".activity-row-time")).toHaveTextContent("12.0s · exit 137 · SIGKILL");
     rerender(eventPart({ schema: "wrong" }));
     expect(screen.queryByRole("group")).toBeNull();
+  });
+
+  it("shows the folded launch arguments alongside the job facts", () => {
+    render(eventPart({
+      schema: "mono-agent.process-job-activity-event.v1",
+      id: "process-job:job-1:started",
+      toolCallId: "launch-1",
+      jobId: "job-1",
+      tool: "Agent",
+      summary: "Review the change",
+      phase: "started",
+      state: "running",
+      occurredAt: "2026-07-17T10:00:01.000Z",
+      launchArgs: { prompt: "Review the change", description: "Review the change" },
+    }));
+    const row = screen.getByRole("group", { name: "Agent job started" });
+    // The model-authored description names the row; the launch arguments wait
+    // behind the same disclosure as the job facts.
+    expect(within(row).getByText("Review the change")).toHaveClass("activity-row-summary");
+    fireEvent.click(row.querySelector("summary")!);
+    expect(screen.getByText("Input")).toBeVisible();
+    // The launch arguments render as JSON behind the disclosure, next to the
+    // job facts that were already there.
+    expect(screen.getByText(/"prompt": "Review the change"/u)).toBeVisible();
+    expect(within(row).getByText("Job")).toBeVisible();
+    expect(within(row).getByText("job-1")).toBeVisible();
+  });
+
+  it("offers a repair for a truncated launch preview", () => {
+    const repair = vi.fn(async () => true);
+    render(
+      <ToolCallRepairProvider repair={repair}>
+        {eventPart({
+          schema: "mono-agent.process-job-activity-event.v1",
+          id: "process-job:job-1:started",
+          toolCallId: "launch-1",
+          jobId: "job-1",
+          tool: "Agent",
+          summary: "Review the change",
+          phase: "started",
+          state: "running",
+          occurredAt: "2026-07-17T10:00:01.000Z",
+          launchArgs: "HEAD-",
+          launchArgsTruncated: true,
+          launchArgsBytes: 20 * 1_024,
+        })}
+      </ToolCallRepairProvider>,
+    );
+    const row = screen.getByRole("group", { name: "Agent job started" });
+    fireEvent.click(row.querySelector("summary")!);
+    expect(screen.getByText(/Preview only/u)).toBeVisible();
+    expect(screen.getByText(/20,480 chars/u)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    expect(repair).toHaveBeenCalledWith("launch-1");
+  });
+
+  it("keeps rendering retained events without launch arguments", () => {
+    render(eventPart({
+      schema: "mono-agent.process-job-activity-event.v1",
+      id: "process-job:job-1:started",
+      toolCallId: "launch-1",
+      jobId: "job-1",
+      tool: "Exec",
+      summary: "Generate the report",
+      phase: "started",
+      state: "running",
+      occurredAt: "2026-07-17T10:00:01.000Z",
+    }));
+    const row = screen.getByRole("group", { name: "Exec job started" });
+    fireEvent.click(row.querySelector("summary")!);
+    expect(screen.queryByText("Input")).toBeNull();
+    expect(within(row).getByText("job-1")).toBeVisible();
+  });
+
+  it("rejects unknown keys and orphan launch truncation flags", () => {
+    const base = {
+      schema: "mono-agent.process-job-activity-event.v1",
+      id: "process-job:job-1:started",
+      toolCallId: "launch-1",
+      jobId: "job-1",
+      tool: "Exec",
+      summary: "Generate the report",
+      phase: "started",
+      state: "running",
+      occurredAt: "2026-07-17T10:00:01.000Z",
+    };
+    const { rerender } = render(eventPart({ ...base, launchArgs: { command: "run" }, extra: true }));
+    expect(screen.queryByRole("group")).toBeNull();
+    rerender(eventPart({ ...base, launchArgsTruncated: true }));
+    expect(screen.queryByRole("group")).toBeNull();
+    rerender(eventPart({ ...base, launchArgsBytes: 12 }));
+    expect(screen.queryByRole("group")).toBeNull();
+    rerender(eventPart({ ...base, launchArgs: { command: "run" }, launchArgsTruncated: true }));
+    expect(screen.getByRole("group", { name: "Exec job started" })).toBeInTheDocument();
   });
 });
 
