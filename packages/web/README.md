@@ -1125,6 +1125,26 @@ import a communication adapter or another operator surface.
 
 ## Verification
 
+The frontend's standalone install does not depend on ancestor workspace
+`node_modules` or built framework packages. Both Vite configs resolve only
+`@mono-agent/agent-contracts/provider-usage` to its canonical, dependency-free
+TypeScript source; the app's TypeScript path mapping uses that same file.
+Keep runtime imports off the Node-only contracts barrel. The standalone
+manifest declares the Node types needed by its config/test tooling.
+
+To reproduce a clean browser install, run this from a source checkout:
+
+```sh
+pnpm --dir packages/web/webapp run test:standalone
+```
+
+It creates and removes an OS-temp source fixture with no ancestor dependencies,
+installs only the frozen webapp dependencies and Chromium into that fixture,
+then runs focused unit checks, typecheck, production build and the full browser
+suite. It copies the canonical contract source and the existing pure web helpers,
+not a contracts package install or dist tree. Normal local browser tests still use
+`pnpm --dir packages/web/webapp run test:browser`.
+
 ```sh
 pnpm --filter @mono-agent/web run typecheck
 pnpm --filter @mono-agent/web run test

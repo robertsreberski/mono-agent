@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test:standalone": "node scripts/test-standalone.mjs",
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
@@ -28,6 +29,7 @@
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",
+    "@types/node": "^22.20.2",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.3.4",

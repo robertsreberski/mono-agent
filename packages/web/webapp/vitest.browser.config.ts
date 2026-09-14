@@ -2,6 +2,7 @@
 /// <reference types="@vitest/browser/providers/playwright" />
 
 import react from "@vitejs/plugin-react";
+import { sharedSourceAliases } from "./shared-sources";
 import type { BrowserCommand } from "vitest/node";
 import { searchForWorkspaceRoot } from "vite";
 import { defineConfig } from "vitest/config";
@@ -29,6 +30,7 @@ const screenshotDirectories = Object.entries(process.env)
   .map(([, value]) => value as string);
 
 export default defineConfig({
+  resolve: { alias: sharedSourceAliases },
   plugins: [react()],
   ...(screenshotDirectories.length === 0 ? {} : { server: { fs: { allow: [searchForWorkspaceRoot(process.cwd()), ...screenshotDirectories] } } }),
   test: {

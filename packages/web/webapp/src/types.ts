@@ -1224,4 +1224,4 @@ export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
   accept: [],
 };
 
-export type { ProviderUsage, ProviderUsageSnapshot, ProviderUsageId } from "@mono-agent/agent-contracts";
+export type { ProviderUsage, ProviderUsageSnapshot, ProviderUsageId } from "@mono-agent/agent-contracts/provider-usage";
