@@ -612,3 +612,14 @@ describe("buildRootSpanAttributes failure detail", () => {
     expect(attrs).not.toHaveProperty("mono.agent.failover.detail");
   });
 });
+
+
+it("retains cancellation in evidence without exporting it as a provider failover", () => {
+  const history = normalizeFailoverHistory([{ model: "openai-codex:model", failureKind: "cancelled" }]);
+  expect(history).toEqual([{ model: "openai-codex:model", failureKind: "cancelled" }]);
+  expect(renderFailoverHistory(history)).toBeUndefined();
+  if (history === undefined) throw new Error("Expected normalized attempt evidence");
+  const summary = makeSummary({ status: "cancelled", failureKind: "cancelled", failoverHistory: history });
+  expect(composeFailureDetail(summary)).toBe("cancelled");
+  expect(buildRootSpanAttributes(summary, makeContext(), 0)).not.toHaveProperty("mono.agent.failover.count");
+});

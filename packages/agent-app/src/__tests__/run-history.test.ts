@@ -2142,3 +2142,16 @@ describe("RunHistory MCP tool", () => {
     }
   });
 });
+
+
+it("keeps a routed user cancel out of provider-fault timeline rows", async () => {
+  const artifactDir = await tempDir();
+  await writeRun({ artifactDir, runId: "cancelled-route", conversationId: "web:cancel", startedAt: "2026-07-12T08:00:00.000Z",
+    result: { cancelled: true, failoverHistory: [{ model: "openai-codex:model", failureKind: "cancelled" }] } });
+  const history = await openHistoryClient(artifactDir, "web:cancel");
+  try {
+    const body = await inspectWithTimeline(history.client, "cancelled-route");
+    expect(body.timeline.some((row) => row.type === "provider_attempt_failed")).toBe(false);
+    expect(body.timeline).toEqual(expect.arrayContaining([expect.objectContaining({ type: "run_failure", failureKind: "cancelled" })]));
+  } finally { await history.close(); }
+});

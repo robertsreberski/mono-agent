@@ -110,6 +110,23 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 
 ## Install / Usage
 
+The composer’s ↵ control chooses a device-local, persisted Enter preference:
+Enter sends with Shift+Enter for a newline, or Enter inserts a newline with
+Cmd/Ctrl+Enter to send. The default is newline on every device; only an explicit choice enables
+Enter-to-send, and attaching a keyboard never changes the remembered choice.
+The hint stays visible on phones as well as desktops. Escape dismisses input
+suggestions without stopping a run; use Stop response (or `/stop`) deliberately.
+Mid-turn plain-text sends use the active turn’s live-input admission path.
+
+Cancellation requests accept an optional `origin` (`user-stop`,
+`client-disconnect`, `client-reconnect`, `service-shutdown`, or `api`) on
+`POST /api/v1/threads/:id/cancel`. Omitted origins remain compatible as `api`.
+The first origin is retained in SQLite `turns.cancel_origin` and projected as
+`runState.cancelOrigin`; existing rows remain unset rather than guessed. Origin
+is caller-supplied attribution, not authentication. Browser disconnects do not
+send cancellation requests; service shutdown is recorded as an interruption.
+
+
 Process-job completion replies suppress only an exact sentinel-only terminal
 message with a verified wake association; narration and rich replies remain
 visible. Silent replies create no response push. A web wake receipt confirms

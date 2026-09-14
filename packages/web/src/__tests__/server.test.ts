@@ -3438,3 +3438,37 @@ describe("conversation tags HTTP", () => {
     expect((await fetch(`${baseUrl}/api/v1/tags/${tag.id}`, { method: "DELETE" })).status).toBe(404);
   });
 });
+
+
+it.each([undefined, "user-stop", "client-disconnect", "client-reconnect", "service-shutdown"])("round-trips cancel origin %s through HTTP and SQLite", async (origin) => {
+  const { baseUrl, handle } = await start({
+    fetchImpl: (async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/v1/turns")) return new Promise<Response>((_resolve, reject) => {
+        if (init?.signal?.aborted) reject(init.signal.reason);
+        else init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+      return operatorFetch()(input, init);
+    }) as typeof fetch,
+  });
+  const id = await createThread(baseUrl, "agent-one");
+  const started = await fetch(`${baseUrl}/api/v1/threads/${id}/turns`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "wait" }),
+  });
+  expect(started.status).toBe(202);
+  const invalid = await fetch(`${baseUrl}/api/v1/threads/${id}/cancel`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ origin: "escape" }),
+  });
+  expect(invalid.status).toBe(400);
+  const response = await fetch(`${baseUrl}/api/v1/threads/${id}/cancel`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(origin === undefined ? {} : { origin }),
+  });
+  expect(response.status).toBe(202);
+  await waitFor(async () => {
+    const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${id}`));
+    return (detail.thread as { runState: { status: string } }).runState.status === "cancelled";
+  });
+  const database = new DatabaseSync(join(handle.stateDir, "state.sqlite"), { readOnly: true });
+  try { expect(database.prepare("SELECT cancel_origin FROM turns WHERE thread_id = ?").get(id)).toEqual({ cancel_origin: origin ?? "api" }); }
+  finally { database.close(); }
+});

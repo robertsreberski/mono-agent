@@ -580,7 +580,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(runtime.thread.composer.getState().text).toBe("");
   });
 
-  it("submits a live follow-up from Enter while preserving Shift+Enter", async () => {
+  it("submits a live follow-up from Ctrl+Enter while preserving plain and Shift+Enter", async () => {
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
     const sendLiveInput = vi.fn().mockResolvedValue(undefined);
     const runningThread = thread("thread", "agent", {
@@ -601,6 +601,8 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(runtime.thread.composer.getState().text).toBe("Use Enter");
 
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+    expect(sendTurn).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter", ctrlKey: true });
     await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
       expect.objectContaining({ text: "Use Enter" }),
       expect.any(Function),
@@ -764,7 +766,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(sendTurn).not.toHaveBeenCalled();
   });
 
-  it("does not mount a zero-result $ picker that would capture normal Enter submission", async () => {
+  it("does not mount a zero-result $ picker that would capture Ctrl+Enter submission", async () => {
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
     storeMock.current = createStore(sendTurn, {
       skillRegistry: {
@@ -783,7 +785,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
 
     fireEvent.change(input, { target: { value: "$20" } });
     expect(screen.queryByRole("listbox", { name: "Skills" })).not.toBeInTheDocument();
-    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter", ctrlKey: true });
 
     await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
       expect.objectContaining({ text: "$20" }),
@@ -991,7 +993,7 @@ describe("what the composer is holding, for anything that would destroy it", () 
 
     fireEvent.change(input, { target: { value: "half a thought" } });
     await waitFor(() => expect(hasUnsentComposerDraft()).toBe(true));
-    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter", ctrlKey: true });
 
     await waitFor(() => expect(sendTurn).toHaveBeenCalled());
     await waitFor(() => expect(hasUnsentComposerDraft()).toBe(false));

@@ -328,7 +328,10 @@ export interface WebRunActivity {
   readonly cumulativeUsd?: number;
 }
 
+export type WebCancelOrigin = "user-stop" | "client-disconnect" | "client-reconnect" | "service-shutdown" | "api";
+
 export interface WebRunState {
+  readonly cancelOrigin?: WebCancelOrigin;
   readonly id?: string;
   readonly status: WebRunStatus;
   readonly startedAt?: string;

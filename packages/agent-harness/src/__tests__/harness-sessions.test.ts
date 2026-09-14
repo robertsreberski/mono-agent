@@ -1916,6 +1916,20 @@ describe("coordinated terminal recovery", () => {
     } finally { await f.close(); }
   });
 
+  it("recovers a routed cancelled result with a single owned cancelled attempt", async () => {
+    const f = await fixture();
+    try {
+      f.transform((result) => result.cancelled ? { ...result, failureKind: null,
+        failoverHistory: [{ model, failureKind: "cancelled" }] } : result);
+      await f.run("cancelled", "cancel");
+      await f.run("provider_unavailable", "failure budget still available");
+      await f.run("success", "next");
+      expect(f.receipts).toHaveLength(2);
+      expect(new Set(f.fake.calls.map((call) => call.options.sessionId)).size).toBe(1);
+      expect(f.events.filter((event) => event.warning_kind === "terminal_recovery_skipped")).toEqual([]);
+    } finally { await f.close(); }
+  });
+
   it("does not spend the failure recovery budget on user cancellation", async () => {
     const f = await fixture();
     try {

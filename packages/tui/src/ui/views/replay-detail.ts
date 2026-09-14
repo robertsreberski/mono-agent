@@ -69,6 +69,8 @@ export function buildHeadline(replay: ReplayRunDetail): string {
     lines.push(styles.error(`error: ${summary.error}`));
   }
   for (const attempt of summary.failoverHistory ?? []) {
+    // Cancellation is already represented by the run outcome, not a provider fault.
+    if (attempt.failureKind === "cancelled" || attempt.failureKind === "cancelled_user") continue;
     lines.push(styles.warning(`failover: ${attempt.model} → ${attempt.failureKind ?? "?"}`));
   }
   if (replay.turns.length > 0) {

@@ -1088,7 +1088,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .composer-toolbar { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .composer-tools { min-width: 0; display: flex; flex: 0 0 auto; align-items: center; gap: 5px; }
 .composer-tool { width: 32px; height: 32px; }
-.composer-hint { flex: 0 0 auto; overflow: hidden; color: var(--text-muted); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.composer-hint { color: var(--text-muted); font-size: 10px; line-height: 1.5; white-space: normal; }
 .model-change-notice { min-width: 0; flex: 0 1 auto; }
 .composer-actions { min-width: 0; display: flex; flex: 1 1 0; align-items: center; justify-content: flex-end; gap: 6px; }
 .composer-actions .model-controls { min-width: 0; flex: 1 1 0; gap: 3px; }
@@ -1405,10 +1405,6 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.38; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.45; } 30% { transform: translateY(-4px); opacity: 1; } }
-
-@media (max-width: 1100px) {
-  .composer-hint { display: none; }
-}
 
 @media (max-width: 1100px) and (min-width: 901px) {
   .message-column { --column-padding: 24px; }

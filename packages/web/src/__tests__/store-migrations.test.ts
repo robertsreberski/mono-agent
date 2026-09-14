@@ -59,6 +59,25 @@ const historical = [...Array.from({ length: 21 }, (_, version) => ({ version, se
   { version: 17, sequenced17: true }];
 
 describe("web storage migration history", () => {
+  it("upgrades schema 30 without inventing an origin for old turns and retains new origins on reopen", async () => {
+    const stateDir = await seeded(18);
+    (await WebStore.open({ stateDir })).close();
+    const legacy = new DatabaseSync(join(stateDir, "state.sqlite"));
+    legacy.exec("ALTER TABLE turns DROP COLUMN cancel_origin; PRAGMA user_version = 30");
+    legacy.close();
+    (await WebStore.open({ stateDir })).close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      expect(database.prepare("SELECT cancel_origin FROM turns").all()).toEqual(expect.arrayContaining([expect.objectContaining({ cancel_origin: null })]));
+      database.exec("UPDATE turns SET cancel_origin = 'user-stop'");
+      expect(() => database.exec("UPDATE turns SET cancel_origin = 'escape'")).toThrow();
+    } finally { database.close(); }
+    (await WebStore.open({ stateDir })).close();
+    const reopened = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try { expect(reopened.prepare("SELECT cancel_origin FROM turns").all()).toEqual(expect.arrayContaining([expect.objectContaining({ cancel_origin: "user-stop" })])); }
+    finally { reopened.close(); }
+  });
+
   it("upgrades schema 29 with an unset read watermark and asserts its current-version shape", async () => {
     const stateDir = await seeded(18);
     const current = await WebStore.open({ stateDir });
@@ -71,7 +90,7 @@ describe("web storage migration history", () => {
     finally { migrated.close(); }
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     try {
-      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 30 });
+      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
       expect(() => database.exec("UPDATE threads SET read_revision = -1")).toThrow();
       expect(() => database.exec("UPDATE threads SET read_revision = revision + 1")).toThrow();
       database.exec("UPDATE threads SET read_revision = revision; UPDATE threads SET revision = revision + 1");
@@ -474,8 +493,8 @@ describe("web storage migration history", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 30 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(30);
+  it("is immutable and derives schema 31 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(31);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);

@@ -339,7 +339,7 @@ interface ConsoleStoreValue {
     input: StartTurnInput,
     onThreadResolved?: (threadId: string) => void,
   ) => Promise<void>;
-  readonly cancelTurn: () => Promise<void>;
+  readonly cancelTurn: (origin?: "user-stop" | "api") => Promise<void>;
   readonly setShowArchived: (show: boolean) => void;
   readonly setShowOfflineAgents: (show: boolean) => void;
   readonly setModel: (model: string) => void;
@@ -7061,10 +7061,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     ],
   );
 
-  const cancelTurn = useCallback(async () => {
+  const cancelTurn = useCallback(async (origin: "user-stop" | "api" = "user-stop") => {
     if (!selectedThreadId) return;
     try {
-      const result = await api.cancelTurn(selectedThreadId);
+      const result = await api.cancelTurn(selectedThreadId, origin);
       if (threadCacheRef.current.patchThread(result.thread.id, result.thread)) {
         publishDetail(result.thread.id);
       }
