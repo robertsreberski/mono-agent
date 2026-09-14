@@ -94,3 +94,29 @@ export function threadPresentation(thread: ThreadSummary): { readonly text: stri
     active: false,
   };
 }
+
+/**
+ * The one line a SETTLED conversation row may spend on what was last said, or
+ * `undefined` when the row has something better to say.
+ *
+ * This fills exactly the slot {@link threadPresentation} leaves empty: a
+ * conversation whose latest word is a success, whether that came from the
+ * foreground turn or from the latest background job card. Anything the status
+ * line still says -- work in flight, a failure, "No reply yet" -- keeps its
+ * place, so the excerpt can never talk over it.
+ *
+ * Read from the presentation rather than re-deriving the precedence, so the
+ * two cannot disagree about which rows have an empty slot. Running cards and
+ * the store's running projection keep reading `threadPresentation` directly,
+ * which is why this lives beside it instead of widening its text: they must
+ * keep describing work, never a message.
+ *
+ * The preview arrives capped by the server and may span lines, so it is
+ * collapsed to one line here and left to the row's CSS to ellipsize -- the
+ * component never re-truncates it.
+ */
+export function threadRowExcerpt(thread: ThreadSummary): string | undefined {
+  if (threadPresentation(thread).text !== "") return undefined;
+  const preview = thread.lastMessagePreview?.replace(/\s+/gu, " ").trim();
+  return preview === undefined || preview === "" ? undefined : preview;
+}
