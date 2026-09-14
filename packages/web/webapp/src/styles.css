@@ -1200,7 +1200,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .provider-auth-heading > b { overflow: hidden; font-family: inherit; font-size: 12px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
 .provider-auth-badges { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }
 .provider-auth-state { padding: 3px 6px; color: var(--text-muted); background: var(--surface); border-radius: 6px; font-family: inherit; font-size: 10px; font-weight: 750; line-height: 1.5; letter-spacing: .05em; text-transform: uppercase; }
-.provider-auth-state.is-ok { color: var(--accent); }
+.provider-auth-state.is-ok, .provider-auth-state.is-ok-account { color: var(--accent); }
 .provider-auth-state.is-needs-action { color: var(--warning); }
 .provider-auth-check-result { color: var(--text-muted); font-size: 10px; font-weight: 650; line-height: 1.5; }
 .provider-auth-check-result.is-passed { color: var(--accent); }
@@ -1675,3 +1675,40 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-subagent-status { flex: none; font-family: var(--font-mono); font-size: 9px; }
 .process-job-subagent-calls li[data-status="failed"] .process-job-subagent-status { color: var(--danger); }
 .process-job-subagent-calls li[data-status="running"] .process-job-subagent-status { color: var(--accent); }
+
+/* Agent settings shares the project/tag sheet shell; Cron keeps its dialog. */
+.agent-settings-sheet { display: flex; gap: 12px; padding: 10px 17px max(16px, env(safe-area-inset-bottom)); max-height: 92dvh; width: 100%; background: var(--panel); border: 0; border-radius: 20px 20px 0 0; }
+.agent-settings-sheet > header, .agent-settings-sheet > footer { flex: none; padding: 0; border: 0; gap: 8px; }
+.agent-settings-sheet > header h2 { margin: 0; font-size: 14px; font-weight: 650; }
+.agent-settings-sheet .agent-settings-body { display: flex; flex-direction: column; gap: 8px; padding: 0; }
+.agent-settings-sheet .agent-settings-body h3 { font-size: 11px; font-weight: 650; }
+.agent-settings-sheet .agent-settings-body p { font-size: 10.5px; line-height: 1.45; }
+.agent-settings-sheet .agent-settings-config { overflow-wrap: anywhere; }
+.agent-settings-sheet .provider-auth-section { gap: 8px; padding-top: 10px; margin-top: 4px; }
+.agent-settings-sheet .provider-auth-list { gap: 6px; }
+.agent-settings-sheet .provider-auth-card { display: block; padding: 8px 10px; border: 0; border-radius: 12px; }
+.provider-auth-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.agent-settings-sheet .provider-auth-heading { justify-content: flex-start; gap: 6px; flex-wrap: wrap; }
+.agent-settings-sheet .provider-auth-badges { justify-content: flex-start; gap: 4px; }
+.agent-settings-sheet .provider-auth-state, .provider-usage-plan { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; font-size: 10px; font-weight: 600; line-height: 1.5; letter-spacing: 0; text-transform: none; border-radius: 10px; }
+.agent-settings-sheet .secondary-button, .agent-settings-sheet .primary-button { min-height: 28px; padding: 0 10px; border-radius: 8px; }
+.agent-settings-sheet .icon-button { width: 28px; height: 28px; border-radius: 8px; }
+.agent-settings-sheet .provider-auth-neutral-button { background: transparent; }
+.agent-settings-sheet > footer { padding-top: 8px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.provider-usage { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 10px; row-gap: 6px; padding-top: 6px; }
+.provider-usage-meta { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 10px; }
+.provider-usage-plan { color: var(--accent); background: var(--accent-soft); }
+.provider-usage-window { min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.provider-usage-label { display: flex; justify-content: space-between; gap: 4px; }
+.provider-usage-window time { color: var(--text-muted); font-size: 9px; }
+.provider-usage progress { appearance: none; width: 100%; height: 4px; overflow: hidden; border: 0; border-radius: 3px; background: var(--line-strong); }
+.provider-usage progress::-webkit-progress-bar { background: var(--line-strong); border-radius: 3px; }
+.provider-usage progress::-webkit-progress-value { background: var(--accent); border-radius: 3px; }
+.provider-usage progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
+.provider-usage-error { grid-column: 1 / -1; color: var(--warning) !important; }
+@media (min-width: 901px) {
+  .agent-settings-sheet { width: min(100%, 520px); padding: 18px 20px; max-height: calc(100dvh - 48px); border-radius: 18px; }
+}
+@media (pointer: coarse) {
+  .agent-settings-sheet .secondary-button, .agent-settings-sheet .primary-button, .agent-settings-sheet .icon-button { min-height: 36px; }
+}

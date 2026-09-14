@@ -1,3 +1,4 @@
+import type { ProviderUsageOperator } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { AgentResponder, NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 
@@ -53,6 +54,7 @@ export interface ChannelsControllerPort {
   readonly processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   readonly providerAuthObservations?: ProviderAuthObservationTracker;
+  providerUsageFor?(config: MonoAgentConfig): ProviderUsageOperator;
   setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
   rememberSelectedSkills(coreConfig: MonoAgentConfig): void;
   ensureInteractionBridge(coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined>;
@@ -279,6 +281,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       controller.processJobsService,
       controller.monitorsService,
       providerAuth,
+      controller.providerUsageFor?.(coreConfig),
     );
     const runningChannel = await (appOwnedTuiStart ?? driver.start(channelStartInput));
     if (!isCurrentGeneration()) {

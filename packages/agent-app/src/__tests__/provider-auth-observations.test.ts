@@ -3,6 +3,63 @@ import { describe, expect, it } from "vitest";
 import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
 
 describe("provider auth observations", () => {
+  it("records weaker account acceptance, preserves live proof and recovers from rejection", () => {
+    let now = Date.parse("2026-09-14T12:00:00.000Z");
+    const tracker = createProviderAuthObservationTracker(() => now);
+    const generation = tracker.generation();
+    tracker.recordAccountSuccess("anthropic", generation);
+    expect(tracker.get("anthropic")).toEqual({ accountVerifiedAt: new Date(now).toISOString() });
+    now += 1_000;
+    tracker.recordSuccess("anthropic", "anthropic:model");
+    const liveAt = new Date(now).toISOString();
+    now += 1_000;
+    tracker.recordAccountSuccess("anthropic", generation);
+    expect(tracker.get("anthropic")).toEqual({ verifiedAt: liveAt, accountVerifiedAt: new Date(now).toISOString() });
+    now += 1_000;
+    tracker.recordAccountFailure("anthropic", generation);
+    expect(tracker.get("anthropic")).toEqual({ failure: {
+      kind: "provider_auth", message: "Provider rejected the configured credential.", observedAt: new Date(now).toISOString(),
+    } });
+    now += 1_000;
+    tracker.recordAccountSuccess("anthropic", generation);
+    expect(tracker.get("anthropic")).toEqual({ accountVerifiedAt: new Date(now).toISOString() });
+  });
+
+  it("fences account successes and failures across credential persistence and restricts providers", () => {
+    const tracker = createProviderAuthObservationTracker();
+    const generation = tracker.generation();
+    tracker.recordAccountSuccess("anthropic", generation);
+    tracker.credentialPersisted("anthropic");
+    tracker.recordAccountSuccess("anthropic", generation);
+    tracker.recordAccountFailure("opencode-go", generation);
+    expect(tracker.get("anthropic")).toBeUndefined();
+    expect(tracker.get("opencode-go")).toBeUndefined();
+    tracker.recordAccountSuccess("openai" as never, tracker.generation());
+    tracker.recordAccountFailure("openai" as never, tracker.generation());
+    expect(tracker.get("openai")).toBeUndefined();
+    tracker.recordAccountSuccess("anthropic", tracker.generation());
+    expect(tracker.get("anthropic")?.accountVerifiedAt).toBeDefined();
+    tracker.retainProviders([]);
+    expect(tracker.get("anthropic")).toBeUndefined();
+  });
+
+  it("keeps account warnings ordered, bounded and on the existing 24-hour failure TTL", () => {
+    let now = Date.parse("2026-09-14T12:00:00.000Z");
+    const tracker = createProviderAuthObservationTracker(() => now);
+    tracker.recordAccountFailure("anthropic", tracker.generation());
+    tracker.recordAccountSuccess("anthropic", tracker.generation(), new Date(now - 1_000).toISOString());
+    expect(tracker.get("anthropic")?.failure?.kind).toBe("provider_auth");
+    now += 24 * 60 * 60 * 1_000;
+    expect(tracker.get("anthropic")).toBeUndefined();
+    tracker.recordFailure("anthropic", "anthropic:model", "provider_unavailable");
+    tracker.recordAccountSuccess("anthropic", tracker.generation());
+    expect(tracker.get("anthropic")?.failure?.kind).toBe("provider_unavailable");
+    now += 24 * 60 * 60 * 1_000;
+    expect(tracker.get("anthropic")).toEqual({ accountVerifiedAt: new Date(now - 24 * 60 * 60 * 1_000).toISOString() });
+    for (let index = 0; index < 64; index += 1) tracker.recordSuccess(`provider-${index}`, `provider-${index}:model`);
+    expect(tracker.get("anthropic")).toBeUndefined();
+  });
+
   it("attributes fallback failures, verifies only the successful provider, and clears later failures", () => {
     let now = Date.parse("2026-09-06T12:00:00.000Z");
     const tracker = createProviderAuthObservationTracker(() => now);

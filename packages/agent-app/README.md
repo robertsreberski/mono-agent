@@ -527,7 +527,8 @@ Every app-owned TUI/operator endpoint owns an in-memory provider-auth service
 for the web console's Agent settings, with no additional configuration. Its
 routes are keyless when the endpoint has no normal API key and otherwise require
 that bearer. It reports only providers used by effective configured routes and
-keeps credential detection distinct from a successful live request. GitHub
+keeps credential detection, account API acceptance (`verified_by_account_request`),
+and successful live inference (`verified_by_live_request`) distinct. GitHub
 Copilot and OpenAI Codex use Pi's native device-code flow; Anthropic uses the
 existing manual-code redirect callback; API-key providers use masked
 provider-owned prompts. Returned credentials pass through the same owner-private,
@@ -972,6 +973,8 @@ line of long narration. Agent SQLite and retained activity keep the original
 text; failures and non-suppressed output retain their existing truncation rules.
 
 ## Architecture
+
+The controller shares a Pi-store-scoped `provider-usage.ts` service across its operator and `provider-usage-tool.ts` request extensions. Pure mappers retain only Claude/Codex/OpenCode Go core subscription windows. Demand-driven five-minute caching, coalescing, last-good stale data and Retry-After keep usage reads bounded. `ProviderUsage` honors normal app-tool policy and never purchases quota or changes routing. Retained success/auth-failure outcomes feed the controller's credential-generation-fenced auth observations without additional vendor calls. Account acceptance is weaker than live inference proof; account rejection has no model and uses the existing `provider_auth` failure kind.
 
 Configured continuous sessions persist the requested primary model with their durable epoch. Per-model runtime factories are cached for the harness lifetime, and history retirement resolves the owning runtime. A model switch cold-seeds one new epoch; repeated overrides stay warm. Existing fallback and proactive-isolation policies continue to apply. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
 

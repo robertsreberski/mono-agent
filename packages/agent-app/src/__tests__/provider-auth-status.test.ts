@@ -14,6 +14,35 @@ const tempDirs: string[] = [];
 afterEach(async () => await Promise.all(tempDirs.splice(0).map(async (dir) => await rm(dir, { recursive: true, force: true }))));
 
 describe("provider auth status", () => {
+  it("projects account acceptance, live precedence and account rejection without a model", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-provider-account-status-"));
+    tempDirs.push(dir);
+    const authPath = join(dir, "auth.json");
+    await writeFile(authPath, JSON.stringify({ "opencode-go": { type: "api_key", key: "fixture-key" } }), { mode: 0o600 });
+    let now = Date.parse("2026-09-14T12:00:00.000Z");
+    const observations = createProviderAuthObservationTracker(() => now);
+    const status = async () => (await providerAuthStatusSnapshot({
+      config: configWith(authPath), env: {}, drivers: [],
+      input: { cwd: dir, configPath: join(dir, "config.json"), env: {} }, observations,
+    })).providers.find((provider) => provider.providerId === "opencode-go");
+    observations.recordAccountSuccess("opencode-go", observations.generation());
+    expect(await status()).toMatchObject({ verification: "verified_by_account_request", verifiedAt: new Date(now).toISOString() });
+    now += 1_000;
+    observations.recordSuccess("opencode-go", "opencode-go:model");
+    const liveAt = new Date(now).toISOString();
+    now += 1_000;
+    observations.recordAccountSuccess("opencode-go", observations.generation());
+    expect(await status()).toMatchObject({ verification: "verified_by_live_request", verifiedAt: liveAt });
+    now += 1_000;
+    observations.recordAccountFailure("opencode-go", observations.generation());
+    const rejected = await status();
+    expect(rejected).toMatchObject({ verification: "not_verified", lastFailure: { kind: "provider_auth" } });
+    expect(rejected?.lastFailure).not.toHaveProperty("model");
+    expect(rejected).not.toHaveProperty("verifiedAt");
+    observations.credentialPersisted("opencode-go");
+    expect(await status()).not.toHaveProperty("lastFailure");
+  });
+
   it("collects effective routes and excludes disabled static entries", async () => {
     const config = configWith("/missing");
     const drivers = [{

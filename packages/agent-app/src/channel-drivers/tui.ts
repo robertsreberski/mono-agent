@@ -1,3 +1,4 @@
+import type { ProviderUsageOperator } from "@mono-agent/agent-contracts";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -286,6 +287,7 @@ interface AppOwnedTuiChannelDriver extends ChannelDriver<TuiAdapterConfig> {
     processJobs: ProcessJobOperator | undefined,
     monitors: MonitorOperator | undefined,
     providerAuth: ProviderAuthOperator | undefined,
+    providerUsage?: ProviderUsageOperator,
   ): Promise<RunningChannel>;
 }
 
@@ -302,6 +304,7 @@ export function startAppOwnedTuiChannel(
   processJobs: ProcessJobOperator | undefined,
   monitors: MonitorOperator | undefined,
   providerAuth: ProviderAuthOperator | undefined,
+  providerUsage?: ProviderUsageOperator,
 ): Promise<RunningChannel> | undefined {
   if (!appOwnedTuiDrivers.has(driver)) return undefined;
   return (driver as AppOwnedTuiChannelDriver)[APP_OWNED_TUI_START](
@@ -309,6 +312,7 @@ export function startAppOwnedTuiChannel(
     processJobs,
     monitors,
     providerAuth,
+    providerUsage,
   );
 }
 
@@ -342,7 +346,7 @@ export function createTuiChannelDriver(
     async start(input) {
       return await this[APP_OWNED_TUI_START](input, undefined, undefined, undefined);
     },
-    async [APP_OWNED_TUI_START](input, processJobs, monitors, providerAuth) {
+    async [APP_OWNED_TUI_START](input, processJobs, monitors, providerAuth, providerUsage) {
       const adapterModule = await loadTuiModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
       const deliverNotification = overrides.deliverNotification ?? deliverWebNotification;
@@ -552,6 +556,7 @@ export function createTuiChannelDriver(
           ? {}
           : { processJobs, processJobsBearer: processJobs.operatorToken }),
         ...(providerAuth === undefined ? {} : { providerAuth }),
+        ...(providerUsage === undefined ? {} : { providerUsage }),
         ...(input.interaction === undefined ? {} : { interaction: input.interaction }),
         ...(cronOperator?.configured === true ? { cron: cronOperator } : {}),
         info: buildInfo,

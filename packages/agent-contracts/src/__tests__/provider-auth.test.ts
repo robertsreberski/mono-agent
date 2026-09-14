@@ -68,6 +68,21 @@ const check = () => ({
 });
 
 describe("provider auth contracts", () => {
+  it("accepts account verification and model-less failures but validates optional models", () => {
+    const provider = { ...status().providers[0], verification: "verified_by_account_request" };
+    const failure = { kind: "provider_auth", message: "Provider rejected the configured credential.", observedAt: "2026-09-14T12:00:00.000Z" };
+    const snapshot = { ...status(), providers: [{ ...provider, lastFailure: failure }] };
+    expect(parseProviderAuthStatusSnapshot(snapshot)).toEqual(snapshot);
+    for (const model of [null, "", 42]) {
+      expect(() => parseProviderAuthStatusSnapshot({ ...snapshot, providers: [{ ...provider, lastFailure: { ...failure, model } }] })).toThrow();
+    }
+    for (const field of ["kind", "message", "observedAt"] as const) {
+      const incomplete: Record<string, unknown> = { ...failure };
+      delete incomplete[field];
+      expect(() => parseProviderAuthStatusSnapshot({ ...snapshot, providers: [{ ...provider, lastFailure: incomplete }] })).toThrow();
+    }
+  });
+
   it("strictly parses bounded status and session snapshots", () => {
     expect(parseProviderAuthStatusSnapshot(status())).toEqual(status());
     expect(parseProviderAuthSessionSnapshot(session())).toEqual(session());

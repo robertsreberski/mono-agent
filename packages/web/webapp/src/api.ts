@@ -1,3 +1,4 @@
+import type { ProviderUsageSnapshot } from "./types";
 import type { TagSummary, TagColor, ProjectColor } from "./types";
 import type {
   ActiveThreads,
@@ -719,6 +720,11 @@ export const api = {
     );
     return result.agent;
   },
+
+  providerUsage: (sourceId: string, signal?: AbortSignal) => request<ProviderUsageSnapshot>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-usage`,
+    { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, ...(signal === undefined ? {} : { signal }) },
+  ),
 
   providerAuthStatus: (
     sourceId: string,

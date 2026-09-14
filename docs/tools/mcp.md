@@ -528,3 +528,32 @@ line alongside any project context. Steering retains that snapshot; the next
 turn gets fresh tags. Stored user messages stay unprefixed. There is no pending
 tag membership or separate enablement key: the MCP server remains
 `mono-agent-console-projects` so existing policy aliases keep working.
+
+
+## `ProviderUsage`: subscription quota
+
+`ProviderUsage` is a read-only app-owned, request-scoped MCP tool. It requires no
+arguments; optional `provider` accepts only `anthropic`, `openai-codex`, or
+`opencode-go`. It works on permitted agent turns on any channel, independently
+of the web console's writable-turn tools. It returns the same
+`mono-agent.provider-usage.v1` JSON snapshot as
+[Agent settings usage meters](/observability/web-console/#subscription-usage):
+`providers[]` with provider id/label, optional plan, core windows
+(`kind`, `label`, `usedPercent`, optional `resetsAt`, nominal `periodMs`),
+`fetchedAt`, `stale`, and optional fixed `error.code`/`error.message`.
+Absent usable Pi credentials are omitted; an empty providers array does not
+prove any remaining quota. Last-good stale data is not current quota truth.
+
+The tool reads only this agent's `providers.piAuthPath`, using the existing Pi
+resolver for OAuth refresh; it does not accept credentials, paths, URLs or
+account identifiers. Console and tool share one five-minute per-provider cache
+and coalesced refresh/backoff. There is no forced-refresh argument, vendor write,
+quota purchase, routing decision or local cost calculation. Retained usage fetches also
+feed passive credential-health evidence: vendor acceptance is **Credential OK**,
+not proof of inference/model entitlement, while final auth rejection is **Needs action**.
+
+Allow-all exposes it automatically. A restrictive `tools.allowedTools` must
+include `ProviderUsage`, `mcp__mono-agent-provider-usage__ProviderUsage`, or
+`mcp__mono-agent-provider-usage__*`. The same aliases and `*` work in
+`tools.disallowedTools`; deny wins. The request-scoped endpoint is removed at
+turn cleanup. No new config switch or external MCP declaration is needed.

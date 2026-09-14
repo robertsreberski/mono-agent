@@ -261,6 +261,7 @@ export interface AgentSummary {
   readonly health?: string;
   readonly supportsAttachments: boolean;
   readonly supportsProviderAuth?: true;
+  readonly supportsProviderUsage?: true;
   readonly supportsProviderAuthChecks?: true;
   readonly models?: readonly string[];
   readonly defaultModel?: string;
@@ -305,14 +306,15 @@ export interface ProviderAuthProviderStatus {
   readonly credentialType?: "oauth" | "api_key";
   readonly source?: "stored" | "environment" | "ambient" | "config";
   readonly expiresAt?: string;
-  readonly verification: "not_verified" | "verified_by_live_request" | "not_applicable";
+  readonly verification: "not_verified" | "verified_by_account_request" | "verified_by_live_request" | "not_applicable";
   readonly verifiedAt?: string;
   readonly methods: readonly ProviderAuthMethod[];
   readonly unavailableReason?: string;
   readonly lastFailure?: {
     readonly kind: "provider_auth" | "provider_unavailable";
     readonly message: string;
-    readonly model: string;
+    /** Absent for account-level credential rejection. */
+    readonly model?: string;
     readonly observedAt: string;
   };
 }
@@ -1220,3 +1222,5 @@ export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
   maxTurnBytes: 64 * 1024 * 1024,
   accept: [],
 };
+
+export type { ProviderUsage, ProviderUsageSnapshot, ProviderUsageId } from "@mono-agent/agent-contracts";

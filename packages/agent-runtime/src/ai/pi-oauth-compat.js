@@ -94,9 +94,10 @@ export function getPiOAuthProviderIds() {
  *
  * @param {string} providerId
  * @param {Record<string, *>|undefined} credentials Provider-keyed credential map.
+ * @param {AbortSignal} [signal]
  * @returns {Promise<{newCredentials: OAuthCredential, apiKey: string|undefined}|null>}
  */
-export async function resolveOAuthApiKey(providerId, credentials) {
+export async function resolveOAuthApiKey(providerId, credentials, signal) {
   const oauth = getPiOAuthAuth(providerId);
   if (oauth === undefined) {
     throw new Error(`Unknown OAuth provider: ${providerId}`);
@@ -113,9 +114,9 @@ export async function resolveOAuthApiKey(providerId, credentials) {
   if (Date.now() >= credential.expires) {
     try {
       // Pi 0.84 requires provider refreshes to receive an AbortSignal. This
-      // legacy resolver has no cancellation input, so give the refresh its own
-      // non-aborted signal while keeping the public contract unchanged.
-      credential = await oauth.refresh(credential, new AbortController().signal);
+      // optional caller signal bounds usage reads; ordinary callers retain their
+      // private non-aborted signal and exact-expiry behavior.
+      credential = await oauth.refresh(credential, signal ?? new AbortController().signal);
     } catch {
       throw new Error(`Failed to refresh OAuth token for ${providerId}`);
     }
