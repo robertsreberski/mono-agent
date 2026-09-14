@@ -106,11 +106,27 @@ describe("private subagent job progress", () => {
       disposition: "fallback" })).toBe(true);
     expect(JSON.stringify(reversed.snapshot().route)).not.toMatch(/private-route|ghp_|\[REDACTED\]/u);
   });
+
+  it("retains long descriptive route identifiers that are not literals or credential shapes", () => {
+    const descriptive = "my-company/production-large-language-model-v2";
+    const qualified = `provider:${descriptive}`;
+    expect(descriptive.length).toBeGreaterThanOrEqual(40);
+    const progress = new SubagentJobProgress([]);
+    expect(progress.report({ type: "route",
+      requested: { model: descriptive, effort: "high" },
+      executed: { model: qualified, effort: "xhigh" },
+      disposition: "fallback" })).toBe(true);
+    expect(progress.snapshot().route).toEqual({
+      requested: { model: descriptive, effort: "high" },
+      executed: { model: qualified, effort: "xhigh" },
+      disposition: "fallback",
+    });
+  });
 });
 
 describe("argument preview redaction", () => {
   const home = "/Users/example";
-  const secrets = [home, "example", "s3cr3tvalue"];
+  const secrets = [home, "private-note", "s3cr3tvalue"];
   const redact = (value: string) => redactSubagentArgumentPreview(value, secrets, home);
 
   it("renders the screenshot reproduction as a home-relative path", () => {
@@ -123,21 +139,37 @@ describe("argument preview redaction", () => {
     const neighboringHome = redactSubagentArgumentPreview("/rooted/x", ["root"], "/root");
     expect(neighboringHome).not.toMatch(/^~/u);
     expect(neighboringHome).not.toContain("root");
-    expect(redact("/Users/example/notes/example-todo.md")).toBe("~/notes/[REDACTED]-todo.md");
+    expect(redact("/Users/example/notes/private-note-todo.md")).toBe("~/notes/[REDACTED]-todo.md");
     expect(redact("~/safe/s3cr3tvalue/file")).not.toContain("s3cr3tvalue");
   });
 
-  it("does not let home relativization expose a larger literal secret", () => {
+  it.each([
+    ["larger home-prefixed literal", (suffix: string) => ({
+      secrets: [home, `${home}/${suffix}`],
+      value: `${home}/${suffix}`,
+      expected: "[REDACTED]",
+    })],
+    ["mixed-boundary repeated home literal", (suffix: string) => ({
+      secrets: [home, `${home}/${suffix}${home}`],
+      value: `${home}/${suffix}${home}X`,
+      expected: "[REDACTED]X",
+    })],
+    ["literal overlapping the home suffix", (suffix: string) => ({
+      secrets: [home, `example/${suffix}`],
+      value: `${home}/${suffix}`,
+      expected: ["/Users", "[REDACTED]"].join("/"),
+    })],
+  ])("does not let home relativization expose a %s", (_case, fixture) => {
     const sensitiveSuffix = "pin-7421";
-    const value = `${home}/${sensitiveSuffix}`;
-    const result = redactSubagentArgumentPreview(value, [home, value], home);
-    expect(result).toBe("[REDACTED]");
+    const { value, secrets, expected } = fixture(sensitiveSuffix);
+    const result = redactSubagentArgumentPreview(value, secrets, home);
+    expect(result).toBe(expected);
     expect(result).not.toContain(sensitiveSuffix);
   });
 
   it.each([
     ["bearer", "curl -H \"Authorization: Bearer b-short\" ~/a/b", "b-short"],
-    ["password flag", "tool --password=tiny-pass", "tiny-pass"],
+    ["password flag", "tool -p tiny-pass", "tiny-pass"],
     ["labelled API credential", ["api", "key=k-short"].join("_"), "k-short"],
     ["token label", "token: t-short", "t-short"],
     ["password label", "password=p-short", "p-short"],
@@ -151,10 +183,21 @@ describe("argument preview redaction", () => {
   });
 
   it("redacts opaque segments and long slash-bearing credential shapes", () => {
-    expect(redact(`~/.cache/${"a".repeat(32)}/file`)).toBe("~/.cache/[REDACTED]/file");
+    expect(redact(`~/.cache/${"a".repeat(32)}/file`)).not.toContain("a".repeat(32));
     const slashBearing = `${"A".repeat(20)}/${"B".repeat(23)}`;
     expect(redact(slashBearing)).toBe("[REDACTED]");
-    expect(redact(`"${slashBearing.slice(0, 41)}"`)).not.toContain(slashBearing.slice(0, 41));
+  });
+
+  it.each([
+    ["parentheses", "(", ")"],
+    ["brackets", "[", "]"],
+    ["commas", ",", ","],
+    ["equals", "=", "="],
+    ["quotes", "\"", "\""],
+  ])("redacts a 40+ slash-bearing opaque run at %s boundaries", (_case, before, after) => {
+    const opaque = `${"A".repeat(20)}/${"B".repeat(20)}`;
+    expect(opaque).toHaveLength(41);
+    expect(redact(`${before}${opaque}${after}`)).not.toContain(opaque);
   });
 
   it("redacts userinfo after an arbitrarily long custom URL scheme", () => {

@@ -38,29 +38,33 @@ export function redactSubagentArgumentPreview(
   const homePattern = root === "" || root === "/"
     ? undefined
     : new RegExp(`${escapeRegExp(root)}(?=/|$|\\s|["'])`, "gu");
-  const relativized = homePattern === undefined ? scan : scan.replace(homePattern, "~");
-  // Relativization must not make a larger known literal stop matching. Mirror
-  // the exact transformation into such literals, while deliberately excluding
-  // `$HOME` itself so ordinary paths can still retain their useful `~/...` form.
-  const redactionSecrets = homePattern === undefined
-    ? secrets
-    : [...new Set([...secrets, ...secrets.flatMap((secret) => {
-        const transformed = secret.replace(homePattern, "~");
-        return transformed === secret || transformed === "~" ? [] : [transformed];
-      })])];
-  const redacted = redactProcessOutputLine(redactProcessOutput(relativized, redactionSecrets, truncated), redactionSecrets)
+  // Preserve only the exact home-root literal. Every larger or overlapping
+  // literal must match the original bytes before home relativization can reshape
+  // them and make that match context-dependent.
+  const redactionSecrets = secrets.filter((secret) => secret !== root);
+  const literalsRedacted = redactProcessOutput(scan, redactionSecrets, truncated);
+  const relativized = homePattern === undefined ? literalsRedacted : literalsRedacted.replace(homePattern, "~");
+  const redacted = redactProcessOutputLine(relativized, redactionSecrets)
     // `redactProcessOutput` intentionally bounds URL schemes; previews retain
     // the older unbounded userinfo backstop because route-like arguments can use
     // custom schemes of arbitrary length.
     .replace(/([a-z][a-z0-9+.-]*:\/\/)([^/\s]+)@/giu, "$1[REDACTED]@")
-    // Its opaque-shape rule already covers string/whitespace boundaries. Quotes
-    // are also hard boundaries, so a slash-bearing run above the 39-char path
-    // relaxation ceiling must not survive merely because it is quoted.
-    .replace(/(^|[\s"'])(?!\[REDACTED\])([A-Za-z0-9+/=_-]{40,})(?=$|[\s"'])/gu, "$1[REDACTED]")
+    // Restore the generic opaque-run boundary semantics above the approved
+    // 24–39-character slash-bearing relaxation. The sole extra boundary guard
+    // preserves the intentional `~/...` path form; starting later is blocked by
+    // the same opaque-character lookbehind.
+    .replace(/(?<!~)(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{40,}(?![A-Za-z0-9+/=_-])/gu, "[REDACTED]")
     .replace(/(?<![A-Za-z0-9_+=-])[A-Za-z0-9_+=-]{24,}(?![A-Za-z0-9_+=-])/gu, "[REDACTED]")
     .replace(/\s+/gu, " ")
     .trim();
   return redacted || "[redacted]";
+}
+
+const ROUTE_CREDENTIAL_SHAPE = /\b(?:gh[pousr]_[A-Za-z0-9]{16,}|sk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|A(?:KIA|SIA)[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/u;
+
+function routeIdentifierIsSensitive(identifier: string, secrets: readonly string[]): boolean {
+  return secrets.some((secret) => secret.length > 0 && identifier.includes(secret))
+    || ROUTE_CREDENTIAL_SHAPE.test(identifier);
 }
 
 function routePart(
@@ -78,9 +82,9 @@ function routePart(
     if (typeof record[key] !== "string") return null;
     const identifier = record[key];
     // Route identifiers are config-shaped, but still cross a durable UI boundary.
-    // Drop the entire field when either a known literal or credential recognizer
-    // changes it; a redaction marker here would masquerade as a model name.
-    if (redactProcessOutputLine(redactProcessOutput(identifier, secrets), secrets) !== identifier) continue;
+    // Drop known literals and explicit credential shapes. The generic opaque-run
+    // heuristic is intentionally excluded: long descriptive model ids are valid.
+    if (routeIdentifierIsSensitive(identifier, secrets)) continue;
     result[key] = identifier;
   }
   return result;
