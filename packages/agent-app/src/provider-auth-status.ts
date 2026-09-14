@@ -197,7 +197,7 @@ export async function providerAuthStatusSnapshot(
         unavailableReason = "Stored API-key credential is unusable.";
       }
     }
-    const verifiedAt = state === "present" ? observation?.verifiedAt : undefined;
+    const verifiedAt = state === "present" ? observation?.verifiedAt ?? observation?.accountVerifiedAt : undefined;
     providers.push({
       providerId,
       label: description?.label ?? providerId,
@@ -207,7 +207,8 @@ export async function providerAuthStatusSnapshot(
       ...(source === undefined ? {} : { source }),
       ...(expiresAt === undefined ? {} : { expiresAt }),
       verification: state === "not_applicable" ? "not_applicable"
-        : verifiedAt === undefined ? "not_verified" : "verified_by_live_request",
+        : verifiedAt === undefined ? "not_verified"
+        : observation?.verifiedAt !== undefined ? "verified_by_live_request" : "verified_by_account_request",
       ...(verifiedAt === undefined ? {} : { verifiedAt }),
       methods: description === undefined ? [] : methodsFor(providerId, description.methods),
       ...(unavailableReason === undefined ? {} : { unavailableReason }),

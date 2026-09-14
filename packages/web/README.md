@@ -732,6 +732,8 @@ cross-resource requests fail. See
 
 ## Architecture
 
+Agent settings uses the compact project/tag sheet layout and shows core subscription meters beneath matching Claude, Codex and OpenCode Go auth rows. The live-only `supportsProviderUsage` capability enables an independent no-store `/api/v1/agents/:id/provider-usage` proxy, with connection-generation fencing. The web host never reads the Pi store; the agent shares its five-minute cache with the read-only `ProviderUsage` tool.
+
 ### Silent cron history
 
 Successful empty answers and answers suppressed by `NOTHING_TO_REPORT` add no

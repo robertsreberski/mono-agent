@@ -45,6 +45,21 @@ const replyPartOutcomes = [{
 }];
 
 describe("OperatorClient", () => {
+  it("parses account verification and a model-less credential rejection through the shared contract", async () => {
+    const snapshot = {
+      schema: "mono-agent.provider-auth.v1", generatedAt: "2026-09-14T12:00:00.000Z",
+      providers: [{ providerId: "anthropic", label: "Anthropic", usages: [], state: "present", methods: [],
+        verification: "verified_by_account_request", verifiedAt: "2026-09-14T12:00:00.000Z" }],
+    };
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234", fetchImpl: async () => Response.json(snapshot) });
+    expect(await client.providerAuthStatus()).toEqual(snapshot);
+    const rejected = { ...snapshot, providers: [{ ...snapshot.providers[0], verification: "not_verified", lastFailure: {
+      kind: "provider_auth", message: "Provider rejected the configured credential.", observedAt: snapshot.generatedAt,
+    } }] };
+    const rejectedClient = new OperatorClient({ baseUrl: "http://127.0.0.1:1234", fetchImpl: async () => Response.json(rejected) });
+    expect(await rejectedClient.providerAuthStatus()).toEqual(rejected);
+  });
+
   it("accepts only a sufficient v1 context-import capability", async () => {
     const info = async (contextImport: unknown) => await new OperatorClient({
       baseUrl: "http://127.0.0.1:1234/gui",
@@ -1045,4 +1060,18 @@ it("sends Monitor owner authorization only on exact wake turn and steering reque
   expect(headers.map((header) => header.get("x-mono-agent-monitor-wake-authorization"))).toEqual([null, "Bearer owner-monitor-key", "Bearer owner-monitor-key"]);
   await expect(new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui" }).turn({ ...turn, processJobWakeDeliveryKey: "monitor:one:1" }))
     .rejects.toMatchObject({ code: "monitors_unavailable" });
+});
+
+
+it("validates provider usage at the HTTP boundary and rejects identifier-bearing projections", async () => {
+  const headers: Record<string, unknown>[] = [];
+  let invalid = false;
+  const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "fixture-key", fetchImpl: (async (_url, init) => {
+    headers.push(init?.headers as Record<string, unknown>);
+    return Response.json({ schema: "mono-agent.provider-usage.v1", providers: [], ...(invalid ? { account_id: "DROP" } : {}) });
+  }) as typeof fetch });
+  expect((await client.providerUsage()).providers).toEqual([]);
+  expect(JSON.stringify(headers)).toContain("fixture-key");
+  invalid = true;
+  await expect(client.providerUsage()).rejects.toThrow("Invalid provider usage projection");
 });

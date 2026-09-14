@@ -1,3 +1,4 @@
+import { createProviderUsageService } from "./provider-usage.js";
 // Internal host implementation; `app.ts` remains the stable public facade.
 import { resolve } from "node:path";
 
@@ -413,6 +414,17 @@ export class MonoAgentAppController implements MonoAgentApp {
   } | undefined;
   /** One bounded scan cache for artifact-derived native-notify destinations. */
   readonly seenNotifyDestinations = createSeenNotifyDestinationCache();
+  /** Shared by operator reads and every channel; no request-scoped vendor caches. */
+  private readonly providerUsageServices = new Map<string, ReturnType<typeof createProviderUsageService>>();
+  providerUsageFor(config: MonoAgentConfig) {
+    const path = config.providers?.piAuthPath ?? "";
+    let service = this.providerUsageServices.get(path);
+    if (service === undefined) {
+      service = createProviderUsageService({ ...(path ? { path } : {}), outcomes: this.providerAuthObservations });
+      this.providerUsageServices.set(path, service);
+    }
+    return service;
+  }
   /** Process-local proof/failure cache shared by every responder and auth status. */
   readonly providerAuthObservations = createProviderAuthObservationTracker();
 
@@ -675,6 +687,8 @@ export class MonoAgentAppController implements MonoAgentApp {
   ): Promise<ContinuationHistoryRecordResult> { return continuationOperations.recordContinuationHistory(this, conversationId, text, deliveryKey); }
 
   async stop(): Promise<void> {
+    for (const service of this.providerUsageServices.values()) service.stop();
+    this.providerUsageServices.clear();
     try {
       await lifecycleOperations.stop(this);
     } finally {

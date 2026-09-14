@@ -1,3 +1,4 @@
+import type { ProviderUsageId, ProviderUsageSnapshot } from "@mono-agent/agent-contracts";
 import type { WebCancelOrigin } from "./contracts.js";
 import type { ConsoleToolScope, ConsoleToolOperation } from "./console-tools.js";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -874,10 +875,11 @@ export class WebService {
     const connection = this.connections.get(agent.sourceId);
     const providerAuth = connection?.info.supportsProviderAuth === true;
     const providerAuthChecks = connection?.info.supportsProviderAuthChecks === true;
-    if (!providerAuth) return agent;
+    const providerUsage = connection?.info.supportsProviderUsage === true;
     return {
       ...agent,
-      supportsProviderAuth: true,
+      ...(providerAuth ? { supportsProviderAuth: true as const } : {}),
+      ...(providerUsage ? { supportsProviderUsage: true as const } : {}),
       ...(providerAuthChecks ? { supportsProviderAuthChecks: true as const } : {}),
     };
   }
@@ -889,6 +891,7 @@ export class WebService {
   private projectedCapabilitySignature(agent: WebAgentSummary): string {
     const projected = this.decorateProjectedCapabilities(agent);
     return [
+      projected.supportsProviderUsage === true ? "providerUsage" : "",
       projected.supportsProviderAuth === true ? "providerAuth" : "",
       projected.supportsProviderAuthChecks === true ? "providerAuthChecks" : "",
     ].join("|");
@@ -1719,6 +1722,16 @@ export class WebService {
     // unconditionally. Generation 1's ladder then judged generation 2's turns.
     this.admitModelPage(sourceId, generation, page);
     return page;
+  }
+
+  async providerUsage(sourceId: string, provider?: ProviderUsageId): Promise<ProviderUsageSnapshot> {
+    if (this.store.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const connection = this.connections.get(sourceId);
+    if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    if (connection.info.supportsProviderUsage !== true) throw new WebConsoleError("provider_usage_unavailable", "This agent does not expose provider usage.", 409);
+    const snapshot = await connection.client.providerUsage(provider, AbortSignal.timeout(15_000));
+    if (this.connections.get(sourceId)?.generation !== connection.generation) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
+    return snapshot;
   }
 
   async providerAuthStatus(sourceId: string): Promise<ProviderAuthStatusSnapshot> {

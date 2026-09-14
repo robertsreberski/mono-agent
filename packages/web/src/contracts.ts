@@ -177,6 +177,7 @@ export interface WebAgentSummary {
    * is presentation state, never authorization to call the agent.
    */
   readonly supportsProviderAuth?: true;
+  readonly supportsProviderUsage?: true;
   /** Additive explicit live-check action; passive status remains traffic-free. */
   readonly supportsProviderAuthChecks?: true;
   readonly models?: readonly string[];

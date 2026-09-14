@@ -1,3 +1,4 @@
+import { ProviderUsageMeters, useProviderUsage } from "./ProviderUsageMeters";
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { useConsoleStore } from "../console-store";
@@ -95,19 +96,19 @@ export function AgentSettingsDialog({
   };
 
   return (
-    <div className="dialog-layer" role="presentation" onMouseDown={onClose}>
+    <div className="sheet-layer agent-settings-layer" role="presentation" onMouseDown={onClose}>
       <section
         ref={dialogRef}
-        className="agent-settings-dialog"
+        className="sheet agent-settings-dialog agent-settings-sheet"
         role="dialog"
         aria-modal="true"
         aria-labelledby="agent-settings-title"
         tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <header>
+        <span className="sheet-handle" aria-hidden="true" />
+        <header className="sheet-head">
           <div>
-            <span className="eyebrow">Agent settings</span>
             <h2 id="agent-settings-title">{agent.label} settings</h2>
           </div>
           <div className="agent-settings-header-actions">
@@ -177,6 +178,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   const [status, setStatus] = useState<ProviderAuthStatusSnapshot | null>(null);
   const [session, setSession] = useState<ProviderAuthSessionSnapshot | null>(null);
   const [check, setCheck] = useState<ProviderAuthCheckSessionSnapshot | null>(null);
+  const usage = useProviderUsage(agent, session?.state === "succeeded" ? session.id : undefined);
   const [sessionProvider, setSessionProvider] = useState<ProviderAuthProviderStatus | null>(null);
   const [methodProvider, setMethodProvider] = useState<ProviderAuthProviderStatus | null>(null);
   const [inputValue, setInputValue] = useState("");
@@ -273,9 +275,11 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
 
   useEffect(() => {
     if (agent.supportsProviderAuth !== true || agent.status === "offline") return;
+    // A completed usage read may have added passive credential evidence. This
+    // re-reads only local auth status; it never starts another vendor request.
     const controller = refresh();
     return () => controller.abort();
-  }, [sourceId, agent.generation, agent.status, agent.supportsProviderAuth]);
+  }, [sourceId, agent.generation, agent.status, agent.supportsProviderAuth, usage]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -552,11 +556,14 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
           const actionable = provider.methods.length > 0;
           const presentation = providerAuthPresentation(provider);
           const checkResult = check?.results.find((result) => result.providerId === provider.providerId);
+          const providerUsage = usage?.providers.find((item) => item.providerId === provider.providerId);
           return (
             <article className="provider-auth-card" key={provider.providerId}>
+              <div className="provider-auth-controls">
               <div className="provider-auth-heading">
                 <b>{provider.label}</b>
                 <span className="provider-auth-badges">
+                  {providerUsage?.plan !== undefined && <span className="provider-usage-plan">{providerUsage.plan}</span>}
                   {checkResult !== undefined && (
                     <span
                       className={"provider-auth-check-result " + providerAuthCheckPresentation(checkResult).className}
@@ -575,6 +582,8 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
                   {provider.state === "missing" ? "Authenticate" : "Re-authenticate"}
                 </button>
               )}
+              </div>
+              <ProviderUsageMeters usage={providerUsage} />
             </article>
           );
         })}
@@ -667,6 +676,9 @@ function providerAuthPresentation(provider: ProviderAuthProviderStatus): {
   }
   if (provider.verification === "verified_by_live_request" && provider.lastFailure === undefined) {
     return { className: "is-ok", glyph: "✓", label: "OK" };
+  }
+  if (provider.verification === "verified_by_account_request" && provider.lastFailure === undefined) {
+    return { className: "is-ok-account", glyph: "✓", label: "Credential OK" };
   }
   return { className: "is-not-verified", glyph: "?", label: "Not verified" };
 }

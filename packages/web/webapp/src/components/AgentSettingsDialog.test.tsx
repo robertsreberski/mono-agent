@@ -15,6 +15,7 @@ const storeMock = vi.hoisted(() => ({
 }));
 const apiMock = vi.hoisted(() => ({
   providerAuthStatus: vi.fn(),
+  providerUsage: vi.fn(),
   beginProviderAuth: vi.fn(),
   providerAuthSession: vi.fn(),
   submitProviderAuth: vi.fn(),
@@ -40,7 +41,7 @@ vi.mock("./assistant-ui/ModelSelector", () => ({
 
 import { AgentSettingsDialog } from "./AgentSettingsDialog";
 
-const expectDialogTypography = (element: Element, size: "10px" | "12px") => {
+const expectDialogTypography = (element: Element, size: "9px" | "10px" | "11px" | "12px") => {
   const style = window.getComputedStyle(element);
   // jsdom exposes the authored inheritance keyword; a browser resolves it to
   // the root's existing sans-serif stack.
@@ -289,7 +290,8 @@ describe("AgentSettingsDialog", () => {
     const dialog = container.querySelector(".agent-settings-dialog");
     const body = container.querySelector(".agent-settings-body");
 
-    expect(dialog?.children[1]).toBe(body);
+    expect(body?.parentElement).toBe(dialog);
+    expect(dialog?.querySelector(".sheet-handle")).toBeInTheDocument();
     expect(window.getComputedStyle(body!).overflowY).toBe("auto");
   });
 
@@ -600,6 +602,46 @@ describe("AgentSettingsDialog", () => {
     expect(screen.queryByText(/Primary model/u)).not.toBeInTheDocument();
   });
 
+  it("refreshes local auth status after usage and distinguishes credential acceptance from live OK", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true, supportsProviderUsage: true });
+    const usage = deferred<{ schema: "mono-agent.provider-usage.v1"; providers: [] }>();
+    apiMock.providerUsage.mockReturnValue(usage.promise);
+    apiMock.providerAuthStatus.mockResolvedValueOnce(providerAuthStatusSnapshot("not_verified"))
+      .mockResolvedValue(providerAuthStatusSnapshot("verified_by_account_request"));
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    expect(await screen.findByText("Not verified")).toBeVisible();
+    usage.resolve({ schema: "mono-agent.provider-usage.v1", providers: [] });
+    const badge = await screen.findByText("Credential OK");
+    expect(badge.closest(".provider-auth-state")).toHaveClass("is-ok-account");
+    expect(screen.queryByText("OK", { exact: true })).not.toBeInTheDocument();
+    expect(apiMock.providerUsage).toHaveBeenCalledTimes(1);
+    expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(2);
+    expect(apiMock.beginProviderAuthCheck).not.toHaveBeenCalled();
+  });
+
+  it.each(["verified_by_account_request", "verified_by_live_request"] as const)("keeps credential rejection ahead of %s without requiring a model", async (verification) => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    const snapshot = providerAuthStatusSnapshot(verification);
+    apiMock.providerAuthStatus.mockResolvedValue({ ...snapshot, providers: [{ ...snapshot.providers[0], lastFailure: {
+      kind: "provider_auth", message: "Provider rejected the configured credential.", observedAt: snapshot.generatedAt,
+    } }] });
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    expect(await screen.findByText("Needs action")).toBeVisible();
+    expect(screen.queryByText("Credential OK")).not.toBeInTheDocument();
+    expect(screen.queryByText("OK", { exact: true })).not.toBeInTheDocument();
+  });
+
+  it("does not treat account acceptance as proof of inference availability", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    const snapshot = providerAuthStatusSnapshot("verified_by_account_request");
+    apiMock.providerAuthStatus.mockResolvedValue({ ...snapshot, providers: [{ ...snapshot.providers[0], lastFailure: {
+      kind: "provider_unavailable", message: "Provider was unavailable.", model: "opencode-go:model", observedAt: snapshot.generatedAt,
+    } }] });
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    expect(await screen.findByText("Not verified")).toBeVisible();
+    expect(screen.queryByText("Credential OK")).not.toBeInTheDocument();
+  });
+
   it("shows a recorded auth failure ahead of a not-applicable static state", async () => {
     storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
     apiMock.providerAuthStatus.mockResolvedValue({
@@ -674,7 +716,7 @@ describe("AgentSettingsDialog", () => {
     const run = screen.getByRole("button", { name: "Run live checks for all displayed providers" });
     expect(run).toHaveTextContent("Run check");
     expectDialogTypography(run, "12px");
-    expect(window.getComputedStyle(run).minHeight).toBe("38px");
+    expect(window.getComputedStyle(run).minHeight).toBe("28px");
     expect(run).toHaveClass("provider-auth-neutral-button");
     expect(screen.getByText(/may use quota or refresh OAuth/u)).toBeVisible();
     fireEvent.click(run);
@@ -761,7 +803,7 @@ describe("AgentSettingsDialog", () => {
     expect(screen.queryByText("Checks complete: 1 of 1 passed.")).not.toBeInTheDocument();
   });
 
-  it("offers a normal-size neutral cancel control while checks are active", async () => {
+  it("offers a compact neutral cancel control while checks are active", async () => {
     storeMock.selectedAgent = agent("alpha", {
       label: "Alpha",
       supportsProviderAuth: true,
@@ -795,7 +837,7 @@ describe("AgentSettingsDialog", () => {
     expect(cancel).toHaveTextContent("Cancel checks");
     expect(cancel).toHaveClass("provider-auth-neutral-button");
     expectDialogTypography(cancel, "12px");
-    expect(window.getComputedStyle(cancel).minHeight).toBe("38px");
+    expect(window.getComputedStyle(cancel).minHeight).toBe("28px");
     fireEvent.click(cancel);
     await vi.waitFor(() => expect(apiMock.cancelProviderAuthCheck).toHaveBeenCalledWith("alpha", "check-running"));
     expect(await screen.findByText("Checks complete: 0 of 1 passed.")).toBeVisible();
@@ -1128,7 +1170,7 @@ function sessionSnapshot(id: string, progress: string) {
   };
 }
 
-function providerAuthStatusSnapshot(verification: "not_verified" | "verified_by_live_request") {
+function providerAuthStatusSnapshot(verification: "not_verified" | "verified_by_account_request" | "verified_by_live_request") {
   return {
     schema: "mono-agent.provider-auth.v1",
     generatedAt: verification === "not_verified"

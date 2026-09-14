@@ -116,18 +116,73 @@ At startup, mono-agent inspects the existing Tailscale Serve configuration. It p
 
 ## Provider authentication
 
+Agent settings uses the same compact responsive sheet as project/tag settings:
+a bottom sheet on mobile and a centered panel on desktop. Model defaults,
+favorites, authentication, live checks and revert controls keep their existing
+behavior.
+
+### Subscription usage
+
+Under matching provider-auth rows, agents with the `providerUsage` v1 capability
+show subscription meters from their configured Pi auth store:
+
+| Provider | Core meters | Plan |
+| --- | --- | --- |
+| Claude (`anthropic`) | Session (5h), Weekly (7d), Fable when supplied | Not exposed by Pi; omitted |
+| Codex (`openai-codex`) | Session (5h) and/or Weekly (7d), when supplied | Pro 5x, Pro 20x, Business Premium, or the provider's plan label |
+| OpenCode Go (`opencode-go`) | Session, Weekly, Monthly | Go |
+
+Numbers are vendor-reported percent used, clamped to 0–100, not estimates from
+session costs. A sole weekly Codex limit stays Weekly even when it occupies the
+primary slot. Reset countdowns include an absolute time on hover; vendor reset
+timestamps are authoritative (the nominal monthly period is 30 days). No Spark,
+credits, Sonnet, extra-usage or cost meters are included. Unsupported providers
+and absent/unusable credentials add no placeholders. Successfully mapped usage
+reads provide weaker **Credential OK** evidence, not live inference verification.
+
+The agent shares one five-minute in-memory cache between console reads and the
+[ProviderUsage tool](/tools/mcp/#providerusage-subscription-quota). Opening the
+sheet loads usage independently of auth status; it polls while open and stops
+on close or agent switch. Expired data is shown as **Last known usage** during a
+coalesced refresh. Failures show **Usage unavailable** with a short safe reason,
+retaining last-good meters. Rate limits honor `Retry-After`; rejected OAuth
+credentials get one refresh through the existing Pi resolver and one retry.
+Claude rejection includes a re-login hint (usage requires `user:profile` scope);
+an OpenCode entitlement rejection means no Go subscription, not a bad key.
+
+The independent read routes are agent `${basePath}/v1/provider-usage` and console
+`/api/v1/agents/:id/provider-usage`, with an optional exact `provider` filter.
+They are no-store, use the existing owner/operator and same-origin protections,
+and return `mono-agent.provider-usage.v1`. Usage failures never block the auth
+rows. The web server never reads credentials; vendor identifiers and secrets
+are dropped on the agent host before transport. No subscription usage is
+persisted by the service, and no quota purchase/reset endpoint is called.
+
+### Authentication and live checks
+
 For every current app-owned agent, **Agent settings** includes one compact
 provider-authentication row for each provider used by the agent's effective
 primary, fallback, memory, and enabled static trigger routes. A row says **OK**
-only after a retained real request succeeds. Static credential presence is
-**Not verified**; unusable material and a later credential rejection are
+only after a retained real inference request succeeds (`verified_by_live_request`).
+**Credential OK** (`verified_by_account_request`) means the vendor accepted the
+credential at its account/usage API; inference and model entitlement are not
+proven. Static credential presence is **Not verified**. Unusable material and a
+later credential rejection are
 **Needs action**; keyless providers are **Not applicable**. Availability,
 network, quota, and model-entitlement failures do not become false auth claims.
+Usage reads while Agent settings is open, or a `ProviderUsage` tool call, feed
+this passive evidence without extra vendor requests or spending inference quota.
+A mapped success records credential acceptance; a final authentication rejection
+records **Needs action**. Entitlement, rate-limit, timeout, network, malformed
+response and unavailable outcomes add no auth evidence. Account acceptance never
+replaces live verification or clears an inference-availability warning.
 The evidence is best-effort and process-local: a restart loses check sessions
 and observations, and no provider-auth result is stored durably. Ordinary run
 evidence is fenced at provider-execution start: any target-store mutation makes
 already-running summaries and their failover attempts ineligible to verify or
 reject the replacement credential, even if post-install cleanup later fails.
+Usage fetches capture the same generation fence and publish evidence only if the
+credential identity is still retained; a credential replacement clears its proof.
 
 One **Authenticate** or **Re-authenticate** action starts a short-lived session on
 the agent host. GitHub Copilot and OpenAI Codex show Pi's native device URL and
@@ -135,8 +190,8 @@ code while the headless host polls. Anthropic shows an authorization URL and a
 field for the final localhost redirect URL or code because Pi 0.85.1 has no
 Anthropic device-code flow. API-key providers such as OpenCode-Go use masked,
 provider-owned prompts. There is no `--device-auth` CLI flag.
-The neutral recovery action remains available at its normal button size whenever
-the provider exposes a supported login method, even when the row says **OK** or
+The neutral recovery action remains available at the sheet's compact button size whenever
+the provider exposes a supported login method, even when the row says **OK**, **Credential OK**, or
 **Not verified**. Starting another valid login cancels the current session and
 begins again with a fresh session ID; a malformed or unavailable method leaves
 the current prompt usable. Live checks are separate consented operations and
@@ -159,7 +214,7 @@ partial results inline. A pass proves only that provider, credential, and model
 worked at the check time. Missing or incomparable prices, including multiple
 candidates when any price is unknown, make no request; a sole eligible candidate
 with unknown price is the one documented exception. Opening or polling settings
-never sends provider traffic. Clicking **Run check** may consume quota or incur a
+never sends inference requests; subscription usage reads use the cached account API. Clicking **Run check** may consume quota or incur a
 minimum charge, and Pi may refresh OAuth and atomically update the agent's auth
 store. Checks run at most two providers concurrently, time out, can be cancelled,
 and observe a one-minute cooldown.

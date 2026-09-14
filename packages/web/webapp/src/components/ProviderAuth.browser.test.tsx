@@ -104,11 +104,11 @@ describe("provider authentication controls in Chromium", () => {
     expect(screen.queryByText("STALE CLOSED FLOW")).not.toBeInTheDocument();
     const run = screen.getByRole("button", { name: "Run live checks for all displayed providers" });
     expect(run).toBeEnabled();
-    expect(run.getBoundingClientRect().height).toBeGreaterThanOrEqual(38);
+    expect(run.getBoundingClientRect().height).toBeGreaterThanOrEqual(28);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   });
 
-  it("keeps recovery normal-size and neutral while one explicit faux batch reports distinct outcomes", async () => {
+  it("keeps recovery compact and neutral while one explicit faux batch reports distinct outcomes", async () => {
     render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
 
     expect(await screen.findAllByText("Not verified")).toHaveLength(3);
@@ -116,11 +116,11 @@ describe("provider authentication controls in Chromium", () => {
     const recovery = screen.getAllByRole("button", { name: "Re-authenticate" });
     expect(recovery).toHaveLength(3);
     expect(recovery.every((button) => button.classList.contains("provider-auth-neutral-button"))).toBe(true);
-    expect(recovery.every((button) => button.getBoundingClientRect().height >= 38)).toBe(true);
+    expect(recovery.every((button) => button.getBoundingClientRect().height >= 28)).toBe(true);
 
     const run = screen.getByRole("button", { name: "Run live checks for all displayed providers" });
     expect(run.classList.contains("provider-auth-neutral-button")).toBe(true);
-    expect(run.getBoundingClientRect().height).toBeGreaterThanOrEqual(38);
+    expect(run.getBoundingClientRect().height).toBeGreaterThanOrEqual(28);
     await userEvent.click(run);
 
     await waitFor(() => expect(apiMock.beginProviderAuthCheck).toHaveBeenCalledOnce());
@@ -171,7 +171,7 @@ describe("provider authentication controls in Chromium", () => {
     await userEvent.click(screen.getByRole("button", { name: "OAuth paste-back" }));
     expect(await screen.findByText("OLD FLOW ACTIVE")).toBeVisible();
     const restart = screen.getByRole("button", { name: "Re-authenticate" });
-    expect(restart.getBoundingClientRect().height).toBeGreaterThanOrEqual(38);
+    expect(restart.getBoundingClientRect().height).toBeGreaterThanOrEqual(28);
     expect(restart.classList.contains("provider-auth-neutral-button")).toBe(true);
 
     await userEvent.click(restart);

@@ -160,6 +160,35 @@ describe("agentGeneration", () => {
 });
 
 describe("projected web capabilities", () => {
+  it("projects usage capability live and fences a response across a generation change", async () => {
+    let advertised = true;
+    let discovered = fakeDiscoveredAgent();
+    let finish: ((response: Response) => void) | undefined;
+    const other = operatorFetch();
+    const service = await createService({
+      discoverImpl: async () => [discovered],
+      fetchImpl: (async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/v1/info")) return Response.json({ schema: 1, capabilities: advertised ? { providerUsage: { version: 1 } } : {} });
+        if (url.includes("/v1/provider-usage")) return new Promise<Response>((resolve) => { finish = resolve; });
+        return other(input, init);
+      }) as typeof fetch,
+    });
+    try {
+      expect((await service.bootstrap()).agents[0]?.supportsProviderUsage).toBe(true);
+      const pending = service.providerUsage("agent-one");
+      const rejected = expect(pending).rejects.toMatchObject({ code: "agent_generation_changed" });
+      await waitFor(() => finish !== undefined);
+      advertised = false;
+      discovered = fakeDiscoveredAgent({ source: { ...discovered.source, pid: 999, startedAt: "2026-09-14T12:00:00Z" } });
+      await service.refreshAgents();
+      finish!(Response.json({ schema: "mono-agent.provider-usage.v1", providers: [] }));
+      await rejected;
+      expect((await service.bootstrap()).agents[0]?.supportsProviderUsage).toBeUndefined();
+      await expect(service.providerUsage("agent-one")).rejects.toMatchObject({ code: "provider_usage_unavailable" });
+    } finally { await service.stop(); }
+  });
+
   it("does not announce an agent change on every heartbeat of a provider-auth agent", async () => {
     // Every agent behind the tui operator advertises `capabilities.providerAuth`,
     // so on the deployed fleet this is the common case, not an edge one.
