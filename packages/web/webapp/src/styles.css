@@ -145,7 +145,24 @@
    take that away too. It belongs here and nowhere else: scoping it to one
    subtree only moves the bug to the next one. */
 html, body, #root { width: 100%; min-width: 320px; height: 100%; margin: 0; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-body { overflow: hidden; background: var(--app-bg); color: var(--text); }
+/* Installed iOS can sample a real fixed element at the viewport top rather
+   than theme-color. Keep its paint and the document fallback on the header's
+   surface, without overlaying UI or participating in layout. CSS variables
+   follow the same theme/media changes as the header, not a JS color snapshot. */
+html { --status-bar-bg: var(--panel); background: var(--status-bar-bg); }
+/* These full-screen states deliberately use a different surface. */
+html:has(#root > :is(.initial-state, .fatal-state)) { --status-bar-bg: var(--surface); }
+body { overflow: hidden; background: var(--status-bar-bg); color: var(--text); }
+.status-bar-surface {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background: var(--status-bar-bg);
+  pointer-events: none;
+  z-index: -1;
+}
 button, input, textarea, select { font: inherit; color: inherit; }
 button { border: 0; }
 button, select { -webkit-tap-highlight-color: transparent; }
