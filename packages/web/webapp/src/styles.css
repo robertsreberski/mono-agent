@@ -1192,6 +1192,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .provider-auth-section { display: grid; gap: 10px; padding-top: 15px; border-top: 1px solid var(--line); }
 .provider-auth-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .provider-auth-header-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.provider-auth-header-actions .secondary-button { white-space: nowrap; }
 .provider-usage-refreshing { animation: spin 800ms linear infinite; }
 .provider-auth-title-row .secondary-button { flex: none; margin: 0; }
 .provider-auth-check-disclosure, .provider-auth-check-summary { margin: -3px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
@@ -1694,6 +1695,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .agent-settings-sheet .provider-auth-badges { justify-content: flex-start; gap: 4px; }
 .agent-settings-sheet .provider-auth-state, .provider-usage-plan { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; font-size: 10px; font-weight: 600; line-height: 1.5; letter-spacing: 0; text-transform: none; border-radius: 10px; }
 .agent-settings-sheet .secondary-button, .agent-settings-sheet .primary-button { min-height: 28px; max-height: 28px; padding: 0 10px; border-radius: 8px; }
+.agent-settings-sheet .provider-auth-section .secondary-button, .agent-settings-sheet .provider-auth-section .primary-button { font-size: 10px; }
 .agent-settings-sheet .icon-button { width: 28px; height: 28px; min-height: 0; aspect-ratio: 1; border-radius: 8px; }
 .agent-settings-sheet .provider-auth-neutral-button { background: transparent; }
 .agent-settings-sheet > footer { padding-top: 8px; border-top: 1px solid var(--line); flex-wrap: wrap; }

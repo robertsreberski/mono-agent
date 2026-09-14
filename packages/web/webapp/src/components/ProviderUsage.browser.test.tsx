@@ -72,23 +72,35 @@ describe("compact Agent settings subscription meters", () => {
     expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
     const actions = [
       ...screen.getAllByRole("button", { name: "Re-authenticate" }),
-      screen.getByRole("button", { name: "Run live checks for all displayed providers" }),
-      screen.getByRole("button", { name: "Save for new conversations" }),
+      screen.getByRole("button", { name: "Check access" }),
+      screen.getByRole("button", { name: "Refresh usage" }),
     ];
     for (const button of actions) {
-      expect(getComputedStyle(button).fontSize).toBe("12px");
+      expect(getComputedStyle(button).fontSize).toBe("10px");
       expect(button.getBoundingClientRect().height).toBe(28);
     }
-    const headerIcons = document.querySelectorAll(".agent-settings-header-actions .icon-button, .provider-auth-header-actions .icon-button");
-    expect(headerIcons).toHaveLength(3);
+    const headerIcons = document.querySelectorAll(".agent-settings-header-actions .icon-button");
+    expect(headerIcons).toHaveLength(2);
     for (const icon of headerIcons) {
       expect(icon.getBoundingClientRect().width).toBe(28);
       expect(icon.getBoundingClientRect().height).toBe(28);
     }
     const refreshButton = screen.getByRole("button", { name: "Refresh usage" });
     expect(refreshButton).toHaveAttribute("title", "Refresh usage");
-    const runButton = screen.getByRole("button", { name: "Run live checks for all displayed providers" });
+    const runButton = screen.getByRole("button", { name: "Check access" });
     expect(refreshButton.getBoundingClientRect().y).toBe(runButton.getBoundingClientRect().y);
+    expect(refreshButton).toHaveTextContent("Refresh usage");
+    expect(runButton).toHaveTextContent("Check access");
+    expect(screen.queryByText(/Run again|Run check/)).toBeNull();
+    expect(refreshButton).toHaveAccessibleDescription(/Refresh usage reads subscription limits without inference\. Check access sends one small model request/);
+    expect(runButton).toHaveAccessibleDescription(/may use quota or refresh OAuth/);
+    const actionsGroup = refreshButton.closest(".provider-auth-header-actions")!;
+    expect(actionsGroup.scrollWidth).toBeLessThanOrEqual(actionsGroup.clientWidth);
+    expect(getComputedStyle(refreshButton).whiteSpace).toBe("nowrap");
+    expect(getComputedStyle(runButton).whiteSpace).toBe("nowrap");
+    const save = screen.getByRole("button", { name: "Save for new conversations" });
+    expect(getComputedStyle(save).fontSize).toBe("12px");
+    expect(save.getBoundingClientRect().height).toBe(28);
     expect(screen.queryByText(/Sonnet|Spark|credits/)).toBeNull();
     const dialog = screen.getByRole("dialog");
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
