@@ -3399,11 +3399,11 @@ describe("WebService", () => {
     await service.stop();
   });
 
-  it("hints instead of a delta that would cost more than the message it describes", async () => {
-    // A write whose op envelopes outweigh the whole shaped message is not worth
-    // describing: a finish that absorbs twenty-one streamed text parts re-sets
-    // every part it shifted. Those writes reach the console as the invalidation
-    // every other message writer emits, and it re-reads the row.
+  it("sends a delta when a thought-interrupted sentence settles into one part", async () => {
+    // The store joins prose across thoughts as it streams, so a finish no
+    // longer absorbs twenty-one split text parts: one `set` rewrites the one
+    // text part, which costs less than the message and travels as content
+    // rather than as the invalidation an outweighing write would emit.
     const encoder = new TextEncoder();
     let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
     const service = await createService({
@@ -3428,8 +3428,8 @@ describe("WebService", () => {
     await waitFor(() => events.length >= 1);
     expect(events[0]?.type).toBe("message.delta");
 
-    // Reasoning between two text parts keeps them one answer, so the finish can
-    // absorb every one of them.
+    // Thoughts between text parts join the prose in front of them instead of
+    // splitting it, so the finish rewrites a single text part.
     const texts = Array.from({ length: 20 }, (_unused, index) => `t${String(index)}`);
     for (const [index, text] of texts.entries()) {
       push({ kind: "event", event: { type: "assistant_thought", text: `why ${String(index)}` } });
@@ -3441,12 +3441,14 @@ describe("WebService", () => {
     unsubscribe();
 
     const assistant = service.thread(thread.id).messages.at(-1);
-    expect(assistant?.parts).toHaveLength(21);
-    expect(assistant?.parts.at(-1)).toEqual({ type: "text", text: `Za${texts.join("")}` });
-    // The settling write: a truncate plus a `set` for all twenty-one survivors.
+    expect(assistant?.parts).toEqual([
+      { type: "text", text: `Za${texts.join("")}` },
+      { type: "reasoning", text: texts.map((_unused, index) => `why ${String(index)}`).join("") },
+    ]);
+    // The settling write: one `set`, cheaper than the message it describes.
     expect(events.at(-1)).toMatchObject({
-      type: "message.changed",
-      payload: { messageId: assistant?.id, updatedAt: assistant?.updatedAt },
+      type: "message.delta",
+      payload: { messageId: assistant?.id },
     });
     await service.stop();
   });

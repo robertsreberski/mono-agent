@@ -1270,21 +1270,81 @@ describe("convertWebMessage", () => {
   });
 
   it.each(["complete", "running", "cancelled", "failed", "interrupted"] as const)(
-    "preserves reasoning-split text for %s replies", (status) => {
+    "joins text split by a thought for %s replies", (status) => {
       const converted = convertWebMessage(message({ role: "assistant", status, parts: [
         { type: "text", text: "Tot" },
-        { type: "reasoning", text: "." },
+        { type: "reasoning", text: "hmm" },
         { type: "text", text: "ally fair." },
       ] }));
       if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+      // The later text joins into the earlier part, so the reader always sees
+      // one sentence; only the settled fold moves the thought row above it.
       expect(converted.content).toEqual(status === "complete" ? [
-        { type: "reasoning", text: "." }, { type: "text", text: "Totally fair." },
+        { type: "reasoning", text: "hmm" }, { type: "text", text: "Totally fair." },
       ] : [
-        { type: "text", text: "Tot" }, { type: "reasoning", text: "." },
-        { type: "text", text: "ally fair." },
+        { type: "text", text: "Totally fair." }, { type: "reasoning", text: "hmm" },
       ]);
     },
   );
+
+  it.each(["running", "complete"] as const)(
+    "drops a punctuation-only thought instead of rendering a step for %s replies", (status) => {
+      const converted = convertWebMessage(message({
+        role: "assistant",
+        status,
+        parts: [
+          { type: "text", text: "The" },
+          { type: "reasoning", text: "." },
+          { type: "text", text: " targeted search only surfaced daycare threads." },
+        ],
+      }));
+      if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+      // One sentence, no thought row — and with nothing else to group, no
+      // empty activity card either.
+      expect(converted.content).toEqual([
+        { type: "text", text: "The targeted search only surfaced daycare threads." },
+      ]);
+    },
+  );
+
+  it.each(["", "   ", ".", "**", "… —"] as const)(
+    "treats %j as a thought with no readable content", (text) => {
+      const converted = convertWebMessage(message({
+        role: "assistant",
+        status: "running",
+        parts: [{ type: "reasoning", text }],
+      }));
+      if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+      expect(converted.content).toEqual([]);
+    },
+  );
+
+  it("keeps a thought that carries real content, punctuation included", () => {
+    const converted = convertWebMessage(message({
+      role: "assistant",
+      status: "running",
+      parts: [
+        { type: "text", text: "The" },
+        { type: "reasoning", text: ". Let me check the inbox" },
+        { type: "text", text: " targeted search continues." },
+      ],
+    }));
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content).toEqual([
+      { type: "text", text: "The targeted search continues." },
+      { type: "reasoning", text: ". Let me check the inbox" },
+    ]);
+  });
+
+  it("keeps an emoji-only thought as readable content", () => {
+    const converted = convertWebMessage(message({
+      role: "assistant",
+      status: "running",
+      parts: [{ type: "reasoning", text: "🤔" }],
+    }));
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content).toEqual([{ type: "reasoning", text: "🤔" }]);
+  });
 
   it("keeps answer fragments together across reasoning, without joining tool narration", () => {
     const converted = convertWebMessage(message({
@@ -1294,7 +1354,7 @@ describe("convertWebMessage", () => {
         { type: "tool-call", toolCallId: "t1", toolName: "Search", args: {}, status: "complete" },
         { type: "reasoning", text: "Checking" },
         { type: "text", text: "Tot" },
-        { type: "reasoning", text: "." },
+        { type: "reasoning", text: "Hmm" },
         { type: "text", text: "ally" },
         { type: "reasoning", text: "More" },
         { type: "text", text: " " },

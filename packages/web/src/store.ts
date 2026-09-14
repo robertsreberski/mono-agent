@@ -7972,11 +7972,20 @@ function upsertToolCall(
 }
 
 /**
- * Whether a stored part marks a semantic boundary between streamed text runs.
- * Most telemetry remains invisible; compaction and the content-free assistant
- * message marker intentionally keep adjacent provider responses separate.
+ * Whether a stored part marks a semantic boundary for a streamed run of
+ * `appending`. Most telemetry remains invisible; compaction and the
+ * content-free assistant message marker intentionally keep adjacent provider
+ * responses separate.
  */
-function separatesStreamedText(part: WebMessagePart): boolean {
+function separatesStreamedText(part: WebMessagePart, appending: "text" | "reasoning"): boolean {
+  // A thought is working-out inside one answer, not a message boundary: prose
+  // that resumes after it belongs to the text run in front of it, so the
+  // reader sees the whole sentence and then the thought row instead of one
+  // sentence rendered as two blocks split mid-word. The relation stays
+  // asymmetric on purpose: prose between two thoughts still separates them,
+  // so distinct thoughts cannot merge into one reasoning part and lose their
+  // chronology.
+  if (appending === "text" && part.type === "reasoning") return false;
   // A Monitor acknowledgement may arrive while the provider is still flushing
   // the preceding message's final text delta. Its compact activity row must not
   // split that word; the explicit message boundary below separates responses.
@@ -8001,13 +8010,14 @@ function separatesStreamedText(part: WebMessagePart): boolean {
  * console renders every text part as its own markdown block, so a sentence
  * visibly broke in half. Skipping the parts the console never renders keeps
  * prose in one run, while a real tool call or delegation, which IS rendered,
- * still separates the text on either side of it.
+ * still separates the text on either side of it. A thought, though rendered,
+ * does not: it rides inside the one answer it interrupts.
  */
 function appendTextPart(parts: WebMessagePart[], type: "text" | "reasoning", delta: string): void {
   for (let index = parts.length - 1; index >= 0; index -= 1) {
     const part = parts[index];
     if (part === undefined) break;
-    if (!separatesStreamedText(part)) continue;
+    if (!separatesStreamedText(part, type)) continue;
     if (part.type !== type) break;
     parts[index] = { type, text: `${part.text}${delta}` };
     return;
@@ -8018,9 +8028,9 @@ function appendTextPart(parts: WebMessagePart[], type: "text" | "reasoning", del
 /**
  * Text parts on either side of one of these came from DIFFERENT assistant
  * messages: a tool call ends the message that requested it, so prose written
- * after the result belongs to the next one. Reasoning does not — a single
- * message can carry `thinking, text, thinking, text`, which `appendTextPart`
- * splits into two text parts even though the provider reports one answer.
+ * after the result belongs to the next one. Reasoning does not end one — a
+ * single message can carry `thinking, text, thinking, text` as one answer —
+ * so it never separates the trailing run the final text owns.
  */
 function separatesAssistantMessages(part: WebMessagePart): boolean {
   return part.type === "tool-call" || part.type === "subagent" || part.type === "error";
