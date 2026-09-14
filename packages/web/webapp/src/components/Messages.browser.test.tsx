@@ -611,8 +611,15 @@ describe("inline steer in Chromium", () => {
 });
 
 
-function SyntheticJobStack({ finished }: { readonly finished: boolean }) {
+function backgroundSubagentJobWithNewestCall(finished = false) {
   const job = backgroundSubagentJob(finished);
+  const progress = job.subagentProgress!;
+  return { ...job, subagentProgress: { ...progress, revision: progress.revision + 1, toolCalls: progress.toolCalls + 1,
+    recent: [...progress.recent, { id: "synthetic-call-45", toolName: "Write", argsSummary: "~/worktrees/synthetic/final-check.ts",
+      status: finished ? "complete" as const : "running" as const, ...(finished ? { executionMs: 58 } : {}) }].slice(-50) } };
+}
+
+function SyntheticJobStack({ job }: { readonly job: ReturnType<typeof backgroundSubagentJob> }) {
   const catalogByProvider = { anthropic: { models: [{
     id: "claude-sonnet-4.5",
     name: "Claude Sonnet 4.5",
@@ -657,11 +664,11 @@ describe("synthetic detached subagent evidence", () => {
 
     const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(backgroundSubagentJob().timestamps.startedAt!) + 12_000);
     const poll = vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
-    const frame = (finished: boolean) => <main style={{ width: fixtureWidth, margin: "12px auto" }}>
-      <h2>Synthetic fixture · {finished ? "finished" : "running"} child</h2>
-      <SyntheticJobStack finished={finished} />
+    const frame = (job: ReturnType<typeof backgroundSubagentJob>) => <main style={{ width: fixtureWidth, margin: "12px auto" }}>
+      <h2>Synthetic fixture · {job.state === "running" ? "running" : "finished"} child</h2>
+      <SyntheticJobStack job={job} />
     </main>;
-    const stack = render(frame(false));
+    const stack = render(frame(backgroundSubagentJob()));
     const region = await screen.findByRole("region", { name: "Subagent progress" });
     await waitFor(() => expect(region).toBeVisible());
     const runningMeta = document.querySelector(".process-job-live-meta")!;
@@ -675,11 +682,12 @@ describe("synthetic detached subagent evidence", () => {
     const stepSummary = steps.querySelector<HTMLElement>(".activity-step > summary")!;
     const cardRect = card.getBoundingClientRect();
     const cardStyle = getComputedStyle(card);
-    const cardContentLeft = cardRect.left + parseFloat(cardStyle.borderLeftWidth) + parseFloat(cardStyle.paddingLeft);
     const cardContentRight = cardRect.right - parseFloat(cardStyle.borderRightWidth) - parseFloat(cardStyle.paddingRight);
     const stepRect = stepSummary.getBoundingClientRect();
+    const metaFirstItem = runningMeta.firstElementChild as HTMLElement;
+    const firstTool = steps.querySelector<HTMLElement>(".activity-step-tool")!;
     expect(getComputedStyle(steps).borderLeftWidth).toBe("0px");
-    expect(stepRect.left - cardContentLeft).toBeCloseTo(0, 1);
+    expect(firstTool.getBoundingClientRect().left - metaFirstItem.getBoundingClientRect().left).toBeCloseTo(0, 1);
     expect(cardContentRight - stepRect.right).toBeGreaterThanOrEqual(4);
     expect(cardContentRight - stepRect.right).toBeLessThanOrEqual(10);
     const checkBounds = () => {
@@ -688,18 +696,37 @@ describe("synthetic detached subagent evidence", () => {
       expect(region.scrollWidth).toBeLessThanOrEqual(region.clientWidth);
       expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
     };
+    const expectNewestCallAtBottom = (tool: string, summary: string) => {
+      const renderedCalls = [...steps.querySelectorAll<HTMLElement>(".activity-step")];
+      const newest = renderedCalls.at(-1)!;
+      expect(newest.querySelector(".activity-step-tool")).toHaveTextContent(tool);
+      expect(newest.querySelector(".activity-step-summary")).toHaveTextContent(summary);
+      expect(newest.querySelector(".activity-step-time")).toHaveTextContent("running");
+      expect(region.scrollTop).toBeCloseTo(region.scrollHeight - region.clientHeight, 0);
+      const regionRect = region.getBoundingClientRect();
+      const newestRect = newest.querySelector("summary")!.getBoundingClientRect();
+      expect(newestRect.top).toBeGreaterThanOrEqual(regionRect.top - 1);
+      expect(newestRect.bottom).toBeLessThanOrEqual(regionRect.bottom + 1);
+    };
     checkBounds();
+    await waitFor(() => expectNewestCallAtBottom("Grep", "module-44.ts"));
+    stack.rerender(frame(backgroundSubagentJobWithNewestCall()));
+    await waitFor(() => expectNewestCallAtBottom("Write", "final-check.ts"));
+    expect(runningMeta).toHaveTextContent("46 tools, 1 failed");
+    await shot("running");
+
+    // Moving away from the latest call opts out of follow mode. The terminal
+    // report may arrive, but it must not take this reading position away.
     region.scrollTop = 0;
     fireEvent.scroll(region);
     expect(screen.getByText("Bash ×6")).toBeVisible();
     expect(screen.getByText("Read ×3")).toBeVisible();
-    await shot("running");
-    stack.rerender(frame(true));
+    stack.rerender(frame(backgroundSubagentJobWithNewestCall(true)));
     fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
     await waitFor(() => expect(screen.getByRole("region", { name: "Subagent report" })).toBeInTheDocument());
     const finishedMeta = document.querySelector(".process-job-live-meta")!;
     expect(finishedMeta).toHaveTextContent("implementer");
-    expect(finishedMeta).toHaveTextContent("45 tools, 1 failed");
+    expect(finishedMeta).toHaveTextContent("46 tools, 1 failed");
     expect(finishedMeta.querySelector(".effort-signal")).toHaveAttribute("data-filled", "3");
     expect(region.scrollTop).toBe(0); // reading position survives terminal report arrival
     checkBounds();
