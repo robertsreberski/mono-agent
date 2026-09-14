@@ -684,6 +684,35 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.failureKind).toBe("provider_auth");
   });
 
+  it("routes the supplemented opencode-go model through the run collection to provider_auth", async () => {
+    // No `piResolvedModel`/`piResolvedModels` seam: production resolution
+    // (`resolvePiRuntimeModel`) plus the real `builtinModels()` run collection
+    // (with the supplement registered) serve this turn. With no credential the
+    // run must reach the auth stage — only possible if the harness resolved
+    // `deepseek-v4.1-flash` by id inside the collection. The env is stubbed so
+    // a ambient OPENCODE_API_KEY can never turn this into a live request.
+    vi.stubEnv("OPENCODE_API_KEY", "");
+    try {
+      const result = await generatePiNativeResponse("system", {
+        model: {
+          provider: "opencode-go",
+          model: "deepseek-v4.1-flash",
+          reference: "opencode-go:deepseek-v4.1-flash",
+        },
+        messages: [{ role: "user", content: "hello" }],
+        effort: "none",
+        allowedTools: [],
+        resolvePiApiKey: async () => null,
+        piSessionsRoot: sessionsRoot,
+      });
+
+      expect(result.error).toBe("Provider is not configured: opencode-go");
+      expect(result.failureKind).toBe("provider_auth");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("dispatches stable OpenCode headers and returns the attribution id as the fresh provider session", async () => {
     const model = setup({ id: "deepseek-v4-pro" }, "opencode-go");
     const dispatchedHeaders = [];
