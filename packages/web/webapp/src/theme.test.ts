@@ -70,6 +70,18 @@ describe("applyConsolePresentation", () => {
 });
 
 describe("initial PWA chrome", () => {
+  it("keeps a real, inert status-bar paint target outside the React root", () => {
+    const initialDocument = new DOMParser().parseFromString(indexHtml, "text/html");
+    const sampler = initialDocument.body.querySelector(".status-bar-surface");
+
+    expect(sampler?.tagName).toBe("DIV");
+    expect(sampler?.getAttribute("aria-hidden")).toBe("true");
+    expect(sampler?.hasAttribute("inert")).toBe(true);
+    expect(sampler?.nextElementSibling?.id).toBe("root");
+    expect(sampler?.childNodes).toHaveLength(0);
+    expect(initialDocument.querySelectorAll(".status-bar-surface")).toHaveLength(1);
+  });
+
   it("starts with evergreen header colors and the default iOS status mode", () => {
     const initialDocument = new DOMParser().parseFromString(indexHtml, "text/html");
     const light = initialDocument.head.querySelector<HTMLMetaElement>(
