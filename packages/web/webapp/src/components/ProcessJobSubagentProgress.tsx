@@ -1,7 +1,10 @@
 import { useLayoutEffect, useRef } from "react";
-import type { ProcessJobSubagentProgress as Progress } from "../types";
+import type { ProcessJobSubagentProgress as Progress, ToolCallStatus } from "../types";
 import { ActivityStep, clusterSummary, failedLabel } from "./ActivityRow";
 import { formatToolDuration } from "./duration";
+import { resolveSubagentRoute } from "./route-label";
+import { useRouteCapabilities } from "./route-capabilities";
+import { RouteBadge } from "./RouteBadge";
 import { toolArgumentPreview } from "./Subagent";
 
 type Call = Progress["recent"][number];
@@ -16,12 +19,33 @@ function clusters(calls: readonly Call[]): Call[][] {
   return groups;
 }
 
-/** The child's identity and call counts, rendered as facts beside State/Wake. */
-export function ProcessJobSubagentFacts({ progress }: { readonly progress?: Progress }) {
+/** The child's identity, assigned route and call counts in the job facts row. */
+export function ProcessJobSubagentFacts({ progress, status }: {
+  readonly progress?: Progress;
+  readonly status: ToolCallStatus;
+}) {
+  const capabilities = useRouteCapabilities();
   if (progress === undefined) return null;
+  const route = progress.route === undefined ? undefined : resolveSubagentRoute({
+    requested: progress.route.requested,
+    ...(progress.route.executed === undefined ? {} : { executed: progress.route.executed }),
+    disposition: progress.route.disposition ?? "unknown",
+    transitions: [],
+    retries: [],
+  }, status, capabilities.agent, capabilities.catalogModels);
   return (
     <>
       <div><dt>Child</dt><dd>{progress.profile}</dd></div>
+      {route !== undefined && <div><dt>Route</dt><dd><RouteBadge
+        modelShort={route.modelShort}
+        effortShort={route.effortShort}
+        effortSignal={route.effortSignal}
+        label={route.label}
+        title={route.title}
+        compact
+        fallback={route.isFallback}
+        requestedOnly={route.isRequestedOnly}
+      /></dd></div>}
       <div>
         <dt>Tools</dt>
         <dd>{progress.toolCalls}{progress.failedCalls > 0 ? ` · ${progress.failedCalls} failed` : ""}</dd>
@@ -51,11 +75,11 @@ export function ProcessJobSubagentProgress({ progress, open }: {
         follow.current = target.scrollHeight - target.scrollTop - target.clientHeight <= 24;
       }}>
       {progress === undefined
-        ? <p className="subagent-empty">Progress is unavailable for this retained job.</p>
+        ? <p className="process-job-subagent-note">Progress is unavailable for this retained job.</p>
         : <div className="activity-steps">
           {progress.recent.length === 0 && <p className="subagent-empty">No tool calls yet.</p>}
           {progress.toolCalls > progress.recent.length && (
-            <p className="subagent-empty">Showing the latest {progress.recent.length} of {progress.toolCalls} calls.</p>
+            <p className="process-job-subagent-note">Showing the latest {progress.recent.length} of {progress.toolCalls} calls.</p>
           )}
           {clusters(progress.recent).map((calls) => {
             const first = calls[0]!;

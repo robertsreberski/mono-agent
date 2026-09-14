@@ -336,7 +336,7 @@ describe("ProcessJobPart", () => {
 
     const row = screen.getByRole("group", { name: `Exec background job ${label}` });
     expect(row).toHaveClass("is-failed");
-    // The payload's State fact repeats the word; the row's tag is the one on the summary line.
+    // The row's tag is the one retained state label; the payload no longer repeats it.
     expect(within(row.querySelector("summary")!).getByText(label)).toHaveClass("failed-tag");
     expect(row.querySelector(".activity-row-time")).toHaveTextContent("12s · SIGKILL");
     expect(row.querySelector(".activity-row-time")?.textContent).not.toContain(label);
@@ -835,9 +835,20 @@ describe("ProcessJobPart", () => {
   });
 });
 
-it("shows unresolved internal child ownership on a terminal job card", () => {
-  render(part({ type: "process-job", job: processJob({ tool: "Agent", kind: "internal", instanceId: "helper", state: "timed_out", childStillBusy: true }) }));
-  expect(screen.getByText("child still busy · awaiting actual settlement")).toBeInTheDocument();
+it("shows unresolved internal child ownership only on a terminal job card", () => {
+  const job = processJob({ tool: "Agent", kind: "internal", instanceId: "helper", state: "timed_out", childStillBusy: true });
+  const view = render(part({ type: "process-job", job }));
+  const terminal = screen.getByRole("group", { name: "Agent background job timed out" });
+  expect(terminal.querySelector(".activity-row-time .activity-row-alert"))
+    .toHaveTextContent("child still busy · awaiting actual settlement");
+
+  view.unmount();
+  vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+  render(part({ type: "process-job", job: { ...job, state: "running",
+    timestamps: { ...job.timestamps, completedAt: null }, durationMs: null, exitCode: null } }));
+  const running = screen.getByRole("group", { name: "Agent background job running" });
+  expect(within(running).queryByText("child still busy · awaiting actual settlement")).toBeNull();
+  expect(running.querySelector(".activity-row-alert")).toBeNull();
 });
 
 
@@ -850,13 +861,66 @@ describe("background native subagent cards", () => {
     expect(screen.getByRole("region", { name: "Subagent progress" })).toBeVisible();
     expect(screen.getByText("Bash ×6")).toBeVisible();
     expect(screen.getByText("Read ×3")).toBeVisible();
+    expect(screen.getByText("module-6.ts, module-7.ts +1")).toBeVisible();
+    fireEvent.click(screen.getByText("Read ×3").closest("summary")!);
+    expect(screen.getByText("~/worktrees/synthetic/src/module-6.ts")).toBeVisible();
     expect(screen.getByRole("region", { name: "Subagent report" })).toHaveTextContent("Synthetic report");
     expect(screen.queryByText("PRIVATE_RAW_JSON")).toBeNull();
     expect(view.container.querySelector(".process-job-output")).toBeNull();
     const icon = render(<Icon name="agent" />);
     expect(card.querySelector(".activity-job-icon")?.innerHTML).toBe(icon.container.querySelector("svg")?.innerHTML);
-    expect(screen.getByText("State")).toBeVisible();
+    expect(screen.queryByText("State")).toBeNull();
+    expect(screen.queryByText("Exit")).toBeNull();
+    expect(screen.queryByText("Signal")).toBeNull();
     expect(screen.getByText("Wake")).toBeVisible();
+    expect(screen.getByText("Route")).toBeVisible();
+    expect(screen.getByRole("img", { name: /Ran with anthropic:claude-sonnet-4\.5/u })).not.toHaveClass("is-requested");
+  });
+
+  it("shows requested route and compact nonduplicated facts while a child is running", () => {
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    render(part({ job: backgroundSubagentJob() }));
+    expect(screen.getByText("Child")).toBeVisible();
+    expect(screen.getByText("Tools")).toBeVisible();
+    expect(screen.getByText("Route")).toBeVisible();
+    expect(screen.queryByText("Wake")).toBeNull();
+    expect(screen.queryByText("State")).toBeNull();
+    expect(screen.queryByText("Exit")).toBeNull();
+    expect(screen.queryByText("Signal")).toBeNull();
+    expect(screen.getByRole("img", { name: /requested, not a confirmed run/u })).toHaveClass("is-requested");
+  });
+
+  it("flags a fallback route and omits the route badge for legacy progress", () => {
+    const job = backgroundSubagentJob(true);
+    const fallback = { ...job, subagentProgress: { ...job.subagentProgress!, route: {
+      requested: { model: "anthropic:claude-sonnet-4.5", effort: "high" },
+      executed: { model: "openai-codex:gpt-5.6-sol", effort: "xhigh", effectiveEffort: "max" },
+      disposition: "fallback" as const,
+    } } };
+    const view = render(part({ job: fallback }));
+    fireEvent.click(screen.getByRole("group", { name: "Agent background job succeeded" }).querySelector("summary")!);
+    const badge = screen.getByRole("img", { name: /Fallback: anthropic:claude-sonnet-4\.5 → openai-codex:gpt-5\.6-sol/u });
+    expect(badge).toHaveClass("is-fallback");
+    expect(badge.querySelector(".route-badge-flag")).toHaveTextContent("!");
+
+    const { route: _route, ...legacyProgress } = job.subagentProgress!;
+    view.unmount();
+    const legacy = render(part({ job: { ...job, subagentProgress: legacyProgress } }));
+    fireEvent.click(screen.getByRole("group", { name: "Agent background job succeeded" }).querySelector("summary")!);
+    expect(screen.queryByText("Route")).toBeNull();
+    expect(legacy.container.querySelector(".route-badge")).toBeNull();
+  });
+
+  it("styles retained-progress notes separately from the empty state", () => {
+    const job = backgroundSubagentJob(true);
+    const extra = Array.from({ length: 5 }, (_, index) => ({
+      ...job.subagentProgress!.recent[index]!,
+      id: `extra-${String(index)}`,
+    }));
+    render(part({ job: { ...job, subagentProgress: { ...job.subagentProgress!, toolCalls: 60,
+      recent: [...job.subagentProgress!.recent, ...extra] } } }));
+    fireEvent.click(screen.getByRole("group", { name: "Agent background job succeeded" }).querySelector("summary")!);
+    expect(screen.getByText("Showing the latest 50 of 60 calls.")).toHaveClass("process-job-subagent-note");
   });
 
   it("auto-opens on progress and preserves manual collapse and newer revisions", async () => {

@@ -433,6 +433,7 @@ ProcessJobProjectionTimestamps
 ProcessJobProjectionWake
 ProcessJobState
 ProcessJobSubagentProgress
+ProcessJobSubagentRoute
 ProcessJobWakeDeliveryInput
 ProcessJobWakeDeliveryResult
 ProcessJobWakeDisposition
@@ -509,6 +510,7 @@ isMonitorState
 isProcessJobErrorCode
 isProcessJobState
 isProcessJobSubagentProgress
+isProcessJobSubagentRoute
 isSubagentLaunchToolName
 isTerminalMonitorState
 isTerminalProviderAuthSessionState

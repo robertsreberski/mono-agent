@@ -500,7 +500,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           callIndex,
           ...(params.description === undefined ? {} : { label: params.description }),
           ...(detached
-            ? { emit: (event) => reportDetachedProgress(event, reportProgress) }
+            ? { emit: (event) => reportDetachedProgress(event, reportProgress, requested) }
             : context.onEvent === undefined ? {} : { emit: context.onEvent }),
           // Synchronous spend is summed across router attempts. Detached spend
           // belongs only to its instance and job, even if it completes immediately.
@@ -807,12 +807,28 @@ function appendRouteEntry(entries, entry, routeState) {
 /** Drop all provider payloads before the private job callback, especially prompts/results.
  * @param {*} event
  * @param {(event: *) => void} [report]
+ * @param {{model?: string, effort?: string}} [requested]
  */
-function reportDetachedProgress(event, report) {
+function reportDetachedProgress(event, report, requested = {}) {
   if (!report) return;
   if (event.phase === "agent_started") {
     report({ type: "started", profile: event.subagent.name,
       ...(event.subagent.label ? { label: event.subagent.label } : {}) });
+    if (requested.model !== undefined || requested.effort !== undefined) {
+      report({ type: "route", requested });
+    }
+  } else if (event.phase === "agent_completed") {
+    const attribution = event.subagent?.attribution;
+    const routeKnown = attribution?.requested?.model !== undefined
+      || attribution?.requested?.effort !== undefined
+      || attribution?.executed?.model !== undefined
+      || attribution?.executed?.effort !== undefined
+      || attribution?.executed?.effectiveEffort !== undefined;
+    if (attribution !== undefined && routeKnown) {
+      report({ type: "route", requested: attribution.requested,
+        ...(attribution.executed === undefined ? {} : { executed: attribution.executed }),
+        disposition: attribution.disposition });
+    }
   } else if (event.phase === "started") {
     const args = event.arguments;
     // No prompt/message or unknown-object fallback. Redaction precedes retention in the host.

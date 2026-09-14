@@ -303,20 +303,22 @@ const joinMeta = (items: readonly ReactNode[]): ReactNode =>
 
 /**
  * What the time slot says: the state word (unless the tag already says it), the
- * elapsed or final duration, how the process ended, and a failed wake — the one
- * wake outcome an operator has to act on.
+ * elapsed or final duration, how the process ended, unresolved terminal child
+ * ownership, and wake outcomes an operator has to act on.
  */
 const processJobMeta = (job: ProcessJobProjection, terminal: boolean): ReactNode => {
   const timing = processJobTiming(job);
   const exit = processJobExitLabel(job);
   const items: ReactNode[] = [];
-  if (job.kind === "internal" && job.childStillBusy) items.push(<span key="child-busy" className="activity-row-alert">child still busy · awaiting actual settlement</span>);
   if (processJobStatus(job.state) !== "failed") items.push(processJobStateLabel(job.state));
   // A settled job with no finish stamp has nothing honest to show; leave the slot out.
   if (timing !== undefined && (!terminal || timing.finishedAt !== undefined)) {
     items.push(<ActivityElapsed key="elapsed" timing={timing} live={!terminal} />);
   }
   if (exit !== undefined) items.push(exit);
+  if (terminal && job.kind === "internal" && job.childStillBusy) {
+    items.push(<span key="child-busy" className="activity-row-alert">child still busy · awaiting actual settlement</span>);
+  }
   // Its own element: a phone-width row lets the meta wrap, and this is the one
   // token that must neither split across lines nor be the part that clips.
   if (terminal && job.wake.state === "failed") {
@@ -483,6 +485,11 @@ export function ProcessJobCard({
     : undefined;
   const status = processJobStatus(live.state);
   const stateLabel = processJobStateLabel(live.state);
+  const facts: ReactNode[] = [];
+  if (terminal) facts.push(<div key="wake"><dt>Wake</dt><dd>{wakeLabel(live.wake)}</dd></div>);
+  if (live.kind === "internal" && progress !== undefined) {
+    facts.push(<ProcessJobSubagentFacts key="subagent" progress={progress} status={status} />);
+  }
   // The card shows the job's output, not where the host spooled it: the artifact
   // paths are host-local files an operator in the console cannot open, and they
   // pushed the one section worth reading off a phone screen.
@@ -503,13 +510,7 @@ export function ProcessJobCard({
       ariaLabel={`${live.tool} background job ${stateLabel}`}
     >
       <div className="activity-payload is-indented">
-        <dl className="process-job-facts">
-          <div><dt>State</dt><dd>{stateLabel}</dd></div>
-          {live.exitCode !== null && <div><dt>Exit</dt><dd>{live.exitCode}</dd></div>}
-          {live.signal !== null && <div><dt>Signal</dt><dd>{live.signal}</dd></div>}
-          <div><dt>Wake</dt><dd>{wakeLabel(live.wake)}</dd></div>
-          {live.kind === "internal" && <ProcessJobSubagentFacts progress={progress} />}
-        </dl>
+        {facts.length > 0 && <dl className="process-job-facts">{facts}</dl>}
         {live.kind === "internal" ? <ProcessJobSubagentProgress key={live.jobId} progress={progress} open={open} /> : live.output.preview.length > 0 && (
           <>
             <span>Output{live.output.truncated ? " (truncated)" : ""}</span>
