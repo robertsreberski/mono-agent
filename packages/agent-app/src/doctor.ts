@@ -13,7 +13,6 @@ import { promisify } from "node:util";
 // is built from `getBuiltinProviders()`, which is exactly the catalog set.
 import {
   type BuiltinProvider as PiBuiltinProvider,
-  getBuiltinModels as getPiBuiltinModels,
   getBuiltinProviders as getPiBuiltinProviders,
 } from "@earendil-works/pi-ai/providers/all";
 import { validateCronExpression } from "@mono-agent/cron-adapter";
@@ -51,6 +50,7 @@ import {
   sanitizeModelReferenceText,
 } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+import { getPiBuiltinModel } from "@mono-agent/agent-runtime";
 
 import {
   isAppCoreConfigError,
@@ -702,9 +702,13 @@ function piModelResolutionIssue(
     return undefined;
   }
 
+  // pi-supplement: validate against the runtime's supplement-aware facade, not
+  // pi-ai directly, so a supplemented model (see agent-runtime's
+  // ai/pi-supplement.js) validates exactly like a pi builtin. Unknown refs
+  // still fail with the same diagnostic.
   if (
     isPiBuiltinProvider(model.provider)
-    && getPiBuiltinModels(model.provider).some((candidate) => candidate.id === model.model)
+    && getPiBuiltinModel(model.provider, model.model) !== undefined
   ) {
     return undefined;
   }

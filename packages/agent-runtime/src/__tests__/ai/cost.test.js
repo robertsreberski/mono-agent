@@ -67,6 +67,24 @@ describe("resolvePricing precedence", () => {
     });
   });
 
+  it("prices the opencode-go DeepSeek V4.1 Flash supplement from its own row", () => {
+    const pricing = resolvePricing({ model: "opencode-go:deepseek-v4.1-flash" });
+    expect(getBuiltinModel).toHaveBeenCalledWith("opencode-go", "deepseek-v4.1-flash");
+    expect(pricing).toMatchObject({
+      source: "pi-catalog",
+      priced: true,
+      input: 0.15,
+      output: 0.6,
+      cacheRead: 0.003,
+      cacheWrite: 0,
+    });
+    expect(estimateCost({
+      model: "opencode-go:deepseek-v4.1-flash",
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    })).toBeCloseTo(0.15 + 0.6, 6);
+  });
+
   it("preserves colons inside model ids when consulting the catalog", () => {
     getBuiltinModel.mockReturnValue(undefined);
     const pricing = resolvePricing({ model: "amazon-bedrock:anthropic.claude-opus-4-5-20251101-v1:0" });
