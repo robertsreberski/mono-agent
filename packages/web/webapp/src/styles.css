@@ -1652,10 +1652,13 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 }
 
 /* A detached child's progress: the transcript's own step/payload primitives,
-   scrolling inside the card so a long run never widens or lengthens the stack. */
-.process-job-subagent-progress { max-height: min(22vh, 184px); min-width: 0; max-width: 100%; margin: 0 -8px 0 -34px; padding: 0 4px 4px 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none; overscroll-behavior: contain; border-radius: 8px; }
+   scrolling inside the card so a long run never widens or lengthens the stack.
+   The card itself supplies the hierarchy, so its rows need neither the transcript
+   rail nor the rail's indent. Let the negative margins reclaim both payload
+   insets; a 100% max-width would clamp that expansion and strand space at right. */
+.process-job-subagent-progress { max-height: min(22vh, 184px); min-width: 0; margin: 0 -8px 0 -34px; padding: 0 4px 4px 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none; overscroll-behavior: contain; border-radius: 8px; }
 .process-job-subagent-progress:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.process-job-subagent-progress > .activity-steps { margin: 0 0 0 24px; padding-bottom: 6px; }
+.process-job-subagent-progress > .activity-steps { margin: 0; padding: 0 0 6px; border-left: 0; }
 .process-job-subagent-note { margin: 0; padding: 2px 8px 4px; color: var(--text-muted); font-size: 9px; line-height: 1.4; }
 .process-job-subagent-progress .activity-step > summary { min-height: 28px; }
 .process-job-subagent-progress .activity-step-tool { min-width: 68px; }
