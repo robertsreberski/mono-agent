@@ -280,9 +280,54 @@ describe("Dashboard conversation rows", () => {
     }]);
     rerender(<Dashboard />);
     expect(row).not.toHaveTextContent("Completed");
-    expect(row.querySelector(".thread-preview-text")?.textContent).toBe("");
+    // The settled slot shows the newest reply, never the job card's own words.
+    expect(row.querySelector(".thread-preview-text")?.textContent).toBe("Older reply");
     expect(row).not.toHaveTextContent("Results are ready");
     expect(within(row).queryByRole("img", { name: /running|Working/u })).toBeNull();
+  });
+
+  it("spends a settled row's empty status slot on the newest reply, and nothing else", () => {
+    const settled = thread("settled", "agent-one", {
+      title: "Settled work",
+      runState: { status: "complete" },
+      lastMessagePreview: "The deploy is green again.",
+    });
+    const quiet = thread("quiet", "agent-one", {
+      title: "Quiet work",
+      runState: { status: "complete" },
+    });
+    const failed = thread("broken", "agent-one", {
+      title: "Broken work",
+      runState: { status: "failed" },
+      lastMessagePreview: "An older answer",
+    });
+    const busy = thread("busy", "agent-one", {
+      title: "Busy work",
+      runState: { status: "running" },
+      lastMessagePreview: "An older answer",
+    });
+    const threads = [settled, quiet, failed, busy];
+    storeMock.current = createStore(threads);
+    render(<Dashboard />);
+
+    const settledRow = screen.getByRole("button", { name: "Open Settled work" });
+    const preview = settledRow.querySelector(".thread-preview-text")!;
+    expect(preview.textContent).toBe("The deploy is green again.");
+    // Hovering the ellipsized line shows the fuller text, as status lines do.
+    expect(preview).toHaveAttribute("title", "The deploy is green again.");
+
+    const quietRow = screen.getByRole("button", { name: "Open Quiet work" });
+    expect(quietRow.querySelector(".thread-preview-text")?.textContent).toBe("");
+
+    const failedRow = screen.getByRole("button", { name: "Open Broken work" });
+    expect(failedRow).toHaveTextContent("Failed");
+    expect(failedRow).not.toHaveTextContent("An older answer");
+
+    const busyRow = screen.getByRole("button", { name: "Open Busy work" });
+    expect(busyRow).toHaveTextContent("Working…");
+    expect(busyRow).not.toHaveTextContent("An older answer");
+    // The running dot keeps describing the work, never the excerpt.
+    expect(within(busyRow).getByRole("img", { name: "Working…" })).toBeVisible();
   });
 
   it("shows cancellation status in archived conversations", () => {
