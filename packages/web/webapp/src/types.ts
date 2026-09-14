@@ -262,6 +262,7 @@ export interface AgentSummary {
   readonly supportsAttachments: boolean;
   readonly supportsProviderAuth?: true;
   readonly supportsProviderUsage?: true;
+  readonly supportsProviderUsageRefresh?: true;
   readonly supportsProviderAuthChecks?: true;
   readonly models?: readonly string[];
   readonly defaultModel?: string;

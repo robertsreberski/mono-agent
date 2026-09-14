@@ -1,38 +1,85 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { AgentSummary, ProviderUsage, ProviderUsageSnapshot } from "../types";
 
 /** Isolated from auth status/login: slow or failed quota reads never hide auth controls. */
 export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
   const [snapshot, setSnapshot] = useState<ProviderUsageSnapshot | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const owner = useRef<{ scope: string; refresh: () => Promise<void> } | null>(null);
+  const scope = `${agent.sourceId}:${agent.generation ?? "unknown"}:${authRevision ?? ""}`;
   useEffect(() => {
     setSnapshot(null);
+    setRefreshing(false);
+    setFeedback(null);
     if (agent.supportsProviderUsage !== true || agent.status === "offline") return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const load = async () => {
+    let sequence = 0;
+    let manualFlight = false;
+    let retained: ProviderUsageSnapshot | null = null;
+    const load = async (manual = false) => {
+      // Timer reads cannot supersede a pending manual request. A manual request
+      // can supersede an older GET, even if that GET ignores its AbortSignal.
+      if (manualFlight) return;
+      if (manual) {
+        manualFlight = true;
+        setRefreshing(true);
+        setFeedback("Refreshing usage…");
+      }
+      if (timer !== undefined) clearTimeout(timer);
+      const request = ++sequence;
       let delay = 300_000;
       try {
-        const next = await api.providerUsage(agent.sourceId, controller.signal);
-        if (controller.signal.aborted) return;
+        const next = await (manual ? api.refreshProviderUsage(agent.sourceId, controller.signal) : api.providerUsage(agent.sourceId, controller.signal));
+        if (controller.signal.aborted || request !== sequence) return;
+        const missing = retained?.providers.some((previous) => !next.providers.some((item) => item.providerId === previous.providerId));
+        retained = next;
         setSnapshot(next);
-        // A stale response started a coalesced refresh; read its result once soon.
+        if (manual) {
+          if (next.providers.some((item) => item.stale || item.error) || missing) {
+            setFeedback("Some usage could not be refreshed. Last known meters are retained where available.");
+          } else if (next.providers.length === 0) {
+            setFeedback("No subscription usage is available.");
+          } else {
+            const oldest = Math.min(...next.providers.map((item) => Date.parse(item.fetchedAt)));
+            setFeedback(`Usage refreshed. Last fetched ${new Date(oldest).toLocaleString()}.`);
+          }
+        }
+        // A stale automatic response started a coalesced refresh; read it once soon.
         if (next.providers.some((provider) => provider.stale && !provider.error)) delay = 15_000;
       } catch {
-        // No provider credential evidence on a transport failure. Retain only
-        // already-known providers, using a fixed message instead of raw errors.
-        if (!controller.signal.aborted) setSnapshot((previous) => previous === null ? null : ({ ...previous, providers: previous.providers.map((provider) => ({
+        if (controller.signal.aborted || request !== sequence) return;
+        // Fixed transport error, preserving last-good values and fetchedAt.
+        setSnapshot((previous) => previous === null ? null : ({ ...previous, providers: previous.providers.map((provider) => ({
           ...provider, stale: true, error: { code: "unavailable", message: "Provider usage is unavailable." },
         })) }));
+        if (manual) setFeedback("Usage refresh failed. Last known meters are retained where available.");
       } finally {
-        if (!controller.signal.aborted) timer = setTimeout(() => { void load(); }, delay);
+        if (!controller.signal.aborted && request === sequence) {
+          if (manual) { manualFlight = false; setRefreshing(false); }
+          timer = setTimeout(() => { void load(); }, delay);
+        }
       }
     };
+    owner.current = { scope, refresh: () => load(true) };
     void load();
-    return () => { controller.abort(); if (timer !== undefined) clearTimeout(timer); };
-  }, [agent.sourceId, agent.generation, agent.status, agent.supportsProviderUsage, authRevision]);
-  return snapshot;
+    return () => {
+      controller.abort();
+      owner.current = null;
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [scope, agent.status, agent.supportsProviderUsage]);
+  return {
+    snapshot,
+    refreshing,
+    feedback,
+    refresh: () => agent.supportsProviderUsageRefresh === true && agent.status !== "offline" && owner.current?.scope === scope
+      ? owner.current.refresh() : Promise.resolve(),
+  };
 }
+
 function countdown(reset: string, now: number): string {
   const minutes = Math.max(0, Math.ceil((Date.parse(reset) - now) / 60_000));
   if (minutes === 0) return "Reset due";

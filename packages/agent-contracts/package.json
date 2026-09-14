@@ -19,6 +19,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./provider-usage": {
+      "types": "./dist/provider-usage.d.ts",
+      "import": "./dist/provider-usage.js"
     }
   },
   "files": [

@@ -1191,6 +1191,8 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .cron-config-fields small { grid-column: 2; color: var(--text-muted); font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
 .provider-auth-section { display: grid; gap: 10px; padding-top: 15px; border-top: 1px solid var(--line); }
 .provider-auth-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.provider-auth-header-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.provider-usage-refreshing { animation: spin 800ms linear infinite; }
 .provider-auth-title-row .secondary-button { flex: none; margin: 0; }
 .provider-auth-check-disclosure, .provider-auth-check-summary { margin: -3px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 .provider-auth-list { display: grid; gap: 9px; }

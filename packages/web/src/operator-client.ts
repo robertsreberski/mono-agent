@@ -157,6 +157,7 @@ export interface OperatorInfo {
   readonly supportsJobs?: boolean;
   readonly supportsProviderAuth?: true;
   readonly supportsProviderUsage?: true;
+  readonly supportsProviderUsageRefresh?: true;
   readonly supportsProviderAuthChecks?: true;
 }
 
@@ -267,7 +268,10 @@ export class OperatorClient {
       ...(mcpApps === undefined ? {} : { mcpApps }),
       ...(cron?.read === true ? { cron: { read: true, actions: cron.actions === true } } : {}),
       ...(capabilities?.jobs === true ? { supportsJobs: true } : {}),
-      ...(record(capabilities?.providerUsage)?.version === 1 ? { supportsProviderUsage: true } : {}),
+      ...(record(capabilities?.providerUsage)?.version === 1 ? {
+        supportsProviderUsage: true,
+        ...(record(capabilities?.providerUsage)?.refresh === true ? { supportsProviderUsageRefresh: true } : {}),
+      } : {}),
       ...(record(capabilities?.providerAuth)?.version === 1 ? { supportsProviderAuth: true } : {}),
       ...(record(record(capabilities?.providerAuth)?.checks)?.version === 1
         ? { supportsProviderAuthChecks: true }
@@ -278,6 +282,13 @@ export class OperatorClient {
   async providerUsage(provider?: ProviderUsageId, signal?: AbortSignal): Promise<ProviderUsageSnapshot> {
     const response = await this.request(`${this.baseUrl}/v1/provider-usage${provider === undefined ? "" : `?provider=${encodeURIComponent(provider)}`}`, {
       headers: this.headers(false), ...(signal === undefined ? {} : { signal }),
+    });
+    return parseProviderUsageSnapshot(JSON.parse(await readBoundedBody(response, 128 * 1024, "operator_provider_usage_too_large")));
+  }
+
+  async refreshProviderUsage(provider?: ProviderUsageId, signal?: AbortSignal): Promise<ProviderUsageSnapshot> {
+    const response = await this.request(`${this.baseUrl}/v1/provider-usage/refresh${provider === undefined ? "" : `?provider=${encodeURIComponent(provider)}`}`, {
+      method: "POST", headers: this.headers(true), body: "{}", ...(signal === undefined ? {} : { signal }),
     });
     return parseProviderUsageSnapshot(JSON.parse(await readBoundedBody(response, 128 * 1024, "operator_provider_usage_too_large")));
   }

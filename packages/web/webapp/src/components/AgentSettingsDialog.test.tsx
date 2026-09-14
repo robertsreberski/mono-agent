@@ -16,6 +16,7 @@ const storeMock = vi.hoisted(() => ({
 const apiMock = vi.hoisted(() => ({
   providerAuthStatus: vi.fn(),
   providerUsage: vi.fn(),
+  refreshProviderUsage: vi.fn(),
   beginProviderAuth: vi.fn(),
   providerAuthSession: vi.fn(),
   submitProviderAuth: vi.fn(),
@@ -118,6 +119,42 @@ const advanceProviderPollsUntil = async (expectation: () => void, maxPolls = 12)
 };
 
 describe("AgentSettingsDialog", () => {
+  it("offers refresh only with the additive capability and disables it while offline", async () => {
+    storeMock.selectedAgent = agent("alpha", { supportsProviderAuth: true, supportsProviderUsage: true });
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    apiMock.providerUsage.mockResolvedValue({ schema: "mono-agent.provider-usage.v1", providers: [] });
+    const props = { open: true, onClose: vi.fn(), dialogRef: createRef<HTMLElement>() };
+    const view = render(<AgentSettingsDialog {...props} />);
+    expect(screen.queryByRole("button", { name: "Refresh usage" })).toBeNull();
+    storeMock.selectedAgent = { ...storeMock.selectedAgent, supportsProviderUsageRefresh: true };
+    view.rerender(<AgentSettingsDialog {...props} />);
+    expect(screen.getByRole("button", { name: "Refresh usage" })).toHaveAttribute("title", "Refresh usage");
+    storeMock.selectedAgent = { ...storeMock.selectedAgent, status: "offline" };
+    view.rerender(<AgentSettingsDialog {...props} />);
+    expect(screen.getByRole("button", { name: "Refresh usage" })).toBeDisabled();
+  });
+  it("refreshes passive credential status after usage, without inference and while fencing conflicting controls", async () => {
+    storeMock.selectedAgent = agent("alpha", { supportsProviderAuth: true, supportsProviderAuthChecks: true, supportsProviderUsage: true, supportsProviderUsageRefresh: true });
+    const initial = { schema: "mono-agent.provider-usage.v1", providers: [] };
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    apiMock.providerUsage.mockResolvedValue(initial);
+    const pending = deferred<typeof initial>();
+    apiMock.refreshProviderUsage.mockReturnValueOnce(pending.promise);
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    await findStartButton("Re-authenticate");
+    fireEvent.click(screen.getByRole("button", { name: "Refresh usage" }));
+    expect(screen.getByRole("button", { name: "Refresh usage" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Refresh usage" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "Run live checks for all displayed providers" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Re-authenticate" })).toBeDisabled();
+    expect(screen.getByText("Refreshing usage…")).toBeInTheDocument();
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("verified_by_account_request"));
+    await act(async () => pending.resolve({ ...initial }));
+    await screen.findByText("Credential OK");
+    expect(apiMock.beginProviderAuthCheck).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Refresh usage" })).toBeEnabled();
+  });
+
   it.each(["auth", "check"] as const)("cancels a late %s admission after its dialog closes without losing the response ID", async (kind) => {
     storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true });
     apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));

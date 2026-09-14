@@ -150,6 +150,23 @@ credentials get one refresh through the existing Pi resolver and one retry.
 Claude rejection includes a re-login hint (usage requires `user:profile` scope);
 an OpenCode entitlement rejection means no Go subscription, not a bad key.
 
+**Refresh usage**, the refresh-arrow button beside **Run check**, explicitly
+reads subscription limits without running inference. It is available only when
+the agent advertises manual refresh support. While pending it spins and disables
+conflicting authentication/check actions. It bypasses a successful cache's
+five-minute freshness and awaits the shared fetch, but never bypasses error
+backoff or `Retry-After`. Existing in-flight reads are coalesced, not duplicated.
+Failures keep last-good meters and their actual fetch time; partial or suppressed
+updates are not reported as a successful refresh of every row. Successful usage
+refresh earns only **Credential OK**, unlike the model request made by **Run check**.
+
+Manual intent uses `POST` to the same usage paths with `/refresh` appended, an
+empty JSON object, and an optional exact `provider` query filter. Discovery adds
+`refresh: true` to `capabilities.providerUsage: {version: 1}`; older agents keep
+ordinary cached reads and do not expose a misleading refresh control. A manual
+request to an unsupported agent fails explicitly rather than returning cached
+data as a successful refresh.
+
 The independent read routes are agent `${basePath}/v1/provider-usage` and console
 `/api/v1/agents/:id/provider-usage`, with an optional exact `provider` filter.
 They are no-store, use the existing owner/operator and same-origin protections,

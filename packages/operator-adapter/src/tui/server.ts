@@ -481,7 +481,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
             ...(options.modelCatalog === undefined
               ? {}
               : { modelCatalog: { version: 1, maxPageSize: MAX_MODEL_CATALOG_PAGE_SIZE } }),
-            ...(options.providerUsage === undefined ? {} : { providerUsage: { version: 1 } }),
+            ...(options.providerUsage === undefined ? {} : { providerUsage: { version: 1, ...(typeof options.providerUsage.refresh === "function" ? { refresh: true } : {}) } }),
             ...(options.providerAuth === undefined
               ? {}
               : {
@@ -1176,6 +1176,21 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
     res.status(status).json(body);
   };
+
+  app.use(`${basePath}/v1/provider-usage`, (_req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    next();
+  });
+  app.post(`${basePath}/v1/provider-usage/refresh`, express.json({ limit: 1024, strict: true }), (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (typeof options.providerUsage?.refresh !== "function") { res.status(409).json({ error: "provider_usage_refresh_unavailable" }); return; }
+    const provider = req.query.provider;
+    if (Object.keys(req.query).some((key) => key !== "provider") || (provider !== undefined && !isProviderUsageId(provider))
+      || req.body === null || typeof req.body !== "object" || Array.isArray(req.body) || Object.keys(req.body).length !== 0) {
+      res.status(400).json({ error: "invalid_provider_usage_refresh" }); return;
+    }
+    void options.providerUsage.refresh(provider).then((snapshot) => res.json(parseProviderUsageSnapshot(snapshot))).catch(next);
+  });
 
   app.get(`${basePath}/v1/provider-usage`, (req, res, next) => {
     res.setHeader("Cache-Control", "private, no-store, max-age=0");

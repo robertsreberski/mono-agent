@@ -1,12 +1,12 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { page } from "@vitest/browser/context";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { commands, page } from "@vitest/browser/context";
 import { createRef } from "react";
-import { beforeEach, describe, expect, inject, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { agent } from "../test/fixtures";
 import type { ProviderUsageSnapshot } from "../types";
 import "../styles.css";
 const store = vi.hoisted(() => ({ selectedAgent: null as ReturnType<typeof agent> | null, catalogByProvider: {}, ensureProviderCatalog: vi.fn(), setAgentPinned: vi.fn(), setAgentRunDefaults: vi.fn(), clearAgentRunDefaults: vi.fn() }));
-const mocks = vi.hoisted(() => ({ providerAuthStatus: vi.fn(), providerUsage: vi.fn() }));
+const mocks = vi.hoisted(() => ({ providerAuthStatus: vi.fn(), providerUsage: vi.fn(), refreshProviderUsage: vi.fn() }));
 vi.mock("../console-store", () => ({ useConsoleStore: () => store }));
 vi.mock("../api", () => ({ api: mocks }));
 import { AgentSettingsDialog } from "./AgentSettingsDialog";
@@ -33,7 +33,7 @@ const snapshot: ProviderUsageSnapshot = { schema: "mono-agent.provider-usage.v1"
 ] };
 beforeEach(() => {
   vi.clearAllMocks();
-  store.selectedAgent = agent("fixture", { label: "Synthetic usage fixture", supportsProviderAuth: true, supportsProviderUsage: true, supportsProviderAuthChecks: true,
+  store.selectedAgent = agent("fixture", { label: "Synthetic usage fixture", supportsProviderAuth: true, supportsProviderUsage: true, supportsProviderUsageRefresh: true, supportsProviderAuthChecks: true,
     defaultModel: "anthropic:claude-sonnet-4-6", models: ["anthropic:claude-sonnet-4-6"],
   });
   mocks.providerUsage.mockResolvedValue(snapshot);
@@ -42,8 +42,11 @@ beforeEach(() => {
     methods: [{ authType: p.providerId === "opencode-go" ? "api_key" : "oauth", strategy: "paste_back", label: "Login", recommended: true }],
   })) });
 });
+afterEach(async () => { await commands.emulateColorScheme(null); });
 describe("compact Agent settings subscription meters", () => {
-  it(`renders compact controls without overflow with ${touch ? "coarse touch" : "fine desktop"} input`, async () => {
+  it.each(["light", "dark"] as const)(`renders compact controls with ${touch ? "coarse touch" : "fine desktop"} input in %s`, async (theme) => {
+    await commands.emulateColorScheme(theme);
+    expect(matchMedia(`(prefers-color-scheme: ${theme})`).matches).toBe(true);
     const { width, height } = viewport;
     await page.viewport(width, height);
     expect(matchMedia("(pointer: coarse)").matches).toBe(touch);
@@ -76,12 +79,16 @@ describe("compact Agent settings subscription meters", () => {
       expect(getComputedStyle(button).fontSize).toBe("12px");
       expect(button.getBoundingClientRect().height).toBe(28);
     }
-    const headerIcons = document.querySelectorAll(".agent-settings-header-actions .icon-button");
-    expect(headerIcons).toHaveLength(2);
+    const headerIcons = document.querySelectorAll(".agent-settings-header-actions .icon-button, .provider-auth-header-actions .icon-button");
+    expect(headerIcons).toHaveLength(3);
     for (const icon of headerIcons) {
       expect(icon.getBoundingClientRect().width).toBe(28);
       expect(icon.getBoundingClientRect().height).toBe(28);
     }
+    const refreshButton = screen.getByRole("button", { name: "Refresh usage" });
+    expect(refreshButton).toHaveAttribute("title", "Refresh usage");
+    const runButton = screen.getByRole("button", { name: "Run live checks for all displayed providers" });
+    expect(refreshButton.getBoundingClientRect().y).toBe(runButton.getBoundingClientRect().y);
     expect(screen.queryByText(/Sonnet|Spark|credits/)).toBeNull();
     const dialog = screen.getByRole("dialog");
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
@@ -90,6 +97,30 @@ describe("compact Agent settings subscription meters", () => {
     expect(screen.getByRole("button", { name: "Save for new conversations" })).toBeVisible();
     await waitFor(() => expect(screen.getByRole("progressbar", { name: "OpenCode Go Monthly used" })).toBeVisible());
     const directory = import.meta.env.VITE_PROVIDER_USAGE_SHOTS;
-    if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-settings-${width}x${height}-${touch ? "coarse-touch" : "fine-desktop"}.png` });
+    if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-settings-${width}x${height}-${touch ? "coarse-touch" : "fine-desktop"}-${theme}.png` });
   });
+  it("shows a bounded pending refresh and retains meters on failure in dark mode", async () => {
+    await commands.emulateColorScheme("dark");
+    await page.viewport(viewport.width, viewport.height);
+    let reject!: (error: Error) => void;
+    mocks.refreshProviderUsage.mockReturnValueOnce(new Promise((_resolve, fail) => { reject = fail; }));
+    render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    await screen.findByRole("progressbar", { name: "Codex Weekly used" });
+    const button = screen.getByRole("button", { name: "Refresh usage" });
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByText("Refreshing usage…")).toBeVisible();
+    expect(getComputedStyle(button.querySelector("svg")!).animationName).toBe("spin");
+    const directory = import.meta.env.VITE_PROVIDER_USAGE_SHOTS;
+    const name = `${viewport.width}x${viewport.height}-${touch ? "coarse-touch" : "fine-desktop"}-dark`;
+    if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-settings-${name}-refresh-pending.png` });
+    await act(async () => reject(new Error("PRIVATE_VENDOR_DETAIL")));
+    await screen.findByText(/Usage refresh failed/);
+    expect(button).toBeEnabled();
+    expect(screen.getByRole("progressbar", { name: "Codex Weekly used" })).toHaveAttribute("value", "48");
+    expect(document.body.textContent).not.toContain("PRIVATE_VENDOR_DETAIL");
+    if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-settings-${name}-refresh-error.png` });
+  });
+
 });
