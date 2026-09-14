@@ -7558,11 +7558,13 @@ function applyEvent(
       if (hasDetachedSubagentReceipt(parts, subagent.id)) return;
       const group = ensureSubagentPart(parts, subagent);
       // The bookend only announces the subagent; the group it belongs to is the
-      // whole of its contribution here.
+      // whole of its contribution here. Its launch attribution badges the row
+      // while running; the closing bookend replaces it with the executed route.
       if (event.metadata?.subagentLifecycle === true) {
         replaceSubagentPart(parts, withEventHistoryUpdate({
           ...group,
           ...(event.arguments === undefined ? {} : { args: event.arguments }),
+          ...(subagent.attribution === undefined ? {} : { attribution: subagent.attribution }),
         }, historyUpdate));
         return;
       }

@@ -81,6 +81,51 @@ export interface RuntimeSubagentIdentity {
   /** Provider-reported ancestry; informational only. */
   readonly agentPath?: string;
   readonly costUsd?: number;
+  /**
+   * Bounded provider-route attribution for the delegation. On `agent_started`
+   * this is the LAUNCH route — the explicit request completed with the
+   * inherited parent route — with `disposition: "unknown"`, so consumers must
+   * render it requested-only, never as a confirmed run. On `agent_completed`
+   * it is the final accounting, where `requested` is the explicit request
+   * alone. Absent when the runtime knows no route; never guessed.
+   */
+  readonly attribution?: RuntimeSubagentRouteAttribution;
+}
+
+/** Explicitly requested leg of one delegation's route, as `<provider>:<model>`. */
+export interface RuntimeSubagentRouteSelection {
+  readonly model?: string;
+  readonly effort?: string;
+}
+
+/** A route leg the provider actually ran on, with its effective effort when reported. */
+export interface RuntimeSubagentRouteExecution extends RuntimeSubagentRouteSelection {
+  readonly effectiveEffort?: string;
+}
+
+export interface RuntimeSubagentRouteTransition {
+  readonly from: string;
+  readonly to: string;
+  readonly attemptIndex?: number;
+  readonly reason?: string;
+}
+
+export interface RuntimeSubagentRouteRetry {
+  readonly model?: string;
+  readonly retryIndex?: number;
+  readonly attempts?: number;
+  readonly reason?: string;
+}
+
+/** Bounded provider-route attribution for one delegation; see `RuntimeSubagentIdentity.attribution`. */
+export interface RuntimeSubagentRouteAttribution {
+  readonly requested: RuntimeSubagentRouteSelection;
+  readonly attempted?: RuntimeSubagentRouteExecution;
+  readonly executed?: RuntimeSubagentRouteExecution;
+  readonly disposition: "requested" | "fallback" | "unknown";
+  readonly transitions: readonly RuntimeSubagentRouteTransition[];
+  readonly retries: readonly RuntimeSubagentRouteRetry[];
+  readonly truncated?: true;
 }
 
 /** Normalized subagent lifecycle/activity phases. */
@@ -204,7 +249,11 @@ function isRuntimeSubagentIdentity(value: unknown): value is RuntimeSubagentIden
     && optionalString(value, "nativeId")
     && optionalString(value, "label")
     && optionalString(value, "agentPath")
-    && optionalNumber(value, "costUsd");
+    && optionalNumber(value, "costUsd")
+    // Declared but loosely held: attribution is operator telemetry from
+    // present and future producers, so the guard admits any record shape
+    // rather than rejecting a payload this console does not know yet.
+    && optionalRecord(value, "attribution");
 }
 
 function isRuntimeSubagentActivityPhase(value: unknown): value is RuntimeSubagentActivityPhase {
@@ -225,6 +274,12 @@ function optionalString(value: Readonly<Record<string, unknown>>, key: string): 
 
 function optionalNumber(value: Readonly<Record<string, unknown>>, key: string): boolean {
   return !(key in value) || typeof value[key] === "number";
+}
+
+function optionalRecord(value: Readonly<Record<string, unknown>>, key: string): boolean {
+  const candidate = value[key];
+  return candidate === undefined
+    || (typeof candidate === "object" && candidate !== null && !Array.isArray(candidate));
 }
 
 function optionalBoolean(value: Readonly<Record<string, unknown>>, key: string): boolean {

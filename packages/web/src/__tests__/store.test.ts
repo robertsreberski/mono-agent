@@ -3575,13 +3575,18 @@ describe("WebStore subagent parts", () => {
       arguments: { name, prompt: "find X", description: "read the router" },
     },
   });
-  const bookend = (id: string, name: string, label?: string) => ({
+  const bookend = (id: string, name: string, label?: string, attribution?: unknown) => ({
     kind: "event" as const,
     event: {
       type: "tool_call_started" as const,
       id: `agent:${id}`,
       name: `Agent(${name})`,
-      metadata: { ...subagent(id, name, label), subagentLifecycle: true },
+      metadata: {
+        subagent: { id, name, callIndex: 0, ...(label === undefined ? {} : { label }),
+          ...(attribution === undefined ? {} : { attribution }) },
+        synthetic: true,
+        subagentLifecycle: true,
+      },
     },
   });
   const childCall = (id: string, name: string, toolId: string, tool: string, args: unknown) => ({
@@ -4083,6 +4088,101 @@ describe("WebStore subagent parts", () => {
     ] as never);
 
     expect(parts.find((part) => part.type === "subagent")).toMatchObject({ attribution });
+  });
+
+  it("badges a delegation from its started bookend while it runs", async () => {
+    const launchAttribution = {
+      requested: { model: "child-primary", effort: "high" },
+      disposition: "unknown",
+      transitions: [],
+      retries: [],
+    };
+    const parts = await turnWith([
+      launch("call-1", "researcher"),
+      bookend("call-1", "researcher", undefined, launchAttribution),
+      childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }),
+    ]);
+
+    // The launch badge survives the child's own tool calls rather than being
+    // dropped by the activity updates.
+    expect(parts.find((part) => part.type === "subagent")).toMatchObject({
+      type: "subagent",
+      status: "running",
+      attribution: launchAttribution,
+      calls: [{ toolName: "Read", status: "running" }],
+    });
+  });
+
+  it("replaces the launch badge with the executed route on the completed bookend", async () => {
+    const launchAttribution = {
+      requested: { model: "child-primary", effort: "high" },
+      disposition: "unknown",
+      transitions: [],
+      retries: [],
+    };
+    const executedAttribution = {
+      requested: { model: "child-primary", effort: "high" },
+      executed: { model: "child-primary", effort: "high", effectiveEffort: "high" },
+      disposition: "requested",
+      transitions: [],
+      retries: [],
+    };
+    const parts = await turnWith([
+      launch("call-1", "researcher"),
+      bookend("call-1", "researcher", undefined, launchAttribution),
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "agent:call-1",
+          name: "Agent(researcher)",
+          executionMs: 1_200,
+          metadata: {
+            subagent: { id: "call-1", name: "researcher", callIndex: 0, attribution: executedAttribution },
+            synthetic: true,
+            subagentLifecycle: true,
+          },
+        },
+      },
+    ] as never);
+
+    expect(parts.find((part) => part.type === "subagent")).toMatchObject({
+      type: "subagent",
+      status: "complete",
+      executionMs: 1_200,
+      attribution: executedAttribution,
+    });
+  });
+
+  it("keeps the launch badge when the completed bookend reports no route", async () => {
+    const launchAttribution = {
+      requested: { model: "child-primary", effort: "high" },
+      disposition: "unknown",
+      transitions: [],
+      retries: [],
+    };
+    const parts = await turnWith([
+      launch("call-1", "researcher"),
+      bookend("call-1", "researcher", undefined, launchAttribution),
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "agent:call-1",
+          name: "Agent(researcher)",
+          executionMs: 1_200,
+          metadata: { ...subagent("call-1", "researcher"), subagentLifecycle: true },
+        },
+      },
+    ]);
+
+    // The runtime learned nothing by completion; the launch route stays, still
+    // marked requested-only rather than rewritten as a confirmed run.
+    expect(parts.find((part) => part.type === "subagent")).toMatchObject({
+      type: "subagent",
+      status: "complete",
+      attribution: launchAttribution,
+    });
   });
 
   it("leaves the cost off a delegation the runtime never priced", async () => {
