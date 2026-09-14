@@ -45,6 +45,7 @@ export async function runPiProviderCheck(input) {
       mcpServers: {},
       maxTurns: 1,
       piMaxRetries: 0,
+      compaction: { enabled: false },
       providerCheckMaxTokens: 4,
       providerCheckAuthContext: {
         async env(name) { return input.environment?.[name]; },
@@ -61,21 +62,15 @@ export async function runPiProviderCheck(input) {
       ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
     });
   } catch (error) {
+    if (input.abortSignal?.aborted === true) {
+      return { state: "inconclusive", code: "cancelled", message: "The provider check did not complete." };
+    }
     return classifyProviderCheckFailure(error instanceof Error ? error.message : "", undefined);
   }
   if (result?.cancelled === true || input.abortSignal?.aborted === true) {
     return { state: "inconclusive", code: "cancelled", message: "The provider check did not complete." };
   }
   if (!result?.error && result?.failureKind == null) {
-    return { state: "passed", code: "passed", message: "Provider request succeeded." };
-  }
-  // The check prompt is two words and the output is deliberately capped at a few
-  // tokens, so the only way this request can surface as a context-window
-  // overflow is a `length` stop that pi's harness rewrites into an overflow
-  // error: the provider authenticated and generated. Treat it as success rather
-  // than an inconclusive failure (Claude Haiku and GLM hit this; Codex happens
-  // to finish "OK" inside the cap).
-  if (result?.failureKind === "context_limit") {
     return { state: "passed", code: "passed", message: "Provider request succeeded." };
   }
   return classifyProviderCheckFailure(

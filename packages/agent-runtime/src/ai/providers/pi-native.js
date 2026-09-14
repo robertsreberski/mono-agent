@@ -248,8 +248,9 @@ const PROVIDER_CHECK_REQUEST_METHODS = new Set([
 /**
  * Pi's Agent resolves the transport model through `Models` again, so capping
  * only the model handed to the harness does not constrain the actual provider
- * request. Bind the same cap at the dispatcher boundary used by every request
- * path. This wrapper is activated only for explicit provider checks.
+ * request or the intended output limit used to classify length stops. Cap both
+ * re-resolution and dispatch, leaving the shared model collection unchanged.
+ * This wrapper is activated only for explicit provider checks.
  *
  * @param {import("@earendil-works/pi-ai").Models} models
  * @param {unknown} requestedCap
@@ -258,21 +259,22 @@ const PROVIDER_CHECK_REQUEST_METHODS = new Set([
 function withProviderCheckOutputCap(models, requestedCap) {
   const cap = Number(requestedCap);
   if (!Number.isSafeInteger(cap) || cap <= 0) return models;
+  const capped = (model) => {
+    if (model === undefined) return model;
+    const current = Number(model.maxTokens);
+    return { ...model, maxTokens: Number.isFinite(current) && current > 0 ? Math.min(current, cap) : cap };
+  };
   const wrappers = new Map();
   return /** @type {import("@earendil-works/pi-ai").Models} */ (new Proxy(models, {
     get(target, property) {
       const value = Reflect.get(target, property, target);
       if (typeof property !== "string" || typeof value !== "function") return value;
+      if (property === "getModel") return (...args) => capped(value.apply(target, args));
       if (!PROVIDER_CHECK_REQUEST_METHODS.has(property)) return value.bind(target);
       let wrapper = wrappers.get(property);
       if (wrapper === undefined) {
         wrapper = (model, ...args) => {
-          const current = Number(model?.maxTokens);
-          const cappedModel = {
-            ...model,
-            maxTokens: Number.isFinite(current) && current > 0 ? Math.min(current, cap) : cap,
-          };
-          return value.call(target, cappedModel, ...args);
+          return value.call(target, capped(model), ...args);
         };
         wrappers.set(property, wrapper);
       }
