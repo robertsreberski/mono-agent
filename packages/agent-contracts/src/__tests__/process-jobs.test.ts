@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   isProcessJobErrorCode,
   isProcessJobState,
+  isProcessJobSubagentProgress,
+  isProcessJobSubagentRoute,
   parseProcessJobProjection,
   parseProcessJobProjections,
   processJobPublicError,
@@ -194,12 +196,17 @@ it("requires internal identity in the public TypeScript discriminated union", ()
 describe("internal subagent progress projection", () => {
   const progress = { revision: 2, profile: "helper", toolCalls: 1, failedCalls: 0,
     recent: [{ id: "call", toolName: "Read", status: "complete", argsSummary: "src/file.ts", executionMs: 12 }],
+    route: { requested: { model: "anthropic:claude-sonnet-4.5", effort: "high" } },
     answerHead: "Report", answerTruncated: false };
   const internal = () => ({ ...projection(), kind: "internal", tool: "Agent", instanceId: "helper", childStillBusy: false });
-  it("round trips new progress and still accepts legacy internal jobs", () => {
+  it("round trips new progress and still accepts legacy internal jobs and progress", () => {
     expect(parseProcessJobProjection(internal())).toEqual(internal());
     const value = { ...internal(), subagentProgress: progress };
     expect(parseProcessJobProjection(value)).toEqual(value);
+    const { route: _route, ...legacyProgress } = progress;
+    expect(isProcessJobSubagentProgress(legacyProgress)).toBe(true);
+    const parsedLegacy = parseProcessJobProjection({ ...internal(), subagentProgress: legacyProgress });
+    expect(parsedLegacy.kind === "internal" ? parsedLegacy.subagentProgress : undefined).toEqual(legacyProgress);
     expect(() => parseProcessJobProjection({ ...projection(), subagentProgress: progress })).toThrow();
   });
   it.each([
@@ -211,5 +218,40 @@ describe("internal subagent progress projection", () => {
     { recent: [{ id: "c", toolName: "Read", status: "running", argsSummary: "😀".repeat(65) }] },
   ])("rejects malformed or overlarge progress %j", (patch) => {
     expect(() => parseProcessJobProjection({ ...internal(), subagentProgress: { ...progress, ...patch } })).toThrow();
+  });
+
+  it.each([
+    { requested: { model: "anthropic:claude-sonnet-4.5", effort: "high" } },
+    { requested: {}, executed: { model: "openai-codex:gpt-5.6-sol", effectiveEffort: "xhigh" } },
+    { requested: { model: "anthropic:claude-sonnet-4.5" }, executed: { model: "openai-codex:gpt-5.6-sol", effort: "high" }, disposition: "fallback" },
+  ])("accepts bounded subagent route identifiers %#", (route) => {
+    expect(isProcessJobSubagentRoute(route)).toBe(true);
+  });
+
+  it.each([
+    {},
+    { requested: {} },
+    { requested: { model: "valid:model" }, extra: true },
+    { requested: { model: "valid:model", extra: true } },
+    { requested: { model: "Bearer abc" } },
+    { requested: { model: `m${"x".repeat(256)}` } },
+    { requested: { effort: `e${"x".repeat(64)}` } },
+    { requested: { model: "valid:model" }, disposition: "ran" },
+    { requested: { model: "valid:model" }, executed: "not-an-object" },
+  ])("rejects malformed subagent routes %#", (route) => {
+    expect(isProcessJobSubagentRoute(route)).toBe(false);
+  });
+
+  it.each([
+    ["array", ["fallback"]],
+    ["object", { toString: null }],
+    ["number", 1],
+    ["null", null],
+  ])("rejects a non-string %s disposition without throwing", (_case, disposition) => {
+    const route = { requested: { model: "valid:model" }, disposition };
+    expect(() => isProcessJobSubagentRoute(route)).not.toThrow();
+    expect(isProcessJobSubagentRoute(route)).toBe(false);
+    expect(isProcessJobSubagentProgress({ ...progress, route })).toBe(false);
+    expect(() => parseProcessJobProjection({ ...internal(), subagentProgress: { ...progress, route } })).toThrow(TypeError);
   });
 });

@@ -229,16 +229,22 @@ export function resolveSubagentRoute(
   catalogModels?: Readonly<Record<string, readonly CatalogModel[]>>,
 ): ResolvedSubagentRoute | undefined {
   if (attribution === undefined) return undefined;
-  const target = attribution.executed ?? attribution.attempted ?? attribution.requested;
-  const kind: SubagentRouteKind = attribution.executed !== undefined
+  // Older retained records can contain `executed: {}`. Presence alone is not
+  // execution evidence and must not erase a meaningful requested route.
+  const hasRouteIdentity = (route: typeof attribution.executed): boolean => route !== undefined
+    && (route.model !== undefined || route.effort !== undefined || route.effectiveEffort !== undefined);
+  const executed = hasRouteIdentity(attribution.executed) ? attribution.executed : undefined;
+  const attempted = hasRouteIdentity(attribution.attempted) ? attribution.attempted : undefined;
+  const target = executed ?? attempted ?? attribution.requested;
+  const kind: SubagentRouteKind = executed !== undefined
     ? "executed"
-    : attribution.attempted !== undefined
+    : attempted !== undefined
       ? "attempted"
       : target.model !== undefined || target.effort !== undefined ||
           ("effectiveEffort" in target && target.effectiveEffort !== undefined)
         ? "requested"
         : "none";
-  const effectiveEffort = (attribution.executed ?? attribution.attempted)?.effectiveEffort;
+  const effectiveEffort = (executed ?? attempted)?.effectiveEffort;
   const effort = effectiveEffort ?? target.effort ?? "";
   const model = target.model ?? "";
   const summary = kind === "requested" || kind === "attempted"

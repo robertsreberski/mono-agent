@@ -12,6 +12,7 @@ export {
   isProcessJobErrorCode,
   isProcessJobState,
   isProcessJobSubagentProgress,
+  isProcessJobSubagentRoute,
   parseProcessJobProjection,
   parseProcessJobProjections,
   processJobPublicError,
@@ -28,6 +29,7 @@ export type {
   ProcessJobProjectionWake,
   ProcessJobState,
   ProcessJobSubagentProgress,
+  ProcessJobSubagentRoute,
   ProcessJobWakeState,
 } from "./process-jobs.js";
 export {

@@ -131,11 +131,19 @@ export interface ProcessJobProjectionError {
   readonly message: string;
 }
 
+export interface ProcessJobSubagentRoute {
+  readonly requested: { readonly model?: string; readonly effort?: string };
+  readonly executed?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string };
+  /** Present once the child settled; absent while only the request is known. */
+  readonly disposition?: "requested" | "fallback" | "unknown";
+}
+
 /** Bounded, redacted UI evidence; never included in the parent's wake output. */
 export interface ProcessJobSubagentProgress {
   readonly revision: number;
   readonly profile: string;
   readonly label?: string;
+  readonly route?: ProcessJobSubagentRoute;
   readonly toolCalls: number;
   readonly failedCalls: number;
   readonly recent: readonly {
@@ -149,13 +157,35 @@ export interface ProcessJobSubagentProgress {
   readonly answerTruncated?: boolean;
 }
 
+const PROCESS_JOB_SUBAGENT_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
+const PROCESS_JOB_SUBAGENT_EFFORT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
+
+export function isProcessJobSubagentRoute(value: unknown): value is ProcessJobSubagentRoute {
+  if (!isRecord(value)
+    || !hasExactlyKeys(value, ["requested", ...["executed", "disposition"].filter((key) => Object.hasOwn(value, key))])
+    || !isRecord(value.requested)
+    || !hasExactlyKeys(value.requested, ["model", "effort"].filter((key) => Object.hasOwn(value.requested as Record<string, unknown>, key)))
+    || (value.requested.model !== undefined && (typeof value.requested.model !== "string" || !PROCESS_JOB_SUBAGENT_MODEL.test(value.requested.model)))
+    || (value.requested.effort !== undefined && (typeof value.requested.effort !== "string" || !PROCESS_JOB_SUBAGENT_EFFORT.test(value.requested.effort)))
+    || (value.disposition !== undefined
+      && (typeof value.disposition !== "string" || !["requested", "fallback", "unknown"].includes(value.disposition)))) return false;
+  if (value.executed !== undefined
+    && (!isRecord(value.executed)
+      || !hasExactlyKeys(value.executed, ["model", "effort", "effectiveEffort"].filter((key) => Object.hasOwn(value.executed as Record<string, unknown>, key)))
+      || (value.executed.model !== undefined && (typeof value.executed.model !== "string" || !PROCESS_JOB_SUBAGENT_MODEL.test(value.executed.model)))
+      || (value.executed.effort !== undefined && (typeof value.executed.effort !== "string" || !PROCESS_JOB_SUBAGENT_EFFORT.test(value.executed.effort)))
+      || (value.executed.effectiveEffort !== undefined && (typeof value.executed.effectiveEffort !== "string" || !PROCESS_JOB_SUBAGENT_EFFORT.test(value.executed.effectiveEffort))))) return false;
+  return value.requested.model !== undefined || value.requested.effort !== undefined || value.executed !== undefined;
+}
+
 /** Shared strict validator for both durable records and operator projections. */
 export function isProcessJobSubagentProgress(value: unknown): value is ProcessJobSubagentProgress {
   if (!isRecord(value)
     || !hasExactlyKeys(value, ["revision", "profile", "toolCalls", "failedCalls", "recent",
-      ...["label", "answerHead", "answerTruncated"].filter((key) => Object.hasOwn(value, key))])
+      ...["label", "route", "answerHead", "answerTruncated"].filter((key) => Object.hasOwn(value, key))])
     || !nonNegativeInteger(value.revision) || !boundedNonEmptyString(value.profile, 128)
     || (value.label !== undefined && !boundedString(value.label, 256))
+    || (value.route !== undefined && !isProcessJobSubagentRoute(value.route))
     || !nonNegativeInteger(value.toolCalls) || !nonNegativeInteger(value.failedCalls)
     || value.failedCalls > value.toolCalls
     || (value.answerHead !== undefined && !boundedString(value.answerHead, 8_000))

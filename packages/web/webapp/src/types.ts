@@ -44,6 +44,11 @@ export interface ProcessJobSubagentProgress {
   readonly revision: number;
   readonly profile: string;
   readonly label?: string;
+  readonly route?: {
+    readonly requested: { readonly model?: string; readonly effort?: string };
+    readonly executed?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string };
+    readonly disposition?: "requested" | "fallback" | "unknown";
+  };
   readonly toolCalls: number;
   readonly failedCalls: number;
   readonly recent: readonly {

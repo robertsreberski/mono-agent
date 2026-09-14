@@ -500,7 +500,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           callIndex,
           ...(params.description === undefined ? {} : { label: params.description }),
           ...(detached
-            ? { emit: (event) => reportDetachedProgress(event, reportProgress) }
+            ? { emit: (event) => reportDetachedProgress(event, reportProgress, requested) }
             : context.onEvent === undefined ? {} : { emit: context.onEvent }),
           // Synchronous spend is summed across router attempts. Detached spend
           // belongs only to its instance and job, even if it completes immediately.
@@ -807,12 +807,31 @@ function appendRouteEntry(entries, entry, routeState) {
 /** Drop all provider payloads before the private job callback, especially prompts/results.
  * @param {*} event
  * @param {(event: *) => void} [report]
+ * @param {{model?: string, effort?: string}} [requested]
  */
-function reportDetachedProgress(event, report) {
+function reportDetachedProgress(event, report, requested = {}) {
   if (!report) return;
   if (event.phase === "agent_started") {
     report({ type: "started", profile: event.subagent.name,
       ...(event.subagent.label ? { label: event.subagent.label } : {}) });
+    if (requested.model !== undefined || requested.effort !== undefined) {
+      report({ type: "route", requested });
+    }
+  } else if (event.phase === "agent_completed") {
+    const attribution = event.subagent?.attribution;
+    const routeKnown = attribution?.requested?.model !== undefined
+      || attribution?.requested?.effort !== undefined
+      || attribution?.executed?.model !== undefined
+      || attribution?.executed?.effort !== undefined
+      || attribution?.executed?.effectiveEffort !== undefined;
+    if (attribution !== undefined && routeKnown) {
+      const executedKnown = attribution.executed?.model !== undefined
+        || attribution.executed?.effort !== undefined
+        || attribution.executed?.effectiveEffort !== undefined;
+      report({ type: "route", requested: attribution.requested,
+        ...(executedKnown ? { executed: attribution.executed } : {}),
+        disposition: attribution.disposition });
+    }
   } else if (event.phase === "started") {
     const args = event.arguments;
     // No prompt/message or unknown-object fallback. Redaction precedes retention in the host.
@@ -884,12 +903,18 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
       // Before the bookend, so the run's own usage report can already include
       // it, and so an abandoned child still hands over whatever it spent.
       recordUsage?.(usage);
-      const executed = ["ok", "awaiting_reply"].includes(status) && result && typeof result === "object"
+      const reportedExecuted = ["ok", "awaiting_reply"].includes(status) && result && typeof result === "object"
         ? {
             ...(boundedRouteString(result.model) === undefined ? {} : { model: boundedRouteString(result.model) }),
             ...(boundedRouteString(result.effort, 64) === undefined ? {} : { effort: boundedRouteString(result.effort, 64) }),
             ...(boundedRouteString(result.effectiveEffort, 64) === undefined ? {} : { effectiveEffort: boundedRouteString(result.effectiveEffort, 64) }),
           }
+        : undefined;
+      // A successful result object is not itself route evidence. Keeping `{}`
+      // here makes consumers prefer an unknown executed route over a pinned
+      // requested route, so omit it unless at least one identifier was reported.
+      const executed = reportedExecuted !== undefined && Object.keys(reportedExecuted).length > 0
+        ? reportedExecuted
         : undefined;
       const requestedModel = routeState.requested.model;
       const fallback = routeState.transitions.length > 0

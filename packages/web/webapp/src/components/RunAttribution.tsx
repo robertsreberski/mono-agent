@@ -22,19 +22,37 @@ const routeLabel = (model: string | undefined, effort: string | undefined): stri
   return effortText === undefined ? model : `${model} · ${effortText}`;
 };
 
+const hasRouteEvidence = (route: {
+  readonly model?: string;
+  readonly effort?: string;
+  readonly effectiveEffort?: string;
+} | undefined): boolean => route !== undefined
+  && (route.model !== undefined || route.effort !== undefined || route.effectiveEffort !== undefined);
+
 export function runAttributionSummary(
   attribution: RunAttributionValue,
   status: RunStatus | WebMessageStatus,
 ): string {
-  const target = attribution.executed ?? attribution.attempted ?? attribution.requested;
+  const executed = hasRouteEvidence(attribution.executed) ? attribution.executed : undefined;
+  const attempted = hasRouteEvidence(attribution.attempted) ? attribution.attempted : undefined;
+  const target = executed ?? attempted ?? attribution.requested;
   if (attribution.disposition === "fallback") {
     const from = attribution.requested.model ?? attribution.transitions[0]?.from ?? "requested route";
     const to = target.model ?? attribution.transitions.at(-1)?.to ?? "fallback route";
     const reason = attribution.transitions.at(-1)?.reason ?? "reason not reported";
     return `Fallback: ${from} → ${to} · ${reason}`;
   }
-  const verb = status === "running" ? "Running with" : status === "complete" ? "Ran with" : "Tried";
-  return `${verb} ${routeLabel(target.model, target.effort)}`;
+  if (executed !== undefined) {
+    const verb = status === "running" ? "Running with" : status === "complete" ? "Ran with" : "Tried";
+    return `${verb} ${routeLabel(executed.model, executed.effort)}`;
+  }
+  if (attempted !== undefined) {
+    return `${status === "running" ? "Attempting" : "Attempted"} ${routeLabel(attempted.model, attempted.effort)}`;
+  }
+  if (hasRouteEvidence(attribution.requested)) {
+    return `Requested ${routeLabel(attribution.requested.model, attribution.requested.effort)} — not a confirmed run`;
+  }
+  return "Route not reported";
 }
 
 type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" | "interrupted";
@@ -89,7 +107,9 @@ export function RunAttribution({
 }) {
   if (attribution === undefined) return null;
   const fallback = attribution.disposition === "fallback";
-  const effectiveEffort = effortLabel((attribution.executed ?? attribution.attempted)?.effectiveEffort);
+  const executed = hasRouteEvidence(attribution.executed) ? attribution.executed : undefined;
+  const attempted = hasRouteEvidence(attribution.attempted) ? attribution.attempted : undefined;
+  const effectiveEffort = effortLabel((executed ?? attempted)?.effectiveEffort);
   const requestedEffort = effortLabel(attribution.requested.effort);
   const effortChanged = effectiveEffort !== undefined
     && (requestedEffort === undefined || canonicalEffort(effectiveEffort) !== canonicalEffort(requestedEffort));
@@ -118,8 +138,8 @@ export function RunAttribution({
           <summary>Routing details</summary>
           <dl>
             <div><dt>Requested</dt><dd>{routeLabel(attribution.requested.model, attribution.requested.effort)}</dd></div>
-            {attribution.attempted && <div><dt>Attempted</dt><dd>{routeLabel(attribution.attempted.model, attribution.attempted.effort)}</dd></div>}
-            {attribution.executed && <div><dt>Executed</dt><dd>{routeLabel(attribution.executed.model, attribution.executed.effort)}</dd></div>}
+            {attempted && <div><dt>Attempted</dt><dd>{routeLabel(attempted.model, attempted.effort)}</dd></div>}
+            {executed && <div><dt>Executed</dt><dd>{routeLabel(executed.model, executed.effort)}</dd></div>}
             {effectiveEffort && <div><dt>Effective effort</dt><dd>{effectiveEffort}</dd></div>}
           </dl>
           {attribution.transitions.length > 0 && (

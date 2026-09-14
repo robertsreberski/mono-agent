@@ -1635,6 +1635,13 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-subagent-progress { max-height: min(22vh, 184px); min-width: 0; max-width: 100%; margin: 0 -8px 0 -34px; padding: 0 4px 4px 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none; overscroll-behavior: contain; border-radius: 8px; }
 .process-job-subagent-progress:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .process-job-subagent-progress > .activity-steps { margin: 0 0 0 24px; padding-bottom: 6px; }
+.process-job-subagent-note { margin: 0; padding: 2px 8px 4px; color: var(--text-muted); font-size: 9px; line-height: 1.4; }
+.process-job-subagent-progress .activity-step > summary { min-height: 28px; }
+.process-job-subagent-progress .activity-step-tool { min-width: 68px; }
+.activity-row.is-job .process-job-live-meta { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0; margin: 0; color: var(--text-muted); font-size: 9.5px; line-height: 1.5; }
+.process-job-live-meta .route-badge { vertical-align: baseline; }
+.process-job-meta-separator { margin: 0 4px; }
+.process-job-child-profile { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .process-job-subagent-progress .activity-payload { padding: 0 8px 8px; }
 .process-job-subagent-progress .activity-payload pre { max-height: none; overflow: visible; }
 .process-job-subagent-calls { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }

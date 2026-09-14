@@ -1241,6 +1241,61 @@ it("keeps detached live progress out of the parent stream and persists it separa
   expect((f.wake.mock.calls[0]![0] as any).prompt).not.toContain("subagentProgress");
 });
 
+it("projects the requested detached route while running and the executed fallback after settlement", async () => {
+  const f = await fixture();
+  const gate = deferred<any>();
+  const definitions = [{ name: "routed", description: "Route fixture", systemPrompt: "Work", allowedTools: ["Read"],
+    model: { provider: "provider", model: "primary", reference: "provider:primary" }, effort: "high" }];
+  const { agent } = tools(f, async (request) => {
+    request.onEvent({ type: "provider_execution_config", model: "provider:primary", effort: "high", effectiveEffort: "high" });
+    request.onEvent({ type: "provider_failover_started", from: "provider:primary", to: "provider:fallback", attemptIndex: 1, reason: "overloaded" });
+    request.onEvent({ type: "provider_execution_config", model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" });
+    await gate.promise;
+    return { text: "done", model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" };
+  }, { definitions });
+  const receipt = await agent.execute("route", { name: "routed", persist: true, background: true, id: "helper", prompt: "work" });
+  const id = receipt.details.jobId;
+  await vi.waitFor(async () => expect((await f.service.get(id) as any).subagentProgress?.route).toEqual({
+    requested: { model: "provider:primary", effort: "high" },
+  }));
+  gate.resolve(undefined);
+  const job = await done(f.service, id);
+  expect(job.subagentProgress?.route).toEqual({
+    requested: { model: "provider:primary", effort: "high" },
+    executed: { model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" },
+    disposition: "fallback",
+  });
+  expect(JSON.stringify(job.subagentProgress?.route)).not.toMatch(/reason|overloaded/u);
+  const reopened = await openProcessJobStore(f.root, f.options.settings.stateDir);
+  expect((await reopened.get(id))?.subagentProgress?.route).toEqual(job.subagentProgress?.route);
+});
+
+it.each([
+  ["successful", { text: "done" }],
+  ["awaiting-reply", { subagentQuestion: { question: "Which scope?" } }],
+])("preserves a pinned requested route when a %s result reports no executed route", async (_case, result) => {
+  const f = await fixture();
+  const definitions = [{ name: "pinned", description: "Pinned route fixture", systemPrompt: "Work", allowedTools: ["Read"],
+    model: { provider: "provider", model: "primary", reference: "provider:primary" }, effort: "high" }];
+  const { agent } = tools(f, async () => result, { definitions });
+  const receipt = await agent.execute(`pinned-${_case}`, { name: "pinned", persist: true, background: true, id: "helper", prompt: "work" });
+  const job = await done(f.service, receipt.details.jobId);
+  expect(job.subagentProgress?.route).toEqual({
+    requested: { model: "provider:primary", effort: "high" },
+    disposition: "requested",
+  });
+  expect(job.subagentProgress?.route).not.toHaveProperty("executed");
+});
+
+it("omits detached route progress when the profile requests no route", async () => {
+  const f = await fixture();
+  const definitions = [{ name: "unrouted", description: "No route fixture", systemPrompt: "Work", allowedTools: ["Read"] }];
+  const { agent } = tools(f, async () => ({ text: "done" }), { definitions });
+  const receipt = await agent.execute("no-route", { name: "unrouted", persist: true, background: true, id: "helper", prompt: "work" });
+  const job = await done(f.service, receipt.details.jobId);
+  expect(job.subagentProgress).not.toHaveProperty("route");
+});
+
 it("ignores private progress emitted after internal cancellation grace expires", async () => {
   const gate = deferred<any>();
   let emit!: (event: any) => void;

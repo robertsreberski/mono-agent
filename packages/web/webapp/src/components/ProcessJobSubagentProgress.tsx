@@ -1,7 +1,10 @@
-import { useLayoutEffect, useRef } from "react";
-import type { ProcessJobSubagentProgress as Progress } from "../types";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
+import type { ProcessJobSubagentProgress as Progress, ToolCallStatus } from "../types";
 import { ActivityStep, clusterSummary, failedLabel } from "./ActivityRow";
 import { formatToolDuration } from "./duration";
+import { resolveSubagentRoute } from "./route-label";
+import { useRouteCapabilities } from "./route-capabilities";
+import { RouteBadge } from "./RouteBadge";
 import { toolArgumentPreview } from "./Subagent";
 
 type Call = Progress["recent"][number];
@@ -16,18 +19,41 @@ function clusters(calls: readonly Call[]): Call[][] {
   return groups;
 }
 
-/** The child's identity and call counts, rendered as facts beside State/Wake. */
-export function ProcessJobSubagentFacts({ progress }: { readonly progress?: Progress }) {
-  if (progress === undefined) return null;
-  return (
-    <>
-      <div><dt>Child</dt><dd>{progress.profile}</dd></div>
-      <div>
-        <dt>Tools</dt>
-        <dd>{progress.toolCalls}{progress.failedCalls > 0 ? ` · ${progress.failedCalls} failed` : ""}</dd>
-      </div>
-    </>
-  );
+/** One quiet, unlabelled line for child route/calls plus exceptional host facts. */
+export function ProcessJobMetaLine({ progress, status, supplements = [] }: {
+  readonly progress?: Progress;
+  readonly status: ToolCallStatus;
+  readonly supplements?: readonly ReactNode[];
+}) {
+  const capabilities = useRouteCapabilities();
+  const route = progress?.route === undefined ? undefined : resolveSubagentRoute({
+    requested: progress.route.requested,
+    ...(progress.route.executed === undefined ? {} : { executed: progress.route.executed }),
+    disposition: progress.route.disposition ?? "unknown",
+    transitions: [],
+    retries: [],
+  }, status, capabilities.agent, capabilities.catalogModels);
+  const items: ReactNode[] = [
+    ...(progress === undefined ? [] : [<span key="profile" className="process-job-child-profile">{progress.profile}</span>]),
+    ...(route === undefined ? [] : [<RouteBadge
+      key="route"
+      modelShort={route.modelShort}
+      effortShort={route.effortShort}
+      effortSignal={route.effortSignal}
+      label={route.label}
+      title={route.title}
+      compact
+      fallback={route.isFallback}
+      requestedOnly={route.isRequestedOnly}
+    />]),
+    ...(progress === undefined ? [] : [<span key="tools">{progress.toolCalls} {progress.toolCalls === 1 ? "tool" : "tools"}{progress.failedCalls > 0
+      ? `, ${progress.failedCalls} failed` : ""}</span>]),
+    ...supplements,
+  ];
+  if (items.length === 0) return null;
+  return <div className="process-job-live-meta">{items.flatMap((item, index) => index === 0
+    ? [item]
+    : [<span key={`separator-${String(index)}`} className="process-job-meta-separator" aria-hidden="true">·</span>, item])}</div>;
 }
 
 /**
@@ -51,11 +77,11 @@ export function ProcessJobSubagentProgress({ progress, open }: {
         follow.current = target.scrollHeight - target.scrollTop - target.clientHeight <= 24;
       }}>
       {progress === undefined
-        ? <p className="subagent-empty">Progress is unavailable for this retained job.</p>
+        ? <p className="process-job-subagent-note">Progress is unavailable for this retained job.</p>
         : <div className="activity-steps">
           {progress.recent.length === 0 && <p className="subagent-empty">No tool calls yet.</p>}
           {progress.toolCalls > progress.recent.length && (
-            <p className="subagent-empty">Showing the latest {progress.recent.length} of {progress.toolCalls} calls.</p>
+            <p className="process-job-subagent-note">Showing the latest {progress.recent.length} of {progress.toolCalls} calls.</p>
           )}
           {clusters(progress.recent).map((calls) => {
             const first = calls[0]!;

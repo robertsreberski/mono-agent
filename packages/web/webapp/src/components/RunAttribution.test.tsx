@@ -30,9 +30,11 @@ describe("RunAttribution", () => {
 
   it("distinguishes running, completed, and failed non-fallback attempts", () => {
     const requested = { requested: { model: "primary", effort: "high" }, attempted: { model: "primary", effort: "high" }, disposition: "requested" as const, transitions: [], retries: [] };
-    expect(runAttributionSummary(requested, "running")).toBe("Running with primary · High");
+    expect(runAttributionSummary(requested, "running")).toBe("Attempting primary · High");
     expect(runAttributionSummary({ ...requested, executed: requested.attempted }, "complete")).toBe("Ran with primary · High");
-    expect(runAttributionSummary(requested, "failed")).toBe("Tried primary · High");
+    expect(runAttributionSummary(requested, "failed")).toBe("Attempted primary · High");
+    expect(runAttributionSummary({ ...requested, attempted: undefined }, "complete"))
+      .toBe("Requested primary · High — not a confirmed run");
   });
 
   it("states when a fallback reason was not reported", () => {
