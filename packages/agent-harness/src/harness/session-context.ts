@@ -54,7 +54,7 @@ export function sessionContextBlock(
     ? HOST_MANAGED_MEMORY_GUIDANCE
     : undefined;
   const childBackgroundGuidance = capabilities.backgroundSubagents === true
-    ? "Persistent Agent and AgentSend support background: true. A durable started receipt means the exact conversation will wake with completion, failure, interruption or AskParent. Do not poll or replay. A terminal job with childStillBusy:true retains a busy child until its actual execution settles."
+    ? "Children are stateless and foreground by default: persist only a child you will actually continue, and background only sustained work that outlives a reply. Persistent Agent and AgentSend support background: true. A durable started receipt means the exact conversation will wake with completion, failure, interruption or AskParent. Do not poll or replay. A terminal job with childStillBusy:true retains a busy child until its actual execution settles."
     : undefined;
   const backgroundGuidance = capabilities.backgroundProcessJobs === true
     ? BACKGROUND_PROCESS_JOB_GUIDANCE
