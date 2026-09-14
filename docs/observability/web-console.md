@@ -179,7 +179,7 @@ code while the headless host polls. Anthropic shows an authorization URL and a
 field for the final localhost redirect URL or code because Pi 0.85.1 has no
 Anthropic device-code flow. API-key providers such as OpenCode-Go use masked,
 provider-owned prompts. There is no `--device-auth` CLI flag.
-The neutral recovery action remains available at its normal button size whenever
+The neutral recovery action remains available at the sheet's compact button size whenever
 the provider exposes a supported login method, even when the row says **OK** or
 **Not verified**. Starting another valid login cancels the current session and
 begins again with a fresh session ID; a malformed or unavailable method leaves

@@ -554,12 +554,14 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
           const actionable = provider.methods.length > 0;
           const presentation = providerAuthPresentation(provider);
           const checkResult = check?.results.find((result) => result.providerId === provider.providerId);
+          const providerUsage = usage?.providers.find((item) => item.providerId === provider.providerId);
           return (
             <article className="provider-auth-card" key={provider.providerId}>
               <div className="provider-auth-controls">
               <div className="provider-auth-heading">
                 <b>{provider.label}</b>
                 <span className="provider-auth-badges">
+                  {providerUsage?.plan !== undefined && <span className="provider-usage-plan">{providerUsage.plan}</span>}
                   {checkResult !== undefined && (
                     <span
                       className={"provider-auth-check-result " + providerAuthCheckPresentation(checkResult).className}
@@ -579,7 +581,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
                 </button>
               )}
               </div>
-              <ProviderUsageMeters usage={usage?.providers.find((item) => item.providerId === provider.providerId)} />
+              <ProviderUsageMeters usage={providerUsage} />
             </article>
           );
         })}

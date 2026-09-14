@@ -675,7 +675,7 @@ describe("AgentSettingsDialog", () => {
     const run = screen.getByRole("button", { name: "Run live checks for all displayed providers" });
     expect(run).toHaveTextContent("Run check");
     expectDialogTypography(run, "11px");
-    expect(window.getComputedStyle(run).minHeight).toBe("38px");
+    expect(window.getComputedStyle(run).minHeight).toBe("28px");
     expect(run).toHaveClass("provider-auth-neutral-button");
     expect(screen.getByText(/may use quota or refresh OAuth/u)).toBeVisible();
     fireEvent.click(run);
@@ -762,7 +762,7 @@ describe("AgentSettingsDialog", () => {
     expect(screen.queryByText("Checks complete: 1 of 1 passed.")).not.toBeInTheDocument();
   });
 
-  it("offers a normal-size neutral cancel control while checks are active", async () => {
+  it("offers a compact neutral cancel control while checks are active", async () => {
     storeMock.selectedAgent = agent("alpha", {
       label: "Alpha",
       supportsProviderAuth: true,
@@ -796,7 +796,7 @@ describe("AgentSettingsDialog", () => {
     expect(cancel).toHaveTextContent("Cancel checks");
     expect(cancel).toHaveClass("provider-auth-neutral-button");
     expectDialogTypography(cancel, "11px");
-    expect(window.getComputedStyle(cancel).minHeight).toBe("38px");
+    expect(window.getComputedStyle(cancel).minHeight).toBe("28px");
     fireEvent.click(cancel);
     await vi.waitFor(() => expect(apiMock.cancelProviderAuthCheck).toHaveBeenCalledWith("alpha", "check-running"));
     expect(await screen.findByText("Checks complete: 0 of 1 passed.")).toBeVisible();

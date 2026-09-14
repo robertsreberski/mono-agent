@@ -40,6 +40,7 @@ function countdown(reset: string, now: number): string {
   if (minutes >= 60) return `Resets in ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   return `Resets in ${minutes}m`;
 }
+/** The plan chip is rendered inline by the provider heading; this shows only the meters. */
 export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -49,9 +50,8 @@ export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage 
   }, [usage]);
   if (!usage) return null;
   return <div className="provider-usage" aria-label={`${usage.label} subscription usage`}>
-    {(usage.plan || usage.stale) && <div className="provider-usage-meta">
-      {usage.plan && <span className="provider-usage-plan">{usage.plan}</span>}
-      {usage.stale && <span title={`Fetched ${new Date(usage.fetchedAt).toLocaleString()}`}>Last known usage</span>}
+    {usage.stale && <div className="provider-usage-meta">
+      <span title={`Fetched ${new Date(usage.fetchedAt).toLocaleString()}`}>Last known usage</span>
     </div>}
     {usage.windows.map((window) => <div className="provider-usage-window" key={window.kind}>
       <div className="provider-usage-label"><span>{window.label}</span><span>{window.usedPercent}%</span></div>

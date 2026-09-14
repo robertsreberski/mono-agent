@@ -1688,13 +1688,16 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .agent-settings-sheet .provider-auth-list { gap: 6px; }
 .agent-settings-sheet .provider-auth-card { display: block; padding: 8px 10px; border: 0; border-radius: 12px; }
 .provider-auth-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.agent-settings-sheet .provider-auth-state { font-size: 9px; font-weight: 600; letter-spacing: 0; text-transform: none; border-radius: 10px; padding: 2px 6px; }
-.agent-settings-sheet .secondary-button, .agent-settings-sheet .primary-button { font-size: 11px; padding-inline: 9px; min-height: 38px; }
+.agent-settings-sheet .provider-auth-heading { justify-content: flex-start; gap: 6px; flex-wrap: wrap; }
+.agent-settings-sheet .provider-auth-badges { justify-content: flex-start; gap: 4px; }
+.agent-settings-sheet .provider-auth-state, .provider-usage-plan { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; font-size: 9px; font-weight: 600; line-height: 1.5; letter-spacing: 0; text-transform: none; border-radius: 10px; }
+.agent-settings-sheet .secondary-button, .agent-settings-sheet .primary-button { min-height: 28px; padding: 0 10px; font-size: 11px; border-radius: 8px; }
+.agent-settings-sheet .icon-button { width: 28px; height: 28px; border-radius: 8px; }
 .agent-settings-sheet .provider-auth-neutral-button { background: transparent; }
 .agent-settings-sheet > footer { padding-top: 8px; border-top: 1px solid var(--line); flex-wrap: wrap; }
 .provider-usage { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 10px; row-gap: 6px; padding-top: 6px; }
 .provider-usage-meta { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 10px; }
-.provider-usage-plan { padding: 2px 6px; color: var(--accent); background: var(--accent-soft); border-radius: 10px; }
+.provider-usage-plan { color: var(--accent); background: var(--accent-soft); }
 .provider-usage-window { min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .provider-usage-label { display: flex; justify-content: space-between; gap: 4px; }
 .provider-usage-window time { color: var(--text-muted); font-size: 9px; }
@@ -1706,10 +1709,6 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 @media (min-width: 901px) {
   .agent-settings-sheet { width: min(100%, 520px); padding: 18px 20px; max-height: calc(100dvh - 48px); border-radius: 18px; }
 }
-@media (max-width: 600px) {
-  .agent-settings-sheet .provider-auth-heading { align-items: flex-start; flex-direction: column; gap: 2px; }
-  .agent-settings-sheet .provider-auth-badges { justify-content: flex-start; }
-}
 @media (pointer: coarse) {
-  .agent-settings-sheet .icon-button, .agent-settings-sheet button { min-height: 44px; }
+  .agent-settings-sheet .secondary-button, .agent-settings-sheet .primary-button, .agent-settings-sheet .icon-button { min-height: 36px; }
 }
