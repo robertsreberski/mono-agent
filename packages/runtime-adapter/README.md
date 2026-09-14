@@ -285,6 +285,11 @@ RuntimeRunOptions
 RuntimeSubagentActivityEvent
 RuntimeSubagentActivityPhase
 RuntimeSubagentIdentity
+RuntimeSubagentRouteAttribution
+RuntimeSubagentRouteExecution
+RuntimeSubagentRouteRetry
+RuntimeSubagentRouteSelection
+RuntimeSubagentRouteTransition
 RuntimeToolLifecycleEvent
 RuntimeToolLifecyclePersistence
 RuntimeToolLifecycleSink
@@ -383,7 +388,12 @@ synthetic fallback for orphan lifecycle records), while optional `nativeId` and
 `agentPath` retain provider correlation metadata. Its
 `RuntimeSubagentActivityPhase` phases are `agent_started`, `started`,
 `completed`, `message`, and `agent_completed`; child `message` activity is never
-parent answer text or a tool completion. `RuntimeEventLike` remains permissive
+parent answer text or a tool completion. The `agent_started` bookend already
+carries the launch route in `subagent.attribution` — the explicit request
+completed with the inherited parent route, with `disposition: "unknown"` — so
+consumers can badge the delegation while it runs; the `agent_completed`
+bookend replaces it with the final accounting, where `requested` is the
+explicit request alone. `RuntimeEventLike` remains permissive
 for other provider telemetry; use `isRuntimeSubagentActivityEvent()` to narrow
 an open event before consuming the required normalized fields.
 

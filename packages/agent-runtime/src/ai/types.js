@@ -43,7 +43,12 @@
  * @property {number} [costUsd] Priced delegation cost, when the runtime can
  *   attribute it to this subagent.
  * @property {*} [attribution] Bounded provider-route attribution for the
- *   completed child run. Consumers must treat it as operator telemetry.
+ *   delegation. Consumers must treat it as operator telemetry. On
+ *   `agent_started` it is the LAUNCH route — the explicit request completed
+ *   with the inherited parent route — with `disposition: "unknown"`, so it
+ *   renders requested-only and never as a confirmed run. On `agent_completed`
+ *   it is the final accounting, where `requested` is the explicit request
+ *   alone. Absent when the runtime knows no route; never guessed.
  */
 
 /**

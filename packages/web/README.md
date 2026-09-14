@@ -311,7 +311,10 @@ selection, and names requested and answering models plus the classified reason
 when the runtime supplied one. Expanding the marker shows the bounded route
 chain, same-model retries, route-level effort, and Pi's actual effective thinking
 level. Configured subagents keep independent attribution in their own Activity
-row. The browser never infers a fallback from selector state, and the
+row: the launch route badges from the moment the delegation starts — marked
+requested, not a confirmed run — and the completed child's executed route
+replaces it. Delegations recorded before the launch route existed keep showing
+no badge rather than a guessed one. The browser never infers a fallback from selector state, and the
 route-attribution payload never carries raw provider errors or request identifiers.
 
 Where the conversation's selected route changes, the transcript says so: a quiet
