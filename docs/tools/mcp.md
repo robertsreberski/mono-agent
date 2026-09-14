@@ -548,7 +548,9 @@ The tool reads only this agent's `providers.piAuthPath`, using the existing Pi
 resolver for OAuth refresh; it does not accept credentials, paths, URLs or
 account identifiers. Console and tool share one five-minute per-provider cache
 and coalesced refresh/backoff. There is no forced-refresh argument, vendor write,
-quota purchase, routing decision or local cost calculation.
+quota purchase, routing decision or local cost calculation. Retained usage fetches also
+feed passive credential-health evidence: vendor acceptance is **Credential OK**,
+not proof of inference/model entitlement, while final auth rejection is **Needs action**.
 
 Allow-all exposes it automatically. A restrictive `tools.allowedTools` must
 include `ProviderUsage`, `mcp__mono-agent-provider-usage__ProviderUsage`, or

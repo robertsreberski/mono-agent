@@ -1200,7 +1200,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .provider-auth-heading > b { overflow: hidden; font-family: inherit; font-size: 12px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
 .provider-auth-badges { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }
 .provider-auth-state { padding: 3px 6px; color: var(--text-muted); background: var(--surface); border-radius: 6px; font-family: inherit; font-size: 10px; font-weight: 750; line-height: 1.5; letter-spacing: .05em; text-transform: uppercase; }
-.provider-auth-state.is-ok { color: var(--accent); }
+.provider-auth-state.is-ok, .provider-auth-state.is-ok-account { color: var(--accent); }
 .provider-auth-state.is-needs-action { color: var(--warning); }
 .provider-auth-check-result { color: var(--text-muted); font-size: 10px; font-weight: 650; line-height: 1.5; }
 .provider-auth-check-result.is-passed { color: var(--accent); }

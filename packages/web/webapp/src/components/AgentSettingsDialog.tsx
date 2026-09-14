@@ -275,9 +275,11 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
 
   useEffect(() => {
     if (agent.supportsProviderAuth !== true || agent.status === "offline") return;
+    // A completed usage read may have added passive credential evidence. This
+    // re-reads only local auth status; it never starts another vendor request.
     const controller = refresh();
     return () => controller.abort();
-  }, [sourceId, agent.generation, agent.status, agent.supportsProviderAuth]);
+  }, [sourceId, agent.generation, agent.status, agent.supportsProviderAuth, usage]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -674,6 +676,9 @@ function providerAuthPresentation(provider: ProviderAuthProviderStatus): {
   }
   if (provider.verification === "verified_by_live_request" && provider.lastFailure === undefined) {
     return { className: "is-ok", glyph: "✓", label: "OK" };
+  }
+  if (provider.verification === "verified_by_account_request" && provider.lastFailure === undefined) {
+    return { className: "is-ok-account", glyph: "✓", label: "Credential OK" };
   }
   return { className: "is-not-verified", glyph: "?", label: "Not verified" };
 }

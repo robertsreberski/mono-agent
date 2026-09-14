@@ -33,7 +33,7 @@ beforeEach(() => {
   });
   mocks.providerUsage.mockResolvedValue(snapshot);
   mocks.providerAuthStatus.mockResolvedValue({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: snapshot.providers.map((p) => ({
-    providerId: p.providerId, label: p.label, usages: [], state: "present", source: "stored", verification: "not_verified",
+    providerId: p.providerId, label: p.label, usages: [], state: "present", source: "stored", verification: p.providerId === "openai-codex" ? "verified_by_live_request" : "verified_by_account_request",
     methods: [{ authType: p.providerId === "opencode-go" ? "api_key" : "oauth", strategy: "paste_back", label: "Login", recommended: true }],
   })) });
 });
@@ -46,6 +46,18 @@ describe("compact Agent settings subscription meters", () => {
     expect(screen.queryByRole("progressbar", { name: "Codex Session used" })).toBeNull();
     expect(screen.getByText("Pro 20x")).toBeVisible();
     expect(screen.getByText("0%")).toBeVisible();
+    expect(screen.getAllByText("Credential OK")).toHaveLength(2);
+    const accountBadge = screen.getAllByText("Credential OK")[0]!.closest(".provider-auth-state")!;
+    const liveBadge = screen.getByText("OK", { exact: true }).closest(".provider-auth-state")!;
+    expect(accountBadge).toHaveClass("is-ok-account");
+    expect(liveBadge).toHaveClass("is-ok");
+    expect(getComputedStyle(accountBadge).color).toBe(getComputedStyle(liveBadge).color);
+    expect(getComputedStyle(accountBadge).fontSize).toBe("10px");
+    const codexHeading = screen.getByText("Pro 20x").closest(".provider-auth-heading")!;
+    expect([...codexHeading.querySelectorAll("b, .provider-usage-plan, .provider-auth-state")].map((child) => child.textContent?.trim())).toEqual(["Codex", "Pro 20x", "✓ OK"]);
+    const authButton = screen.getAllByRole("button", { name: "Re-authenticate" })[0]!;
+    expect(getComputedStyle(authButton).fontSize).toBe("12px");
+    expect(authButton.getBoundingClientRect().height).toBe(28);
     expect(screen.queryByText(/Sonnet|Spark|credits/)).toBeNull();
     const dialog = screen.getByRole("dialog");
     expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth);

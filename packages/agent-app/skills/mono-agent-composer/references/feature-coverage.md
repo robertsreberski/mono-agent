@@ -188,4 +188,7 @@ needed. A restrictive allowlist must include `ProviderUsage`; the namespaced
 work, with deny winning. Optional `provider` filters the three exact ids.
 Snapshots are secret-free, five-minute cached vendor percentages/reset times,
 not local costs; stale/error data is explicitly labelled and absent credentials
-are omitted. No quota purchases or routing decisions are performed.
+are omitted. Retained usage successes provide weaker **Credential OK** evidence,
+not inference/model entitlement or live **OK**; final auth rejections show
+**Needs action**. Evidence is fenced against credential replacement and adds no
+extra vendor calls. No quota purchases or routing decisions are performed.
