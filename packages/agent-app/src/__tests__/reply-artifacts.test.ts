@@ -1116,4 +1116,237 @@ describe("reply artifact publication", () => {
     await expect(access(join(root, "artifacts", "reply-files", attachment.reference.id, "metadata.json")))
       .resolves.toBeUndefined();
   });
+
+  it("supersedes a private-path rejection when the same file name later publishes in the same run", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    await mkdir(join(workspace, ".mono-agent", "hidden"), { recursive: true });
+    await mkdir(join(workspace, "tmp"), { recursive: true });
+    await writeFile(join(workspace, ".mono-agent", "hidden", "shot.png"), "shot-bytes");
+    await writeFile(join(workspace, "tmp", "shot.png"), "shot-bytes");
+    const service = createReplyArtifactService({ artifactDir: join(root, "artifacts"), workspace });
+    const publisher = await openPublisher(service, "run-supersede", "conversation");
+    let rejection: Awaited<ReturnType<typeof publisher.client.callTool>>;
+    let success: Awaited<ReturnType<typeof publisher.client.callTool>>;
+    try {
+      rejection = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: ".mono-agent/hidden/shot.png" },
+      });
+      success = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: "tmp/shot.png" },
+      });
+    } finally {
+      await publisher.close();
+    }
+    expect(rejection!).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: "Generated file path contains a private component." }],
+      structuredContent: { published: false, code: "artifact_publish_failed" },
+    });
+    expect(success!).toMatchObject({ structuredContent: { published: true, name: "shot.png" } });
+
+    const response = await service.wrapResponder(responder("run-supersede")).respond({
+      conversationId: "conversation",
+      text: "publish",
+      abortSignal: new AbortController().signal,
+    }, stream);
+    const attachments = response.parts?.filter(
+      (part): part is AgentReplyAttachmentPart => part.type === "attachment",
+    ) ?? [];
+    const failures = response.parts?.filter((part) => part.type === "failure") ?? [];
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]?.name).toBe("shot.png");
+    expect(failures).toHaveLength(0);
+  });
+
+  it("supersedes a later rejection when an earlier attachment already carries the same display name", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    await mkdir(join(workspace, ".mono-agent", "hidden"), { recursive: true });
+    await mkdir(join(workspace, "tmp"), { recursive: true });
+    await writeFile(join(workspace, "tmp", "shot.png"), "shot-bytes");
+    await writeFile(join(workspace, ".mono-agent", "hidden", "shot.png"), "shot-bytes");
+    const service = createReplyArtifactService({ artifactDir: join(root, "artifacts"), workspace });
+    const publisher = await openPublisher(service, "run-supersede-early", "conversation");
+    try {
+      const success = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: "tmp/shot.png" },
+      });
+      expect(success).toMatchObject({ structuredContent: { published: true, name: "shot.png" } });
+      const rejection = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: ".mono-agent/hidden/shot.png" },
+      });
+      expect(rejection).toMatchObject({
+        isError: true,
+        structuredContent: { published: false, code: "artifact_publish_failed" },
+      });
+    } finally {
+      await publisher.close();
+    }
+    const response = await service.wrapResponder(responder("run-supersede-early")).respond({
+      conversationId: "conversation",
+      text: "publish",
+      abortSignal: new AbortController().signal,
+    }, stream);
+    expect(response.parts?.filter((part) => part.type === "attachment")).toHaveLength(1);
+    expect(response.parts?.filter((part) => part.type === "failure")).toHaveLength(0);
+  });
+
+  it("keeps a rejection whose display name never publishes alongside an unrelated attachment", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    await mkdir(join(workspace, ".mono-agent", "hidden"), { recursive: true });
+    await mkdir(join(workspace, "tmp"), { recursive: true });
+    await writeFile(join(workspace, ".mono-agent", "hidden", "never.png"), "never-private");
+    await writeFile(join(workspace, "tmp", "other.txt"), "other-public");
+    const service = createReplyArtifactService({ artifactDir: join(root, "artifacts"), workspace });
+    const publisher = await openPublisher(service, "run-unrelated", "conversation");
+    try {
+      const rejection = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: ".mono-agent/hidden/never.png" },
+      });
+      expect(rejection).toMatchObject({
+        isError: true,
+        structuredContent: { published: false, code: "artifact_publish_failed" },
+      });
+      const success = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: "tmp/other.txt" },
+      });
+      expect(success).toMatchObject({ structuredContent: { published: true, name: "other.txt" } });
+    } finally {
+      await publisher.close();
+    }
+    const response = await service.wrapResponder(responder("run-unrelated")).respond({
+      conversationId: "conversation",
+      text: "publish",
+      abortSignal: new AbortController().signal,
+    }, stream);
+    const attachments = response.parts?.filter(
+      (part): part is AgentReplyAttachmentPart => part.type === "attachment",
+    ) ?? [];
+    const failures = response.parts?.filter((part) => part.type === "failure") ?? [];
+    expect(attachments.map((part) => part.name)).toEqual(["other.txt"]);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({ type: "failure", code: "artifact_publish_failed" });
+  });
+
+  it("does not let a superseded rejection consume the shared reply-part budget", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    await mkdir(join(workspace, ".mono-agent", "hidden"), { recursive: true });
+    await mkdir(join(workspace, "tmp"), { recursive: true });
+    await writeFile(join(workspace, ".mono-agent", "hidden", "shot.png"), "shot-bytes");
+    await writeFile(join(workspace, "tmp", "shot.png"), "shot-bytes");
+    await writeFile(join(workspace, "tmp", "other.txt"), "other-bytes");
+    const service = createReplyArtifactService({
+      artifactDir: join(root, "artifacts"),
+      workspace,
+      replyPartBudget: createReplyPartBudget(2),
+    });
+    const publisher = await openPublisher(service, "run-budget", "conversation");
+    let first: Awaited<ReturnType<typeof publisher.client.callTool>>;
+    let second: Awaited<ReturnType<typeof publisher.client.callTool>>;
+    let third: Awaited<ReturnType<typeof publisher.client.callTool>>;
+    try {
+      first = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: ".mono-agent/hidden/shot.png" },
+      });
+      second = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: "tmp/shot.png" },
+      });
+      third = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: "tmp/other.txt" },
+      });
+    } finally {
+      await publisher.close();
+    }
+    expect(first!).toMatchObject({
+      isError: true,
+      structuredContent: { published: false, code: "artifact_publish_failed" },
+    });
+    expect(second!).toMatchObject({ structuredContent: { published: true, name: "shot.png" } });
+    // The freed slot lets an unrelated file publish instead of hitting the shared 2-part budget.
+    expect(third!).toMatchObject({ structuredContent: { published: true, name: "other.txt" } });
+
+    const response = await service.wrapResponder(responder("run-budget")).respond({
+      conversationId: "conversation",
+      text: "publish",
+      abortSignal: new AbortController().signal,
+    }, stream);
+    const attachments = response.parts?.filter(
+      (part): part is AgentReplyAttachmentPart => part.type === "attachment",
+    ) ?? [];
+    expect(attachments.map((part) => part.name).sort()).toEqual(["other.txt", "shot.png"]);
+    expect(response.parts?.filter((part) => part.type === "failure")).toHaveLength(0);
+  });
+
+  it("keeps a delivery-binding failure and an unrelated rejection when the bound file is lost", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    const artifactDir = join(root, "artifacts");
+    await mkdir(join(workspace, ".mono-agent", "hidden"), { recursive: true });
+    await mkdir(workspace, { recursive: true });
+    await writeFile(join(workspace, "bad.txt"), "bad-content");
+    await writeFile(join(workspace, "good.txt"), "good-content");
+    await writeFile(join(workspace, ".mono-agent", "hidden", "unrelated.png"), "unrelated-private");
+    const service = createReplyArtifactService({ artifactDir, workspace });
+    const publisher = await openPublisher(service, "run-binding-supersede", "origin");
+    let badId = "";
+    let goodId = "";
+    try {
+      const bad = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: "bad.txt" },
+      });
+      const good = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: "good.txt" },
+      });
+      const unrelated = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: ".mono-agent/hidden/unrelated.png" },
+      });
+      expect(bad).toMatchObject({ structuredContent: { published: true } });
+      expect(good).toMatchObject({ structuredContent: { published: true } });
+      expect(unrelated).toMatchObject({
+        isError: true,
+        structuredContent: { published: false, code: "artifact_publish_failed" },
+      });
+      badId = (bad.structuredContent as { attachmentId: string }).attachmentId;
+      goodId = (good.structuredContent as { attachmentId: string }).attachmentId;
+    } finally {
+      await publisher.close();
+    }
+    await padJsonFileToLimit(join(artifactDir, "reply-files", badId, "metadata.json"), 16 * 1024);
+
+    const response = await service.wrapResponder(responder("run-binding-supersede")).respond({
+      conversationId: "delivery",
+      text: "publish",
+      abortSignal: new AbortController().signal,
+    }, stream);
+    expect(response.parts).toEqual([
+      expect.objectContaining({
+        type: "failure",
+        code: "artifact_publish_failed",
+        relatedPartId: badId,
+        message: "The generated file could not be finalized for delivery.",
+      }),
+      expect.objectContaining({ type: "attachment", id: goodId }),
+      expect.objectContaining({ type: "failure", code: "artifact_publish_failed" }),
+    ]);
+    const failures = response.parts?.filter((part) => part.type === "failure") ?? [];
+    expect(failures).toHaveLength(2);
+    // The lost attachment does not suppress the unrelated rejection: exactly one
+    // failure is the delivery binding outcome, the other has no related part.
+    expect(failures.filter((part) => "relatedPartId" in part && part.relatedPartId !== undefined)).toHaveLength(1);
+  });
 });

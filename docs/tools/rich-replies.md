@@ -40,6 +40,17 @@ parts per run. A retry with the same integrity identity reuses the first part;
 the twenty-first distinct producer request returns a visible capability failure
 to the model without replacing the first twenty.
 
+A rejected publish attempt is superseded when the same run successfully
+publishes an attachment with the same sanitized display name, regardless of
+call order. The rejection still answers the model with its exact `isError`
+reason so the file can be relocated, but the delivered reply carries only the
+surviving attachment. Only publish-attempt failures are superseded, evaluated
+after delivery binding against surviving attachments: capacity failures and
+delivery-binding failures are never suppressed, an attachment lost at delivery
+binding supersedes nothing, and a superseded rejection releases its reply-part
+budget claim. A file that never publishes still produces exactly one visible
+failure part.
+
 `PublishReplyFile` is request-scoped. Its random loopback endpoint is
 high-entropy, closes with the request, is not logged, and does not contain the
 run id, conversation id, workspace, or artifact path. The tool is removed by
