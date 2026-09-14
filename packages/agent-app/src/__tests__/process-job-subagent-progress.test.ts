@@ -107,21 +107,26 @@ describe("private subagent job progress", () => {
     expect(JSON.stringify(reversed.snapshot().route)).not.toMatch(/private-route|ghp_|\[REDACTED\]/u);
   });
 
-  it("retains long descriptive route identifiers that are not literals or credential shapes", () => {
-    const descriptive = "my-company/production-large-language-model-v2";
-    const qualified = `provider:${descriptive}`;
-    expect(descriptive.length).toBeGreaterThanOrEqual(40);
+  it.each([
+    "openai-codex:gpt-5.6-sol",
+    "anthropic:claude-fable-5-1",
+    "my-company/production-large-language-model-v2",
+    "provider:my-company/production-large-language-model-v2",
+  ])("retains the ordinary route identifier %s", (model) => {
     const progress = new SubagentJobProgress([]);
-    expect(progress.report({ type: "route",
-      requested: { model: descriptive, effort: "high" },
-      executed: { model: qualified, effort: "xhigh" },
-      disposition: "fallback" })).toBe(true);
-    expect(progress.snapshot().route).toEqual({
-      requested: { model: descriptive, effort: "high" },
-      executed: { model: qualified, effort: "xhigh" },
-      disposition: "fallback",
-    });
+    expect(progress.report({ type: "route", requested: { model, effort: "high" } })).toBe(true);
+    expect(progress.snapshot().route?.requested).toEqual({ model, effort: "high" });
   });
+
+  it.each(["password", "passwd", "secret", "token", "api_key", "apikey", "authorization", "credential"])(
+    "drops a route identifier beginning with the sensitive label %s",
+    (label) => {
+      const progress = new SubagentJobProgress([]);
+      expect(progress.report({ type: "route", requested: { model: `${label}:tiny-value`, effort: "high" } })).toBe(true);
+      expect(progress.snapshot().route?.requested).toEqual({ effort: "high" });
+      expect(JSON.stringify(progress.snapshot().route)).not.toContain("tiny-value");
+    },
+  );
 });
 
 describe("argument preview redaction", () => {
@@ -129,25 +134,45 @@ describe("argument preview redaction", () => {
   const secrets = [home, "example", "private-note", "s3cr3tvalue"];
   const redact = (value: string) => redactSubagentArgumentPreview(value, secrets, home);
 
+  const opaque41 = `${"A".repeat(20)}/${"B".repeat(20)}`;
   it.each([
-    ["home containing the username literal",
-      `${home}/worktrees/mono-maintainer/mono-agent/pwa-top-blur/AGENTS.md`,
-      [home, "example"],
-      "~/worktrees/mono-maintainer/mono-agent/pwa-top-blur/AGENTS.md"],
-    ["mixed-boundary repeated home literal",
-      `${home}/pin-7421${home}X`,
-      [home, `${home}/pin-7421${home}`],
-      "[REDACTED]X"],
-    ["literal overlapping the home suffix",
-      `${home}/pin-7421`,
-      [home, "example/pin-7421"],
-      ["/Users", "[REDACTED]"].join("/")],
-    ["username literal outside the home occurrence",
-      `${home}/notes/example-todo.md`,
-      [home, "example"],
-      "~/notes/[REDACTED]-todo.md"],
-  ])("resolves original-byte home and literal ranges for %s", (_case, value, fixtureSecrets, expected) => {
-    expect(redactSubagentArgumentPreview(value, fixtureSecrets, home)).toBe(expected);
+    { case: "home containing the username literal",
+      value: `${home}/worktrees/mono-maintainer/mono-agent/pwa-top-blur/AGENTS.md`,
+      fixtureSecrets: [home, "example"],
+      expected: "~/worktrees/mono-maintainer/mono-agent/pwa-top-blur/AGENTS.md" },
+    { case: "mixed-boundary repeated home literal",
+      value: `${home}/pin-7421${home}X`,
+      fixtureSecrets: [home, `${home}/pin-7421${home}`],
+      expected: "[REDACTED]X" },
+    { case: "literal overlapping the home suffix",
+      value: `${home}/pin-7421`,
+      fixtureSecrets: [home, "example/pin-7421"],
+      expected: ["/Users", "[REDACTED]"].join("/") },
+    { case: "username literal outside the home occurrence",
+      value: `${home}/notes/example-todo.md`,
+      fixtureSecrets: [home, "example"],
+      expected: "~/notes/[REDACTED]-todo.md" },
+    { case: "left overlap cancelling the home occurrence",
+      value: `prefix${home}/file`,
+      fixtureSecrets: [home, "example", "prefix/Users"],
+      absent: "example" },
+    { case: "rendering one literal assembling another",
+      value: "pin-REDA7421",
+      fixtureSecrets: ["REDA", "pin-7421"],
+      absent: "pin-7421",
+      fixtureHome: "" },
+    { case: "home rendering assembling another literal",
+      value: `${home}/pin-7421`,
+      fixtureSecrets: [home, "example", "~/pin-7421"],
+      absent: "~/pin-7421" },
+    { case: "opaque run following a rendered tilde without a slash",
+      value: `${home}/REMOVE${opaque41}`,
+      fixtureSecrets: [home, "example", "/REMOVE", "REDA"],
+      absent: opaque41 },
+  ])("resolves original-byte home and literal ranges for $case", ({ value, fixtureSecrets, expected, absent, fixtureHome }) => {
+    const result = redactSubagentArgumentPreview(value, fixtureSecrets, fixtureHome ?? home);
+    if (expected !== undefined) expect(result).toBe(expected);
+    if (absent !== undefined) expect(result).not.toContain(absent);
   });
 
   it("renders the exact home root as home-relative with realistic ambient secrets", () => {
@@ -193,6 +218,10 @@ describe("argument preview redaction", () => {
     const opaque = `${"A".repeat(20)}/${"B".repeat(20)}`;
     expect(opaque).toHaveLength(41);
     expect(redact(`${before}${opaque}${after}`)).not.toContain(opaque);
+  });
+
+  it("does not let a named recognizer reintroduce a marker containing a known literal", () => {
+    expect(redactSubagentArgumentPreview("password=tiny-pass", ["REDA"], "")).not.toContain("REDA");
   });
 
   it("redacts userinfo after an arbitrarily long custom URL scheme", () => {

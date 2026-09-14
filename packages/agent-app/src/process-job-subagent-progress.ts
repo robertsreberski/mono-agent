@@ -70,10 +70,16 @@ function renderPreviewLiterals(
       }
     }
   }
-  const survivingLiterals = mergeOverlappingRanges(literalRanges.filter((literal) =>
-    !homeRanges.some((homeRange) => literal.start >= homeRange.start && literal.end <= homeRange.end)));
+  const extendingLiterals = literalRanges.filter((literal) =>
+    !homeRanges.some((homeRange) => literal.start >= homeRange.start && literal.end <= homeRange.end));
   const survivingHomes = homeRanges.filter((homeRange) =>
-    !survivingLiterals.some((literal) => rangesOverlap(homeRange, literal)));
+    !extendingLiterals.some((literal) => rangesOverlap(homeRange, literal)));
+  const survivingLiterals = mergeOverlappingRanges(literalRanges.filter((literal) => {
+    const exactHomeLiteral = homeRanges.some((homeRange) =>
+      literal.start === homeRange.start && literal.end === homeRange.end);
+    return !exactHomeLiteral && !survivingHomes.some((homeRange) =>
+      literal.start >= homeRange.start && literal.end <= homeRange.end);
+  }));
   const replacements = [
     ...survivingLiterals.map((range) => ({ ...range, value: "[REDACTED]" })),
     ...survivingHomes.map((range) => ({ ...range, value: "~" })),
@@ -87,6 +93,20 @@ function renderPreviewLiterals(
     cursor = replacement.end;
   }
   return rendered + scan.slice(cursor);
+}
+
+function finalizePreviewRedaction(value: string, secrets: readonly string[]): string {
+  let current = value;
+  // Rendering or a recognizer marker can assemble a known literal or credential
+  // shape across a removed span. Iterate the real scrubbers to stability, then
+  // fail closed rather than retain a pathological rewrite cycle.
+  for (let pass = 0; pass < 8; pass += 1) {
+    const recognized = redactProcessOutputLine(current, secrets);
+    const literalsScrubbed = renderPreviewLiterals(recognized, secrets, undefined, false);
+    if (literalsScrubbed === current) return current;
+    current = literalsScrubbed;
+  }
+  return "[redacted]";
 }
 
 /**
@@ -105,30 +125,36 @@ export function redactSubagentArgumentPreview(
   const homePattern = root === "" || root === "/"
     ? undefined
     : new RegExp(`${escapeRegExp(root)}(?=/|$|\\s|["'])`, "gu");
-  // Literal and home matches are both decided against the original bytes. A
-  // literal wholly inside a home match is hidden by `~`; a literal extending
-  // outside that match wins and cancels it before either replacement renders.
+  // Literal and home matches are both decided against the original bytes. An
+  // extending literal cancels an overlapping home first; only literals contained
+  // by a surviving home are then hidden by `~` (with exact-home literals always
+  // suppressed so an overlap does not unnecessarily erase the whole root).
   const relativized = renderPreviewLiterals(scan, secrets, homePattern, truncated);
-  const redacted = redactProcessOutputLine(redactProcessOutput(relativized, []), [])
+  const recognized = redactProcessOutputLine(redactProcessOutput(relativized, []), [])
     // `redactProcessOutput` intentionally bounds URL schemes; previews retain
     // the older unbounded userinfo backstop because route-like arguments can use
     // custom schemes of arbitrary length.
     .replace(/([a-z][a-z0-9+.-]*:\/\/)([^/\s]+)@/giu, "$1[REDACTED]@")
     // Restore the generic opaque-run boundary semantics above the approved
-    // 24–39-character slash-bearing relaxation. The sole extra boundary guard
-    // preserves the intentional `~/...` path form; starting later is blocked by
-    // the same opaque-character lookbehind.
-    .replace(/(?<!~)(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{40,}(?![A-Za-z0-9+/=_-])/gu, "[REDACTED]")
+    // 24–39-character slash-bearing relaxation. Exempt only a run whose first
+    // character is the slash in a genuine `~/...` path; the opaque lookbehind
+    // prevents matching again from later within that same run.
+    .replace(/(?!(?<=~)\/)(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{40,}(?![A-Za-z0-9+/=_-])/gu, "[REDACTED]")
     .replace(/(?<![A-Za-z0-9_+=-])[A-Za-z0-9_+=-]{24,}(?![A-Za-z0-9_+=-])/gu, "[REDACTED]")
     .replace(/\s+/gu, " ")
     .trim();
+  const redacted = finalizePreviewRedaction(recognized, secrets);
   return redacted || "[redacted]";
 }
 
 const ROUTE_CREDENTIAL_SHAPE = /\b(?:gh[pousr]_[A-Za-z0-9]{16,}|sk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|A(?:KIA|SIA)[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/u;
+const ROUTE_SENSITIVE_LABEL = /^(?:password|passwd|secret|token|api[_-]?key|authorization|credential)$/iu;
 
 function routeIdentifierIsSensitive(identifier: string, secrets: readonly string[]): boolean {
-  return secrets.some((secret) => secret.length > 0 && identifier.includes(secret))
+  const firstSeparator = identifier.indexOf(":");
+  const sensitiveLabel = firstSeparator >= 0 && ROUTE_SENSITIVE_LABEL.test(identifier.slice(0, firstSeparator));
+  return sensitiveLabel
+    || secrets.some((secret) => secret.length > 0 && identifier.includes(secret))
     || ROUTE_CREDENTIAL_SHAPE.test(identifier);
 }
 
