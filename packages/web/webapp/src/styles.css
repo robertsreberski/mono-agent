@@ -404,6 +404,17 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .thread-unread { width: 6px; height: 6px; flex: none; background: var(--accent); border-radius: 999px; }
 .thread-preview { min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .thread-preview-text { min-width: 0; max-width: 55%; flex: 0 0 auto; overflow: hidden; font: inherit; line-height: inherit; text-overflow: ellipsis; white-space: nowrap; }
+/* A conversation row spends its preview line on the newest reply, and the
+   excerpt yields to everything else on the line: the project badge and the
+   tag chips keep their intrinsic width, the route badge stays pinned right by
+   its own auto margin, and the excerpt takes only the space that remains,
+   ellipsizing instead of squeezing its neighbours. The badge keeps a cap so
+   a long project name ellipsizes rather than pushing the line out, and the
+   base balance above stays untouched for search hits and automation rows. */
+.thread-item.is-conversation .thread-preview-text { max-width: none; flex: 1 1 auto; }
+.thread-item.is-conversation .thread-preview .project-badge { flex: none; max-width: 45%; }
+.thread-item.is-conversation .thread-preview .project-badge span { min-width: 0; }
+.thread-item.is-conversation .thread-preview .thread-tags { flex: none; }
 .thread-running { width: 6px; height: 6px; flex: none; align-self: center; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); animation: pulse 1.4s ease infinite; }
 .thread-load-more { min-height: 31px; margin: 8px 0 0; padding: 0 9px; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 10px; font-weight: 650; }
 .thread-load-more:hover { color: var(--text); background: var(--surface-hover); }
@@ -1548,9 +1559,10 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .project-badge svg { flex: none; }
 .project-badge span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The same badge standing still inside a row that is already one target:
-   no hover, no cursor, and it gives up its width before the status text does.
-   It takes the line's own type size and leading so its baseline is the line's
-   baseline, and the glyph's bottom edge sits on that baseline too. */
+   no hover, no cursor, and -- outside a conversation row's preview line,
+   which pins it (see above) -- it gives up its width before the status text
+   does. It takes the line's own type size and leading so its baseline is the
+   line's baseline, and the glyph's bottom edge sits on that baseline too. */
 .project-badge.is-static { flex: 0 1 auto; align-items: baseline; margin: 0; padding: 0; font-size: inherit; line-height: inherit; cursor: default; }
 .project-badge.is-static:hover { background: transparent; }
 /* The folder is drawn 1.5px short of its box's bottom edge; on a baseline
