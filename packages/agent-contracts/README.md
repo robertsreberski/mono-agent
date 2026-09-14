@@ -242,6 +242,7 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/agent-contracts`**
 
 ```text
+AGENT_ATTACHMENT_MIME_ALIASES
 AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES
 AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES
 AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES
@@ -487,6 +488,7 @@ assertAgentContinuationOriginContext
 assertSafeBind
 bearerTokensEqual
 buildStreamingTailPreview
+canonicalizeAgentAttachmentMimeType
 classifyNotifySuppression
 close
 closeServerBounded
