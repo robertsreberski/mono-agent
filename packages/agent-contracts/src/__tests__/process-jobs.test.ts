@@ -241,4 +241,17 @@ describe("internal subagent progress projection", () => {
   ])("rejects malformed subagent routes %#", (route) => {
     expect(isProcessJobSubagentRoute(route)).toBe(false);
   });
+
+  it.each([
+    ["array", ["fallback"]],
+    ["object", { toString: null }],
+    ["number", 1],
+    ["null", null],
+  ])("rejects a non-string %s disposition without throwing", (_case, disposition) => {
+    const route = { requested: { model: "valid:model" }, disposition };
+    expect(() => isProcessJobSubagentRoute(route)).not.toThrow();
+    expect(isProcessJobSubagentRoute(route)).toBe(false);
+    expect(isProcessJobSubagentProgress({ ...progress, route })).toBe(false);
+    expect(() => parseProcessJobProjection({ ...internal(), subagentProgress: { ...progress, route } })).toThrow(TypeError);
+  });
 });

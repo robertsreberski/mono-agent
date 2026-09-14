@@ -8,7 +8,7 @@ import type { MessagePart, ProcessJobProjection, ProcessJobState } from "../type
 import type { ProcessJobActivityEvent } from "../process-job-presentation";
 import { ActivityRow, type ActivityStatus } from "./ActivityRow";
 import { ActivityElapsed, type ActivityTiming } from "./assistant-ui/ActivityElapsed";
-import { ProcessJobSubagentFacts, ProcessJobSubagentProgress } from "./ProcessJobSubagentProgress";
+import { ProcessJobMetaLine, ProcessJobSubagentProgress } from "./ProcessJobSubagentProgress";
 import { formatToolDuration } from "./duration";
 
 export const TERMINAL_PROCESS_JOB_STATES: ReadonlySet<ProcessJobState> = new Set<ProcessJobState>([
@@ -485,10 +485,13 @@ export function ProcessJobCard({
     : undefined;
   const status = processJobStatus(live.state);
   const stateLabel = processJobStateLabel(live.state);
-  const facts: ReactNode[] = [];
-  if (terminal) facts.push(<div key="wake"><dt>Wake</dt><dd>{wakeLabel(live.wake)}</dd></div>);
-  if (live.kind === "internal" && progress !== undefined) {
-    facts.push(<ProcessJobSubagentFacts key="subagent" progress={progress} status={status} />);
+  const supplements: ReactNode[] = [];
+  if (terminal && (live.wake.attempts > 1 || ["failed", "unknown", "suppressed"].includes(live.wake.state))) {
+    supplements.push(<span key="wake">wake {wakeLabel(live.wake)}</span>);
+  }
+  const exit = processJobExitLabel(live);
+  if (terminal && exit !== undefined && (live.exitCode !== 0 || live.signal !== null)) {
+    supplements.push(<span key="exit">{exit}</span>);
   }
   // The card shows the job's output, not where the host spooled it: the artifact
   // paths are host-local files an operator in the console cannot open, and they
@@ -510,7 +513,11 @@ export function ProcessJobCard({
       ariaLabel={`${live.tool} background job ${stateLabel}`}
     >
       <div className="activity-payload is-indented">
-        {facts.length > 0 && <dl className="process-job-facts">{facts}</dl>}
+        <ProcessJobMetaLine
+          progress={live.kind === "internal" ? progress : undefined}
+          status={status}
+          supplements={supplements}
+        />
         {live.kind === "internal" ? <ProcessJobSubagentProgress key={live.jobId} progress={progress} open={open} /> : live.output.preview.length > 0 && (
           <>
             <span>Output{live.output.truncated ? " (truncated)" : ""}</span>

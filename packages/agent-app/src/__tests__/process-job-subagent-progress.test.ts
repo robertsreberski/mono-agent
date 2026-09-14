@@ -63,6 +63,49 @@ describe("private subagent job progress", () => {
     progress.finish();
     expect(progress.report({ type: "route", requested: { model: "other:model" } })).toBe(false);
   });
+
+  it("copies accepted route primitives across caller mutation and finish sealing", () => {
+    const progress = new SubagentJobProgress([]);
+    const event = { type: "route", requested: { model: "provider:primary", effort: "high" },
+      executed: { model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" },
+      disposition: "fallback" } as const;
+    expect(progress.report(event)).toBe(true);
+    (event.requested as { model: string }).model = "provider:mutated";
+    (event.executed as { model: string }).model = "provider:mutated";
+    const accepted = progress.snapshot();
+    expect(accepted.route).toEqual({
+      requested: { model: "provider:primary", effort: "high" },
+      executed: { model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" },
+      disposition: "fallback",
+    });
+    const finished = progress.finish();
+    (event.requested as { effort: string }).effort = "low";
+    (event.executed as { effort: string }).effort = "low";
+    expect(progress.snapshot()).toEqual(finished);
+  });
+
+  it("drops secret-shaped route fields rather than presenting redaction markers as model names", () => {
+    const knownRoute = "provider:private-route";
+    const credentialRoute = `provider:ghp_${"g".repeat(16)}`;
+    const progress = new SubagentJobProgress([knownRoute]);
+    expect(progress.report({ type: "route",
+      requested: { model: knownRoute, effort: "high" },
+      executed: { model: credentialRoute, effort: "xhigh" },
+      disposition: "fallback" })).toBe(true);
+    expect(progress.snapshot().route).toEqual({
+      requested: { effort: "high" },
+      executed: { effort: "xhigh" },
+      disposition: "fallback",
+    });
+    expect(JSON.stringify(progress.snapshot().route)).not.toMatch(/private-route|ghp_|\[REDACTED\]/u);
+
+    const reversed = new SubagentJobProgress([knownRoute]);
+    expect(reversed.report({ type: "route",
+      requested: { model: credentialRoute, effort: "high" },
+      executed: { model: knownRoute, effort: "xhigh" },
+      disposition: "fallback" })).toBe(true);
+    expect(JSON.stringify(reversed.snapshot().route)).not.toMatch(/private-route|ghp_|\[REDACTED\]/u);
+  });
 });
 
 describe("argument preview redaction", () => {
@@ -84,17 +127,26 @@ describe("argument preview redaction", () => {
     expect(redact("~/safe/s3cr3tvalue/file")).not.toContain("s3cr3tvalue");
   });
 
+  it("does not let home relativization expose a larger literal secret", () => {
+    const sensitiveSuffix = "pin-7421";
+    const value = `${home}/${sensitiveSuffix}`;
+    const result = redactSubagentArgumentPreview(value, [home, value], home);
+    expect(result).toBe("[REDACTED]");
+    expect(result).not.toContain(sensitiveSuffix);
+  });
+
   it.each([
-    ["bearer", `curl -H "Authorization: Bearer ${"b".repeat(30)}" ~/a/b`, "b".repeat(30)],
-    ["password flag", "tool --password=hunter2hunter2", "hunter2hunter2"],
-    ["api key label", `api_key=${"k".repeat(30)}`, "k".repeat(30)],
-    ["token label", `token: ${"t".repeat(30)}`, "t".repeat(30)],
-    ["password label", "password=secret-password-value", "secret-password-value"],
-    ["URL userinfo", "https://user:pw@host/some/long/path/segments/here", "user:pw"],
-    ["PEM", "-----BEGIN RSA PRIVATE KEY-----\nprivate-key-body\n-----END RSA PRIVATE KEY-----", "private-key-body"],
-    ["GitHub token", `ghp_${"g".repeat(20)}`, `ghp_${"g".repeat(20)}`],
+    ["bearer", "curl -H \"Authorization: Bearer b-short\" ~/a/b", "b-short"],
+    ["password flag", "tool --password=tiny-pass", "tiny-pass"],
+    ["labelled API credential", ["api", "key=k-short"].join("_"), "k-short"],
+    ["token label", "token: t-short", "t-short"],
+    ["password label", "password=p-short", "p-short"],
+    ["URL userinfo", "https://u:pw@host/a/b", "u:pw"],
+    ["PEM", "-----BEGIN RSA PRIVATE KEY-----\nshort-body\n-----END RSA PRIVATE KEY-----", "short-body"],
+    ["GitHub token", `ghp_${"g".repeat(16)}`, `ghp_${"g".repeat(16)}`],
     ["literal secret", "~/safe/s3cr3tvalue/file", "s3cr3tvalue"],
-  ])("removes adversarial %s material", (_case, value, secret) => {
+  ])("removes adversarial %s material below the generic entropy threshold", (_case, value, secret) => {
+    expect(secret.length).toBeLessThan(24);
     expect(redact(value)).not.toContain(secret);
   });
 
@@ -102,6 +154,12 @@ describe("argument preview redaction", () => {
     expect(redact(`~/.cache/${"a".repeat(32)}/file`)).toBe("~/.cache/[REDACTED]/file");
     const slashBearing = `${"A".repeat(20)}/${"B".repeat(23)}`;
     expect(redact(slashBearing)).toBe("[REDACTED]");
+    expect(redact(`"${slashBearing.slice(0, 41)}"`)).not.toContain(slashBearing.slice(0, 41));
+  });
+
+  it("redacts userinfo after an arbitrarily long custom URL scheme", () => {
+    const value = `${"a".repeat(65)}://user:pw@host`;
+    expect(redact(value)).not.toContain("user:pw@");
   });
 
   it("preserves an ordinary path whose slash-free segments stay below the opaque-run limit", () => {

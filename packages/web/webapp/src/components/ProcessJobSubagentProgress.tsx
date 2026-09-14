@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 import type { ProcessJobSubagentProgress as Progress, ToolCallStatus } from "../types";
 import { ActivityStep, clusterSummary, failedLabel } from "./ActivityRow";
 import { formatToolDuration } from "./duration";
@@ -19,39 +19,41 @@ function clusters(calls: readonly Call[]): Call[][] {
   return groups;
 }
 
-/** The child's identity, assigned route and call counts in the job facts row. */
-export function ProcessJobSubagentFacts({ progress, status }: {
+/** One quiet, unlabelled line for child route/calls plus exceptional host facts. */
+export function ProcessJobMetaLine({ progress, status, supplements = [] }: {
   readonly progress?: Progress;
   readonly status: ToolCallStatus;
+  readonly supplements?: readonly ReactNode[];
 }) {
   const capabilities = useRouteCapabilities();
-  if (progress === undefined) return null;
-  const route = progress.route === undefined ? undefined : resolveSubagentRoute({
+  const route = progress?.route === undefined ? undefined : resolveSubagentRoute({
     requested: progress.route.requested,
     ...(progress.route.executed === undefined ? {} : { executed: progress.route.executed }),
     disposition: progress.route.disposition ?? "unknown",
     transitions: [],
     retries: [],
   }, status, capabilities.agent, capabilities.catalogModels);
-  return (
-    <>
-      <div><dt>Child</dt><dd>{progress.profile}</dd></div>
-      {route !== undefined && <div><dt>Route</dt><dd><RouteBadge
-        modelShort={route.modelShort}
-        effortShort={route.effortShort}
-        effortSignal={route.effortSignal}
-        label={route.label}
-        title={route.title}
-        compact
-        fallback={route.isFallback}
-        requestedOnly={route.isRequestedOnly}
-      /></dd></div>}
-      <div>
-        <dt>Tools</dt>
-        <dd>{progress.toolCalls}{progress.failedCalls > 0 ? ` · ${progress.failedCalls} failed` : ""}</dd>
-      </div>
-    </>
-  );
+  const items: ReactNode[] = [
+    ...(progress === undefined ? [] : [<span key="profile" className="process-job-child-profile">{progress.profile}</span>]),
+    ...(route === undefined ? [] : [<RouteBadge
+      key="route"
+      modelShort={route.modelShort}
+      effortShort={route.effortShort}
+      effortSignal={route.effortSignal}
+      label={route.label}
+      title={route.title}
+      compact
+      fallback={route.isFallback}
+      requestedOnly={route.isRequestedOnly}
+    />]),
+    ...(progress === undefined ? [] : [<span key="tools">{progress.toolCalls} {progress.toolCalls === 1 ? "tool" : "tools"}{progress.failedCalls > 0
+      ? `, ${progress.failedCalls} failed` : ""}</span>]),
+    ...supplements,
+  ];
+  if (items.length === 0) return null;
+  return <div className="process-job-live-meta">{items.flatMap((item, index) => index === 0
+    ? [item]
+    : [<span key={`separator-${String(index)}`} className="process-job-meta-separator" aria-hidden="true">·</span>, item])}</div>;
 }
 
 /**

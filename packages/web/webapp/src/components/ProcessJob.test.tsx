@@ -7,6 +7,7 @@ import { DATA_MODE_STORAGE_KEY } from "../data-mode";
 import { backgroundSubagentJob } from "../test/background-subagent-fixtures";
 import { Icon } from "./Icon";
 import { processJob } from "../test/fixtures";
+import { RouteCapabilitiesProvider } from "./route-capabilities";
 import type { ProcessJobState } from "../types";
 import {
   ProcessJobPart,
@@ -316,7 +317,7 @@ describe("ProcessJobPart", () => {
     expect(screen.getByText("done")).toBeVisible();
     // The card shows the job's output, never the host-local files it was spooled to.
     expect(screen.queryByText(/artifacts\/11111111-1111-4111-8111-111111111111\//u)).toBeNull();
-    expect(screen.getByText("delivered (1 attempt)")).toBeVisible();
+    expect(row.querySelector(".process-job-live-meta")).toBeNull();
     expect(screen.getByText("Output")).toBeVisible();
     expect(screen.queryByText("Output (truncated)")).toBeNull();
   });
@@ -340,6 +341,7 @@ describe("ProcessJobPart", () => {
     expect(within(row.querySelector("summary")!).getByText(label)).toHaveClass("failed-tag");
     expect(row.querySelector(".activity-row-time")).toHaveTextContent("12s · SIGKILL");
     expect(row.querySelector(".activity-row-time")?.textContent).not.toContain(label);
+    expect(row.querySelector(".process-job-live-meta")).toHaveTextContent("SIGKILL");
   });
 
   it("surfaces a failed wake on the row and its error in the payload", () => {
@@ -361,7 +363,7 @@ describe("ProcessJobPart", () => {
     const error = screen.getByText(/Process-job wake delivery failed/u).closest(".activity-error");
     expect(error).not.toBeNull();
     expect(error).toHaveTextContent("process_job_wake_failed");
-    expect(screen.getByText("failed (3 attempts)")).toBeVisible();
+    expect(row.querySelector(".process-job-live-meta")).toHaveTextContent("wake failed (3 attempts)");
   });
 
   it("shows receipt uncertainty without claiming a definite delivery failure", () => {
@@ -835,22 +837,41 @@ describe("ProcessJobPart", () => {
   });
 });
 
-it("shows unresolved internal child ownership only on a terminal job card", () => {
-  const job = processJob({ tool: "Agent", kind: "internal", instanceId: "helper", state: "timed_out", childStillBusy: true });
-  const view = render(part({ type: "process-job", job }));
-  const terminal = screen.getByRole("group", { name: "Agent background job timed out" });
-  expect(terminal.querySelector(".activity-row-time .activity-row-alert"))
-    .toHaveTextContent("child still busy · awaiting actual settlement");
-
-  view.unmount();
+it.each(["queued", "starting", "running"] as const)("hides unresolved internal child ownership while %s", (state) => {
   vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
-  render(part({ type: "process-job", job: { ...job, state: "running",
-    timestamps: { ...job.timestamps, completedAt: null }, durationMs: null, exitCode: null } }));
-  const running = screen.getByRole("group", { name: "Agent background job running" });
-  expect(within(running).queryByText("child still busy · awaiting actual settlement")).toBeNull();
-  expect(running.querySelector(".activity-row-alert")).toBeNull();
+  const base = processJob();
+  const job = processJob({ tool: "Agent", kind: "internal", instanceId: "helper", state, childStillBusy: true,
+    timestamps: { ...base.timestamps, startedAt: state === "queued" ? null : base.timestamps.startedAt, completedAt: null },
+    durationMs: null, exitCode: null, wake: { ...base.wake, state: "pending", attempts: 0, lastAttemptAt: null } });
+  render(part({ type: "process-job", job }));
+  const row = screen.getByRole("group", { name: `Agent background job ${state}` });
+  expect(within(row).queryByText("child still busy · awaiting actual settlement")).toBeNull();
+  expect(row.querySelector(".activity-row-alert")).toBeNull();
 });
 
+it.each(["succeeded", "failed", "timed_out", "cancelled", "spawn_failed", "queue_expired", "interrupted"] as const)(
+  "shows unresolved internal child ownership after %s",
+  (state) => {
+    const job = processJob({ tool: "Agent", kind: "internal", instanceId: "helper", state, childStillBusy: true });
+    render(part({ type: "process-job", job }));
+    const row = screen.getByRole("group", { name: `Agent background job ${state.replaceAll("_", " ")}` });
+    expect(row.querySelector(".activity-row-time .activity-row-alert"))
+      .toHaveTextContent("child still busy · awaiting actual settlement");
+  },
+);
+
+it.each(["external", "internal"] as const)("renders no live metadata container for a nonterminal %s job without progress", (kind) => {
+  vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+  const base = processJob();
+  const runningFields = { state: "running" as const, timestamps: { ...base.timestamps, completedAt: null },
+    durationMs: null, exitCode: null, wake: { ...base.wake, state: "pending" as const, attempts: 0, lastAttemptAt: null } };
+  const running = kind === "internal"
+    ? processJob({ ...runningFields, tool: "Agent", kind: "internal", instanceId: "helper", childStillBusy: false })
+    : processJob(runningFields);
+  const view = render(part({ type: "process-job", job: running }));
+  expect(view.container.querySelector(".process-job-live-meta")).toBeNull();
+  expect(view.container.querySelector("dl.process-job-facts")).toBeNull();
+});
 
 describe("background native subagent cards", () => {
   it.each(["Agent", "AgentSend"] as const)("renders %s clustered progress and report, never command output", (tool) => {
@@ -869,24 +890,22 @@ describe("background native subagent cards", () => {
     expect(view.container.querySelector(".process-job-output")).toBeNull();
     const icon = render(<Icon name="agent" />);
     expect(card.querySelector(".activity-job-icon")?.innerHTML).toBe(icon.container.querySelector("svg")?.innerHTML);
-    expect(screen.queryByText("State")).toBeNull();
-    expect(screen.queryByText("Exit")).toBeNull();
-    expect(screen.queryByText("Signal")).toBeNull();
-    expect(screen.getByText("Wake")).toBeVisible();
-    expect(screen.getByText("Route")).toBeVisible();
+    const meta = card.querySelector(".process-job-live-meta");
+    expect(meta).toHaveTextContent("implementer");
+    expect(meta).toHaveTextContent("45 tools, 1 failed");
+    expect(meta).not.toHaveTextContent(/wake|exit|signal/iu);
+    expect(meta?.querySelector("dt")).toBeNull();
     expect(screen.getByRole("img", { name: /Ran with anthropic:claude-sonnet-4\.5/u })).not.toHaveClass("is-requested");
   });
 
-  it("shows requested route and compact nonduplicated facts while a child is running", () => {
+  it("shows requested route and one compact unlabelled metadata line while a child is running", () => {
     vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
-    render(part({ job: backgroundSubagentJob() }));
-    expect(screen.getByText("Child")).toBeVisible();
-    expect(screen.getByText("Tools")).toBeVisible();
-    expect(screen.getByText("Route")).toBeVisible();
-    expect(screen.queryByText("Wake")).toBeNull();
-    expect(screen.queryByText("State")).toBeNull();
-    expect(screen.queryByText("Exit")).toBeNull();
-    expect(screen.queryByText("Signal")).toBeNull();
+    const view = render(part({ job: backgroundSubagentJob() }));
+    const meta = view.container.querySelector(".process-job-live-meta");
+    expect(meta).toHaveTextContent("implementer");
+    expect(meta).toHaveTextContent("45 tools, 1 failed");
+    expect(meta?.querySelectorAll("dt")).toHaveLength(0);
+    expect(meta?.querySelectorAll(".route-badge")).toHaveLength(1);
     expect(screen.getByRole("img", { name: /requested, not a confirmed run/u })).toHaveClass("is-requested");
   });
 
@@ -907,8 +926,38 @@ describe("background native subagent cards", () => {
     view.unmount();
     const legacy = render(part({ job: { ...job, subagentProgress: legacyProgress } }));
     fireEvent.click(screen.getByRole("group", { name: "Agent background job succeeded" }).querySelector("summary")!);
-    expect(screen.queryByText("Route")).toBeNull();
     expect(legacy.container.querySelector(".route-badge")).toBeNull();
+    expect(legacy.container.querySelector(".process-job-live-meta")).toHaveTextContent("implementer·45 tools, 1 failed");
+  });
+
+  it("normalizes a retained empty executed route back to requested-only", () => {
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const job = backgroundSubagentJob();
+    render(part({ job: { ...job, subagentProgress: { ...job.subagentProgress!, route: {
+      requested: { model: "anthropic:claude-sonnet-4.5", effort: "high" },
+      executed: {},
+      disposition: "requested" as const,
+    } } } }));
+    const badge = screen.getByRole("img", { name: /requested, not a confirmed run/u });
+    expect(badge).toHaveClass("is-requested");
+    expect(badge).toHaveTextContent("Sonnet 4.5·high");
+    expect(badge).not.toHaveTextContent("—");
+  });
+
+  it("renders effort bars when the owning catalog knows the model's ladder, with text as the unknown-catalog fallback", () => {
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const job = backgroundSubagentJob();
+    const view = render(<RouteCapabilitiesProvider agent={null} catalogByProvider={{ anthropic: { models: [{
+      id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", provider: "anthropic", providerLabel: "Anthropic",
+      reasoning: true, effortLevels: ["low", "medium", "high"],
+    }] } }}>{part({ job })}</RouteCapabilitiesProvider>);
+    expect(view.container.querySelector(".effort-signal")).toHaveAttribute("data-levels", "3");
+    expect(view.container.querySelector(".effort-signal")).toHaveAttribute("data-filled", "3");
+    expect(view.container.querySelector(".route-badge-effort")).toBeNull();
+
+    view.rerender(part({ job }));
+    expect(view.container.querySelector(".effort-signal")).toBeNull();
+    expect(view.container.querySelector(".route-badge-effort")).toHaveTextContent("high");
   });
 
   it("styles retained-progress notes separately from the empty state", () => {

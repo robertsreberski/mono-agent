@@ -425,6 +425,23 @@ describe("Agent tool activity forwarding", () => {
     });
   });
 
+  it.each([
+    ["successful", { text: "done", events: [] }],
+    ["awaiting-reply", { subagentQuestion: { question: "Which scope?" }, events: [] }],
+  ])("keeps a pinned requested route when a %s result reports no executed identifiers", async (_case, result) => {
+    const definitions = [{ ...PROFILE,
+      model: { provider: "provider", model: "primary", reference: "provider:primary" }, effort: "high" }];
+    const { events, done } = capture(async () => result, { name: "researcher", prompt: "x" }, { definitions });
+    await done;
+
+    expect(events.find((event) => event.phase === "agent_completed")?.subagent.attribution).toEqual({
+      requested: { model: "provider:primary", effort: "high" },
+      disposition: "requested",
+      transitions: [],
+      retries: [],
+    });
+  });
+
   it("never forwards the child's assistant text, which would splice into the parent answer", async () => {
     const run = async (request) => {
       request.onEvent({ type: "assistant", message: { content: [{ type: "text", text: "internal monologue" }] } });

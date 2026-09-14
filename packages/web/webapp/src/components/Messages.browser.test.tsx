@@ -12,6 +12,7 @@ import { backgroundSubagentJob, backgroundSubagentMessages } from "../test/backg
 import { api } from "../api";
 import { ProcessJobPresentationProvider, projectProcessJobPresentation } from "../process-job-presentation";
 import type { ProcessJobActivityEvent } from "../process-job-presentation";
+import { RouteCapabilitiesProvider } from "./route-capabilities";
 import type { WebMessage } from "../types";
 import "../styles.css";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
@@ -599,10 +600,20 @@ describe("inline steer in Chromium", () => {
 
 function SyntheticJobStack({ finished }: { readonly finished: boolean }) {
   const job = backgroundSubagentJob(finished);
-  return <ProcessJobPresentationProvider threadId="thread" messages={[]} historyIsBounded={false}
-    jobs={[{ messageId: "synthetic-card", part: { type: "process-job", job } }]}>
-    <ProcessJobStack />
-  </ProcessJobPresentationProvider>;
+  const catalogByProvider = { anthropic: { models: [{
+    id: "claude-sonnet-4.5",
+    name: "Claude Sonnet 4.5",
+    provider: "anthropic",
+    providerLabel: "Anthropic",
+    reasoning: true,
+    effortLevels: ["low", "medium", "high"],
+  }] } };
+  return <RouteCapabilitiesProvider agent={null} catalogByProvider={catalogByProvider}>
+    <ProcessJobPresentationProvider threadId="thread" messages={[]} historyIsBounded={false}
+      jobs={[{ messageId: "synthetic-card", part: { type: "process-job", job } }]}>
+      <ProcessJobStack />
+    </ProcessJobPresentationProvider>
+  </RouteCapabilitiesProvider>;
 }
 
 describe("synthetic detached subagent evidence", () => {
@@ -633,6 +644,12 @@ describe("synthetic detached subagent evidence", () => {
     const stack = render(frame(false));
     const region = await screen.findByRole("region", { name: "Subagent progress" });
     await waitFor(() => expect(region).toBeVisible());
+    const runningMeta = document.querySelector(".process-job-live-meta")!;
+    expect(runningMeta).toHaveTextContent("implementer");
+    expect(runningMeta).toHaveTextContent("45 tools, 1 failed");
+    expect(runningMeta.querySelector("dt")).toBeNull();
+    expect(runningMeta.querySelector(".effort-signal")).toHaveAttribute("data-levels", "3");
+    expect(runningMeta.querySelector(".effort-signal")).toHaveAttribute("data-filled", "3");
     const checkBounds = () => {
       expect(region.clientHeight).toBeLessThanOrEqual(320);
       expect(region.scrollHeight).toBeGreaterThan(region.clientHeight);
@@ -648,6 +665,10 @@ describe("synthetic detached subagent evidence", () => {
     stack.rerender(frame(true));
     fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
     await waitFor(() => expect(screen.getByRole("region", { name: "Subagent report" })).toBeInTheDocument());
+    const finishedMeta = document.querySelector(".process-job-live-meta")!;
+    expect(finishedMeta).toHaveTextContent("implementer");
+    expect(finishedMeta).toHaveTextContent("45 tools, 1 failed");
+    expect(finishedMeta.querySelector(".effort-signal")).toHaveAttribute("data-filled", "3");
     expect(region.scrollTop).toBe(0); // reading position survives terminal report arrival
     checkBounds();
     region.scrollTop = region.scrollHeight;

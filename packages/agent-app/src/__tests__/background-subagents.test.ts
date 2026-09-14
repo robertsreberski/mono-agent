@@ -1270,6 +1270,23 @@ it("projects the requested detached route while running and the executed fallbac
   expect((await reopened.get(id))?.subagentProgress?.route).toEqual(job.subagentProgress?.route);
 });
 
+it.each([
+  ["successful", { text: "done" }],
+  ["awaiting-reply", { subagentQuestion: { question: "Which scope?" } }],
+])("preserves a pinned requested route when a %s result reports no executed route", async (_case, result) => {
+  const f = await fixture();
+  const definitions = [{ name: "pinned", description: "Pinned route fixture", systemPrompt: "Work", allowedTools: ["Read"],
+    model: { provider: "provider", model: "primary", reference: "provider:primary" }, effort: "high" }];
+  const { agent } = tools(f, async () => result, { definitions });
+  const receipt = await agent.execute(`pinned-${_case}`, { name: "pinned", persist: true, background: true, id: "helper", prompt: "work" });
+  const job = await done(f.service, receipt.details.jobId);
+  expect(job.subagentProgress?.route).toEqual({
+    requested: { model: "provider:primary", effort: "high" },
+    disposition: "requested",
+  });
+  expect(job.subagentProgress?.route).not.toHaveProperty("executed");
+});
+
 it("omits detached route progress when the profile requests no route", async () => {
   const f = await fixture();
   const definitions = [{ name: "unrouted", description: "No route fixture", systemPrompt: "Work", allowedTools: ["Read"] }];

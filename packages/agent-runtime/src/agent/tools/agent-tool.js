@@ -825,8 +825,11 @@ function reportDetachedProgress(event, report, requested = {}) {
       || attribution?.executed?.effort !== undefined
       || attribution?.executed?.effectiveEffort !== undefined;
     if (attribution !== undefined && routeKnown) {
+      const executedKnown = attribution.executed?.model !== undefined
+        || attribution.executed?.effort !== undefined
+        || attribution.executed?.effectiveEffort !== undefined;
       report({ type: "route", requested: attribution.requested,
-        ...(attribution.executed === undefined ? {} : { executed: attribution.executed }),
+        ...(executedKnown ? { executed: attribution.executed } : {}),
         disposition: attribution.disposition });
     }
   } else if (event.phase === "started") {
@@ -900,12 +903,18 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
       // Before the bookend, so the run's own usage report can already include
       // it, and so an abandoned child still hands over whatever it spent.
       recordUsage?.(usage);
-      const executed = ["ok", "awaiting_reply"].includes(status) && result && typeof result === "object"
+      const reportedExecuted = ["ok", "awaiting_reply"].includes(status) && result && typeof result === "object"
         ? {
             ...(boundedRouteString(result.model) === undefined ? {} : { model: boundedRouteString(result.model) }),
             ...(boundedRouteString(result.effort, 64) === undefined ? {} : { effort: boundedRouteString(result.effort, 64) }),
             ...(boundedRouteString(result.effectiveEffort, 64) === undefined ? {} : { effectiveEffort: boundedRouteString(result.effectiveEffort, 64) }),
           }
+        : undefined;
+      // A successful result object is not itself route evidence. Keeping `{}`
+      // here makes consumers prefer an unknown executed route over a pinned
+      // requested route, so omit it unless at least one identifier was reported.
+      const executed = reportedExecuted !== undefined && Object.keys(reportedExecuted).length > 0
+        ? reportedExecuted
         : undefined;
       const requestedModel = routeState.requested.model;
       const fallback = routeState.transitions.length > 0

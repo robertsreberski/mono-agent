@@ -35,17 +35,39 @@ export function redactSubagentArgumentPreview(
   const scan = value.slice(0, 16_384);
   const truncated = scan.length < value.length;
   const root = home.endsWith("/") ? home.slice(0, -1) : home;
-  const relativized = root === "" || root === "/"
-    ? scan
-    : scan.replace(new RegExp(`${escapeRegExp(root)}(?=/|$|\\s|["'])`, "gu"), "~");
-  const redacted = redactProcessOutputLine(redactProcessOutput(relativized, secrets, truncated), secrets)
+  const homePattern = root === "" || root === "/"
+    ? undefined
+    : new RegExp(`${escapeRegExp(root)}(?=/|$|\\s|["'])`, "gu");
+  const relativized = homePattern === undefined ? scan : scan.replace(homePattern, "~");
+  // Relativization must not make a larger known literal stop matching. Mirror
+  // the exact transformation into such literals, while deliberately excluding
+  // `$HOME` itself so ordinary paths can still retain their useful `~/...` form.
+  const redactionSecrets = homePattern === undefined
+    ? secrets
+    : [...new Set([...secrets, ...secrets.flatMap((secret) => {
+        const transformed = secret.replace(homePattern, "~");
+        return transformed === secret || transformed === "~" ? [] : [transformed];
+      })])];
+  const redacted = redactProcessOutputLine(redactProcessOutput(relativized, redactionSecrets, truncated), redactionSecrets)
+    // `redactProcessOutput` intentionally bounds URL schemes; previews retain
+    // the older unbounded userinfo backstop because route-like arguments can use
+    // custom schemes of arbitrary length.
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)([^/\s]+)@/giu, "$1[REDACTED]@")
+    // Its opaque-shape rule already covers string/whitespace boundaries. Quotes
+    // are also hard boundaries, so a slash-bearing run above the 39-char path
+    // relaxation ceiling must not survive merely because it is quoted.
+    .replace(/(^|[\s"'])(?!\[REDACTED\])([A-Za-z0-9+/=_-]{40,})(?=$|[\s"'])/gu, "$1[REDACTED]")
     .replace(/(?<![A-Za-z0-9_+=-])[A-Za-z0-9_+=-]{24,}(?![A-Za-z0-9_+=-])/gu, "[REDACTED]")
     .replace(/\s+/gu, " ")
     .trim();
   return redacted || "[redacted]";
 }
 
-function routePart(value: unknown, keys: readonly string[]): Record<string, string> | null {
+function routePart(
+  value: unknown,
+  keys: readonly string[],
+  secrets: readonly string[],
+): Record<string, string> | null {
   if (value === undefined) return {};
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
@@ -54,7 +76,12 @@ function routePart(value: unknown, keys: readonly string[]): Record<string, stri
   for (const key of keys) {
     if (record[key] === undefined) continue;
     if (typeof record[key] !== "string") return null;
-    result[key] = record[key];
+    const identifier = record[key];
+    // Route identifiers are config-shaped, but still cross a durable UI boundary.
+    // Drop the entire field when either a known literal or credential recognizer
+    // changes it; a redaction marker here would masquerade as a model name.
+    if (redactProcessOutputLine(redactProcessOutput(identifier, secrets), secrets) !== identifier) continue;
+    result[key] = identifier;
   }
   return result;
 }
@@ -81,12 +108,15 @@ export class SubagentJobProgress {
       this.value = { ...previous, profile: this.safe(event.profile, 128),
         ...(event.label ? { label: this.safe(event.label, 256) } : {}) };
     } else if (event.type === "route") {
-      const requested = routePart(event.requested, ["model", "effort"]);
+      const requested = routePart(event.requested, ["model", "effort"], this.secrets);
       const executed = event.executed === undefined
         ? undefined
-        : routePart(event.executed, ["model", "effort", "effectiveEffort"]);
+        : routePart(event.executed, ["model", "effort", "effectiveEffort"], this.secrets);
       if (requested === null || executed === null) return false;
-      const candidate = { requested, ...(executed === undefined ? {} : { executed }),
+      // Retain a fresh primitive-only snapshot. Empty executed objects add no
+      // evidence and would incorrectly override a known requested route.
+      const candidate = { requested: { ...requested },
+        ...(executed === undefined || Object.keys(executed).length === 0 ? {} : { executed: { ...executed } }),
         ...(event.disposition === undefined ? {} : { disposition: event.disposition }) };
       if (!isProcessJobSubagentRoute(candidate) || isDeepStrictEqual(candidate, previous.route)) return false;
       this.value = { ...previous, route: candidate };

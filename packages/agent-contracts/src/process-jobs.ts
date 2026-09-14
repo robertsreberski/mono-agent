@@ -167,7 +167,8 @@ export function isProcessJobSubagentRoute(value: unknown): value is ProcessJobSu
     || !hasExactlyKeys(value.requested, ["model", "effort"].filter((key) => Object.hasOwn(value.requested as Record<string, unknown>, key)))
     || (value.requested.model !== undefined && (typeof value.requested.model !== "string" || !PROCESS_JOB_SUBAGENT_MODEL.test(value.requested.model)))
     || (value.requested.effort !== undefined && (typeof value.requested.effort !== "string" || !PROCESS_JOB_SUBAGENT_EFFORT.test(value.requested.effort)))
-    || (value.disposition !== undefined && !["requested", "fallback", "unknown"].includes(String(value.disposition)))) return false;
+    || (value.disposition !== undefined
+      && (typeof value.disposition !== "string" || !["requested", "fallback", "unknown"].includes(value.disposition)))) return false;
   if (value.executed !== undefined
     && (!isRecord(value.executed)
       || !hasExactlyKeys(value.executed, ["model", "effort", "effectiveEffort"].filter((key) => Object.hasOwn(value.executed as Record<string, unknown>, key)))
