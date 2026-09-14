@@ -531,7 +531,7 @@ export function getPiBuiltinTools(allowedTools, {
   const processTimeoutSchema = {
     type: "integer",
     minimum: 1,
-    description: `Exact timeout in milliseconds. A foreground run is capped at ${formatDurationForModel(foregroundTimeoutLimitMs)} and is killed at that point${processJobsController ? ", so anything longer belongs in the background" : ". Background commands are unavailable for this run"}${
+    description: `Exact timeout in milliseconds. A foreground run is capped at ${formatDurationForModel(foregroundTimeoutLimitMs)} and is killed at that point${processJobsController ? "; only a command you expect to exceed that belongs in the background" : ". Background commands are unavailable for this run"}${
       backgroundLimitMs === undefined
         ? ""
         : `, where this host allows up to ${formatDurationForModel(backgroundLimitMs)}`
@@ -539,11 +539,14 @@ export function getPiBuiltinTools(allowedTools, {
   };
   // Shared by Exec and Bash, and injected only when the host supplies a
   // process-job controller. House style for a tool description is
-  // capability + when-to-prefer + caveat, so the middle sentence is what tells
-  // the model which commands belong here rather than in the foreground.
+  // capability + when-to-prefer + caveat. The description states the default
+  // (foreground), the price of the alternative (an extra turn and a deferred
+  // answer) and the one threshold that justifies paying it, because a bare
+  // "prefer this for long work" reads as an invitation to background anything
+  // of uncertain length — including a five-second command run "while replying".
   const backgroundSchema = {
     type: "boolean",
-    description: `Run as a durable background process job and notify this conversation when it finishes. Prefer this for work that outlives a reply — builds, full test suites, long installs, migrations, long-running watchers — and leave it off whenever you need the output to answer right now. Do not use for commands that daemonize into another POSIX process group or session.${
+    description: `Run as a durable background process job and wake this conversation with a new turn when it finishes. Foreground is the default: a background job costs an extra turn and defers the answer until its wake arrives, so leave this off for anything expected to finish within the foreground ceiling or whose output you need to answer now. Set it only for work you expect to exceed that ceiling or that must keep running after your reply — builds, full test suites, long installs, migrations, long-running watchers. It is not a way to run something "while replying" or to survive a stop or restart of this agent: a restart interrupts every job. Do not use for commands that daemonize into another POSIX process group or session.${
       backgroundLimitMs === undefined
         ? ""
         : ` This host runs a background job for up to ${formatDurationForModel(backgroundLimitMs)}; \`timeout_ms\` may lower that but never raise it, and the start receipt reports \`max_runtime_ms\`, the budget actually granted — check it, because a job is killed at that limit.`

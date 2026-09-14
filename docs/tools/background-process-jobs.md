@@ -304,8 +304,11 @@ workspace/home paths remain hidden.
 
 The agent is told when to reach for this and what not to do afterwards in three
 places, all gated on the same availability check as the schema itself: the
-`background` field description steers it toward work that outlives a reply and
-away from anything whose output is needed to answer now; the start result leads
+`background` field description states that foreground is the default, that a
+background job costs an extra turn and defers the answer, that only work
+expected to exceed the foreground ceiling or to keep running after the reply
+belongs there, and that a restart of the agent interrupts every job (so
+backgrounding is not a way to run something "while replying"); the start result leads
 with a line saying the conversation is woken on completion, so the agent must
 not poll, sleep, or re-run the command to check; and the session block of the
 system prompt repeats both alongside the daemonize prohibition and the fact that
