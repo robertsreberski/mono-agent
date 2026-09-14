@@ -126,45 +126,40 @@ describe("private subagent job progress", () => {
 
 describe("argument preview redaction", () => {
   const home = "/Users/example";
-  const secrets = [home, "private-note", "s3cr3tvalue"];
+  const secrets = [home, "example", "private-note", "s3cr3tvalue"];
   const redact = (value: string) => redactSubagentArgumentPreview(value, secrets, home);
 
-  it("renders the screenshot reproduction as a home-relative path", () => {
-    expect(redact("/Users/example/worktrees/mono-maintainer/mono-agent/pwa-top-blur/AGENTS.md"))
-      .toBe("~/worktrees/mono-maintainer/mono-agent/pwa-top-blur/AGENTS.md");
-    expect(redact("/Users/example")).toBe("~");
+  it.each([
+    ["home containing the username literal",
+      `${home}/worktrees/mono-maintainer/mono-agent/pwa-top-blur/AGENTS.md`,
+      [home, "example"],
+      "~/worktrees/mono-maintainer/mono-agent/pwa-top-blur/AGENTS.md"],
+    ["mixed-boundary repeated home literal",
+      `${home}/pin-7421${home}X`,
+      [home, `${home}/pin-7421${home}`],
+      "[REDACTED]X"],
+    ["literal overlapping the home suffix",
+      `${home}/pin-7421`,
+      [home, "example/pin-7421"],
+      ["/Users", "[REDACTED]"].join("/")],
+    ["username literal outside the home occurrence",
+      `${home}/notes/example-todo.md`,
+      [home, "example"],
+      "~/notes/[REDACTED]-todo.md"],
+  ])("resolves original-byte home and literal ranges for %s", (_case, value, fixtureSecrets, expected) => {
+    expect(redactSubagentArgumentPreview(value, fixtureSecrets, home)).toBe(expected);
+  });
+
+  it("renders the exact home root as home-relative with realistic ambient secrets", () => {
+    expect(redact(home)).toBe("~");
   });
 
   it("uses a home boundary and still scrubs literal secrets outside that prefix", () => {
-    const neighboringHome = redactSubagentArgumentPreview("/rooted/x", ["root"], "/root");
+    const neighboringHome = redactSubagentArgumentPreview("/rooted/x", ["/root", "root"], "/root");
     expect(neighboringHome).not.toMatch(/^~/u);
     expect(neighboringHome).not.toContain("root");
     expect(redact("/Users/example/notes/private-note-todo.md")).toBe("~/notes/[REDACTED]-todo.md");
     expect(redact("~/safe/s3cr3tvalue/file")).not.toContain("s3cr3tvalue");
-  });
-
-  it.each([
-    ["larger home-prefixed literal", (suffix: string) => ({
-      secrets: [home, `${home}/${suffix}`],
-      value: `${home}/${suffix}`,
-      expected: "[REDACTED]",
-    })],
-    ["mixed-boundary repeated home literal", (suffix: string) => ({
-      secrets: [home, `${home}/${suffix}${home}`],
-      value: `${home}/${suffix}${home}X`,
-      expected: "[REDACTED]X",
-    })],
-    ["literal overlapping the home suffix", (suffix: string) => ({
-      secrets: [home, `example/${suffix}`],
-      value: `${home}/${suffix}`,
-      expected: ["/Users", "[REDACTED]"].join("/"),
-    })],
-  ])("does not let home relativization expose a %s", (_case, fixture) => {
-    const sensitiveSuffix = "pin-7421";
-    const { value, secrets, expected } = fixture(sensitiveSuffix);
-    const result = redactSubagentArgumentPreview(value, secrets, home);
-    expect(result).toBe(expected);
-    expect(result).not.toContain(sensitiveSuffix);
   });
 
   it.each([

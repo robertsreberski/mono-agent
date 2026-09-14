@@ -22,6 +22,73 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, (character) => `\\${character}`);
 }
 
+interface PreviewRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+function rangesOverlap(left: PreviewRange, right: PreviewRange): boolean {
+  return left.start < right.end && right.start < left.end;
+}
+
+function mergeOverlappingRanges(ranges: readonly PreviewRange[]): PreviewRange[] {
+  const ordered = [...ranges].sort((left, right) => left.start - right.start || right.end - left.end);
+  const merged: PreviewRange[] = [];
+  for (const range of ordered) {
+    const previous = merged.at(-1);
+    if (previous === undefined || range.start >= previous.end) {
+      merged.push({ ...range });
+    } else if (range.end > previous.end) {
+      merged[merged.length - 1] = { start: previous.start, end: range.end };
+    }
+  }
+  return merged;
+}
+
+function renderPreviewLiterals(
+  scan: string,
+  secrets: readonly string[],
+  homePattern: RegExp | undefined,
+  truncated: boolean,
+): string {
+  const homeRanges: PreviewRange[] = homePattern === undefined
+    ? []
+    : [...scan.matchAll(homePattern)].map((match) => ({ start: match.index, end: match.index + match[0].length }));
+  const literalRanges: PreviewRange[] = [];
+  for (const secret of [...new Set(secrets)].filter((candidate) => candidate.length > 0)) {
+    let start = scan.indexOf(secret);
+    while (start >= 0) {
+      literalRanges.push({ start, end: start + secret.length });
+      start = scan.indexOf(secret, start + 1);
+    }
+    if (truncated) {
+      const maximumPrefix = Math.min(secret.length - 1, scan.length);
+      for (let length = maximumPrefix; length > 0; length -= 1) {
+        if (!scan.endsWith(secret.slice(0, length))) continue;
+        literalRanges.push({ start: scan.length - length, end: scan.length });
+        break;
+      }
+    }
+  }
+  const survivingLiterals = mergeOverlappingRanges(literalRanges.filter((literal) =>
+    !homeRanges.some((homeRange) => literal.start >= homeRange.start && literal.end <= homeRange.end)));
+  const survivingHomes = homeRanges.filter((homeRange) =>
+    !survivingLiterals.some((literal) => rangesOverlap(homeRange, literal)));
+  const replacements = [
+    ...survivingLiterals.map((range) => ({ ...range, value: "[REDACTED]" })),
+    ...survivingHomes.map((range) => ({ ...range, value: "~" })),
+  ].sort((left, right) => left.start - right.start);
+  const literalMarker = secrets.some((secret) => secret.length > 0 && "[REDACTED]".includes(secret)) ? "" : "[REDACTED]";
+  let rendered = "";
+  let cursor = 0;
+  for (const replacement of replacements) {
+    rendered += scan.slice(cursor, replacement.start);
+    rendered += replacement.value === "[REDACTED]" ? literalMarker : replacement.value;
+    cursor = replacement.end;
+  }
+  return rendered + scan.slice(cursor);
+}
+
 /**
  * Redacts a tool-argument preview while preserving ordinary slash-delimited paths.
  * Only unlabelled 24–39-character opaque runs containing slashes stop matching;
@@ -38,13 +105,11 @@ export function redactSubagentArgumentPreview(
   const homePattern = root === "" || root === "/"
     ? undefined
     : new RegExp(`${escapeRegExp(root)}(?=/|$|\\s|["'])`, "gu");
-  // Preserve only the exact home-root literal. Every larger or overlapping
-  // literal must match the original bytes before home relativization can reshape
-  // them and make that match context-dependent.
-  const redactionSecrets = secrets.filter((secret) => secret !== root);
-  const literalsRedacted = redactProcessOutput(scan, redactionSecrets, truncated);
-  const relativized = homePattern === undefined ? literalsRedacted : literalsRedacted.replace(homePattern, "~");
-  const redacted = redactProcessOutputLine(relativized, redactionSecrets)
+  // Literal and home matches are both decided against the original bytes. A
+  // literal wholly inside a home match is hidden by `~`; a literal extending
+  // outside that match wins and cancels it before either replacement renders.
+  const relativized = renderPreviewLiterals(scan, secrets, homePattern, truncated);
+  const redacted = redactProcessOutputLine(redactProcessOutput(relativized, []), [])
     // `redactProcessOutput` intentionally bounds URL schemes; previews retain
     // the older unbounded userinfo backstop because route-like arguments can use
     // custom schemes of arbitrary length.
