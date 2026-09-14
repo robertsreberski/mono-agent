@@ -3357,7 +3357,13 @@ function renderProcessJobSurface(projection: ProcessJobProjection): string {
     `${icon} Background ${projection.tool} job ${projection.jobId}: ${projection.state.replaceAll("_", " ")}`,
     ...(projection.kind === "internal" ? [
       `Instance: ${projection.instanceId}`,
-      ...(projection.childStillBusy ? ["Child remains busy (childStillBusy:true); sends must wait for actual settlement."] : []),
+      // Only a terminal job's busy child is news: the flag is true for the whole
+      // life of every healthy running child, and the warning it carries (wait for
+      // actual settlement before sending, closing or relaunching) is about a job
+      // that ended while its child still held the lock and lease.
+      ...(isTerminalProcessJobState(projection.state) && projection.childStillBusy
+        ? ["Child remains busy (childStillBusy:true); sends must wait for actual settlement."]
+        : []),
       ...(projection.subagentQuestion ? [
         `Pending question (child text): ${JSON.stringify(projection.subagentQuestion.question.slice(0, 1000))}`,
         ...(projection.subagentQuestion.options ? [`Options: ${projection.subagentQuestion.options.slice(0, 5).map((option) => JSON.stringify(option.slice(0, 100))).join(", ")}`] : []),
