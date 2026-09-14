@@ -45,6 +45,21 @@ const replyPartOutcomes = [{
 }];
 
 describe("OperatorClient", () => {
+  it("parses account verification and a model-less credential rejection through the shared contract", async () => {
+    const snapshot = {
+      schema: "mono-agent.provider-auth.v1", generatedAt: "2026-09-14T12:00:00.000Z",
+      providers: [{ providerId: "anthropic", label: "Anthropic", usages: [], state: "present", methods: [],
+        verification: "verified_by_account_request", verifiedAt: "2026-09-14T12:00:00.000Z" }],
+    };
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234", fetchImpl: async () => Response.json(snapshot) });
+    expect(await client.providerAuthStatus()).toEqual(snapshot);
+    const rejected = { ...snapshot, providers: [{ ...snapshot.providers[0], verification: "not_verified", lastFailure: {
+      kind: "provider_auth", message: "Provider rejected the configured credential.", observedAt: snapshot.generatedAt,
+    } }] };
+    const rejectedClient = new OperatorClient({ baseUrl: "http://127.0.0.1:1234", fetchImpl: async () => Response.json(rejected) });
+    expect(await rejectedClient.providerAuthStatus()).toEqual(rejected);
+  });
+
   it("accepts only a sufficient v1 context-import capability", async () => {
     const info = async (contextImport: unknown) => await new OperatorClient({
       baseUrl: "http://127.0.0.1:1234/gui",

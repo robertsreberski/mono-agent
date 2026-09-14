@@ -12,7 +12,7 @@ export const MAX_PROVIDER_AUTH_OPTIONS = 32;
 export const MAX_PROVIDER_AUTH_STRING_BYTES = 4_096;
 
 export type ProviderAuthState = "present" | "expired" | "missing" | "not_applicable";
-export type ProviderAuthVerification = "not_verified" | "verified_by_live_request" | "not_applicable";
+export type ProviderAuthVerification = "not_verified" | "verified_by_account_request" | "verified_by_live_request" | "not_applicable";
 export type ProviderAuthType = "oauth" | "api_key";
 export type ProviderAuthStrategy = "device_code" | "paste_back" | "provider_prompt" | "api_key_prompt";
 export type ProviderAuthSessionState =
@@ -85,7 +85,8 @@ export interface ProviderAuthProviderStatus {
   readonly lastFailure?: {
     readonly kind: "provider_auth" | "provider_unavailable";
     readonly message: string;
-    readonly model: string;
+    /** Absent for account/usage API evidence, which does not target a model. */
+    readonly model?: string;
     readonly observedAt: string;
   };
 }
@@ -405,9 +406,10 @@ function parseError(value: unknown): NonNullable<ProviderAuthSessionSnapshot["er
 }
 
 function parseFailure(value: unknown): NonNullable<ProviderAuthProviderStatus["lastFailure"]> {
-  const root = exactRecord(value, ["kind", "message", "model", "observedAt"], "provider auth failure");
+  const root = exactRecord(value, ["kind", "message", "model", "observedAt"], "provider auth failure", true);
   if ((root.kind !== "provider_auth" && root.kind !== "provider_unavailable")
-    || !boundedString(root.message) || !boundedString(root.model) || !isoDate(root.observedAt)) invalid("provider auth failure");
+    || !boundedString(root.message) || (root.model !== undefined && !boundedString(root.model))
+    || !isoDate(root.observedAt)) invalid("provider auth failure");
   return root as unknown as NonNullable<ProviderAuthProviderStatus["lastFailure"]>;
 }
 
@@ -537,7 +539,7 @@ function state(value: unknown): value is ProviderAuthState {
 }
 
 function verification(value: unknown): value is ProviderAuthVerification {
-  return value === "not_verified" || value === "verified_by_live_request" || value === "not_applicable";
+  return value === "not_verified" || value === "verified_by_account_request" || value === "verified_by_live_request" || value === "not_applicable";
 }
 
 function sessionState(value: unknown): value is ProviderAuthSessionState {

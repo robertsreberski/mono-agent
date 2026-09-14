@@ -306,14 +306,15 @@ export interface ProviderAuthProviderStatus {
   readonly credentialType?: "oauth" | "api_key";
   readonly source?: "stored" | "environment" | "ambient" | "config";
   readonly expiresAt?: string;
-  readonly verification: "not_verified" | "verified_by_live_request" | "not_applicable";
+  readonly verification: "not_verified" | "verified_by_account_request" | "verified_by_live_request" | "not_applicable";
   readonly verifiedAt?: string;
   readonly methods: readonly ProviderAuthMethod[];
   readonly unavailableReason?: string;
   readonly lastFailure?: {
     readonly kind: "provider_auth" | "provider_unavailable";
     readonly message: string;
-    readonly model: string;
+    /** Absent for account-level credential rejection. */
+    readonly model?: string;
     readonly observedAt: string;
   };
 }
