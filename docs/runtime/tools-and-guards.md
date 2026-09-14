@@ -159,6 +159,10 @@ id: "reviewer"})` creates an instance and runs its first turn.
 `AgentSend({id: "reviewer", message: "Now check this revision"})` resumes its own
 Pi-native durable session. The parent transcript is never seeded into the child.
 The selected model, effort, prompt, and profile are retained for that instance.
+The tool copy states that a child is stateless by default and that `persist`
+is for a child the parent will actually continue: a persistent instance holds
+its transcript and one live instance slot until it is closed, and `background`
+(which requires `persist`) is reserved for sustained work that outlives a reply.
 Current global tool denies still apply on every turn. Only MCP server names are
 retained; their configuration is resolved from the current catalog. A removed
 server or unavailable retained route causes an error rather than using stale

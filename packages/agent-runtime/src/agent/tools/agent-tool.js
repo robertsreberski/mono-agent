@@ -303,10 +303,10 @@ export function createAgentTool(subagents, context = {}, continuation) {
         verification: { type: "object", additionalProperties: false, required: ["workdir"], properties: {
           workdir: { type: "string", maxLength: 2048 }, reportPath: { type: "string", maxLength: 512 },
         }, description: "Optional observation-only worktree and relative report presence target. Does not change command cwd, widen permissions, authorize work, or establish verification success." },
-        persist: { type: "boolean", description: "Keep this subagent alive so you can continue it with AgentSend." },
+        persist: { type: "boolean", description: "Keep this subagent alive so you can continue it with AgentSend. Off by default; set it only when a follow-up turn is actually expected, and close the instance when that follow-up is done." },
         id: { type: "string", pattern: INLINE_NAME_RE.source, description: "Instance id; only with persist." },
       } : {}),
-      ...(background ? { background: { type: "boolean", description: "Run a persistent child detached; this conversation wakes on completion or AskParent. Do not poll or replay." } } : {}),
+      ...(background ? { background: { type: "boolean", description: "Run the child detached (requires persist: true); this conversation wakes on completion or AskParent. Only for sustained work that outlives a reply — a short answer you need now stays foreground. Do not poll or replay." } } : {}),
       description: {
         type: "string",
         maxLength: 80,
@@ -320,7 +320,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
   return {
     name: "Agent",
     label: "Agent",
-    description: toolDescription(subagents, definitions, ceiling, Boolean(instances)) + (instances ? "\n\nSet persist: true to retain this child’s own context across calls and parent turns. Continue it with AgentSend; close it when done." : "") + (background ? " Set background: true with persist: true to return a durable started receipt and wake this exact conversation when the child settles or asks you a question. Do not poll or replay." : ""),
+    description: toolDescription(subagents, definitions, ceiling, Boolean(instances)) + (instances ? "\n\nA child is stateless by default: it answers once and holds nothing afterwards, which is right for most delegations. Set persist: true only when you will actually continue this child with AgentSend — corrections, follow-up questions, a multi-step assignment — because a persistent instance keeps its transcript and one of this conversation’s live instance slots until you close it; close it as soon as the follow-up is done." : "") + (background ? " background: true detaches the child (it currently requires persist: true) and returns a durable started receipt; this exact conversation wakes when the child settles or asks you a question. Reserve it for sustained work that outlives a reply, not for a short question whose answer you need now. Do not poll or replay." : ""),
     parameters,
     // MUST stay undefined. Agent-only batches can overlap when the offered tool
     // set contains no sequential tool. Pi 0.85 exposes only a global harness
