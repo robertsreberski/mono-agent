@@ -71,6 +71,28 @@ describe("Reasoning", () => {
       .toContain("and then deciding");
   });
 
+  it.each(["", "   ", ".", "**", "… —"] as const)(
+    "renders no row for a thought with no readable content: %j", (text) => {
+      const { container } = render(
+        <Reasoning type="reasoning" text={text} status={{ type: "complete" }} />,
+      );
+
+      // Neither a "." summary nor an empty disclosure: without readable
+      // content there is no step to show and nothing to expand.
+      expect(container.querySelector(".activity-row")).toBeNull();
+      expect(container.textContent).toBe("");
+    },
+  );
+
+  it("renders a thought once real content arrives after punctuation", () => {
+    const { container } = render(
+      <Reasoning type="reasoning" text=". Let me check the inbox" status={{ type: "running" }} />,
+    );
+
+    expect(container.querySelector(".activity-row-summary")?.textContent)
+      .toBe(". Let me check the inbox");
+  });
+
   it("renders plain reasoning paragraphs while preserving single line breaks", () => {
     const { container } = render(
       <Reasoning

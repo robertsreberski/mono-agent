@@ -711,4 +711,53 @@ describe("reasoning-split reply in Chromium", () => {
       if (directory) await page.screenshot({ path: `${directory}/synthetic-transcript-${label}.png` });
     },
   );
+
+  it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)(
+    "renders a running sentence a thought interrupts as one block at %ipx (%s)", async (width, height, label) => {
+      await page.viewport(width, height);
+      const sentence = "The targeted search only surfaced daycare/postpartum threads — let me look at Robin's full recent inbox and her calendar for this week to catch anything worded differently.";
+      const runningSplit: WebMessage = {
+        ...runningResponse,
+        id: "running-split-response",
+        turnId: "turn-1",
+        parts: [
+          { type: "text", text: "The" },
+          { type: "reasoning", text: "." },
+          { type: "text", text: sentence.slice("The".length) },
+        ],
+      };
+      const runningThought: WebMessage = {
+        ...runningResponse,
+        id: "running-thought-response",
+        turnId: "turn-2",
+        parts: [
+          { type: "reasoning", text: "Checking her calendar for this week" },
+          { type: "text", text: "Still pulling the week together." },
+        ],
+      };
+      const { container } = render(
+        <SteerHarness width={Math.min(width, 760)} messages={[runningSplit, runningThought]} />,
+      );
+      // Running prose streams through the animated markdown path, so wait for
+      // the whole sentence before asking how many blocks hold it: split in
+      // two, no single paragraph would ever hold all of it.
+      expect(await screen.findByText(sentence, {}, { timeout: 10_000 })).toBeVisible();
+      const paragraphs = [...container.querySelectorAll("p")]
+        .filter((paragraph) => paragraph.textContent?.includes("targeted search"));
+      expect(paragraphs).toHaveLength(1);
+      expect(paragraphs[0]?.textContent).toBe(sentence);
+      // The content-free thought is not a step, while the genuine thought
+      // beside it still renders its row.
+      const summaries = [...container.querySelectorAll(".activity-row-summary")]
+        .map((row) => row.textContent);
+      expect(summaries).not.toContain(".");
+      expect(summaries).toContain("Checking her calendar for this week");
+      // Exactly one Activity band — the genuine thought's — so the dropped
+      // thought leaves no phantom or empty card behind.
+      expect(screen.getAllByRole("button", { name: /Activity/ })).toHaveLength(1);
+      expect(screen.getByRole("button", { name: "Activity in progress" })).toBeVisible();
+      const directory = import.meta.env.VITE_TRANSCRIPT_SHOTS as string | undefined;
+      if (directory) await page.screenshot({ path: `${directory}/synthetic-transcript-running-${label}.png` });
+    },
+  );
 });

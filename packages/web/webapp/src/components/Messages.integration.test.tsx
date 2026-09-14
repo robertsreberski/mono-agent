@@ -1181,6 +1181,46 @@ describe("AssistantMessage grouped parts", () => {
     expect(await screen.findByText("Second completed tool")).toBeVisible();
   });
 
+  it("renders a live sentence a thought interrupts as one block with no activity card", async () => {
+    // The reported defect: "The" in one text block, a "." activity step, then
+    // the rest of the sentence in a second block.
+    render(
+      <MessageHarness
+        message={{
+          ...assistantMessage("running"),
+          parts: [
+            { type: "text", text: "The" },
+            { type: "reasoning", text: "." },
+            { type: "text", text: " targeted search only surfaced daycare threads." },
+          ],
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("The targeted search only surfaced daycare threads.")).toBeVisible();
+    // The content-free thought is not a step, and with nothing else to group
+    // the band — and its "1 step" header — never renders.
+    expect(screen.queryByRole("button", { name: /Activity/ })).not.toBeInTheDocument();
+  });
+
+  it("still groups a thought with real content into activity beside the joined sentence", async () => {
+    render(
+      <MessageHarness
+        message={{
+          ...assistantMessage("running"),
+          parts: [
+            { type: "text", text: "The" },
+            { type: "reasoning", text: "Checking the inbox first" },
+            { type: "text", text: " targeted search continues." },
+          ],
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("The targeted search continues.")).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Activity in progress" })).toBeVisible();
+  });
+
   it.each(["complete", "failed", "cancelled", "interrupted"] as const)(
     "collapses activity when the parent message becomes %s and allows reopening",
     async (status) => {

@@ -16,6 +16,7 @@ import { RouteCapabilitiesProvider } from "./components/route-capabilities";
 import { ToolCallRepairProvider } from "./components/tool-call-repair";
 import { canSendInConsole, canUploadInConsole } from "./capabilities";
 import { clusterToolCalls } from "./activity-clustering";
+import { hasReadableThoughtContent } from "./components/assistant-ui/Reasoning";
 import { useConsoleStore, useUploadLimits } from "./console-store";
 import { noteComposerAttachments } from "./composer-draft";
 import {
@@ -371,16 +372,20 @@ const completeAttachment = (attachment: WebAttachment): CompleteAttachment => {
  * markdown root and would otherwise read as a paragraph break.
  *
  * Every message stored before the runtime stopped splitting text across
- * invisible telemetry carries those splits — frequently mid-word — so this also
- * repairs history rather than only protecting new turns. Concatenation is
- * verbatim: the parts were one continuous stream of deltas.
+ * invisible telemetry carries those splits — frequently mid-word — and so does
+ * every message stored before the store stopped splitting text across
+ * thoughts, so this also repairs history rather than only protecting new
+ * turns. Concatenation is verbatim: the parts were one continuous stream of
+ * deltas.
  */
 const joinAdjacentText = (parts: readonly ConvertedPart[], joinReasoning = false): ConvertedPart[] =>
   parts.reduce<ConvertedPart[]>((joined, part) => {
     if (part.type === "text") {
       let previousIndex = joined.length - 1;
-      // Reasoning can split a single answer even mid-word. Only settled
-      // replies may reorder it; every other visible part remains a barrier.
+      // Reasoning can split a single answer even mid-word. Joining pulls the
+      // later text into the earlier part, so the reader sees the whole
+      // sentence and then the thought row; every other visible part remains a
+      // barrier.
       while (joined[previousIndex]?.type === "data-monitor-activity"
         || (joinReasoning && joined[previousIndex]?.type === "reasoning")) previousIndex -= 1;
       const previous = joined[previousIndex];
@@ -519,6 +524,14 @@ export const convertWebMessage = (
         { type: "data-cron-reply-context-details" as const, data },
       ];
     }
+    // A thought with no readable content — empty, whitespace, or only
+    // punctuation/markdown decoration such as "." — is not a step. Dropping
+    // it before the join keeps it out of the activity count and out of the
+    // band, so it can neither render a "." row nor leave an empty card
+    // behind. History needs no migration because every read converts again,
+    // and a thought still streaming grows into the same stored part until it
+    // reads as prose and appears normally.
+    if (part.type === "reasoning" && !hasReadableThoughtContent(part.text)) return [];
     // The service worker precaches this bundle, so a console left open across a
     // server upgrade can be handed a part type it does not know yet. `== null`
     // covers that `undefined` too: pushing it into content breaks the whole
@@ -548,13 +561,14 @@ export const convertWebMessage = (
       type: "data-process-job-event" as const,
       data: jsonObject(event.phase === "started" ? withLaunchArgs(event, part) : event),
     }));
-  }), message.role === "assistant" && message.status === "complete" && !hasCronReplyContext);
+  }), message.role === "assistant" && !hasCronReplyContext);
   const converted = joined.filter((part) => part.type !== "data-assistant-message-boundary");
   // Only a COMPLETED turn is known to have an answer. Streaming is still
   // writing one, and a cancelled/failed/interrupted turn was stopped with none
   // (the store finalizes all three with no final text), so its last prose is
   // narration: folding would invert the chronology and dress that narration up
-  // as the answer. Both keep arrival order.
+  // as the answer. Those turns keep arrival order apart from the text join
+  // above, which only repairs a thought splitting one sentence in two.
   const ordered = message.role === "assistant" && message.status === "complete" && !hasCronReplyContext
     ? foldSettledActivity(converted)
     : converted;
