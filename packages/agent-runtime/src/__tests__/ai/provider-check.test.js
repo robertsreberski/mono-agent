@@ -142,6 +142,16 @@ describe("provider check", () => {
     expect(JSON.stringify(outcome)).not.toContain(secret);
   });
 
+  it("treats a capped-output overflow rewrite as a successful provider request", async () => {
+    // pi's harness rewrites a `length` stop under the tiny check cap into a
+    // context-window error; the two-word prompt cannot overflow for real.
+    const outcome = await runPiProviderCheck({
+      model: { provider: "fixture", model: "cheap" },
+      execute: vi.fn(async () => ({ error: "Assistant request exceeded the context window", failureKind: "context_limit" })),
+    });
+    expect(outcome).toEqual({ state: "passed", code: "passed", message: "Provider request succeeded." });
+  });
+
   it.each([
     ["401 Unauthorized", undefined, "auth_failed"],
     ["invalid_grant", undefined, "auth_failed"],
