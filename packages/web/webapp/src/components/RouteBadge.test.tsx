@@ -182,6 +182,24 @@ describe("subagent collapsed badges", () => {
     expect(view.container.querySelector(".route-badge-effort")).toHaveTextContent("max");
   });
 
+  it("badges a running delegation with its launch route, never as ran-with", () => {
+    render(part({
+      ...delegation,
+      status: "running",
+      executionMs: undefined,
+      attribution: {
+        requested: { model: "anthropic:claude-sonnet-4.5", effort: "high" },
+        disposition: "unknown",
+        transitions: [],
+        retries: [],
+      },
+    }));
+    const badge = screen.getByRole("img", { name: /requested, not a confirmed run/u });
+    expect(badge).toHaveClass("is-requested");
+    expect(badge.textContent).toContain("Sonnet");
+    expect(badge.textContent).toContain("high");
+  });
+
   it("marks requested-only as requested, never as ran-with", () => {
     render(part({
       ...delegation,

@@ -1096,6 +1096,28 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     expect(toolCall.metadata).not.toHaveProperty("subagentLifecycle");
   });
 
+  it("carries launch attribution on the started bookend through to renderers", () => {
+    const attribution = {
+      requested: { model: "anthropic:parent", effort: "xhigh" },
+      disposition: "unknown",
+      transitions: [],
+      retries: [],
+    };
+    const started = streamEventFromRuntimeEvent({
+      type: "subagent_activity",
+      phase: "agent_started",
+      id: "agent:call-1",
+      name: "Agent(researcher)",
+      subagent: { id: "call-1", name: "researcher", callIndex: 1, attribution },
+    }) as { metadata?: Record<string, unknown> };
+
+    expect(started.metadata).toMatchObject({
+      subagent: { id: "call-1", attribution },
+      synthetic: true,
+      subagentLifecycle: true,
+    });
+  });
+
   it("keeps a background delegation open in stream order until agent_completed", () => {
     const subagent = { id: "call-1", nativeId: "native-1", name: "researcher", callIndex: 0 };
     const events = [

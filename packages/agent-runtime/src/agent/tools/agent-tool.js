@@ -378,6 +378,18 @@ export function createAgentTool(subagents, context = {}, continuation) {
         ...(profile.model === undefined ? {} : { model: `${profile.model.provider}:${profile.model.model}` }),
         ...(profile.effort === undefined ? {} : { effort: profile.effort }),
       };
+      // The route the child will really run on: explicit pins win, the parent's
+      // own route fills the gaps. Published on the started bookend so the row
+      // badges while running. Never recorded as an explicit request: the
+      // collector keeps it beside `requested` so completion cannot misread an
+      // inherited route as a fallback.
+      const inheritedModel = requested.model === undefined ? modelRouteString(context.model) : undefined;
+      const inheritedEffort = requested.effort === undefined ? boundedRouteString(context.effort, 64) : undefined;
+      const launch = {
+        ...requested,
+        ...(inheritedModel === undefined ? {} : { model: inheritedModel }),
+        ...(inheritedEffort === undefined ? {} : { effort: inheritedEffort }),
+      };
       const routeLabel = [requested.model, requested.effort].filter(Boolean).join("/");
 
       // The concurrency cap bounds resources, not cost: a delegation loop can
@@ -495,12 +507,13 @@ export function createAgentTool(subagents, context = {}, continuation) {
 
         const collector = createActivityCollector({
           requested,
+          launch,
           callId: toolCallId,
           profileName: profile.name,
           callIndex,
           ...(params.description === undefined ? {} : { label: params.description }),
           ...(detached
-            ? { emit: (event) => reportDetachedProgress(event, reportProgress, requested) }
+            ? { emit: (event) => reportDetachedProgress(event, reportProgress, launch) }
             : context.onEvent === undefined ? {} : { emit: context.onEvent }),
           // Synchronous spend is summed across router attempts. Detached spend
           // belongs only to its instance and job, even if it completes immediately.
@@ -797,6 +810,16 @@ function boundedRouteIndex(value) {
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
 }
 
+/** Format a host-supplied model reference the way `requested` does, or undefined when it names nothing. */
+function modelRouteString(ref) {
+  if (typeof ref === "string") return boundedRouteString(ref);
+  if (ref === null || typeof ref !== "object" || Array.isArray(ref)) return undefined;
+  const provider = typeof ref.provider === "string" ? ref.provider.trim() : "";
+  const model = typeof ref.model === "string" ? ref.model.trim() : "";
+  if (provider.length > 0 && model.length > 0) return boundedRouteString(`${provider}:${model}`);
+  return boundedRouteString(typeof ref.reference === "string" ? ref.reference : undefined);
+}
+
 function appendRouteEntry(entries, entry, routeState) {
   entries.push(entry);
   if (entries.length <= ROUTE_HISTORY_MAX_ENTRIES) return;
@@ -807,15 +830,18 @@ function appendRouteEntry(entries, entry, routeState) {
 /** Drop all provider payloads before the private job callback, especially prompts/results.
  * @param {*} event
  * @param {(event: *) => void} [report]
- * @param {{model?: string, effort?: string}} [requested]
+ * @param {{model?: string, effort?: string}} [launch] The route the child will
+ *   really run on: explicit pins completed with the inherited parent route.
+ *   Reported as the progress `requested` route so the job card badges while
+ *   running; the completed bookend's own attribution still wins.
  */
-function reportDetachedProgress(event, report, requested = {}) {
+function reportDetachedProgress(event, report, launch = {}) {
   if (!report) return;
   if (event.phase === "agent_started") {
     report({ type: "started", profile: event.subagent.name,
       ...(event.subagent.label ? { label: event.subagent.label } : {}) });
-    if (requested.model !== undefined || requested.effort !== undefined) {
-      report({ type: "route", requested });
+    if (launch.model !== undefined || launch.effort !== undefined) {
+      report({ type: "route", requested: launch });
     }
   } else if (event.phase === "agent_completed") {
     const attribution = event.subagent?.attribution;
@@ -862,9 +888,9 @@ function reportDetachedProgress(event, report, requested = {}) {
  * answer body, so forwarding them would splice a subagent's prose into the
  * main agent's reply. Its text reaches the parent through the tool result.
  *
- * @param {{callId: string, profileName: string, callIndex: number, requested?: {model?: string, effort?: string}, label?: string, emit?: (event: *) => void, recordUsage?: (usage: {costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}) => void}} options
+ * @param {{callId: string, profileName: string, callIndex: number, requested?: {model?: string, effort?: string}, launch?: {model?: string, effort?: string}, label?: string, emit?: (event: *) => void, recordUsage?: (usage: {costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}) => void}} options
  */
-function createActivityCollector({ callId, profileName, callIndex, requested = {}, label, emit, recordUsage }) {
+function createActivityCollector({ callId, profileName, callIndex, requested = {}, launch = {}, label, emit, recordUsage }) {
   /** @type {Map<string, {name: string, args: unknown, startedAt: number, ms?: number}>} */
   const open = new Map();
   /** @type {Array<{name: string, args: unknown, ms?: number, isError: boolean}>} */
@@ -873,7 +899,11 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
   const usage = emptyUsage();
   const subagent = { id: callId, name: profileName, callIndex, ...(label === undefined ? {} : { label }) };
   let finalAttribution;
-  const routeState = { requested: { ...requested }, attempted: undefined, transitions: [], retries: [], truncated: false };
+  // `requested` is the explicit route only: call-time overrides and profile
+  // pins. `launch` completes it with the inherited parent route for display on
+  // the started bookend. The two stay separate so the completion-time
+  // disposition never verdicts an inherited route as a fallback.
+  const routeState = { requested: { ...requested }, launch: { ...launch }, attempted: undefined, transitions: [], retries: [], truncated: false };
 
   /** @param {*} event */
   const publish = (event) => {
@@ -891,11 +921,24 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
     usage: () => ({ ...usage }),
     /** Lifecycle bookends so the subagent is visible before its first tool call. */
     started() {
+      // Badge the row from the moment the delegation starts. `requested` here
+      // is the launch route, so consumers render it requested-only — never as
+      // a confirmed run — and the completed bookend replaces it. Unknown stays
+      // unknown: no launch route means no attribution, not a guessed one.
+      const launchAttribution = routeState.launch.model === undefined && routeState.launch.effort === undefined
+        ? undefined
+        : {
+            requested: { ...routeState.launch },
+            disposition: "unknown",
+            transitions: [],
+            retries: [],
+          };
       publish({
         phase: "agent_started",
         id: `agent:${callId}`,
         name: `Agent(${profileName})`,
         arguments: { name: profileName, ...(label === undefined ? {} : { description: label }) },
+        ...(launchAttribution === undefined ? {} : { subagent: { ...subagent, attribution: launchAttribution } }),
       });
     },
     /** @param {{status: string, durationMs: number, result?: *}} outcome */
