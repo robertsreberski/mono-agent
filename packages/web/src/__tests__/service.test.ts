@@ -5393,6 +5393,25 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("canonicalizes a Safari voice-memo upload to the allowlisted audio type", async () => {
+    const service = await createService();
+    const attachment = service.createUpload({ name: "voice-memo.m4a", contentType: "audio/x-m4a" });
+    expect(attachment).toMatchObject({ contentType: "audio/mp4", kind: "document" });
+    await service.stop();
+  });
+
+  it("rejects genuinely unsupported attachment types with the reported type", async () => {
+    const service = await createService();
+    try {
+      service.createUpload({ name: "setup.exe", contentType: "application/x-msdownload" });
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toMatchObject({ code: "unsupported_attachment_type", status: 415 });
+      expect((error as Error).message).toContain("application/x-msdownload");
+    }
+    await service.stop();
+  });
+
   it("waits for an in-flight discovery refresh before closing SQLite", async () => {
     let calls = 0;
     let releaseRefresh: (() => void) | undefined;

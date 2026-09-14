@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AGENT_ATTACHMENT_MIME_ALIASES,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
   agentAttachmentKindFromMimeType,
+  canonicalizeAgentAttachmentMimeType,
   decodeAgentAttachmentText,
   type AgentAttachment,
   type AgentRequestBase,
@@ -85,5 +87,36 @@ describe("multimodal attachment contracts", () => {
 
     expect(request.replyTo?.conversationId).toBe("slack:C1:thread");
     expect(request.continuation?.originRunId).toBe("run-origin");
+  });
+
+  it("canonicalizes browser-reported vendor MIME aliases to the allowlisted type", () => {
+    expect(canonicalizeAgentAttachmentMimeType("audio/x-m4a")).toBe("audio/mp4");
+    expect(canonicalizeAgentAttachmentMimeType("audio/m4a")).toBe("audio/mp4");
+    expect(canonicalizeAgentAttachmentMimeType("audio/x-mp4")).toBe("audio/mp4");
+    expect(canonicalizeAgentAttachmentMimeType("audio/mp3")).toBe("audio/mpeg");
+    expect(canonicalizeAgentAttachmentMimeType("audio/x-mp3")).toBe("audio/mpeg");
+    expect(canonicalizeAgentAttachmentMimeType("audio/mpeg3")).toBe("audio/mpeg");
+    expect(canonicalizeAgentAttachmentMimeType("audio/x-mpeg-3")).toBe("audio/mpeg");
+    expect(canonicalizeAgentAttachmentMimeType("audio/x-wav")).toBe("audio/wav");
+    expect(canonicalizeAgentAttachmentMimeType("audio/wave")).toBe("audio/wav");
+    expect(canonicalizeAgentAttachmentMimeType("audio/vnd.wave")).toBe("audio/wav");
+    expect(canonicalizeAgentAttachmentMimeType("audio/x-pn-wav")).toBe("audio/wav");
+    expect(canonicalizeAgentAttachmentMimeType("audio/x-aac")).toBe("audio/aac");
+    expect(canonicalizeAgentAttachmentMimeType("audio/x-flac")).toBe("audio/flac");
+    expect(canonicalizeAgentAttachmentMimeType("audio/x-ogg")).toBe("audio/ogg");
+    expect(canonicalizeAgentAttachmentMimeType("audio/vorbis")).toBe("audio/ogg");
+  });
+
+  it("trims and lowercases before canonicalizing, and passes unknown types through", () => {
+    expect(canonicalizeAgentAttachmentMimeType(" Audio/X-M4A ")).toBe("audio/mp4");
+    expect(canonicalizeAgentAttachmentMimeType("  AUDIO/MP4  ")).toBe("audio/mp4");
+    expect(canonicalizeAgentAttachmentMimeType("application/x-msdownload")).toBe("application/x-msdownload");
+    expect(canonicalizeAgentAttachmentMimeType("audio/x-caf")).toBe("audio/x-caf");
+  });
+
+  it("maps every alias to a type in the attachment MIME allowlist", () => {
+    for (const target of Object.values(AGENT_ATTACHMENT_MIME_ALIASES)) {
+      expect(DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST).toContain(target);
+    }
   });
 });

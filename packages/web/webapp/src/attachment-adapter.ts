@@ -43,8 +43,37 @@ const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
   ".webm": "video/webm",
 };
 
+// Mirror of `canonicalizeAgentAttachmentMimeType` in
+// `@mono-agent/agent-contracts`: the webapp does not depend on that package,
+// so this local table is the source of truth for the composer only. Keep it in
+// sync with the contract — browsers report vendor aliases (Safari reports a
+// Voice Memo `.m4a` as `audio/x-m4a`) for containers the allowlist already
+// accepts under their canonical type.
+const ATTACHMENT_MIME_ALIASES: Readonly<Record<string, string>> = {
+  "audio/x-m4a": "audio/mp4",
+  "audio/m4a": "audio/mp4",
+  "audio/x-mp4": "audio/mp4",
+  "audio/mp3": "audio/mpeg",
+  "audio/x-mp3": "audio/mpeg",
+  "audio/mpeg3": "audio/mpeg",
+  "audio/x-mpeg-3": "audio/mpeg",
+  "audio/x-wav": "audio/wav",
+  "audio/wave": "audio/wav",
+  "audio/vnd.wave": "audio/wav",
+  "audio/x-pn-wav": "audio/wav",
+  "audio/x-aac": "audio/aac",
+  "audio/x-flac": "audio/flac",
+  "audio/x-ogg": "audio/ogg",
+  "audio/vorbis": "audio/ogg",
+};
+
+const canonicalizeAttachmentMimeType = (value: string): string => {
+  const normalized = value.trim().toLowerCase();
+  return ATTACHMENT_MIME_ALIASES[normalized] ?? normalized;
+};
+
 export const inferAttachmentContentType = (file: Pick<File, "name" | "type">): string => {
-  if (file.type.trim()) return file.type.trim().toLowerCase();
+  if (file.type.trim()) return canonicalizeAttachmentMimeType(file.type);
   const lowerName = file.name.toLowerCase();
   const extension = Object.keys(MIME_BY_EXTENSION).find((candidate) =>
     lowerName.endsWith(candidate),
