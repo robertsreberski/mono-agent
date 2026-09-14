@@ -4,7 +4,7 @@ import {
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { page } from "@vitest/browser/context";
+import { commands, page } from "@vitest/browser/context";
 import { describe, expect, it, vi } from "vitest";
 import { coalesceMonitorWakeMessages, convertWebMessage } from "../runtime";
 import { ProcessJobStack } from "./ProcessJobStack";
@@ -16,6 +16,12 @@ import { RouteCapabilitiesProvider } from "./route-capabilities";
 import type { WebMessage } from "../types";
 import "../styles.css";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
+
+declare module "@vitest/browser/context" {
+  interface BrowserCommands {
+    emulateColorScheme(colorScheme: "light" | "dark" | null): Promise<void>;
+  }
+}
 
 /**
  * Screenshot evidence is opt-in: `VITE_STEER_INLINE_SHOTS=<absolute dir>`
@@ -605,8 +611,15 @@ describe("inline steer in Chromium", () => {
 });
 
 
-function SyntheticJobStack({ finished }: { readonly finished: boolean }) {
+function backgroundSubagentJobWithNewestCall(finished = false) {
   const job = backgroundSubagentJob(finished);
+  const progress = job.subagentProgress!;
+  return { ...job, subagentProgress: { ...progress, revision: progress.revision + 1, toolCalls: progress.toolCalls + 1,
+    recent: [...progress.recent, { id: "synthetic-call-45", toolName: "Write", argsSummary: "~/worktrees/synthetic/final-check.ts",
+      status: finished ? "complete" as const : "running" as const, ...(finished ? { executionMs: 58 } : {}) }].slice(-50) } };
+}
+
+function SyntheticJobStack({ job }: { readonly job: ReturnType<typeof backgroundSubagentJob> }) {
   const catalogByProvider = { anthropic: { models: [{
     id: "claude-sonnet-4.5",
     name: "Claude Sonnet 4.5",
@@ -624,11 +637,18 @@ function SyntheticJobStack({ finished }: { readonly finished: boolean }) {
 }
 
 describe("synthetic detached subagent evidence", () => {
-  it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)("contains Activity and job progress at %ipx (%s)", async (width, height, label) => {
+  it.each([
+    [1280, 800, "desktop", "light"],
+    [1280, 800, "desktop", "dark"],
+    [390, 844, "mobile", "light"],
+    [390, 844, "mobile", "dark"],
+  ] as const)("contains Activity and job progress at %ix%i (%s, %s)", async (width, height, label, scheme) => {
     await page.viewport(width, height);
+    await commands.emulateColorScheme(scheme);
     const directory = import.meta.env.VITE_BACKGROUND_SUBAGENT_SHOTS as string | undefined;
     const shot = async (state: string) => {
-      if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-${label}-${state}.png` });
+      const schemeSuffix = scheme === "light" ? "" : `-${scheme}`;
+      if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-${label}${schemeSuffix}-${state}.png` });
     };
     const fixtureWidth = Math.min(width - 24, 880);
     const activity = render(<main style={{ width: fixtureWidth, margin: "12px auto" }}>
@@ -644,11 +664,11 @@ describe("synthetic detached subagent evidence", () => {
 
     const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(backgroundSubagentJob().timestamps.startedAt!) + 12_000);
     const poll = vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
-    const frame = (finished: boolean) => <main style={{ width: fixtureWidth, margin: "12px auto" }}>
-      <h2>Synthetic fixture · {finished ? "finished" : "running"} child</h2>
-      <SyntheticJobStack finished={finished} />
+    const frame = (job: ReturnType<typeof backgroundSubagentJob>) => <main style={{ width: fixtureWidth, margin: "12px auto" }}>
+      <h2>Synthetic fixture · {job.state === "running" ? "running" : "finished"} child</h2>
+      <SyntheticJobStack job={job} />
     </main>;
-    const stack = render(frame(false));
+    const stack = render(frame(backgroundSubagentJob()));
     const region = await screen.findByRole("region", { name: "Subagent progress" });
     await waitFor(() => expect(region).toBeVisible());
     const runningMeta = document.querySelector(".process-job-live-meta")!;
@@ -657,24 +677,56 @@ describe("synthetic detached subagent evidence", () => {
     expect(runningMeta.querySelector("dt")).toBeNull();
     expect(runningMeta.querySelector(".effort-signal")).toHaveAttribute("data-levels", "3");
     expect(runningMeta.querySelector(".effort-signal")).toHaveAttribute("data-filled", "3");
+    const card = region.closest<HTMLElement>(".activity-row.is-job")!;
+    const steps = region.querySelector<HTMLElement>(".activity-steps")!;
+    const stepSummary = steps.querySelector<HTMLElement>(".activity-step > summary")!;
+    const cardRect = card.getBoundingClientRect();
+    const cardStyle = getComputedStyle(card);
+    const cardContentRight = cardRect.right - parseFloat(cardStyle.borderRightWidth) - parseFloat(cardStyle.paddingRight);
+    const stepRect = stepSummary.getBoundingClientRect();
+    const metaFirstItem = runningMeta.firstElementChild as HTMLElement;
+    const firstTool = steps.querySelector<HTMLElement>(".activity-step-tool")!;
+    expect(getComputedStyle(steps).borderLeftWidth).toBe("0px");
+    expect(firstTool.getBoundingClientRect().left - metaFirstItem.getBoundingClientRect().left).toBeCloseTo(0, 1);
+    expect(cardContentRight - stepRect.right).toBeGreaterThanOrEqual(4);
+    expect(cardContentRight - stepRect.right).toBeLessThanOrEqual(10);
     const checkBounds = () => {
       expect(region.clientHeight).toBeLessThanOrEqual(320);
       expect(region.scrollHeight).toBeGreaterThan(region.clientHeight);
       expect(region.scrollWidth).toBeLessThanOrEqual(region.clientWidth);
       expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
     };
+    const expectNewestCallAtBottom = (tool: string, summary: string) => {
+      const renderedCalls = [...steps.querySelectorAll<HTMLElement>(".activity-step")];
+      const newest = renderedCalls.at(-1)!;
+      expect(newest.querySelector(".activity-step-tool")).toHaveTextContent(tool);
+      expect(newest.querySelector(".activity-step-summary")).toHaveTextContent(summary);
+      expect(newest.querySelector(".activity-step-time")).toHaveTextContent("running");
+      expect(region.scrollTop).toBeCloseTo(region.scrollHeight - region.clientHeight, 0);
+      const regionRect = region.getBoundingClientRect();
+      const newestRect = newest.querySelector("summary")!.getBoundingClientRect();
+      expect(newestRect.top).toBeGreaterThanOrEqual(regionRect.top - 1);
+      expect(newestRect.bottom).toBeLessThanOrEqual(regionRect.bottom + 1);
+    };
     checkBounds();
+    await waitFor(() => expectNewestCallAtBottom("Grep", "module-44.ts"));
+    stack.rerender(frame(backgroundSubagentJobWithNewestCall()));
+    await waitFor(() => expectNewestCallAtBottom("Write", "final-check.ts"));
+    expect(runningMeta).toHaveTextContent("46 tools, 1 failed");
+    await shot("running");
+
+    // Moving away from the latest call opts out of follow mode. The terminal
+    // report may arrive, but it must not take this reading position away.
     region.scrollTop = 0;
     fireEvent.scroll(region);
     expect(screen.getByText("Bash ×6")).toBeVisible();
     expect(screen.getByText("Read ×3")).toBeVisible();
-    await shot("running");
-    stack.rerender(frame(true));
+    stack.rerender(frame(backgroundSubagentJobWithNewestCall(true)));
     fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
     await waitFor(() => expect(screen.getByRole("region", { name: "Subagent report" })).toBeInTheDocument());
     const finishedMeta = document.querySelector(".process-job-live-meta")!;
     expect(finishedMeta).toHaveTextContent("implementer");
-    expect(finishedMeta).toHaveTextContent("45 tools, 1 failed");
+    expect(finishedMeta).toHaveTextContent("46 tools, 1 failed");
     expect(finishedMeta.querySelector(".effort-signal")).toHaveAttribute("data-filled", "3");
     expect(region.scrollTop).toBe(0); // reading position survives terminal report arrival
     checkBounds();
@@ -687,6 +739,7 @@ describe("synthetic detached subagent evidence", () => {
     stack.unmount();
     poll.mockRestore();
     clock.mockRestore();
+    await commands.emulateColorScheme(null);
   });
 });
 
