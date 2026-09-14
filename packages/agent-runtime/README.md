@@ -86,6 +86,8 @@ See [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-rep
 
 ## Architecture
 
+`createPiOAuthApiKeyResolver` accepts optional `{ rejectedAccessToken, signal }` for a bounded usage read: only the still-current rejected token is forced through the existing OAuth refresh inside the serialized auth-file lane. Already-replaced tokens retain normal expiry behavior. Failed or cancelled refresh writes nothing; ordinary one-argument callers are unchanged.
+
 The injected Pi-native `Monitor` tool supports `wake_on: "batch" | "exit"`,
 `dedupe: "none" | "batch"`, and `min_wake_interval_ms` (defaults batch/none/0).
 The start receipt reports the host's effective policy, including interval

@@ -23,6 +23,46 @@ afterEach(async () => {
 });
 
 describe("createPiOAuthApiKeyResolver", () => {
+  it("forces only the rejected token through the existing refresh path and passes cancellation", async () => {
+    const authPath = await writeAuth({ anthropic: oauthCredentials("old-token") });
+    const resolver = createPiOAuthApiKeyResolver({ path: authPath });
+    const signal = new AbortController().signal;
+    resolveOAuthApiKeyMock.mockImplementation(async (_provider, credentials) => {
+      expect(credentials.anthropic.expires).toBe(0);
+      return { apiKey: "new-token", newCredentials: { ...credentials.anthropic, access: "new-token", expires: 4200000000000 } };
+    });
+    await expect(resolver("anthropic", { rejectedAccessToken: "old-token", signal })).resolves.toBe("new-token");
+    expect(resolveOAuthApiKeyMock.mock.calls[0][2]).toBe(signal);
+    expect((await resolver.readCredential("anthropic")).expires).toBe(4200000000000);
+    expect((await stat(authPath)).mode & 0o777).toBe(0o600);
+  });
+
+  it("uses an already replaced token rather than forcing a second refresh", async () => {
+    const authPath = await writeAuth({ anthropic: oauthCredentials("replacement") });
+    const resolver = createPiOAuthApiKeyResolver({ path: authPath });
+    resolveOAuthApiKeyMock.mockImplementation(async (_provider, credentials) => {
+      expect(credentials.anthropic.expires).not.toBe(0);
+      return { apiKey: "replacement", newCredentials: credentials.anthropic };
+    });
+    await expect(resolver("anthropic", { rejectedAccessToken: "old-token" })).resolves.toBe("replacement");
+  });
+
+  it("does not persist forced expiry or results from failed/cancelled refresh", async () => {
+    const authPath = await writeAuth({ anthropic: oauthCredentials("old-token") });
+    const before = await readFile(authPath, "utf8");
+    const resolver = createPiOAuthApiKeyResolver({ path: authPath });
+    resolveOAuthApiKeyMock.mockRejectedValueOnce(new Error("fixture failure"));
+    await expect(resolver("anthropic", { rejectedAccessToken: "old-token" })).rejects.toThrow();
+    expect(await readFile(authPath, "utf8")).toBe(before);
+    const controller = new AbortController();
+    resolveOAuthApiKeyMock.mockImplementationOnce(async (_provider, credentials) => {
+      controller.abort();
+      return { apiKey: "new", newCredentials: { ...credentials.anthropic, access: "new" } };
+    });
+    await expect(resolver("anthropic", { rejectedAccessToken: "old-token", signal: controller.signal })).rejects.toThrow();
+    expect(await readFile(authPath, "utf8")).toBe(before);
+  });
+
   it("returns undefined when the auth file is missing", async () => {
     const dir = await tempDir();
     const resolver = createPiOAuthApiKeyResolver({ path: join(dir, "auth.json") });

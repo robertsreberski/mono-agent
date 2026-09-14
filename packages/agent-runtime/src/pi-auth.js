@@ -10,7 +10,7 @@ import { resolveOAuthApiKey } from "./ai/pi-oauth-compat.js";
  * @typedef {{type: "api_key", key?: string, env?: Object<string, *>}} PiApiKeyCredential
  * @typedef {{type: "oauth", access?: string, refresh?: string, expires: number, [key: string]: *}} PiOAuthCredential
  * @typedef {PiApiKeyCredential|PiOAuthCredential} PiCredential
- * @typedef {((provider: string) => Promise<string|undefined>) & {
+ * @typedef {((provider: string, options?: {rejectedAccessToken?: string, signal?: AbortSignal}) => Promise<string|undefined>) & {
  *   readCredential?: (provider: string) => Promise<PiCredential|undefined>,
  *   modifyCredential?: (provider: string, fn: (current: PiCredential|undefined) => Promise<PiCredential|undefined>) => Promise<PiCredential|undefined>,
  *   deleteCredential?: (provider: string) => Promise<void>
@@ -30,7 +30,7 @@ export function createPiOAuthApiKeyResolver(options = {}) {
     : undefined;
   const authPath = configuredAuthPath ? canonicalizeAuthPath(configuredAuthPath) : undefined;
 
-  async function resolvePiOAuthApiKey(provider) {
+  async function resolvePiOAuthApiKey(provider, options = {}) {
     if (!authPath || typeof provider !== "string" || provider.trim().length === 0) {
       return undefined;
     }
@@ -41,7 +41,19 @@ export function createPiOAuthApiKeyResolver(options = {}) {
         return undefined;
       }
 
-      const result = await resolveOAuthApiKey(provider, cloneAuth(auth));
+      options.signal?.throwIfAborted();
+      const credentials = cloneAuth(auth);
+      const credential = credentials[provider];
+      // Only invalidate the token actually rejected. A queued caller may already
+      // have refreshed or replaced it. Never write a synthetic expiry to disk.
+      if (options.rejectedAccessToken !== undefined && credential?.type === "oauth"
+        && credential.access === options.rejectedAccessToken) {
+        credential.expires = 0;
+      }
+      const result = options.signal === undefined
+        ? await resolveOAuthApiKey(provider, credentials)
+        : await resolveOAuthApiKey(provider, credentials, options.signal);
+      options.signal?.throwIfAborted();
       if (result === null || result === undefined || typeof result.apiKey !== "string" || result.apiKey.length === 0) {
         return undefined;
       }

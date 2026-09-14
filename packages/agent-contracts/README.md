@@ -132,6 +132,8 @@ the operator response ceiling.
 
 ## Architecture
 
+`provider-usage.ts` defines the strict `mono-agent.provider-usage.v1` subscription projection, bounded core windows, fixed errors and read-only `ProviderUsageOperator`. It carries no credentials or vendor account identifiers.
+
 ### Data flow
 
 The core turn boundary is deliberately structural:
@@ -423,6 +425,10 @@ PROCESS_JOB_STATES
 PROVIDER_AUTH_CHECK_SCHEMA
 PROVIDER_AUTH_SESSION_SCHEMA
 PROVIDER_AUTH_STATUS_SCHEMA
+PROVIDER_USAGE_ERRORS
+PROVIDER_USAGE_IDS
+PROVIDER_USAGE_LABELS
+PROVIDER_USAGE_SCHEMA
 ProcessJobErrorCode
 ProcessJobOperator
 ProcessJobProjection
@@ -463,6 +469,12 @@ ProviderAuthStrategy
 ProviderAuthType
 ProviderAuthUsage
 ProviderAuthVerification
+ProviderUsage
+ProviderUsageErrorCode
+ProviderUsageId
+ProviderUsageOperator
+ProviderUsageSnapshot
+ProviderUsageWindow
 ReadSettingsJsonResult
 RedactedSecretValue
 ResilientAgentMessageStream
@@ -513,6 +525,7 @@ isProcessJobErrorCode
 isProcessJobState
 isProcessJobSubagentProgress
 isProcessJobSubagentRoute
+isProviderUsageId
 isSubagentLaunchToolName
 isTerminalMonitorState
 isTerminalProviderAuthSessionState
@@ -539,6 +552,7 @@ parseProviderAuthSessionInput
 parseProviderAuthSessionSnapshot
 parseProviderAuthSessionStartInput
 parseProviderAuthStatusSnapshot
+parseProviderUsageSnapshot
 processJobPublicError
 readAuthorizationBearer
 readBoolean
