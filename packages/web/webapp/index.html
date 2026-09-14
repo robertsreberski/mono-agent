@@ -32,6 +32,8 @@
     <title>mono-agent</title>
   </head>
   <body>
+    <!-- Real paint target for installed iOS status-bar sampling; survives React loading/errors. -->
+    <div class="status-bar-surface" aria-hidden="true" inert></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
