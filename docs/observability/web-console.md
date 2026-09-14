@@ -799,6 +799,8 @@ Web uploads use the same transport-neutral `AgentAttachment` contract and harnes
 - UTF-8 decoding for supported text files;
 - the same owner-private harness attachment persistence and model-facing attachment description.
 
+The console accepts the same MIME allowlist and canonicalizes common browser-reported aliases (for example Safari's `audio/x-m4a` for a Voice Memo) to the allowlisted type.
+
 A web turn additionally permits at most 10 files and 64 MiB in aggregate. Attachment-only turns are valid. The browser streams bytes to a staged upload with progress; it does not retain base64 copies in React state. Removing an unattached upload removes its stage, and abandoned stages are purged after 24 hours. Committed attachments remain with their conversation, including after archival.
 
 Images are shown rather than filed, and carry no chrome at all: a `png`, `jpeg`, `gif`, or `webp` attachment renders as the picture itself, with no filename, media type, size, or download button beside it. Several in one message share a single row that scrolls sideways rather than reflowing, each cropped to a common height. Selecting one opens it full size, uncropped, with paging, a counter, and a download action — that is where the whole image and its file live. Other file types keep the compact chip or card with their name and size. `svg` is never rendered inline: it is active content, so it stays a download.

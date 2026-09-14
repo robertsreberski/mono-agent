@@ -8,6 +8,7 @@ import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
+  canonicalizeAgentAttachmentMimeType,
   type AgentReplyPart,
   createChannelUserCancelReason,
   isChannelUserCancelReason,
@@ -2163,9 +2164,10 @@ export class WebService {
 
   createUpload(input: CreateWebUploadInput): WebAttachment {
     const name = normalizeFilename(input.name);
-    const contentType = normalizeMime(input.contentType);
+    const reportedType = normalizeMime(input.contentType);
+    const contentType = canonicalizeAgentAttachmentMimeType(reportedType);
     if (!this.allowlist.has(contentType)) {
-      throw new WebConsoleError("unsupported_attachment_type", `Attachments of type ${contentType} are not allowed.`, 415);
+      throw new WebConsoleError("unsupported_attachment_type", `Attachments of type ${reportedType} are not allowed.`, 415);
     }
     if (input.sizeBytes !== undefined && (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes < 0)) {
       throw new WebConsoleError("invalid_attachment_size", "Attachment size must be a non-negative integer.", 400);
