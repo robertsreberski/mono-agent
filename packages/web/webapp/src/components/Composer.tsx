@@ -1,4 +1,4 @@
-import { composerEnterHint, useComposerEnterMode, writeComposerEnterMode } from "../composer-enter-mode";
+import { composerEnterHint, composerSteerHint, useComposerEnterMode, writeComposerEnterMode } from "../composer-enter-mode";
 import {
   ComposerPrimitive,
   unstable_useComposerInput,
@@ -326,7 +326,7 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
             </div>
           </div>
           <div className="composer-hint">
-            {statusText ? `${statusText} · ` : ""}{composerEnterHint(enterMode)} · / commands · $ skills
+            {statusText ? `${statusText} · ` : ""}{composerEnterHint(enterMode)}{isRunning ? ` · ${composerSteerHint()}` : ""} · / commands · $ skills
           </div>
         </ComposerPrimitive.AttachmentDropzone>
       </ComposerPrimitive.Root>

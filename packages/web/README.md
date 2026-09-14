@@ -112,8 +112,8 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 
 The composer’s ↵ control chooses a device-local, persisted Enter preference:
 Enter sends with Shift+Enter for a newline, or Enter inserts a newline with
-Cmd/Ctrl+Enter to send. The initial default is newline on touch-primary devices
-and send elsewhere; attaching a keyboard never changes the remembered choice.
+Cmd/Ctrl+Enter to send. The default is newline on every device; only an explicit choice enables
+Enter-to-send, and attaching a keyboard never changes the remembered choice.
 The hint stays visible on phones as well as desktops. Escape dismisses input
 suggestions without stopping a run; use Stop response (or `/stop`) deliberately.
 Mid-turn plain-text sends use the active turn’s live-input admission path.

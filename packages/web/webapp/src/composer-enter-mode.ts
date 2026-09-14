@@ -3,12 +3,14 @@ import { useSyncExternalStore } from "react";
 // Console-local preference, following data-mode's storage + document fallback.
 export type ComposerEnterMode = "send" | "newline";
 export const COMPOSER_ENTER_MODE_KEY = "mono-agent:composer-enter-mode";
-export const TOUCH_PRIMARY_QUERY = "(pointer: coarse) and (not (any-pointer: fine))";
-export const defaultComposerEnterMode = (touchPrimary: boolean): ComposerEnterMode =>
-  touchPrimary ? "newline" : "send";
-export const composerEnterHint = (mode: ComposerEnterMode): string => mode === "send"
-  ? "Enter sends · Shift+Enter newline"
-  : "Enter newline · Cmd/Ctrl+Enter sends";
+export const defaultComposerEnterMode = (): ComposerEnterMode => "newline";
+const platformName = (): string => typeof navigator === "undefined" ? "" : navigator.platform;
+const usesCommandKey = (platform: string): boolean => /Mac|iPhone|iPad|iPod/i.test(platform);
+export const composerEnterHint = (mode: ComposerEnterMode, platform = platformName()): string => mode === "send"
+  ? "↵ to send · ⇧↵ newline"
+  : `${usesCommandKey(platform) ? "⌘↵" : "Ctrl+↵"} to send · ↵ newline`;
+export const composerSteerHint = (platform = platformName()): string =>
+  `${usesCommandKey(platform) ? "⌘⇧↵" : "Ctrl+Shift+↵"} steer`;
 const listeners = new Set<() => void>();
 let sessionMode: ComposerEnterMode | undefined;
 const notify = () => { for (const listener of listeners) listener(); };
@@ -19,8 +21,8 @@ export function readComposerEnterMode(): ComposerEnterMode {
     const stored = localStorage.getItem(COMPOSER_ENTER_MODE_KEY);
     if (stored === "send" || stored === "newline") return stored;
   } catch { /* Storage refusal retains the document's choice below. */ }
-  // Resolve ONCE, not from a live media subscription. Persist even the default.
-  const mode = defaultComposerEnterMode(window.matchMedia?.(TOUCH_PRIMARY_QUERY).matches === true);
+  // Plain Enter is a newline everywhere. Only an explicit preference can change it.
+  const mode = defaultComposerEnterMode();
   persist(mode);
   return mode;
 }
