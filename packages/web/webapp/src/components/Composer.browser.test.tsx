@@ -25,6 +25,18 @@ type SendSubmission = (
   onThreadResolved?: (threadId: string) => void,
 ) => Promise<void>;
 
+/**
+ * Screenshot evidence is opt-in: `VITE_COMPOSER_HINT_SHOTS=<absolute dir>`
+ * captures the composer at each viewport, and CI runs the same assertions
+ * without it.
+ */
+const shotDirectory = import.meta.env.VITE_COMPOSER_HINT_SHOTS as string | undefined;
+
+const capture = async (name: string): Promise<void> => {
+  if (shotDirectory === undefined || shotDirectory.length === 0) return;
+  await page.screenshot({ path: `${shotDirectory}/${name}.png` });
+};
+
 const onlineAgent = agent("agent");
 const runningThread = thread("thread", "agent", {
   runState: { id: "turn-running", status: "running" },
@@ -79,10 +91,10 @@ beforeEach(() => {
 });
 
 describe.each([
-  { label: "desktop", width: 1_440, height: 900 },
-  { label: "mobile", width: 390, height: 844 },
-  { label: "narrow mobile", width: 360, height: 800 },
-])("single composer submission at the $label viewport", ({ width, height }) => {
+  { label: "desktop", width: 1_440, height: 900, showsKeyboardHint: true },
+  { label: "mobile", width: 390, height: 844, showsKeyboardHint: false },
+  { label: "narrow mobile", width: 360, height: 800, showsKeyboardHint: false },
+])("single composer submission at the $label viewport", ({ label, width, height, showsKeyboardHint }) => {
   it("keeps one Send action and submits through the server-authoritative path", async () => {
     await page.viewport(width, height);
     const sendSubmission = vi.fn<SendSubmission>().mockResolvedValue(undefined);
@@ -105,8 +117,19 @@ describe.each([
       expect.objectContaining({ text: "Use the authoritative state" }),
       expect.any(Function),
     ));
-    expect(document.querySelector(".composer-hint")).toBeVisible();
+    // The ⌘↵/Ctrl+↵ line is desktop-only: a phone has no such shortcut, so the
+    // row is dropped there instead of spending composer height on noise.
+    const keyboardHint = document.querySelector(".composer-hint-keys");
+    expect(keyboardHint).not.toBeNull();
+    if (showsKeyboardHint) {
+      expect(keyboardHint).toBeVisible();
+    } else {
+      expect(keyboardHint).not.toBeVisible();
+      expect(document.querySelector(".composer-hint")?.getBoundingClientRect().height ?? -1)
+        .toBe(0);
+    }
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    await capture(`composer-${label.replace(/\s+/gu, "-")}`);
   });
 });
 

@@ -1089,6 +1089,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .composer-tools { min-width: 0; display: flex; flex: 0 0 auto; align-items: center; gap: 5px; }
 .composer-tool { width: 32px; height: 32px; }
 .composer-hint { color: var(--text-muted); font-size: 10px; line-height: 1.5; white-space: normal; }
+.composer-hint-status + .composer-hint-keys::before { content: "·"; margin: 0 4px; }
 .model-change-notice { min-width: 0; flex: 0 1 auto; }
 .composer-actions { min-width: 0; display: flex; flex: 1 1 0; align-items: center; justify-content: flex-end; gap: 6px; }
 .composer-actions .model-controls { min-width: 0; flex: 1 1 0; gap: 3px; }
@@ -1418,6 +1419,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .dashboard-header { min-height: 58px; padding-block: max(7px, env(safe-area-inset-top)) 7px; }
   .conversation-title { max-width: min(42vw, 340px); }
   .chat-status { display: none; }
+  /* The mobile shell has no ⌘↵: the shortcut line is noise there, and the row
+     it occupies is better spent on the transcript. A status such as
+     "Conversation archived" still shows; the row collapses to zero height when
+     only the keys remain. */
+  .composer-hint-keys { display: none; }
   .message-column { --column-padding: 18px; padding-block: 28px 16px; }
   .thread-footer { padding-inline: max(14px, env(safe-area-inset-left)) max(14px, env(safe-area-inset-right)); }
   /* One screen at a time. The Dashboard is the entrance and keeps the grid
