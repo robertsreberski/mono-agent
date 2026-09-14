@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useConsoleStore } from "../../console-store";
+import { readProjectsCollapsed, writeProjectsCollapsed } from "../../projects-collapsed";
 import type { ProjectSummary } from "../../types";
 import { Icon } from "../Icon";
 import { relativeTime } from "../time";
@@ -12,6 +14,12 @@ const chatCountLabel = (count: number): string =>
  * Rows open the project page; the "+ New" text action opens the settings sheet
  * in create mode. Hidden down to the label row when the agent has no active
  * projects: archived projects stay out of this listing.
+ *
+ * The label row collapses the listing, and the choice outlives the tab in this
+ * browser. The heading keeps its `h2` semantics with the toggle inside it, so
+ * the section stays labelled while the button carries the expanded state, and
+ * the New action sits beside the toggle rather than inside it so creating a
+ * project never collapses the section.
  */
 export function ProjectsSection() {
   const {
@@ -23,12 +31,35 @@ export function ProjectsSection() {
     ? []
     : projectsByAgent[selectedAgentId] ?? []
   ).filter((project) => project.archivedAt === null);
+  // Resolved in the initializer so the first paint already matches the stored
+  // choice; an effect would flash the rows open before hiding them.
+  const [collapsed, setCollapsed] = useState<boolean>(readProjectsCollapsed);
+
+  const toggleCollapsed = (): void => {
+    const next = !collapsed;
+    setCollapsed(next);
+    writeProjectsCollapsed(next);
+  };
 
   return (
     <section className="dashboard-section" aria-labelledby="dashboard-projects-label">
       <div className="dashboard-section-head">
         <h2 className="dashboard-section-label" id="dashboard-projects-label">
-          Projects
+          <button
+            type="button"
+            className="dashboard-section-toggle"
+            aria-expanded={!collapsed}
+            aria-controls="dashboard-projects-list"
+            onClick={toggleCollapsed}
+          >
+            <span className="dashboard-section-chevron" aria-hidden="true">
+              <Icon name="chevron" size={12} />
+            </span>
+            Projects
+            {collapsed && (
+              <span className="dashboard-section-count">{projects.length}</span>
+            )}
+          </button>
         </h2>
         <button
           type="button"
@@ -43,9 +74,16 @@ export function ProjectsSection() {
           New
         </button>
       </div>
-      {projects.map((project) => (
-        <ProjectRow key={project.id} project={project} onOpen={() => openProjectById(project.id)} />
-      ))}
+      <div
+        id="dashboard-projects-list"
+        role="region"
+        aria-labelledby="dashboard-projects-label"
+        hidden={collapsed}
+      >
+        {projects.map((project) => (
+          <ProjectRow key={project.id} project={project} onOpen={() => openProjectById(project.id)} />
+        ))}
+      </div>
     </section>
   );
 }
