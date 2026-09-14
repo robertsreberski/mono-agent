@@ -1,3 +1,4 @@
+import type { WebCancelOrigin } from "./contracts.js";
 import type { ConsoleToolScope, ConsoleToolOperation } from "./console-tools.js";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
@@ -2133,7 +2134,7 @@ export class WebService {
     return { message: reserved.message, disposition: "pending" };
   }
 
-  async cancelTurn(threadId: string): Promise<WebThread> {
+  async cancelTurn(threadId: string, origin: WebCancelOrigin = "api"): Promise<WebThread> {
     const resolved = this.store.getThread(threadId)?.id;
     if (resolved === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     threadId = resolved;
@@ -2141,6 +2142,7 @@ export class WebService {
     const stored = this.store.activeTurn(threadId);
     if (stored === undefined) throw new WebConsoleError("no_active_turn", "This conversation has no active turn.", 409);
     this.consoleToolTurns.delete(stored.id);
+    this.store.recordCancelOrigin(stored.id, origin);
     const reason = createChannelUserCancelReason("Web");
     const liveInputs = [...this.activeLiveInputs.entries()]
       .filter(([, input]) => input.threadId === threadId);
@@ -2286,9 +2288,13 @@ export class WebService {
     const activeHostWakes = [...this.activeHostWakes.values()];
     const trackedIds = new Set(active.map((turn) => turn.turnId));
     for (const turnId of this.store.listActiveTurnIds()) {
-      if (!trackedIds.has(turnId)) this.store.interruptTurn(turnId);
+      if (!trackedIds.has(turnId)) {
+        this.store.recordCancelOrigin(turnId, "service-shutdown");
+        this.store.interruptTurn(turnId);
+      }
     }
     for (const turn of active) {
+      this.store.recordCancelOrigin(turn.turnId, "service-shutdown");
       this.store.interruptTurn(turn.turnId);
       turn.controller.abort(new WebTurnCancellation("shutdown", "Web service is stopping."));
     }

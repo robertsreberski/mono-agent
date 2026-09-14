@@ -63,7 +63,7 @@ function store(sendSubmission: SendSubmission): Record<string, unknown> {
     sendTurn: vi.fn(),
     sendSubmission,
     sendLiveInput: vi.fn(),
-    cancelTurn: vi.fn(),
+    cancelTurn: vi.fn().mockResolvedValue(undefined),
     setShowArchived: vi.fn(),
     setModel: vi.fn(),
     setEffort: vi.fn(),
@@ -74,6 +74,7 @@ function store(sendSubmission: SendSubmission): Record<string, unknown> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   document.body.style.margin = "0";
 });
 
@@ -104,6 +105,40 @@ describe.each([
       expect.objectContaining({ text: "Use the authoritative state" }),
       expect.any(Function),
     ));
+    expect(document.querySelector(".composer-hint")).toBeVisible();
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  });
+});
+
+
+describe.each([
+  ["MacIntel", "Meta", "⌘↵"],
+  ["Win32", "Control", "Ctrl+↵"],
+])("fixed Enter behavior on %s", (platform, modifier, hint) => {
+  it("shows the send hint, preserves newlines, sends, steers, and ignores Escape", async () => {
+    await page.viewport(1440, 900);
+    const platformSpy = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+    try {
+      const send = vi.fn<SendSubmission>().mockResolvedValue(undefined);
+      storeMock.current = store(send);
+      render(<WebRuntimeProvider><Composer /></WebRuntimeProvider>);
+      expect(screen.getByText(`${hint} to send · / commands · $ skills`)).toBeVisible();
+      const input = screen.getByRole("combobox", { name: "Message" });
+      await userEvent.fill(input, "first");
+      await userEvent.keyboard("{Escape}");
+      expect(storeMock.current.cancelTurn).not.toHaveBeenCalled();
+      await userEvent.keyboard("{Enter}");
+      expect(send).not.toHaveBeenCalled();
+      expect(input).toHaveValue("first\n");
+      await userEvent.keyboard("second");
+      await userEvent.keyboard(`{${modifier}>}{Enter}{/${modifier}}`);
+      await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "first\nsecond" }), expect.any(Function)));
+      send.mockClear();
+      await userEvent.fill(input, "steer");
+      await userEvent.keyboard(`{${modifier}>}{Shift>}{Enter}{/Shift}{/${modifier}}`);
+      await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "steer" }), expect.any(Function)));
+      await userEvent.click(screen.getByRole("button", { name: "Stop response" }));
+      expect(storeMock.current.cancelTurn).toHaveBeenCalledWith("user-stop");
+    } finally { platformSpy.mockRestore(); }
   });
 });

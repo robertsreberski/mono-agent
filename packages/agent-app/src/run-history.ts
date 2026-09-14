@@ -1161,6 +1161,8 @@ function projectRun(
 
   appendSummaryWarnings(timeline, summary.runtimeWarnings, summary.endedAt, artifactDir);
   for (const attempt of summary.failoverHistory ?? []) {
+    // Cancellation is already represented by the run outcome, not a provider fault.
+    if (attempt.failureKind === "cancelled" || attempt.failureKind === "cancelled_user") continue;
     const endedAt = projectTimestamp(summary.endedAt);
     timeline.push({
       kind: "failure",

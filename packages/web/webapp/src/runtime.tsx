@@ -900,7 +900,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     isRunning,
     isSendDisabled: !selectedCanSend || turnStarting,
     onNew,
-    onCancel: store.cancelTurn,
+    onCancel: () => store.cancelTurn("api"),
     queue: submissionQueue,
     unstable_capabilities: { copy: true },
     adapters: {

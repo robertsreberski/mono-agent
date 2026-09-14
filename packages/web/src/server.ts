@@ -886,7 +886,12 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   app.post("/api/v1/threads/:id/cancel", (req, res, next) => {
     const threadId = pathParam(req.params.id);
-    void trackOperation(service.cancelTurn(threadId), activeOperations)
+    const origin = req.body?.origin ?? "api";
+    if (!["user-stop", "client-disconnect", "client-reconnect", "service-shutdown", "api"].includes(origin)) {
+      next(new WebConsoleError("invalid_cancel_origin", "Unknown cancellation origin.", 400));
+      return;
+    }
+    void trackOperation(service.cancelTurn(threadId, origin), activeOperations)
       .then((thread) => res.status(202).json({ cancelled: true, thread }))
       .catch(next);
   });
