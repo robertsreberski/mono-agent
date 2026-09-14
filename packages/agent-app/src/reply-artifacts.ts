@@ -324,6 +324,8 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
   const storage = options.storageBudget ?? replyArtifactStorageBudgetFor(artifactDir);
   const partsByRun = new Map<string, AgentReplyPart[]>();
   const partsByIdentityByRun = new Map<string, Map<string, AgentReplyPart>>();
+  const intendedDisplayNameByFailureIdentityByRun = new Map<string, Map<string, string>>();
+  const eagerlyUnclaimedFailureIdentitiesByRun = new Map<string, Set<string>>();
   const artifactIdsByRun = new Map<string, Set<string>>();
   const artifactProtectionsByRun = new Map<string, Map<string, ReplyArtifactStorageProtection>>();
   const responseContext = new AsyncLocalStorage<{ readonly runIds: Set<string> }>();
@@ -363,6 +365,87 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
     partsByRun.set(runId, current);
     partsByIdentityByRun.set(runId, byIdentity);
     return { part, accepted: true };
+  };
+
+  const rememberPublishFailure = (runId: string, failureIdentity: string, intendedName: string): void => {
+    let byFailure = intendedDisplayNameByFailureIdentityByRun.get(runId);
+    if (byFailure === undefined) {
+      byFailure = new Map<string, string>();
+      intendedDisplayNameByFailureIdentityByRun.set(runId, byFailure);
+    }
+    byFailure.set(failureIdentity, intendedName);
+  };
+
+  const hasRecordedAttachmentWithName = (runId: string, displayName: string): boolean =>
+    partsByRun.get(runId)?.some((part) => part.type === "attachment" && part.name === displayName) ?? false;
+
+  /**
+   * Free the reply-part budget claims of recorded publish-attempt failures with
+   * the given sanitized display name, keeping their parts until response
+   * finalization decides whether a surviving attachment supersedes them.
+   * Returns the number of newly freed claims.
+   */
+  const unclaimFailuresWithDisplayName = (runId: string, displayName: string): number => {
+    const byFailure = intendedDisplayNameByFailureIdentityByRun.get(runId);
+    if (byFailure === undefined) return 0;
+    let eagerly = eagerlyUnclaimedFailureIdentitiesByRun.get(runId);
+    let freed = 0;
+    for (const [failureIdentity, intendedName] of byFailure) {
+      if (intendedName !== displayName) continue;
+      if (eagerly?.has(failureIdentity)) continue;
+      budget.unclaim(runId, failureIdentity);
+      if (eagerly === undefined) {
+        eagerly = new Set<string>();
+        eagerlyUnclaimedFailureIdentitiesByRun.set(runId, eagerly);
+      }
+      eagerly.add(failureIdentity);
+      freed += 1;
+    }
+    return freed;
+  };
+
+  /**
+   * Drop publish-attempt failure parts superseded by a surviving attachment
+   * with the same sanitized display name. Evaluated against the finalized part
+   * list after delivery binding, so an attachment replaced by a delivery
+   * failure never supersedes anything. Delivery failures and reply-part
+   * capacity failures are never suppressed. Suppressed failures release their
+   * budget claim; retained failures that were eagerly unclaimed reclaim it.
+   */
+  const suppressSupersededPublishFailures = (
+    runId: string,
+    finalized: readonly AgentReplyPart[],
+  ): AgentReplyPart[] => {
+    const byFailure = intendedDisplayNameByFailureIdentityByRun.get(runId);
+    if (byFailure === undefined || byFailure.size === 0) return [...finalized];
+    const survivingNames = new Set<string>();
+    for (const part of finalized) {
+      if (part.type === "attachment") survivingNames.add(part.name);
+    }
+    const byIdentity = partsByIdentityByRun.get(runId);
+    const partsToDrop = new Set<AgentReplyPart>();
+    const identitiesToDrop = new Set<string>();
+    for (const [failureIdentity, intendedName] of byFailure) {
+      if (!survivingNames.has(intendedName)) continue;
+      identitiesToDrop.add(failureIdentity);
+      const part = byIdentity?.get(failureIdentity);
+      if (part !== undefined) partsToDrop.add(part);
+    }
+    for (const failureIdentity of identitiesToDrop) {
+      budget.unclaim(runId, failureIdentity);
+    }
+    const eagerly = eagerlyUnclaimedFailureIdentitiesByRun.get(runId);
+    if (eagerly !== undefined) {
+      for (const failureIdentity of identitiesToDrop) eagerly.delete(failureIdentity);
+      // Retained failures that were eagerly unclaimed must keep consuming budget.
+      for (const failureIdentity of [...eagerly]) {
+        budget.claim(runId, failureIdentity);
+        eagerly.delete(failureIdentity);
+      }
+      if (eagerly.size === 0) eagerlyUnclaimedFailureIdentitiesByRun.delete(runId);
+    }
+    if (partsToDrop.size === 0) return [...finalized];
+    return finalized.filter((part) => !partsToDrop.has(part));
   };
 
   const publish = async (binding: {
@@ -444,9 +527,18 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
           await options.beforePublicationCommit?.();
           const identity = `attachment:${manifest.integrityId}`;
           const part = attachmentPart(manifest, id);
-          const recorded = recordPart(binding.runId, identity, part);
+          const alreadyRecorded = partsByIdentityByRun.get(binding.runId)?.has(identity) ?? false;
+          let recorded = recordPart(binding.runId, identity, part);
+          if (!recorded.accepted && !alreadyRecorded) {
+            // A superseded rejection for the same display name must not block
+            // its retry: free those budget claims and try once more.
+            if (unclaimFailuresWithDisplayName(binding.runId, manifest.name) > 0) {
+              recorded = recordPart(binding.runId, identity, part);
+            }
+          }
           if (!recorded.accepted) return recorded.part as AgentReplyAttachmentPart | AgentReplyPartFailure;
           claimedIdentity = identity;
+          unclaimFailuresWithDisplayName(binding.runId, manifest.name);
           await rename(stagingDirectory, directory);
           const ids = artifactIdsByRun.get(binding.runId) ?? new Set<string>();
           ids.add(id);
@@ -489,7 +581,15 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
           errorCode: errnoCode(error),
         });
       }
-      return recordPart(binding.runId, failureIdentity, failure).part as AgentReplyPartFailure;
+      const intendedName = sanitizeDisplayName(input.name ?? basename(input.path), failureIdentity);
+      const recordedFailure = recordPart(binding.runId, failureIdentity, failure);
+      if (recordedFailure.accepted) {
+        rememberPublishFailure(binding.runId, failureIdentity, intendedName);
+        if (hasRecordedAttachmentWithName(binding.runId, intendedName)) {
+          unclaimFailuresWithDisplayName(binding.runId, intendedName);
+        }
+      }
+      return recordedFailure.part as AgentReplyPartFailure;
     }
   };
 
@@ -649,7 +749,13 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
             return response;
           }
           const finalized = await finalizeDeliveryParts({ runId, conversationId: request.conversationId }, published);
-          const parts = mergeReplyParts(response.parts, finalized);
+          const deliverable = suppressSupersededPublishFailures(runId, finalized);
+          if (deliverable.length === 0 && (response.parts === undefined || response.parts.length === 0)) {
+            await retainRun(runId);
+            retainedRunId = runId;
+            return response;
+          }
+          const parts = mergeReplyParts(response.parts, deliverable);
           await retainRun(runId);
           retainedRunId = runId;
           return { ...response, parts };
@@ -667,6 +773,8 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
     const protections = [...(artifactProtectionsByRun.get(runId)?.values() ?? [])];
     partsByRun.delete(runId);
     partsByIdentityByRun.delete(runId);
+    intendedDisplayNameByFailureIdentityByRun.delete(runId);
+    eagerlyUnclaimedFailureIdentitiesByRun.delete(runId);
     artifactIdsByRun.delete(runId);
     artifactProtectionsByRun.delete(runId);
     runOwners.delete(runId);
