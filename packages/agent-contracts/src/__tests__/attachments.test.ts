@@ -114,6 +114,11 @@ describe("multimodal attachment contracts", () => {
     expect(canonicalizeAgentAttachmentMimeType("audio/x-caf")).toBe("audio/x-caf");
   });
 
+  it("does not resolve inherited Object properties as aliases", () => {
+    expect(canonicalizeAgentAttachmentMimeType("constructor")).toBe("constructor");
+    expect(canonicalizeAgentAttachmentMimeType("toString")).toBe("tostring");
+  });
+
   it("maps every alias to a type in the attachment MIME allowlist", () => {
     for (const target of Object.values(AGENT_ATTACHMENT_MIME_ALIASES)) {
       expect(DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST).toContain(target);

@@ -251,7 +251,11 @@ export const AGENT_ATTACHMENT_MIME_ALIASES: Readonly<Record<string, string>> = {
  */
 export function canonicalizeAgentAttachmentMimeType(value: string): string {
   const normalized = value.trim().toLowerCase();
-  return AGENT_ATTACHMENT_MIME_ALIASES[normalized] ?? normalized;
+  // Own-property check only: a caller-reported type such as `constructor`
+  // would otherwise resolve against Object.prototype and return a function.
+  return Object.hasOwn(AGENT_ATTACHMENT_MIME_ALIASES, normalized)
+    ? AGENT_ATTACHMENT_MIME_ALIASES[normalized] ?? normalized
+    : normalized;
 }
 
 /**

@@ -57,6 +57,10 @@ describe("WebUploadAttachmentAdapter", () => {
     expect(inferAttachmentContentType(createFile("memo.m4a"))).toBe("audio/mp4");
   });
 
+  it("does not resolve inherited Object properties as aliases", () => {
+    expect(inferAttachmentContentType(createFile("odd.bin", 4, "constructor"))).toBe("constructor");
+  });
+
   it("advertises both MIME types and file extensions to the device picker", () => {
     const adapter = new WebUploadAttachmentAdapter(uploadLimits);
     expect(adapter.accept).toContain("text/markdown");

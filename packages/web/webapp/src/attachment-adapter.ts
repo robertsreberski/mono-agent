@@ -69,7 +69,11 @@ const ATTACHMENT_MIME_ALIASES: Readonly<Record<string, string>> = {
 
 const canonicalizeAttachmentMimeType = (value: string): string => {
   const normalized = value.trim().toLowerCase();
-  return ATTACHMENT_MIME_ALIASES[normalized] ?? normalized;
+  // Own-property check only: a browser-reported type such as `constructor`
+  // would otherwise resolve against Object.prototype and return a function.
+  return Object.hasOwn(ATTACHMENT_MIME_ALIASES, normalized)
+    ? ATTACHMENT_MIME_ALIASES[normalized] ?? normalized
+    : normalized;
 };
 
 export const inferAttachmentContentType = (file: Pick<File, "name" | "type">): string => {
