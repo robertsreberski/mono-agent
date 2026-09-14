@@ -202,6 +202,30 @@ const subagentMessage = (threadId: string): WebMessage => ({
       },
       calls: [],
     },
+    // A delegation still running: the launch route badges the row immediately,
+    // as requested-only, because nothing has reported an executed route yet.
+    {
+      type: "subagent",
+      toolCallId: "call-running",
+      name: "implementer",
+      label: "Fold the launch call into its job row",
+      status: "running",
+      args: { name: "implementer", prompt: "Implement the approved change." },
+      attribution: {
+        requested: { model: SOL, effort: "high" },
+        disposition: "unknown",
+        transitions: [],
+        retries: [],
+      },
+      calls: [
+        {
+          toolCallId: "agent:call-running:t1",
+          toolName: "read_file",
+          args: { file_path: "/repo/runtime.tsx" },
+          status: "running",
+        },
+      ],
+    },
   ],
 });
 
@@ -396,8 +420,15 @@ describe("route badges on the dashboard", () => {
     expect(fallback).toBeVisible();
     expect(fallback).toHaveClass("is-fallback");
 
+    // The running delegation badges its launch route before any execution
+    // evidence exists, and says so rather than reading as a confirmed run.
+    const running = screen.getByRole("img", { name: /Subagent route: Requested/u });
+    expect(running).toBeVisible();
+    expect(running).toHaveClass("is-requested");
+    expect(running.getAttribute("aria-label")).toContain("requested, not a confirmed run");
+
     const rows = document.querySelectorAll("details.activity-row.is-subagent");
-    expect(rows.length).toBe(2);
+    expect(rows.length).toBe(3);
     await userEvent.click(rows[1]!.querySelector("summary")!);
     expect(await screen.findByText("Fallback: openai-codex:gpt-6-astra → anthropic:claude-sonnet-4.5 · overloaded")).toBeVisible();
   });
