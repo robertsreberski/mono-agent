@@ -1331,3 +1331,17 @@ it.each(["cancelled", "provider_unavailable"])("strips recovery receipts on ever
   expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sessionRecovery");
   expect(result.providerSessionRecovery).toBeUndefined();
 });
+
+
+it("attributes a primary user cancellation without changing its result or trying a fallback", async () => {
+  const model = modelRef("openai-codex", "gpt-5.6-sol");
+  const receipt = { runId: "run", revision: 1, providerSessionId: "id", modelKey: model.reference, tipId: "tip" };
+  executeMock.mockResolvedValueOnce({ cancelled: true, failureKind: null, error: null, events: [], providerSessionRecovery: receipt });
+  const events = [];
+  const router = createRouterRuntime({ chain: [model, modelRef("anthropic", "backup")] });
+  const result = await router.run("sys", { messages: [], sessionRecovery: { runId: "run", revision: 1 }, sessionId: "id", sessionKeepAlive: true, onEvent: (event) => events.push(event) });
+  expect(result).toMatchObject({ cancelled: true, failureKind: null, providerSessionRecovery: receipt });
+  expect(result.failoverHistory).toEqual([expect.objectContaining({ model, failureKind: "cancelled" })]);
+  expect(executeMock).toHaveBeenCalledTimes(1);
+  expect(events.filter((event) => event.type.startsWith("provider_failover") || event.type === "provider_retry_started")).toEqual([]);
+});

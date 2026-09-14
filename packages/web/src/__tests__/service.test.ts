@@ -4261,9 +4261,13 @@ describe("WebService", () => {
       model: "provider/fallback",
     };
 
+    const cancel = vi.spyOn(service, "cancelTurn");
     const first = service.submit(thread.id, input);
     expect(service.submit(thread.id, input)).toEqual(first);
     await waitFor(() => delivered.length === 1);
+    expect(first.outcome).toBe("live-input");
+    expect(service.store.activeTurn(thread.id)?.id).toBe(started.turn.id);
+    expect(cancel).not.toHaveBeenCalled();
     expect(delivered).toEqual([expect.objectContaining({
       id: expect.any(String),
       text: "Use this correction",
@@ -4632,7 +4636,7 @@ describe("WebService", () => {
     await service.stop();
   });
 
-  it("cancels an active upstream turn and persists the cancelled state", async () => {
+  it.each(["user-stop", "client-disconnect", "client-reconnect", "api"] as const)("persists %s cancellation before aborting the upstream turn", async (origin) => {
     let cancelSettled = false;
     let turnAbortReason: unknown;
     let turnAbortedAfterCancel = false;
@@ -4659,13 +4663,14 @@ describe("WebService", () => {
     const service = await createService({ fetchImpl });
     const thread = service.createThread("agent-one");
     await service.startTurn(thread.id, { text: "wait" });
-    await service.cancelTurn(thread.id);
+    await service.cancelTurn(thread.id, origin);
     await waitFor(() => service.store.getThread(thread.id)?.runState.status === "cancelled");
     expect(service.thread(thread.id).messages.at(-1)?.status).toBe("cancelled");
     expect(isChannelUserCancelReason(turnAbortReason)).toBe(true);
     if (!isChannelUserCancelReason(turnAbortReason)) throw new Error("Expected a branded Web cancellation reason.");
     expect(turnAbortReason.channel).toBe("Web");
     expect(turnAbortedAfterCancel).toBe(true);
+    expect(service.thread(thread.id).thread.runState.cancelOrigin).toBe(origin);
     await service.stop();
   });
 

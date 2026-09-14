@@ -1,3 +1,4 @@
+import type { WebCancelOrigin } from "./contracts.js";
 import { CONSOLE_READ_TOOL_NAMES, executeConsoleTool, type ConsoleToolScope, type ConsoleToolOperation, type ConsoleToolCommit } from "./console-tools.js";
 import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, readdir, unlink } from "node:fs/promises";
@@ -376,6 +377,7 @@ interface TurnRow {
   finished_at: string | null;
   error_code: string | null;
   error_message: string | null;
+  cancel_origin: WebCancelOrigin | null;
 }
 
 interface LiveInputRow {
@@ -4630,6 +4632,7 @@ export class WebStore {
   }
 
   failTurn(turnId: string, error: { readonly message: string; readonly code?: string; readonly cancelled?: boolean }): StoredTurnFinish {
+    if (error.cancelled === true) this.recordCancelOrigin(turnId, "api");
     return this.finishTurn(
       turnId,
       error.cancelled === true ? "cancelled" : "failed",
@@ -4642,6 +4645,11 @@ export class WebStore {
 
   interruptTurn(turnId: string, message = "The web service stopped before this turn completed."): StoredTurnFinish {
     return this.finishTurn(turnId, "interrupted", undefined, "interrupted", message, undefined);
+  }
+
+  recordCancelOrigin(turnId: string, origin: WebCancelOrigin): void {
+    this.database.prepare("UPDATE turns SET cancel_origin = COALESCE(cancel_origin, ?) WHERE id = ? AND status = 'running'")
+      .run(origin, turnId);
   }
 
   activeTurn(threadId: string): { readonly id: string; readonly conversationId: string } | undefined {
@@ -6298,6 +6306,7 @@ export class WebStore {
         };
       states.set(row.thread_id, {
         id: row.id,
+        ...(row.cancel_origin == null ? {} : { cancelOrigin: row.cancel_origin }),
         status,
         startedAt: row.started_at,
         ...(lastOutcome === undefined ? {} : { lastOutcome }),

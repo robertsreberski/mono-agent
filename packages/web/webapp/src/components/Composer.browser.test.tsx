@@ -63,7 +63,7 @@ function store(sendSubmission: SendSubmission): Record<string, unknown> {
     sendTurn: vi.fn(),
     sendSubmission,
     sendLiveInput: vi.fn(),
-    cancelTurn: vi.fn(),
+    cancelTurn: vi.fn().mockResolvedValue(undefined),
     setShowArchived: vi.fn(),
     setModel: vi.fn(),
     setEffort: vi.fn(),
@@ -74,6 +74,7 @@ function store(sendSubmission: SendSubmission): Record<string, unknown> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   document.body.style.margin = "0";
 });
 
@@ -104,6 +105,39 @@ describe.each([
       expect.objectContaining({ text: "Use the authoritative state" }),
       expect.any(Function),
     ));
+    expect(document.querySelector(".composer-hint")).toBeVisible();
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  });
+});
+
+
+describe.each(["send", "newline"] as const)("explicit Enter mode %s", (mode) => {
+  it("shows the effective hint, preserves newlines, steers, and ignores Escape", async () => {
+    await page.viewport(1440, 900);
+    const { COMPOSER_ENTER_MODE_KEY, composerEnterHint } = await import("../composer-enter-mode");
+    localStorage.setItem(COMPOSER_ENTER_MODE_KEY, mode);
+    const send = vi.fn<SendSubmission>().mockResolvedValue(undefined);
+    storeMock.current = store(send);
+    render(<WebRuntimeProvider><Composer /></WebRuntimeProvider>);
+    expect(screen.getByText(`${composerEnterHint(mode)} · / commands · $ skills`)).toBeVisible();
+    const input = screen.getByRole("combobox", { name: "Message" });
+    await userEvent.fill(input, "first");
+    await userEvent.keyboard("{Escape}");
+    expect(storeMock.current.cancelTurn).not.toHaveBeenCalled();
+    await userEvent.keyboard(mode === "send" ? "{Shift>}{Enter}{/Shift}" : "{Enter}");
+    expect(send).not.toHaveBeenCalled();
+    expect(input).toHaveValue("first\n");
+    await userEvent.keyboard("second");
+    await userEvent.keyboard(mode === "send" ? "{Enter}" : "{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "first\nsecond" }), expect.any(Function)));
+    send.mockClear();
+    await userEvent.fill(input, "steer");
+    await userEvent.keyboard("{Control>}{Shift>}{Enter}{/Shift}{/Control}");
+    await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "steer" }), expect.any(Function)));
+    await userEvent.click(screen.getByRole("button", { name: /^Enter key behavior:/ }));
+    expect(screen.getByText(`${composerEnterHint(mode === "send" ? "newline" : "send")} · / commands · $ skills`)).toBeVisible();
+    expect(localStorage.getItem(COMPOSER_ENTER_MODE_KEY)).toBe(mode === "send" ? "newline" : "send");
+    await userEvent.click(screen.getByRole("button", { name: "Stop response" }));
+    expect(storeMock.current.cancelTurn).toHaveBeenCalledWith("user-stop");
   });
 });

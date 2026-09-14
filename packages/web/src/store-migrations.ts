@@ -202,6 +202,9 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
   { version: 30, name: "conversation-read-watermark", up: ({ database }) => {
     addColumn(database, "threads", "read_revision", "INTEGER NOT NULL DEFAULT 0 CHECK (read_revision >= 0 AND read_revision <= revision)");
   } },
+  { version: 31, name: "turn-cancel-origin", up: ({ database }) => {
+    addColumn(database, "turns", "cancel_origin", "TEXT CHECK (cancel_origin IN ('user-stop', 'client-disconnect', 'client-reconnect', 'service-shutdown', 'api'))");
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -262,7 +265,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       notification_deliveries: ["message_id", "job_id", "run_id"],
       agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
       messages: ["seq", "cron_suppressed"],
-      turns: ["project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
+      turns: ["cancel_origin", "project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
       live_inputs: ["dispatch_started_at"],
       web_submissions: [
         "thread_id", "submission_id", "payload_sha256", "outcome", "reason", "message_id", "turn_id", "input_id", "created_at",

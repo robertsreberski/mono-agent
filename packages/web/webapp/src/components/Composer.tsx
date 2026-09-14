@@ -1,3 +1,4 @@
+import { composerEnterHint, useComposerEnterMode, writeComposerEnterMode } from "../composer-enter-mode";
 import {
   ComposerPrimitive,
   unstable_useComposerInput,
@@ -77,6 +78,7 @@ export const buildComposerCommands = ({
 
 export function Composer({ runSettings }: { readonly runSettings?: ReactNode } = {}) {
   const store = useConsoleStore();
+  const enterMode = useComposerEnterMode();
   const {
     connection,
     selectedAgent,
@@ -261,8 +263,8 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
               aria-expanded={false}
               rows={1}
               addAttachmentOnPaste={canUpload}
-              submitMode="enter"
-              unstable_insertNewlineOnTouchEnter
+              submitMode={enterMode === "send" ? "enter" : "ctrlEnter"}
+              cancelOnEscape={false}
               unstable_focusOnRunStart={false}
               unstable_focusOnScrollToBottom={false}
               unstable_focusOnThreadSwitched={false}
@@ -293,9 +295,13 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
                 onBeforeOpen={() => captureSelection()}
                 onSelect={(name) => insertSkill(name, "browse")}
               />
-              <span className="composer-hint">
-                {statusText ?? "Enter to send · / commands · $ skills"}
-              </span>
+              <button
+                type="button"
+                className="icon-button composer-tool"
+                aria-label={`Enter key behavior: ${composerEnterHint(enterMode)}. Change behavior`}
+                title={`${composerEnterHint(enterMode)}. Click to change`}
+                onClick={() => writeComposerEnterMode(enterMode === "send" ? "newline" : "send")}
+              >↵</button>
             </div>
             <div className="composer-actions">
               {runSettings}
@@ -307,15 +313,20 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
                 <Icon name="send" size={16} />
               </ComposerPrimitive.Send>
               {isRunning && (
-                <ComposerPrimitive.Cancel
+                <button
+                  type="button"
+                  onClick={() => void store.cancelTurn("user-stop").catch(() => undefined)}
                   className="composer-stop"
                   aria-label="Stop response"
                   title="Stop"
                 >
                   <Icon name="stop" size={14} />
-                </ComposerPrimitive.Cancel>
+                </button>
               )}
             </div>
+          </div>
+          <div className="composer-hint">
+            {statusText ? `${statusText} · ` : ""}{composerEnterHint(enterMode)} · / commands · $ skills
           </div>
         </ComposerPrimitive.AttachmentDropzone>
       </ComposerPrimitive.Root>
