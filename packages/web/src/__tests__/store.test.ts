@@ -2271,7 +2271,7 @@ describe("WebStore", () => {
     store.close();
   });
 
-  it("collapses the prose a reasoning block split back into one answer", async () => {
+  it("keeps prose in one part when a thought lands mid-sentence", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const store = await WebStore.open({ stateDir: join(base, "state") });
@@ -2279,7 +2279,9 @@ describe("WebStore", () => {
     const thread = store.createThread("agent-one");
     const turn = store.beginTurn({ threadId: thread.id, text: "check", attachmentIds: [] });
     // One assistant message can carry `thinking, text, thinking, text`, and the
-    // provider reports every text block of it as the same answer.
+    // provider reports every text block of it as the same answer: prose that
+    // resumes after the thought joins the run in front of it, so the reader
+    // sees the whole sentence and then the thought row.
     store.applyStreamFrames(turn.turnId, [
       { kind: "append", delta: "Looking." },
       { kind: "event", event: { type: "tool_call_started", id: "tool-1", name: "Search", arguments: {} } },
@@ -2292,8 +2294,56 @@ describe("WebStore", () => {
     expect(detail.messages.at(-1)?.parts).toEqual([
       { type: "text", text: "Looking." },
       { type: "tool-call", toolCallId: "tool-1", toolName: "Search", args: {}, status: "running" },
-      { type: "reasoning", text: "hmm" },
       { type: "text", text: "First half. Second half." },
+      { type: "reasoning", text: "hmm" },
+    ]);
+    store.close();
+  });
+
+  it("joins a sentence a thought interrupts with no tool call in between", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "check", attachmentIds: [] });
+    // The live reply that motivated this: one sentence split around a
+    // content-free thought must persist as one text part, never two blocks.
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "append", delta: "The" },
+      { kind: "event", event: { type: "assistant_thought", text: "." } },
+      { kind: "append", delta: " targeted search only surfaced daycare threads." },
+    ]);
+    const detail = store.completeTurn(turn.turnId, "");
+
+    expect(detail.messages.at(-1)?.parts).toEqual([
+      { type: "text", text: "The targeted search only surfaced daycare threads." },
+      { type: "reasoning", text: "." },
+    ]);
+    store.close();
+  });
+
+  it("keeps two thoughts around prose as two reasoning parts", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "check", attachmentIds: [] });
+    // The join is asymmetric: prose between two thoughts still separates them,
+    // so distinct thoughts cannot merge into one reasoning part and lose their
+    // chronology.
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "assistant_thought", text: "first thought" } },
+      { kind: "append", delta: "hi" },
+      { kind: "event", event: { type: "assistant_thought", text: "second thought" } },
+    ]);
+    const detail = store.completeTurn(turn.turnId, "hi");
+
+    expect(detail.messages.at(-1)?.parts).toEqual([
+      { type: "reasoning", text: "first thought" },
+      { type: "text", text: "hi" },
+      { type: "reasoning", text: "second thought" },
     ]);
     store.close();
   });
@@ -4853,23 +4903,25 @@ describe("WebStore message sequence and part deltas", () => {
     return write.delta;
   }
 
-  it("describes the final-text reconciliation that absorbs earlier text parts", async () => {
+  it("describes the final-text write when prose already joined across a thought", async () => {
     const context = await openStreamingStore();
     stream(context, [{ kind: "append", delta: "Part one." }]);
     stream(context, [{ kind: "event", event: { type: "assistant_thought", text: "Thinking." } }]);
     stream(context, [{ kind: "append", delta: "Part two." }]);
 
-    // The answer owns the trailing run of text, so reconciliation writes it
-    // into the last text part and splices the absorbed one away.
+    // The stream already joined the prose around the thought into one part, so
+    // reconciliation only rewrites that part's text; the thought stays after it.
     const delta = finish(context, () =>
       context.store.completeTurn(context.turnId, "Here goes: Part one.Part two."));
 
     expect(delta.ops).toEqual([
-      { op: "truncate", length: 2 },
-      { op: "set", index: 0, part: { type: "reasoning", text: "Thinking." } },
-      { op: "set", index: 1, part: { type: "text", text: "Here goes: Part one.Part two." } },
+      { op: "set", index: 0, part: { type: "text", text: "Here goes: Part one.Part two." } },
     ]);
     expect(delta.status).toBe("complete");
+    expect(context.store.getMessage(context.messageId)?.parts).toEqual([
+      { type: "text", text: "Here goes: Part one.Part two." },
+      { type: "reasoning", text: "Thinking." },
+    ]);
     context.store.close();
   });
 

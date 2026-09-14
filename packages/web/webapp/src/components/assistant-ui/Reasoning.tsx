@@ -296,6 +296,17 @@ const renderParagraph = (paragraph: string, paragraphIndex: number) => (
 const THINKING_PREVIEW_CHARACTERS = 52;
 
 /**
+ * Whether a thought carries anything worth a row. A thought that holds only
+ * punctuation or markdown decoration — the "." the runtime occasionally emits
+ * between deltas — is not a step: it stays out of the activity count and out
+ * of the band, and simply appears once real content arrives. Letters, numbers
+ * and other symbols (emoji included) count as readable, so only decoration is
+ * ever hidden.
+ */
+export const hasReadableThoughtContent = (text: string): boolean =>
+  /[\p{L}\p{N}\p{So}]/u.test(text);
+
+/**
  * A thought's preview is the row's only content, so it has to read as prose. The
  * expanded body still renders the raw text; this only strips the emphasis and
  * heading markers that would otherwise be the first thing the eye lands on.
@@ -313,7 +324,7 @@ const thinkingPreview = (text: string): string =>
  * place for anyone who wants to read it.
  */
 const ReasoningImpl: ReasoningMessagePartComponent = ({ text, status }) => {
-  if (text.length === 0) return null;
+  if (!hasReadableThoughtContent(text)) return null;
   const preview = thinkingPreview(text);
   // A thought still arriving stays open — watching the model work is the whole
   // reason Activity auto-opens — and folds itself away once it has settled.
