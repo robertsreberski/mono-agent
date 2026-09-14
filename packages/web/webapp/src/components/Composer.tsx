@@ -1,4 +1,3 @@
-import { composerEnterHint, composerSteerHint, useComposerEnterMode, writeComposerEnterMode } from "../composer-enter-mode";
 import {
   ComposerPrimitive,
   unstable_useComposerInput,
@@ -78,7 +77,6 @@ export const buildComposerCommands = ({
 
 export function Composer({ runSettings }: { readonly runSettings?: ReactNode } = {}) {
   const store = useConsoleStore();
-  const enterMode = useComposerEnterMode();
   const {
     connection,
     selectedAgent,
@@ -263,7 +261,7 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
               aria-expanded={false}
               rows={1}
               addAttachmentOnPaste={canUpload}
-              submitMode={enterMode === "send" ? "enter" : "ctrlEnter"}
+              submitMode="ctrlEnter"
               cancelOnEscape={false}
               unstable_focusOnRunStart={false}
               unstable_focusOnScrollToBottom={false}
@@ -295,13 +293,6 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
                 onBeforeOpen={() => captureSelection()}
                 onSelect={(name) => insertSkill(name, "browse")}
               />
-              <button
-                type="button"
-                className="icon-button composer-tool"
-                aria-label={`Enter key behavior: ${composerEnterHint(enterMode)}. Change behavior`}
-                title={`${composerEnterHint(enterMode)}. Click to change`}
-                onClick={() => writeComposerEnterMode(enterMode === "send" ? "newline" : "send")}
-              >↵</button>
             </div>
             <div className="composer-actions">
               {runSettings}
@@ -326,7 +317,7 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
             </div>
           </div>
           <div className="composer-hint">
-            {statusText ? `${statusText} · ` : ""}{composerEnterHint(enterMode)}{isRunning ? ` · ${composerSteerHint()}` : ""} · / commands · $ skills
+            {statusText ? `${statusText} · ` : ""}{/Mac|iPhone|iPad|iPod/i.test(navigator.platform) ? "⌘↵" : "Ctrl+↵"} to send · / commands · $ skills
           </div>
         </ComposerPrimitive.AttachmentDropzone>
       </ComposerPrimitive.Root>
