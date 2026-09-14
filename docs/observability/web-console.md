@@ -116,6 +116,50 @@ At startup, mono-agent inspects the existing Tailscale Serve configuration. It p
 
 ## Provider authentication
 
+Agent settings uses the same compact responsive sheet as project/tag settings:
+a bottom sheet on mobile and a centered panel on desktop. Model defaults,
+favorites, authentication, live checks and revert controls keep their existing
+behavior.
+
+### Subscription usage
+
+Under matching provider-auth rows, agents with the `providerUsage` v1 capability
+show subscription meters from their configured Pi auth store:
+
+| Provider | Core meters | Plan |
+| --- | --- | --- |
+| Claude (`anthropic`) | Session (5h), Weekly (7d), Fable when supplied | Not exposed by Pi; omitted |
+| Codex (`openai-codex`) | Session (5h) and/or Weekly (7d), when supplied | Pro 5x, Pro 20x, Business Premium, or the provider's plan label |
+| OpenCode Go (`opencode-go`) | Session, Weekly, Monthly | Go |
+
+Numbers are vendor-reported percent used, clamped to 0–100, not estimates from
+session costs. A sole weekly Codex limit stays Weekly even when it occupies the
+primary slot. Reset countdowns include an absolute time on hover; vendor reset
+timestamps are authoritative (the nominal monthly period is 30 days). No Spark,
+credits, Sonnet, extra-usage or cost meters are included. Unsupported providers
+and absent/unusable credentials add no placeholders. Usage success does not
+promote an authentication row to verified.
+
+The agent shares one five-minute in-memory cache between console reads and the
+[ProviderUsage tool](/tools/mcp/#providerusage-subscription-quota). Opening the
+sheet loads usage independently of auth status; it polls while open and stops
+on close or agent switch. Expired data is shown as **Last known usage** during a
+coalesced refresh. Failures show **Usage unavailable** with a short safe reason,
+retaining last-good meters. Rate limits honor `Retry-After`; rejected OAuth
+credentials get one refresh through the existing Pi resolver and one retry.
+Claude rejection includes a re-login hint (usage requires `user:profile` scope);
+an OpenCode entitlement rejection means no Go subscription, not a bad key.
+
+The independent read routes are agent `${basePath}/v1/provider-usage` and console
+`/api/v1/agents/:id/provider-usage`, with an optional exact `provider` filter.
+They are no-store, use the existing owner/operator and same-origin protections,
+and return `mono-agent.provider-usage.v1`. Usage failures never block the auth
+rows. The web server never reads credentials; vendor identifiers and secrets
+are dropped on the agent host before transport. No subscription usage is
+persisted by the service, and no quota purchase/reset endpoint is called.
+
+### Authentication and live checks
+
 For every current app-owned agent, **Agent settings** includes one compact
 provider-authentication row for each provider used by the agent's effective
 primary, fallback, memory, and enabled static trigger routes. A row says **OK**

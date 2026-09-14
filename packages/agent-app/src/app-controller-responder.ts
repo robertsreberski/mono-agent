@@ -1,3 +1,5 @@
+import { createProviderUsageRuntimeExtension } from "./provider-usage-tool.js";
+import type { ProviderUsageOperator } from "@mono-agent/agent-contracts";
 import { createConsoleProjectsRuntimeExtension } from "./console-projects.js";
 import { resolve } from "node:path";
 
@@ -102,6 +104,7 @@ export interface ResponderControllerPort {
   readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   readonly seenNotifyDestinations: SeenNotifyDestinationCache;
   readonly providerAuthObservations?: ProviderAuthObservationTracker;
+  providerUsageFor?(config: MonoAgentConfig): ProviderUsageOperator;
   sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined;
   memoryStore(coreConfig: MonoAgentConfig): Promise<ConfiguredMemory>;
   ensureSharedMemoryRetrieval(
@@ -310,7 +313,9 @@ export async function buildResponder(
   const replyArtifactsExtension = replyArtifactsBase;
   const runHistoryExtension = runHistoryBase;
   const sessionHistoryExtension = sessionHistoryBase;
+  const usage = controller.providerUsageFor?.(coreConfig);
   const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
+    usage === undefined ? undefined : createProviderUsageRuntimeExtension(usage, coreConfig.tools),
     supermemoryMcp,
     runHistoryExtension,
     sessionHistoryExtension,

@@ -1,3 +1,4 @@
+import { parseProviderUsageSnapshot, type ProviderUsageId, type ProviderUsageSnapshot } from "@mono-agent/agent-contracts";
 import {
   AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
   AGENT_CONTEXT_IMPORT_VERSION,
@@ -155,6 +156,7 @@ export interface OperatorInfo {
   readonly cron?: { readonly read: true; readonly actions: boolean };
   readonly supportsJobs?: boolean;
   readonly supportsProviderAuth?: true;
+  readonly supportsProviderUsage?: true;
   readonly supportsProviderAuthChecks?: true;
 }
 
@@ -265,11 +267,19 @@ export class OperatorClient {
       ...(mcpApps === undefined ? {} : { mcpApps }),
       ...(cron?.read === true ? { cron: { read: true, actions: cron.actions === true } } : {}),
       ...(capabilities?.jobs === true ? { supportsJobs: true } : {}),
+      ...(record(capabilities?.providerUsage)?.version === 1 ? { supportsProviderUsage: true } : {}),
       ...(record(capabilities?.providerAuth)?.version === 1 ? { supportsProviderAuth: true } : {}),
       ...(record(record(capabilities?.providerAuth)?.checks)?.version === 1
         ? { supportsProviderAuthChecks: true }
         : {}),
     };
+  }
+
+  async providerUsage(provider?: ProviderUsageId, signal?: AbortSignal): Promise<ProviderUsageSnapshot> {
+    const response = await this.request(`${this.baseUrl}/v1/provider-usage${provider === undefined ? "" : `?provider=${encodeURIComponent(provider)}`}`, {
+      headers: this.headers(false), ...(signal === undefined ? {} : { signal }),
+    });
+    return parseProviderUsageSnapshot(JSON.parse(await readBoundedBody(response, 128 * 1024, "operator_provider_usage_too_large")));
   }
 
   async providerAuthStatus(signal?: AbortSignal): Promise<ProviderAuthStatusSnapshot> {

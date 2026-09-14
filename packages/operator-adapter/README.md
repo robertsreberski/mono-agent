@@ -183,6 +183,8 @@ agent even though current producers emit at most 256 KiB per frame. See
 
 ## Architecture
 
+An app-owned `ProviderUsageOperator` enables bearer-protected `GET ${basePath}/v1/provider-usage` (optional exact provider filter) and `capabilities.providerUsage: {version: 1}`. This no-store read is separate from auth status and validates the secret-free v1 projection.
+
 ### Data flow
 
 1. The host passes an `AgentResponder` to `startTuiAdapter` and publishes the

@@ -220,3 +220,13 @@ canonical [deprecation tracker](/reference/deprecations/).
 ## Programmatic use
 
 The policy is also available as a library for code-defined agents: `createToolPolicy()`, `failClosedToolPolicy()`, `loadToolPolicyFromJsonFile()`, and `toolPolicyToRuntimeOptions()` from `@mono-agent/agent-harness`. Errors are thrown as `ToolPolicyError` with codes `invalid_tool_policy` and `tool_policy_read_failed`. See [Programmatic API](/programmatic/).
+
+
+## ProviderUsage
+
+`ProviderUsage` reads Claude, Codex and OpenCode Go subscription quota from this
+agent's Pi credentials without changing vendor state or routing. It is available
+under allow-all; restrictive policies can allow the bare name or
+`mcp__mono-agent-provider-usage__ProviderUsage` / `mcp__mono-agent-provider-usage__*`.
+Deny always wins. See [subscription quota tool](/tools/mcp/#providerusage-subscription-quota)
+for optional provider filtering, omissions and stale/error semantics.

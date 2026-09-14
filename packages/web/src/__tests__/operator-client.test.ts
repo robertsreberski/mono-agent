@@ -1046,3 +1046,17 @@ it("sends Monitor owner authorization only on exact wake turn and steering reque
   await expect(new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui" }).turn({ ...turn, processJobWakeDeliveryKey: "monitor:one:1" }))
     .rejects.toMatchObject({ code: "monitors_unavailable" });
 });
+
+
+it("validates provider usage at the HTTP boundary and rejects identifier-bearing projections", async () => {
+  const headers: Record<string, unknown>[] = [];
+  let invalid = false;
+  const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "fixture-key", fetchImpl: (async (_url, init) => {
+    headers.push(init?.headers as Record<string, unknown>);
+    return Response.json({ schema: "mono-agent.provider-usage.v1", providers: [], ...(invalid ? { account_id: "DROP" } : {}) });
+  }) as typeof fetch });
+  expect((await client.providerUsage()).providers).toEqual([]);
+  expect(JSON.stringify(headers)).toContain("fixture-key");
+  invalid = true;
+  await expect(client.providerUsage()).rejects.toThrow("Invalid provider usage projection");
+});

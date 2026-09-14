@@ -261,6 +261,7 @@ export interface AgentSummary {
   readonly health?: string;
   readonly supportsAttachments: boolean;
   readonly supportsProviderAuth?: true;
+  readonly supportsProviderUsage?: true;
   readonly supportsProviderAuthChecks?: true;
   readonly models?: readonly string[];
   readonly defaultModel?: string;
@@ -1220,3 +1221,5 @@ export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
   maxTurnBytes: 64 * 1024 * 1024,
   accept: [],
 };
+
+export type { ProviderUsage, ProviderUsageSnapshot, ProviderUsageId } from "@mono-agent/agent-contracts";

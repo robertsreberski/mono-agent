@@ -1,3 +1,4 @@
+import { ProviderUsageMeters, useProviderUsage } from "./ProviderUsageMeters";
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { useConsoleStore } from "../console-store";
@@ -95,19 +96,19 @@ export function AgentSettingsDialog({
   };
 
   return (
-    <div className="dialog-layer" role="presentation" onMouseDown={onClose}>
+    <div className="sheet-layer agent-settings-layer" role="presentation" onMouseDown={onClose}>
       <section
         ref={dialogRef}
-        className="agent-settings-dialog"
+        className="sheet agent-settings-dialog agent-settings-sheet"
         role="dialog"
         aria-modal="true"
         aria-labelledby="agent-settings-title"
         tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <header>
+        <span className="sheet-handle" aria-hidden="true" />
+        <header className="sheet-head">
           <div>
-            <span className="eyebrow">Agent settings</span>
             <h2 id="agent-settings-title">{agent.label} settings</h2>
           </div>
           <div className="agent-settings-header-actions">
@@ -177,6 +178,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   const [status, setStatus] = useState<ProviderAuthStatusSnapshot | null>(null);
   const [session, setSession] = useState<ProviderAuthSessionSnapshot | null>(null);
   const [check, setCheck] = useState<ProviderAuthCheckSessionSnapshot | null>(null);
+  const usage = useProviderUsage(agent, session?.state === "succeeded" ? session.id : undefined);
   const [sessionProvider, setSessionProvider] = useState<ProviderAuthProviderStatus | null>(null);
   const [methodProvider, setMethodProvider] = useState<ProviderAuthProviderStatus | null>(null);
   const [inputValue, setInputValue] = useState("");
@@ -554,6 +556,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
           const checkResult = check?.results.find((result) => result.providerId === provider.providerId);
           return (
             <article className="provider-auth-card" key={provider.providerId}>
+              <div className="provider-auth-controls">
               <div className="provider-auth-heading">
                 <b>{provider.label}</b>
                 <span className="provider-auth-badges">
@@ -575,6 +578,8 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
                   {provider.state === "missing" ? "Authenticate" : "Re-authenticate"}
                 </button>
               )}
+              </div>
+              <ProviderUsageMeters usage={usage?.providers.find((item) => item.providerId === provider.providerId)} />
             </article>
           );
         })}

@@ -1,3 +1,4 @@
+import { isProviderUsageId } from "@mono-agent/agent-contracts";
 import type { CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
@@ -264,6 +265,19 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     if (status === 204) res.status(status).end();
     else res.status(status).json(body);
   };
+
+  app.get("/api/v1/agents/:id/provider-usage", (req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    try {
+      exactRequestOrigin(req);
+      const provider = req.query.provider;
+      if (Object.keys(req.query).some((key) => key !== "provider") || (provider !== undefined && !isProviderUsageId(provider))) {
+        res.status(400).json({ error: "invalid_provider" }); return;
+      }
+      void trackOperation(service.providerUsage(pathParam(req.params.id), provider), activeOperations)
+        .then((snapshot) => res.json(snapshot)).catch(next);
+    } catch (error) { next(error); }
+  });
 
   app.use("/api/v1/agents/:id/provider-auth", (_req, res, next) => {
     res.setHeader("Cache-Control", "private, no-store, max-age=0");

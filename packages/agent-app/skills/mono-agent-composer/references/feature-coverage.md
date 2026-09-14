@@ -175,3 +175,17 @@ Failed answers retain the question; success clears it; another question replaces
 it. The Session envelope exposes bounded pending questions after restart.
 Parent/stateless runs have no AskParent, and children cannot use AskUser or
 channel sends. There is no separate config key or background/wake behavior.
+
+
+### Subscription usage (Claude, Codex, OpenCode Go)
+
+The app automatically exposes `ProviderUsage` on policy-permitted turns and
+usage meters under matching provider-auth rows in Agent settings. It reads only
+usable credentials in `providers.piAuthPath`: Claude/Codex OAuth or OpenCode Go's
+static key. No new config, external MCP declaration or consumer auth store is
+needed. A restrictive allowlist must include `ProviderUsage`; the namespaced
+`mcp__mono-agent-provider-usage__ProviderUsage` and server wildcard aliases also
+work, with deny winning. Optional `provider` filters the three exact ids.
+Snapshots are secret-free, five-minute cached vendor percentages/reset times,
+not local costs; stale/error data is explicitly labelled and absent credentials
+are omitted. No quota purchases or routing decisions are performed.

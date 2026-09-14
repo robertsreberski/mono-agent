@@ -1,3 +1,4 @@
+import { isProviderUsageId, parseProviderUsageSnapshot, type ProviderUsageOperator } from "@mono-agent/agent-contracts";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { isAbsolute } from "node:path";
@@ -288,6 +289,7 @@ export interface TuiAdapterOptions {
   readonly monitorsBearer?: string;
   /** Pi credential status/login surface; uses apiKey when the endpoint has one. */
   readonly providerAuth?: ProviderAuthOperator;
+  readonly providerUsage?: ProviderUsageOperator;
 }
 
 export interface TuiAdapterStartResult {
@@ -479,6 +481,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
             ...(options.modelCatalog === undefined
               ? {}
               : { modelCatalog: { version: 1, maxPageSize: MAX_MODEL_CATALOG_PAGE_SIZE } }),
+            ...(options.providerUsage === undefined ? {} : { providerUsage: { version: 1 } }),
             ...(options.providerAuth === undefined
               ? {}
               : {
@@ -1173,6 +1176,17 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
     res.status(status).json(body);
   };
+
+  app.get(`${basePath}/v1/provider-usage`, (req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    if (!authorize(req, res, apiKey)) return;
+    if (options.providerUsage === undefined) { res.status(503).json({ error: "provider_usage_unavailable" }); return; }
+    const provider = req.query.provider;
+    if (Object.keys(req.query).some((key) => key !== "provider") || (provider !== undefined && !isProviderUsageId(provider))) {
+      res.status(400).json({ error: "invalid_provider" }); return;
+    }
+    void options.providerUsage.snapshot(provider).then((snapshot) => res.json(parseProviderUsageSnapshot(snapshot))).catch(next);
+  });
 
   app.use(providerAuthPath, (_req, res, next) => {
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
