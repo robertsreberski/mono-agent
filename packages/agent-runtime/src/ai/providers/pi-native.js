@@ -37,6 +37,7 @@ import { readToolRuntime } from "../../agent/tools/shared/runtime-context.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
 import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "./pi-models.js";
+import { registerPiSupplementModels } from "../pi-supplement.js";
 import {
   textFromContent,
   thinkingFromContent,
@@ -219,6 +220,13 @@ function buildRunModels(runtime, options, runtimeWarnings, providerAttributionSe
           ? {}
           : { authContext: options.providerCheckAuthContext }),
       });
+      // pi-supplement: the pi-agent-core drive path re-resolves the run's model
+      // by id inside THIS collection (`lane.models.getModel(provider, modelId)`),
+      // so a supplemented row must be registered here, not just returned by
+      // `resolvePiRuntimeModel`. Upstream ids already in the collection are left
+      // untouched (upstream wins). The `piResolvedModels` seam above stays
+      // verbatim and never receives supplements.
+      registerPiSupplementModels(models);
     }
   }
   return withProviderCheckOutputCap(

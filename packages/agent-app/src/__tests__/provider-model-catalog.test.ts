@@ -117,6 +117,34 @@ describe("provider-model-catalog", () => {
     }
   });
 
+  it("advertises the supplemented opencode-go DeepSeek V4.1 Flash like a builtin", () => {
+    const catalog = buildProviderModelCatalog({ providers: [{ id: "opencode-go" }] });
+    const provider = catalog.listProviders().find((entry) => entry.id === "opencode-go");
+
+    const full = listPiBuiltinModels("opencode-go");
+    expect(full.some((model) => model.id === "deepseek-v4.1-flash")).toBe(true);
+    // 27 upstream rows plus the one supplement: far below the 100 default cap,
+    // so maxAdvertisedModels behavior is unchanged (no totalModelCount).
+    expect(provider?.modelCount).toBe(full.length);
+    expect(provider?.totalModelCount).toBeUndefined();
+
+    const models = catalog.listModels("opencode-go").models;
+    const advertised = models.find((model) => model.id === "deepseek-v4.1-flash");
+    const snapshot = full.find((model) => model.id === "deepseek-v4.1-flash")!;
+    const effort = resolveAdvertisedModelEffortForBuiltin(snapshot);
+    expect(advertised).toMatchObject({
+      id: "deepseek-v4.1-flash",
+      name: "DeepSeek V4.1 Flash",
+      provider: "opencode-go",
+      contextWindow: 1000000,
+      reasoning: effort.reasoning,
+    });
+    expect(advertised?.effortLevels).toEqual(effort.effortLevels);
+
+    const ref = parseMonoRuntimeModelReference("opencode-go:deepseek-v4.1-flash");
+    expect(catalog.describe([ref])[ref.reference]?.effortLevels).toEqual(effort.effortLevels);
+  });
+
   it("caps openrouter at 100 and reports totalModelCount when not narrowed", () => {
     const catalog = buildProviderModelCatalog({ providers: [{ id: "openrouter" }] });
     const openrouter = catalog.listProviders().find((provider) => provider.id === "openrouter");
