@@ -86,8 +86,10 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   conversation-level stack after the transcript. Queued, starting, and running
   cards stay visible by default; terminal cards remain mounted behind
   expandable history so status counts and live transitions stay current.
-  When a loaded launching `Exec`/`Bash` call has its exact persisted machine
-  receipt, that response's Activity also shows its actual start row. The
+  When a loaded launching `Exec`/`Bash`/`Agent`/`AgentSend` call has its exact persisted machine
+  receipt, that response's Activity shows one start row for the launch: the
+  launch call folds into the `<Tool> job started` row, which carries the launch
+  arguments behind its disclosure alongside the job facts. The
   terminal row appears where the exact wake was consumed: at the steered point
   in an active response or first in a follow-up response. If no retained wake
   marker exists, the terminal row falls back beside the launch. These rows
@@ -291,8 +293,9 @@ from aggregate work.
 Structured reasoning, routine tools, process-job lifecycle evidence, and one
 update-in-place row per compaction share the stream-aware Activity disclosure,
 which collapses at every terminal message state without reordering answer
-parts. Receipt-bearing job launches keep their start row beside the exact
-launch call. Their terminal row follows the consumed wake chronologically, with
+parts. Receipt-bearing job launches fold their launch call into one start row,
+which carries the launch arguments behind its disclosure alongside the job
+facts. Their terminal row follows the consumed wake chronologically, with
 launch-adjacent placement only as a fallback when no wake marker was retained;
 ordinary adjacent same-tool calls retain their existing clustering.
 

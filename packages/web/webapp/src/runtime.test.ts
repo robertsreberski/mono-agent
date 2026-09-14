@@ -870,7 +870,7 @@ describe("convertWebMessage", () => {
   });
 
   it.each(["running", "complete", "failed", "cancelled", "interrupted"] as const)(
-    "keeps launch lifecycle rows adjacent for a %s response",
+    "folds the launch call into its start row for a %s response",
     (status) => {
       const job = processJob();
       const source = message({
@@ -884,9 +884,85 @@ describe("convertWebMessage", () => {
       ];
       const content = convertWebMessage(source, { processJobEvents: events }).content as readonly { readonly type: string }[];
       const types = content.map((part) => part.type);
-      expect(types).toEqual(["tool-call", "data-process-job-event", "data-process-job-event", "text"]);
+      // One row for the launch (the started event carries its arguments) plus
+      // the later terminal fact, then the answer.
+      expect(types).toEqual(["data-process-job-event", "data-process-job-event", "text"]);
     },
   );
+
+  it("folds the paired launch arguments into the started event", () => {
+    const job = processJob();
+    const launch = {
+      ...launchPart(job, "launch"),
+      args: { command: "node worker.js --launch", description: "Generate the report" },
+    };
+    const source = message({ role: "assistant", parts: [launch] });
+    const events = [
+      { schema: "mono-agent.process-job-activity-event.v1" as const, id: `process-job:${job.jobId}:started`, toolCallId: "launch", jobId: job.jobId, tool: job.tool, summary: job.summary, phase: "started" as const, state: job.state, occurredAt: job.timestamps.startedAt! },
+    ];
+    const content = convertWebMessage(source, { processJobEvents: events }).content as readonly {
+      readonly type: string; readonly data?: Record<string, unknown>;
+    }[];
+    expect(content.map((part) => part.type)).toEqual(["data-process-job-event"]);
+    expect(content[0]?.data).toMatchObject({
+      id: `process-job:${job.jobId}:started`,
+      phase: "started",
+      launchArgs: { command: "node worker.js --launch", description: "Generate the report" },
+    });
+  });
+
+  it("carries a truncated launch preview with its size so the row can offer a repair", () => {
+    const job = processJob();
+    const launch = {
+      ...launchPart(job, "launch"),
+      args: "HEAD-".repeat(8),
+      argsTruncated: true as const,
+      argsBytes: 20 * 1_024,
+    };
+    const source = message({ role: "assistant", parts: [launch] });
+    const events = [
+      { schema: "mono-agent.process-job-activity-event.v1" as const, id: `process-job:${job.jobId}:started`, toolCallId: "launch", jobId: job.jobId, tool: job.tool, summary: job.summary, phase: "started" as const, state: job.state, occurredAt: job.timestamps.startedAt! },
+    ];
+    const content = convertWebMessage(source, { processJobEvents: events }).content as readonly {
+      readonly type: string; readonly data?: Record<string, unknown>;
+    }[];
+    expect(content.map((part) => part.type)).toEqual(["data-process-job-event"]);
+    expect(content[0]?.data).toMatchObject({
+      phase: "started",
+      launchArgsTruncated: true,
+      launchArgsBytes: 20 * 1_024,
+    });
+  });
+
+  it("keeps the launch tool-call row when only a terminal event exists", () => {
+    const job = processJob();
+    const source = message({ role: "assistant", parts: [launchPart(job, "launch")] });
+    const events = [
+      { schema: "mono-agent.process-job-activity-event.v1" as const, id: `process-job:${job.jobId}:terminal`, toolCallId: "launch", jobId: job.jobId, tool: job.tool, summary: job.summary, phase: "terminal" as const, state: job.state, occurredAt: job.timestamps.completedAt! },
+    ];
+    const content = convertWebMessage(source, { processJobEvents: events }).content as readonly { readonly type: string }[];
+    // No valid start produced a started event, so the launch row survives next
+    // to the later terminal fact.
+    expect(content.map((part) => part.type)).toEqual(["tool-call", "data-process-job-event"]);
+  });
+
+  it("keeps a failed launch as an ordinary error tool-call row", () => {
+    const job = processJob();
+    const failedLaunch = { ...launchPart(job, "launch"), status: "failed" as const };
+    const source = message({ role: "assistant", parts: [failedLaunch] });
+    const events = [
+      { schema: "mono-agent.process-job-activity-event.v1" as const, id: `process-job:${job.jobId}:started`, toolCallId: "launch", jobId: job.jobId, tool: job.tool, summary: job.summary, phase: "started" as const, state: job.state, occurredAt: job.timestamps.startedAt! },
+    ];
+    const content = convertWebMessage(source, { processJobEvents: events }).content as readonly { readonly type: string }[];
+    expect(content.map((part) => part.type)).toEqual(["tool-call", "data-process-job-event"]);
+  });
+
+  it("keeps an unpaired launch tool-call row without inventing an event", () => {
+    const job = processJob();
+    const source = message({ role: "assistant", parts: [launchPart(job, "launch")] });
+    const content = convertWebMessage(source).content as readonly { readonly type: string }[];
+    expect(content.map((part) => part.type)).toEqual(["tool-call"]);
+  });
 
   it("separates consecutive receipt-bearing launches while ordinary adjacent calls still cluster", () => {
     const job = processJob();
@@ -914,8 +990,10 @@ describe("convertWebMessage", () => {
       occurredAt: item.timestamps.completedAt!,
     }]);
     const launchContent = convertWebMessage(launches, { processJobEvents: events }).content as readonly { readonly type: string }[];
+    // Each launch folds into its own started row; the later terminal fact stays
+    // beside it. Ordinary same-tool calls still cluster.
     expect(launchContent.map((part) => part.type))
-      .toEqual(["tool-call", "data-process-job-event", "data-process-job-event", "tool-call", "data-process-job-event", "data-process-job-event"]);
+      .toEqual(["data-process-job-event", "data-process-job-event", "data-process-job-event", "data-process-job-event"]);
 
     const ordinary = message({ role: "assistant", parts: [
       { type: "tool-call", toolCallId: "one", toolName: "Exec", status: "complete" },

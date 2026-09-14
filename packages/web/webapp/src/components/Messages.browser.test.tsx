@@ -3,7 +3,7 @@ import {
   ThreadPrimitive,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { page } from "@vitest/browser/context";
 import { describe, expect, it, vi } from "vitest";
 import { coalesceMonitorWakeMessages, convertWebMessage } from "../runtime";
@@ -202,7 +202,7 @@ function ActivityHarness({ width }: { readonly width: number }) {
     attachments: [],
     parts: [
       { type: "reasoning", text: "Launching the worker." },
-      { type: "tool-call", toolCallId: "launch", toolName: "Exec", status: "complete" },
+      { type: "tool-call", toolCallId: "launch", toolName: "Exec", status: "complete", args: { command: "node worker.js --launch" } },
       { type: "text", text: "Finished." },
     ],
   };
@@ -304,10 +304,13 @@ describe("process-job response Activity in Chromium", () => {
   it.each([760, 360] as const)("keeps causal lifecycle rows inside the %ipx response", (width) => {
     const { container } = render(<ActivityHarness width={width} />);
     const activity = screen.getByRole("button", { name: "Activity" });
-    expect(activity).toHaveTextContent("4 steps");
+    // The launch call folds into its start row: reasoning plus the two lifecycle
+    // facts, not a second tool-call row beside the start.
+    expect(activity).toHaveTextContent("3 steps");
     fireEvent.click(activity);
+    const started = screen.getByRole("group", { name: "Exec job started" });
     const rows = [
-      screen.getByRole("group", { name: "Exec job started" }),
+      started,
       screen.getByRole("group", { name: "Exec job succeeded" }),
     ];
     const messageRoot = container.querySelector<HTMLElement>(".message-assistant")!;
@@ -315,6 +318,10 @@ describe("process-job response Activity in Chromium", () => {
       expect(row.getBoundingClientRect().left).toBeGreaterThanOrEqual(messageRoot.getBoundingClientRect().left);
       expect(row.getBoundingClientRect().right).toBeLessThanOrEqual(messageRoot.getBoundingClientRect().right);
     }
+    // The surviving start row carries the launch arguments in its disclosure.
+    fireEvent.click(started.querySelector("summary")!);
+    expect(within(started).getByText("Input")).toBeVisible();
+    expect(within(started).getByText(/node worker\.js --launch/u)).toBeVisible();
     expect(messageRoot.scrollWidth).toBeLessThanOrEqual(messageRoot.clientWidth);
     expect(screen.getAllByRole("button", { name: "Copy response" })).toHaveLength(1);
   });

@@ -4,9 +4,10 @@ import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "re
 import { api } from "../api";
 import { currentDataMode } from "../data-mode";
 import { useDocumentVisible } from "../document-visibility";
+import { useToolCallRepair } from "./tool-call-repair";
 import type { MessagePart, ProcessJobProjection, ProcessJobState } from "../types";
 import type { ProcessJobActivityEvent } from "../process-job-presentation";
-import { ActivityRow, type ActivityStatus } from "./ActivityRow";
+import { ActivityPayload, ActivityRow, truncationProps, type ActivityStatus } from "./ActivityRow";
 import { ActivityElapsed, type ActivityTiming } from "./assistant-ui/ActivityElapsed";
 import { ProcessJobMetaLine, ProcessJobSubagentProgress } from "./ProcessJobSubagentProgress";
 import { formatToolDuration } from "./duration";
@@ -197,8 +198,19 @@ const activityEvent = (value: unknown): ProcessJobActivityEvent | undefined => {
   const allowed = [
     "schema", "id", "toolCallId", "jobId", "tool", "summary", "phase", "state",
     "occurredAt", "durationMs", "exitCode", "signal",
+    "launchArgs", "launchArgsTruncated", "launchArgsBytes",
   ];
   const required = allowed.slice(0, 8);
+  // Launch arguments are tool-defined content, so the envelope stays strict
+  // while the args value itself only has to survive a JSON round trip.
+  const launchArgsUnserializable = (): boolean => {
+    if (!Object.prototype.hasOwnProperty.call(record, "launchArgs")) return false;
+    try {
+      return JSON.stringify(record.launchArgs) === undefined;
+    } catch {
+      return true;
+    }
+  };
   try {
     if (!required.every((key) => Object.prototype.hasOwnProperty.call(record, key))
       || Object.keys(record).some((key) => !allowed.includes(key))
@@ -220,7 +232,17 @@ const activityEvent = (value: unknown): ProcessJobActivityEvent | undefined => {
       || (record.durationMs !== undefined
         && (typeof record.durationMs !== "number" || !Number.isFinite(record.durationMs) || record.durationMs < 0))
       || (record.exitCode !== undefined && !Number.isSafeInteger(record.exitCode))
-      || (record.signal !== undefined && typeof record.signal !== "string")) return undefined;
+      || (record.signal !== undefined && typeof record.signal !== "string")
+      || launchArgsUnserializable()
+      // Truncation flags without the preview they describe would offer a repair
+      // for an Input the row never shows.
+      || (Object.prototype.hasOwnProperty.call(record, "launchArgsTruncated")
+        && (record.launchArgsTruncated !== true
+          || !Object.prototype.hasOwnProperty.call(record, "launchArgs")))
+      || (Object.prototype.hasOwnProperty.call(record, "launchArgsBytes")
+        && (!Number.isSafeInteger(record.launchArgsBytes)
+          || Number(record.launchArgsBytes) < 0
+          || !Object.prototype.hasOwnProperty.call(record, "launchArgs")))) return undefined;
     return record as unknown as ProcessJobActivityEvent;
   } catch {
     return undefined;
@@ -231,9 +253,14 @@ const eventTime = (value: string | undefined, key?: string): ReactNode => value 
   ? undefined
   : <time key={key} dateTime={value}>{new Date(value).toLocaleString()}</time>;
 
-/** A persisted-card-derived lifecycle fact; deliberately no hooks, API calls, or live clock. */
+/**
+ * A persisted-card-derived lifecycle fact. It never polls and owns no clock;
+ * the one context it reads is the repair control for a folded launch preview,
+ * the same control the suppressed tool-call row would have offered.
+ */
 export function ProcessJobActivityEventPart({ data }: DataMessagePartProps) {
   const event = activityEvent(data);
+  const repairToolCall = useToolCallRepair();
   if (event === undefined) return null;
   const terminal = event.phase === "terminal";
   const stateLabel = processJobStateLabel(event.state);
@@ -245,6 +272,11 @@ export function ProcessJobActivityEventPart({ data }: DataMessagePartProps) {
         ...(event.signal === undefined ? [] : [event.signal]),
       ])
     : eventTime(event.occurredAt);
+  // The folded launch call's Input, with the same preview notice and repair the
+  // tool row carried. The model-authored description already names the row, so
+  // only the arguments move here. Absent on retained events that predate the
+  // fold, which keep rendering as job facts alone.
+  const hasLaunchArgs = event.launchArgs !== undefined;
   return (
     <ActivityRow
       variant="job"
@@ -256,6 +288,20 @@ export function ProcessJobActivityEventPart({ data }: DataMessagePartProps) {
       duration={meta}
       ariaLabel={`${event.tool} job ${terminal ? stateLabel : "started"}`}
     >
+      {hasLaunchArgs && (
+        <ActivityPayload
+          args={event.launchArgs}
+          indented
+          {...truncationProps(
+            {
+              ...(event.launchArgsTruncated === true ? { argsTruncated: true as const } : {}),
+              ...(event.launchArgsBytes === undefined ? {} : { argsBytes: event.launchArgsBytes }),
+            },
+            event.toolCallId,
+            repairToolCall,
+          )}
+        />
+      )}
       <div className="activity-payload is-indented process-job-event">
         <dl className="process-job-facts">
           <div><dt>Job</dt><dd>{event.jobId}</dd></div>
