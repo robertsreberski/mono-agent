@@ -499,6 +499,35 @@ function expectStatusBarSurface(surface: Element): void {
   expect(document.elementsFromPoint(10, 0)).not.toContain(sampler);
 }
 
+/**
+ * The phone pushes the conversation in over a 220 ms `transform` transition
+ * (`.chat-region`, in the max-width: 900px block). A rect read while that slide
+ * is still landing carries its remainder, so every geometry check below waits
+ * for the transform to reach its resting `none` first.
+ */
+const slideSettled = async (): Promise<void> => {
+  const region = document.querySelector<HTMLElement>(".chat-region");
+  if (region === null) return;
+  await waitFor(() => expect(getComputedStyle(region).transform).toBe("none"));
+};
+
+/**
+ * Stationary to the eye, not to the last binary fraction.
+ *
+ * What this guards is a header that travels with the transcript -- pixels of
+ * movement, the kind a reader sees. CI's Linux renderer composites the same
+ * settled layout a fraction of a pixel apart across a scroll (observed: x
+ * 0.142 and 0.164 on the 390px viewport, width and height identical), which an
+ * exact rect comparison reads as a regression. Half a pixel is well under
+ * anything visible and still fails on real movement.
+ */
+const SUBPIXEL = 0.5;
+const expectStationary = (rect: DOMRect, before: DOMRectReadOnly): void => {
+  for (const side of ["x", "y", "top", "left", "right", "bottom", "width", "height"] as const) {
+    expect(Math.abs(rect[side] - before[side])).toBeLessThan(SUBPIXEL);
+  }
+};
+
 describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
   it.each(["light", "dark"] as const)("tracks the %s Dashboard and conversation without changing layout", async (scheme) => {
     await page.viewport(viewport.width, viewport.height);
@@ -531,6 +560,7 @@ describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
     const chat = document.querySelector<HTMLElement>(".chat-panel")!;
     const header = document.querySelector<HTMLElement>(".chat-header")!;
     await waitFor(() => expect(chat.getBoundingClientRect().left).toBe(viewport.name === "phone" ? 0 : 340));
+    await slideSettled();
     expectStatusBarSurface(chat);
     expect(header.getBoundingClientRect().top).toBe(0);
     expect(getComputedStyle(header).paddingTop).toBe(viewport.name === "phone" ? "7px" : "10px");
@@ -554,13 +584,14 @@ describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
     const scroll = document.querySelector<HTMLElement>(".thread-viewport")!;
     const header = document.querySelector<HTMLElement>(".chat-header")!;
     await waitFor(() => expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight));
-    const headerRect = header.getBoundingClientRect().toJSON();
+    await slideSettled();
+    const headerRect = header.getBoundingClientRect();
     scroll.scrollTop = 0;
     scroll.dispatchEvent(new Event("scroll"));
     scroll.scrollTop = 100;
     scroll.dispatchEvent(new Event("scroll"));
     await waitFor(() => expect(scroll.scrollTop).toBe(100));
-    expect(header.getBoundingClientRect().toJSON()).toEqual(headerRect);
+    expectStationary(header.getBoundingClientRect(), headerRect);
     expectStatusBarSurface(document.querySelector(".chat-panel")!);
     expect(window.scrollY).toBe(0);
   });
