@@ -120,8 +120,8 @@ describe("managed web definition decoding", () => {
     // Real producer shapes: a version-manager or system node binary plus the
     // packaged CLI entrypoint, and the managed runtime's pinned layout.
     const producerPaths: ReadonlyArray<readonly [string, string]> = [
-      ["/Users/operator/.nvm/versions/node/v24.15.0/bin/node", "/opt/mono-agent/packages/agent-app/dist/cli.js"],
-      ["/usr/local/bin/node", "/Users/operator/.mono-agent/runtime/abc123/node_modules/@mono-agent/agent-app/dist/cli.js"],
+      ["/Users/example/.nvm/versions/node/v24.15.0/bin/node", "/opt/mono-agent/packages/agent-app/dist/cli.js"],
+      ["/usr/local/bin/node", "/Users/example/.mono-agent/runtime/abc123/node_modules/@mono-agent/agent-app/dist/cli.js"],
     ];
     for (const [nodePath, cliPath] of producerPaths) {
       expect(decodeManagedWebDefinition(["/usr/bin/env", "-i", nodePath, cliPath, "web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum"]))
