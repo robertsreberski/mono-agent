@@ -255,7 +255,10 @@ On narrow touch screens the console opens on the Dashboard; a
 conversation is pushed over it when a row, a Running card or the new-conversation
 control is tapped, and popped by the 44-pixel **Back to dashboard** control at
 the left edge of the conversation header, by a deliberate right swipe across the
-unoccupied chat surface or ordinary unselected transcript text, or by Escape.
+unoccupied chat surface or ordinary unselected transcript text, by Escape, or by
+the browser/system Back action. These surfaces use browser history, so Forward
+restores the conversation after returning to the Dashboard. A direct cron or
+notification conversation link first installs a safe in-app Dashboard step.
 An open project page takes the Dashboard slot and is closed back to the agent's
 conversations by its header **Back to … conversations** control or by the same
 deliberate right swipe across its unoccupied surface or ordinary unselected text.

@@ -24,6 +24,7 @@ const storeMock = vi.hoisted(() => ({
   selectedThread: null,
   hasRunningThread: false,
   openProjectId: null as string | null,
+  openProjectById: vi.fn(),
   closeProject: vi.fn(),
   showArchived: false,
   showOfflineAgents: false,
@@ -64,9 +65,18 @@ vi.mock("./components/Chat", () => ({
 }));
 
 vi.mock("./components/dashboard/Dashboard", () => ({
-  Dashboard: ({ onNavigate }: { readonly onNavigate?: () => void }) => (
+  Dashboard: ({
+    onNavigate,
+    onCloseProject,
+  }: {
+    readonly onNavigate?: () => void;
+    readonly onCloseProject?: () => void;
+  }) => (
     <div data-testid="dashboard">
       <button type="button" onClick={onNavigate}>Open a conversation</button>
+      {storeMock.openProjectId !== null && (
+        <button type="button" onClick={onCloseProject}>Back to project conversations</button>
+      )}
     </div>
   ),
 }));
@@ -80,6 +90,7 @@ beforeEach(() => {
   storeMock.selectionError = null;
   storeMock.selectedAgent = null;
   storeMock.openProjectId = null;
+  storeMock.openProjectById.mockClear();
   storeMock.closeProject.mockClear();
   storeMock.createThread.mockReset().mockResolvedValue(undefined);
 });
@@ -199,6 +210,16 @@ describe("App viewport layout", () => {
       window.history.replaceState(null, "", "/");
     }
   });
+
+  it("does not add mobile history entries for desktop navigation", () => {
+    const pushState = vi.spyOn(window.history, "pushState");
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open a conversation" }));
+
+    expect(pushState).not.toHaveBeenCalled();
+    pushState.mockRestore();
+  });
 });
 
 describe("App mobile screens", () => {
@@ -213,9 +234,11 @@ describe("App mobile screens", () => {
       }),
     });
     window.history.replaceState(null, "", "/");
+    vi.spyOn(window.history, "back").mockImplementation(() => undefined);
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     Reflect.deleteProperty(window, "matchMedia");
   });
 
@@ -244,6 +267,158 @@ describe("App mobile screens", () => {
     return found;
   };
   const openConversation = () => fireEvent.click(screen.getByRole("button", { name: "Open a conversation" }));
+  const navigateHistory = (state: unknown, path = "/") => {
+    window.history.replaceState(state, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate", { state }));
+  };
+
+  it("uses browser history for conversation Back and Forward without stale screen state", () => {
+    window.history.replaceState({ foreignOwner: "preserved" }, "", "/");
+    const pushState = vi.spyOn(window.history, "pushState");
+    const { container } = render(<App />);
+    const dashboardState = window.history.state;
+    expect(dashboardState).toMatchObject({
+      foreignOwner: "preserved",
+      monoAgentMobileNavigation: { version: 1, surface: "dashboard" },
+    });
+
+    openConversation();
+    const conversationState = window.history.state;
+    expect(conversationState).toMatchObject({
+      foreignOwner: "preserved",
+      monoAgentMobileNavigation: { version: 1, surface: "conversation" },
+    });
+
+    act(() => navigateHistory(dashboardState));
+    expect(chat(container)).not.toHaveClass("is-open");
+
+    act(() => navigateHistory(conversationState));
+    expect(chat(container)).toHaveClass("is-open");
+
+    act(() => navigateHistory(dashboardState));
+    openConversation();
+    expect(chat(container)).toHaveClass("is-open");
+    expect(window.history.state).toMatchObject({
+      monoAgentMobileNavigation: { version: 1, surface: "conversation" },
+    });
+    expect(pushState).toHaveBeenCalledTimes(2);
+  });
+
+  it("seeds a reload-safe Dashboard URL behind a notification deep link", () => {
+    const replaceState = vi.spyOn(window.history, "replaceState");
+    window.history.replaceState(
+      { notification: "foreign" },
+      "",
+      "/?campaign=push&thread=thread-1&view=compact",
+    );
+    replaceState.mockClear();
+    const first = render(<App />);
+
+    expect(replaceState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notification: "foreign",
+        monoAgentMobileNavigation: expect.objectContaining({ version: 1, surface: "dashboard" }),
+      }),
+      "",
+      "http://localhost:3000/?campaign=push&view=compact",
+    );
+    expect(window.history.state).toMatchObject({
+      monoAgentMobileNavigation: { version: 1, surface: "conversation" },
+    });
+
+    const dashboardState = replaceState.mock.calls[0]?.[0];
+    act(() => navigateHistory(dashboardState, "/?campaign=push&view=compact"));
+    expect(chat(first.container)).not.toHaveClass("is-open");
+
+    first.unmount();
+    const reloaded = render(<App />);
+    expect(chat(reloaded.container)).not.toHaveClass("is-open");
+    expect(window.location.search).toBe("?campaign=push&view=compact");
+  });
+
+  it("converts a cron route push from a project into one conversation entry", () => {
+    const { container, rerender } = render(<App />);
+    const dashboardState = window.history.state;
+
+    storeMock.openProjectId = "project-web";
+    rerender(<App />);
+    const projectState = window.history.state;
+    const replaceState = vi.spyOn(window.history, "replaceState");
+    const pushState = vi.spyOn(window.history, "pushState");
+
+    // console-store.selectThread pushes the cron route while preserving state,
+    // then ProjectPage's row calls the shell's onNavigate callback.
+    window.history.pushState(window.history.state, "", "/agents/alpha/cron/nightly");
+    const routePushCount = pushState.mock.calls.length;
+    openConversation();
+    expect(pushState).toHaveBeenCalledTimes(routePushCount);
+    const conversationState = window.history.state;
+    expect(replaceState).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        monoAgentMobileNavigation: expect.objectContaining({
+          version: 1,
+          surface: "conversation",
+          href: "http://localhost:3000/agents/alpha/cron/nightly",
+        }),
+      }),
+      "",
+      "http://localhost:3000/agents/alpha/cron/nightly",
+    );
+
+    act(() => navigateHistory(projectState));
+    expect(chat(container)).not.toHaveClass("is-open");
+    fireEvent.click(screen.getByRole("button", { name: "Back to project conversations" }));
+    expect(window.history.back).toHaveBeenCalledTimes(1);
+
+    storeMock.openProjectId = null;
+    rerender(<App />);
+    act(() => navigateHistory(dashboardState));
+    expect(chat(container)).not.toHaveClass("is-open");
+
+    act(() => navigateHistory(projectState));
+    expect(storeMock.openProjectById).toHaveBeenCalledWith("project-web");
+    storeMock.openProjectId = "project-web";
+    rerender(<App />);
+    act(() => navigateHistory(conversationState, "/agents/alpha/cron/nightly"));
+    expect(storeMock.closeProject).toHaveBeenCalled();
+    expect(chat(container)).toHaveClass("is-open");
+  });
+
+  it("restores an ordinary conversation screen from its history state after reload", () => {
+    window.history.replaceState({
+      monoAgentMobileNavigation: { version: 1, surface: "conversation" },
+    }, "", "/");
+
+    const { container } = render(<App />);
+
+    expect(chat(container)).toHaveClass("is-open");
+    expect(panel(container)).toHaveAttribute("inert");
+  });
+
+  it("backs out of a project and restores it on Forward", () => {
+    const { container, rerender } = render(<App />);
+    const dashboardState = window.history.state;
+
+    storeMock.openProjectId = "project-web";
+    rerender(<App />);
+    const projectState = window.history.state;
+    expect(projectState).toMatchObject({
+      monoAgentMobileNavigation: {
+        version: 1,
+        surface: "project",
+        projectId: "project-web",
+      },
+    });
+
+    act(() => navigateHistory(dashboardState));
+    expect(storeMock.closeProject).toHaveBeenCalledTimes(1);
+    expect(chat(container)).not.toHaveClass("is-open");
+
+    storeMock.openProjectId = null;
+    rerender(<App />);
+    act(() => navigateHistory(projectState));
+    expect(storeMock.openProjectById).toHaveBeenCalledWith("project-web");
+  });
 
   it("calls the conversation visible only while it is the screen being shown", () => {
     storeMock.setConversationVisible.mockClear();
@@ -293,6 +468,7 @@ describe("App mobile screens", () => {
     expect(panel(container)).toHaveAttribute("inert");
 
     fireEvent.click(screen.getByRole("button", { name: "Back to dashboard" }));
+    expect(window.history.back).toHaveBeenCalledTimes(1);
     expect(chat(container)).not.toHaveClass("is-open");
     expect(panel(container)).not.toHaveAttribute("inert");
   });
@@ -351,15 +527,27 @@ describe("App mobile screens", () => {
     const { container, rerender } = render(<App />);
     openConversation();
     expect(chat(container)).toHaveClass("is-open");
+    const replaceState = vi.spyOn(window.history, "replaceState");
 
     // Saving "New project…" from the conversation's picker opens the project
-    // page, which lives in the dashboard slot: the shell must pop back to it,
-    // or the page lands aria-hidden and inert behind the conversation.
+    // page, which lives in the dashboard slot. It replaces the conversation's
+    // history step so the project's own Back still returns to the Dashboard.
     storeMock.openProjectId = "project-web";
     rerender(<App />);
     expect(chat(container)).not.toHaveClass("is-open");
     expect(chat(container)).toHaveAttribute("inert");
     expect(panel(container)).not.toHaveAttribute("inert");
+    expect(replaceState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        monoAgentMobileNavigation: expect.objectContaining({
+          version: 1,
+          surface: "project",
+          projectId: "project-web",
+        }),
+      }),
+      "",
+      "http://localhost:3000/",
+    );
     storeMock.openProjectId = null;
   });
 
@@ -479,6 +667,7 @@ describe("App mobile screens", () => {
     swipe(shell!, { x: 40, y: 200 }, { x: 130, y: 204 });
 
     expect(storeMock.closeProject).toHaveBeenCalledTimes(1);
+    expect(window.history.back).toHaveBeenCalledTimes(1);
     expect(chat(container)).not.toHaveClass("is-open");
     expect(panel(container)).not.toHaveAttribute("inert");
   });
