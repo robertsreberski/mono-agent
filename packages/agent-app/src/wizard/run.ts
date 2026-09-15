@@ -710,19 +710,23 @@ async function collectInteractiveFromSeed(
             draft.advancedEverAccepted = true;
             draft.advancedRequested = true;
             step = 3;
-          } else if (draft.advancedEverAccepted) {
-            // Never wipe capabilities the operator already accepted (O2).
-            p.log.info("Keeping the optional capabilities you already selected.");
-            draft.advancedRequested = hasAdvancedAnswers(draft);
-            step = finalStep;
           } else {
-            if (clearAdvancedAnswers(draft)) {
+            // Declining keeps an already accepted selection, but it must never
+            // skip mandatory consent: route through tools (6) and safety (7)
+            // before review. Observability (8) still runs when retained
+            // capabilities are part of this run, so escaping back to this gate
+            // cannot bypass the tool framing, the sandbox choice, or the
+            // default-No high-risk confirmation (review finding F1).
+            const retained = draft.advancedEverAccepted && hasAdvancedAnswers(draft);
+            if (retained) {
+              p.log.info("Keeping the optional capabilities you already selected.");
+            } else if (clearAdvancedAnswers(draft)) {
               p.log.info(
                 "Skipped optional capabilities for now — you can add channels, memory, or observability later " +
                 "in mono-agent.config.json.",
               );
             }
-            draft.advancedRequested = false;
+            draft.advancedRequested = retained;
             step = 6;
           }
           break;

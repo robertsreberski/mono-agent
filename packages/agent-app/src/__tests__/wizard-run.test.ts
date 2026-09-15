@@ -20,6 +20,8 @@ const { CANCEL, ESCAPE, promptMock } = vi.hoisted(() => ({
     textCalls: [] as Array<Record<string, unknown>>,
     passwordCalls: [] as Array<Record<string, unknown>>,
     notes: [] as Array<{ message: string; title?: string }>,
+    /** Ordered `kind:message` log of every prompt, so consent order is assertable. */
+    callOrder: [] as string[],
   },
 }));
 
@@ -111,26 +113,42 @@ function nextPromptAnswer(queue: unknown[], name: string): unknown {
   return answer;
 }
 
+/** Index of the LAST recorded prompt whose `kind:message` starts with `prefix`, or -1. */
+function lastCallIndex(prefix: string): number {
+  let found = -1;
+  promptMock.callOrder.forEach((entry, index) => {
+    if (entry.startsWith(prefix)) found = index;
+  });
+  return found;
+}
+
 vi.mock("@clack/prompts", () => ({
   isCancel: (value: unknown): value is symbol => value === CANCEL,
   intro: vi.fn(),
   cancel: vi.fn(),
   note: vi.fn((message: string, title?: string) => {
     promptMock.notes.push({ message, ...(title === undefined ? {} : { title }) });
+    promptMock.callOrder.push(`note:${title ?? ""}`);
   }),
   select: vi.fn(async (options: Record<string, unknown>) => {
     promptMock.selectCalls.push(options);
+    promptMock.callOrder.push(`select:${String(options.message)}`);
     return nextPromptAnswer(promptMock.selectAnswers, "select");
   }),
   autocomplete: vi.fn(async (options: Record<string, unknown>) => {
     promptMock.autocompleteCalls.push(options);
+    promptMock.callOrder.push(`autocomplete:${String(options.message)}`);
     return nextPromptAnswer(promptMock.autocompleteAnswers, "autocomplete");
   }),
   confirm: vi.fn(async (options: Record<string, unknown>) => {
     promptMock.confirmCalls.push(options);
+    promptMock.callOrder.push(`confirm:${String(options.message)}`);
     return nextPromptAnswer(promptMock.confirmAnswers, "confirm");
   }),
-  multiselect: vi.fn(async () => nextPromptAnswer(promptMock.multiselectAnswers, "multiselect")),
+  multiselect: vi.fn(async (options: Record<string, unknown>) => {
+    promptMock.callOrder.push(`multiselect:${String(options?.message ?? "")}`);
+    return nextPromptAnswer(promptMock.multiselectAnswers, "multiselect");
+  }),
   text: vi.fn(async (options: Record<string, unknown>) => {
     promptMock.textCalls.push(options);
     // Role prompt: existing flow tests press Enter on the
@@ -138,10 +156,12 @@ vi.mock("@clack/prompts", () => ({
     if (options.message === "What Role should be saved to IDENTITY.md → ## Role?") {
       return options.initialValue;
     }
+    promptMock.callOrder.push(`text:${String(options.message)}`);
     return nextPromptAnswer(promptMock.textAnswers, "text");
   }),
   password: vi.fn(async (options: Record<string, unknown>) => {
     promptMock.passwordCalls.push(options);
+    promptMock.callOrder.push(`password:${String(options.message)}`);
     return nextPromptAnswer(promptMock.passwordAnswers, "password");
   }),
   log: { step: vi.fn(), info: vi.fn(), warn: vi.fn() },
@@ -182,6 +202,7 @@ beforeEach(() => {
     promptMock.textCalls,
     promptMock.passwordCalls,
     promptMock.notes,
+    promptMock.callOrder,
   ]) queue.length = 0;
   discoveryMock.calls.length = 0;
   discoveryMock.discover.mockClear();
@@ -335,20 +356,20 @@ describe("wizard production flow", () => {
     expect(promptMock.passwordCalls).toHaveLength(0);
   });
 
-  it("keeps capabilities accepted from review when the gate is answered No afterwards", async () => {
+  it("keeps capabilities accepted from review and re-runs consent when the gate is declined after them", async () => {
     promptMock.selectAnswers.push(
       "__custom__",
       "", // provider-default effort
       "edit", // review #1
-      "2", // add optional capabilities
+      "2", // add optional capabilities (offered while advanced is off)
       "", // memory
-      "edit", // review #2
-      "2", // add optional capabilities
-      "create", // review #3
+      ESCAPE, // Escape the review on the way back to the gate
+      ESCAPE, // Escape the memory step on the way back
+      "create", // final review
     );
     promptMock.autocompleteAnswers.push("openai-codex:gpt-5.6-terra");
-    promptMock.textAnswers.push("Gate Edit Agent", "0 8 * * *");
-    promptMock.multiselectAnswers.push(["channel:cron"]);
+    promptMock.textAnswers.push("Gate Edit Agent", "0 8 * * *", ESCAPE);
+    promptMock.multiselectAnswers.push(["channel:cron"], ESCAPE);
     promptMock.confirmAnswers.push(
       false, // no fallbacks
       false, // gate #1: decline (default path)
@@ -357,11 +378,17 @@ describe("wizard production flow", () => {
       true, // gate #2: accept from review
       true, // allow all tools (advanced path)
       true, // managed SRT (advanced path)
-      false, // observability
-      false, // gate #3: No must not wipe the accepted channel
+      false, // observability (advanced path)
+      ESCAPE, // Escape observability on the way back
+      ESCAPE, // Escape route safety
+      ESCAPE, // Escape tools
+      false, // gate #3: No must keep the accepted channel, not skip consent
+      true, // allow all tools (mandatory re-run)
+      true, // managed SRT (mandatory re-run)
+      false, // observability (retained capability)
     );
 
-    const result = await runInitWizard({ cwd: "/tmp/gate-edit-agent" });
+    const result = await withTtyStdin(() => runInitWizard({ cwd: "/tmp/gate-edit-agent" }));
 
     expect(result.status).toBe("answers");
     if (result.status !== "answers") return;
@@ -369,6 +396,48 @@ describe("wizard production flow", () => {
     expect(result.answers.moduleInputs["channel:cron"]?.cronExpression).toBe("0 8 * * *");
     expect(result.answers.memory).toBeUndefined();
     expect(result.answers.observability).toBe(false);
+    const lastGateIndex = lastCallIndex("confirm:Add optional capabilities");
+    expect(promptMock.callOrder.filter((entry) => entry.startsWith("confirm:Add optional capabilities")))
+      .toHaveLength(3);
+    expect(lastCallIndex("confirm:Allow all tools?")).toBeGreaterThan(lastGateIndex);
+    expect(lastCallIndex("confirm:Install and use managed SRT")).toBeGreaterThan(lastGateIndex);
+    expect(lastCallIndex("confirm:Export traces to Phoenix")).toBeGreaterThan(lastGateIndex);
+    expect(lastCallIndex("select:Create ")).toBeGreaterThan(lastCallIndex("confirm:Export traces to Phoenix"));
+  });
+
+  it("requires tool and sandbox consent when the gate is declined after an accepted Yes", async () => {
+    promptMock.selectAnswers.push(
+      "__custom__",
+      "", // provider-default effort
+      "create", // final action
+    );
+    promptMock.autocompleteAnswers.push("openai-codex:gpt-5.6-terra");
+    promptMock.textAnswers.push("Consent Return Agent");
+    promptMock.multiselectAnswers.push(ESCAPE); // Escape out of the channels step
+    promptMock.confirmAnswers.push(
+      false, // no fallbacks
+      true, // optional gate: Yes opens the optional path
+      false, // gate after escaping channels: No
+      true, // allow all tools (mandatory consent)
+      false, // decline managed SRT
+      false, // decline high-risk unsandboxed allow-all -> sandbox is forced on
+    );
+
+    const result = await withTtyStdin(() => runInitWizard({ cwd: "/tmp/consent-return-agent" }));
+
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.answers.channels).toEqual([]);
+    expect(result.answers.allowedTools).toEqual(["*"]);
+    expect(result.answers.sandbox).toBe(true);
+    const toolsIndex = lastCallIndex("confirm:Allow all tools?");
+    const srtIndex = lastCallIndex("confirm:Install and use managed SRT");
+    const highRiskIndex = lastCallIndex("confirm:Proceed with high-risk");
+    const createIndex = lastCallIndex("select:Create ");
+    expect(toolsIndex).toBeGreaterThanOrEqual(0);
+    expect(srtIndex).toBeGreaterThan(toolsIndex);
+    expect(highRiskIndex).toBeGreaterThan(srtIndex);
+    expect(createIndex).toBeGreaterThan(highRiskIndex);
   });
 
   it("warns in Creation review that an existing IDENTITY.md keeps its current Role", async () => {
