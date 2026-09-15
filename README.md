@@ -14,6 +14,8 @@ These docs describe the current `main` source. The latest published npm release 
 
 - **Work in a codebase** — open a project folder as the agent workspace and ask it to fix a failing test, review a diff, trace a bug, or run and interpret commands. With the [native sandbox](./docs/tools/sandbox.md) enabled, tool subprocesses are confined to the roots you allow and network access is deny-by-default.
 - **Research, write, and plan** — give it source material and a role, then have it draft, compare, summarize, and keep notes; optional [memory tiers](./docs/memory/index.md) carry what it learns into later conversations.
+- **Keep the work organized** — conversations can be grouped into projects and tagged, and console project tools let the agent act on that workspace state instead of only replying. Source-only for now: see [Release status](./docs/reference/release-status.md).
+- **Delegate sustained work** — durable subagent sessions keep working on longer tasks in the background and report back into the conversation, including questions they need you to answer. Source-only for now: see [Release status](./docs/reference/release-status.md).
 - **Automate a routine** — schedule a recurring digest, accept requests on a [webhook](./docs/channels/webhook.md), publish an [OpenAI-compatible endpoint](./docs/channels/openai-api.md), or talk to the agent from [Telegram](./docs/channels/telegram.md) and [Slack](./docs/channels/slack.md).
 - **Bring your own models** — route to subscription/API providers such as OpenAI Codex, Anthropic, GitHub Copilot, and OpenCode-Go, or run entirely local with Ollama or LM Studio. Fallback routes keep a turn alive when the primary provider fails.
 - **Extend it as configuration** — add [skills](./docs/context/skills.md), [MCP servers](./docs/tools/mcp.md), [tool policy](./docs/tools/policy.md), and preset-seeded capability modules without writing a host.
@@ -30,7 +32,7 @@ These docs describe the current `main` source. The latest published npm release 
 
 Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — can become a running agent from one `mono-agent.config.json`. You need Node.js 24.15.0 or newer and credentials for the model you choose; a local provider such as Ollama works too.
 
-Choose the wall-clock path up front: flags or non-TTY input use the fast scaffold-only path (unless explicit `--auth` adds provider setup) and never claim readiness. Bare `mono-agent init` on a TTY makes one real no-tool model call per selected route before committing the scaffold, with timeouts of 90s for each cloud route and 240s for each local route.
+Guided setup is authentic and not instant: it signs you in to the provider you choose and makes one real model request for every selected route to prove the route answers. That can take several minutes and counts as usage on your account. Running with flags, `--yes`, or without a TTY skips all of it and writes the scaffold only; add `--auth` if you want provider setup on that automated path too. [Setup details](#setup-details) list the exact deadlines, flags, and files.
 
 ### 1. Install the CLI
 
@@ -58,25 +60,31 @@ mono-agent start                  # background service on macOS and Linux
 mono-agent status                 # confirm the running instance
 ```
 
-If guided init already started the agent, `status` confirms it in place of `start`. Without a usable service manager, run `mono-agent start --foreground` and keep that terminal open.
+If guided init already started the agent, `status` confirms it in place of `start`; on Linux, guided setup prints this start step for you to run yourself. Without a usable service manager, run `mono-agent start --foreground` and keep that terminal open.
 
 ### 4. Open the web workspace
 
-Start the browser console once, bound to this computer, and open it:
+Run the browser console in its own terminal, bound to this computer, and open the URL it prints:
 
 ```bash
-mono-agent web start --loopback
+mono-agent web run --loopback
 ```
 
-Open <http://127.0.0.1:5050>, choose the agent, and start a conversation. Conversations and in-flight turns live in the service, so closing or refreshing a tab does not stop the work. Bare `mono-agent web` reports status and the exact URLs without changing anything; hosts without a managed service can run `mono-agent web run --loopback` in the foreground.
+Open <http://127.0.0.1:5050>, choose the running agent, and start a conversation. Conversations and in-flight turns live in the service, so refreshing or closing a tab does not abort the work — but keep this terminal open. If you started the agent with `--foreground` too, that is a second terminal.
 
-Without `--loopback` the console listens on `0.0.0.0:5050` for your LAN or tailnet and has **no application login** — anyone who can reach the port can operate the discovered agents and read retained conversations. Keep that default to a trusted network, or read [Safety and privacy](#safety-and-privacy) first.
+Want the console to keep running in the background? `mono-agent web start` installs it as a service instead. On macOS, managed startup also publishes the console through its own Tailscale Serve HTTPS route — `--loopback` narrows only the local listener, so it does not make a managed console local — and there is still no application login, so anyone who can reach that route can operate the discovered agents. Foreground `web run` never configures that route and never removes one an earlier managed start created. [Install & prerequisites](./docs/getting-started/install.md#run-the-browser-console) covers both modes and how to check the effective URLs.
 
 The same agent is also reachable from the terminal console and, once you enable them, from channels. [Your first agent](./docs/getting-started/quickstart.md) walks the wizard branches, the scriptable webhook smoke request, and the per-platform start paths; [Setup security and managed runtime](./docs/reference/setup-security.md) documents the managed-start and secret-persistence trust model behind them.
 
+## Setup details
+
+Bare `mono-agent init` on a terminal is the guided wizard. It asks for the agent name and the exact Role destined for `IDENTITY.md` → `## Role`, searches the provider catalogs, and then proves every selected route with one disposable no-tool model call, sequentially, with timeouts of 90s for each cloud route and 240s for each local route. An interrupted preflight can resume the routes that already passed under the same non-secret plan fingerprint. On macOS the **Agent ready** gate additionally starts the managed background agent and proves its live snapshot before printing the handoff; on Linux the same route and configuration checks run, and then `init` prints a **Manual start required** handoff instead of installing the systemd user service for you.
+
+Passing any flag, `--yes`, or running without a TTY skips the wizard: `init` writes the scaffold only, runs no readiness proof, starts no process, and never labels the result ready. `--auth` adds provider setup to that automated path. The flags, the files a scaffold writes, the full generated config, and the guided secret handling are documented in [Your first agent](./docs/getting-started/quickstart.md#setup-details-guided-init-flags-and-files).
+
 ## Make it yours
 
-Everything below is configuration in the same one file — start with the defaults, then add what you need:
+Everything below is configuration in the same one file. Edit `mono-agent.config.json` (and `IDENTITY.md`), then apply the change with `mono-agent validate` followed by `mono-agent restart` — a running agent keeps serving the old config until that restart. Start with the defaults, then add what you need:
 
 - **Models and fallbacks** — `runtime.model` takes any `<provider>:<model>` ref; add ordered `runtime.fallbacks` and per-route effort. Local providers use `providers.local`. Start with [Runtime & providers](./docs/runtime/index.md).
 - **Tools and safety** — the tool surface is allow-all by default; narrow it with `tools.allowedTools`, or go chat-only with `[]`. [Tool policy](./docs/tools/policy.md) and the [sandbox](./docs/tools/sandbox.md) are the two separate controls.
@@ -90,7 +98,7 @@ Everything below is configuration in the same one file — start with the defaul
 
 mono-agent is local-first and single-owner by default, and two defaults deserve attention before anything is network-reachable:
 
-- **The web console has no application login.** It binds `0.0.0.0:5050` by default and is an owner-equivalent operator surface: reachability *is* the access boundary. Run it on a trusted LAN or tailnet, or start it with [--loopback](./docs/observability/web-console.md#start-it-once) to keep it on this machine. A network-reachable operator can also start and complete provider sign-in, so treat the port as credential authority, not a read-only view.
+- **The web console has no application login.** The foreground console (`mono-agent web run --loopback`) keeps its listener on this computer and touches no proxy configuration. Managed startup (`mono-agent web start`) binds `0.0.0.0:5050` by default, and on macOS it also claims its own Tailscale Serve HTTPS route — even with `--loopback`, which narrows only the local listener. Because anyone who can reach the console operates the discovered agents and can complete provider sign-in, read [the console's security boundary](./docs/observability/web-console.md#security-boundary-trusted-network-no-login) before using a managed service or a broader bind.
 - **Tools are allow-all by default and the sandbox is opt-in.** A fresh agent can run shell commands, read and write files, and fetch pages unless you narrow `tools.allowedTools`. The native sandbox confines Pi-owned commands to declared roots with a deny-by-default network policy and fails closed when no usable engine exists, so a command fails instead of silently running unsandboxed.
 
 Secrets belong in an owner-only `.env` or the provider's auth store, never in JSON or chat; guided setup fails closed rather than guessing where a secret may be written. Read [SECURITY.md](./SECURITY.md) for the trust boundaries, [Setup security and managed runtime](./docs/reference/setup-security.md) for the managed-runtime and secret-persistence contracts, and [Run artifacts & traces](./docs/observability/artifacts-and-traces.md) for what is recorded locally and how redaction is bounded.

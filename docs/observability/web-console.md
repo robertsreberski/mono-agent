@@ -45,7 +45,7 @@ mono-agent web logs
 mono-agent web run         # foreground service, including non-macOS hosts
 ```
 
-Use `--loopback` with `start` or `run` to bind `127.0.0.1` instead. Advanced `--host` and `--port` overrides are available when `0.0.0.0:5050` is not appropriate. The lifecycle status records the effective bind, theme, console name, and any owned Tailscale route so later commands operate on the same service rather than guessing.
+Use `--loopback` with `start` or `run` to bind `127.0.0.1` instead. That bind narrows the HTTP listener, not every way the console can be reached: managed `start`/`restart` inspects Tailscale and claims an owned Serve HTTPS route while the service runs, so a loopback-bind managed console can still be reachable from the tailnet, while the foreground `run` command never configures Serve. Advanced `--host` and `--port` overrides are available when `0.0.0.0:5050` is not appropriate. The lifecycle status records the effective bind, theme, console name, and any owned Tailscale route so later commands operate on the same service rather than guessing; `mono-agent web` prints the effective URLs and `tailscale serve status` shows the Serve route.
 
 ## Console identity and curated themes
 
@@ -99,7 +99,7 @@ colors. Theme choice is explicit rather than inferred from the hostname.
 The console intentionally has no application authentication or multi-user accounts. Anyone who can reach its HTTP listener can read retained conversations, upload files, cancel turns, send instructions to every discovered agent, and operate provider-authentication flows. Treat the listener as an owner-equivalent operator surface:
 
 - run it only on a trusted LAN or tailnet;
-- use `--loopback` when other devices must not reach it;
+- when other devices must not reach it, keep it local with the foreground `mono-agent web run --loopback`; a managed `start --loopback` narrows only the listener and may still publish an owned Tailscale Serve route;
 - do not publish port `5050` through a public router, tunnel, or unrestricted reverse proxy;
 - keep operating-system and Tailscale network admission controls as the access boundary.
 
@@ -289,8 +289,9 @@ authorization URLs, submit paste-back callbacks or API keys, and thereby bind or
 replace a real provider credential in the agent's Pi auth store. That can switch
 the account and billing identity the agent uses or disrupt its access. This is
 accepted because network reachability is deliberately treated as owner-equivalent
-authority; deployments that cannot make that assumption must use `--loopback`
-or add an authenticated network boundary before exposing the console.
+authority; deployments that cannot make that assumption must not rely on the bind
+alone — use the foreground `mono-agent web run --loopback`, or add an authenticated
+network boundary before exposing the console.
 
 Login/check sessions, URLs, codes, progress, prompts, and sanitized check results
 live only in agent/webapp memory. Responses use `Cache-Control: private,

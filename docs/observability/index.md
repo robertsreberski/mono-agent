@@ -100,7 +100,7 @@ mono-agent web start
 mono-agent web               # read-only status + exact URLs
 ```
 
-The default bind is `0.0.0.0:5050`, making LAN and tailnet access the normal path; `--loopback` narrows it to this computer. There is no application login, so network reachability is authority to operate the agents. Keep the service on a trusted LAN/tailnet and do not expose it publicly. See the [web console guide](/observability/web-console/) for lifecycle, Tailscale HTTPS, security, conversations, archive/reset behavior, and attachments.
+The default bind is `0.0.0.0:5050`, making LAN and tailnet access the normal path; `--loopback` narrows the HTTP listener to this computer. That narrowing is not local-only by itself: managed `start`/`restart` can also claim an owned Tailscale Serve HTTPS route while the service runs, while the foreground `run` command never configures Serve. There is no application login, so network reachability is authority to operate the agents. Keep the service on a trusted LAN/tailnet and do not expose it publicly. See the [web console guide](/observability/web-console/) for lifecycle, Tailscale HTTPS, security, conversations, archive/reset behavior, and attachments.
 
 ## Related
 

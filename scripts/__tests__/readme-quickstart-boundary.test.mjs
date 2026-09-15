@@ -34,7 +34,7 @@ describe("root README Quickstart boundary", () => {
       "mono-agent init",
       "mono-agent validate",
       "mono-agent start",
-      "mono-agent web start --loopback",
+      "mono-agent web run --loopback",
       "http://127.0.0.1:5050",
     ];
 
@@ -57,6 +57,41 @@ describe("root README Quickstart boundary", () => {
     expect(quickstart).not.toMatch(/mono-agent tui\b/u);
     expect(quickstart).not.toMatch(/mono-agent-tui\b/u);
     expect(readme).toContain("./docs/reference/release-status.md");
+  });
+
+  it("starts the console with the local-first foreground command and qualifies managed startup", () => {
+    // `mono-agent web start` can publish the owner-equivalent console through an
+    // owned Tailscale Serve route even with `--loopback`, so the initial journey
+    // must use the foreground `web run` command and the managed alternative must
+    // carry its reachability warning.
+    const foreground = quickstart.indexOf("mono-agent web run --loopback");
+    const managed = quickstart.indexOf("mono-agent web start");
+    expect(foreground, "the foreground console command is the documented first console start").toBeGreaterThan(-1);
+    expect(managed, "the managed console service is still documented as the optional follow-up").toBeGreaterThan(foreground);
+    expect(quickstart).toMatch(/\bTailscale\b/u);
+    expect(quickstart).toMatch(/no application login/u);
+
+    for (const falsePromise of [
+      /--loopback[^.\n]{0,120}\bonly (?:from|on) this (?:computer|machine)\b/iu,
+      /(?:web start|managed (?:start|startup|service|console))[^.\n]{0,120}\b(?:stays?|keeps?|remains?) (?:it )?(?:on|to) this (?:computer|machine)\b/iu,
+      /--loopback[^.\n]{0,120}\b(?:local-only|local only)\b/iu,
+    ]) {
+      expect(quickstart, `managed loopback must not be described as local-only: ${falsePromise}`)
+        .not.toMatch(falsePromise);
+    }
+
+    // Any line that pairs the managed path with a local-only promise must carry
+    // the Tailscale Serve caveat on that same line.
+    const managedLines = quickstart
+      .split("\n")
+      .filter((line) => /managed|web start/iu.test(line));
+    expect(managedLines.length, "the managed console alternative must stay documented").toBeGreaterThan(0);
+    for (const line of managedLines) {
+      if (/\b(?:only from|only on|local-only|local only|stays? local|keeps? it local)\b/iu.test(line)) {
+        expect(line, `a managed local-only promise needs the Serve caveat: ${line}`)
+          .toMatch(/Tailscale/u);
+      }
+    }
   });
 
   it("keeps deep setup internals outside the runnable section", () => {
@@ -115,5 +150,19 @@ describe("root README Quickstart boundary", () => {
     expect(releaseStatus).toContain("## Source-only capability groups");
     expect(releaseStatus).toContain("## How this page is kept honest");
     expect(releaseStatus).toContain("/getting-started/install/#run-an-unreleased-build");
+  });
+
+  it("keeps the canonical console page honest about managed loopback reachability", () => {
+    // The same correction applies to the reference the README links: a managed
+    // loopback bind may still be published through an owned Tailscale Serve
+    // route, so the page must not sell loopback as a local-only guarantee.
+    const webConsole = readRepoFile("docs/observability/web-console.md");
+    expect(webConsole).toContain(
+      "managed `start`/`restart` inspects Tailscale and claims an owned Serve HTTPS route",
+    );
+    expect(webConsole).toContain(
+      "when other devices must not reach it, keep it local with the foreground `mono-agent web run --loopback`",
+    );
+    expect(webConsole).not.toMatch(/use `--loopback` when other devices must not reach it/iu);
   });
 });

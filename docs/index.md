@@ -16,10 +16,10 @@ npm i -g create-mono-agent     # Node.js >= 24.15.0; no pnpm required
 mkdir my-agent && cd my-agent
 mono-agent init                # guided wizard on a TTY; scaffold-only with flags
 mono-agent start               # background service on macOS and Linux
-mono-agent web start --loopback
+mono-agent web run --loopback  # foreground console; keep this terminal open
 ```
 
-Then open `http://127.0.0.1:5050`, choose the agent, and start a conversation. [Getting Started → Quickstart](/getting-started/quickstart/) explains every branch of that path, including what a bare `init` proves before it calls the agent ready, and [Install & prerequisites](/getting-started/install/) covers pinned installs, one-shot scaffolding, and source builds.
+Then open `http://127.0.0.1:5050`, choose the agent, and start a conversation. `web run` keeps the console on this computer and configures no proxy route; the managed `mono-agent web start` service instead runs in the background and, on macOS, also claims its own Tailscale Serve HTTPS route — so `--loopback` alone does not make a managed console local, and the console has no application login either way. [Getting Started → Quickstart](/getting-started/quickstart/) explains every branch of that path, including what a bare `init` proves before it calls the agent ready, and [Install & prerequisites](/getting-started/install/) covers both console modes, pinned installs, one-shot scaffolding, and source builds.
 
 :::caution[These docs describe `main`, not the latest release]
 The latest published npm release is `create-mono-agent@0.21.1`, so an npm install does not yet include everything documented here. [Release status](/reference/release-status/) lists the source-only capability groups and the source-build alternative.

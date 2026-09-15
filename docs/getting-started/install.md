@@ -76,22 +76,29 @@ npm exec --package create-mono-agent -- mono-agent start
 
 `npm exec` needs to resolve the package on each invocation and should not be relied on for a long-lived background process; install globally (or pin the version) when you are ready to run an agent every day.
 
-## Start the browser console
+## Run the browser console
 
-The browser console is a separate always-on service, so start it once from any directory and leave it running. Managed start is available on macOS (`launchd`) and Linux (systemd user service); `--loopback` keeps the listener on this computer:
-
-```bash
-mono-agent web start --loopback
-mono-agent web            # status, effective theme/name, and the exact URLs
-```
-
-Open the printed URL — with `--loopback` that is `http://127.0.0.1:5050` — and choose any agent that is running on the machine. On a host with no usable service manager, run the foreground service instead and keep it in its own terminal:
+The browser console is a separate service from the agent. The local-first way to run it is the foreground command, in its own terminal:
 
 ```bash
 mono-agent web run --loopback
 ```
 
-Bare `mono-agent web` is read-only: it prints service status, the usable URLs, and lifecycle help, and never starts, stops, or rewrites the service. Without `--loopback` the console binds `0.0.0.0:5050` for local, LAN, and tailnet use — and because it has **no application login**, anyone who can reach that port can operate the discovered agents. Read the [web console guide](/observability/web-console/) for persistent threads, attachments, notifications, service lifecycle, and the full security boundary, or [Linux services](/observability/linux-services/) for the systemd lifecycle.
+Open the printed URL — with `--loopback` that is `http://127.0.0.1:5050` — and choose any agent that is running on the machine. Foreground `web run` configures no proxy route and removes none: it stops when the terminal closes or you press Ctrl-C, and it never touches an existing Tailscale Serve route. If the agent itself runs in the foreground, that is terminal 1 and this is terminal 2.
+
+To keep the console running in the background, install the managed service instead (macOS `launchd`, Linux systemd user service):
+
+```bash
+mono-agent web start --loopback
+mono-agent web            # read-only status, effective URLs, and lifecycle help
+```
+
+Two differences matter before you use the managed path:
+
+- **macOS**: managed `start`/`restart` inspects Tailscale and claims its own Serve HTTPS route while the service runs. `--loopback` narrows only the local HTTP listener, so a managed console can still be reachable from the tailnet — and because it has **no application login**, anyone who can reach it can operate the discovered agents. `mono-agent web` prints the effective URLs; `tailscale serve status` shows the route.
+- **Linux**: `start` uses the systemd user service and HTTPS routes are managed externally. See [Linux services](/observability/linux-services/).
+
+Where no usable service manager exists, the foreground command above is the supported path. Read the [web console guide](/observability/web-console/) for persistent threads, attachments, notifications, service lifecycle, and the full security boundary.
 
 ## The terminal console (optional)
 
@@ -147,7 +154,7 @@ On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-
 Bare `init` behaves differently per platform and input mode, and the docs do not hide it:
 
 - **macOS, interactive**: it proves every selected route sequentially, prepares the private managed runtime, starts or refreshes the single canonical per-config `launchd` agent, waits for a fresh exact-snapshot ready trace source, then prints the edit → `validate` → `restart` → console handoff. Interrupted preflight can resume fingerprint-matching successes or restart all checks.
-- **Linux, interactive**: the wizard still runs and proves the routes, but it does not start the systemd user service for you. It prints the manual `validate` → `start` steps, and those require a usable systemd **user** manager; without one, keep `mono-agent start --foreground` in its own terminal, or use `mono-agent web run --loopback` for the console.
+- **Linux, interactive**: the wizard still runs and proves the routes, but it does not start the systemd user service for you. It prints the manual `validate` → `start` steps, and those require a usable systemd **user** manager; without one, run `mono-agent start --foreground` in terminal 1 and `mono-agent web run --loopback` in terminal 2, because the console needs that agent process to stay alive.
 - **Any flag, `--yes`, or a non-TTY**: init is scaffold-only. It never runs the readiness proof, never starts a process, and never labels the result ready.
 
 Off macOS, edit the preserved scaffold manually, validate, start the service or foreground process, and open the browser console or `mono-agent tui`. See [Setup security and managed runtime](/reference/setup-security/) for the closure, environment, single-instance, and snapshot-integrity contracts behind the managed path.
