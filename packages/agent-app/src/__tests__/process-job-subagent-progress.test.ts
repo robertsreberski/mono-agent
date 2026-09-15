@@ -25,9 +25,9 @@ describe("private subagent job progress", () => {
     progress.report({ type: "started", profile: "😀".repeat(200), label: "token=hidden" });
     progress.report({ type: "tool_started", id: "1", toolName: "Bash", argsSummary: 'echo --password="correct horse battery staple" a private credential' });
     const answer = "Report\na private credential\nBearer forbidden\n" + "😀 ".repeat(5_000);
-    const snapshot = progress.finish(answer);
+    const snapshot = progress.finish(answer, 0.0042);
     expect(JSON.stringify(snapshot)).not.toMatch(/private credential|correct horse|forbidden|hidden/u);
-    expect(snapshot).toMatchObject({ failedCalls: 1, answerTruncated: true });
+    expect(snapshot).toMatchObject({ failedCalls: 1, costUsd: 0.0042, answerTruncated: true });
     expect(snapshot.recent[0]?.status).toBe("failed");
     expect(snapshot.answerHead).toContain("Report\n");
     expect(Buffer.byteLength(snapshot.answerHead!)).toBeLessThanOrEqual(8_000);
@@ -37,6 +37,15 @@ describe("private subagent job progress", () => {
     (snapshot.recent as unknown[]).pop();
     expect(progress.snapshot().recent).toHaveLength(1);
   });
+
+  it.each([undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    "omits an unpriced or malformed finish cost %#",
+    (costUsd) => {
+      const progress = new SubagentJobProgress([]);
+      expect(progress.finish(undefined, costUsd)).not.toHaveProperty("costUsd");
+      expect(isProcessJobSubagentProgress(progress.snapshot())).toBe(true);
+    },
+  );
 
   it("retains requested and settled route identifiers while rejecting invalid updates", () => {
     const progress = new SubagentJobProgress([]);

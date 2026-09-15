@@ -674,6 +674,7 @@ describe("synthetic detached subagent evidence", () => {
     const runningMeta = document.querySelector(".process-job-live-meta")!;
     expect(runningMeta).toHaveTextContent("implementer");
     expect(runningMeta).toHaveTextContent("45 tools, 1 failed");
+    expect(runningMeta).not.toHaveTextContent("$");
     expect(runningMeta.querySelector("dt")).toBeNull();
     expect(runningMeta.querySelector(".effort-signal")).toHaveAttribute("data-levels", "3");
     expect(runningMeta.querySelector(".effort-signal")).toHaveAttribute("data-filled", "3");
@@ -727,6 +728,7 @@ describe("synthetic detached subagent evidence", () => {
     const finishedMeta = document.querySelector(".process-job-live-meta")!;
     expect(finishedMeta).toHaveTextContent("implementer");
     expect(finishedMeta).toHaveTextContent("46 tools, 1 failed");
+    expect(finishedMeta).toHaveTextContent("$0.01");
     expect(finishedMeta.querySelector(".effort-signal")).toHaveAttribute("data-filled", "3");
     expect(region.scrollTop).toBe(0); // reading position survives terminal report arrival
     checkBounds();

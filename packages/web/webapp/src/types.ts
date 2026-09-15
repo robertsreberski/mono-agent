@@ -51,6 +51,7 @@ export interface ProcessJobSubagentProgress {
   };
   readonly toolCalls: number;
   readonly failedCalls: number;
+  readonly costUsd?: number;
   readonly recent: readonly {
     readonly id: string;
     readonly toolName: string;

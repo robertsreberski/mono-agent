@@ -7,6 +7,7 @@ import { useDocumentVisible } from "../document-visibility";
 import { useToolCallRepair } from "./tool-call-repair";
 import type { MessagePart, ProcessJobProjection, ProcessJobState } from "../types";
 import type { ProcessJobActivityEvent } from "../process-job-presentation";
+import { formatUsd } from "../usage";
 import { ActivityPayload, ActivityRow, truncationProps, type ActivityStatus } from "./ActivityRow";
 import { ActivityElapsed, type ActivityTiming } from "./assistant-ui/ActivityElapsed";
 import { ProcessJobMetaLine, ProcessJobSubagentProgress } from "./ProcessJobSubagentProgress";
@@ -532,6 +533,10 @@ export function ProcessJobCard({
   const status = processJobStatus(live.state);
   const stateLabel = processJobStateLabel(live.state);
   const supplements: ReactNode[] = [];
+  if (terminal && progress !== undefined && typeof progress.costUsd === "number"
+    && Number.isFinite(progress.costUsd) && progress.costUsd > 0) {
+    supplements.push(<span key="cost">{formatUsd(progress.costUsd)}</span>);
+  }
   if (terminal && (live.wake.attempts > 1 || ["failed", "unknown", "suppressed"].includes(live.wake.state))) {
     supplements.push(<span key="wake">wake {wakeLabel(live.wake)}</span>);
   }

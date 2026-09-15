@@ -194,7 +194,7 @@ it("requires internal identity in the public TypeScript discriminated union", ()
 
 
 describe("internal subagent progress projection", () => {
-  const progress = { revision: 2, profile: "helper", toolCalls: 1, failedCalls: 0,
+  const progress = { revision: 2, profile: "helper", toolCalls: 1, failedCalls: 0, costUsd: 0.0123,
     recent: [{ id: "call", toolName: "Read", status: "complete", argsSummary: "src/file.ts", executionMs: 12 }],
     route: { requested: { model: "anthropic:claude-sonnet-4.5", effort: "high" } },
     answerHead: "Report", answerTruncated: false };
@@ -203,12 +203,23 @@ describe("internal subagent progress projection", () => {
     expect(parseProcessJobProjection(internal())).toEqual(internal());
     const value = { ...internal(), subagentProgress: progress };
     expect(parseProcessJobProjection(value)).toEqual(value);
-    const { route: _route, ...legacyProgress } = progress;
+    const { route: _route, costUsd: _costUsd, ...legacyProgress } = progress;
     expect(isProcessJobSubagentProgress(legacyProgress)).toBe(true);
     const parsedLegacy = parseProcessJobProjection({ ...internal(), subagentProgress: legacyProgress });
     expect(parsedLegacy.kind === "internal" ? parsedLegacy.subagentProgress : undefined).toEqual(legacyProgress);
     expect(() => parseProcessJobProjection({ ...projection(), subagentProgress: progress })).toThrow();
   });
+
+  it("accepts absent and non-negative bounded cost while rejecting malformed prices", () => {
+    const { costUsd: _costUsd, ...withoutCost } = progress;
+    expect(isProcessJobSubagentProgress(withoutCost)).toBe(true);
+    expect(isProcessJobSubagentProgress({ ...withoutCost, costUsd: 0 })).toBe(true);
+    for (const costUsd of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, "0.01"]) {
+      expect(isProcessJobSubagentProgress({ ...withoutCost, costUsd })).toBe(false);
+      expect(() => parseProcessJobProjection({ ...internal(), subagentProgress: { ...withoutCost, costUsd } })).toThrow(TypeError);
+    }
+  });
+
   it.each([
     { recent: Array.from({ length: 51 }, (_, i) => ({ id: String(i), toolName: "Read", status: "running" })), toolCalls: 51 },
     { answerHead: "😀".repeat(2_001) }, { profile: "😀".repeat(33) }, { failedCalls: 2 },
