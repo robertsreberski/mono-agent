@@ -90,10 +90,21 @@ const isMobileViewport = (): boolean =>
  */
 const NOTIFICATION_OPEN_CONVERSATION_EVENT = "mono-agent:open-conversation";
 type MobileScreen = "dashboard" | "conversation";
-type MobileHistoryEntry =
+type MobileHistorySurface =
   | { readonly version: 1; readonly surface: MobileScreen }
   | { readonly version: 1; readonly surface: "project"; readonly projectId: string };
+type MobileHistoryEntry = MobileHistorySurface & { readonly href?: string };
 const MOBILE_HISTORY_STATE_KEY = "monoAgentMobileNavigation";
+
+const mobileHistoryHref = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  try {
+    const url = new URL(value);
+    return url.origin === window.location.origin ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 const mobileHistoryEntry = (state: unknown): MobileHistoryEntry | null => {
   if (typeof state !== "object" || state === null || Array.isArray(state)) return null;
@@ -101,30 +112,39 @@ const mobileHistoryEntry = (state: unknown): MobileHistoryEntry | null => {
   if (typeof candidate !== "object" || candidate === null) return null;
   const entry = candidate as Record<string, unknown>;
   if (entry.version !== 1) return null;
+  const href = mobileHistoryHref(entry.href);
   if (entry.surface === "dashboard" || entry.surface === "conversation") {
-    return { version: 1, surface: entry.surface };
+    return { version: 1, surface: entry.surface, ...(href === undefined ? {} : { href }) };
   }
   if (entry.surface === "project" && typeof entry.projectId === "string" && entry.projectId.length > 0) {
-    return { version: 1, surface: "project", projectId: entry.projectId };
+    return { version: 1, surface: "project", projectId: entry.projectId, ...(href === undefined ? {} : { href }) };
   }
   return null;
 };
 
-const stateWithMobileHistoryEntry = (entry: MobileHistoryEntry): Record<string, unknown> => ({
+const stateWithMobileHistoryEntry = (entry: MobileHistorySurface, href: string): Record<string, unknown> => ({
   ...(typeof window.history.state === "object"
     && window.history.state !== null
     && !Array.isArray(window.history.state)
     ? window.history.state as Record<string, unknown>
     : {}),
-  [MOBILE_HISTORY_STATE_KEY]: entry,
+  [MOBILE_HISTORY_STATE_KEY]: { ...entry, href },
 });
 
-const replaceMobileHistoryEntry = (entry: MobileHistoryEntry): void => {
-  window.history.replaceState(stateWithMobileHistoryEntry(entry), "", window.location.href);
+const replaceMobileHistoryEntry = (entry: MobileHistorySurface, target = window.location.href): void => {
+  const href = new URL(target, window.location.href).href;
+  window.history.replaceState(stateWithMobileHistoryEntry(entry, href), "", href);
 };
 
-const pushMobileHistoryEntry = (entry: MobileHistoryEntry): void => {
-  window.history.pushState(stateWithMobileHistoryEntry(entry), "", window.location.href);
+const pushMobileHistoryEntry = (entry: MobileHistorySurface, target = window.location.href): void => {
+  const href = new URL(target, window.location.href).href;
+  window.history.pushState(stateWithMobileHistoryEntry(entry, href), "", href);
+};
+
+const notificationDashboardUrl = (href: string): string => {
+  const url = new URL(href);
+  url.searchParams.delete("thread");
+  return url.href;
 };
 
 const initialMobileScreen = (): MobileScreen => {
@@ -457,7 +477,15 @@ export function App() {
     if (isMobileViewport()) {
       const current = mobileHistoryEntry(window.history.state);
       if (current?.surface !== "conversation") {
-        pushMobileHistoryEntry({ version: 1, surface: "conversation" });
+        // A cron selection pushes its URL before the Dashboard asks us to show
+        // the conversation, copying the marker from the surface it left. Turn
+        // that already-pushed route into the conversation entry instead of
+        // pushing the same destination twice.
+        if (current?.href !== undefined && current.href !== window.location.href) {
+          replaceMobileHistoryEntry({ version: 1, surface: "conversation" });
+        } else {
+          pushMobileHistoryEntry({ version: 1, surface: "conversation" });
+        }
       }
     }
     setScreen("conversation");
@@ -523,14 +551,22 @@ export function App() {
     mobileHistoryInitializedRef.current = true;
     const initialEntry = mobileHistoryEntry(window.history.state);
     if (initialEntry === null) {
-      replaceMobileHistoryEntry({ version: 1, surface: "dashboard" });
+      const initialUrl = window.location.href;
+      const dashboardUrl = screen === "conversation"
+        ? notificationDashboardUrl(initialUrl)
+        : initialUrl;
+      replaceMobileHistoryEntry({ version: 1, surface: "dashboard" }, dashboardUrl);
       if (screen === "conversation") {
-        pushMobileHistoryEntry({ version: 1, surface: "conversation" });
+        pushMobileHistoryEntry({ version: 1, surface: "conversation" }, initialUrl);
       } else if (openProjectId !== null) {
         pushMobileHistoryEntry({ version: 1, surface: "project", projectId: openProjectId });
       }
       return;
     }
+    // History entries created by the first release of this owner did not yet
+    // record their URL. Upgrade the current entry in place so its next route
+    // mutation can still be distinguished from an in-surface navigation.
+    if (initialEntry.href === undefined) replaceMobileHistoryEntry(initialEntry);
     if (initialEntry.surface === "project") {
       setScreen("dashboard");
       if (openProjectId !== initialEntry.projectId) openProjectById(initialEntry.projectId);

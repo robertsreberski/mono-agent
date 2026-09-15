@@ -304,27 +304,84 @@ describe("App mobile screens", () => {
     expect(pushState).toHaveBeenCalledTimes(2);
   });
 
-  it("seeds a safe Dashboard entry behind a notification deep link", () => {
+  it("seeds a reload-safe Dashboard URL behind a notification deep link", () => {
     const replaceState = vi.spyOn(window.history, "replaceState");
-    window.history.replaceState({ notification: "foreign" }, "", "/?thread=thread-1");
+    window.history.replaceState(
+      { notification: "foreign" },
+      "",
+      "/?campaign=push&thread=thread-1&view=compact",
+    );
     replaceState.mockClear();
-    const { container } = render(<App />);
+    const first = render(<App />);
 
     expect(replaceState).toHaveBeenCalledWith(
       expect.objectContaining({
         notification: "foreign",
-        monoAgentMobileNavigation: { version: 1, surface: "dashboard" },
+        monoAgentMobileNavigation: expect.objectContaining({ version: 1, surface: "dashboard" }),
       }),
       "",
-      "http://localhost:3000/?thread=thread-1",
+      "http://localhost:3000/?campaign=push&view=compact",
     );
     expect(window.history.state).toMatchObject({
       monoAgentMobileNavigation: { version: 1, surface: "conversation" },
     });
 
     const dashboardState = replaceState.mock.calls[0]?.[0];
-    act(() => navigateHistory(dashboardState, "/?thread=thread-1"));
+    act(() => navigateHistory(dashboardState, "/?campaign=push&view=compact"));
+    expect(chat(first.container)).not.toHaveClass("is-open");
+
+    first.unmount();
+    const reloaded = render(<App />);
+    expect(chat(reloaded.container)).not.toHaveClass("is-open");
+    expect(window.location.search).toBe("?campaign=push&view=compact");
+  });
+
+  it("converts a cron route push from a project into one conversation entry", () => {
+    const { container, rerender } = render(<App />);
+    const dashboardState = window.history.state;
+
+    storeMock.openProjectId = "project-web";
+    rerender(<App />);
+    const projectState = window.history.state;
+    const replaceState = vi.spyOn(window.history, "replaceState");
+    const pushState = vi.spyOn(window.history, "pushState");
+
+    // console-store.selectThread pushes the cron route while preserving state,
+    // then ProjectPage's row calls the shell's onNavigate callback.
+    window.history.pushState(window.history.state, "", "/agents/alpha/cron/nightly");
+    const routePushCount = pushState.mock.calls.length;
+    openConversation();
+    expect(pushState).toHaveBeenCalledTimes(routePushCount);
+    const conversationState = window.history.state;
+    expect(replaceState).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        monoAgentMobileNavigation: expect.objectContaining({
+          version: 1,
+          surface: "conversation",
+          href: "http://localhost:3000/agents/alpha/cron/nightly",
+        }),
+      }),
+      "",
+      "http://localhost:3000/agents/alpha/cron/nightly",
+    );
+
+    act(() => navigateHistory(projectState));
     expect(chat(container)).not.toHaveClass("is-open");
+    fireEvent.click(screen.getByRole("button", { name: "Back to project conversations" }));
+    expect(window.history.back).toHaveBeenCalledTimes(1);
+
+    storeMock.openProjectId = null;
+    rerender(<App />);
+    act(() => navigateHistory(dashboardState));
+    expect(chat(container)).not.toHaveClass("is-open");
+
+    act(() => navigateHistory(projectState));
+    expect(storeMock.openProjectById).toHaveBeenCalledWith("project-web");
+    storeMock.openProjectId = "project-web";
+    rerender(<App />);
+    act(() => navigateHistory(conversationState, "/agents/alpha/cron/nightly"));
+    expect(storeMock.closeProject).toHaveBeenCalled();
+    expect(chat(container)).toHaveClass("is-open");
   });
 
   it("restores an ordinary conversation screen from its history state after reload", () => {
@@ -482,11 +539,11 @@ describe("App mobile screens", () => {
     expect(panel(container)).not.toHaveAttribute("inert");
     expect(replaceState).toHaveBeenCalledWith(
       expect.objectContaining({
-        monoAgentMobileNavigation: {
+        monoAgentMobileNavigation: expect.objectContaining({
           version: 1,
           surface: "project",
           projectId: "project-web",
-        },
+        }),
       }),
       "",
       "http://localhost:3000/",
