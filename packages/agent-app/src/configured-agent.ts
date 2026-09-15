@@ -1,3 +1,4 @@
+import { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/agent-harness";
 import { createSubagentRecoveryAccess } from "./subagent-recovery-access.js";
 import type { OwnedForegroundProcesses } from "@mono-agent/runtime-adapter";
 import { createSubagentInstanceRegistry, isLiveSubagentInstance, persistentSubagentsEnabled, subagentInstancesRoot, type InstanceRegistryHandle } from "./subagent-instances.js";
@@ -844,7 +845,8 @@ export function buildSubagentsOptions(
     let subagentQuestion: RuntimeResult["subagentQuestion"];
     let submitted = false;
     const currentProfileDenies = subagents.definitions?.find((profile) => profile.name === request.definition.name)?.disallowedTools ?? [];
-    const askParentController = request.instance && scope && ![...config.tools.disallowedTools, ...currentProfileDenies, ...(request.definition.disallowedTools ?? [])].includes("AskParent")
+    const askParentExposed = Boolean(request.instance) && ![...config.tools.disallowedTools, ...currentProfileDenies, ...(request.definition.disallowedTools ?? [])].includes("AskParent");
+    const askParentController = askParentExposed && scope
       ? { submit: async (question: NonNullable<RuntimeResult["subagentQuestion"]>): Promise<void> => {
         if (submitted) throw new Error("AskParent already submitted a question this turn.");
         submitted = true;
@@ -859,7 +861,13 @@ export function buildSubagentsOptions(
     const commandTimeoutMs = request.detached === true && Number.isFinite(request.deadlineAt)
       ? Math.max(1, Math.min(Math.floor(request.deadlineAt! - Date.now()), subagents.commandTimeoutMs ?? 1_800_000))
       : undefined;
-    const result = await runtime.run(childSystemPrompt, {
+    const childCapabilityOptions = {
+      toolExposure: { askParent: askParentExposed, persistentSubagents: false, monitors: false },
+      ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
+      ...(askParentController === undefined ? {} : { askParentController }),
+    };
+    const result = await runtime.run(`${childSystemPrompt}\n\n${HOST_TURN_CONTEXT_GUIDANCE}`, {
+      ...childCapabilityOptions,
       ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
       ...(askParentController === undefined ? {} : { askParentController }),
       ...(request.instance === undefined ? {} : {
@@ -870,7 +878,7 @@ export function buildSubagentsOptions(
         ...(config.runtime.compaction === undefined ? {} : { compaction: config.runtime.compaction }),
       }),
       model: childModel,
-      messages: [{ role: "user", content: request.prompt }],
+      messages: [{ role: "user", content: composeHostTurnEnvelope(formatHostCapabilities(childCapabilityOptions), request.prompt) }],
       maxTurns: request.maxTurns,
       ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
       // Monotonic: the child is confined by the same policy as the parent turn.
@@ -896,7 +904,7 @@ export function buildSubagentsOptions(
         : { skills: childSkills, skillsRoot: request.skillsRoot }),
       ...((request.definition.effort ?? request.effort) === undefined
         ? {} : { effort: request.definition.effort ?? request.effort }),
-      allowedTools: [...new Set([...(request.definition.allowedTools ?? DEFAULT_SUBAGENT_TOOLS), ...(askParentController ? ["AskParent"] : [])])],
+      allowedTools: [...new Set([...(request.definition.allowedTools ?? DEFAULT_SUBAGENT_TOOLS), ...(askParentExposed ? ["AskParent"] : [])])],
       disallowedTools: [...new Set([...(request.definition.disallowedTools ?? []), ...config.tools.disallowedTools, ...SUBAGENT_HARD_DENY])],
       // Only the servers this profile named. A profile that names none gets an
       // empty map, keeping the app-owned AskUser and channel-send tools
@@ -922,6 +930,7 @@ export function buildSubagentsOptions(
   };
 
   return {
+    toolExposure: { persistentSubagents: persistentSubagentsEnabled(config) },
     subagents: {
       ...(scope === undefined || !persistentSubagentsEnabled(config) ? {} : { instances: scope.instances }),
       definitions,
@@ -2480,7 +2489,7 @@ function mergeStaticRuntimeOptions(
         merged[key] = mergeStringLists(merged[key], value);
         continue;
       }
-      if (key === "mcpServers") {
+      if (key === "mcpServers" || key === "toolExposure" || key === "hostCapabilities") {
         merged[key] = {
           ...(isRecord(merged[key]) ? merged[key] : {}),
           ...(isRecord(value) ? value : {}),

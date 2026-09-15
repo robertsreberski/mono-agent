@@ -7,26 +7,27 @@ import { createAgentTool } from "./agent-tool.js";
  * @param {Parameters<typeof createAgentTool>[1]} [context]
  */
 export function createAgentSendTool(subagents, context = {}) {
-  if (context.instancesEnabled === false || !subagents?.instances || !subagents.run || Number(subagents.depth ?? 0) > 0) return null;
+  if (context.instancesEnabled === false || !(context.persistentExposure ?? Boolean(subagents?.instances)) || !subagents?.run || Number(subagents.depth ?? 0) > 0) return null;
   const instances = subagents.instances;
-  const background = instances.reserve && instances.releaseReservation && subagents.backgroundSubagentController;
+  const background = instances?.reserve && instances?.releaseReservation && subagents.backgroundSubagentController;
   return {
     name: "AgentSend", label: "AgentSend",
-    description: "Continue a persistent subagent by id with its full prior context. Instance ids appear in the Session envelope and Agent results. Use close: true when done." + (background ? " Set background: true with a message for detached work; this exact conversation wakes on completion or AskParent. Do not poll or replay." : "") + (instances.inspect ? " Use inspect: true alone for bounded recovery evidence; it executes no provider. After independent verification, a retained-only ack with a message explicitly authorizes one continuation. Lost/unknown continuity requires close/create, never replay." : ""),
+    description: "Continue a persistent subagent by id with its full prior context. Instance ids appear in the Session envelope and Agent results. Use close: true when done." + " Set background: true with a message for detached work; this exact conversation wakes on completion or AskParent. Do not poll or replay." + " Use inspect: true alone for bounded recovery evidence; it executes no provider. After independent verification, a retained-only ack with a message explicitly authorizes one continuation. Lost/unknown continuity requires close/create, never replay.",
     parameters: {
       type: "object", additionalProperties: false, required: ["id"],
       properties: {
         id: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,39}$" },
         message: { type: "string", minLength: 1 },
         close: { type: "boolean" },
-        ...(background ? { background: { type: "boolean" } } : {}),
+        background: { type: "boolean" },
         description: { type: "string", maxLength: 80 },
-        ...(instances.inspect ? { inspect: { type: "boolean" } } : {}),
-        ...(instances.checkAcknowledgement ? { ack: { type: "string", maxLength: 128 } } : {}),
+        inspect: { type: "boolean" },
+        ack: { type: "string", maxLength: 128 },
       },
     },
     /** @param {string} callId @param {{id: string, message?: string, close?: boolean, description?: string, background?: boolean, inspect?: boolean, ack?: string}} params @param {AbortSignal} [signal] */
     async execute(callId, params, signal) {
+      if (!instances) throw new Error("Error: persistent subagent instances are unavailable in this conversation.");
       if (signal?.aborted) throw new Error("tool execution aborted");
       if (params.inspect !== undefined && typeof params.inspect !== "boolean") throw new Error("Error: inspect must be a boolean.");
       if (params.inspect === true) {

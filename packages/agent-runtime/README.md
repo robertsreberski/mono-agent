@@ -189,6 +189,24 @@ Inspection starts no provider. Consumed/conflicting acknowledgements return a
 typed non-executing response rather than replaying an execution receipt; the app
 owns current-policy inspection, continuity eligibility and durable consumption.
 
+### Tool exposure versus admission
+
+Tool definitions follow the configured authority profile, not the current turn's
+controllers. User, process-job wake, monitor wake and cron turns keep the same
+provider-visible definitions within an unchanged profile; persistent children
+have their own profile and retain structural recursion/MCP exclusions.
+Unavailable operations remain visible but refuse before execution. Current
+availability/reasons, lineage budgets, command ceilings, monitor limits and
+persistent-child/recovery capabilities appear only in the latest non-authorizing
+`host_turn_context`, never in tool schemas or canonical history. Children use
+the same envelope formatter. No previous controller or tool snapshot is retained.
+
+Builtins, skill names, MCP servers and source tool names use deterministic
+code-unit ordering, including before MCP collision naming. Real configuration,
+model, output-schema or skill-catalog changes can still change definitions, as
+can third-party schema changes and explicitly warned infrastructure discovery
+failures. Stable definitions do not guarantee a provider cache hit.
+
 ## Public API
 
 ### Start here

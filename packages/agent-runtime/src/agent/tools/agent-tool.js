@@ -217,7 +217,7 @@ function positiveInt(value, fallback) {
  * Build the `Agent` tool, or null when subagents are unavailable for this run.
  *
  * @param {RuntimeSubagentsOptions|null|undefined} subagents
- * @param {{recoveryAccess?: unknown, instancesEnabled?: boolean, model?: *, effort?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
+ * @param {{recoveryAccess?: unknown, instancesEnabled?: boolean, persistentExposure?: boolean, model?: *, effort?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
  * @param {{record: import("../../ai/types.js").RuntimeSubagentInstance, close?: boolean, acknowledgement?: import("../../ai/types.js").RuntimeSubagentRecoveryRequest}} [continuation] Internal AgentSend dispatch; never model supplied.
  * @returns {*|null}
  */
@@ -228,12 +228,13 @@ export function createAgentTool(subagents, context = {}, continuation) {
   if (positiveInt(subagents.depth, 0) > 0 || Number(subagents.depth || 0) > 0) return null;
 
   const instances = context.instancesEnabled === false ? undefined : subagents.instances;
+  const persistentExposure = context.instancesEnabled !== false && (context.persistentExposure ?? Boolean(instances));
   const background = instances?.reserve && instances?.releaseReservation ? subagents.backgroundSubagentController : undefined;
-  const definitions = Array.isArray(subagents.definitions) ? subagents.definitions.filter(Boolean) : [];
+  const definitions = Array.isArray(subagents.definitions) ? subagents.definitions.filter(Boolean).slice().sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0) : [];
   const maxConcurrent = positiveInt(subagents.maxConcurrent, DEFAULT_MAX_CONCURRENT);
   const maxPerTurn = positiveInt(subagents.maxPerTurn, DEFAULT_MAX_PER_TURN);
   const names = definitions.map((definition) => definition.name);
-  const models = subagents.models ?? [];
+  const models = [...(subagents.models ?? [])].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 
   const slots = slotsForOptions(subagents, maxConcurrent, context.parentRunId);
   // Budget state hangs off the shared `subagents` options object, NOT this
@@ -245,7 +246,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
 
   // The ceiling doubles as the authoring switch: null means the closed schema
   // this tool has always had, with `name` restricted to configured profiles.
-  const ceiling = inlineCeiling(subagents.inline);
+  const ceiling = inlineCeiling(subagents.inline)?.slice().sort() ?? null;
 
   const parameters = {
     type: "object",
@@ -299,14 +300,14 @@ export function createAgentTool(subagents, context = {}, continuation) {
         enum: models.map((choice) => choice.name),
         description: `Run the subagent on this model instead of inheriting yours. Choices: ${models.map((choice) => `${choice.name} → ${choice.key}`).join(", ")}.`,
       } }),
-      ...(instances ? {
+      ...(persistentExposure ? {
         verification: { type: "object", additionalProperties: false, required: ["workdir"], properties: {
           workdir: { type: "string", maxLength: 2048 }, reportPath: { type: "string", maxLength: 512 },
         }, description: "Optional observation-only worktree and relative report presence target. Does not change command cwd, widen permissions, authorize work, or establish verification success." },
         persist: { type: "boolean", description: "Keep this subagent alive so you can continue it with AgentSend. Off by default; set it only when a follow-up turn is actually expected, and close the instance when that follow-up is done." },
         id: { type: "string", pattern: INLINE_NAME_RE.source, description: "Instance id; only with persist." },
       } : {}),
-      ...(background ? { background: { type: "boolean", description: "Run the child detached (requires persist: true); this conversation wakes on completion or AskParent. Only for sustained work that outlives a reply — a short answer you need now stays foreground. Do not poll or replay." } } : {}),
+      ...(persistentExposure ? { background: { type: "boolean", description: "Run the child detached (requires persist: true); this conversation wakes on completion or AskParent. Only for sustained work that outlives a reply — a short answer you need now stays foreground. Do not poll or replay." } } : {}),
       description: {
         type: "string",
         maxLength: 80,
@@ -320,7 +321,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
   return {
     name: "Agent",
     label: "Agent",
-    description: toolDescription(subagents, definitions, ceiling, Boolean(instances)) + (instances ? "\n\nA child is stateless by default: it answers once and holds nothing afterwards, which is right for most delegations. Set persist: true only when you will actually continue this child with AgentSend — corrections, follow-up questions, a multi-step assignment — because a persistent instance keeps its transcript and one of this conversation’s live instance slots until you close it; close it as soon as the follow-up is done." : "") + (background ? " background: true detaches the child (it currently requires persist: true) and returns a durable started receipt; this exact conversation wakes when the child settles or asks you a question. Reserve it for sustained work that outlives a reply, not for a short question whose answer you need now. Do not poll or replay." : ""),
+    description: toolDescription(subagents, definitions, ceiling, persistentExposure) + (persistentExposure ? "\n\nA child is stateless by default: it answers once and holds nothing afterwards, which is right for most delegations. Set persist: true only when you will actually continue this child with AgentSend — corrections, follow-up questions, a multi-step assignment — because a persistent instance keeps its transcript and one of this conversation’s live instance slots until you close it; close it as soon as the follow-up is done." : "") + (persistentExposure ? " background: true detaches the child (it currently requires persist: true) and returns a durable started receipt; this exact conversation wakes when the child settles or asks you a question. Reserve it for sustained work that outlives a reply, not for a short question whose answer you need now. Do not poll or replay." : ""),
     parameters,
     // MUST stay undefined. Agent-only batches can overlap when the offered tool
     // set contains no sequential tool. Pi 0.85 exposes only a global harness

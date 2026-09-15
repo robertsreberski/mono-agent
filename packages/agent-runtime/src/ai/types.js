@@ -194,6 +194,8 @@
 
 /**
  * @typedef {Object} RuntimeRunOptions
+ * @property {{monitors?: boolean, persistentSubagents?: boolean, askParent?: boolean}} [toolExposure] Stable profile exposure, not execution authority.
+ * @property {Record<string, {available: boolean, reason?: string, limits?: Record<string, number|null>}>} [hostCapabilities] Current non-authorizing host facts.
  * @property {{submit(question: {question: string, options?: string[]}): Promise<void>}} [askParentController]
  * The options object a host passes to `createRuntime(host).run(systemPrompt, options)`.
  * @property {RuntimeModelRef} model                     Resolved model reference; see parseRuntimeModelReference.

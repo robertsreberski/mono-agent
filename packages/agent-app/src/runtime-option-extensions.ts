@@ -156,7 +156,7 @@ function mergeRuntimeOptions(
       target[key] = mergeStringLists(target[key], value);
       continue;
     }
-    if (key === "mcpServers") {
+    if ((key === "mcpServers" || key === "hostCapabilities" || key === "toolExposure")) {
       target[key] = {
         ...(isRecord(target[key]) ? target[key] : {}),
         ...(isRecord(value) ? value : {}),

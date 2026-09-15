@@ -49,7 +49,7 @@ describe("awaited owned foreground command seam", () => {
     runtime: { model: { id: "fake" } }, resolved: { model: "fake" }, onEvent() {}, runtimeWarnings: [] });
     try {
       const tool = built.tools.find((tool) => tool.name === "Exec");
-      expect(tool.parameters.properties.background).toBeUndefined();
+      expect(tool.parameters.properties.background).toBeDefined();
       await tool.execute("pi-host-call", { executable: process.execPath, workdir: root });
       expect(forAttempt).toHaveBeenCalledOnce();
       expect(run).toHaveBeenCalledOnce();

@@ -158,6 +158,7 @@ export function createMemoryRememberServer(
       inputSchema: REMEMBER_INPUT,
     },
     async (args, extra) => {
+      if (!isRememberCapableStore(store)) return toolError("Remember is unavailable: memory write capability is disabled.");
       // Loaded lazily: this module is imported by the composition root, and an
       // agent with no memory configured must not pay for the SQLite/BuJo stack.
       // Sharing the store's own transform is what keeps the credential checks
@@ -244,13 +245,11 @@ export function createMemoryRememberRuntimeExtension(
     ),
     ...(options.onUnavailable === undefined ? {} : { onUnavailable: options.onUnavailable }),
   });
-  // Re-check the capability per request rather than trusting composition alone:
-  // a store that cannot accept a write must never advertise the endpoint, and a
-  // read-only store still structurally has `remember`.
   return async (input) => {
-    if (!isRememberCapableStore(store)) {
-      return { runtimeOptions: {}, cleanup: async () => {} };
-    }
-    return await extension(input);
+    const result = await extension(input);
+    const available = isRememberCapableStore(store);
+    return { ...result, runtimeOptions: { ...result.runtimeOptions, hostCapabilities: {
+      Remember: { available, ...(available ? {} : { reason: "memory_write_unavailable" }) },
+    } } };
   };
 }

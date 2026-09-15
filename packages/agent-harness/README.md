@@ -253,6 +253,7 @@ DurableHistoryStoreOptions
 DurableHistoryStoreStats
 ExternalRunSummary
 FileContextInput
+HOST_TURN_CONTEXT_GUIDANCE
 HistoryMessage
 InMemoryHistoryStoreOptions
 LiveInputMailbox
@@ -318,6 +319,7 @@ assistantTextFromRuntimeEvent
 buildAgentContext
 buildSkillIndex
 classifyContinuationMcpServerTransport
+composeHostTurnEnvelope
 createAgentHarness
 createAgentResponder
 createDurableHistoryStore
@@ -330,6 +332,7 @@ createSkillsCache
 createToolHistoryArtifactSink
 createToolPolicy
 failClosedToolPolicy
+formatHostCapabilities
 isProcessAlive
 isReadSkillCompatibleName
 isStdioMcpServerSpec

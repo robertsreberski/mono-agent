@@ -45,7 +45,10 @@ export function createMonitorsRuntimeExtension(
       result = options.next === undefined
         ? { runtimeOptions: {}, cleanup: async () => {} }
         : await options.next(input);
-      let runtimeOptions = result.runtimeOptions ?? {};
+      let runtimeOptions = { ...result.runtimeOptions, toolExposure: {
+        ...(result.runtimeOptions?.toolExposure as Record<string, boolean> | undefined),
+        monitors: options.service !== undefined && hasAllowedMonitorTools(options.coreConfig),
+      } } as NonNullable<typeof result.runtimeOptions>;
       const service = options.service;
       if (service !== undefined) {
         const origin = monitorOriginForRequest(input, options.channelId, options.conversationScheme);
@@ -63,6 +66,19 @@ export function createMonitorsRuntimeExtension(
         // extension. Registering a second one here would make the conversation's
         // active run ambiguous and silently break process-job steering, because
         // that registry admits a steer only when exactly one candidate matches.
+        const available = monitorsAdmissible(origin, missed, chainDepth, service, options.coreConfig);
+        const reason = missed ? "wake_context_unavailable" : !origin ? "origin_unavailable"
+          : chainDepth >= service.settings.maxChainDepth ? "chain_depth_exhausted" : "tool_unavailable";
+        const facts = { available, ...(available ? {} : { reason }), limits: {
+          maxRuntimeMs: service.settings.maxRuntimeMs,
+          persistentMaxRuntimeMs: service.settings.persistentMaxRuntimeMs,
+          maxActivePerConversation: service.settings.maxActivePerConversation,
+          maxWakeIntervalMs: service.settings.maxWakeIntervalMs,
+          chainDepth, maxChainDepth: service.settings.maxChainDepth,
+        } };
+        runtimeOptions = { ...runtimeOptions, hostCapabilities: {
+          ...(runtimeOptions.hostCapabilities as Record<string, unknown> | undefined), Monitor: facts, MonitorStop: facts,
+        } };
         if (monitorsAdmissible(origin, missed, chainDepth, service, options.coreConfig)) {
           runtimeOptions = {
             ...runtimeOptions,

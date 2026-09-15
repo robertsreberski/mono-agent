@@ -2017,7 +2017,7 @@ describe("AskUser tool", () => {
     expect(settings).toBeUndefined();
   });
 
-  it("is not registered without logical and physical conversation ids (parent-process shape)", async () => {
+  it("retains its definition but refuses missing conversation ids (parent-process shape)", async () => {
     const server = await createAdapterSendToolsServer(
       {
         telegram: {
@@ -2032,7 +2032,8 @@ describe("AskUser tool", () => {
     );
     await withMcpClient(server, async (client) => {
       const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toEqual(["TelegramSendMessage"]);
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["TelegramSendMessage", "AskUser"]);
+      expect((await client.callTool({ name: "AskUser", arguments: { questions: [{ header: "Test", question: "Proceed?", options: [{ label: "Yes", description: "Proceed" }, { label: "No", description: "Stop" }] }] } })).isError).toBe(true);
     });
   });
 
