@@ -30,6 +30,9 @@ const snapshot: ProviderUsageSnapshot = { schema: "mono-agent.provider-usage.v1"
     { kind: "weekly", label: "Weekly", usedPercent: 1, periodMs: 604800000, resetsAt: reset },
     { kind: "monthly", label: "Monthly", usedPercent: 17, periodMs: 2592000000, resetsAt: reset },
   ] },
+  { providerId: "github-copilot", label: "GitHub Copilot", plan: "Individual", fetchedAt: new Date().toISOString(), stale: false, windows: [
+    { kind: "credits", label: "Credits", usedPercent: 42.1, periodMs: 2592000000, resetsAt: reset },
+  ] },
 ] };
 beforeEach(() => {
   vi.clearAllMocks();
@@ -37,7 +40,7 @@ beforeEach(() => {
     defaultModel: "anthropic:claude-sonnet-4-6", models: ["anthropic:claude-sonnet-4-6"],
   });
   mocks.providerUsage.mockResolvedValue(snapshot);
-  mocks.providerAuthStatus.mockResolvedValue({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: snapshot.providers.map((p) => ({
+  mocks.providerAuthStatus.mockResolvedValue({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: snapshot.providers.filter((p) => p.providerId !== "github-copilot").map((p) => ({
     providerId: p.providerId, label: p.label, usages: [], state: "present", source: "stored", verification: p.providerId === "openai-codex" ? "verified_by_live_request" : "verified_by_account_request",
     methods: [{ authType: p.providerId === "opencode-go" ? "api_key" : "oauth", strategy: "paste_back", label: "Login", recommended: true }],
   })) });
@@ -54,7 +57,7 @@ describe("compact Agent settings subscription meters", () => {
     expect(navigator.maxTouchPoints > 0).toBe(touch);
     render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
     await screen.findByRole("progressbar", { name: "Codex Weekly used" });
-    expect(screen.getAllByRole("progressbar")).toHaveLength(7);
+    expect(screen.getAllByRole("progressbar")).toHaveLength(8);
     expect(screen.queryByRole("progressbar", { name: "Codex Session used" })).toBeNull();
     expect(screen.getByText("Pro 20x")).toBeVisible();
     expect(screen.getByText("0%")).toBeVisible();
@@ -82,9 +85,15 @@ describe("compact Agent settings subscription meters", () => {
     const headerIcons = document.querySelectorAll(".agent-settings-header-actions .icon-button");
     expect(headerIcons).toHaveLength(2);
     for (const icon of headerIcons) {
-      expect(icon.getBoundingClientRect().width).toBe(28);
-      expect(icon.getBoundingClientRect().height).toBe(28);
+      expect(icon.getBoundingClientRect().width).toBe(36);
+      expect(icon.getBoundingClientRect().height).toBe(36);
+      expect(getComputedStyle(icon).borderRadius).toBe("10px");
     }
+    const copilot = screen.getByText("GitHub Copilot").closest("article")!;
+    expect(screen.getByText("Usage only")).toBeVisible();
+    expect(copilot.querySelector("button, .provider-auth-state, .provider-auth-check-result")).toBeNull();
+    expect([...document.querySelectorAll(".provider-auth-card b")].map((element) => element.textContent)).toEqual(["Claude", "Codex", "OpenCode Go", "GitHub Copilot"]);
+    expect(screen.getByRole("progressbar", { name: "GitHub Copilot Credits used" })).toHaveAttribute("value", "42.1");
     const refreshButton = screen.getByRole("button", { name: "Refresh usage" });
     expect(refreshButton).toHaveAttribute("title", "Refresh usage");
     const runButton = screen.getByRole("button", { name: "Check access" });
@@ -108,6 +117,7 @@ describe("compact Agent settings subscription meters", () => {
     expect(dialog.getBoundingClientRect().width).toBeLessThanOrEqual(width);
     expect(screen.getByRole("button", { name: "Save for new conversations" })).toBeVisible();
     await waitFor(() => expect(screen.getByRole("progressbar", { name: "OpenCode Go Monthly used" })).toBeVisible());
+    expect(screen.getByRole("progressbar", { name: "GitHub Copilot Credits used" })).toBeVisible();
     const directory = import.meta.env.VITE_PROVIDER_USAGE_SHOTS;
     if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-settings-${width}x${height}-${touch ? "coarse-touch" : "fine-desktop"}-${theme}.png` });
   });
@@ -132,7 +142,32 @@ describe("compact Agent settings subscription meters", () => {
     expect(button).toBeEnabled();
     expect(screen.getByRole("progressbar", { name: "Codex Weekly used" })).toHaveAttribute("value", "48");
     expect(document.body.textContent).not.toContain("PRIVATE_VENDOR_DETAIL");
+    expect(screen.getByRole("progressbar", { name: "GitHub Copilot Credits used" })).toHaveAttribute("value", "42.1");
+    expect(screen.getByText("Usage only").closest("article")!.querySelector(".provider-auth-state, button")).toBeNull();
     if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-settings-${name}-refresh-error.png` });
+  });
+
+  it.each([false, true])("renders free Copilot configured=%s without duplicate or fabricated auth", async (configured) => {
+    await page.viewport(viewport.width, viewport.height);
+    const copilot = snapshot.providers.find((p) => p.providerId === "github-copilot")!;
+    mocks.providerUsage.mockResolvedValue({ ...snapshot, providers: [{ ...copilot, plan: "Free", windows: [
+      { kind: "chat", label: "Chat", usedPercent: 60, periodMs: 2592000000 },
+      { kind: "completions", label: "Completions", usedPercent: 25, periodMs: 2592000000 },
+    ] }] });
+    mocks.providerAuthStatus.mockResolvedValue({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: configured ? [{
+      providerId: "github-copilot", label: "GitHub Copilot", usages: [], state: "present", source: "stored", verification: "not_verified",
+      methods: [{ authType: "oauth", strategy: "paste_back", label: "Login", recommended: true }],
+    }] : [] });
+    render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    await screen.findByRole("progressbar", { name: "GitHub Copilot Chat used" });
+    expect(screen.getAllByText("GitHub Copilot")).toHaveLength(1);
+    expect(screen.getByRole("progressbar", { name: "GitHub Copilot Completions used" })).toHaveAttribute("value", "25");
+    expect(screen.queryByRole("progressbar", { name: "GitHub Copilot Credits used" })).toBeNull();
+    expect(document.querySelectorAll(".provider-auth-card")).toHaveLength(1);
+    expect(document.querySelectorAll(".provider-auth-state")).toHaveLength(configured ? 1 : 0);
+    expect(screen.queryAllByRole("button", { name: "Re-authenticate" })).toHaveLength(configured ? 1 : 0);
+    expect(screen.queryAllByText("Usage only")).toHaveLength(configured ? 0 : 1);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(viewport.width);
   });
 
 });

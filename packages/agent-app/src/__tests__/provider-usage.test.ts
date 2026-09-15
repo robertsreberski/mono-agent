@@ -9,7 +9,7 @@ const RESET = "2026-09-15T12:00:00.000Z";
 const codex = { plan_type: "pro", email: "DROP_EMAIL", account_id: "DROP_ACCOUNT", user_id: "DROP_USER", rate_limit: { primary_window: { used_percent: 48, limit_window_seconds: 604800, reset_at: NOW / 1000 + 86400 }, secondary_window: null }, credits: { balance: 100 }, additional_rate_limits: [{ name: "spark" }] };
 const claude = { five_hour: { utilization: 38, resets_at: RESET }, seven_day: { utilization: 30 }, seven_day_sonnet: { utilization: 99 }, extra_usage: {}, limits: [{ kind: "weekly_scoped", scope: { model: { display_name: "Fable" } }, percent: 31, resets_at: RESET }] };
 const go = { usage: { rolling: { percent: 0, status: "ok", resetsAt: RESET }, weekly: { percent: 1, resetsAt: RESET }, monthly: { percent: 17, resetsAt: RESET } } };
-const bodies = { anthropic: claude, "openai-codex": codex, "opencode-go": go };
+const bodies = { "github-copilot": { quota_snapshots: { premium_interactions: { percent_remaining: 57.9 } } }, anthropic: claude, "openai-codex": codex, "opencode-go": go };
 function fixture(provider: ProviderUsageId = "anthropic") {
   let time = NOW;
   let credential: Record<string, unknown> | undefined = provider === "opencode-go" ? { type: "api_key", key: "fixture-key" } : { type: "oauth", access: "fixture-access", refresh: "fixture-refresh", expires: NOW + 86_400_000, ...(provider === "openai-codex" ? { accountId: "fixture-account" } : {}) };
@@ -17,7 +17,7 @@ function fixture(provider: ProviderUsageId = "anthropic") {
   const fetch = vi.fn(async (_url: unknown, _init?: RequestInit) => Response.json(bodies[provider]));
   const tracker = createProviderAuthObservationTracker(() => time);
   const outcomes = { generation: tracker.generation, recordAccountSuccess: vi.fn(tracker.recordAccountSuccess), recordAccountFailure: vi.fn(tracker.recordAccountFailure) };
-  const service = createProviderUsageService({ resolver: resolver as never, fetch: fetch as never, now: () => time, outcomes });
+  const service = createProviderUsageService({ copilotCredential: async () => undefined, resolver: resolver as never, fetch: fetch as never, now: () => time, outcomes });
   return { service, resolver, fetch, tracker, outcomes, setCredential: (value: typeof credential) => { credential = value; }, advance: (ms = PROVIDER_USAGE_CACHE_MS) => { time += ms; } };
 }
 async function settle() { for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0)); }
@@ -244,7 +244,7 @@ describe("shared provider usage cache and safe failures", () => {
   });
   it("bounds a request deadline", async () => {
     const f = fixture();
-    const service = createProviderUsageService({ resolver: f.resolver as never, outcomes: f.outcomes, timeoutMs: 10, fetch: async (_url, init) => new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("private")), { once: true })) });
+    const service = createProviderUsageService({ copilotCredential: async () => undefined, resolver: f.resolver as never, outcomes: f.outcomes, timeoutMs: 10, fetch: async (_url, init) => new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("private")), { once: true })) });
     expect((await service.snapshot()).providers[0]?.error?.code).toBe("timeout");
     expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled();
     expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();

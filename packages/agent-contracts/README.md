@@ -132,7 +132,7 @@ the operator response ceiling.
 
 ## Architecture
 
-`provider-usage.ts` defines the strict `mono-agent.provider-usage.v1` subscription projection, bounded core windows, fixed errors and read-only `ProviderUsageOperator`. It carries no credentials or vendor account identifiers. Provider-auth status distinguishes additive `verified_by_account_request` (vendor account API accepted the credential, not inference or model entitlement) from stronger `verified_by_live_request`; `lastFailure.model` is optional for account-level rejection.
+`provider-usage.ts` defines the strict `mono-agent.provider-usage.v1` subscription projection, at most four providers (Claude, Codex, OpenCode Go and GitHub Copilot), at most three core percent windows per provider, fixed errors and read-only `ProviderUsageOperator`. Copilot alone admits Credits/Chat/Completions window kinds; existing provider rules stay unchanged. It carries no credentials or vendor account identifiers. Provider-auth status distinguishes additive `verified_by_account_request` (vendor account API accepted the credential, not inference or model entitlement) from stronger `verified_by_live_request`; `lastFailure.model` is optional for account-level rejection.
 
 ### Data flow
 

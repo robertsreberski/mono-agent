@@ -533,24 +533,31 @@ tag membership or separate enablement key: the MCP server remains
 ## `ProviderUsage`: subscription quota
 
 `ProviderUsage` is a read-only app-owned, request-scoped MCP tool. It requires no
-arguments; optional `provider` accepts only `anthropic`, `openai-codex`, or
-`opencode-go`. It works on permitted agent turns on any channel, independently
+arguments; optional `provider` accepts only `anthropic`, `openai-codex`,
+`opencode-go`, or `github-copilot`. It works on permitted agent turns on any channel, independently
 of the web console's writable-turn tools. It returns the same
 `mono-agent.provider-usage.v1` JSON snapshot as
 [Agent settings usage meters](/observability/web-console/#subscription-usage):
 `providers[]` with provider id/label, optional plan, core windows
 (`kind`, `label`, `usedPercent`, optional `resetsAt`, nominal `periodMs`),
 `fetchedAt`, `stale`, and optional fixed `error.code`/`error.message`.
-Absent usable Pi credentials are omitted; an empty providers array does not
+Providers without usable credentials are omitted; an empty providers array does not
 prove any remaining quota. Last-good stale data is not current quota truth.
 
-The tool reads only this agent's `providers.piAuthPath`, using the existing Pi
-resolver for OAuth refresh; it does not accept credentials, paths, URLs or
+The tool prefers this agent's `providers.piAuthPath`, using the existing Pi
+resolver for OAuth refresh. Copilot additionally discovers local editor and GitHub
+CLI github.com credentials, in the documented [usage credential order](/observability/web-console/#subscription-usage).
+It does not accept credentials, paths, URLs or
 account identifiers. Console and tool share one five-minute per-provider cache
 and coalesced refresh/backoff. There is no forced-refresh argument, vendor write,
 quota purchase, routing decision or local cost calculation. Retained usage fetches also
-feed passive credential-health evidence: vendor acceptance is **Credential OK**,
+feed passive credential-health evidence only when using agent-owned Pi credentials:
+vendor acceptance is **Credential OK**,
 not proof of inference/model entitlement, while final auth rejection is **Needs action**.
+Copilot paid-plan Credits and free-plan Chat/Completions are percentages only;
+unlimited/zero-entitlement buckets, Extra Usage and organization billing are omitted.
+A token-based-billing seat may return a plan without windows. Local Copilot tokens
+never verify the agent’s inference credential or refresh on rejection.
 
 Allow-all exposes it automatically. A restrictive `tools.allowedTools` must
 include `ProviderUsage`, `mcp__mono-agent-provider-usage__ProviderUsage`, or

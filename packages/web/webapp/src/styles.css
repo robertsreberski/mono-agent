@@ -1697,6 +1697,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .agent-settings-sheet .secondary-button, .agent-settings-sheet .primary-button { min-height: 28px; max-height: 28px; padding: 0 10px; border-radius: 8px; }
 .agent-settings-sheet .provider-auth-section .secondary-button, .agent-settings-sheet .provider-auth-section .primary-button { font-size: 10px; }
 .agent-settings-sheet .icon-button { width: 28px; height: 28px; min-height: 0; aspect-ratio: 1; border-radius: 8px; }
+.agent-settings-sheet .agent-settings-header-actions .icon-button { width: 36px; height: 36px; padding: 0; border-radius: 10px; flex: none; }
+.provider-usage-only { color: var(--text-muted); font-size: 10px; }
 .agent-settings-sheet .provider-auth-neutral-button { background: transparent; }
 .agent-settings-sheet > footer { padding-top: 8px; border-top: 1px solid var(--line); flex-wrap: wrap; }
 .provider-usage { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 10px; row-gap: 6px; padding-top: 6px; }
