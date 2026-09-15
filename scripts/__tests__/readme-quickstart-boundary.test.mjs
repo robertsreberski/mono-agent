@@ -155,14 +155,32 @@ describe("root README Quickstart boundary", () => {
   it("keeps the canonical console page honest about managed loopback reachability", () => {
     // The same correction applies to the reference the README links: a managed
     // loopback bind may still be published through an owned Tailscale Serve
-    // route, so the page must not sell loopback as a local-only guarantee.
+    // route, and a foreground run leaves any existing route in place — so the
+    // page must not sell loopback as a local-only guarantee.
     const webConsole = readRepoFile("docs/observability/web-console.md");
     expect(webConsole).toContain(
       "managed `start`/`restart` inspects Tailscale and claims an owned Serve HTTPS route",
     );
     expect(webConsole).toContain(
-      "when other devices must not reach it, keep it local with the foreground `mono-agent web run --loopback`",
+      "narrows only the HTTP listener and may publish an owned Tailscale Serve route",
     );
+    expect(webConsole).toContain(
+      "a foreground run does not remove a Serve route, reverse proxy, or tunnel that already points at the port",
+    );
+    expect(webConsole).toContain("before relying on loopback for local-only access");
     expect(webConsole).not.toMatch(/use `--loopback` when other devices must not reach it/iu);
+    expect(webConsole).not.toMatch(/keep it local with the foreground `mono-agent web run --loopback`/iu);
+  });
+
+  it("separates managed apply commands from the foreground apply path", () => {
+    const firstAgent = readRepoFile("docs/getting-started/quickstart.md");
+    const section = firstAgent.slice(firstAgent.indexOf("## Make it yours"));
+    expect(section).toContain("mono-agent restart");
+    expect(section).toContain("mono-agent start --foreground");
+    expect(section).toContain("Ctrl-C");
+    expect(section).toContain("target the managed background instance");
+    expect(section).not.toMatch(/restart --foreground/u);
+    expect(section).not.toMatch(/guided setup is the only thing that writes/iu);
+    expect(readme).not.toMatch(/restart --foreground/u);
   });
 });

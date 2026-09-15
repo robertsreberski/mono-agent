@@ -118,7 +118,9 @@ Now that the first reply works, change the agent in the same folder:
 
 1. Edit `mono-agent.config.json` — model routes and fallbacks, context, channels, tools, memory, sandbox, observability. Start from the [Annotated config blueprint](/config/blueprint/).
 2. Edit `IDENTITY.md` — the Role, boundaries, and knowledge sections the agent reads each turn. See [Identity & soul](/context/identity-and-soul/).
-3. Apply the change and confirm it took effect:
+3. Apply the change and confirm it took effect. The commands depend on how the agent runs: `restart`, `status`, `stop`, and `logs` target the managed background instance, not a foreground process.
+
+For a background service (macOS `launchd` or Linux systemd user service):
 
 ```bash
 mono-agent validate
@@ -126,7 +128,16 @@ mono-agent restart
 mono-agent status
 ```
 
-`validate` checks the edited configuration; `restart` is what actually loads it. A running agent keeps serving the previous config until the restart succeeds, so fix every `[error]` section first. Do not put secrets in JSON or identity files: channel and provider credentials belong in an owner-only `.env` or the provider's auth store, and guided setup is the only thing that writes them. For the full config surface, see [Configuration](/config/) and the [CLI reference](/observability/cli-reference/).
+For a foreground agent, stop it with Ctrl-C in the terminal that owns it, then start it again:
+
+```bash
+mono-agent validate
+mono-agent start --foreground
+```
+
+Watch the new start output for errors. There is no foreground variant of `restart`, and `mono-agent status` does not track a foreground process. `validate` checks the edited configuration; the restart — or the new foreground start — is what actually loads it, and the agent keeps serving the previous config until then, so fix every `[error]` section first. The console is a separate process: leave its terminal open, and it reconnects to the agent once the agent is running again.
+
+Do not put secrets in JSON or identity files: channel and provider credentials belong in an owner-only `.env` or the provider's auth store. `mono-agent auth login` writes that store, and your own manual edits can too — guided setup is one writer, not the only one. For the full config surface, see [Configuration](/config/) and the [CLI reference](/observability/cli-reference/).
 
 ## Setup details: guided init, flags, and files
 

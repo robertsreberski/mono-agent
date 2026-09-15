@@ -99,9 +99,11 @@ colors. Theme choice is explicit rather than inferred from the hostname.
 The console intentionally has no application authentication or multi-user accounts. Anyone who can reach its HTTP listener can read retained conversations, upload files, cancel turns, send instructions to every discovered agent, and operate provider-authentication flows. Treat the listener as an owner-equivalent operator surface:
 
 - run it only on a trusted LAN or tailnet;
-- when other devices must not reach it, keep it local with the foreground `mono-agent web run --loopback`; a managed `start --loopback` narrows only the listener and may still publish an owned Tailscale Serve route;
+- when other devices must not reach it, bind the foreground `mono-agent web run --loopback` and confirm nothing else publishes it; a managed `start --loopback` narrows only the HTTP listener and may publish an owned Tailscale Serve route, and a foreground run does not remove a Serve route, reverse proxy, or tunnel that already points at the port;
 - do not publish port `5050` through a public router, tunnel, or unrestricted reverse proxy;
 - keep operating-system and Tailscale network admission controls as the access boundary.
+
+Foreground startup changes only the listener. A Serve handler, reverse proxy, or tunnel that already points at the port keeps working until you remove it yourself, so inspect `tailscale serve status` and your own proxy configuration before relying on loopback for local-only access — this matters most for a machine that ran a managed console before.
 
 The server rejects unexpected Host/Origin combinations and does not enable cross-origin API access, but those checks are browser request-integrity controls, not authentication. Cron mutations additionally require the addressed agent's operator API key, an explicit agent-side opt-in, a source-qualified job route, and an agent-issued confirmation; those gates do not turn the web console into a multi-user authenticated application. Plain LAN HTTP is not encrypted. Tailscale transport protects direct tailnet traffic, while Tailscale Serve provides browser-trusted HTTPS when available.
 

@@ -84,7 +84,7 @@ Passing any flag, `--yes`, or running without a TTY skips the wizard: `init` wri
 
 ## Make it yours
 
-Everything below is configuration in the same one file. Edit `mono-agent.config.json` (and `IDENTITY.md`), then apply the change with `mono-agent validate` followed by `mono-agent restart` — a running agent keeps serving the old config until that restart. Start with the defaults, then add what you need:
+Everything below is configuration in the same one file. Edit `mono-agent.config.json` (and `IDENTITY.md`), then apply the change: a background service loads it with `mono-agent validate` followed by `mono-agent restart` (and `mono-agent status` confirms the result), while a foreground agent is stopped with Ctrl-C in the terminal that owns it, validated, and started again with `mono-agent start --foreground`. `restart` and `status` target the managed background instance, not a foreground process. Either way the running agent keeps serving the old config until it restarts, and the console is a separate process you can leave running. Start with the defaults, then add what you need:
 
 - **Models and fallbacks** — `runtime.model` takes any `<provider>:<model>` ref; add ordered `runtime.fallbacks` and per-route effort. Local providers use `providers.local`. Start with [Runtime & providers](./docs/runtime/index.md).
 - **Tools and safety** — the tool surface is allow-all by default; narrow it with `tools.allowedTools`, or go chat-only with `[]`. [Tool policy](./docs/tools/policy.md) and the [sandbox](./docs/tools/sandbox.md) are the two separate controls.
