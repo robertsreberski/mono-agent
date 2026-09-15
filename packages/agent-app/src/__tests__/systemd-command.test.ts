@@ -35,6 +35,14 @@ const service = { loadState: "loaded", activeState: "active", subState: "running
 const args = (action: string) => parseCliArgs([action, "--config", "/agent/config.json"]);
 const output = () => ({ stdout: { write: vi.fn() }, stderr: { write: vi.fn() } });
 
+/**
+ * The exact managed worker invocation `workerArgv` writes: `env -i`, then the
+ * selected environment assignments, then node, the `--` separator and the CLI
+ * entrypoint, then the command.
+ */
+const managedWebArgv = (...args: readonly string[]): string[] =>
+  ["/usr/bin/env", "-i", "PATH=/usr/bin", "/usr/bin/node", "--", "/managed/dist/cli.js", ...args];
+
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.inspect.mockResolvedValue(service);
@@ -186,7 +194,13 @@ describe("Linux web command composition", () => {
   });
 
   it("preserves installed endpoint, theme, and allowed hosts on restart", async () => {
-    mocks.read.mockResolvedValue({ argv: ["MONO_AGENT_WEB_ALLOWED_HOSTS=example.ts.net", "web", "run", "--host", "127.0.0.1", "--port", "6060", "--theme", "plum"] });
+    mocks.read.mockResolvedValue({
+      argv: [
+        "/usr/bin/env", "-i", "PATH=/usr/bin", "MONO_AGENT_WEB_ALLOWED_HOSTS=example.ts.net",
+        "/usr/bin/node", "--", "/managed/dist/cli.js",
+        "web", "run", "--host", "127.0.0.1", "--port", "6060", "--theme", "plum",
+      ],
+    });
     mocks.health.mockResolvedValue(true);
     expect(await runSystemdWebCommand({ positionals: ["restart"], env: {} }, output())).toBe(0);
     expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining([
@@ -196,7 +210,7 @@ describe("Linux web command composition", () => {
   });
 
   it("persists an operator-chosen console name into the unit argv", async () => {
-    mocks.read.mockResolvedValue({ argv: ["web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum"] });
+    mocks.read.mockResolvedValue({ argv: managedWebArgv("web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum") });
     mocks.health.mockResolvedValue(true);
     expect(await runSystemdWebCommand(
       { positionals: ["restart"], env: {}, name: "Flockbox" },
@@ -206,14 +220,14 @@ describe("Linux web command composition", () => {
   });
 
   it("preserves the installed console name when restart does not override it", async () => {
-    mocks.read.mockResolvedValue({ argv: ["web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum", "--name", "Flockbox"] });
+    mocks.read.mockResolvedValue({ argv: managedWebArgv("web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum", "--name", "Flockbox") });
     mocks.health.mockResolvedValue(true);
     expect(await runSystemdWebCommand({ positionals: ["restart"], env: {} }, output())).toBe(0);
     expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining(["--name", "Flockbox"]));
   });
 
   it("clears the installed console name when restart receives the reset sentinel", async () => {
-    mocks.read.mockResolvedValue({ argv: ["web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum", "--name", "Flockbox"] });
+    mocks.read.mockResolvedValue({ argv: managedWebArgv("web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum", "--name", "Flockbox") });
     mocks.health.mockResolvedValue(true);
     expect(await runSystemdWebCommand(
       { positionals: ["restart"], env: {}, name: "-" },
@@ -223,14 +237,14 @@ describe("Linux web command composition", () => {
   });
 
   it("leaves the console name out of the unit argv when none was chosen", async () => {
-    mocks.read.mockResolvedValue({ argv: ["web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum"] });
+    mocks.read.mockResolvedValue({ argv: managedWebArgv("web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum") });
     mocks.health.mockResolvedValue(true);
     expect(await runSystemdWebCommand({ positionals: ["restart"], env: {} }, output())).toBe(0);
     expect(mocks.start.mock.calls[0]![0].argv).not.toContain("--name");
   });
 
   it("probes the IPv6 loopback address for a bracketed wildcard listener", async () => {
-    mocks.read.mockResolvedValue({ argv: ["web", "run", "--host", "[::]", "--port", "5050", "--theme", "plum"] });
+    mocks.read.mockResolvedValue({ argv: managedWebArgv("web", "run", "--host", "[::]", "--port", "5050", "--theme", "plum") });
     mocks.health.mockResolvedValue(true);
     expect(await runSystemdWebCommand({ positionals: ["restart"], env: {} }, output())).toBe(0);
     expect(mocks.health).toHaveBeenCalledWith("http://[::1]:5050/healthz");
@@ -244,10 +258,85 @@ describe("Linux web command composition", () => {
   });
 
   it("allows an owned active console to restart on a new host at the same port", async () => {
-    mocks.read.mockResolvedValue({ argv: ["web", "run", "--host", "0.0.0.0", "--port", "5050", "--theme", "plum"] });
+    mocks.read.mockResolvedValue({ argv: managedWebArgv("web", "run", "--host", "0.0.0.0", "--port", "5050", "--theme", "plum") });
     mocks.health.mockResolvedValue(true);
     expect(await runSystemdWebCommand({ positionals: ["restart"], env: {}, loopback: true }, output())).toBe(0);
     expect(mocks.start).toHaveBeenCalledOnce();
     expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining(["--host", "127.0.0.1", "--port", "5050"]));
+  });
+
+  it("binds loopback on a fresh install with no installed unit", async () => {
+    mocks.inspect.mockResolvedValue({ ...service, activeState: "inactive", pid: 0 });
+    // Nothing answers before the install; the service is healthy once started.
+    mocks.health.mockResolvedValueOnce(false).mockResolvedValue(true);
+    expect(await runSystemdWebCommand({ positionals: ["start"], env: {} }, output())).toBe(0);
+    expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining(["--host", "127.0.0.1", "--port", "5050"]));
+  });
+
+  it("keeps the historical wide bind of an installed unit that never recorded --host", async () => {
+    mocks.read.mockResolvedValue({ argv: managedWebArgv("web", "run", "--port", "5050", "--theme", "plum") });
+    mocks.health.mockResolvedValue(true);
+    expect(await runSystemdWebCommand({ positionals: ["restart"], env: {} }, output())).toBe(0);
+    expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining(["--host", "0.0.0.0", "--port", "5050"]));
+  });
+
+  it("preserves an installed unit's explicit host", async () => {
+    mocks.read.mockResolvedValue({ argv: managedWebArgv("web", "run", "--host", "10.0.0.5", "--port", "6060", "--theme", "plum") });
+    mocks.health.mockResolvedValue(true);
+    expect(await runSystemdWebCommand({ positionals: ["restart"], env: {} }, output())).toBe(0);
+    expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining(["--host", "10.0.0.5", "--port", "6060"]));
+  });
+
+  it("refuses a malformed installed unit before any mutation", async () => {
+    const cases: ReadonlyArray<readonly string[]> = [
+      managedWebArgv("web", "run", "--host", "0.0.0.0", "--port", "not-a-number", "--theme", "plum"),
+      managedWebArgv("web", "run", "--host", "0.0.0.0", "--port", "5050", "--port", "5051", "--theme", "plum"),
+      managedWebArgv("web", "run", "--host", "0.0.0.0", "--theme", "plum"),
+      ["/bin/echo", "--host", "0.0.0.0", "--port", "5050", "--theme", "plum"],
+    ];
+    for (const argv of cases) {
+      mocks.read.mockResolvedValue({ argv });
+      mocks.health.mockResolvedValue(true);
+      const deps = output();
+      expect(await runSystemdWebCommand({ positionals: ["restart"], env: {} }, deps)).toBe(1);
+      expect(deps.stderr.write).toHaveBeenCalledWith(expect.stringContaining("not a recognized managed web invocation"));
+      expect(mocks.start).not.toHaveBeenCalled();
+      expect(mocks.stop).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps a malformed installed unit unknown in status without probing it", async () => {
+    mocks.read.mockResolvedValue({
+      argv: managedWebArgv("web", "run", "--host", "0.0.0.0", "--port", "not-a-number", "--theme", "plum"),
+    });
+    const deps = output();
+    expect(await runSystemdWebCommand({ positionals: ["status"], json: true, env: {} }, deps)).toBe(1);
+    const status = JSON.parse(deps.stdout.write.mock.calls[0]![0] as string) as {
+      ok: boolean;
+      listener: { host: null; port: null; url: null; source: string };
+      definitionError: string | null;
+    };
+    expect(status.ok).toBe(false);
+    expect(status.listener).toMatchObject({ host: null, port: null, url: null, source: "unknown" });
+    expect(status.definitionError).toContain("not a recognized managed web definition");
+    expect(mocks.health).not.toHaveBeenCalled();
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  it("reports listener and externally managed HTTPS routes in JSON status", async () => {
+    mocks.health.mockResolvedValue(true);
+    const deps = output();
+    expect(await runSystemdWebCommand({ positionals: ["status"], json: true, env: {} }, deps)).toBe(0);
+    const status = JSON.parse(deps.stdout.write.mock.calls[0]![0] as string) as {
+      ok: boolean;
+      listener: { host: string; port: number; url: string };
+      ownedTailscaleRoute: { state: string };
+      note: string;
+    };
+    expect(status.ok).toBe(true);
+    expect(status.listener).toMatchObject({ host: "127.0.0.1", port: 5050, url: "http://127.0.0.1:5050/" });
+    expect(status.ownedTailscaleRoute.state).toBe("not-managed");
+    expect(status.note).toContain("not inspected");
+    expect(deps.stdout.write).toHaveBeenCalledOnce();
   });
 });

@@ -31,7 +31,8 @@ export const PRESET_CATALOG: readonly WizardPreset[] = [
     description: "Webhook loopback, no credentials, no memory — the lowest-friction smoke agent.",
     riskLevel: "low",
     playbook: "webhook-automation-sync-async.md",
-    answers: {},
+    // Explicit, not inherited: the browser-first default selects no channel.
+    answers: { channels: ["channel:webhook"] },
   },
   {
     id: "telegram-assistant",

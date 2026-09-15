@@ -10,6 +10,7 @@ import {
   DEFAULT_WEB_HOST,
   DEFAULT_WEB_PORT,
   ensureTailscaleServe,
+  LEGACY_DEFAULT_WEB_HOST,
   removeOwnedTailscaleServe,
   runWebCommand,
   tailscaleProxyTarget,
@@ -17,9 +18,10 @@ import {
   webPaths,
   WEB_LAUNCHD_LABEL,
 } from "../web-command.js";
-import type { CommandRunner } from "../web-command.js";
+import type { CommandRunner, RunWebCommandDeps } from "../web-command.js";
 import {
   buildWebMaintenancePlistXml,
+  buildWebPlistXml,
   WEB_MAINTENANCE_LAUNCHD_LABEL,
   webMaintenanceCalendarMinute,
 } from "../launchd.js";
@@ -126,15 +128,15 @@ describe("runWebCommand", () => {
     expect(output).toContain("service");
     expect(output).toContain("stopped");
     expect(output).toContain("evergreen");
+    // Fresh install default: a pristine console binds loopback and reports no
+    // owned route; no LAN/tailnet URL is advertised without an explicit --host.
     expect(output).toContain("http://127.0.0.1:5050/");
-    expect(output).toContain("http://192.168.2.42:5050/");
-    expect(output).toContain("http://100.64.0.7:5050/");
+    expect(output).toContain("mono-agent-owned Tailscale route: none");
+    expect(output).toContain("--share-tailnet");
+    expect(output).not.toContain("http://192.168.2.42:5050/");
+    expect(output).not.toContain("http://100.64.0.7:5050/");
     expect(output).not.toContain("fd7a:115c:a1e0::7");
-    expect(output.match(/http:\/\/192\.168\.2\.42:5050\//gu)).toHaveLength(1);
     expect(output).not.toContain("203.0.113.9");
-    expect(output).not.toContain("2001:4860:4860::8888");
-    expect(output).not.toContain("http://[fe80::7]:5050/");
-    expect(output).not.toContain("fe80::7%25en0");
     expect(output).not.toContain("http://0.0.0.0:5050/");
     expect(startServer).not.toHaveBeenCalled();
     expect(resetState).not.toHaveBeenCalled();
@@ -1047,7 +1049,7 @@ describe("runWebCommand", () => {
   it("restores and reboots the previous worker when a restart replacement never becomes healthy", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     await prepareState({ stateDir: paths.stateDir });
     await mkdir(paths.launchd.launchAgentsDir, { mode: 0o700 });
     const oldPlist = "old verified plist\n";
@@ -1149,7 +1151,7 @@ describe("runWebCommand", () => {
   it("publishes the helper from the fresh composite main identity before either bootstrap", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     const launchd = pairedLaunchctlFixture();
 
     await expect(runWebCommand(
@@ -1187,7 +1189,7 @@ describe("runWebCommand", () => {
   it("regenerates the helper after a byte-identical main rewrite with a new inode identity", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     const launchd = pairedLaunchctlFixture();
     const deps = {
       platform: "darwin" as const,
@@ -1305,7 +1307,7 @@ describe("runWebCommand", () => {
   it("never bootstraps a partial pair when helper regeneration fails", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     const launchd = pairedLaunchctlFixture();
     const writer = async (path: string, contents: string): Promise<void> => {
       if (path === paths.maintenancePlistPath) throw new Error("injected helper publication failure");
@@ -1338,7 +1340,7 @@ describe("runWebCommand", () => {
   it("removes a partial first-start publication when the plist write fails", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     let writes = 0;
     const writePrivateFile = async (path: string, contents: string) => {
       writes += 1;
@@ -1374,7 +1376,7 @@ describe("runWebCommand", () => {
   it("pins the node's exact Tailscale DNS hostname into the worker before claiming Serve", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     let loaded = false;
     const launchctl = async (args: readonly string[]) => {
       if (args[0] === "print") return { code: loaded ? 0 : 1, stdout: loaded ? "pid = 777\n" : "", stderr: "" };
@@ -1398,6 +1400,7 @@ describe("runWebCommand", () => {
       {
         positionals: ["start"],
         theme: "terracotta",
+        shareTailnet: true,
         env: {
           MONO_AGENT_WEB_ALLOWED_HOSTS: "console.home.arpa",
           MONO_AGENT_WEB_PUSH_SUBJECT: "mailto:owner@example.test",
@@ -1561,7 +1564,7 @@ describe("runWebCommand", () => {
     const home = await testHome();
     const paths = webPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, {
       homeDir: home,
       tailscale: scriptedClaimRunner(),
@@ -1621,7 +1624,7 @@ describe("runWebCommand", () => {
   it("boots out a partially loaded first start and removes its artifacts after bootstrap failure", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     let loaded = false;
     const calls: string[][] = [];
     const launchctl = async (args: readonly string[]) => {
@@ -1668,7 +1671,7 @@ describe("runWebCommand", () => {
   it("stops a crash-looping first start and removes its artifacts after readiness timeout", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     let loaded = false;
     const calls: string[][] = [];
     const launchctl = async (args: readonly string[]) => {
@@ -2153,8 +2156,8 @@ describe("Tailscale Serve ownership", () => {
       tailscale: runner,
       writePrivateFile: async () => { throw new Error("disk full"); },
     });
-    expect(result).toMatchObject({ kind: "unavailable" });
-    expect(result.kind === "unavailable" ? result.detail : "").toContain("rolled back");
+    expect(result).toMatchObject({ kind: "unavailable", routeOutcome: "rolled-back" });
+    expect(result.kind === "unavailable" ? result.detail : "").toContain("absence was verified");
     expect(runner).toHaveBeenCalledWith(["serve", "--https=443", "off"]);
   });
 
@@ -2188,16 +2191,1091 @@ describe("Tailscale Serve ownership", () => {
   });
 });
 
-function scriptedClaimRunner(): CommandRunner {
-  let reads = 0;
+/**
+ * A managed-start harness: paired launchd fixture, captured stdout/stderr, and
+ * deps that always prove the replacement worker healthy unless overridden.
+ */
+async function managedStartHarness(home: string, overrides: Partial<RunWebCommandDeps> = {}) {
+  await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
+  const fixture = pairedLaunchctlFixture();
+  const captured = { stdout: "", stderr: "" };
+  const deps: RunWebCommandDeps = {
+    platform: "darwin" as NodeJS.Platform,
+    homeDir: home,
+    getuid: () => 501,
+    prepareState,
+    acquireLifecycleLock: async () => async () => undefined,
+    launchctl: fixture.runner,
+    sleep: async () => undefined,
+    ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
+    healthcheck: async () => true,
+    isAlive: fixture.isAlive,
+    stdout: { write: (text: string) => { captured.stdout += text; } },
+    stderr: { write: (text: string) => { captured.stderr += text; } },
+    ...overrides,
+  };
+  return { fixture, captured, deps };
+}
+
+const EXACT_ABSENT_OWNERSHIP = {
+  schema: "mono-agent.web-tailscale-serve.v1",
+  webKey: "host.example.ts.net:8443",
+  httpsPort: 8443,
+  proxyTarget: "http://127.0.0.1:5050",
+  configSha256: "a".repeat(64),
+  url: "https://host.example.ts.net:8443/",
+  configuredAt: new Date(0).toISOString(),
+};
+
+/** The macOS managed worker prefix `buildWebLaunchdProgramArguments` writes before `web run …`. */
+const managedWebArgv = (...args: readonly string[]): string[] =>
+  ["/usr/bin/env", "-i", "PATH=/usr/bin", "/managed/node", "/managed/dist/cli.js", ...args];
+
+/** Reports the node DNS name and an empty Serve table (the owned route is absent). */
+function absentRouteRunner(): CommandRunner {
   return async (args) => {
     if (args[0] === "serve" && args[1] === "status") {
+      return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {} }) };
+    }
+    if (args[0] === "status") {
+      return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+    }
+    return { code: 1, stderr: "unexpected command", stdout: "" };
+  };
+}
+
+describe("web console exposure contract", () => {
+  it("binds loopback on a pristine start and never runs the Tailscale CLI", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    const tailscale = vi.fn(absentRouteRunner());
+    const { captured, deps } = await managedStartHarness(home, { tailscale });
+
+    expect(await runWebCommand({ positionals: ["start"], env: {} }, deps)).toBe(0);
+
+    expect(tailscale).not.toHaveBeenCalled();
+    const plist = await readFile(paths.launchd.plistPath, "utf8");
+    expect(plist).toContain("<string>--host</string>");
+    expect(plist).toContain(`<string>${DEFAULT_WEB_HOST}</string>`);
+    expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).toMatchObject({
+      host: DEFAULT_WEB_HOST,
+      port: DEFAULT_WEB_PORT,
+    });
+    expect(captured.stdout).toContain("mono-agent-owned Tailscale route: none");
+    expect(captured.stdout).toContain(`http://${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)}/`);
+    expect(captured.stdout).not.toContain(LEGACY_DEFAULT_WEB_HOST);
+    expect(captured.stderr).not.toContain("Tailscale");
+  });
+
+  it("recovers a stopped install's published bind from its LaunchAgent definition", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, buildWebPlistXml({
+      label: WEB_LAUNCHD_LABEL,
+      nodePath: "/managed/node",
+      cliPath: "/managed/dist/cli.js",
+      cwd: paths.stateDir,
+      host: LEGACY_DEFAULT_WEB_HOST,
+      port: 5051,
+      theme: "plum",
+      name: "Legacy Console",
+      stdoutPath: paths.launchd.stdoutPath,
+      stderrPath: paths.launchd.stderrPath,
+      environment: {},
+    }), { mode: 0o600 });
+    // No service record: this install is stopped, not fresh.
+    const { deps } = await managedStartHarness(home);
+
+    expect(await runWebCommand({ positionals: ["start"], env: {} }, deps)).toBe(0);
+
+    const record = JSON.parse(await readFile(paths.recordPath, "utf8")) as Record<string, unknown>;
+    expect(record).toMatchObject({ host: LEGACY_DEFAULT_WEB_HOST, port: 5051, theme: "plum", name: "Legacy Console" });
+    const plist = await readFile(paths.launchd.plistPath, "utf8");
+    expect(plist).toContain(`<string>${LEGACY_DEFAULT_WEB_HOST}</string>`);
+    expect(plist).toContain("<string>5051</string>");
+    expect(plist).toContain("<string>Legacy Console</string>");
+  });
+
+  it("refuses to start over an unvalidated existing definition without mutating it", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "not a plist\n", { mode: 0o600 });
+    const { fixture, captured, deps } = await managedStartHarness(home);
+
+    expect(await runWebCommand({ positionals: ["start"], env: {} }, deps)).toBe(1);
+
+    expect(captured.stderr).toContain("could not be validated");
+    expect(await readFile(paths.launchd.plistPath, "utf8")).toBe("not a plist\n");
+    expect(fixture.calls.some((args) => args[0] === "bootstrap")).toBe(false);
+    await expect(readFile(paths.recordPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the healthy worker and exits nonzero when an explicit share cannot resolve the DNS name", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    const { fixture, captured, deps } = await managedStartHarness(home, { tailscale: unavailableTailscaleRunner() });
+
+    expect(await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, deps)).toBe(1);
+
+    expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+    expect(captured.stderr).toContain("Sharing failed:");
+    expect(captured.stderr).toContain("No Tailscale handler was changed by this command");
+    expect(captured.stderr).not.toContain("route was created");
+    expect(captured.stdout).toContain(`http://${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)}/`);
+    expect(captured.stdout).not.toContain("Tailscale route: http");
+    await expect(stat(paths.tailscalePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the healthy worker and exits nonzero when the ownership record is invalid", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await writeFile(paths.tailscalePath, "{\"schema\":\"not-ours\"}\n", { mode: 0o600 });
+    const { fixture, captured, deps } = await managedStartHarness(home, { tailscale: absentRouteRunner() });
+
+    expect(await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, deps)).toBe(1);
+
+    expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+    expect(captured.stderr).toContain("Sharing failed:");
+    expect(await readFile(paths.tailscalePath, "utf8")).toBe("{\"schema\":\"not-ours\"}\n");
+  });
+
+  it("keeps the healthy worker and exits nonzero when the explicit share claim fails", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "serve" && args[1] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {} }) };
+      }
+      if (args[0] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+      }
+      return { code: 1, stderr: "serve failed", stdout: "" };
+    };
+    const { fixture, captured, deps } = await managedStartHarness(home, { tailscale: runner });
+
+    expect(await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, deps)).toBe(1);
+
+    expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+    expect(calls).toContainEqual(["serve", "--bg", "--https=443", "http://127.0.0.1:5050"]);
+    expect(captured.stderr).toContain("Sharing failed:");
+    // A failed claim is not proof that nothing was created: never assert absence.
+    expect(captured.stderr).toContain("A Tailscale handler may remain");
+    expect(captured.stderr).toContain("attempted HTTPS port 443 -> http://127.0.0.1:5050");
+    expect(captured.stderr).toContain("tailscale serve status");
+    expect(captured.stderr).not.toContain("route was created");
+    await expect(stat(paths.tailscalePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the healthy worker and exits nonzero when ownership cannot be recorded", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    const runner = vi.fn(scriptedClaimRunner());
+    const { fixture, captured, deps } = await managedStartHarness(home, {
+      tailscale: runner,
+      writePrivateFile: async (path: string, contents: string) => {
+        if (path === paths.tailscalePath) throw new Error("disk full");
+        await writeFile(path, contents, { mode: 0o600 });
+      },
+    });
+
+    expect(await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, deps)).toBe(1);
+
+    expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+    expect(captured.stderr).toContain("Sharing failed:");
+    expect(captured.stderr).toContain("The newly created Tailscale handler was rolled back; no mono-agent-owned route remains");
+    expect(captured.stderr).toContain("attempted HTTPS port 443");
+    expect(runner).toHaveBeenCalledWith(["serve", "--https=443", "off"]);
+  });
+
+  it("does not create a route for a proven-absent ownership record without --share-tailnet", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await writeFile(paths.tailscalePath, `${JSON.stringify(EXACT_ABSENT_OWNERSHIP, undefined, 2)}\n`, { mode: 0o600 });
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (args) => {
+      calls.push([...args]);
+      return await absentRouteRunner()(args);
+    };
+    const { captured, deps } = await managedStartHarness(home, { tailscale: runner });
+
+    expect(await runWebCommand({ positionals: ["start"], env: {} }, deps)).toBe(0);
+
+    expect(calls.some((args) => args[0] === "serve" && args[1] === "--bg")).toBe(false);
+    await expect(stat(paths.tailscalePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(captured.stdout).toContain("mono-agent-owned Tailscale route: none");
+  });
+
+  it("refuses --share-tailnet on a bare start when the console is already managed", async () => {
+    const home = await testHome();
+    const fixture = pairedLaunchctlFixture({ worker: true, helper: true });
+    const captured = { stdout: "", stderr: "" };
+    const code = await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, {
+      platform: "darwin" as NodeJS.Platform,
+      homeDir: home,
+      getuid: () => 501,
+      prepareState,
+      launchctl: fixture.runner,
+      stdout: { write: (text: string) => { captured.stdout += text; } },
+      stderr: { write: (text: string) => { captured.stderr += text; } },
+    });
+
+    expect(code).toBe(1);
+    expect(captured.stderr).toContain("mono-agent web restart --share-tailnet");
+  });
+
+  it("rejects --share-tailnet for the Linux managed lifecycle", async () => {
+    const home = await testHome();
+    const captured = { stdout: "", stderr: "" };
+    const code = await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, {
+      platform: "linux" as NodeJS.Platform,
+      homeDir: home,
+      stdout: { write: (text: string) => { captured.stdout += text; } },
+      stderr: { write: (text: string) => { captured.stderr += text; } },
+    });
+
+    expect(code).toBe(2);
+    expect(captured.stderr).toContain("Linux HTTPS routes are externally managed");
+  });
+
+  it("reports the listener and the owned route separately, including JSON", async () => {
+    const home = await testHome();
+    const human = { stdout: "", stderr: "" };
+    const humanCode = await runWebCommand({ positionals: ["status"], env: {} }, {
+      platform: "freebsd" as NodeJS.Platform,
+      homeDir: home,
+      stdout: { write: (text: string) => { human.stdout += text; } },
+      stderr: { write: (text: string) => { human.stderr += text; } },
+    });
+    expect(humanCode).toBe(1);
+    expect(human.stdout).toContain("listener");
+    expect(human.stdout).toContain(`127.0.0.1:${String(DEFAULT_WEB_PORT)}`);
+    expect(human.stdout).toContain("mono-agent-owned Tailscale route: none");
+    expect(human.stdout).toContain("other proxies and routes are not inspected");
+    expect(human.stdout).toContain("no application login");
+    expect(human.stdout).not.toMatch(/this computer only/iu);
+
+    const jsonOutput = { stdout: "", stderr: "" };
+    const jsonCode = await runWebCommand({ positionals: ["status"], json: true, env: {} }, {
+      platform: "freebsd" as NodeJS.Platform,
+      homeDir: home,
+      stdout: { write: (text: string) => { jsonOutput.stdout += text; } },
+      stderr: { write: (text: string) => { jsonOutput.stderr += text; } },
+    });
+    expect(jsonCode).toBe(1);
+    const status = JSON.parse(jsonOutput.stdout) as {
+      ok: boolean;
+      listener: { host: string; port: number; url: string; source: string; provenRunning: boolean };
+      ownedTailscaleRoute: { state: string };
+      authentication: string;
+      note: string;
+    };
+    expect(status.ok).toBe(false);
+    expect(status.listener).toEqual({
+      host: DEFAULT_WEB_HOST,
+      port: DEFAULT_WEB_PORT,
+      url: `http://${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)}/`,
+      source: "fresh default",
+      provenRunning: false,
+    });
+    expect(status.ownedTailscaleRoute.state).toBe("none");
+    expect(status.authentication).toBe("none");
+    expect(status.note).toContain("not inspected");
+  });
+
+  it("refuses a foreign or ambiguous persisted definition without touching launchd", async () => {
+    const cases: ReadonlyArray<readonly string[]> = [
+      // An unrelated command with plausible values is not a managed web definition.
+      ["/bin/echo", "--host", "0.0.0.0", "--port", "5051", "--theme", "plum"],
+      // Duplicate options are ambiguous, not a last-one-wins invitation.
+      [...managedWebArgv("web", "run", "--host", "0.0.0.0", "--port", "5051", "--port", "5052", "--theme", "plum")],
+      // A non-numeric port must never reach a definition.
+      [...managedWebArgv("web", "run", "--host", "0.0.0.0", "--port", "not-a-number", "--theme", "plum")],
+      // Padded foreign launchers: an env prefix and a valid option list are not
+      // enough when the executable/entrypoint filenames are not the managed ones.
+      ["/usr/bin/env", "-i", "/bin/echo", "/managed/dist/cli.js", "web", "run", "--host", "0.0.0.0", "--port", "5051", "--theme", "plum"],
+      ["/usr/bin/env", "-i", "/usr/bin/node", "/bin/echo", "web", "run", "--host", "0.0.0.0", "--port", "5051", "--theme", "plum"],
+    ];
+    for (const argv of cases) {
+      const home = await testHome();
+      const paths = webPaths(home);
+      await prepareState({ stateDir: paths.stateDir });
+      await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+      const plist = buildWebPlistXml({
+        label: WEB_LAUNCHD_LABEL,
+        nodePath: "/managed/node",
+        cliPath: "/managed/dist/cli.js",
+        cwd: paths.stateDir,
+        host: "0.0.0.0",
+        port: 5051,
+        theme: "plum",
+        stdoutPath: paths.launchd.stdoutPath,
+        stderrPath: paths.launchd.stderrPath,
+        environment: {},
+      });
+      // Replace the managed argv with the case under test while keeping a valid plist.
+      const foreign = plist.replace(
+        /<array>[\s\S]*?<\/array>/u,
+        `<array>\n${argv.map((token) => `    <string>${token}</string>`).join("\n")}\n  </array>`,
+      );
+      await writeFile(paths.launchd.plistPath, foreign, { mode: 0o600 });
+      const runtime = vi.fn(async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }));
+      const { fixture, captured, deps } = await managedStartHarness(home, { ensureManagedRuntime: runtime });
+
+      expect(await runWebCommand({ positionals: ["start"], env: {} }, deps)).toBe(1);
+
+      expect(captured.stderr).toContain("could not be validated");
+      expect(runtime).not.toHaveBeenCalled();
+      expect(fixture.calls.some((args) => args[0] === "bootout")).toBe(false);
+      expect(fixture.calls.some((args) => args[0] === "bootstrap")).toBe(false);
+      expect(await readFile(paths.launchd.plistPath, "utf8")).toBe(foreign);
+      await expect(stat(paths.recordPath)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it("keeps a loaded maintenance helper untouched when the main definition is invalid", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "not a plist\n", { mode: 0o600 });
+    const fixture = pairedLaunchctlFixture({ worker: false, helper: true });
+    const runtime = vi.fn(async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }));
+    const captured = { stdout: "", stderr: "" };
+    const code = await runWebCommand({ positionals: ["start"], env: {} }, {
+      platform: "darwin" as NodeJS.Platform,
+      homeDir: home,
+      getuid: () => 501,
+      prepareState,
+      acquireLifecycleLock: async () => async () => undefined,
+      launchctl: fixture.runner,
+      sleep: async () => undefined,
+      ensureManagedRuntime: runtime,
+      healthcheck: async () => true,
+      isAlive: fixture.isAlive,
+      stdout: { write: (text: string) => { captured.stdout += text; } },
+      stderr: { write: (text: string) => { captured.stderr += text; } },
+    });
+
+    expect(code).toBe(1);
+    expect(captured.stderr).toContain("could not be validated");
+    expect(fixture.loaded.get(WEB_MAINTENANCE_LAUNCHD_LABEL)).toBe(true);
+    expect(runtime).not.toHaveBeenCalled();
+    expect(fixture.calls.some((args) => args[0] === "bootout")).toBe(false);
+    expect(fixture.calls.some((args) => args[0] === "bootstrap")).toBe(false);
+    expect(await readFile(paths.launchd.plistPath, "utf8")).toBe("not a plist\n");
+  });
+
+  it("reports a stopped install's recovered listener instead of the fresh default", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, buildWebPlistXml({
+      label: WEB_LAUNCHD_LABEL,
+      nodePath: "/managed/node",
+      cliPath: "/managed/dist/cli.js",
+      cwd: paths.stateDir,
+      host: LEGACY_DEFAULT_WEB_HOST,
+      port: 5051,
+      theme: "plum",
+      name: "Legacy Console",
+      stdoutPath: paths.launchd.stdoutPath,
+      stderrPath: paths.launchd.stderrPath,
+      environment: {},
+    }), { mode: 0o600 });
+    const captured = { stdout: "", stderr: "" };
+    const deps = {
+      platform: "freebsd" as NodeJS.Platform,
+      homeDir: home,
+      stdout: { write: (text: string) => { captured.stdout += text; } },
+      stderr: { write: (text: string) => { captured.stderr += text; } },
+    };
+
+    expect(await runWebCommand({ positionals: ["status"], env: {} }, deps)).toBe(1);
+    expect(captured.stdout).toContain(`0.0.0.0:5051 (configured; not proven running)`);
+    expect(captured.stdout).not.toContain(`127.0.0.1:5050`);
+    expect(captured.stdout).toContain("plum");
+
+    const jsonCaptured = { stdout: "", stderr: "" };
+    expect(await runWebCommand({ positionals: ["status"], json: true, env: {} }, {
+      ...deps,
+      stdout: { write: (text: string) => { jsonCaptured.stdout += text; } },
+      stderr: { write: (text: string) => { jsonCaptured.stderr += text; } },
+    })).toBe(1);
+    const status = JSON.parse(jsonCaptured.stdout) as {
+      listener: { host: string | null; port: number | null; source: string; provenRunning: boolean };
+      definitionError: string | null;
+    };
+    expect(status.listener).toMatchObject({
+      host: LEGACY_DEFAULT_WEB_HOST,
+      port: 5051,
+      source: "installed definition",
+      provenRunning: false,
+    });
+    expect(status.definitionError).toBeNull();
+  });
+
+  it("keeps an unreadable status definition unknown without probing it", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "not a plist\n", { mode: 0o600 });
+    const healthcheck = vi.fn(async () => true);
+    const captured = { stdout: "", stderr: "" };
+
+    expect(await runWebCommand({ positionals: ["status"], json: true, env: {} }, {
+      platform: "darwin" as NodeJS.Platform,
+      homeDir: home,
+      getuid: () => 501,
+      launchctl: pairedLaunchctlFixture().runner,
+      healthcheck,
+      stdout: { write: (text: string) => { captured.stdout += text; } },
+      stderr: { write: (text: string) => { captured.stderr += text; } },
+    })).toBe(1);
+
+    const status = JSON.parse(captured.stdout) as {
+      ok: boolean;
+      listener: { host: null; port: null; url: null; source: string };
+      definitionError: string | null;
+    };
+    expect(status.ok).toBe(false);
+    expect(status.listener).toMatchObject({ host: null, port: null, url: null, source: "unknown" });
+    expect(status.definitionError).toContain("could not be validated");
+    expect(healthcheck).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes unverifiable, changed, and missing owned routes in status", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await writeFile(paths.tailscalePath, `${JSON.stringify(EXACT_ABSENT_OWNERSHIP, undefined, 2)}\n`, { mode: 0o600 });
+
+    const statusWith = async (tailscale: CommandRunner) => {
+      const captured = { stdout: "", stderr: "" };
+      const code = await runWebCommand({ positionals: ["status"], json: true, env: {} }, {
+        platform: "freebsd" as NodeJS.Platform,
+        homeDir: home,
+        tailscale,
+        stdout: { write: (text: string) => { captured.stdout += text; } },
+        stderr: { write: (text: string) => { captured.stderr += text; } },
+      });
+      return { code, captured };
+    };
+
+    // Inspection failure is not evidence of a mismatch.
+    const failing = await statusWith(async (args) => {
+      if (args[0] === "serve" && args[1] === "status") return { code: 1, stdout: "", stderr: "LocalAPI unavailable" };
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    });
+    const failingStatus = JSON.parse(failing.captured.stdout) as {
+      ownedTailscaleRoute: { state: string; detail?: string };
+    };
+    expect(failingStatus.ownedTailscaleRoute.state).toBe("unverifiable");
+    expect(failingStatus.ownedTailscaleRoute.detail).toContain("LocalAPI unavailable");
+
+    // A different handler at the same port is a real mismatch.
+    const changed = await statusWith(async (args) => {
+      if (args[0] === "serve" && args[1] === "status") {
+        return {
+          code: 0,
+          stderr: "",
+          stdout: JSON.stringify({
+            TCP: { "8443": { HTTPS: true } },
+            Web: { "host.example.ts.net:8443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } },
+          }),
+        };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    });
+    const changedStatus = JSON.parse(changed.captured.stdout) as {
+      ownedTailscaleRoute: { state: string; detail?: string };
+    };
+    expect(changedStatus.ownedTailscaleRoute.state).toBe("changed");
+    expect(changedStatus.ownedTailscaleRoute.detail).toContain("does not match");
+
+    // The recorded handler is provably gone: report that, not a mismatch.
+    const missing = await statusWith(absentRouteRunner());
+    const missingStatus = JSON.parse(missing.captured.stdout) as {
+      ownedTailscaleRoute: { state: string; detail?: string };
+    };
+    expect(missingStatus.ownedTailscaleRoute.state).toBe("missing");
+    expect(missingStatus.ownedTailscaleRoute.detail).toContain("no longer present");
+
+    // Human output uses the same distinctions.
+    const human = { stdout: "", stderr: "" };
+    await runWebCommand({ positionals: ["status"], env: {} }, {
+      platform: "freebsd" as NodeJS.Platform,
+      homeDir: home,
+      tailscale: absentRouteRunner(),
+      stdout: { write: (text: string) => { human.stdout += text; } },
+      stderr: { write: (text: string) => { human.stderr += text; } },
+    });
+    expect(human.stdout).toContain("mono-agent-owned Tailscale route: missing");
+    await expect(stat(paths.tailscalePath)).resolves.toBeDefined();
+  });
+
+  it("never claims absence when an explicit share's cleanup could not be proven", async () => {
+    const home = await testHome();
+    const runner: CommandRunner = async (args) => {
+      if (args[0] === "serve" && args[1] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {} }) };
+      }
+      if (args[0] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+      }
+      // The claim fails, so ownership is never written and no rollback can be
+      // proven: the outcome must stay uncertain rather than claiming absence.
+      return { code: 1, stderr: "serve off failed", stdout: "" };
+    };
+    const { fixture, captured, deps } = await managedStartHarness(home, {
+      tailscale: runner,
+      writePrivateFile: async (path: string, contents: string) => {
+        if (path.endsWith("tailscale-serve.json")) throw new Error("disk full");
+        await writeFile(path, contents, { mode: 0o600 });
+      },
+    });
+
+    expect(await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, deps)).toBe(1);
+
+    expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+    expect(captured.stderr).toContain("Sharing failed:");
+    expect(captured.stderr).toContain("A Tailscale handler may remain");
+    expect(captured.stderr).toContain("attempted HTTPS port 443");
+    expect(captured.stderr).toContain("tailscale serve status");
+    expect(captured.stderr).not.toContain("no mono-agent-owned route remains");
+  });
+
+  it("reports a verification failure whose rollback is unverifiable as uncertain", async () => {
+    const home = await testHome();
+    let statusReads = 0;
+    const runner: CommandRunner = async (args) => {
+      if (args[0] === "serve" && args[1] === "status") {
+        statusReads += 1;
+        if (statusReads === 1) return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {} }) };
+        return { code: 1, stderr: "LocalAPI unavailable", stdout: "" };
+      }
+      if (args[0] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+      }
+      return { code: 0, stderr: "", stdout: "" };
+    };
+    const { fixture, captured, deps } = await managedStartHarness(home, { tailscale: runner });
+
+    expect(await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, deps)).toBe(1);
+
+    expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+    expect(captured.stderr).toContain("handler command succeeded but verification failed");
+    expect(captured.stderr).toContain("A Tailscale handler may remain");
+    expect(captured.stderr).not.toContain("no mono-agent-owned route remains");
+  });
+});
+
+
+describe("migration-aware Tailscale failure finalization (R1/R2)", () => {
+  /**
+   * A stateful managed-lifecycle harness: an owned route for
+   * `http://127.0.0.1:5050`, a prior service record/plist for port 5050, and a
+   * runner whose `serve status --json` reflects the modeled live route — except
+   * for the first post-claim verification read, which can be forced to report a
+   * foreign handler or nothing at all.
+   */
+  async function migrationHarness(options: {
+    readonly verificationReports: "route" | "foreign" | "none";
+    readonly ownershipWriteFailures: number;
+    readonly rollbackOffFails: boolean;
+  }) {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: home, tailscale: scriptedClaimRunner() });
+    const priorOwnership = await readFile(paths.tailscalePath, "utf8");
+    const oldPlist = "old 5050 plist\n";
+    const oldRecord = `${JSON.stringify({
+      schema: "mono-agent.web-service.v1",
+      host: "0.0.0.0",
+      port: 5050,
+      updatedAt: "2026-07-17T00:00:00.000Z",
+    }, undefined, 2)}\n`;
+    await writeFile(paths.launchd.plistPath, oldPlist, { mode: 0o600 });
+    await writeFile(paths.recordPath, oldRecord, { mode: 0o600 });
+
+    let loaded = true;
+    let currentTarget: string | undefined = "http://127.0.0.1:5050";
+    let verificationReadsRemaining = 0;
+    let claimArmed = false;
+    let rollbackOffFailuresArmed = false;
+    let ownershipWriteFailuresRemaining = options.ownershipWriteFailures;
+    const calls: string[][] = [];
+    const routeStatus = (target: string | undefined): Record<string, unknown> => target === undefined
+      ? { TCP: {}, Web: {} }
+      : {
+          TCP: { "443": { HTTPS: true } },
+          Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: target } } } },
+        };
+    const launchctl = async (args: readonly string[]) => {
+      calls.push([...args]);
+      if (args[0] === "print") return { code: loaded ? 0 : 1, stdout: loaded ? "pid = 777\n" : "", stderr: "" };
+      if (args[0] === "bootout") {
+        loaded = false;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "bootstrap") {
+        loaded = true;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+    const tailscale: CommandRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+      }
+      if (args[0] === "serve" && args[1] === "--bg") {
+        currentTarget = args[3];
+        // Only the verification read that follows the replacement claim is
+        // overridden; a later restore command must be verified honestly.
+        if (!claimArmed) {
+          claimArmed = true;
+          verificationReadsRemaining = 1;
+          rollbackOffFailuresArmed = true;
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "serve" && args[1] === "--https=443" && args[2] === "off") {
+        // The migration's own removal must succeed; only a post-claim rollback
+        // attempt can be forced to fail.
+        if (options.rollbackOffFails && rollbackOffFailuresArmed) {
+          return { code: 1, stdout: "", stderr: "off failed" };
+        }
+        currentTarget = undefined;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "serve" && args[1] === "status") {
+        if (verificationReadsRemaining > 0) {
+          verificationReadsRemaining -= 1;
+          if (options.verificationReports === "none") {
+            return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {}, Web: {} }) };
+          }
+          if (options.verificationReports === "foreign") {
+            return {
+              code: 0,
+              stderr: "",
+              stdout: JSON.stringify({
+                TCP: { "443": { HTTPS: true } },
+                Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } },
+              }),
+            };
+          }
+        }
+        return { code: 0, stderr: "", stdout: JSON.stringify(routeStatus(currentTarget)) };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+    const captured = { stdout: "", stderr: "" };
+    const deps = {
+      platform: "darwin" as NodeJS.Platform,
+      homeDir: home,
+      getuid: () => 501,
+      prepareState,
+      acquireLifecycleLock: async () => async () => undefined,
+      launchctl,
+      tailscale,
+      sleep: async () => undefined,
+      ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
+      healthcheck: async () => true,
+      isAlive: () => loaded,
+      stdout: { write: (text: string) => { captured.stdout += text; } },
+      stderr: { write: (text: string) => { captured.stderr += text; } },
+      writePrivateFile: async (path: string, contents: string) => {
+        if (path.endsWith("tailscale-serve.json") && ownershipWriteFailuresRemaining > 0) {
+          ownershipWriteFailuresRemaining -= 1;
+          throw new Error("disk full");
+        }
+        await writeFile(path, contents, { mode: 0o600 });
+      },
+    };
+    return {
+      paths,
+      calls,
+      captured,
+      deps,
+      priorOwnership,
+      oldPlist,
+      oldRecord,
+      state: () => ({ loaded, currentTarget }),
+    };
+  }
+
+  const bgTargets = (calls: readonly (readonly string[])[]): string[] =>
+    calls.filter((args) => args[0] === "serve" && args[1] === "--bg").map((args) => args[3] ?? "");
+
+  for (const shareTailnet of [false, true]) {
+    const flag = shareTailnet ? " with --share-tailnet" : " without --share-tailnet";
+
+    it(`rolls the worker back and restores the prior route when a 5050->5051 migration fails verification${flag}`, async () => {
+      const harness = await migrationHarness({ verificationReports: "none", ownershipWriteFailures: 0, rollbackOffFails: false });
+
+      const code = await runWebCommand(
+        { positionals: ["restart"], env: {}, port: 5051, ...(shareTailnet ? { shareTailnet: true } : {}) },
+        harness.deps,
+      );
+
+      // Final-state invariants: the replacement worker must not survive, and the
+      // prior exact route plus its ownership record must be live again.
+      expect(code).toBe(1);
+      expect(harness.state().loaded).toBe(true);
+      expect(harness.state().currentTarget).toBe("http://127.0.0.1:5050");
+      expect(await readFile(harness.paths.recordPath, "utf8")).toBe(harness.oldRecord);
+      expect(await readFile(harness.paths.launchd.plistPath, "utf8")).toBe(harness.oldPlist);
+      expect(await readFile(harness.paths.tailscalePath, "utf8")).toBe(harness.priorOwnership);
+      expect(bgTargets(harness.calls)).toEqual(["http://127.0.0.1:5051", "http://127.0.0.1:5050"]);
+      expect(harness.captured.stderr).toContain("migration failed");
+      expect(harness.captured.stderr).toContain("prior owned route was restored");
+    });
+
+    it(`rolls the worker back and reports an unrestorable prior route when the replacement may remain${flag}`, async () => {
+      const harness = await migrationHarness({ verificationReports: "none", ownershipWriteFailures: 0, rollbackOffFails: true });
+
+      const code = await runWebCommand(
+        { positionals: ["restart"], env: {}, port: 5051, ...(shareTailnet ? { shareTailnet: true } : {}) },
+        harness.deps,
+      );
+
+      expect(code).toBe(1);
+      expect(harness.state().loaded).toBe(true);
+      expect(harness.state().currentTarget).toBe("http://127.0.0.1:5051");
+      expect(await readFile(harness.paths.recordPath, "utf8")).toBe(harness.oldRecord);
+      expect(await readFile(harness.paths.launchd.plistPath, "utf8")).toBe(harness.oldPlist);
+      expect(harness.captured.stderr).toContain("migration failed");
+      expect(harness.captured.stderr).toContain("could not be confirmed restored");
+      // The replacement could not be provably removed, so the prior route must
+      // not be republished over it and the unknown handler must stay untouched.
+      expect(bgTargets(harness.calls)).toEqual(["http://127.0.0.1:5051"]);
+      // One off for the migration, one failed rollback attempt that left the
+      // replacement handler in place.
+      expect(harness.calls.filter((args) => args.join(" ") === "serve --https=443 off")).toHaveLength(2);
+    });
+
+    it(`rolls the worker back and restores the prior route when ownership cannot be recorded after migration${flag}`, async () => {
+      const harness = await migrationHarness({ verificationReports: "route", ownershipWriteFailures: 1, rollbackOffFails: false });
+
+      const code = await runWebCommand(
+        { positionals: ["restart"], env: {}, port: 5051, ...(shareTailnet ? { shareTailnet: true } : {}) },
+        harness.deps,
+      );
+
+      expect(code).toBe(1);
+      expect(harness.state().loaded).toBe(true);
+      expect(harness.state().currentTarget).toBe("http://127.0.0.1:5050");
+      expect(await readFile(harness.paths.recordPath, "utf8")).toBe(harness.oldRecord);
+      expect(await readFile(harness.paths.launchd.plistPath, "utf8")).toBe(harness.oldPlist);
+      expect(await readFile(harness.paths.tailscalePath, "utf8")).toBe(harness.priorOwnership);
+      expect(harness.captured.stderr).toContain("migration failed");
+      expect(harness.captured.stderr).toContain("prior owned route was restored");
+    });
+  }
+
+  it("does not restore a prior route while a Web-only handler occupies its port", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: home, tailscale: scriptedClaimRunner() });
+    const priorOwnership = await readFile(paths.tailscalePath, "utf8");
+    const calls: string[][] = [];
+    let reads = 0;
+    const runner: CommandRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+      }
+      if (args[0] === "serve" && args[1] === "status") {
+        reads += 1;
+        if (reads <= 2) {
+          return {
+            code: 0,
+            stderr: "",
+            stdout: JSON.stringify({
+              TCP: { "443": { HTTPS: true } },
+              Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:5050" } } } },
+            }),
+          };
+        }
+        if (reads <= 4) return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {}, Web: {} }) };
+        // A Web-only handler (no TCP entry) occupies the prior HTTPS port.
+        return {
+          code: 0,
+          stderr: "",
+          stdout: JSON.stringify({
+            TCP: {},
+            Web: { "other.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } },
+          }),
+        };
+      }
+      if (args[0] === "serve" && args[1] === "--https=443" && args[2] === "off") {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "serve" && args[1] === "--bg") {
+        // The 5051 claim fails after the prior route was already migrated away.
+        return { code: 1, stdout: "", stderr: "claim failed" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+
+    const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5051, {}, { homeDir: home, tailscale: runner });
+
+    expect(result).toMatchObject({ kind: "unavailable", routeOutcome: "uncertain", priorRouteRestored: false });
+    expect(calls.some((args) => args.join(" ") === "serve --bg --https=443 http://127.0.0.1:5050")).toBe(false);
+    // The refused restore must not republish an ownership record either.
+    await expect(stat(paths.tailscalePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(priorOwnership).toContain("http://127.0.0.1:5050");
+  });
+
+  it("reports both facts when the prior route is restored but the replacement may remain on another port", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: home, tailscale: scriptedClaimRunner() });
+    const exact = (port: number, target: string): string => JSON.stringify({
+      TCP: { [String(port)]: { HTTPS: true } },
+      Web: { [`host.example.ts.net:${String(port)}`]: { Handlers: { "/": { Proxy: target } } } },
+    });
+    const empty = JSON.stringify({ TCP: {}, Web: {} });
+    const calls: string[][] = [];
+    let reads = 0;
+    let ownershipWrites = 0;
+    const runner: CommandRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+      }
+      if (args[0] === "serve" && args[1] === "status") {
+        reads += 1;
+        if (reads <= 2) return { code: 0, stderr: "", stdout: exact(443, "http://127.0.0.1:5050") };
+        if (reads === 3) return { code: 0, stderr: "", stdout: empty };
+        if (reads === 4) {
+          // Another handler holds 443, so the replacement claims 8443.
+          return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: { "443": { HTTPS: true } }, Web: {} }) };
+        }
+        // Reads 5-6: claim verification and the rollback's post-off check, where
+        // the replacement handler survived the zero-exit off command.
+        if (reads <= 6) return { code: 0, stderr: "", stdout: exact(8443, "http://127.0.0.1:5051") };
+        // Read 7: the prior port is free again, so the restore may proceed.
+        if (reads === 7) return { code: 0, stderr: "", stdout: empty };
+        return { code: 0, stderr: "", stdout: exact(443, "http://127.0.0.1:5050") };
+      }
+      if (args[0] === "serve" && args[1] === "--https=8443" && args[2] === "off") {
+        // A zero exit that does not remove the surviving replacement handler.
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "serve" && args[1] === "--https=443" && args[2] === "off") {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "serve" && args[1] === "--bg") {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+
+    const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5051, {}, {
+      homeDir: home,
+      tailscale: runner,
+      writePrivateFile: async (path: string, contents: string) => {
+        if (path.endsWith("tailscale-serve.json") && ownershipWrites++ === 0) throw new Error("disk full");
+        await writeFile(path, contents, { mode: 0o600 });
+      },
+    });
+
+    expect(result).toMatchObject({
+      kind: "unavailable",
+      routeOutcome: "uncertain",
+      priorRouteRestored: true,
+      replacementHandlerRemoved: false,
+    });
+    const bgCalls = calls.filter((args) => args[0] === "serve" && args[1] === "--bg");
+    expect(bgCalls).toEqual([
+      ["serve", "--bg", "--https=8443", "http://127.0.0.1:5051"],
+      ["serve", "--bg", "--https=443", "http://127.0.0.1:5050"],
+    ]);
+    expect(await readFile(paths.tailscalePath, "utf8")).toContain("http://127.0.0.1:5050");
+  });
+
+  /** Scripted post-claim verification failure with a configurable rollback outcome. */
+  async function rollbackOutcome(options: {
+    readonly afterOff: "absent" | "present" | "changed" | "error" | "malformed" | "differentWebKey";
+    readonly offExit: number;
+  }) {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
+    let readIndex = 0;
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+      }
+      if (args[0] === "serve" && args[1] === "status") {
+        readIndex += 1;
+        if (readIndex === 1) return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {} }) };
+        if (readIndex === 2) {
+          // Verification reports a different handler: the claim did not take effect.
+          return {
+            code: 0,
+            stderr: "",
+            stdout: JSON.stringify({
+              TCP: { "443": { HTTPS: true } },
+              Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } },
+            }),
+          };
+        }
+        // Every post-off case must reach the real off command: the pre-off read
+        // still shows the exact created handler, so the rollback issues the off
+        // and only then reads the inventory under test.
+        if (readIndex === 3
+          && (options.afterOff === "differentWebKey" || options.afterOff === "absent"
+            || options.afterOff === "malformed" || options.afterOff === "error")) {
+          return {
+            code: 0,
+            stderr: "",
+            stdout: JSON.stringify({
+              TCP: { "443": { HTTPS: true } },
+              Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:5050" } } } },
+            }),
+          };
+        }
+        if (options.afterOff === "error") return { code: 1, stderr: "LocalAPI unavailable", stdout: "" };
+        if (options.afterOff === "malformed") {
+          return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: "not-an-object", Web: {} }) };
+        }
+        if (options.afterOff === "differentWebKey") {
+          return {
+            code: 0,
+            stderr: "",
+            stdout: JSON.stringify({
+              TCP: {},
+              Web: { "other.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } },
+            }),
+          };
+        }
+        if (options.afterOff === "changed") {
+          return {
+            code: 0,
+            stderr: "",
+            stdout: JSON.stringify({
+              TCP: { "443": { HTTPS: true } },
+              Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } },
+            }),
+          };
+        }
+        if (options.afterOff === "absent") return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {}, Web: {} }) };
+        // Index 3 (rollback pre-check) always shows the exact created handler, so
+        // the off command is really issued; later reads use `afterOff`.
+        if (readIndex === 3) {
+          return {
+            code: 0,
+            stderr: "",
+            stdout: JSON.stringify({
+              TCP: { "443": { HTTPS: true } },
+              Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:5050" } } } },
+            }),
+          };
+        }
+        return {
+          code: 0,
+          stderr: "",
+          stdout: JSON.stringify({
+            TCP: { "443": { HTTPS: true } },
+            Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:5050" } } } },
+          }),
+        };
+      }
+      if (args[0] === "serve" && args[1] === "--bg") return { code: 0, stderr: "", stdout: "" };
+      if (args[0] === "serve" && args[1] === "--https=443" && args[2] === "off") {
+        return { code: options.offExit, stderr: options.offExit === 0 ? "" : "off failed", stdout: "" };
+      }
+      return { code: 1, stderr: "unexpected", stdout: "" };
+    };
+    return { home, paths, calls, runner };
+  }
+
+  it("treats a surviving handler after a successful off command as uncertain", async () => {
+    const { paths, calls, runner } = await rollbackOutcome({ afterOff: "present", offExit: 0 });
+    const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: paths.stateDir, tailscale: runner });
+    expect(result.kind).toBe("unavailable");
+    expect(result.kind === "unavailable" ? result.routeOutcome : undefined).toBe("uncertain");
+    expect(calls.filter((args) => args.join(" ") === "serve --https=443 off")).toHaveLength(1);
+  });
+
+  /** The rollback must issue exactly one off and re-read status afterwards. */
+  const expectRealOffThenStatusRead = (calls: readonly (readonly string[])[]): void => {
+    const offCalls = calls.filter((args) => args.join(" ") === "serve --https=443 off");
+    expect(offCalls).toHaveLength(1);
+    const offIndex = calls.findIndex((args) => args.join(" ") === "serve --https=443 off");
+    expect(calls.some((args, index) => index > offIndex && args[0] === "serve" && args[1] === "status")).toBe(true);
+  };
+
+  it.each([
+    { afterOff: "absent", offExit: 0, expected: "rolled-back" },
+    { afterOff: "differentWebKey", offExit: 0, expected: "uncertain" },
+    { afterOff: "malformed", offExit: 0, expected: "uncertain" },
+  ] as const)(
+    "finalizes a post-off $afterOff inventory as $expected after a real off",
+    async ({ afterOff, offExit, expected }) => {
+      const { paths, calls, runner } = await rollbackOutcome({ afterOff, offExit });
+      const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: paths.stateDir, tailscale: runner });
+      expect(result.kind === "unavailable" ? result.routeOutcome : undefined).toBe(expected);
+      expectRealOffThenStatusRead(calls);
+    },
+  );
+
+  it("treats an unverifiable status read after a real off as uncertain", async () => {
+    const { paths, calls, runner } = await rollbackOutcome({ afterOff: "error", offExit: 0 });
+    const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: paths.stateDir, tailscale: runner });
+    expect(result.kind === "unavailable" ? result.routeOutcome : undefined).toBe("uncertain");
+    expectRealOffThenStatusRead(calls);
+  });
+
+  it("keeps an unmatched handler untouched and reports uncertainty", async () => {
+    const { paths, calls, runner } = await rollbackOutcome({ afterOff: "changed", offExit: 0 });
+    const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: paths.stateDir, tailscale: runner });
+    expect(result.kind === "unavailable" ? result.routeOutcome : undefined).toBe("uncertain");
+    // Nothing beyond the exact-off attempt may target the unknown handler.
+    expect(calls.filter((args) => args.some((token) => token.endsWith("off")))).toHaveLength(0);
+  });
+
+  it("treats a failed off command as uncertain", async () => {
+    const { paths, runner } = await rollbackOutcome({ afterOff: "present", offExit: 1 });
+    const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: paths.stateDir, tailscale: runner });
+    expect(result.kind === "unavailable" ? result.routeOutcome : undefined).toBe("uncertain");
+  });
+});
+
+function scriptedClaimRunner(): CommandRunner {
+  let reads = 0;
+  let removed = false;
+  return async (args) => {
+    if (args[0] === "serve" && args[1] === "--https=443" && args[2] === "off") {
+      removed = true;
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    if (args[0] === "serve" && args[1] === "status") {
       reads += 1;
+      const absent = removed || reads === 1;
       return {
         code: 0,
         stderr: "",
-        stdout: JSON.stringify(reads === 1
-          ? { TCP: {} }
+        stdout: JSON.stringify(absent
+          ? { TCP: {}, Web: {} }
           : {
               TCP: { "443": { HTTPS: true } },
               Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:5050" } } } },

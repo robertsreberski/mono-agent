@@ -25,9 +25,22 @@ import {
 } from "./systemd.js";
 import type { SystemdDefinition, SystemdDeps, SystemdService } from "./systemd.js";
 import type { RunWebCommandOptions } from "./web-command.js";
+import * as ui from "./ui.js";
+import {
+  DEFAULT_WEB_HOST,
+  DEFAULT_WEB_PORT,
+  DEFAULT_WEB_THEME,
+  decodeManagedWebDefinition,
+  LEGACY_DEFAULT_WEB_HOST,
+} from "./web-service-definition.js";
 
 const cliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
 type Action = "start" | "restart" | "stop" | "status" | "logs";
+
+// Shared with the macOS lifecycle: a pristine install binds loopback, and a
+// legacy unit published without --host keeps its historical wide bind.
+const FRESH_WEB_HOST = DEFAULT_WEB_HOST;
+const LEGACY_WEB_HOST = LEGACY_DEFAULT_WEB_HOST;
 
 /** Clear the systemd manager's ambient environment; provider settings come from dotenv. */
 function workerArgv(args: readonly string[], environment: Readonly<Record<string, string>>): readonly string[] {
@@ -187,15 +200,19 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
       return 0;
     }
     const installed = await readSystemdDefinition(identity, deps);
-    const previousOption = (key: string): string | undefined => {
-      const index = installed?.argv.indexOf(key) ?? -1;
-      return index < 0 ? undefined : installed?.argv[index + 1];
-    };
-    const host = options.loopback ? "127.0.0.1" : options.host ?? previousOption("--host") ?? "0.0.0.0";
-    const port = options.port ?? Number(previousOption("--port") ?? 5050);
-    const theme = options.theme ?? previousOption("--theme") ?? "evergreen";
+    // Validate the installed unit with the same decoder the macOS lifecycle
+    // uses: a syntactically present unit whose invocation or option values are
+    // not a recognized managed web definition must fail before any mutation
+    // instead of being republished from half-parsed values (F6).
+    const installedDefinition = installed === undefined ? undefined : decodeManagedWebDefinition(installed.argv);
+    const definitionUnknown = installed !== undefined && installedDefinition === undefined;
+    const host = options.loopback
+      ? "127.0.0.1"
+      : options.host ?? installedDefinition?.host ?? (installed === undefined ? FRESH_WEB_HOST : LEGACY_WEB_HOST);
+    const port = options.port ?? installedDefinition?.port ?? DEFAULT_WEB_PORT;
+    const theme = options.theme ?? installedDefinition?.theme ?? DEFAULT_WEB_THEME;
     // No default: an absent name means the worker falls back to the machine hostname.
-    let consoleName = previousOption("--name");
+    let consoleName = installedDefinition?.name;
     if (options.name !== undefined) {
       const requestedName = options.name.trim();
       consoleName = requestedName === "-" ? undefined : requestedName;
@@ -206,10 +223,52 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
     const ready = async () => await webHealthcheck(`${url}healthz`);
     if (action === "status") {
       const service = await inspectSystemd(identity, deps);
-      const healthy = service.activeState === "active" && service.pid > 0 && await ready();
+      // An unreadable definition stays unknown: it is never probed as if it
+      // were the fresh default.
+      const healthy = !definitionUnknown && service.activeState === "active" && service.pid > 0 && await ready();
+      const code = definitionUnknown ? 1 : options.positionals.length === 0 ? 0 : healthy ? 0 : 1;
+      if (options.json === true) {
+        stdout.write(`${JSON.stringify({
+          ok: code === 0,
+          action: "status",
+          listener: definitionUnknown
+            ? { host: null, port: null, url: null, source: "unknown", provenRunning: false }
+            : {
+                host,
+                port,
+                url,
+                source: installed === undefined ? "fresh default" : "installed unit",
+                provenRunning: service.activeState === "active" && service.pid > 0 && healthy,
+              },
+          console: { theme, name: consoleName ?? null },
+          service: {
+            state: service.activeState ?? "unknown",
+            pid: service.pid > 0 ? service.pid : null,
+            healthy,
+          },
+          authentication: "none",
+          ownedTailscaleRoute: { state: "not-managed", detail: "Linux HTTPS routes are externally managed" },
+          definitionError: definitionUnknown
+            ? "the installed systemd unit is not a recognized managed web definition"
+            : null,
+          note: "other proxies and routes are not inspected; network reachability is the access boundary",
+        }, null, 2)}\n`);
+        return code;
+      }
       report(identity, service, healthy, deps);
-      stdout.write(`Web: ${url}\nTheme: ${theme}\nName: ${consoleName ?? "— (machine hostname)"}\nHTTPS routes: externally managed; inspect tailscale serve status.\n`);
-      return options.positionals.length === 0 ? 0 : healthy ? 0 : 1;
+      if (definitionUnknown) {
+        stdout.write(ui.errorLine(
+          "The installed systemd web unit is not a recognized managed web definition; the effective listener is unknown and was not probed.",
+        ));
+      } else {
+        stdout.write(`Web: ${url}\nTheme: ${theme}\nName: ${consoleName ?? "— (machine hostname)"}\nHTTPS routes: externally managed; inspect tailscale serve status.\n`);
+      }
+      return code;
+    }
+    if (definitionUnknown) {
+      throw new Error(
+        "Refusing to change the installed web unit because its definition is not a recognized managed web invocation; nothing was changed.",
+      );
     }
     if (action !== "start" && action !== "restart") throw new Error(`Unsupported systemd web action: ${action}`);
     const environment = operationalEnvironment(options.env);
@@ -223,7 +282,7 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
       ], environment) };
     await withSystemdLock(identity, deps, async () => {
       const service = await inspectSystemd(identity, deps);
-      const ownedServiceMayAnswer = installed !== undefined && service.pid > 0 && Number(previousOption("--port")) === port;
+      const ownedServiceMayAnswer = installedDefinition !== undefined && service.pid > 0 && installedDefinition.port === port;
       if (!ownedServiceMayAnswer && await ready()) throw new Error("A web console already answers at this address. Stop its existing supervisor before installing this service.");
       await startSystemd(definition, action === "restart", ready, deps);
     });

@@ -38,12 +38,13 @@ export const JSON_CAPABLE_COMMANDS = [
   "jobs",
   "monitors",
   "web-control",
+  "web",
 ] as const;
 
 // Human-facing list for the rejection message: the two subcommand-gated surfaces
 // are qualified so the error points at the exact invocation that accepts `--json`.
 const JSON_CAPABLE_COMMANDS_DISPLAY =
-  "validate, config, presets, status, sandbox status, install-skill --project --check, runs, memory, continuations, jobs, monitors, web-control";
+  "validate, config, presets, status, sandbox status, install-skill --project --check, runs, memory, continuations, jobs, monitors, web-control, web status";
 
 // Commands removed outright before the KNOWN_COMMANDS gate. Parsing throws with the
 // replacement, and runCli maps that parse error to exit code 2 (usage-error).
@@ -172,14 +173,16 @@ export interface ParsedCliArgs {
   readonly entityConflict?: "target" | "source";
   /** `mono-agent memory import prepare`: accept removal of derived associations. */
   readonly acceptDerivedAssociationDrift?: boolean;
-  /** web: bind host (defaults to 0.0.0.0). */
+  /** web: bind host (fresh default 127.0.0.1; `--host` explicitly widens it). */
   readonly host?: string;
   /** web: bind port (defaults to 5050). */
   readonly port?: number;
   /** web: curated visual theme for this host console. */
   readonly theme?: string;
-  /** web: narrow the default LAN bind to 127.0.0.1. */
+  /** web: narrow the bind to 127.0.0.1 (the fresh default; kept for explicit scripts). */
   readonly loopback?: boolean;
+  /** web: explicitly create/verify the mono-agent-owned Tailscale Serve route (macOS managed start/restart). */
+  readonly shareTailnet?: boolean;
   /** bridge acp: exact trace-source id to expose. */
   readonly sourceId?: string;
   /** bridge acp: emit the sanitized machine-readable discovery contract. */
@@ -303,6 +306,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let port: number | undefined;
   let theme: string | undefined;
   let loopback = false;
+  let shareTailnet = false;
   let sourceId: string | undefined;
   let discover = false;
   let requireToolEnvironment = false;
@@ -452,6 +456,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--loopback":
         loopback = true;
+        break;
+      case "--share-tailnet":
+        shareTailnet = true;
         break;
       case "--source-id":
         sourceId = requireValue(rest, ++i, flag).trim();
@@ -653,6 +660,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if ((host !== undefined || port !== undefined || theme !== undefined || loopback) && cmd !== "web") {
     throw new Error("--host, --port, --theme, and --loopback are only supported for `mono-agent web`.");
   }
+  if (shareTailnet && cmd !== "web") {
+    throw new Error("--share-tailnet is only supported for `mono-agent web start` and `mono-agent web restart`.");
+  }
   if ((sourceId !== undefined || discover || requireToolEnvironment) && cmd !== "bridge") {
     throw new Error("--source-id, --discover, and --require-tool-environment are only supported for `mono-agent bridge acp`.");
   }
@@ -784,6 +794,12 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       && action !== "start" && action !== "restart" && action !== "run") {
       throw new Error("--host, --port, --theme, --name, and --loopback are only supported for `mono-agent web start`, `web restart`, or `web run`.");
     }
+    if (shareTailnet && action !== "start" && action !== "restart") {
+      throw new Error("--share-tailnet is only supported for `mono-agent web start` and `mono-agent web restart`; the foreground `web run` never manages a Tailscale route.");
+    }
+    if (json && action !== "status") {
+      throw new Error("--json is only supported for `mono-agent web status`.");
+    }
     if ((follow || lines !== undefined) && action !== "logs") {
       throw new Error("--follow and --lines are only supported for `mono-agent web logs`.");
     }
@@ -858,6 +874,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(host === undefined ? {} : { host }),
     ...(port === undefined ? {} : { port }),
     ...(theme === undefined ? {} : { theme }),
+    ...(shareTailnet ? { shareTailnet } : {}),
     ...(loopback ? { loopback } : {}),
     ...(sourceId === undefined ? {} : { sourceId }),
     ...(discover ? { discover } : {}),

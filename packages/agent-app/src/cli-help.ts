@@ -209,17 +209,20 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     group: "Console",
     short: "web [start|stop|status|...]",
     summary: "Always-on assistant-ui console for every local agent.",
+    json: true,
     signature: "mono-agent web [start|restart|run] [--host <addr>|--loopback] [--port <n>]\n" +
-      "               [--theme <name>] [--name <label>]\n" +
-      "               web [stop|status|logs]\n" +
+      "               [--theme <name>] [--name <label>] [--share-tailnet]\n" +
+      "               web [stop|status [--json]|logs]\n" +
       "               web reset --all --yes",
     lines: [
       "Operate the always-on assistant-ui console for persistent conversations",
       "with every discovered local agent. Bare `web` prints status and help only.",
-      "The default 0.0.0.0:5050 bind is reachable over LAN/Tailnet; --loopback",
-      "narrows it to 127.0.0.1. There is no app login: network reachability is",
-      "the access boundary. start/restart claim a conflict-free Tailscale Serve",
-      "HTTPS port without replacing existing handlers; run stays in the foreground.",
+      "A fresh install binds 127.0.0.1:5050; --host explicitly widens the bind",
+      "(for example 0.0.0.0 for the LAN). There is no app login: network",
+      "reachability is the access boundary. On macOS, start/restart publish an",
+      "owned Tailscale Serve HTTPS route only with --share-tailnet and re-verify an",
+      "existing owned route on restart; Linux HTTPS routes are externally managed.",
+      "`web run` stays in the foreground and never manages a Serve route or removes one.",
       "Themes: evergreen (default), ocean, plum, and terracotta. --name sets",
       "the PWA, tab, and rail label; --name - restores the hostname default. A managed start/restart",
       "persists both selections and status reports their effective values.",

@@ -29,9 +29,17 @@ The groups below are documented in this repository but are not in 0.21.1. Each o
 | Subscription usage meters | Provider-reported quota meters in Agent settings, and the `ProviderUsage` tool that reports supported quotas | Not included |
 | Console dashboard refresh | The dashboard layout that replaced the earlier agent rail and conversation sidebar, plus mobile and PWA refinements | Earlier layout |
 | Linux service hardening | systemd session-environment attestation and published dotenv snapshots | Not included |
+| Browser-first guided setup | The shorter wizard: name/Role, provider routes, an optional-capabilities gate for channels/memory/observability (default No), tools, and sandbox, with the browser handoff instead of a terminal-first continuation | Earlier wizard; still writes the webhook smoke channel by default |
+| Loopback console default | Fresh CLI console installs bind `127.0.0.1:5050`; `--host <addr>` widens explicitly | Managed installs bind `0.0.0.0:5050` |
+| Explicit `--share-tailnet` | macOS managed start/restart publishes a mono-agent-owned Tailscale Serve route only on request; an existing exact owned route is re-verified, and `web status --json` reports the listener and owned route separately | Managed macOS start claims a Serve route automatically |
+| Report-ready `web status --json` | Machine-readable listener/service/owned-route split | Not included |
 
 :::note
 A usage meter reports the quota a provider is willing to expose for an activated provider route. It is not a readiness check: no meter, or a missing credential, does not by itself say whether a model turn will succeed. See [Provider authentication](/observability/web-console/#provider-authentication).
+:::
+
+:::caution[Released console network defaults differ]
+`create-mono-agent@0.21.1` still binds a **managed** console to `0.0.0.0:5050` and its macOS managed `start`/`restart` claims a Tailscale Serve HTTPS route automatically. The loopback fresh default, `--share-tailnet`, and `web status --json` described in these docs are source-only until the next release. On 0.21.1 the compatible local-first path is the foreground `mono-agent web run --loopback`, which never configures Serve and never removes a route that already exists — inspect `tailscale serve status` and your own proxies before treating it as local-only. A source build is required for the new flags.
 :::
 
 ## Run the source build instead
