@@ -29,7 +29,9 @@ describe("ProviderUsage tool", () => {
     await mkdir(output, { recursive: true });
     const root = await mkdtemp(join(output, "usage-smoke-"));
     const vendor = vi.fn(async () => Response.json(id === "github-copilot" ? { copilot_plan: "individual", quota_snapshots: { premium_interactions: { percent_remaining: 58 } } } : { usage: { rolling: { percent: 0 }, weekly: { percent: 1 }, monthly: { percent: 17, resetsAt: "2026-10-01T00:00:00Z" } }, email: "DROP_IDENTIFIER" }));
-    const resolver = Object.assign(vi.fn(), { readCredential: async (provider: string) => provider === id ? { type: "api_key", key: "synthetic-key" } : undefined });
+    const resolver = Object.assign(vi.fn(), { readCredential: async (provider: string) => provider !== id ? undefined : id === "github-copilot"
+      ? { type: "oauth", access: "synthetic-inference", refresh: "synthetic-github", expires: 0 }
+      : { type: "api_key", key: "synthetic-key" } });
     const usage = createProviderUsageService({ copilotCredential: async () => undefined, resolver: resolver as never, fetch: vendor });
     const operator = await startTuiAdapter({ host: "127.0.0.1", port: 0, apiKey: "synthetic-owner", providerUsage: usage, responder: { respond: async () => ({ text: "unused" }) } });
     let web: Awaited<ReturnType<typeof startWebServer>> | undefined;
@@ -60,8 +62,10 @@ describe("ProviderUsage tool", () => {
       expect(response.headers.get("cache-control")).toContain("no-store");
       const body = await response.json();
       expect(body).toEqual(result.structuredContent);
-      expect(JSON.stringify(body)).not.toMatch(/synthetic-key|DROP_IDENTIFIER/);
+      expect(JSON.stringify(body)).not.toMatch(/synthetic-key|synthetic-inference|synthetic-github|DROP_IDENTIFIER/);
       expect(vendor).toHaveBeenCalledTimes(1);
+      expect(resolver).not.toHaveBeenCalled();
+      if (id === "github-copilot") expect(vendor).toHaveBeenCalledWith("https://api.github.com/copilot_internal/user", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "token synthetic-github" }) }));
       expect((await fetch(`${base}/api/v1/agents/fixture-agent/provider-usage?provider=anthropic`, { headers: { "X-Mono-Agent-Web-Origin": base } })).status).toBe(200);
       expect((await fetch(`${base}/api/v1/agents/fixture-agent/provider-usage?provider=other`, { headers: { "X-Mono-Agent-Web-Origin": base } })).status).toBe(400);
       expect((await fetch(`${base}/api/v1/agents/fixture-agent/provider-usage`, { headers: { "X-Mono-Agent-Web-Origin": "https://foreign.invalid" } })).status).toBe(403);
