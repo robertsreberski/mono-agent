@@ -147,7 +147,7 @@ describe("AgentSettingsDialog", () => {
     expectDialogTypography(refresh, "10px");
     const disclosure = document.querySelectorAll("#provider-actions-disclosure");
     expect(disclosure).toHaveLength(1);
-    expect(disclosure[0]).toHaveTextContent("Refresh usage reads subscription limits without inference. Check access sends one small model request per displayed provider and may use quota or refresh OAuth.");
+    expect(disclosure[0]).toHaveTextContent("Refresh usage reads subscription limits without inference. Check access sends one small model request per configured authentication provider (not usage-only rows) and may use quota or refresh OAuth.");
     expect(refresh).toHaveAccessibleDescription(disclosure[0]!.textContent!);
     expect(screen.getByRole("button", { name: "Check access" })).toHaveAccessibleDescription(disclosure[0]!.textContent!);
     expect(document.querySelector("#provider-usage-refresh-disclosure, #provider-auth-check-disclosure")).toBeNull();

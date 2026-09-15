@@ -119,26 +119,31 @@ At startup, mono-agent inspects the existing Tailscale Serve configuration. It p
 Agent settings uses the same compact responsive sheet as project/tag settings:
 a bottom sheet on mobile and a centered panel on desktop. Model defaults,
 favorites, authentication, live checks and revert controls keep their existing
-behavior.
+behavior. Pin and close match the dashboard header: 36×36px with 10px corners,
+on desktop and coarse-touch screens. Provider text actions remain 28px high.
 
 ### Subscription usage
 
-Under matching provider-auth rows, agents with the `providerUsage` v1 capability
-show subscription meters from their configured Pi auth store:
+Agents with the `providerUsage` v1 capability show subscription meters under
+matching provider-auth rows. Unmatched usage providers appear as **Usage only**
+cards, without an auth badge, live-check result or authentication controls:
 
 | Provider | Core meters | Plan |
 | --- | --- | --- |
 | Claude (`anthropic`) | Session (5h), Weekly (7d), Fable when supplied | Not exposed by Pi; omitted |
 | Codex (`openai-codex`) | Session (5h) and/or Weekly (7d), when supplied | Pro 5x, Pro 20x, Business Premium, or the provider's plan label |
 | OpenCode Go (`opencode-go`) | Session, Weekly, Monthly | Go |
+| GitHub Copilot (`github-copilot`) | Monthly Credits on paid plans; Chat and Completions on free plans | Safe provider plan label |
 
 Numbers are vendor-reported percent used, clamped to 0–100, not estimates from
 session costs. A sole weekly Codex limit stays Weekly even when it occupies the
 primary slot. Reset countdowns include an absolute time on hover; vendor reset
 timestamps are authoritative (the nominal monthly period is 30 days). No Spark,
-credits, Sonnet, extra-usage or cost meters are included. Unsupported providers
+Codex credits, Sonnet, extra-usage, organization billing or cost meters are included. Unsupported providers
 and absent/unusable credentials add no placeholders. Successfully mapped usage
-reads provide weaker **Credential OK** evidence, not live inference verification.
+reads using the agent’s Pi credential provide weaker **Credential OK** evidence,
+not live inference verification. Copilot local fallback credentials never add
+authentication evidence for the agent.
 
 The agent shares one five-minute in-memory cache between console reads and the
 [ProviderUsage tool](/tools/mcp/#providerusage-subscription-quota). Opening the
@@ -146,7 +151,8 @@ sheet loads usage independently of auth status; it polls while open and stops
 on close or agent switch. Expired data is shown as **Last known usage** during a
 coalesced refresh. Failures show **Usage unavailable** with a short safe reason,
 retaining last-good meters. Rate limits honor `Retry-After`; rejected OAuth
-credentials get one refresh through the existing Pi resolver and one retry.
+credentials from Pi get one refresh through the existing resolver and one retry.
+Local Copilot tokens do not refresh on rejection.
 Claude rejection includes a re-login hint (usage requires `user:profile` scope);
 an OpenCode entitlement rejection means no Go subscription, not a bad key.
 
@@ -159,7 +165,8 @@ five-minute freshness and awaits the shared fetch, but never bypasses error
 backoff or `Retry-After`. Existing in-flight reads are coalesced, not duplicated.
 Failures keep last-good meters and their actual fetch time; partial or suppressed
 updates are not reported as a successful refresh of every row. Successful usage
-refresh earns only **Credential OK**, unlike the model request made by **Check access**.
+refresh with a Pi credential earns only **Credential OK**, unlike the model request
+made by **Check access**; local Copilot usage earns no auth badge.
 
 Manual intent uses `POST` to the same usage paths with `/refresh` appended, an
 empty JSON object, and an optional exact `provider` query filter. Discovery adds
@@ -176,6 +183,21 @@ rows. The web server never reads credentials; vendor identifiers and secrets
 are dropped on the agent host before transport. No subscription usage is
 persisted by the service, and no quota purchase/reset endpoint is called.
 
+Copilot uses the agent’s usable Pi `github-copilot` credential first, then local
+Copilot editor `~/.config/github-copilot/apps.json` (or older `hosts.json`), the
+active github.com token in `~/.config/gh/hosts.yml`, then bounded noninteractive
+`gh auth token --hostname github.com` for keychain retrieval. Only github.com
+entries qualify. Files and helper output/time are bounded; no environment-token
+fallback, browser cookies, prompts or credential-store writes are used. No new
+configuration is required. Usage is available even if Copilot is not an inference
+provider. Credential/source rotation fences cached and in-flight usage.
+
+The read-only Copilot endpoint is `https://api.github.com/copilot_internal/user`.
+Percent used is `100 - percent_remaining`, falling back to entitlement/remaining.
+Unlimited and zero-entitlement buckets are omitted. Explicit token-based-billing
+seats without per-seat percentages show only the plan; no organization discovery,
+spend, personal Credits counts or Extra Usage are requested or projected.
+
 ### Authentication and live checks
 
 For every current app-owned agent, **Agent settings** includes one compact
@@ -190,7 +212,7 @@ later credential rejection are
 network, quota, and model-entitlement failures do not become false auth claims.
 Usage reads while Agent settings is open, or a `ProviderUsage` tool call, feed
 this passive evidence without extra vendor requests or spending inference quota.
-A mapped success records credential acceptance; a final authentication rejection
+A mapped success using the agent’s Pi credential records credential acceptance; a final authentication rejection
 records **Needs action**. Entitlement, rate-limit, timeout, network, malformed
 response and unavailable outcomes add no auth evidence. Account acceptance never
 replaces live verification or clears an inference-availability warning.
