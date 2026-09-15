@@ -3,7 +3,7 @@ import { commands, page } from "@vitest/browser/context";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { agent } from "../test/fixtures";
-import type { ProviderUsageSnapshot } from "../types";
+import type { ProviderAuthStatusSnapshot, ProviderUsageSnapshot } from "../types";
 import "../styles.css";
 const store = vi.hoisted(() => ({ selectedAgent: null as ReturnType<typeof agent> | null, catalogByProvider: {}, ensureProviderCatalog: vi.fn(), setAgentPinned: vi.fn(), setAgentRunDefaults: vi.fn(), clearAgentRunDefaults: vi.fn() }));
 const mocks = vi.hoisted(() => ({ providerAuthStatus: vi.fn(), providerUsage: vi.fn(), refreshProviderUsage: vi.fn() }));
@@ -40,7 +40,7 @@ beforeEach(() => {
     defaultModel: "anthropic:claude-sonnet-4-6", models: ["anthropic:claude-sonnet-4-6"],
   });
   mocks.providerUsage.mockResolvedValue(snapshot);
-  mocks.providerAuthStatus.mockResolvedValue({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: snapshot.providers.filter((p) => p.providerId !== "github-copilot").map((p) => ({
+  mocks.providerAuthStatus.mockResolvedValue({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: snapshot.providers.map((p) => ({
     providerId: p.providerId, label: p.label, usages: [], state: "present", source: "stored", verification: p.providerId === "openai-codex" ? "verified_by_live_request" : "verified_by_account_request",
     methods: [{ authType: p.providerId === "opencode-go" ? "api_key" : "oauth", strategy: "paste_back", label: "Login", recommended: true }],
   })) });
@@ -61,7 +61,7 @@ describe("compact Agent settings subscription meters", () => {
     expect(screen.queryByRole("progressbar", { name: "Codex Session used" })).toBeNull();
     expect(screen.getByText("Pro 20x")).toBeVisible();
     expect(screen.getByText("0%")).toBeVisible();
-    expect(screen.getAllByText("Credential OK")).toHaveLength(2);
+    expect(screen.getAllByText("Credential OK")).toHaveLength(3);
     const accountBadge = screen.getAllByText("Credential OK")[0]!.closest(".provider-auth-state")!;
     const liveBadge = screen.getByText("OK", { exact: true }).closest(".provider-auth-state")!;
     expect(accountBadge).toHaveClass("is-ok-account");
@@ -90,8 +90,8 @@ describe("compact Agent settings subscription meters", () => {
       expect(getComputedStyle(icon).borderRadius).toBe("10px");
     }
     const copilot = screen.getByText("GitHub Copilot").closest("article")!;
-    expect(screen.getByText("Usage only")).toBeVisible();
-    expect(copilot.querySelector("button, .provider-auth-state, .provider-auth-check-result")).toBeNull();
+    expect(screen.queryByText("Usage only")).toBeNull();
+    expect(copilot.querySelector(".provider-auth-state")).not.toBeNull();
     expect([...document.querySelectorAll(".provider-auth-card b")].map((element) => element.textContent)).toEqual(["Claude", "Codex", "OpenCode Go", "GitHub Copilot"]);
     expect(screen.getByRole("progressbar", { name: "GitHub Copilot Credits used" })).toHaveAttribute("value", "42.1");
     const refreshButton = screen.getByRole("button", { name: "Refresh usage" });
@@ -143,8 +143,39 @@ describe("compact Agent settings subscription meters", () => {
     expect(screen.getByRole("progressbar", { name: "Codex Weekly used" })).toHaveAttribute("value", "48");
     expect(document.body.textContent).not.toContain("PRIVATE_VENDOR_DETAIL");
     expect(screen.getByRole("progressbar", { name: "GitHub Copilot Credits used" })).toHaveAttribute("value", "42.1");
-    expect(screen.getByText("Usage only").closest("article")!.querySelector(".provider-auth-state, button")).toBeNull();
+    expect(screen.queryByText("Usage only")).toBeNull();
     if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-settings-${name}-refresh-error.png` });
+  });
+
+  it("renders scoped meters without auth controls for an independent usage capability", async () => {
+    await page.viewport(viewport.width, viewport.height);
+    store.selectedAgent = agent("fixture", { supportsProviderUsage: true, supportsProviderUsageRefresh: true });
+    render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    await screen.findByRole("progressbar", { name: "GitHub Copilot Credits used" });
+    expect(screen.getByRole("heading", { name: "Subscription usage" })).toBeVisible();
+    expect(screen.getAllByRole("progressbar")).toHaveLength(8);
+    expect(document.querySelectorAll(".provider-auth-card")).toHaveLength(4);
+    expect(document.querySelectorAll(".provider-auth-card button, .provider-auth-state, .provider-auth-check-result")).toHaveLength(0);
+    expect(screen.queryByText("Usage only")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Check access" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Refresh usage" })).toBeVisible();
+    expect(mocks.providerAuthStatus).not.toHaveBeenCalled();
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(viewport.width);
+  });
+
+  it("hides credential-only usage while retaining the active provider's meters", async () => {
+    await commands.emulateColorScheme("light");
+    await page.viewport(viewport.width, viewport.height);
+    const auth: ProviderAuthStatusSnapshot = await mocks.providerAuthStatus();
+    mocks.providerAuthStatus.mockResolvedValue({ ...auth, providers: auth.providers.filter((provider) => provider.providerId === "openai-codex") });
+    render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    await screen.findByRole("progressbar", { name: "Codex Weekly used" });
+    expect(screen.getAllByRole("progressbar")).toHaveLength(1);
+    expect([...document.querySelectorAll(".provider-auth-card b")].map((element) => element.textContent)).toEqual(["Codex"]);
+    expect(screen.queryByText("GitHub Copilot")).toBeNull();
+    expect(screen.queryByText("Usage only")).toBeNull();
+    const directory = import.meta.env.VITE_PROVIDER_USAGE_SHOTS;
+    if (directory) await page.screenshot({ path: `${directory}/synthetic-active-codex-only-${viewport.width}x${viewport.height}.png` });
   });
 
   it.each([false, true])("renders free Copilot configured=%s without duplicate or fabricated auth", async (configured) => {
@@ -159,6 +190,13 @@ describe("compact Agent settings subscription meters", () => {
       methods: [{ authType: "oauth", strategy: "paste_back", label: "Login", recommended: true }],
     }] : [] });
     render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    if (!configured) {
+      await waitFor(() => expect(mocks.providerUsage).toHaveBeenCalled());
+      expect(screen.queryByText("GitHub Copilot")).toBeNull();
+      expect(screen.queryAllByRole("progressbar")).toHaveLength(0);
+      expect(screen.queryByText("Usage only")).toBeNull();
+      return;
+    }
     await screen.findByRole("progressbar", { name: "GitHub Copilot Chat used" });
     expect(screen.getAllByText("GitHub Copilot")).toHaveLength(1);
     expect(screen.getByRole("progressbar", { name: "GitHub Copilot Completions used" })).toHaveAttribute("value", "25");
@@ -166,7 +204,7 @@ describe("compact Agent settings subscription meters", () => {
     expect(document.querySelectorAll(".provider-auth-card")).toHaveLength(1);
     expect(document.querySelectorAll(".provider-auth-state")).toHaveLength(configured ? 1 : 0);
     expect(screen.queryAllByRole("button", { name: "Re-authenticate" })).toHaveLength(configured ? 1 : 0);
-    expect(screen.queryAllByText("Usage only")).toHaveLength(configured ? 0 : 1);
+    expect(screen.queryAllByText("Usage only")).toHaveLength(0);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(viewport.width);
   });
 
