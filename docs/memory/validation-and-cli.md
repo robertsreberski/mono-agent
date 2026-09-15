@@ -550,7 +550,7 @@ for an existing local agent, with one backend-specific branch in step 6.
    ```
 
    Edit the config or identity directly, never enter secrets in either file,
-   validate the result, restart, and open ordinary `tui` only after readiness.
+   validate the result, restart, and only then open the browser console (`mono-agent web run --loopback`) or the optional terminal console.
 
 4. Confirm that the exact embeddings model is available from the selected provider. For Ollama:
 
