@@ -388,20 +388,21 @@ describe("Remember runtime extension registration", () => {
   it.each([
     ["a read-only store", { remember: async () => ({}), supportsRemember: () => false }],
     ["a store with no remember surface", { appendHostSummary: async () => ({}) }],
-  ])("registers nothing for %s", async (_label, store) => {
+  ])("retains definition and refuses writes for %s", async (_label, store) => {
     const extension = await createMemoryRememberRuntimeExtension(store as never)(request());
-    expect(extension.runtimeOptions).toEqual({});
+    expect(extension.runtimeOptions?.hostCapabilities).toEqual({ Remember: { available: false, reason: "memory_write_unavailable" } });
+    expect((await callRemember(store as never, "Must not be stored")).result.isError).toBe(true);
     await extension.cleanup?.();
   });
 
-  it("registers nothing for a real store opened read-only", async () => {
+  it("retains definition for a real store opened read-only", async () => {
     const { dir, store } = writableStore();
     await store.remember("conv-1", "Seeded so the read-only open has canonical parity.");
     const readOnly = createBujoMemoryStore({ root: dir, readOnly: true, clock: () => FIXED });
     stores.push(readOnly);
 
     const extension = await createMemoryRememberRuntimeExtension(readOnly as never)(request());
-    expect(extension.runtimeOptions).toEqual({});
+    expect(extension.runtimeOptions?.hostCapabilities).toEqual({ Remember: { available: false, reason: "memory_write_unavailable" } });
     await extension.cleanup?.();
   });
 });

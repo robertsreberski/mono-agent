@@ -55,9 +55,76 @@ Codex pre-transport payloads may have unavailable wire interpretation even when
 logical input is full. A changed fingerprint proves a payload change, not a
 cache miss; identical fingerprints do not guarantee a hit.
 
-Usage comes from the latest `context_usage` snapshot following each diagnostic;
+Usage comes from the latest `context_usage` snapshot joined by request ID;
 snapshots are replaced, not summed. Totals sum requests and use
 `cacheRead / (input + cacheRead + cacheWrite)`, never an average of percentages.
 Missing usage stays unknown (`?` in the table, `null` in JSON), including affected
 totals. Zero denominators also have an unknown ratio. Runs recorded before
 diagnostics were enabled show zero diagnosed requests, not measured cache usage.
+
+## Consecutive first requests
+
+The additive `consecutiveFirstRequests` section compares the first assistant
+request of run N with the last assistant request of the immediately preceding
+run in the same conversation. It does not skip an intervening run to find a
+better baseline. Both diagnostic model/API and summary `providerSessionId` must
+match. Missing baselines, missing diagnostics/identity, session/model resets and
+overlapping runs are reported in `pairs` and `excluded`, not classified as cache
+hits or misses. Exclusion counts can overlap. Earlier `--since` baselines remain
+available; concurrent-run cache-key grouping is intentionally not attempted.
+
+Idle gap is current `startedAt` minus previous `endedAt`, with buckets `<5m`,
+`5–60m`, `>=60m`, `overlap`, and `unknown`. Missing timestamps remain null.
+Comparable cohorts group by model/API, tools `stable|changed|unknown`, idle gap
+and retention treatment (requested setting plus observed TTL metadata). Legacy
+exports without retention metadata remain unknown. System fingerprints and
+message-prefix comparison evidence retain full/delta, truncated and unknown
+interpretation; an equal observed prefix is not proof that an unobserved tail is
+equal or that the provider still has a cache entry.
+
+Usage is joined by request ID using its latest snapshot, never by summing
+snapshots. Cohorts report token sums and per-field coverage, uncached
+`input + cacheWrite`, and a **token-weighted** hit ratio over pairs with all three
+input counters available. Incomplete pairs are not silently treated as zero;
+all-unknown aggregates remain null. First-request costs and their coverage are
+separate from run costs. Only the last `cost_accumulated.cumulativeUsd` snapshot
+is used for cumulative run accounting; it is never substituted for a missing
+first-request cost. The existing all-request and compaction outputs remain.
+
+## Measurement gates
+
+**Gate A — stable definitions and unchanged admission.** Under unchanged
+configuration, model, skill catalog and authority profile, normal user/job-wake/
+monitor-wake/cron transitions must produce zero definition changes, including
+constant-count changes. Persistent children have a separate profile. Offline
+provider-wire tests compare serialized Anthropic and OpenAI Responses tool
+arrays; refusal tests prove that visibility does not grant authority. Real
+configuration, third-party schema and infrastructure discovery changes remain
+possible prefix breaks. Separately authorized short-retention observations under
+five minutes should corroborate first-request reuse; investigate exceptions
+using system/message evidence, not fingerprints alone.
+
+**Gate B — separately evaluated long retention.** Only after A, separately
+approved evidence may compare matched stable-prefix requests at 5–60 minutes
+with observed one-hour TTL metadata on a supported model. Compare uncached input,
+cache-write/read costs and whole-run costs, not just hit percentages. These gates
+provide no rollout or spending authorization and do not enable the disabled live
+benchmark. Offline equality proves payload stability, not provider residency,
+actual billing or a guaranteed hit.
+
+### Optional Anthropic cache retention
+
+`providers.piNative.cacheRetention` accepts `"short"` or `"long"`; its environment
+variable is `MONO_AGENT_PI_CACHE_RETENTION`. Nonempty MONO_AGENT environment wins
+over JSON, then unset. Either explicit resolved value overrides Pi's separate
+ambient `PI_CACHE_RETENTION`; unset forwards nothing and preserves Pi behavior.
+The opt-in is default-off only when no external `PI_CACHE_RETENTION=long` is set.
+The runtime forwards retention only to Anthropic Messages, including child
+routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
+unsupported models receive no one-hour TTL.
+
+One-hour writes cost **2× normal input**, reads **0.1×**, versus **1.25×** for
+short-cache writes. Model support is required, and no cache hit is guaranteed.
+Metadata-only diagnostics record the requested setting and observed cache TTL;
+an ephemeral Anthropic cache control without an explicit TTL denotes five
+minutes. Evaluate the measurement gates before separately authorizing spending.

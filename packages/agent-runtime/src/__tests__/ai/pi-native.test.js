@@ -1647,9 +1647,9 @@ describe("pi-native typed policy objects + deprecated settings shim", () => {
       const cap = bashTimeoutMs ?? 120_000;
       for (const name of ["Bash", "Exec"]) {
         const tool = advertised.find((tool) => tool.name === name);
-        expect(tool.description).toContain(`${cap} ms`);
-        expect(tool.parameters.properties.timeout_ms.description).toContain(`${cap} ms`);
-        expect(tool.parameters.properties).not.toHaveProperty("background");
+        expect(tool.description).toContain("host_turn_context");
+        expect(tool.parameters.properties.timeout_ms.description).not.toContain(`${cap} ms`);
+        expect(tool.parameters.properties).toHaveProperty("background");
       }
       expect(timer.mock.calls.filter(([, ms]) => ms === cap)).toHaveLength(2);
     } finally {

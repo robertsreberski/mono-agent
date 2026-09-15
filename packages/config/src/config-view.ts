@@ -171,6 +171,7 @@ export const CONFIG_ENV_KEYS = {
   "providers.piAuthPath": "MONO_AGENT_PI_AUTH_PATH",
   "providers.piNative.transport": "MONO_AGENT_PI_TRANSPORT",
   "providers.piNative.promptCacheDiagnostics": "MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS",
+  "providers.piNative.cacheRetention": "MONO_AGENT_PI_CACHE_RETENTION",
   "providers.piNative.piMaxRetries": "MONO_AGENT_PI_MAX_RETRIES",
   "providers.piNative.maxRetryDelayMs": "MONO_AGENT_MAX_RETRY_DELAY_MS",
   "providers.piNative.piSessionsRoot": "MONO_AGENT_PI_SESSIONS_ROOT",
@@ -1169,6 +1170,13 @@ function buildProvidersSection(input: BuildMonoAgentConfigViewInput): ConfigView
         value: String(providers?.piNative?.promptCacheDiagnostics ?? false),
         jsonPresent: json.providers?.piNative?.promptCacheDiagnostics !== undefined,
       }),
+      toField(env, {
+        id: "providers.piNative.cacheRetention",
+        label: "Anthropic cache retention",
+        value: providers?.piNative?.cacheRetention ?? "default",
+        jsonPresent: json.providers?.piNative?.cacheRetention !== undefined,
+      }),
+
       toField(env, {
         id: "providers.piNative.piMaxRetries",
         label: "Pi max retries",

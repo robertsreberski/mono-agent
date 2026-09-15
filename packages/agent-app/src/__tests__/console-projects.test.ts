@@ -50,10 +50,19 @@ describe("console project tools", () => {
   it("does not authorize metadata without owner authentication or a writable interactive source", async () => {
     const createClient = vi.fn().mockRejectedValue(new Error("unavailable"));
     const extension = createConsoleProjectsRuntimeExtension({ sourceId: "configured", policy: { allowedTools: ["*"], disallowedTools: [] }, createClient });
-    expect((await extension(request())).runtimeOptions).toEqual({});
     const forged = request();
-    expect((await extension({ ...forged, request: { ...forged.request, conversationId: "web:other" } })).runtimeOptions).toEqual({});
-    expect((await extension({ ...forged, request: { ...forged.request, metadata: { source: "cron" } } })).runtimeOptions).toEqual({});
+    for (const input of [request(), { ...forged, request: { ...forged.request, conversationId: "web:other" } }, { ...forged, request: { ...forged.request, metadata: { source: "cron" } } }]) {
+      const bound = await extension(input);
+      const servers = bound.runtimeOptions?.mcpServers as Record<string, { url: string }>;
+      const client = new Client({ name: "console-refusal", version: "1.0.0" });
+      try {
+        await client.connect(new StreamableHTTPClientTransport(new URL(servers["mono-agent-console-projects"]!.url)) as never);
+        expect((await client.listTools()).tools).toHaveLength(Object.keys(CONSOLE_PROJECT_SCHEMAS).length);
+        const result = await client.callTool({ name: "CreateProject", arguments: { name: "Refused" } });
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toBeUndefined();
+      } finally { await client.close(); await bound.cleanup?.(); }
+    }
     expect(createClient).toHaveBeenCalledTimes(1);
   });
 });

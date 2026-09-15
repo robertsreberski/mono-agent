@@ -9,7 +9,7 @@ import {
 } from "@mono-agent/runtime-adapter";
 
 import type { BuiltAgentContext, ContextBlockInput, HistoryMessage, SkillIndexSummary } from "../context/index.js";
-import { composeHostTurnEnvelope, neutralizeTurnEnvelope } from "../context/turn-envelope.js";
+import { composeHostTurnEnvelope, formatHostCapabilities, neutralizeTurnEnvelope } from "../context/turn-envelope.js";
 import type { Semaphore } from "../semaphore.js";
 import type {
   AgentHarnessContinuationClaimCapability,
@@ -280,9 +280,11 @@ export async function runHarnessRuntime(
       // the transcript out of persistUserMessage, so it can never reach history or
       // long-term memory. A continuation turn has a host-synthesized prompt and no
       // live speaker, so it is skipped -- the same guard memory uses.
+      const capabilityContext = formatHostCapabilities(merged as Partial<RuntimeRunOptions>);
+      const currentTurnContext = `${context.turnContext}\n\n${capabilityContext}`;
       const currentUserMessage: RuntimeMessage = {
         role: "user",
-        content: composeHostTurnEnvelope(context.turnContext, composeUserMessageWithMemory(
+        content: composeHostTurnEnvelope(currentTurnContext, composeUserMessageWithMemory(
           request.continuation === undefined
             ? composeUserMessageWithSpeakerContext(
                 request.userMessage,
@@ -413,7 +415,7 @@ export async function runHarnessRuntime(
         memory,
         speakerTurnContextFields(request.sender, request.precedingMessages),
       );
-      emitRuntimeEvent(turnContextEvent);
+      emitRuntimeEvent({ ...turnContextEvent, hostCapabilities: capabilityContext });
       // Bracket the provider call so observability can separate provider+tool+IO
       // time (this event's durationMs) from harness overhead (context build,
       // attachment persistence, compaction, admission wait).

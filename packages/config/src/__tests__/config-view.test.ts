@@ -519,3 +519,12 @@ describe("findRemovedConfigWarnings", () => {
     expect(warnings.join("\n")).not.toContain("secret-ish-cron");
   });
 });
+
+
+it("reports cache retention source with the provider config-view precedence convention", () => {
+  const env = { ...baseEnv, MONO_AGENT_MODEL: "anthropic:claude-sonnet-4-6" };
+  const json = { providers: { piNative: { cacheRetention: "long" as const } } };
+  expect(field(buildView(env, json), "providers.piNative.cacheRetention")).toMatchObject({ value: "long", source: "json" });
+  expect(field(buildView({ ...env, MONO_AGENT_PI_CACHE_RETENTION: "short" }, json), "providers.piNative.cacheRetention")).toMatchObject({ value: "short", source: "env" });
+  expect(field(buildView(env), "providers.piNative.cacheRetention")).toMatchObject({ value: "default", source: "default" });
+});

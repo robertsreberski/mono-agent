@@ -43,7 +43,7 @@ export function isSetConversationTitleToolAllowed(policy: ConversationTitlePolic
 }
 
 /** One stateless tool whose structured result is applied by the originating web console. */
-export function createSetConversationTitleServer(): McpServer {
+export function createSetConversationTitleServer(isWritable: () => boolean = () => true): McpServer {
   const server = new McpServer({
     name: SET_CONVERSATION_TITLE_MCP_SERVER_NAME,
     version: "1.0.0",
@@ -56,6 +56,7 @@ export function createSetConversationTitleServer(): McpServer {
       inputSchema: SET_CONVERSATION_TITLE_INPUT,
     },
     async (input: SetConversationTitleInput) => {
+      if (!isWritable()) return { isError: true, content: [{ type: "text" as const, text: "Conversation title is unavailable: the originating turn is not writable." }] };
       const title = normalizeConversationTitle(input.title);
       return {
         content: [{
@@ -72,18 +73,19 @@ export function createSetConversationTitleServer(): McpServer {
   return server;
 }
 
-/** Inject the capability only for an exact writable interactive web turn. */
+/** Stable definition; only an exact writable interactive web turn admits calls. */
 export function createSetConversationTitleRuntimeExtension(): RuntimeOptionsExtension {
   const extension = createRequestScopedMcpRuntimeExtension({
     serverName: SET_CONVERSATION_TITLE_MCP_SERVER_NAME,
     startingMessage: "Conversation title tool is starting",
-    createServer: () => createSetConversationTitleServer(),
+    createServer: (input) => createSetConversationTitleServer(() => isWritableWebConversationTitleRequest(input.request)),
   });
   return async (input) => {
-    if (!isWritableWebConversationTitleRequest(input.request)) {
-      return { runtimeOptions: {}, cleanup: async () => {} };
-    }
-    return await extension(input);
+    const result = await extension(input);
+    const available = isWritableWebConversationTitleRequest(input.request);
+    return { ...result, runtimeOptions: { ...result.runtimeOptions, hostCapabilities: {
+      SetConversationTitle: { available, ...(available ? {} : { reason: "origin_not_writable" }) },
+    } } };
   };
 }
 

@@ -455,6 +455,11 @@ export interface RuntimeMcpAppHost {
 }
 
 export interface RuntimeRunOptions {
+  /** Stable configured profile, never executable authority or retained controllers. */
+  readonly toolExposure?: { readonly monitors?: boolean; readonly persistentSubagents?: boolean; readonly askParent?: boolean };
+  /** Current host facts only; tools must independently enforce admission. */
+  readonly hostCapabilities?: Readonly<Record<string, { readonly available: boolean; readonly reason?: string; readonly limits?: Readonly<Record<string, number | null>> }>>;
+
   readonly askParentController?: { submit(question: { question: string; options?: string[] }): Promise<void> };
   /** Host-owned opt-in for settled durable terminal recovery. */
   readonly sessionRecovery?: { runId: string; revision: number } | undefined;
@@ -492,6 +497,8 @@ export interface RuntimeRunOptions {
   readonly onEvent?: (event: RuntimeEventLike) => void;
   /** Emit metadata-only prompt-cache request fingerprints; disabled by default. */
   readonly promptCacheDiagnostics?: boolean;
+  /** Optional Anthropic Messages cache retention. Unset preserves Pi defaults/environment. */
+  readonly cacheRetention?: "short" | "long";
   /** Host-owned, incremental durable tool-lifecycle writer for this run. */
   readonly toolLifecycleSink?: RuntimeToolLifecycleSink;
   readonly effort?: string;

@@ -1690,6 +1690,17 @@
               "type": "boolean",
               "default": false
             },
+            "cacheRetention": {
+              "description": "Optional Anthropic Messages cache retention (short or long). Unset preserves Pi defaults/environment. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.",
+              "examples": [
+                "long"
+              ],
+              "type": "string",
+              "enum": [
+                "short",
+                "long"
+              ]
+            },
             "piMaxRetries": {
               "description": "Configures piNative.piMaxRetries for the providers section.",
               "examples": [

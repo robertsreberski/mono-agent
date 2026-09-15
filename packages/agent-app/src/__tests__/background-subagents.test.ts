@@ -894,7 +894,7 @@ describe("detached persistent subagents", () => {
     await expect(agent.execute("a", { prompt: "x", background: true })).rejects.toThrow(/persist/);
     await expect(send.execute("b", { id: "helper", close: true, background: true })).rejects.toThrow(/message/);
     const bare = createAgentTool({ instances: f.instances, run });
-    expect(bare.parameters.properties.background).toBeUndefined();
+    expect(bare.parameters.properties.background).toBeDefined();
     await expect(bare.execute("c", { prompt: "x", persist: true, background: true })).rejects.toThrow(/unavailable/);
     expect(run).not.toHaveBeenCalled(); expect(await f.service.list()).toEqual([]);
   });

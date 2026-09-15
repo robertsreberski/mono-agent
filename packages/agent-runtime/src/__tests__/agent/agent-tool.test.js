@@ -1164,3 +1164,18 @@ describe("Agent call-time routes", () => {
     expect(run).not.toHaveBeenCalled();
   });
 });
+
+
+it("definitions stay byte-identical across admission changes and optional operations refuse before side effects", async () => {
+  const run = okRun();
+  const context = { persistentExposure: true };
+  const unavailable = createAgentTool({ run }, context);
+  const instances = { reserve: vi.fn(), releaseReservation: vi.fn(), create: vi.fn() };
+  const available = createAgentTool({ run, instances, backgroundSubagentController: { start: vi.fn() } }, context);
+  const definition = ({ name, description, parameters }) => JSON.stringify({ name, description, parameters });
+  expect(definition(unavailable)).toBe(definition(available));
+  for (const params of [{ prompt: "x", persist: true }, { prompt: "x", persist: true, background: true }, { prompt: "x", persist: true, verification: { workdir: "/repo" } }]) {
+    await expect(unavailable.execute("no", params)).rejects.toThrow(/unavailable/);
+  }
+  expect(run).not.toHaveBeenCalled(); expect(instances.create).not.toHaveBeenCalled();
+});

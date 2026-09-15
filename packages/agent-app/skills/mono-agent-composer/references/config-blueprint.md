@@ -75,6 +75,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     // Pi-native bridge tuning (all optional).
     "piNative": {
       "transport": "auto",                // auto | sse | websocket | websocket-cached
+      // "cacheRetention": "long",       // opt-in Anthropic 1h; supported model, 2× input write / 0.1× read, no guaranteed hit
       "promptCacheDiagnostics": false,     // metadata-only request fingerprints in run artifacts
       "piMaxRetries": 2,                   // 0-8; transient provider-transport retries
       "maxRetryDelayMs": 60000,            // backoff cap between retries (ms)
@@ -480,3 +481,11 @@ const app = await startMonoAgentApp({
 ```
 
 For a bare responder without channels, use `@mono-agent/config` + `@mono-agent/agent-app` (`createConfiguredAgentResponder` — also takes `memory`, `historyStore`, `runtimeOptions`, `runtimeOptionsForRequest`). For multi-agent orchestration, add `@mono-agent/agent-orchestrator` (`createCollaboratorToolRuntimeExtension`) — see `references/package-map.md`. Channel message texts and stream tuning (welcome/help/error texts, edit debounce) are channel-driver overrides, not config keys.
+
+Anthropic cache retention is optional (`providers.piNative.cacheRetention`:
+short/long). `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON; either explicit value
+overrides Pi's ambient `PI_CACHE_RETENTION`. Unset forwards nothing. Default-off
+assumes no ambient Pi long retention. One-hour writes cost 2× normal input,
+reads 0.1×; short writes 1.25×. Model support is required, with no guaranteed hit.
+First verify stable tool definitions and admission; separately authorize any
+retention spending experiment using the prompt-cache measurement gates.

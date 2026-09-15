@@ -1122,6 +1122,9 @@ export function layerJsonOntoEnv(
     }
     fromJson.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS = String(json.providers.piNative.promptCacheDiagnostics);
   }
+  if (json.providers?.piNative?.cacheRetention !== undefined) {
+    fromJson.MONO_AGENT_PI_CACHE_RETENTION = String(json.providers.piNative.cacheRetention);
+  }
   if (json.providers?.piNative?.piMaxRetries !== undefined) {
     fromJson.MONO_AGENT_PI_MAX_RETRIES = String(json.providers.piNative.piMaxRetries);
   }

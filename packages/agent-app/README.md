@@ -46,7 +46,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   conversation, independent of daily rollover buckets.
 - Expose the sibling request-scoped read-only `SessionHistory` tool over the
   harness's canonical retained managed-tool lifecycle sidecar.
-- Expose the request-scoped `SetConversationTitle` tool only to writable
+- Expose the request-scoped `SetConversationTitle` definition across turns, admitting calls only on writable
   interactive web turns, so the agent can keep an automatic semantic thread
   title current without overriding a title the user renamed.
 - Opt in to Pi-native Exec/Bash process jobs through `processJobs.*`: keep the
