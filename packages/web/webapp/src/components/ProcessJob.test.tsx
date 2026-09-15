@@ -624,6 +624,35 @@ describe("ProcessJobPart", () => {
     expect(screen.queryByText(/stdout\.log/u)).toBeNull();
   });
 
+  it("says a running job has no output yet instead of showing an empty card", () => {
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const complete = processJob();
+    const view = render(part({
+      type: "process-job",
+      job: processJob({
+        state: "running",
+        timestamps: { ...complete.timestamps, completedAt: null },
+        wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+        output: { ...complete.output, stdoutBytes: 0, stderrBytes: 0, preview: "" },
+        exitCode: null,
+        durationMs: null,
+      }),
+    }));
+    fireEvent.click(screen.getByRole("group", { name: "Exec background job running" }).querySelector("summary")!);
+    expect(screen.getByText("No output yet.")).toBeVisible();
+    expect(view.container.querySelector(".process-job-output")).toBeNull();
+    expect(screen.queryByText("Output")).toBeNull();
+  });
+
+  it("says a settled job produced no output at all", () => {
+    render(part({
+      type: "process-job",
+      job: processJob({ output: { ...processJob().output, stdoutBytes: 0, stderrBytes: 0, preview: "" } }),
+    }));
+    fireEvent.click(screen.getByRole("group", { name: "Exec background job succeeded" }).querySelector("summary")!);
+    expect(screen.getByText("No output.")).toBeVisible();
+  });
+
   it("ticks a running job once a second in server time and stops on a terminal poll", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-17T10:00:17.000Z"));
@@ -983,6 +1012,9 @@ describe("background native subagent cards", () => {
     expect(screen.getByRole("region", { name: "Subagent report" })).toHaveTextContent("Synthetic report");
     expect(screen.queryByText("PRIVATE_RAW_JSON")).toBeNull();
     expect(view.container.querySelector(".process-job-output")).toBeNull();
+    // The empty-tail stand-in belongs to command output, which a subagent card
+    // never shows: its progress region is the payload.
+    expect(view.container.querySelector(".process-job-empty-output")).toBeNull();
     const icon = render(<Icon name="agent" />);
     expect(card.querySelector(".activity-job-icon")?.innerHTML).toBe(icon.container.querySelector("svg")?.innerHTML);
     const meta = card.querySelector(".process-job-live-meta");
