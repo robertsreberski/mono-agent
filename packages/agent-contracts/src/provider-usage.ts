@@ -1,8 +1,8 @@
 export const PROVIDER_USAGE_SCHEMA = "mono-agent.provider-usage.v1" as const;
-export const PROVIDER_USAGE_IDS = ["anthropic", "openai-codex", "opencode-go"] as const;
+export const PROVIDER_USAGE_IDS = ["anthropic", "openai-codex", "opencode-go", "github-copilot"] as const;
 export type ProviderUsageId = typeof PROVIDER_USAGE_IDS[number];
 export const PROVIDER_USAGE_LABELS: Record<ProviderUsageId, string> = {
-  anthropic: "Claude", "openai-codex": "Codex", "opencode-go": "OpenCode Go",
+  anthropic: "Claude", "openai-codex": "Codex", "opencode-go": "OpenCode Go", "github-copilot": "GitHub Copilot",
 };
 export const PROVIDER_USAGE_ERRORS = {
   auth_failed: "Credential rejected; re-login to this provider.",
@@ -15,8 +15,8 @@ export const PROVIDER_USAGE_ERRORS = {
 } as const;
 export type ProviderUsageErrorCode = keyof typeof PROVIDER_USAGE_ERRORS;
 export interface ProviderUsageWindow {
-  readonly kind: "session" | "weekly" | "monthly" | "model";
-  readonly label: "Session" | "Weekly" | "Monthly" | "Fable";
+  readonly kind: "session" | "weekly" | "monthly" | "model" | "credits" | "chat" | "completions";
+  readonly label: "Session" | "Weekly" | "Monthly" | "Fable" | "Credits" | "Chat" | "Completions";
   readonly usedPercent: number;
   readonly resetsAt?: string;
   /** Nominal duration only; resetsAt is authoritative (month = 30 days). */
@@ -58,7 +58,7 @@ function date(value: unknown): value is string {
 /** Strict, bounded, secret-free projection boundary. Never accepts vendor data directly. */
 export function parseProviderUsageSnapshot(value: unknown): ProviderUsageSnapshot {
   const snapshot = record(value, ["schema", "providers"]);
-  assert(snapshot.schema === PROVIDER_USAGE_SCHEMA && Array.isArray(snapshot.providers) && snapshot.providers.length <= 3 && Object.keys(snapshot.providers).length === snapshot.providers.length);
+  assert(snapshot.schema === PROVIDER_USAGE_SCHEMA && Array.isArray(snapshot.providers) && snapshot.providers.length <= 4 && Object.keys(snapshot.providers).length === snapshot.providers.length);
   const seen = new Set<string>();
   const providers = snapshot.providers.map((input): ProviderUsage => {
     const p = record(input, ["providerId", "label", "plan", "windows", "fetchedAt", "stale", "error"]);
@@ -73,9 +73,10 @@ export function parseProviderUsageSnapshot(value: unknown): ProviderUsageSnapsho
       const w = record(input, ["kind", "label", "usedPercent", "resetsAt", "periodMs"]);
       assert(typeof w.kind === "string" && !kinds.has(w.kind));
       kinds.add(w.kind);
-      const labels = { session: "Session", weekly: "Weekly", monthly: "Monthly", model: "Fable" } as const;
+      const labels = { session: "Session", weekly: "Weekly", monthly: "Monthly", model: "Fable", credits: "Credits", chat: "Chat", completions: "Completions" } as const;
       assert(Object.hasOwn(labels, w.kind));
       const kind = w.kind as ProviderUsageWindow["kind"];
+      assert((["credits", "chat", "completions"].includes(kind)) === (providerId === "github-copilot"));
       assert(w.label === labels[kind] && (kind !== "model" || providerId === "anthropic") && (kind !== "monthly" || providerId === "opencode-go"));
       assert(typeof w.usedPercent === "number" && Number.isFinite(w.usedPercent) && w.usedPercent >= 0 && w.usedPercent <= 100);
       assert(typeof w.periodMs === "number" && Number.isFinite(w.periodMs) && w.periodMs > 0);

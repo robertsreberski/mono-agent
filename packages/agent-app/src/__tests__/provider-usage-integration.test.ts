@@ -20,16 +20,17 @@ describe("ProviderUsage tool", () => {
     expect(isProviderUsageToolAllowed({ allowedTools: ["Read"] })).toBe(false);
     expect(PROVIDER_USAGE_INPUT.safeParse({}).success).toBe(true);
     expect(PROVIDER_USAGE_INPUT.safeParse({ provider: "anthropic" }).success).toBe(true);
+    expect(PROVIDER_USAGE_INPUT.safeParse({ provider: "github-copilot" }).success).toBe(true);
     expect(PROVIDER_USAGE_INPUT.safeParse({ provider: "other" }).success).toBe(false);
     expect(PROVIDER_USAGE_INPUT.safeParse({ url: "https://foreign" }).success).toBe(false);
   });
-  it("shares the real usage service across MCP and operator -> web HTTP (synthetic vendor smoke)", async () => {
+  it.each(["opencode-go", "github-copilot"] as const)("shares %s across MCP and operator -> web HTTP (synthetic vendor smoke)", async (id) => {
     const output = fileURLToPath(new URL("../../../../output/", import.meta.url));
     await mkdir(output, { recursive: true });
     const root = await mkdtemp(join(output, "usage-smoke-"));
-    const vendor = vi.fn(async () => Response.json({ usage: { rolling: { percent: 0 }, weekly: { percent: 1 }, monthly: { percent: 17, resetsAt: "2026-10-01T00:00:00Z" } }, email: "DROP_IDENTIFIER" }));
-    const resolver = Object.assign(vi.fn(), { readCredential: async (provider: string) => provider === "opencode-go" ? { type: "api_key", key: "synthetic-key" } : undefined });
-    const usage = createProviderUsageService({ resolver: resolver as never, fetch: vendor });
+    const vendor = vi.fn(async () => Response.json(id === "github-copilot" ? { copilot_plan: "individual", quota_snapshots: { premium_interactions: { percent_remaining: 58 } } } : { usage: { rolling: { percent: 0 }, weekly: { percent: 1 }, monthly: { percent: 17, resetsAt: "2026-10-01T00:00:00Z" } }, email: "DROP_IDENTIFIER" }));
+    const resolver = Object.assign(vi.fn(), { readCredential: async (provider: string) => provider === id ? { type: "api_key", key: "synthetic-key" } : undefined });
+    const usage = createProviderUsageService({ copilotCredential: async () => undefined, resolver: resolver as never, fetch: vendor });
     const operator = await startTuiAdapter({ host: "127.0.0.1", port: 0, apiKey: "synthetic-owner", providerUsage: usage, responder: { respond: async () => ({ text: "unused" }) } });
     let web: Awaited<ReturnType<typeof startWebServer>> | undefined;
     const bound = await createProviderUsageRuntimeExtension(usage, { allowedTools: ["ProviderUsage"] })(request());
@@ -40,7 +41,7 @@ describe("ProviderUsage tool", () => {
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name)).toEqual(["ProviderUsage"]);
       expect(tools.tools[0]?.annotations?.readOnlyHint).toBe(true);
-      const result = await client.callTool({ name: "ProviderUsage", arguments: {} });
+      const result = await client.callTool({ name: "ProviderUsage", arguments: { provider: id } });
       expect((await client.callTool({ name: "ProviderUsage", arguments: { provider: "other" } })).isError).toBe(true);
       expect((await fetch(`${operator.baseUrl}/v1/provider-usage`)).status).toBe(401);
       const headers = { authorization: "Bearer synthetic-owner" };
@@ -54,7 +55,7 @@ describe("ProviderUsage tool", () => {
         } }],
       });
       const base = `http://127.0.0.1:${web.port}`;
-      const response = await fetch(`${base}/api/v1/agents/fixture-agent/provider-usage`, { headers: { "X-Mono-Agent-Web-Origin": base } });
+      const response = await fetch(`${base}/api/v1/agents/fixture-agent/provider-usage?provider=${id}`, { headers: { "X-Mono-Agent-Web-Origin": base } });
       expect(response.status).toBe(200);
       expect(response.headers.get("cache-control")).toContain("no-store");
       const body = await response.json();
@@ -80,7 +81,7 @@ describe("ProviderUsage tool", () => {
       expect((await fetch(refreshUrl, { ...post, headers: { ...post.headers, "Content-Type": "text/plain" }, body: "force" })).status).toBe(400);
       expect((await fetch(`${operator.baseUrl}/v1/provider-usage/refresh`, { method: "POST", headers: { ...headers, "Content-Type": "text/plain" }, body: "force" })).status).toBe(400);
       expect(vendor).toHaveBeenCalledTimes(1);
-      vendor.mockResolvedValueOnce(Response.json({ usage: { rolling: { percent: 41 } } }));
+      vendor.mockResolvedValueOnce(Response.json(id === "github-copilot" ? { quota_snapshots: { premium_interactions: { percent_remaining: 59 } } } : { usage: { rolling: { percent: 41 } } }));
       const refreshed = await fetch(refreshUrl, post);
       expect(refreshed.status).toBe(200);
       expect(refreshed.headers.get("cache-control")).toContain("no-store");

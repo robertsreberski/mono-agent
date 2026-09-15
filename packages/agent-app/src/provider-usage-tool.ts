@@ -20,7 +20,7 @@ export function createProviderUsageRuntimeExtension(operator: ProviderUsageOpera
       createServer: () => {
         const server = new McpServer({ name: SERVER, version: "1.0.0" });
         server.registerTool("ProviderUsage", {
-          description: "Read subscription quota usage for Claude, Codex and OpenCode Go from this agent's Pi credentials. Optional provider filter. Returns percent used, reset times, known plan and cache/error state; cached for five minutes. Missing usable credentials are omitted. Read-only; never changes routing or purchases quota.",
+          description: "Read subscription quota usage for Claude, Codex, OpenCode Go and GitHub Copilot. Uses this agent's Pi credentials first; Copilot may use local editor or GitHub CLI credentials. Optional provider filter. Returns percent used, reset times, known plan and cache/error state; cached for five minutes. Missing usable credentials are omitted. Read-only; never changes routing or purchases quota.",
           inputSchema: PROVIDER_USAGE_INPUT,
           annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
         }, async ({ provider }) => {

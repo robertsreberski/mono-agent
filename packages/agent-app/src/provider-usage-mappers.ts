@@ -1,8 +1,9 @@
 import type { ProviderUsageId, ProviderUsageWindow } from "@mono-agent/agent-contracts";
 
 const HOUR = 3_600_000;
-const periods = { session: 5 * HOUR, weekly: 7 * 24 * HOUR, monthly: 30 * 24 * HOUR, model: 7 * 24 * HOUR };
-const labels = { session: "Session", weekly: "Weekly", monthly: "Monthly", model: "Fable" } as const;
+const MONTH = 30 * 24 * HOUR;
+const periods = { session: 5 * HOUR, weekly: 7 * 24 * HOUR, monthly: 30 * 24 * HOUR, model: 7 * 24 * HOUR, credits: MONTH, chat: MONTH, completions: MONTH };
+const labels = { session: "Session", weekly: "Weekly", monthly: "Monthly", model: "Fable", credits: "Credits", chat: "Chat", completions: "Completions" } as const;
 export function usageRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -52,6 +53,8 @@ export function mapProviderUsage(provider: ProviderUsageId, body: unknown, heade
       const fable = data.limits.map(usageRecord).find((limit) => limit.kind === "weekly_scoped" && usageRecord(usageRecord(limit.scope).model).display_name === "Fable");
       if (fable) add(window("model", fable.percent, fable.resets_at));
     }
+  } else if (provider === "github-copilot") {
+    return mapCopilotUsage(data);
   } else {
     plan = "Go";
     const usage = usageRecord(data.usage);
@@ -62,5 +65,52 @@ export function mapProviderUsage(provider: ProviderUsageId, body: unknown, heade
   }
   if (windows.length === 0) throw new Error("Invalid usage response.");
   windows.sort((a, b) => ["session", "weekly", "monthly", "model"].indexOf(a.kind) - ["session", "weekly", "monthly", "model"].indexOf(b.kind));
+  return { windows, ...(plan === undefined ? {} : { plan }) };
+}
+
+/** Copilot dates are UTC calendar days or explicit ISO timestamps, never locale dates. */
+function copilotReset(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 35
+    || !/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2}))?$/.test(value)) return undefined;
+  const day = value.slice(0, 10);
+  const midnight = iso(day + "T00:00:00Z");
+  if (midnight?.slice(0, 10) !== day) return undefined;
+  return iso(value.length === 10 ? day + "T00:00:00Z" : value);
+}
+function mapCopilotUsage(data: Record<string, unknown>): { windows: ProviderUsageWindow[]; plan?: string } {
+  const rawPlan = data.copilot_plan;
+  const aliases: Record<string, string> = { individual: "Individual", individual_pro: "Individual Pro", free: "Free", business: "Business", enterprise: "Enterprise" };
+  const plan = typeof rawPlan === "string" && /^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$/.test(rawPlan)
+    ? (Object.hasOwn(aliases, rawPlan) ? aliases[rawPlan] : undefined) ?? rawPlan.replace(/[_-]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : undefined;
+  const reset = copilotReset(data.quota_reset_date) ?? copilotReset(data.limited_user_reset_date);
+  const windows: ProviderUsageWindow[] = [];
+  const snapshots = usageRecord(data.quota_snapshots);
+  for (const [key, kind] of [["premium_interactions", "credits"], ["chat", "chat"], ["completions", "completions"]] as const) {
+    const bucket = usageRecord(snapshots[key]);
+    const entitlement = numeric(bucket.entitlement);
+    const remaining = numeric(bucket.remaining);
+    if (bucket.unlimited === true || entitlement === -1 || remaining === -1 || entitlement === 0) continue;
+    // Malformed declared core values are not silently reinterpreted as absent.
+    if ((bucket.entitlement !== undefined && (entitlement === undefined || entitlement < 0))
+      || (bucket.remaining !== undefined && remaining === undefined)
+      || (bucket.unlimited !== undefined && typeof bucket.unlimited !== "boolean")) continue;
+    const percent = numeric(bucket.percent_remaining);
+    const used = bucket.percent_remaining !== undefined ? (percent === undefined ? undefined : 100 - percent)
+      : entitlement !== undefined && entitlement > 0 && remaining !== undefined ? 100 - remaining / entitlement * 100 : undefined;
+    const mapped = window(kind, used, reset);
+    if (mapped) windows.push(mapped);
+  }
+  if (windows.length === 0) {
+    const limited = usageRecord(data.limited_user_quotas);
+    const monthly = usageRecord(data.monthly_quotas);
+    for (const kind of ["chat", "completions"] as const) {
+      const remaining = numeric(limited[kind]);
+      const total = numeric(monthly[kind]);
+      if (total === undefined || total <= 0 || remaining === undefined || remaining === -1) continue;
+      const mapped = window(kind, 100 - remaining / total * 100, reset);
+      if (mapped) windows.push(mapped);
+    }
+  }
+  if (windows.length === 0 && !(data.token_based_billing === true && plan !== undefined)) throw new Error("Invalid usage response.");
   return { windows, ...(plan === undefined ? {} : { plan }) };
 }

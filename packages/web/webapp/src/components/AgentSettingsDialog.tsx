@@ -380,7 +380,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
     };
   }, [sourceId, scopeKey, check?.id, check?.state]);
 
-  if (agent.supportsProviderAuth !== true) {
+  if (agent.supportsProviderAuth !== true && agent.supportsProviderUsage !== true) {
     return (
       <section className="provider-auth-section">
         <div><h3>Provider authentication</h3><p className="provider-auth-unavailable">Not available on this agent.</p></div>
@@ -527,7 +527,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   return (
     <section className="provider-auth-section">
       <div className="provider-auth-title-row">
-        <h3>Provider authentication</h3>
+        <h3>{agent.supportsProviderAuth === true ? "Provider authentication" : "Subscription usage"}</h3>
         <div className="provider-auth-header-actions">
         {agent.supportsProviderUsageRefresh === true && agent.supportsProviderUsage === true && (
           <button type="button" className="secondary-button provider-auth-neutral-button" title="Refresh usage" aria-label="Refresh usage"
@@ -562,11 +562,11 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
         <p id="provider-actions-disclosure" className="provider-auth-check-disclosure">
           {agent.supportsProviderUsageRefresh === true && "Refresh usage reads subscription limits without inference."}
           {agent.supportsProviderUsageRefresh === true && agent.supportsProviderAuthChecks === true && " "}
-          {agent.supportsProviderAuthChecks === true && "Check access sends one small model request per displayed provider and may use quota or refresh OAuth."}
+          {agent.supportsProviderAuthChecks === true && "Check access sends one small model request per configured authentication provider (not usage-only rows) and may use quota or refresh OAuth."}
         </p>
       )}
       {usageFeedback !== null && <p role="status" className="provider-auth-check-disclosure">{usageFeedback}</p>}
-      {status === null && authError === null && <p aria-live="polite">Loading provider status…</p>}
+      {agent.supportsProviderAuth === true && status === null && authError === null && <p aria-live="polite">Loading provider status…</p>}
       <div className="provider-auth-list">
         {status?.providers.map((provider) => {
           const actionable = provider.methods.length > 0;
@@ -603,6 +603,21 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
             </article>
           );
         })}
+        {usage?.providers.filter((provider) => !status?.providers.some((auth) => auth.providerId === provider.providerId))
+          .slice().sort((a, b) => a.providerId.localeCompare(b.providerId)).map((provider) => (
+            <article className="provider-auth-card provider-usage-only-card" key={provider.providerId}>
+              <div className="provider-auth-controls">
+                <div className="provider-auth-heading">
+                  <b>{provider.label}</b>
+                  <span className="provider-auth-badges">
+                    {provider.plan !== undefined && <span className="provider-usage-plan">{provider.plan}</span>}
+                    <span className="provider-usage-only">Usage only</span>
+                  </span>
+                </div>
+              </div>
+              <ProviderUsageMeters usage={provider} />
+            </article>
+          ))}
       </div>
       {methodProvider !== null && methodProvider.methods.length > 1 && !checkActive && (
         <div className="provider-auth-flow">
