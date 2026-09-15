@@ -562,13 +562,13 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
         <p id="provider-actions-disclosure" className="provider-auth-check-disclosure">
           {agent.supportsProviderUsageRefresh === true && "Refresh usage reads subscription limits without inference."}
           {agent.supportsProviderUsageRefresh === true && agent.supportsProviderAuthChecks === true && " "}
-          {agent.supportsProviderAuthChecks === true && "Check access sends one small model request per configured authentication provider (not usage-only rows) and may use quota or refresh OAuth."}
+          {agent.supportsProviderAuthChecks === true && "Check access sends one small model request per configured authentication provider and may use quota or refresh OAuth."}
         </p>
       )}
       {usageFeedback !== null && <p role="status" className="provider-auth-check-disclosure">{usageFeedback}</p>}
       {agent.supportsProviderAuth === true && status === null && authError === null && <p aria-live="polite">Loading provider status…</p>}
       <div className="provider-auth-list">
-        {status?.providers.map((provider) => {
+        {agent.supportsProviderAuth === true && status?.providers.map((provider) => {
           const actionable = provider.methods.length > 0;
           const presentation = providerAuthPresentation(provider);
           const checkResult = check?.results.find((result) => result.providerId === provider.providerId);
@@ -603,21 +603,15 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
             </article>
           );
         })}
-        {usage?.providers.filter((provider) => !status?.providers.some((auth) => auth.providerId === provider.providerId))
-          .slice().sort((a, b) => a.providerId.localeCompare(b.providerId)).map((provider) => (
-            <article className="provider-auth-card provider-usage-only-card" key={provider.providerId}>
-              <div className="provider-auth-controls">
-                <div className="provider-auth-heading">
-                  <b>{provider.label}</b>
-                  <span className="provider-auth-badges">
-                    {provider.plan !== undefined && <span className="provider-usage-plan">{provider.plan}</span>}
-                    <span className="provider-usage-only">Usage only</span>
-                  </span>
-                </div>
-              </div>
-              <ProviderUsageMeters usage={provider} />
-            </article>
-          ))}
+        {agent.supportsProviderUsage === true && agent.supportsProviderAuth !== true && usage?.providers.map((provider) => (
+          <article className="provider-auth-card" key={provider.providerId}>
+            <div className="provider-auth-heading">
+              <b>{provider.label}</b>
+              {provider.plan !== undefined && <span className="provider-usage-plan">{provider.plan}</span>}
+            </div>
+            <ProviderUsageMeters usage={provider} />
+          </article>
+        ))}
       </div>
       {methodProvider !== null && methodProvider.methods.length > 1 && !checkActive && (
         <div className="provider-auth-flow">

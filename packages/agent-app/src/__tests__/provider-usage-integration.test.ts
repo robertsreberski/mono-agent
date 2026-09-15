@@ -7,6 +7,9 @@ import { startTuiAdapter } from "@mono-agent/operator-adapter";
 import { startWebServer, OperatorClient } from "@mono-agent/web";
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
 import { describe, expect, it, vi } from "vitest";
+import type { MonoAgentConfig } from "@mono-agent/config";
+import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { createAgentProviderUsage } from "../provider-usage-scope.js";
 import { createProviderUsageService } from "../provider-usage.js";
 import { createProviderUsageRuntimeExtension, isProviderUsageToolAllowed, PROVIDER_USAGE_INPUT } from "../provider-usage-tool.js";
 
@@ -29,10 +32,14 @@ describe("ProviderUsage tool", () => {
     await mkdir(output, { recursive: true });
     const root = await mkdtemp(join(output, "usage-smoke-"));
     const vendor = vi.fn(async () => Response.json(id === "github-copilot" ? { copilot_plan: "individual", quota_snapshots: { premium_interactions: { percent_remaining: 58 } } } : { usage: { rolling: { percent: 0 }, weekly: { percent: 1 }, monthly: { percent: 17, resetsAt: "2026-10-01T00:00:00Z" } }, email: "DROP_IDENTIFIER" }));
-    const resolver = Object.assign(vi.fn(), { readCredential: async (provider: string) => provider !== id ? undefined : id === "github-copilot"
+    const resolver = Object.assign(vi.fn(), { readCredential: vi.fn(async (provider: string) => provider !== id ? { type: "oauth", access: "synthetic-inactive", refresh: "synthetic-inactive", expires: Date.now() + 60000 } : id === "github-copilot"
       ? { type: "oauth", access: "synthetic-inference", refresh: "synthetic-github", expires: 0 }
-      : { type: "api_key", key: "synthetic-key" } });
-    const usage = createProviderUsageService({ copilotCredential: async () => undefined, resolver: resolver as never, fetch: vendor });
+      : { type: "api_key", key: "synthetic-key" }) });
+    const service = createProviderUsageService({ copilotCredential: async () => undefined, resolver: resolver as never, fetch: vendor });
+    const usage = createAgentProviderUsage({
+      config: { runtime: { model: parseMonoRuntimeModelReference(`${id}:model`) } } as MonoAgentConfig,
+      drivers: [], input: { cwd: root, configPath: join(root, "config.json"), env: {} }, service,
+    });
     const operator = await startTuiAdapter({ host: "127.0.0.1", port: 0, apiKey: "synthetic-owner", providerUsage: usage, responder: { respond: async () => ({ text: "unused" }) } });
     let web: Awaited<ReturnType<typeof startWebServer>> | undefined;
     const bound = await createProviderUsageRuntimeExtension(usage, { allowedTools: ["ProviderUsage"] })(request());
@@ -43,6 +50,9 @@ describe("ProviderUsage tool", () => {
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name)).toEqual(["ProviderUsage"]);
       expect(tools.tools[0]?.annotations?.readOnlyHint).toBe(true);
+      expect((await client.callTool({ name: "ProviderUsage", arguments: { provider: "anthropic" } })).structuredContent).toEqual({ schema: "mono-agent.provider-usage.v1", providers: [] });
+      expect(resolver.readCredential).not.toHaveBeenCalled();
+      expect(vendor).not.toHaveBeenCalled();
       const result = await client.callTool({ name: "ProviderUsage", arguments: { provider: id } });
       expect((await client.callTool({ name: "ProviderUsage", arguments: { provider: "other" } })).isError).toBe(true);
       expect((await fetch(`${operator.baseUrl}/v1/provider-usage`)).status).toBe(401);
@@ -94,8 +104,9 @@ describe("ProviderUsage tool", () => {
       const cached = await client.callTool({ name: "ProviderUsage", arguments: {} });
       expect(cached.structuredContent).toMatchObject({ providers: [{ windows: [{ usedPercent: 41 }] }] });
       expect(vendor).toHaveBeenCalledTimes(2);
+      expect(new Set(resolver.readCredential.mock.calls.map(([provider]) => provider))).toEqual(new Set([id]));
 
-    } finally { await client.close(); await bound.cleanup?.(); await web?.stop(); await operator.stop(); usage.stop(); await rm(root, { recursive: true, force: true }); }
+    } finally { await client.close(); await bound.cleanup?.(); await web?.stop(); await operator.stop(); service.stop(); await rm(root, { recursive: true, force: true }); }
   });
   it("keeps old snapshot-only operators compatible without advertising or faking refresh", async () => {
     const snapshot = vi.fn(async () => ({ schema: "mono-agent.provider-usage.v1" as const, providers: [] }));

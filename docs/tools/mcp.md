@@ -541,7 +541,10 @@ of the web console's writable-turn tools. It returns the same
 `providers[]` with provider id/label, optional plan, core windows
 (`kind`, `label`, `usedPercent`, optional `resetsAt`, nominal `periodMs`),
 `fetchedAt`, `stale`, and optional fixed `error.code`/`error.message`.
-Providers without usable credentials are omitted; an empty providers array does not
+Only providers activated by this agent’s effective primary/fallback, agent-host
+memory LLM, and enabled cron/webhook model references are eligible. An explicit
+inactive provider returns an empty snapshot without credential lookup or vendor
+requests. Credentials alone do not activate providers. Providers without usable credentials are omitted; an empty providers array does not
 prove any remaining quota. Last-good stale data is not current quota truth.
 
 The tool prefers this agent's `providers.piAuthPath`, using the existing Pi
