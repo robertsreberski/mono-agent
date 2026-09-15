@@ -146,6 +146,8 @@ export interface ProcessJobSubagentProgress {
   readonly route?: ProcessJobSubagentRoute;
   readonly toolCalls: number;
   readonly failedCalls: number;
+  /** This detached child turn's priced usage in USD; absent when pricing is unavailable. */
+  readonly costUsd?: number;
   readonly recent: readonly {
     readonly id: string;
     readonly toolName: string;
@@ -182,11 +184,13 @@ export function isProcessJobSubagentRoute(value: unknown): value is ProcessJobSu
 export function isProcessJobSubagentProgress(value: unknown): value is ProcessJobSubagentProgress {
   if (!isRecord(value)
     || !hasExactlyKeys(value, ["revision", "profile", "toolCalls", "failedCalls", "recent",
-      ...["label", "route", "answerHead", "answerTruncated"].filter((key) => Object.hasOwn(value, key))])
+      ...["label", "route", "costUsd", "answerHead", "answerTruncated"].filter((key) => Object.hasOwn(value, key))])
     || !nonNegativeInteger(value.revision) || !boundedNonEmptyString(value.profile, 128)
     || (value.label !== undefined && !boundedString(value.label, 256))
     || (value.route !== undefined && !isProcessJobSubagentRoute(value.route))
     || !nonNegativeInteger(value.toolCalls) || !nonNegativeInteger(value.failedCalls)
+    || (value.costUsd !== undefined && (typeof value.costUsd !== "number" || !Number.isFinite(value.costUsd)
+      || value.costUsd < 0 || value.costUsd > Number.MAX_SAFE_INTEGER))
     || value.failedCalls > value.toolCalls
     || (value.answerHead !== undefined && !boundedString(value.answerHead, 8_000))
     || (value.answerTruncated !== undefined && typeof value.answerTruncated !== "boolean")
