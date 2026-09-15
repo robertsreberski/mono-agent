@@ -70,7 +70,7 @@ describe("Copilot usage credentials, HTTP and retention", () => {
     const [one, two] = await Promise.all([f.service.snapshot(), f.service.snapshot("github-copilot")]);
     expect(one).toEqual(two); expect(parseProviderUsageSnapshot(one)).toEqual(one);
     expect(f.fetch).toHaveBeenCalledExactlyOnceWith("https://api.github.com/copilot_internal/user", expect.objectContaining({ method: "GET", redirect: "error", headers: {
-      Authorization: `token SECRET_${pi ? "PI" : "LOCAL"}`, Accept: "application/json", "Editor-Version": "vscode/1.96.2",
+      Authorization: `token SECRET_${pi ? "REFRESH" : "LOCAL"}`, Accept: "application/json", "Editor-Version": "vscode/1.96.2",
       "Editor-Plugin-Version": "copilot-chat/0.26.7", "User-Agent": "GitHubCopilotChat/0.26.7", "X-Github-Api-Version": "2025-04-01",
     } }));
     await f.service.snapshot(); expect(f.fetch).toHaveBeenCalledTimes(1);
@@ -78,97 +78,121 @@ describe("Copilot usage credentials, HTTP and retention", () => {
     if (pi) expect(f.local).not.toHaveBeenCalled();
     expect(JSON.stringify(one)).not.toMatch(/SECRET|usageSource|identity/);
   });
-  it.each([401, 403])("only Pi OAuth refreshes on rejection %s", async (status) => {
-    for (const pi of [false, true]) {
-      const f = fixture(pi); f.fetch.mockResolvedValueOnce(new Response("SECRET_VENDOR", { status }));
-      const result = await f.service.snapshot();
-      expect(result.providers[0]?.error?.code).toBe(pi ? undefined : "auth_failed");
-      expect(f.resolver).toHaveBeenCalledTimes(pi ? 1 : 0);
-      expect(f.fetch).toHaveBeenCalledTimes(pi ? 2 : 1);
-      expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
-      expect(f.outcomes.recordAccountSuccess).toHaveBeenCalledTimes(pi ? 1 : 0);
+  it.each([NOW - 1, NOW + 100000])("uses the GitHub device token, not inference access, with expiry %s", async (expires) => {
+    const f = fixture(true);
+    f.setPi({ type: "oauth", access: "synthetic-inference", refresh: "synthetic-github", expires });
+    const result = await f.service.snapshot("github-copilot");
+    expect(result.providers[0]).toMatchObject({ plan: "Individual", windows: [{ usedPercent: 42.1 }], stale: false });
+    expect(f.fetch).toHaveBeenCalledExactlyOnceWith("https://api.github.com/copilot_internal/user", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "token synthetic-github" }) }));
+    expect(f.resolver).not.toHaveBeenCalled(); expect(f.local).not.toHaveBeenCalled();
+    expect(f.outcomes.recordAccountSuccess).toHaveBeenCalledExactlyOnceWith("github-copilot", 0, new Date(NOW).toISOString());
+    expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toMatch(/SECRET|synthetic|usageSource|identity/);
+  });
+  it.each([401, 403])("never refreshes or retries Copilot rejection %s for OAuth, API key or local", async (status) => {
+    for (const source of ["oauth", "api_key", "local"]) {
+      const f = fixture(source !== "local");
+      if (source === "api_key") f.setPi({ type: "api_key", key: "SECRET_PI_KEY" });
+      if (source === "oauth") f.setPi({ type: "oauth", access: "SECRET_PI", refresh: "SECRET_REFRESH", expires: NOW - 1, usageSource: "local" });
+      f.fetch.mockImplementation(async () => new Response("SECRET_VENDOR", { status }));
+      const result = await f.service.snapshot("github-copilot");
+      expect(result.providers[0]?.error?.code).toBe("auth_failed");
+      expect(f.resolver).not.toHaveBeenCalled(); expect(f.fetch).toHaveBeenCalledTimes(1);
+      expect(f.fetch.mock.calls[0]?.[1]?.headers).toMatchObject({ Authorization: `token SECRET_${source === "oauth" ? "REFRESH" : source === "api_key" ? "PI_KEY" : "LOCAL"}` });
+      expect(f.outcomes.recordAccountFailure).toHaveBeenCalledTimes(source === "local" ? 0 : 1);
+      expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled();
+      if (source !== "local") expect(f.local).not.toHaveBeenCalled();
+      expect(await f.service.snapshot()).toEqual(result);
+      expect(await f.service.refresh()).toEqual(result);
+      expect(f.fetch).toHaveBeenCalledTimes(1);
+      expect(f.outcomes.recordAccountFailure).toHaveBeenCalledTimes(source === "local" ? 0 : 1);
+      f.advance(); await f.service.refresh(); expect(f.fetch).toHaveBeenCalledTimes(2);
+      expect(f.resolver).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).not.toMatch(/SECRET|usageSource|identity/);
     }
   });
-  it("refreshes expired Pi before request and does not fall through on rejection", async () => {
-    const f = fixture(true); f.setPi({ type: "oauth", access: "SECRET_OLD", refresh: "SECRET_REFRESH", expires: NOW - 1 });
-    f.fetch.mockImplementation(async () => new Response("SECRET", { status: 401 }));
-    expect((await f.service.snapshot()).providers[0]?.error?.code).toBe("auth_failed");
-    expect(f.resolver).toHaveBeenCalledTimes(2); expect(f.local).not.toHaveBeenCalled();
-    expect(f.outcomes.recordAccountFailure).toHaveBeenCalledTimes(1);
+  it.each([undefined, "", "   "])("omits Pi OAuth with missing/blank refresh (%#), never falls back", async (refresh) => {
+    const f = fixture(true);
+    f.setPi({ type: "oauth", access: "SECRET_INFERENCE", refresh, expires: NOW + 100000 });
+    expect((await f.service.snapshot()).providers).toEqual([]);
+    expect((await f.service.refresh()).providers).toEqual([]);
+    expect(f.local).not.toHaveBeenCalled(); expect(f.fetch).not.toHaveBeenCalled(); expect(f.resolver).not.toHaveBeenCalled();
+    expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled(); expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
   });
-  it.each(["expiry", "401", "403"])("ignores unknown Pi usageSource ownership during %s refresh", async (trigger) => {
-    for (const rejected of [false, true]) {
-      const f = fixture(true);
-      f.setPi({ type: "oauth", access: "SECRET_PI", refresh: "SECRET_REFRESH", expires: trigger === "expiry" ? NOW - 1 : NOW + 100000, usageSource: "local" });
-      if (trigger !== "expiry") f.fetch.mockResolvedValueOnce(new Response("SECRET_VENDOR", { status: Number(trigger) }));
-      if (rejected) f.fetch.mockImplementation(async () => new Response("SECRET_VENDOR", { status: 401 }));
-      const result = await f.service.snapshot("github-copilot");
-      expect(result.providers[0]?.error?.code).toBe(rejected ? "auth_failed" : undefined);
-      expect(f.resolver).toHaveBeenCalledTimes(trigger === "expiry" && rejected ? 2 : 1);
-      expect(f.fetch).toHaveBeenCalledTimes(trigger === "expiry" && !rejected ? 1 : 2);
-      expect(f.fetch.mock.calls.at(-1)?.[1]?.headers).toMatchObject({ Authorization: "token SECRET_NEW" });
-      expect(f.local).not.toHaveBeenCalled();
-      expect(f.outcomes.recordAccountSuccess).toHaveBeenCalledTimes(rejected ? 0 : 1);
-      expect(f.outcomes.recordAccountFailure).toHaveBeenCalledTimes(rejected ? 1 : 0);
-      expect(JSON.stringify(result)).not.toMatch(/SECRET|usageSource|identity/);
-      expect(JSON.stringify(f.fetch.mock.calls)).not.toContain("SECRET_INFERENCE");
-    }
-  });
-  describe.each(["expiry", "401", "403"])("persisted OAuth access required after %s refresh", (trigger) => {
-    it.each(["unavailable", "throws", "wrong-type", "missing-access", "empty-access", "blank-access"])("fails unavailable on %s re-read without resolver-token leakage or auth evidence", async (failure) => {
-      const f = fixture(true);
-      if (trigger === "expiry") f.setPi({ type: "oauth", access: "SECRET_OLD", refresh: "SECRET_REFRESH", expires: NOW - 1 });
-      else f.fetch.mockResolvedValueOnce(new Response("SECRET_VENDOR", { status: Number(trigger) }));
-      // The read fails transiently; the final ownership fence can still see the original credential.
-      f.resolver.mockImplementationOnce(async () => {
-        if (failure === "throws") f.resolver.readCredential.mockRejectedValueOnce(new Error("SECRET_READ_ERROR"));
-        else f.resolver.readCredential.mockResolvedValueOnce(failure === "unavailable" ? undefined
-          : failure === "wrong-type" ? { type: "api_key", key: "SECRET_WRONG_TYPE" }
-          : { type: "oauth", refresh: "SECRET_REFRESH", expires: NOW + 100000,
-            ...(failure === "missing-access" ? {} : { access: failure === "empty-access" ? "" : "   " }) });
-        return "SECRET_INFERENCE";
-      });
-      const result = await f.service.snapshot("github-copilot");
-      expect(result.providers[0]?.error?.code).toBe("unavailable");
-      expect(f.resolver).toHaveBeenCalledExactlyOnceWith("github-copilot", expect.objectContaining({
-        signal: expect.any(AbortSignal), ...(trigger === "expiry" ? {} : { rejectedAccessToken: "SECRET_PI" }),
-      }));
-      expect(f.fetch).toHaveBeenCalledTimes(trigger === "expiry" ? 0 : 1);
-      expect(JSON.stringify(f.fetch.mock.calls)).not.toMatch(/SECRET_INFERENCE|SECRET_WRONG_TYPE/);
-      expect(JSON.stringify(result)).not.toMatch(/SECRET|usageSource|identity/);
-      expect(f.local).not.toHaveBeenCalled();
-      expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled();
-      expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
-      expect(await f.service.refresh("github-copilot")).toEqual(result); // failure backoff also covers manual reads
-      expect(f.resolver).toHaveBeenCalledTimes(1);
-      expect(f.fetch).toHaveBeenCalledTimes(trigger === "expiry" ? 0 : 1);
-    });
-    it.each(["removed", "rotated"])("keeps the retention fence when Pi is %s during refresh", async (change) => {
-      const f = fixture(true);
-      if (trigger === "expiry") f.setPi({ type: "oauth", access: "SECRET_OLD", refresh: "SECRET_REFRESH", expires: NOW - 1 });
-      else f.fetch.mockResolvedValueOnce(new Response("SECRET_VENDOR", { status: Number(trigger) }));
-      f.resolver.mockImplementationOnce(async () => {
-        f.setPi(change === "removed" ? undefined : { type: "api_key", key: "SECRET_ROTATED" });
-        return "SECRET_INFERENCE";
-      });
-      expect((await f.service.snapshot("github-copilot")).providers).toEqual([]);
-      expect(f.fetch).toHaveBeenCalledTimes(trigger === "expiry" ? 0 : 1);
-      expect(f.resolver).toHaveBeenCalledTimes(1);
-      expect(f.local).not.toHaveBeenCalled();
-      expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled();
-      expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
-      expect(JSON.stringify(f.fetch.mock.calls)).not.toContain("SECRET_INFERENCE");
-    });
-  });
-  it("uses Pi api keys without OAuth refresh and falls back only from unusable Pi", async () => {
-    const f = fixture(); f.setPi({ type: "api_key", key: "SECRET_PI_KEY" });
-    f.fetch.mockResolvedValueOnce(new Response("", { status: 403 }));
-    expect((await f.service.snapshot()).providers[0]?.error?.code).toBe("auth_failed");
+  it.each([undefined, "", " ", "github.com", " GitHub.COM ", "https://github.com", "https://GITHUB.COM:443/path", "github.com:443/path", "http://github.com/"])("accepts Pi-normalized github.com marker (%#)", async (enterpriseUrl) => {
+    const f = fixture(true);
+    f.setPi({ type: "oauth", refresh: "SECRET_REFRESH", enterpriseUrl }); // inference fields are irrelevant
+    expect((await f.service.snapshot()).providers).toHaveLength(1);
+    expect(f.fetch.mock.calls[0]?.[1]?.headers).toMatchObject({ Authorization: "token SECRET_REFRESH" });
     expect(f.local).not.toHaveBeenCalled(); expect(f.resolver).not.toHaveBeenCalled();
-    expect(f.outcomes.recordAccountFailure).toHaveBeenCalledTimes(1);
-    f.setPi({ type: "oauth", access: "expired", expires: NOW - 1 });
-    expect((await f.service.snapshot()).providers[0]?.error).toBeUndefined();
-    expect(f.local).toHaveBeenCalled(); expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled();
+  });
+  it.each(["company.ghe.com", "https://company.ghe.com/path", " company.ghe.com:443 ", "github.com.evil", "evilgithub.com", "https://github.com@evil.invalid", "github.com.", "https://", "not a host", "https://[", "mailto:github.com", "file:///github.com", null, 42, {}])("fails closed for enterprise/malformed marker (%#)", async (enterpriseUrl) => {
+    const f = fixture(true);
+    f.setPi({ type: "oauth", access: "SECRET_ENTERPRISE_ACCESS", refresh: "SECRET_ENTERPRISE_REFRESH", expires: NOW + 100000, enterpriseUrl });
+    expect((await f.service.snapshot()).providers).toEqual([]);
+    expect((await f.service.refresh()).providers).toEqual([]);
+    expect(f.local).not.toHaveBeenCalled(); expect(f.fetch).not.toHaveBeenCalled(); expect(f.resolver).not.toHaveBeenCalled();
+    expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled(); expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
+  });
+  it("keeps fresh cache across inference rotation, expiry, catalog and equivalent host markers", async () => {
+    const f = fixture(true); const first = await f.service.snapshot();
+    for (const changes of [{ access: "SECRET_ROTATED" }, { expires: NOW - 1 }, { availableModelIds: ["synthetic-model"] }, { access: undefined, expires: undefined }, { enterpriseUrl: " https://GITHUB.COM:443/path " }]) {
+      f.setPi({ type: "oauth", access: "SECRET_PI", refresh: "SECRET_REFRESH", expires: NOW + 100000, ...changes });
+      expect(await f.service.snapshot()).toEqual(first);
+    }
+    expect(f.fetch).toHaveBeenCalledTimes(1); expect(f.resolver).not.toHaveBeenCalled();
+    expect(f.outcomes.recordAccountSuccess).toHaveBeenCalledTimes(1);
+  });
+  it("retains and coalesces in-flight quota after inference-only rotation", async () => {
+    const f = fixture(true); let finish!: (response: Response) => void;
+    f.fetch.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const pending = f.service.snapshot(); await vi.waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(1));
+    f.setPi({ type: "oauth", access: "SECRET_ROTATED", refresh: "SECRET_REFRESH", expires: NOW - 1, availableModelIds: ["synthetic-model"], enterpriseUrl: " github.com " });
+    const joined = f.service.snapshot(); const manual = f.service.refresh();
+    finish(Response.json(paid));
+    const result = await pending;
+    expect(result.providers).toHaveLength(1); expect(await joined).toEqual(result); expect(await manual).toEqual(result);
+    expect(await f.service.snapshot()).toEqual(result);
+    expect(f.fetch).toHaveBeenCalledTimes(1); expect(f.resolver).not.toHaveBeenCalled(); expect(f.local).not.toHaveBeenCalled();
+    expect(f.outcomes.recordAccountSuccess).toHaveBeenCalledTimes(1);
+  });
+  it.each(["refresh", "missing-refresh", "blank-refresh", "host", "malformed-host", "removed", "type"])("fences fresh cache and in-flight Pi quota on %s change", async (change) => {
+    for (const inFlight of [false, true]) {
+      const f = fixture(true);
+      // Same token as Pi, but local ownership must still not retain Pi data/evidence.
+      f.setLocal("SECRET_REFRESH");
+      let finish!: (response: Response) => void;
+      if (inFlight) f.fetch.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+      const pending = f.service.snapshot();
+      if (inFlight) await vi.waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(1)); else await pending;
+      const changes = change === "refresh" ? { refresh: "SECRET_ROTATED" }
+        : change === "missing-refresh" ? { refresh: undefined }
+        : change === "blank-refresh" ? { refresh: " " }
+        : change === "host" ? { enterpriseUrl: "enterprise.invalid" } : { enterpriseUrl: "https://" };
+      f.setPi(change === "removed" ? undefined : change === "type" ? { type: "api_key", key: "SECRET_REFRESH" }
+        : { type: "oauth", access: "SECRET_PI", refresh: "SECRET_REFRESH", expires: NOW + 100000, ...changes });
+      if (inFlight) {
+        finish(Response.json(paid)); expect((await pending).providers).toEqual([]);
+        expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled(); expect(f.local).not.toHaveBeenCalled();
+      }
+      const usable = ["refresh", "removed", "type"].includes(change);
+      expect((await f.service.snapshot()).providers).toHaveLength(usable ? 1 : 0);
+      expect(f.fetch).toHaveBeenCalledTimes(usable ? 2 : 1);
+      expect(f.outcomes.recordAccountSuccess).toHaveBeenCalledTimes((inFlight ? 0 : 1) + (usable && change !== "removed" ? 1 : 0));
+      expect(f.resolver).not.toHaveBeenCalled(); expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
+      if (change !== "removed") expect(f.local).not.toHaveBeenCalled();
+    }
+  });
+  it("keeps unusable Pi API-key ownership instead of choosing a local account", async () => {
+    const f = fixture(); f.setPi({ type: "api_key", key: " " });
+    expect((await f.service.snapshot()).providers).toEqual([]);
+    expect(f.local).not.toHaveBeenCalled(); expect(f.fetch).not.toHaveBeenCalled();
+  });
+  it("does not use a local account when Pi ownership cannot be read", async () => {
+    const f = fixture(true);
+    f.resolver.readCredential.mockRejectedValue(new Error("SECRET_READ_ERROR"));
+    expect((await f.service.snapshot()).providers).toEqual([]);
+    expect(f.fetch).not.toHaveBeenCalled(); expect(f.local).not.toHaveBeenCalled(); expect(f.resolver).not.toHaveBeenCalled();
   });
   it.each(["local-rotation", "local-removal", "pi-precedence"])("fences in-flight %s without leaking old account or recording Pi proof", async (rotation) => {
     const f = fixture(); let finish!: (response: Response) => void;

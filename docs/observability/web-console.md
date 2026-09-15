@@ -150,9 +150,10 @@ The agent shares one five-minute in-memory cache between console reads and the
 sheet loads usage independently of auth status; it polls while open and stops
 on close or agent switch. Expired data is shown as **Last known usage** during a
 coalesced refresh. Failures show **Usage unavailable** with a short safe reason,
-retaining last-good meters. Rate limits honor `Retry-After`; rejected OAuth
-credentials from Pi get one refresh through the existing resolver and one retry.
-Local Copilot tokens do not refresh on rejection.
+retaining last-good meters. Rate limits honor `Retry-After`; rejected Claude/Codex
+OAuth credentials from Pi get one refresh through the existing resolver and one retry.
+Copilot quota rejection gets one request, no OAuth refresh or retry, and the same
+five-minute failure fence for Pi OAuth, Pi API keys and local tokens.
 Claude rejection includes a re-login hint (usage requires `user:profile` scope);
 an OpenCode entitlement rejection means no Go subscription, not a bad key.
 
@@ -183,14 +184,26 @@ rows. The web server never reads credentials; vendor identifiers and secrets
 are dropped on the agent host before transport. No subscription usage is
 persisted by the service, and no quota purchase/reset endpoint is called.
 
-Copilot uses the agent’s usable Pi `github-copilot` credential first, then local
+Copilot uses the agent’s Pi `github-copilot` credential. For OAuth, quota reads
+send the underlying GitHub device-flow token in `credential.refresh`, never the
+short-lived inference token in `credential.access`. Inference access expiry or
+rotation and model catalog changes neither invoke the resolver nor invalidate
+fresh or in-flight usage. The cache identity follows the GitHub token, normalized
+host and credential source. Pi API keys are sent directly and never refreshed.
+A missing/blank OAuth refresh token, malformed host marker or non-github.com
+`enterpriseUrl` omits usage without local fallback. Pi's URL/domain normalization
+must resolve to exact `github.com`; blank/absent markers mean github.com. No
+enterprise quota endpoint is supported.
+
+Only when no Pi Copilot credential exists does discovery try local
 Copilot editor `~/.config/github-copilot/apps.json` (or older `hosts.json`), the
 active github.com token in `~/.config/gh/hosts.yml`, then bounded noninteractive
 `gh auth token --hostname github.com` for keychain retrieval. Only github.com
 entries qualify. Files and helper output/time are bounded; no environment-token
 fallback, browser cookies, prompts or credential-store writes are used. No new
 configuration is required. Usage is available even if Copilot is not an inference
-provider. Credential/source rotation fences cached and in-flight usage.
+provider. Unusable Pi entries or unreadable Pi ownership never select a local
+account. GitHub token/host/source changes fence cached and in-flight usage.
 
 The read-only Copilot endpoint is `https://api.github.com/copilot_internal/user`.
 Percent used is `100 - percent_remaining`, falling back to entitlement/remaining.

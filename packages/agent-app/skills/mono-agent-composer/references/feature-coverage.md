@@ -177,15 +177,21 @@ Parent/stateless runs have no AskParent, and children cannot use AskUser or
 channel sends. There is no separate config key or background/wake behavior.
 
 
-### Subscription usage (Claude, Codex, OpenCode Go)
+### Subscription usage (Claude, Codex, OpenCode Go, GitHub Copilot)
 
 The app automatically exposes `ProviderUsage` on policy-permitted turns and
-usage meters under matching provider-auth rows in Agent settings. It reads only
-usable credentials in `providers.piAuthPath`: Claude/Codex OAuth or OpenCode Go's
-static key. No new config, external MCP declaration or consumer auth store is
+usage meters under matching provider-auth rows in Agent settings, plus usage-only
+cards for unmatched providers. It reads usable credentials in `providers.piAuthPath`:
+Claude/Codex OAuth, OpenCode Go's static key, or GitHub Copilot OAuth/API key.
+Copilot OAuth uses GitHub's device token in `refresh`, never inference `access`;
+inference expiry/rotation does not refresh or invalidate quota usage. Copilot
+rejections never invoke the resolver or retry. Only absent Pi Copilot entries
+allow local github.com editor/GitHub CLI discovery, without Pi auth evidence.
+Unusable Pi entries, malformed hosts and enterprise accounts omit usage rather
+than falling back to a different account. No new config, external MCP declaration or consumer auth store is
 needed. A restrictive allowlist must include `ProviderUsage`; the namespaced
 `mcp__mono-agent-provider-usage__ProviderUsage` and server wildcard aliases also
-work, with deny winning. Optional `provider` filters the three exact ids.
+work, with deny winning. Optional `provider` filters `anthropic`, `openai-codex`, `opencode-go` or `github-copilot`.
 Snapshots are secret-free, five-minute cached vendor percentages/reset times,
 not local costs; stale/error data is explicitly labelled and absent credentials
 are omitted. Retained usage successes provide weaker **Credential OK** evidence,
