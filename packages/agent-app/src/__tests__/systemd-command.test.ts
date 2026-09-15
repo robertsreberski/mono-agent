@@ -35,9 +35,13 @@ const service = { loadState: "loaded", activeState: "active", subState: "running
 const args = (action: string) => parseCliArgs([action, "--config", "/agent/config.json"]);
 const output = () => ({ stdout: { write: vi.fn() }, stderr: { write: vi.fn() } });
 
-/** The exact managed worker prefix `workerArgv` writes before `web run …`. */
+/**
+ * The exact managed worker invocation `workerArgv` writes: `env -i`, then the
+ * selected environment assignments, then node, the `--` separator and the CLI
+ * entrypoint, then the command.
+ */
 const managedWebArgv = (...args: readonly string[]): string[] =>
-  ["/usr/bin/env", "-i", "/usr/bin/node", "--", "/managed/dist/cli.js", ...args];
+  ["/usr/bin/env", "-i", "PATH=/usr/bin", "/usr/bin/node", "--", "/managed/dist/cli.js", ...args];
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -190,7 +194,13 @@ describe("Linux web command composition", () => {
   });
 
   it("preserves installed endpoint, theme, and allowed hosts on restart", async () => {
-    mocks.read.mockResolvedValue({ argv: managedWebArgv("MONO_AGENT_WEB_ALLOWED_HOSTS=example.ts.net", "web", "run", "--host", "127.0.0.1", "--port", "6060", "--theme", "plum") });
+    mocks.read.mockResolvedValue({
+      argv: [
+        "/usr/bin/env", "-i", "PATH=/usr/bin", "MONO_AGENT_WEB_ALLOWED_HOSTS=example.ts.net",
+        "/usr/bin/node", "--", "/managed/dist/cli.js",
+        "web", "run", "--host", "127.0.0.1", "--port", "6060", "--theme", "plum",
+      ],
+    });
     mocks.health.mockResolvedValue(true);
     expect(await runSystemdWebCommand({ positionals: ["restart"], env: {} }, output())).toBe(0);
     expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining([

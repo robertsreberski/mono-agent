@@ -47,6 +47,32 @@ export interface ManagedWebDefinition {
 
 const MANAGED_WEB_OPTION_NAMES: readonly string[] = ["--host", "--port", "--theme", "--name"];
 
+/**
+ * `env -i` environment assignment as both builders write it
+ * (`buildEnvironmentArguments` / `operationalEnvironment`).
+ */
+const MANAGED_WEB_ENVIRONMENT_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/u;
+
+/** A launcher/entrypoint token: non-empty and not another option. */
+function isPathToken(value: string | undefined): value is string {
+  return value !== undefined && value.length > 0 && !value.startsWith("-");
+}
+
+/** One `--flag value` pair, unique per flag, with the value kept as opaque data. */
+function readManagedOptionPairs(
+  suffix: readonly string[],
+): ReadonlyMap<string, string> | undefined {
+  const values = new Map<string, string>();
+  for (let index = 0; index < suffix.length; index += 2) {
+    const flag = suffix[index];
+    const value = suffix[index + 1];
+    if (flag === undefined || value === undefined || !MANAGED_WEB_OPTION_NAMES.includes(flag)) return undefined;
+    if (values.has(flag)) return undefined;
+    values.set(flag, value);
+  }
+  return values;
+}
+
 /** Binds must be a single printable, non-flag token; the actual bind is proven by the worker. */
 function isValidManagedBindHost(value: string): boolean {
   const host = value.trim();
@@ -70,24 +96,27 @@ function isValidManagedBindHost(value: string): boolean {
  * historical wide bind).
  */
 export function decodeManagedWebDefinition(argv: readonly string[]): ManagedWebDefinition | undefined {
-  const webIndex = argv.indexOf("web");
-  if (webIndex <= 0 || argv.lastIndexOf("web") !== webIndex) return undefined;
-  if (argv[webIndex + 1] !== "run") return undefined;
-  // The token before `web` is the CLI entrypoint in every generated definition
-  // (`node <cli> web run …`, and `… node -- <cli> web run …` on Linux); it must
-  // be a path-like token, not another option.
-  const entrypoint = argv[webIndex - 1];
-  if (entrypoint === undefined || entrypoint.length === 0 || entrypoint.startsWith("-")) return undefined;
+  // Both generated prefixes start with `env -i` (buildLaunchdProgramArguments /
+  // workerArgv). The command is decoded only at this fixed boundary — never by
+  // searching for marker tokens anywhere in argv — so option values such as a
+  // console named `web` or `run` stay data.
+  let index = 0;
+  if (argv[index] !== "/usr/bin/env") return undefined;
+  index += 1;
+  if (argv[index] !== "-i") return undefined;
+  index += 1;
+  while (index < argv.length && MANAGED_WEB_ENVIRONMENT_ASSIGNMENT.test(argv[index] ?? "")) index += 1;
+  // Node entrypoint, then the optional Linux `--` separator, then the CLI path.
+  if (!isPathToken(argv[index])) return undefined;
+  index += 1;
+  if (argv[index] === "--") index += 1;
+  if (!isPathToken(argv[index])) return undefined;
+  index += 1;
+  if (argv[index] !== "web" || argv[index + 1] !== "run") return undefined;
+  index += 2;
 
-  const values = new Map<string, string>();
-  const suffix = argv.slice(webIndex + 2);
-  for (let index = 0; index < suffix.length; index += 2) {
-    const flag = suffix[index];
-    const value = suffix[index + 1];
-    if (flag === undefined || value === undefined || !MANAGED_WEB_OPTION_NAMES.includes(flag)) return undefined;
-    if (values.has(flag)) return undefined;
-    values.set(flag, value);
-  }
+  const values = readManagedOptionPairs(argv.slice(index));
+  if (values === undefined) return undefined;
 
   const port = Number(values.get("--port"));
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) return undefined;

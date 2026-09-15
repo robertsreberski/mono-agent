@@ -1909,6 +1909,43 @@ export async function ensureTailscaleServe(
       },
     };
   };
+  /**
+   * Finalize a failure that happened AFTER a new handler was claimed. When this
+   * command migrated an existing owned route, the prior route and its ownership
+   * record are already gone, so the replacement worker must be rolled back
+   * unless the prior exact route is safely restored first — every post-claim
+   * failure funnels through here instead of returning ad hoc results.
+   */
+  const failAfterClaim = async (
+    detail: string,
+    replacementCleanup: TailscaleCleanupResult,
+    attempt: { readonly httpsPort: number; readonly proxyTarget: string },
+  ): Promise<TailscaleServeResult> => {
+    if (priorMigration === undefined) {
+      return {
+        kind: "unavailable",
+        detail: `${detail}; ${replacementCleanup.detail}`,
+        routeOutcome: replacementCleanup.ok ? "rolled-back" : "uncertain",
+        attempted: attempt,
+      };
+    }
+    const restored = await restorePriorTailscaleRoute(
+      paths,
+      priorMigration.ownership,
+      priorMigration.contents,
+      runner,
+      deps,
+    );
+    return {
+      kind: "unavailable",
+      detail: `${detail}; replacement cleanup: ${replacementCleanup.detail}; prior route: ${restored.detail}`,
+      requiresServiceRollback: true,
+      routeOutcome: restored.ok ? "restored" : "uncertain",
+      // The uncertain handler is the replacement attempt; the restore outcome is
+      // stated in the detail above.
+      attempted: attempt,
+    };
+  };
   if (proxyTarget === undefined) {
     return {
       kind: "unavailable",
@@ -1988,50 +2025,45 @@ export async function ensureTailscaleServe(
       proxyTarget,
       expectedDnsName ?? observedDnsName,
     );
-    return {
-      kind: "unavailable",
-      detail: `handler command succeeded but verification failed: ${after.detail}; ${rollback.detail}`,
-      routeOutcome: rollback.ok ? "rolled-back" : "uncertain",
-      attempted: { httpsPort, proxyTarget },
-    };
+    return await failAfterClaim(
+      `handler command succeeded but verification failed: ${after.detail}`,
+      rollback,
+      { httpsPort, proxyTarget },
+    );
   }
   if (expectedDnsName !== undefined && observedDnsName !== expectedDnsName) {
     const rollback = await rollbackJustCreatedTailscaleRoute(runner, httpsPort, proxyTarget, observedDnsName);
-    return {
-      kind: "unavailable",
-      detail: `handler command succeeded but the node's exact Tailscale DNS name changed or became unavailable; ${rollback.detail}`,
-      routeOutcome: rollback.ok ? "rolled-back" : "uncertain",
-      attempted: { httpsPort, proxyTarget },
-    };
+    return await failAfterClaim(
+      "handler command succeeded but the node's exact Tailscale DNS name changed or became unavailable",
+      rollback,
+      { httpsPort, proxyTarget },
+    );
   }
   const dnsName = expectedDnsName ?? observedDnsName;
   const webKey = findTailscaleWebKey(after.status, httpsPort, proxyTarget, dnsName);
   if (webKey === undefined) {
     const rollback = await rollbackJustCreatedTailscaleRoute(runner, httpsPort, proxyTarget, dnsName);
-    return {
-      kind: "unavailable",
-      detail: `handler command succeeded but the exact proxy target could not be verified; ${rollback.detail}`,
-      routeOutcome: rollback.ok ? "rolled-back" : "uncertain",
-      attempted: { httpsPort, proxyTarget },
-    };
+    return await failAfterClaim(
+      "handler command succeeded but the exact proxy target could not be verified",
+      rollback,
+      { httpsPort, proxyTarget },
+    );
   }
   if (!isExactExpectedTailscaleRoute(after.status, webKey, httpsPort, proxyTarget)) {
     const rollback = await rollbackJustCreatedTailscaleRoute(runner, httpsPort, proxyTarget, dnsName);
-    return {
-      kind: "unavailable",
-      detail: `handler command succeeded but its TCP or Web handler set was not the exact root Proxy-only shape; ${rollback.detail}`,
-      routeOutcome: rollback.ok ? "rolled-back" : "uncertain",
-      attempted: { httpsPort, proxyTarget },
-    };
+    return await failAfterClaim(
+      "handler command succeeded but its TCP or Web handler set was not the exact root Proxy-only shape",
+      rollback,
+      { httpsPort, proxyTarget },
+    );
   }
   if (expectedDnsName !== undefined && tailscaleWebHostname(webKey) !== expectedDnsName) {
     const rollback = await rollbackJustCreatedTailscaleRoute(runner, httpsPort, proxyTarget, dnsName);
-    return {
-      kind: "unavailable",
-      detail: `handler command succeeded under an unexpected Tailscale hostname; ${rollback.detail}`,
-      routeOutcome: rollback.ok ? "rolled-back" : "uncertain",
-      attempted: { httpsPort, proxyTarget },
-    };
+    return await failAfterClaim(
+      "handler command succeeded under an unexpected Tailscale hostname",
+      rollback,
+      { httpsPort, proxyTarget },
+    );
   }
   const hostname = webKey.slice(0, webKey.lastIndexOf(":"));
   const ownership: TailscaleServeOwnership = {
@@ -2050,12 +2082,11 @@ export async function ensureTailscaleServe(
     );
   } catch (error) {
     const rollback = await rollbackExactTailscaleRoute(runner, after.status, ownership);
-    return {
-      kind: "unavailable",
-      detail: `could not durably record Tailscale handler ownership: ${errorMessage(error)}; ${rollback.detail}`,
-      routeOutcome: rollback.ok ? "rolled-back" : "uncertain",
-      attempted: { httpsPort, proxyTarget },
-    };
+    return await failAfterClaim(
+      `could not durably record Tailscale handler ownership: ${errorMessage(error)}`,
+      rollback,
+      { httpsPort, proxyTarget },
+    );
   }
   return { kind: "active", ownership, reused: false };
 }
@@ -2136,6 +2167,14 @@ export function tailscaleProxyTarget(bindHost: string, appPort: number): string 
   return `http://${urlHost(normalized)}:${String(appPort)}`;
 }
 
+/** True when the attempted HTTPS port has no TCP entry and no Web handler at all. */
+function attemptedPortIsAbsent(status: Record<string, unknown>, httpsPort: number): boolean {
+  const tcp = isRecord(status.TCP) ? status.TCP : {};
+  const web = isRecord(status.Web) ? status.Web : {};
+  if (Object.hasOwn(tcp, String(httpsPort))) return false;
+  return !Object.keys(web).some((key) => key.endsWith(`:${String(httpsPort)}`));
+}
+
 async function rollbackJustCreatedTailscaleRoute(
   runner: CommandRunner,
   httpsPort: number,
@@ -2151,7 +2190,14 @@ async function rollbackJustCreatedTailscaleRoute(
   }
   const webKey = findTailscaleWebKey(current.status, httpsPort, proxyTarget, dnsName);
   if (webKey === undefined) {
-    return { ok: true, detail: "no exact newly-created handler remained to remove" };
+    // No exact match is not the same as no route: only a port with no handler at
+    // all proves the attempted route is gone.
+    return attemptedPortIsAbsent(current.status, httpsPort)
+      ? { ok: true, detail: `no handler remained on HTTPS port ${String(httpsPort)}` }
+      : {
+          ok: false,
+          detail: `HTTPS port ${String(httpsPort)} still has a handler that does not match the exact created shape; nothing was removed`,
+        };
   }
   if (!isExactExpectedTailscaleRoute(current.status, webKey, httpsPort, proxyTarget)) {
     return {
@@ -2180,12 +2226,28 @@ async function rollbackExactTailscaleRoute(
     return { ok: false, detail: "rollback refused because the handler no longer matched exactly" };
   }
   const removed = await runner(["serve", `--https=${String(ownership.httpsPort)}`, "off"]);
-  return removed.code === 0
-    ? { ok: true, detail: "the exact handler was rolled back" }
-    : {
-        ok: false,
-        detail: `rollback of the exact handler failed: ${commandDetail(removed) || `exit ${String(removed.code)}`}`,
-      };
+  if (removed.code !== 0) {
+    return {
+      ok: false,
+      detail: `rollback of the exact handler failed: ${commandDetail(removed) || `exit ${String(removed.code)}`}`,
+    };
+  }
+  // A zero exit is not proof of removal: re-read status and require the exact
+  // handler to be provably absent before claiming it was rolled back.
+  const after = await readTailscaleServeStatus(runner);
+  if (after.kind === "error") {
+    return {
+      ok: false,
+      detail: `the off command succeeded but the handler's absence could not be verified: ${after.detail}`,
+    };
+  }
+  if (classifyOwnedTailscaleRoute(after.status, ownership).kind !== "absent") {
+    return {
+      ok: false,
+      detail: "the off command succeeded but the handler is still present or its shape changed; it was not touched further",
+    };
+  }
+  return { ok: true, detail: "the exact handler was removed and its absence was verified" };
 }
 
 export async function removeOwnedTailscaleServe(

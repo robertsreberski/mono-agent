@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { buildWebLaunchdProgramArguments, WEB_LAUNCHD_LABEL } from "../launchd.js";
 import { decodeManagedWebDefinition } from "../web-service-definition.js";
 
 /** The macOS LaunchAgent prefix: env -i … <node> <cli> */
@@ -57,9 +58,62 @@ describe("managed web definition decoding", () => {
       .toBeUndefined();
   });
 
-  it("does not treat an option value as the managed invocation", () => {
-    // `--name web` followed by `run …` must not be decoded as the worker.
-    expect(decodeManagedWebDefinition([...launchdPrefix, "web", "run", "--host", "0.0.0.0", "--port", "5051", "--theme", "plum", "--name", "web", "run"]))
-      .toBeUndefined();
+  it("rejects an unrelated command that merely contains the marker tokens", () => {
+    // A token immediately before `web` is not a recognized launcher+entrypoint.
+    expect(decodeManagedWebDefinition(["/bin/echo", "web", "run", "--port", "5050"])).toBeUndefined();
+    expect(decodeManagedWebDefinition(["/bin/sh", "-c", "web run --port 5050"])).toBeUndefined();
+    expect(decodeManagedWebDefinition(["/usr/bin/env", "-i", "web", "run", "--port", "5050"])).toBeUndefined();
+    expect(decodeManagedWebDefinition(["/usr/bin/env", "-i", "/bin/echo", "web", "run", "--port", "5050"])).toBeUndefined();
+    expect(decodeManagedWebDefinition(["/usr/bin/env", "-i", "/managed/node", "/managed/dist/cli.js", "start", "--host", "0.0.0.0", "--port", "5050"])).toBeUndefined();
+    expect(decodeManagedWebDefinition(["/usr/bin/env", "-i", "/managed/node", "/managed/dist/cli.js", "web", "run", "--port", "5050", "web"])).toBeUndefined();
+  });
+
+  it("decodes builder-produced argv and treats option values as data", () => {
+    const builderArgv = buildWebLaunchdProgramArguments({
+      label: WEB_LAUNCHD_LABEL,
+      nodePath: "/mounted/runtimes/node-24/bin/node",
+      cliPath: "/mounted/cli/dist/cli.js",
+      cwd: "/tmp/web-state",
+      host: "127.0.0.1",
+      port: 5051,
+      theme: "ocean",
+      name: "web",
+      stdoutPath: "/tmp/web.out.log",
+      stderrPath: "/tmp/web.err.log",
+      environment: { PATH: "/usr/bin", MONO_AGENT_WEB_ALLOWED_HOSTS: "console.home.arpa" },
+    });
+    expect(decodeManagedWebDefinition(builderArgv)).toEqual({
+      host: "127.0.0.1",
+      port: 5051,
+      theme: "ocean",
+      name: "web",
+    });
+
+    // Command-like labels are data, not invocation markers.
+    for (const label of ["run", "--host", "web"]) {
+      const argv = buildWebLaunchdProgramArguments({
+        label: WEB_LAUNCHD_LABEL,
+        nodePath: "/managed/node",
+        cliPath: "/managed/dist/cli.js",
+        cwd: "/tmp/web-state",
+        host: "127.0.0.1",
+        port: 5050,
+        theme: "plum",
+        name: label,
+        stdoutPath: "/tmp/web.out.log",
+        stderrPath: "/tmp/web.err.log",
+        environment: {},
+      });
+      expect(decodeManagedWebDefinition(argv)).toMatchObject({ name: label });
+    }
+
+    // The Linux builder layout: env assignments before node, then the `--`
+    // separator, then the CLI entrypoint.
+    const linuxArgv = [
+      "/usr/bin/env", "-i", "PATH=/usr/bin", "MONO_AGENT_WEB_ALLOWED_HOSTS=console.home.arpa",
+      "/usr/bin/node", "--", "/managed/dist/cli.js",
+      "web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum",
+    ];
+    expect(decodeManagedWebDefinition(linuxArgv)).toEqual({ host: "127.0.0.1", port: 5050, theme: "plum" });
   });
 });

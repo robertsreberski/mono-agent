@@ -2156,8 +2156,8 @@ describe("Tailscale Serve ownership", () => {
       tailscale: runner,
       writePrivateFile: async () => { throw new Error("disk full"); },
     });
-    expect(result).toMatchObject({ kind: "unavailable" });
-    expect(result.kind === "unavailable" ? result.detail : "").toContain("rolled back");
+    expect(result).toMatchObject({ kind: "unavailable", routeOutcome: "rolled-back" });
+    expect(result.kind === "unavailable" ? result.detail : "").toContain("absence was verified");
     expect(runner).toHaveBeenCalledWith(["serve", "--https=443", "off"]);
   });
 
@@ -2775,16 +2775,323 @@ describe("web console exposure contract", () => {
   });
 });
 
+
+describe("migration-aware Tailscale failure finalization (R1/R2)", () => {
+  /**
+   * A stateful managed-lifecycle harness: an owned route for
+   * `http://127.0.0.1:5050`, a prior service record/plist for port 5050, and a
+   * runner whose `serve status --json` reflects the modeled live route — except
+   * for the first post-claim verification read, which can be forced to report a
+   * foreign handler or nothing at all.
+   */
+  async function migrationHarness(options: {
+    readonly verificationReports: "route" | "foreign" | "none";
+    readonly ownershipWriteFailures: number;
+    readonly rollbackOffFails: boolean;
+  }) {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: home, tailscale: scriptedClaimRunner() });
+    const priorOwnership = await readFile(paths.tailscalePath, "utf8");
+    const oldPlist = "old 5050 plist\n";
+    const oldRecord = `${JSON.stringify({
+      schema: "mono-agent.web-service.v1",
+      host: "0.0.0.0",
+      port: 5050,
+      updatedAt: "2026-07-17T00:00:00.000Z",
+    }, undefined, 2)}\n`;
+    await writeFile(paths.launchd.plistPath, oldPlist, { mode: 0o600 });
+    await writeFile(paths.recordPath, oldRecord, { mode: 0o600 });
+
+    let loaded = true;
+    let currentTarget: string | undefined = "http://127.0.0.1:5050";
+    let verificationReadsRemaining = 0;
+    let claimArmed = false;
+    let rollbackOffFailuresArmed = false;
+    let ownershipWriteFailuresRemaining = options.ownershipWriteFailures;
+    const calls: string[][] = [];
+    const routeStatus = (target: string | undefined): Record<string, unknown> => target === undefined
+      ? { TCP: {}, Web: {} }
+      : {
+          TCP: { "443": { HTTPS: true } },
+          Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: target } } } },
+        };
+    const launchctl = async (args: readonly string[]) => {
+      calls.push([...args]);
+      if (args[0] === "print") return { code: loaded ? 0 : 1, stdout: loaded ? "pid = 777\n" : "", stderr: "" };
+      if (args[0] === "bootout") {
+        loaded = false;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "bootstrap") {
+        loaded = true;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+    const tailscale: CommandRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+      }
+      if (args[0] === "serve" && args[1] === "--bg") {
+        currentTarget = args[3];
+        // Only the verification read that follows the replacement claim is
+        // overridden; a later restore command must be verified honestly.
+        if (!claimArmed) {
+          claimArmed = true;
+          verificationReadsRemaining = 1;
+          rollbackOffFailuresArmed = true;
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "serve" && args[1] === "--https=443" && args[2] === "off") {
+        // The migration's own removal must succeed; only a post-claim rollback
+        // attempt can be forced to fail.
+        if (options.rollbackOffFails && rollbackOffFailuresArmed) {
+          return { code: 1, stdout: "", stderr: "off failed" };
+        }
+        currentTarget = undefined;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "serve" && args[1] === "status") {
+        if (verificationReadsRemaining > 0) {
+          verificationReadsRemaining -= 1;
+          if (options.verificationReports === "none") {
+            return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {}, Web: {} }) };
+          }
+          if (options.verificationReports === "foreign") {
+            return {
+              code: 0,
+              stderr: "",
+              stdout: JSON.stringify({
+                TCP: { "443": { HTTPS: true } },
+                Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } },
+              }),
+            };
+          }
+        }
+        return { code: 0, stderr: "", stdout: JSON.stringify(routeStatus(currentTarget)) };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+    const captured = { stdout: "", stderr: "" };
+    const deps = {
+      platform: "darwin" as NodeJS.Platform,
+      homeDir: home,
+      getuid: () => 501,
+      prepareState,
+      acquireLifecycleLock: async () => async () => undefined,
+      launchctl,
+      tailscale,
+      sleep: async () => undefined,
+      ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
+      healthcheck: async () => true,
+      isAlive: () => loaded,
+      stdout: { write: (text: string) => { captured.stdout += text; } },
+      stderr: { write: (text: string) => { captured.stderr += text; } },
+      writePrivateFile: async (path: string, contents: string) => {
+        if (path.endsWith("tailscale-serve.json") && ownershipWriteFailuresRemaining > 0) {
+          ownershipWriteFailuresRemaining -= 1;
+          throw new Error("disk full");
+        }
+        await writeFile(path, contents, { mode: 0o600 });
+      },
+    };
+    return {
+      paths,
+      calls,
+      captured,
+      deps,
+      priorOwnership,
+      oldPlist,
+      oldRecord,
+      state: () => ({ loaded, currentTarget }),
+    };
+  }
+
+  const bgTargets = (calls: readonly (readonly string[])[]): string[] =>
+    calls.filter((args) => args[0] === "serve" && args[1] === "--bg").map((args) => args[3] ?? "");
+
+  for (const shareTailnet of [false, true]) {
+    const flag = shareTailnet ? " with --share-tailnet" : " without --share-tailnet";
+
+    it(`rolls the worker back and restores the prior route when a 5050->5051 migration fails verification${flag}`, async () => {
+      const harness = await migrationHarness({ verificationReports: "none", ownershipWriteFailures: 0, rollbackOffFails: false });
+
+      const code = await runWebCommand(
+        { positionals: ["restart"], env: {}, port: 5051, ...(shareTailnet ? { shareTailnet: true } : {}) },
+        harness.deps,
+      );
+
+      // Final-state invariants: the replacement worker must not survive, and the
+      // prior exact route plus its ownership record must be live again.
+      expect(code).toBe(1);
+      expect(harness.state().loaded).toBe(true);
+      expect(harness.state().currentTarget).toBe("http://127.0.0.1:5050");
+      expect(await readFile(harness.paths.recordPath, "utf8")).toBe(harness.oldRecord);
+      expect(await readFile(harness.paths.launchd.plistPath, "utf8")).toBe(harness.oldPlist);
+      expect(await readFile(harness.paths.tailscalePath, "utf8")).toBe(harness.priorOwnership);
+      expect(bgTargets(harness.calls)).toEqual(["http://127.0.0.1:5051", "http://127.0.0.1:5050"]);
+      expect(harness.captured.stderr).toContain("migration failed");
+      expect(harness.captured.stderr).toContain("prior owned route was restored");
+    });
+
+    it(`rolls the worker back and reports an unrestorable prior route when the replacement may remain${flag}`, async () => {
+      const harness = await migrationHarness({ verificationReports: "none", ownershipWriteFailures: 0, rollbackOffFails: true });
+
+      const code = await runWebCommand(
+        { positionals: ["restart"], env: {}, port: 5051, ...(shareTailnet ? { shareTailnet: true } : {}) },
+        harness.deps,
+      );
+
+      expect(code).toBe(1);
+      expect(harness.state().loaded).toBe(true);
+      expect(harness.state().currentTarget).toBe("http://127.0.0.1:5051");
+      expect(await readFile(harness.paths.recordPath, "utf8")).toBe(harness.oldRecord);
+      expect(await readFile(harness.paths.launchd.plistPath, "utf8")).toBe(harness.oldPlist);
+      expect(harness.captured.stderr).toContain("migration failed");
+      expect(harness.captured.stderr).toContain("could not be confirmed restored");
+      // The replacement could not be provably removed, so the prior route must
+      // not be republished over it and the unknown handler must stay untouched.
+      expect(bgTargets(harness.calls)).toEqual(["http://127.0.0.1:5051"]);
+      // One off for the migration, one failed rollback attempt that left the
+      // replacement handler in place.
+      expect(harness.calls.filter((args) => args.join(" ") === "serve --https=443 off")).toHaveLength(2);
+    });
+
+    it(`rolls the worker back and restores the prior route when ownership cannot be recorded after migration${flag}`, async () => {
+      const harness = await migrationHarness({ verificationReports: "route", ownershipWriteFailures: 1, rollbackOffFails: false });
+
+      const code = await runWebCommand(
+        { positionals: ["restart"], env: {}, port: 5051, ...(shareTailnet ? { shareTailnet: true } : {}) },
+        harness.deps,
+      );
+
+      expect(code).toBe(1);
+      expect(harness.state().loaded).toBe(true);
+      expect(harness.state().currentTarget).toBe("http://127.0.0.1:5050");
+      expect(await readFile(harness.paths.recordPath, "utf8")).toBe(harness.oldRecord);
+      expect(await readFile(harness.paths.launchd.plistPath, "utf8")).toBe(harness.oldPlist);
+      expect(await readFile(harness.paths.tailscalePath, "utf8")).toBe(harness.priorOwnership);
+      expect(harness.captured.stderr).toContain("migration failed");
+      expect(harness.captured.stderr).toContain("prior owned route was restored");
+    });
+  }
+
+  /** Scripted post-claim verification failure with a configurable rollback outcome. */
+  async function rollbackOutcome(options: {
+    readonly afterOff: "absent" | "present" | "changed" | "error";
+    readonly offExit: number;
+  }) {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
+    let readIndex = 0;
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+      }
+      if (args[0] === "serve" && args[1] === "status") {
+        readIndex += 1;
+        if (readIndex === 1) return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {} }) };
+        if (readIndex === 2) {
+          // Verification reports a different handler: the claim did not take effect.
+          return {
+            code: 0,
+            stderr: "",
+            stdout: JSON.stringify({
+              TCP: { "443": { HTTPS: true } },
+              Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } },
+            }),
+          };
+        }
+        if (options.afterOff === "error") return { code: 1, stderr: "LocalAPI unavailable", stdout: "" };
+        if (options.afterOff === "changed") {
+          return {
+            code: 0,
+            stderr: "",
+            stdout: JSON.stringify({
+              TCP: { "443": { HTTPS: true } },
+              Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } },
+            }),
+          };
+        }
+        if (options.afterOff === "absent") return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {}, Web: {} }) };
+        return {
+          code: 0,
+          stderr: "",
+          stdout: JSON.stringify({
+            TCP: { "443": { HTTPS: true } },
+            Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:5050" } } } },
+          }),
+        };
+      }
+      if (args[0] === "serve" && args[1] === "--bg") return { code: 0, stderr: "", stdout: "" };
+      if (args[0] === "serve" && args[1] === "--https=443" && args[2] === "off") {
+        return { code: options.offExit, stderr: options.offExit === 0 ? "" : "off failed", stdout: "" };
+      }
+      return { code: 1, stderr: "unexpected", stdout: "" };
+    };
+    return { home, paths, calls, runner };
+  }
+
+  it("treats a surviving handler after a successful off command as uncertain", async () => {
+    const { paths, calls, runner } = await rollbackOutcome({ afterOff: "present", offExit: 0 });
+    const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: paths.stateDir, tailscale: runner });
+    expect(result.kind).toBe("unavailable");
+    expect(result.kind === "unavailable" ? result.routeOutcome : undefined).toBe("uncertain");
+    expect(calls.filter((args) => args.join(" ") === "serve --https=443 off")).toHaveLength(1);
+  });
+
+  it("treats an unverifiable absence after a successful off command as uncertain", async () => {
+    const { paths, runner } = await rollbackOutcome({ afterOff: "error", offExit: 0 });
+    const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: paths.stateDir, tailscale: runner });
+    expect(result.kind === "unavailable" ? result.routeOutcome : undefined).toBe("uncertain");
+  });
+
+  it("keeps an unmatched handler untouched and reports uncertainty", async () => {
+    const { paths, calls, runner } = await rollbackOutcome({ afterOff: "changed", offExit: 0 });
+    const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: paths.stateDir, tailscale: runner });
+    expect(result.kind === "unavailable" ? result.routeOutcome : undefined).toBe("uncertain");
+    // Nothing beyond the exact-off attempt may target the unknown handler.
+    expect(calls.filter((args) => args.some((token) => token.endsWith("off")))).toHaveLength(0);
+  });
+
+  it("proves absence before reporting the route as rolled back", async () => {
+    const { paths, calls, runner } = await rollbackOutcome({ afterOff: "absent", offExit: 0 });
+    const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: paths.stateDir, tailscale: runner });
+    expect(result.kind === "unavailable" ? result.routeOutcome : undefined).toBe("rolled-back");
+    expect(calls.some((args) => args.join(" ") === "serve --https=443 off")).toBe(false);
+  });
+
+  it("treats a failed off command as uncertain", async () => {
+    const { paths, runner } = await rollbackOutcome({ afterOff: "present", offExit: 1 });
+    const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: paths.stateDir, tailscale: runner });
+    expect(result.kind === "unavailable" ? result.routeOutcome : undefined).toBe("uncertain");
+  });
+});
+
 function scriptedClaimRunner(): CommandRunner {
   let reads = 0;
+  let removed = false;
   return async (args) => {
+    if (args[0] === "serve" && args[1] === "--https=443" && args[2] === "off") {
+      removed = true;
+      return { code: 0, stdout: "", stderr: "" };
+    }
     if (args[0] === "serve" && args[1] === "status") {
       reads += 1;
+      const absent = removed || reads === 1;
       return {
         code: 0,
         stderr: "",
-        stdout: JSON.stringify(reads === 1
-          ? { TCP: {} }
+        stdout: JSON.stringify(absent
+          ? { TCP: {}, Web: {} }
           : {
               TCP: { "443": { HTTPS: true } },
               Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:5050" } } } },
