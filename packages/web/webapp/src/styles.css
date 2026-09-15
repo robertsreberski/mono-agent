@@ -1090,7 +1090,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .composer-tool { width: 32px; height: 32px; }
 .composer-hint { color: var(--text-muted); font-size: 10px; line-height: 1.5; white-space: normal; }
 .composer-hint-status + .composer-hint-keys::before { content: "·"; margin: 0 4px; }
-.model-change-notice { min-width: 0; flex: 0 1 auto; }
+.composer-model-notice { display: block; margin: 9px 9px 0; padding: 7px 10px; color: var(--text-muted); background: var(--surface-hover); border: 1px solid var(--line); border-radius: 7px; font-size: 11px; line-height: 1.45; white-space: normal; }
 .composer-actions { min-width: 0; display: flex; flex: 1 1 0; align-items: center; justify-content: flex-end; gap: 6px; }
 .composer-actions .model-controls { min-width: 0; flex: 1 1 0; gap: 3px; }
 .composer-actions .context-display-trigger { flex: none; }

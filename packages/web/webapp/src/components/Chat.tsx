@@ -238,7 +238,7 @@ export function ModelControls() {
     usage, selectorModels, model, effort, setModel, setEffort,
     agentDefaultModel, hasRunOverride, resetRunOverride, disabled, hasSettings,
     catalogStatusByProvider, openCatalog, requestProvider, agentProviders,
-    changeNotice, showModelChangeHint,
+    showModelChangeHint,
   } = useRunControls();
   const [settingsOpen, setSettingsOpen] = useState(false);
   // `openCatalog` closes over the agent's providers and the shortlist, so its
@@ -297,11 +297,16 @@ export function ModelControls() {
           {...(hasRunOverride ? { onReset: resetRunOverride } : {})}
         />
       )}
-      {changeNotice !== null && (
-        <span className="composer-hint model-change-notice" role="status" aria-live="polite">
-          Model changed — the next reply rebuilds this conversation&apos;s context from its text history.
-        </span>
-      )}
+    </div>
+  );
+}
+
+export function ModelChangeNotice() {
+  const { changeNotice } = useRunControls();
+  if (changeNotice === null) return null;
+  return (
+    <div className="composer-model-notice" role="status" aria-live="polite">
+      Model changed — the next reply rebuilds this conversation&apos;s context from its text history.
     </div>
   );
 }
@@ -680,6 +685,7 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
                   <Composer
                     key={composerDraftKey(selectedAgent?.sourceId ?? null, selectedThreadId) ?? "no-agent"}
                     runSettings={<ModelControls />}
+                    notice={<ModelChangeNotice />}
                   />
                 )}
               </ThreadPrimitive.ViewportFooter>
