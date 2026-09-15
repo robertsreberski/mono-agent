@@ -569,7 +569,7 @@ export function ProcessJobCard({
           status={status}
           supplements={supplements}
         />
-        {live.kind === "internal" ? <ProcessJobSubagentProgress key={live.jobId} progress={progress} open={open} /> : live.output.preview.length > 0 && (
+        {live.kind === "internal" ? <ProcessJobSubagentProgress key={live.jobId} progress={progress} open={open} /> : live.output.preview.length > 0 ? (
           <>
             <span>Output{live.output.truncated ? " (truncated)" : ""}</span>
             <pre
@@ -581,6 +581,14 @@ export function ProcessJobCard({
               }}
             >{live.output.preview}</pre>
           </>
+        ) : (
+          // An expanded card that shows nothing at all reads as a broken tail.
+          // A command whose output is buffered, redirected or piped through
+          // something like `tail` genuinely emits nothing until it ends, so the
+          // card says which of the two it is instead of leaving an empty box.
+          <p className="process-job-empty-output">
+            {terminal ? "No output." : "No output yet."}
+          </p>
         )}
         {live.lastError !== null && (
           <p className="activity-error"><strong>{live.lastError.code}</strong> {live.lastError.message}</p>
