@@ -31,7 +31,23 @@ const ROOT_README = readFileSync(
 const HELP_DISCLOSURE_FIRST_LINE =
   "Fast scaffold-only path: flags or non-TTY input; without explicit --auth,";
 const PACKAGE_DISCLOSURE_PREFIX = "Setup has two deliberate wall-clock paths:";
-const ROOT_DISCLOSURE_PREFIX = "Choose the wall-clock path up front:";
+const ROOT_QUICKSTART_HEADING = "## Quickstart: An Agent Folder From One Config File";
+const ROOT_SETUP_DETAILS_HEADING = "## Setup details";
+/**
+ * The root README deliberately uses plain language instead of the legacy
+ * wall-clock taxonomy. This guard protects the semantic signal — authenticating,
+ * real billable model requests, the scaffold-only automated path — and its
+ * location as the second pre-step paragraph of the Quickstart. The exact
+ * deadlines stay in the linked `## Setup details` section.
+ */
+const ROOT_DISCLOSURE_MARKERS: readonly RegExp[] = [
+  /guided setup/i,
+  /signs you in to the provider/i,
+  /real model request/i,
+  /scaffold only/i,
+  /--auth/u,
+  /counts as usage/i,
+];
 
 interface DisclosureSurfaces {
   readonly help: string;
@@ -83,14 +99,29 @@ function packageOpeningParagraphs(source: string): string[] {
 }
 
 function rootQuickstartOpeningParagraphs(source: string): string[] {
-  const heading = "## Quickstart: An Agent Folder From One Config File";
-  const headingStart = source.indexOf(heading);
+  const headingStart = source.indexOf(ROOT_QUICKSTART_HEADING);
   const bodyStart = source.indexOf("\n", headingStart) + 1;
   const firstSubheading = source.indexOf("\n### ", bodyStart);
   if (headingStart < 0 || bodyStart <= headingStart || firstSubheading <= bodyStart) {
     return [];
   }
   return paragraphs(source.slice(bodyStart, firstSubheading));
+}
+
+function rootSetupDetailsSection(source: string): string {
+  const start = source.indexOf(ROOT_SETUP_DETAILS_HEADING);
+  return start === -1 ? "" : source.slice(start);
+}
+
+/**
+ * Returns the plain-language disclosure markers that the second pre-step
+ * Quickstart paragraph is missing.
+ */
+function missingRootDisclosureMarkers(source: string): string[] {
+  const paragraph = rootQuickstartOpeningParagraphs(source)[1] ?? "";
+  return ROOT_DISCLOSURE_MARKERS
+    .filter((marker) => !marker.test(paragraph))
+    .map((marker) => marker.source);
 }
 
 function prominenceFailures(surfaces: DisclosureSurfaces): string[] {
@@ -108,12 +139,11 @@ function prominenceFailures(surfaces: DisclosureSurfaces): string[] {
     failures.push("package README disclosure is not its second opening body paragraph");
   }
 
+  // Location guard only: the root disclosure stays one of the first two
+  // pre-step paragraphs, while its wording is free to stay plain-language.
   const rootOpening = rootQuickstartOpeningParagraphs(surfaces.rootReadme);
-  if (
-    rootOpening.length !== 2
-    || !rootOpening[1]?.startsWith(ROOT_DISCLOSURE_PREFIX)
-  ) {
-    failures.push("root README disclosure is not the second pre-section Quickstart paragraph");
+  if (rootOpening.length < 2 || missingRootDisclosureMarkers(surfaces.rootReadme).length > 0) {
+    failures.push("root README disclosure is not the plain-language second pre-section Quickstart paragraph");
   }
   return failures;
 }
@@ -131,13 +161,12 @@ describe("init wall-clock disclosure", () => {
     expect(initSummaryLine, "the init summary must keep the live-probe signal").toContain("probes");
   });
 
-  it("pins the disclosure to the first help description and exact README opening paragraphs", () => {
+  it("pins the disclosure to the first help description and the README disclosure locations", () => {
     const help = initHelpText();
     const helpLines = initHelpDescriptionLines(help);
     const presetStart = helpLines.findIndex((line) => line.startsWith("--preset seeds"));
     const helpDisclosure = helpLines.slice(0, presetStart).join(" ");
     const packageDisclosure = packageOpeningParagraphs(PACKAGE_README)[1] ?? "";
-    const rootDisclosure = rootQuickstartOpeningParagraphs(ROOT_README)[1] ?? "";
 
     expect(prominenceFailures({ help, packageReadme: PACKAGE_README, rootReadme: ROOT_README }))
       .toEqual([]);
@@ -149,14 +178,17 @@ describe("init wall-clock disclosure", () => {
     expect(helpDisclosure).toContain("before committing the scaffold");
     expect(helpDisclosure).toContain(readinessProbeTimeoutDescription());
 
-    for (const disclosure of [packageDisclosure, rootDisclosure]) {
-      expect(disclosure).toContain("fast scaffold-only path");
-      expect(disclosure).toContain("flags or non-TTY input");
-      expect(disclosure).toContain("unless explicit `--auth`");
-      expect(disclosure).toContain("real no-tool model call per selected route");
-      expect(disclosure).toContain("before committing the scaffold");
-      expect(disclosure).toContain(readinessProbeTimeoutDescription());
-    }
+    expect(packageDisclosure).toContain("fast scaffold-only path");
+    expect(packageDisclosure).toContain("flags or non-TTY input");
+    expect(packageDisclosure).toContain("unless explicit `--auth`");
+    expect(packageDisclosure).toContain("real no-tool model call per selected route");
+    expect(packageDisclosure).toContain("before committing the scaffold");
+    expect(packageDisclosure).toContain(readinessProbeTimeoutDescription());
+
+    // The root README keeps the semantic disclosure in the Quickstart and the
+    // exact deadlines in the linked setup-details section.
+    expect(missingRootDisclosureMarkers(ROOT_README)).toEqual([]);
+    expect(rootSetupDetailsSection(ROOT_README)).toContain(readinessProbeTimeoutDescription());
 
     expect(occurrences(PACKAGE_README, readinessProbeTimeoutDescription())).toBe(2);
     expect(occurrences(ROOT_README, readinessProbeTimeoutDescription())).toBe(1);
@@ -181,8 +213,8 @@ describe("init wall-clock disclosure", () => {
       `${paragraphFiller}\n\n${PACKAGE_DISCLOSURE_PREFIX}`,
     );
     const mutatedRootReadme = ROOT_README.replace(
-      ROOT_DISCLOSURE_PREFIX,
-      `${paragraphFiller}\n\n${ROOT_DISCLOSURE_PREFIX}`,
+      "Guided setup is authentic and not instant:",
+      `${paragraphFiller}\n\nGuided setup is authentic and not instant:`,
     );
 
     expect(mutatedHelp).not.toBe(help);
@@ -195,7 +227,17 @@ describe("init wall-clock disclosure", () => {
     })).toEqual([
       "init help disclosure is not the first description line",
       "package README disclosure is not its second opening body paragraph",
-      "root README disclosure is not the second pre-section Quickstart paragraph",
+      "root README disclosure is not the plain-language second pre-section Quickstart paragraph",
     ]);
+
+    // Moving the plain-language disclosure out of the second paragraph and
+    // removing its semantic signals must fail even without reordering.
+    const rewrittenRoot = ROOT_README.replace(
+      "Guided setup is authentic and not instant: it signs you in to the provider you choose and makes one real model request for every selected route to prove the route answers.",
+      "Setup writes a config file.",
+    );
+    expect(rewrittenRoot).not.toBe(ROOT_README);
+    expect(missingRootDisclosureMarkers(rewrittenRoot).length)
+      .toBeGreaterThan(0);
   });
 });

@@ -26,7 +26,7 @@ describe("root README Quickstart boundary", () => {
     "Quickstart: An Agent Folder From One Config File",
   );
 
-  it("keeps the complete runnable command flow in order", () => {
+  it("keeps the complete web-first runnable command flow in order", () => {
     const commands = [
       "npm i -g create-mono-agent",
       "mkdir my-agent",
@@ -34,8 +34,8 @@ describe("root README Quickstart boundary", () => {
       "mono-agent init",
       "mono-agent validate",
       "mono-agent start",
-      "PORT=3000",
-      'curl -s "http://127.0.0.1:${PORT}/webhook/invoke"',
+      "mono-agent web run --loopback",
+      "http://127.0.0.1:5050",
     ];
 
     let cursor = -1;
@@ -48,6 +48,50 @@ describe("root README Quickstart boundary", () => {
     expect(quickstart.split("\n").length).toBeLessThanOrEqual(70);
     expect(quickstart).toContain("./docs/getting-started/quickstart.md");
     expect(quickstart).toContain("./docs/reference/setup-security.md");
+  });
+
+  it("keeps the first browser conversation the documented path", () => {
+    // The beginner path must not require a terminal-only smoke channel or the
+    // terminal console: the browser console is the documented first surface.
+    expect(quickstart).not.toMatch(/\bcurl\b/u);
+    expect(quickstart).not.toMatch(/mono-agent tui\b/u);
+    expect(quickstart).not.toMatch(/mono-agent-tui\b/u);
+    expect(readme).toContain("./docs/reference/release-status.md");
+  });
+
+  it("starts the console with the local-first foreground command and qualifies managed startup", () => {
+    // `mono-agent web start` can publish the owner-equivalent console through an
+    // owned Tailscale Serve route even with `--loopback`, so the initial journey
+    // must use the foreground `web run` command and the managed alternative must
+    // carry its reachability warning.
+    const foreground = quickstart.indexOf("mono-agent web run --loopback");
+    const managed = quickstart.indexOf("mono-agent web start");
+    expect(foreground, "the foreground console command is the documented first console start").toBeGreaterThan(-1);
+    expect(managed, "the managed console service is still documented as the optional follow-up").toBeGreaterThan(foreground);
+    expect(quickstart).toMatch(/\bTailscale\b/u);
+    expect(quickstart).toMatch(/no application login/u);
+
+    for (const falsePromise of [
+      /--loopback[^.\n]{0,120}\bonly (?:from|on) this (?:computer|machine)\b/iu,
+      /(?:web start|managed (?:start|startup|service|console))[^.\n]{0,120}\b(?:stays?|keeps?|remains?) (?:it )?(?:on|to) this (?:computer|machine)\b/iu,
+      /--loopback[^.\n]{0,120}\b(?:local-only|local only)\b/iu,
+    ]) {
+      expect(quickstart, `managed loopback must not be described as local-only: ${falsePromise}`)
+        .not.toMatch(falsePromise);
+    }
+
+    // Any line that pairs the managed path with a local-only promise must carry
+    // the Tailscale Serve caveat on that same line.
+    const managedLines = quickstart
+      .split("\n")
+      .filter((line) => /managed|web start/iu.test(line));
+    expect(managedLines.length, "the managed console alternative must stay documented").toBeGreaterThan(0);
+    for (const line of managedLines) {
+      if (/\b(?:only from|only on|local-only|local only|stays? local|keeps? it local)\b/iu.test(line)) {
+        expect(line, `a managed local-only promise needs the Serve caveat: ${line}`)
+          .toMatch(/Tailscale/u);
+      }
+    }
   });
 
   it("keeps deep setup internals outside the runnable section", () => {
@@ -94,5 +138,49 @@ describe("root README Quickstart boundary", () => {
 
     expect(referenceIndex).toContain("[Setup security and managed runtime](/reference/setup-security/)");
     expect(firstAgent).toContain("[Setup security and managed runtime](/reference/setup-security/)");
+  });
+
+  it("keeps the installed-vs-source release status discoverable from the first-read pages", () => {
+    const releaseStatus = readRepoFile("docs/reference/release-status.md");
+    const install = readRepoFile("docs/getting-started/install.md");
+    const referenceIndex = readRepoFile("docs/reference/index.md");
+
+    expect(install).toContain("[Release status](/reference/release-status/)");
+    expect(referenceIndex).toContain("[Release status](/reference/release-status/)");
+    expect(releaseStatus).toContain("## Source-only capability groups");
+    expect(releaseStatus).toContain("## How this page is kept honest");
+    expect(releaseStatus).toContain("/getting-started/install/#run-an-unreleased-build");
+  });
+
+  it("keeps the canonical console page honest about managed loopback reachability", () => {
+    // The same correction applies to the reference the README links: a managed
+    // loopback bind may still be published through an owned Tailscale Serve
+    // route, and a foreground run leaves any existing route in place — so the
+    // page must not sell loopback as a local-only guarantee.
+    const webConsole = readRepoFile("docs/observability/web-console.md");
+    expect(webConsole).toContain(
+      "managed `start`/`restart` inspects Tailscale and claims an owned Serve HTTPS route",
+    );
+    expect(webConsole).toContain(
+      "narrows only the HTTP listener and may publish an owned Tailscale Serve route",
+    );
+    expect(webConsole).toContain(
+      "a foreground run does not remove a Serve route, reverse proxy, or tunnel that already points at the port",
+    );
+    expect(webConsole).toContain("before relying on loopback for local-only access");
+    expect(webConsole).not.toMatch(/use `--loopback` when other devices must not reach it/iu);
+    expect(webConsole).not.toMatch(/keep it local with the foreground `mono-agent web run --loopback`/iu);
+  });
+
+  it("separates managed apply commands from the foreground apply path", () => {
+    const firstAgent = readRepoFile("docs/getting-started/quickstart.md");
+    const section = firstAgent.slice(firstAgent.indexOf("## Make it yours"));
+    expect(section).toContain("mono-agent restart");
+    expect(section).toContain("mono-agent start --foreground");
+    expect(section).toContain("Ctrl-C");
+    expect(section).toContain("target the managed background instance");
+    expect(section).not.toMatch(/restart --foreground/u);
+    expect(section).not.toMatch(/guided setup is the only thing that writes/iu);
+    expect(readme).not.toMatch(/restart --foreground/u);
   });
 });

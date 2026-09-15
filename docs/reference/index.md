@@ -13,6 +13,7 @@ Use this section when you need to confirm an exact config key, env var, or cover
 
 | Page | What it gives you |
 | --- | --- |
+| [Release status](/reference/release-status/) | Which documented capabilities are in the current source but not yet in the latest published npm release, and how that is verified. |
 | [Package directory](/reference/packages/) | Every published package, its ownership tier and responsibility, and links to npm and the authoritative package README. |
 | [Capability ladder](/reference/capability-ladder/) | Where new capability work belongs before changing package boundaries or shared contracts. |
 | [Feature matrix](/reference/feature-matrix/) | Compact, scannable table of capabilities mapped to their primary config key, env var, and coverage type. |
