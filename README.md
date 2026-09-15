@@ -10,6 +10,10 @@ The same agent can answer in the browser console, over Telegram or Slack, throug
 
 These docs describe the current `main` source. The latest published npm release is `create-mono-agent@0.21.1` (published 2026-09-10), so a global npm install does not yet contain everything documented here: console projects and tags, durable background subagents, and subscription usage meters are source-only examples. [Release status](./docs/reference/release-status.md) lists the current gap and the source-build alternative.
 
+![Conceptual diagram: a folder with its role and knowledge becomes one mono-agent.config.json, which drives a web workspace for talking, reviewing, and continuing work. Supporting cards list code and debug, research and write, and organize and delegate; channels, memory, skills, and MCP extend the same agent, and a note reads "local-first, not local-only: model calls go to your chosen provider."](./docs/assets/mono-agent-overview.png)
+
+**Source overview.** A folder with a role and knowledge, one `mono-agent.config.json`, and a browser workspace for the conversation. Anything beyond that — channels, memory, skills, MCP — is configuration for the same agent, not host code. Local-first means model calls go where you point them, not that nothing leaves the machine. This diagram describes the current `main` source: [Release status](./docs/reference/release-status.md) separates what the published npm release already contains, and [Setup security and managed runtime](./docs/reference/setup-security.md) covers the managed-start and secret-handling model.
+
 ## What you can do
 
 - **Work in a codebase** — open a project folder as the agent workspace and ask it to fix a failing test, review a diff, trace a bug, or run and interpret commands. With the [native sandbox](./docs/tools/sandbox.md) enabled, tool subprocesses are confined to the roots you allow and network access is deny-by-default.
@@ -33,6 +37,10 @@ These docs describe the current `main` source. The latest published npm release 
 Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — can become a running agent from one `mono-agent.config.json`. You need Node.js 24.15.0 or newer and credentials for the model you choose; a local provider such as Ollama works too.
 
 Guided setup is authentic and not instant: it signs you in to the provider you choose and makes one real model request for every selected route to prove the route answers. That can take several minutes and counts as usage on your account. Running with flags, `--yes`, or without a TTY skips all of it and writes the scaffold only; add `--auth` if you want provider setup on that automated path too. [Setup details](#setup-details) list the exact deadlines, flags, and files.
+
+![Setup diagram: prerequisites are Node.js 24.15+, a working folder, model access through provider sign-in or a local model, and a browser. Four steps — install the CLI with "npm i -g create-mono-agent", define your agent with "mono-agent init", run the agent with "mono-agent validate" then "mono-agent start", and open the console with "mono-agent web run --loopback" at http://127.0.0.1:5050 in a separate terminal. Footer notes: without a service manager use "mono-agent start --foreground"; guided setup makes real model calls while flags or --yes scaffold only; the console has no login, so review tool access and network exposure.](./docs/assets/mono-agent-setup.png)
+
+**Setup at a glance.** Four commands and four prerequisites, every one of them written out as copyable text in this quickstart. `init` is the only readiness-proven step: it signs in to the provider you choose and proves each selected route, it starts the agent on macOS while Linux prints the start step for you, and any flag or non-TTY run writes the scaffold only. The browser console is a separate foreground process with no application login — review [tool access](#safety-and-privacy) and network exposure, and see [Setup security and managed runtime](./docs/reference/setup-security.md) for the managed-start and secret-persistence contracts.
 
 ### 1. Install the CLI
 
