@@ -72,7 +72,7 @@ describe("artifact prompt cache summary", () => {
     expect(Object.keys(JSON.parse(line)).sort()).toEqual([
       "type", "phase", "requestId", "requestOrdinal", "model", "api", "payloadFamily", "supported", "systemBytes", "systemFingerprint", "toolDefinitionCount",
       "toolDefinitionsFingerprint", "messageCount", "messageFingerprints", "messageFingerprintsTruncated", "cacheMode", "cacheKeyFingerprint",
-      "logicalInputInterpretation", "inputInterpretation", "inputInterpretationSource", "timestamp",
+      "logicalInputInterpretation", "inputInterpretation", "inputInterpretationSource", "timestamp", "requestedCacheRetention", "observedCacheTtls",
     ].sort());
     expect(line).not.toMatch(/PRIVATE-|arguments|authorization|endpoint|previous_response_id|prompt_cache_key/u);
   });

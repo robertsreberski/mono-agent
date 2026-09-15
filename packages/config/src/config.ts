@@ -2296,7 +2296,10 @@ function readProviderPiNative(value: unknown): Readonly<Record<string, unknown>>
   if (record.promptCacheDiagnostics !== undefined && typeof record.promptCacheDiagnostics !== "boolean") {
     throw new MonoAgentConfigError("invalid_env", "providers.piNative.promptCacheDiagnostics must be a boolean.");
   }
-  const allowed = new Set(["transport", "promptCacheDiagnostics", "piMaxRetries", "maxRetryDelayMs", "piSessionsRoot"]);
+  if (record.cacheRetention !== undefined && !["short", "long"].includes(record.cacheRetention as string)) {
+    throw new MonoAgentConfigError("invalid_env", "providers.piNative.cacheRetention must be short or long.");
+  }
+  const allowed = new Set(["transport", "cacheRetention", "promptCacheDiagnostics", "piMaxRetries", "maxRetryDelayMs", "piSessionsRoot"]);
   const unknownKeys = Object.keys(record).filter((key) => !allowed.has(key)).sort();
   if (unknownKeys.length > 0) {
     throw new MonoAgentConfigError("invalid_env", `${source} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`, {
@@ -2319,6 +2322,7 @@ function layerProviderReservedValuesOntoEnv(
     ["transport", "MONO_AGENT_PI_TRANSPORT"],
     ["promptCacheDiagnostics", "MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS"],
     ["piMaxRetries", "MONO_AGENT_PI_MAX_RETRIES"],
+    ["cacheRetention", "MONO_AGENT_PI_CACHE_RETENTION"],
     ["maxRetryDelayMs", "MONO_AGENT_MAX_RETRY_DELAY_MS"],
     ["piSessionsRoot", "MONO_AGENT_PI_SESSIONS_ROOT"],
   ] as const;
@@ -2446,6 +2450,7 @@ function readPiNativeProviderConfig(
   const hasAny = [
     env.MONO_AGENT_PI_TRANSPORT,
     env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS,
+    env.MONO_AGENT_PI_CACHE_RETENTION,
     env.MONO_AGENT_PI_MAX_RETRIES,
     env.MONO_AGENT_MAX_RETRY_DELAY_MS,
     env.MONO_AGENT_PI_SESSIONS_ROOT,
@@ -2465,12 +2470,15 @@ function readPiNativeProviderConfig(
   const promptCacheDiagnostics = normalizeOptionalString(env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS) === undefined
     ? undefined
     : readBoolean(env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS, "MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS", false, invalidEnv);
+  const cacheRetention = normalizeOptionalString(env.MONO_AGENT_PI_CACHE_RETENTION) === undefined ? undefined
+    : readChoice<"short" | "long">(env.MONO_AGENT_PI_CACHE_RETENTION, "MONO_AGENT_PI_CACHE_RETENTION", ["short", "long"], "short", invalidEnv);
   const piMaxRetries = readOptionalInteger(env.MONO_AGENT_PI_MAX_RETRIES, "MONO_AGENT_PI_MAX_RETRIES", { min: 0, max: 8 });
   const maxRetryDelayMs = readOptionalInteger(env.MONO_AGENT_MAX_RETRY_DELAY_MS, "MONO_AGENT_MAX_RETRY_DELAY_MS", { min: 100, max: 3_600_000 });
   const piSessionsRoot = readOptionalPath(env.MONO_AGENT_PI_SESSIONS_ROOT, cwd);
   return {
     ...(transport === undefined ? {} : { transport }),
     ...(promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics }),
+    ...(cacheRetention === undefined ? {} : { cacheRetention }),
     ...(piMaxRetries === undefined ? {} : { piMaxRetries }),
     ...(maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs }),
     ...(piSessionsRoot === undefined ? {} : { piSessionsRoot }),

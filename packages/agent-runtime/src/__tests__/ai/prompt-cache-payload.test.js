@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createModels, fauxProvider } from '@earendil-works/pi-ai';
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-responses';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentHarness, createInMemoryHistoryStore, createToolPolicy } from '../../../../agent-harness/src/index.ts';
 import { generatePiNativeResponse } from '../../ai/providers/pi-native.js';
 import { disposeProviderSession } from '../../ai/runtime/sessions.js';
@@ -13,6 +13,8 @@ import { disposeProviderSession } from '../../ai/runtime/sessions.js';
 const roots = [];
 const sessions = new Set();
 afterEach(async () => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   await Promise.all([...sessions].map((id) => disposeProviderSession(id)));
   sessions.clear();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -200,4 +202,45 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps actual %s tool arrays
     }
     expect(envelopes.size).toBe(7);
   }
+});
+
+
+it.each([
+  ['anthropic-messages', 'long', true, '1h'],
+  ['anthropic-messages', 'long', false, '5m'],
+  ['anthropic-messages', 'short', true, '5m'],
+  ['anthropic-messages', undefined, true, '1h'],
+  ['openai-responses', 'long', true, null],
+])('retention %s/%s (supported=%s) preserves Pi compatibility and stream-option boundaries', async (api, cacheRetention, supported, ttl) => {
+  vi.stubEnv('PI_CACHE_RETENTION', 'long');
+  const { AgentHarness } = await import('@earendil-works/pi-agent-core');
+  const create = vi.spyOn(AgentHarness, 'create');
+  const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
+  const base = fauxProvider({ provider: 'retention-fixture', models: [{ id: 'fixture' }] });
+  const model = { ...base.getModel(), api, baseUrl: 'https://fixture.invalid/v1', compat: { supportsLongCacheRetention: supported } };
+  const models = createModels(); const payloads = []; const streamOptions = []; const events = [];
+  models.setProvider({ ...base.provider, getModels: () => [model], streamSimple: (selected, context, options) => {
+    streamOptions.push(options);
+    return send(selected, context, { ...options, apiKey: 'synthetic-test-value', maxRetries: 0,
+      fetch: async (_url, init) => {
+        payloads.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ error: { message: 'intercepted', type: 'test_error' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+      },
+    });
+  } });
+  await generatePiNativeResponse('stable', { model: { provider: 'retention-fixture', model: 'fixture', reference: 'retention-fixture:fixture' },
+    piResolvedModel: model, piResolvedModels: models, messages: [{ role: 'user', content: 'test' }], allowedTools: ['Read'],
+    ...(cacheRetention === undefined ? {} : { cacheRetention }), promptCacheDiagnostics: true, onEvent: (event) => events.push(event),
+  });
+  expect(payloads).toHaveLength(1);
+  if (api === 'anthropic-messages' && cacheRetention !== undefined) expect(streamOptions[0].cacheRetention).toBe(cacheRetention);
+  else {
+    expect(create.mock.calls[0][0].streamOptions).not.toHaveProperty('cacheRetention');
+    // Pi itself materializes an undefined option in its downstream projection.
+    expect(streamOptions[0].cacheRetention).toBeUndefined();
+  }
+  const diagnostic = events.find((event) => event.type === 'prompt_cache_diagnostic');
+  expect(diagnostic).toMatchObject({ requestedCacheRetention: cacheRetention ?? 'unset', observedCacheTtls: ttl ? [ttl] : [] });
+  if (ttl === '1h') expect(JSON.stringify(payloads[0])).toContain('"ttl":"1h"');
+  else expect(JSON.stringify(payloads[0])).not.toContain('"ttl":"1h"');
 });

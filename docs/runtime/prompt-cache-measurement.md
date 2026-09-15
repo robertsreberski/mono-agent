@@ -55,7 +55,7 @@ Codex pre-transport payloads may have unavailable wire interpretation even when
 logical input is full. A changed fingerprint proves a payload change, not a
 cache miss; identical fingerprints do not guarantee a hit.
 
-Usage comes from the latest `context_usage` snapshot following each diagnostic;
+Usage comes from the latest `context_usage` snapshot joined by request ID;
 snapshots are replaced, not summed. Totals sum requests and use
 `cacheRead / (input + cacheRead + cacheWrite)`, never an average of percentages.
 Missing usage stays unknown (`?` in the table, `null` in JSON), including affected
@@ -111,3 +111,20 @@ cache-write/read costs and whole-run costs, not just hit percentages. These gate
 provide no rollout or spending authorization and do not enable the disabled live
 benchmark. Offline equality proves payload stability, not provider residency,
 actual billing or a guaranteed hit.
+
+### Optional Anthropic cache retention
+
+`providers.piNative.cacheRetention` accepts `"short"` or `"long"`; its environment
+variable is `MONO_AGENT_PI_CACHE_RETENTION`. Nonempty MONO_AGENT environment wins
+over JSON, then unset. Either explicit resolved value overrides Pi's separate
+ambient `PI_CACHE_RETENTION`; unset forwards nothing and preserves Pi behavior.
+The opt-in is default-off only when no external `PI_CACHE_RETENTION=long` is set.
+The runtime forwards retention only to Anthropic Messages, including child
+routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
+unsupported models receive no one-hour TTL.
+
+One-hour writes cost **2× normal input**, reads **0.1×**, versus **1.25×** for
+short-cache writes. Model support is required, and no cache hit is guaranteed.
+Metadata-only diagnostics record the requested setting and observed cache TTL;
+an ephemeral Anthropic cache control without an explicit TTL denotes five
+minutes. Evaluate the measurement gates before separately authorizing spending.

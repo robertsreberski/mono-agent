@@ -85,6 +85,8 @@ export type MonoAgentProviderJson = Omit<MonoAgentLocalProviderJson, "id">;
 type MonoAgentPiNativeProviderJson = {
   readonly transport?: PiTransport;
   readonly promptCacheDiagnostics?: boolean;
+  /** Optional Anthropic Messages cache retention. Unset preserves Pi defaults/environment. */
+  readonly cacheRetention?: "short" | "long";
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;
   readonly piSessionsRoot?: string;

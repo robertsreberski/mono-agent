@@ -3038,3 +3038,11 @@ describe("JSON attribution rewrites the diagnostic's subject, never the operator
     expect(error.message).not.toContain("MONO_AGENT_MODEL");
   });
 });
+
+
+it("layers cache retention JSON below nonempty environment", () => {
+  const json = { providers: { piNative: { cacheRetention: "long" as const } } };
+  expect(layerJsonOntoEnv(json, {}).MONO_AGENT_PI_CACHE_RETENTION).toBe("long");
+  expect(layerJsonOntoEnv(json, { MONO_AGENT_PI_CACHE_RETENTION: "short" }).MONO_AGENT_PI_CACHE_RETENTION).toBe("short");
+  expect(layerJsonOntoEnv({}, {}).MONO_AGENT_PI_CACHE_RETENTION).toBeUndefined();
+});

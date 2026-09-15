@@ -293,7 +293,9 @@ export async function buildTurnHarness(runState, {
     thinkingLevel,
     systemPrompt: appendStructuredOutputInstruction(systemPrompt, outputSchema, options.prompts),
     tools,
-    streamOptions: { transport, maxRetries, maxRetryDelayMs },
+    streamOptions: { transport, maxRetries, maxRetryDelayMs,
+      ...(model.api === "anthropic-messages" && options.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
+    },
     // Harness retries are separate from pi-ai transport retries. A health probe
     // must not issue another request even for a retryable terminal error.
     ...(Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0
@@ -302,6 +304,7 @@ export async function buildTurnHarness(runState, {
     steeringMode,
     followUpMode: steeringMode,
     promptCacheDiagnostics: options.promptCacheDiagnostics,
+    cacheRetention: options.cacheRetention,
     onEvent: options.onEvent,
   });
   // MCP `CallToolResult.isError` is a successful protocol response, so pi's

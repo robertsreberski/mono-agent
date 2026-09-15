@@ -84,6 +84,23 @@ existing MCP client instead of creating a client per UI call; host LRU/idle
 eviction closes the client, transport, and sandbox cleanup.
 See [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
 
+### Optional Anthropic cache retention
+
+`providers.piNative.cacheRetention` accepts `"short"` or `"long"`; its environment
+variable is `MONO_AGENT_PI_CACHE_RETENTION`. Nonempty MONO_AGENT environment wins
+over JSON, then unset. Either explicit resolved value overrides Pi's separate
+ambient `PI_CACHE_RETENTION`; unset forwards nothing and preserves Pi behavior.
+The opt-in is default-off only when no external `PI_CACHE_RETENTION=long` is set.
+The runtime forwards retention only to Anthropic Messages, including child
+routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
+unsupported models receive no one-hour TTL.
+
+One-hour writes cost **2× normal input**, reads **0.1×**, versus **1.25×** for
+short-cache writes. Model support is required, and no cache hit is guaranteed.
+Metadata-only diagnostics record the requested setting and observed cache TTL;
+an ephemeral Anthropic cache control without an explicit TTL denotes five
+minutes. Evaluate the measurement gates before separately authorizing spending.
+
 ## Architecture
 
 `createPiOAuthApiKeyResolver` accepts optional `{ rejectedAccessToken, signal }` for a bounded usage read: only the still-current rejected token is forced through the existing OAuth refresh inside the serialized auth-file lane. Already-replaced tokens retain normal expiry behavior. Failed or cancelled refresh writes nothing; ordinary one-argument callers are unchanged.

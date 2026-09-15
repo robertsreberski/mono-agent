@@ -82,3 +82,10 @@ Mention `@agent` in the allowed channel; verify the seen reaction, a final answe
 For real-turn cache measurements and tool-definition changes, enable
 `providers.piNative.promptCacheDiagnostics` and use the offline
 [prompt-cache artifact reader](/runtime/prompt-cache-measurement/).
+
+For Anthropic retention experiments, first satisfy the [prompt-cache measurement
+gates](/runtime/prompt-cache-measurement/). `providers.piNative.cacheRetention` is
+optional and unset by default; long retention requires model support and separate
+spend approval (1h writes 2× input, reads 0.1×; short writes 1.25×), with no
+guaranteed hit. `MONO_AGENT_PI_CACHE_RETENTION` overrides JSON; explicit short
+also overrides ambient Pi long retention.

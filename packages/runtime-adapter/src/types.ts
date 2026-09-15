@@ -497,6 +497,8 @@ export interface RuntimeRunOptions {
   readonly onEvent?: (event: RuntimeEventLike) => void;
   /** Emit metadata-only prompt-cache request fingerprints; disabled by default. */
   readonly promptCacheDiagnostics?: boolean;
+  /** Optional Anthropic Messages cache retention. Unset preserves Pi defaults/environment. */
+  readonly cacheRetention?: "short" | "long";
   /** Host-owned, incremental durable tool-lifecycle writer for this run. */
   readonly toolLifecycleSink?: RuntimeToolLifecycleSink;
   readonly effort?: string;

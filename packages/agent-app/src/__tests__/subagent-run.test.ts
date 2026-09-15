@@ -723,3 +723,12 @@ describe("AskParent child policy and durable controller", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
+
+
+it.each(["short", "long"] as const)("forwards configured %s retention to parent and child routes", async (cacheRetention) => {
+  const config = { ...monoConfig({ enabled: true, definitions: [RESEARCHER] }), providers: { piNative: { cacheRetention, promptCacheDiagnostics: true } } } as MonoAgentConfig;
+  const { runtime, subagents } = await buildSubagents(config);
+  expect(harnessMock.mock.calls[0]?.[0].runtimeOptions).toMatchObject({ cacheRetention });
+  await (subagents?.run as (request: unknown) => Promise<unknown>)({ systemPrompt: "You research.", prompt: "find X", definition: { name: "researcher", allowedTools: ["Read"] }, maxTurns: 1, depth: 1, abortSignal: new AbortController().signal, onEvent: () => {} });
+  expect(runtime.run.mock.calls[0]?.[1]).toMatchObject({ cacheRetention, promptCacheDiagnostics: true });
+});

@@ -868,6 +868,8 @@ export function buildSubagentsOptions(
     };
     const result = await runtime.run(`${childSystemPrompt}\n\n${HOST_TURN_CONTEXT_GUIDANCE}`, {
       ...childCapabilityOptions,
+      ...(config.providers?.piNative?.cacheRetention === undefined ? {} : { cacheRetention: config.providers.piNative.cacheRetention }),
+      ...(config.providers?.piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: config.providers.piNative.promptCacheDiagnostics }),
       ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
       ...(askParentController === undefined ? {} : { askParentController }),
       ...(request.instance === undefined ? {} : {
@@ -2563,6 +2565,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
   if (
     permissionMode === undefined
     && piNative?.transport === undefined
+    && piNative?.cacheRetention === undefined
     && piNative?.promptCacheDiagnostics === undefined
     && piNative?.piMaxRetries === undefined
     && piNative?.maxRetryDelayMs === undefined
@@ -2576,6 +2579,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
   return {
     ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(piNative?.transport === undefined ? {} : { piTransport: piNative.transport }),
+    ...(piNative?.cacheRetention === undefined ? {} : { cacheRetention: piNative.cacheRetention }),
     ...(piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: piNative.promptCacheDiagnostics }),
     ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
     ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
