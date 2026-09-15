@@ -8,16 +8,25 @@ import "../styles.css";
 
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
 
-vi.mock("../console-store", () => ({
-  useConsoleStore: () => storeMock.current,
-  useUploadLimits: () => uploadLimits,
-}));
-vi.mock("../api", () => ({
-  api: { createUpload: vi.fn(), deleteUpload: vi.fn() },
-  uploadContent: vi.fn(),
-}));
+vi.mock("../console-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../console-store")>();
+  return {
+    ...actual,
+    useConsoleStore: () => storeMock.current,
+    useUploadLimits: () => uploadLimits,
+  };
+});
+vi.mock("../api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api")>();
+  return {
+    ...actual,
+    api: { createUpload: vi.fn(), deleteUpload: vi.fn() },
+    uploadContent: vi.fn(),
+  };
+});
 
 import { Composer } from "./Composer";
+import { ModelChangeNotice, ModelControls } from "./Chat";
 import { WebRuntimeProvider } from "../runtime";
 
 type SendSubmission = (
@@ -83,6 +92,138 @@ function store(sendSubmission: SendSubmission): Record<string, unknown> {
     clearActionError: vi.fn(),
   };
 }
+
+/**
+ * Screenshot evidence is opt-in: `VITE_MODEL_CHANGE_BANNER_SHOTS=<absolute dir>`
+ * captures the composer with the model-change banner visible, and CI runs the
+ * same geometry assertions without it.
+ */
+const bannerShotDirectory = import.meta.env.VITE_MODEL_CHANGE_BANNER_SHOTS as string | undefined;
+
+const captureBanner = async (name: string): Promise<void> => {
+  if (bannerShotDirectory === undefined || bannerShotDirectory.length === 0) return;
+  await page.screenshot({ path: `${bannerShotDirectory}/${name}.png` });
+};
+
+const NOTICE_COPY = "Model changed — the next reply rebuilds this conversation's context from its text history.";
+
+function noticeStore(): Record<string, unknown> {
+  const changedFrom = "pi:openai-codex:gpt-5.5";
+  const changedTo = "pi:anthropic:claude-sonnet-4.5";
+  const base = store(vi.fn<SendSubmission>().mockResolvedValue(undefined));
+  const selectedThread = thread("thread", "agent");
+  const selectedAgent = agent("agent", {
+    models: [changedFrom, changedTo],
+    defaultModel: changedFrom,
+    defaultEffort: "high",
+    modelOptions: {
+      [changedFrom]: { label: "GPT-5.5 Codex", reasoning: true, effortLevels: ["low", "high"] },
+      [changedTo]: { label: "Claude Sonnet 4.5", reasoning: true, effortLevels: ["low", "high"] },
+    },
+  });
+  return {
+    ...base,
+    model: changedTo,
+    effort: "",
+    modelOptions: [changedFrom, changedTo],
+    effortOptions: ["low", "high"],
+    effectiveModel: changedTo,
+    effectiveEffort: "high",
+    hasRunOverride: false,
+    resetRunOverride: vi.fn(),
+    setModel: vi.fn(),
+    setEffort: vi.fn(),
+    selectedThread,
+    selectedThreadId: selectedThread.id,
+    threads: [selectedThread],
+    visibleThreads: [selectedThread],
+    selectedAgent,
+    agents: [selectedAgent],
+    selectedAgentId: selectedAgent.sourceId,
+    detail: {
+      thread: selectedThread,
+      messages: [{
+        id: "assistant-one",
+        threadId: selectedThread.id,
+        role: "assistant",
+        parts: [{ type: "text", text: "done" }],
+        attachments: [],
+        createdAt: "2026-07-17T10:00:00.000Z",
+        updatedAt: "2026-07-17T10:00:00.000Z",
+        finishedAt: "2026-07-17T10:00:00.000Z",
+        status: "complete",
+        attribution: {
+          requested: { model: changedFrom, effort: "high" },
+          executed: { model: changedFrom, effort: "high" },
+          disposition: "requested" as const,
+          transitions: [],
+          retries: [],
+        },
+      }],
+    },
+    catalogByProvider: {},
+    ensureProviderCatalog: vi.fn(),
+  };
+}
+
+describe.each([
+  { label: "mobile", width: 390, height: 844 },
+  { label: "desktop", width: 1440, height: 900 },
+])("model-change banner at the $label viewport", ({ label, width, height }) => {
+  it("renders above the input without overlapping the action row", async () => {
+    await page.viewport(width, height);
+    storeMock.current = noticeStore();
+    render(
+      <WebRuntimeProvider>
+        <div style={{ width: "100vw", minHeight: "160px" }}>
+          <Composer runSettings={<ModelControls />} notice={<ModelChangeNotice />} />
+        </div>
+      </WebRuntimeProvider>,
+    );
+
+    // A textual assertion alone would have passed before this bug too: the old
+    // notice rendered the same copy inside the action row. The geometry below
+    // is the regression coverage.
+    const matches = screen.getAllByText(NOTICE_COPY);
+    expect(matches).toHaveLength(1);
+    const notice = matches[0] as HTMLElement;
+    expect(notice).toBeVisible();
+    expect(notice).toHaveAttribute("role", "status");
+    expect(notice).toHaveAttribute("aria-live", "polite");
+    expect(notice.closest(".composer-actions")).toBeNull();
+    expect(notice.closest(".model-controls")).toBeNull();
+    expect(document.querySelector(".model-change-notice")).toBeNull();
+    const root = notice.closest(".composer-root");
+    expect(root).not.toBeNull();
+
+    const noticeBox = notice.getBoundingClientRect();
+    const rootBox = (root as Element).getBoundingClientRect();
+    const inputRow = document.querySelector(".composer-input-row");
+    const actions = document.querySelector(".composer-actions");
+    expect(inputRow).not.toBeNull();
+    expect(actions).not.toBeNull();
+    const inputBox = (inputRow as Element).getBoundingClientRect();
+    const actionsBox = (actions as Element).getBoundingClientRect();
+    const triggerBox = screen
+      .getByRole("button", { name: "Model and reasoning effort" })
+      .getBoundingClientRect();
+
+    // The banner sits above the textarea and spans the composer's width.
+    expect(noticeBox.bottom).toBeLessThanOrEqual(inputBox.top);
+    expect(noticeBox.left).toBeGreaterThanOrEqual(rootBox.left);
+    expect(noticeBox.right).toBeLessThanOrEqual(rootBox.right);
+    expect(noticeBox.width).toBeGreaterThan(rootBox.width * 0.9);
+    // It shares no pixels with the action row or the model trigger beneath it.
+    const overlaps = (a: DOMRect, b: DOMRect): boolean =>
+      a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    expect(overlaps(noticeBox, actionsBox)).toBe(false);
+    expect(overlaps(noticeBox, triggerBox)).toBe(false);
+    expect(noticeBox.bottom).toBeLessThanOrEqual(actionsBox.top);
+    expect(noticeBox.bottom).toBeLessThanOrEqual(triggerBox.top);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    await captureBanner(`model-change-banner-${label}`);
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

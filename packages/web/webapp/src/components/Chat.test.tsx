@@ -45,7 +45,7 @@ vi.mock("./Messages", () => ({
   UserMessage: () => <div data-testid="thread-message" />,
 }));
 
-import { CONNECTION_NOTICE_DELAY_MS, Chat, ConnectionBanner, ModelControls } from "./Chat";
+import { CONNECTION_NOTICE_DELAY_MS, Chat, ConnectionBanner, ModelChangeNotice, ModelControls } from "./Chat";
 
 const resizeObserverCallbacks = new Set<ResizeObserverCallback>();
 class ResizeObserverStub implements ResizeObserver {
@@ -688,22 +688,26 @@ describe("ModelControls", () => {
       }),
     };
 
-    const view = render(<ModelControls />);
+    const view = render(<><ModelControls /><ModelChangeNotice /></>);
     fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
     const effortGroup = await screen.findByRole("radiogroup", { name: "Reasoning effort" });
     fireEvent.click(within(effortGroup).getByRole("radio", { name: "Low" }));
-    view.rerender(<ModelControls />);
+    view.rerender(<><ModelControls /><ModelChangeNotice /></>);
     expect(setEffort).toHaveBeenCalledWith("low");
     expect(screen.queryByText(/Model changed —/u)).toBeNull();
 
     fireEvent.click(screen.getByRole("option", { name: /Claude Sonnet 4\.5/u }));
-    view.rerender(<ModelControls />);
-    expect(screen.getByRole("status")).toHaveTextContent(
+    view.rerender(<><ModelControls /><ModelChangeNotice /></>);
+    const notice = screen.getByRole("status");
+    expect(notice).toHaveTextContent(
       "Model changed — the next reply rebuilds this conversation's context from its text history.",
     );
+    expect(notice).toHaveAttribute("aria-live", "polite");
+    // The banner no longer lives inside the action-row controls.
+    expect(notice.closest(".model-controls")).toBeNull();
 
     fireEvent.click(screen.getByRole("option", { name: /^GPT-5\.5 Codex/u }));
-    view.rerender(<ModelControls />);
+    view.rerender(<><ModelControls /><ModelChangeNotice /></>);
     expect(screen.queryByText(/Model changed —/u)).toBeNull();
   });
 
