@@ -179,6 +179,69 @@ describe("shared provider usage cache and safe failures", () => {
       expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
     }
   });
+  it("manual refresh bypasses successful TTL, awaits new usage and records only account evidence", async () => {
+    const f = fixture();
+    const first = await f.service.snapshot();
+    f.advance(1000);
+    f.fetch.mockResolvedValueOnce(Response.json({ five_hour: { utilization: 61 } }));
+    const next = await f.service.refresh();
+    expect(next.providers[0]?.windows[0]?.usedPercent).toBe(61);
+    expect(next.providers[0]?.fetchedAt).not.toBe(first.providers[0]?.fetchedAt);
+    expect(next.providers[0]?.stale).toBe(false);
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+    expect(f.outcomes.recordAccountSuccess).toHaveBeenCalledTimes(2);
+    expect(await f.service.snapshot()).toEqual(next);
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+  });
+  it.each(["cold", "fresh", "stale"])("coalesces manual refresh with concurrent %s reads", async (state) => {
+    const f = fixture();
+    if (state !== "cold") await f.service.snapshot();
+    if (state === "stale") f.advance();
+    let finish!: (response: Response) => void;
+    f.fetch.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const automatic = f.service.snapshot();
+    const one = f.service.refresh();
+    const two = f.service.refresh("anthropic");
+    await settle();
+    expect(f.fetch).toHaveBeenCalledTimes(state === "cold" ? 1 : 2);
+    let completed = false;
+    void one.then(() => { completed = true; });
+    await settle(); expect(completed).toBe(false);
+    finish(Response.json({ five_hour: { utilization: 62 } }));
+    const [a, b] = await Promise.all([one, two]);
+    expect(a).toEqual(b);
+    expect(a.providers[0]?.windows[0]?.usedPercent).toBe(62);
+    await automatic;
+    expect(f.fetch).toHaveBeenCalledTimes(state === "cold" ? 1 : 2);
+  });
+  it.each([429, 500])("manual refresh preserves last-good and cannot bypass %s backoff", async (status) => {
+    const f = fixture(); const first = await f.service.snapshot();
+    f.advance(1000);
+    f.fetch.mockResolvedValueOnce(new Response("SECRET", { status, headers: { "Retry-After": "1800" } }));
+    const failed = await f.service.refresh();
+    expect(failed.providers[0]).toMatchObject({ windows: first.providers[0]?.windows, fetchedAt: first.providers[0]?.fetchedAt, stale: true });
+    expect(failed.providers[0]?.error?.code).toBe(status === 429 ? "rate_limited" : "unavailable");
+    expect(await f.service.refresh()).toEqual(failed);
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+    f.advance(PROVIDER_USAGE_CACHE_MS);
+    if (status === 429) { expect(await f.service.refresh()).toEqual(failed); expect(f.fetch).toHaveBeenCalledTimes(2); f.advance(1_500_000); }
+    expect((await f.service.refresh()).providers[0]?.error).toBeUndefined();
+    expect(f.fetch).toHaveBeenCalledTimes(3);
+  });
+  it("serializes manual refresh across credential rotation and drops the old account", async () => {
+    const f = fixture("opencode-go"); await f.service.snapshot();
+    let finish!: (response: Response) => void;
+    f.fetch.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const old = f.service.refresh(); await settle();
+    f.setCredential({ type: "api_key", key: "rotated-fixture" });
+    const rotated = f.service.refresh(); await settle();
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+    finish(Response.json(go));
+    expect((await old).providers).toEqual([]);
+    expect((await rotated).providers).toHaveLength(1);
+    expect(f.fetch).toHaveBeenCalledTimes(3);
+    expect(f.outcomes.recordAccountSuccess).toHaveBeenCalledTimes(2);
+  });
   it("bounds a request deadline", async () => {
     const f = fixture();
     const service = createProviderUsageService({ resolver: f.resolver as never, outcomes: f.outcomes, timeoutMs: 10, fetch: async (_url, init) => new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("private")), { once: true })) });

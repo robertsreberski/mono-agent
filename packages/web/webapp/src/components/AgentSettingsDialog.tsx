@@ -178,7 +178,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   const [status, setStatus] = useState<ProviderAuthStatusSnapshot | null>(null);
   const [session, setSession] = useState<ProviderAuthSessionSnapshot | null>(null);
   const [check, setCheck] = useState<ProviderAuthCheckSessionSnapshot | null>(null);
-  const usage = useProviderUsage(agent, session?.state === "succeeded" ? session.id : undefined);
+  const { snapshot: usage, refreshing: usageRefreshing, feedback: usageFeedback, refresh: refreshUsage } = useProviderUsage(agent, session?.state === "succeeded" ? session.id : undefined);
   const [sessionProvider, setSessionProvider] = useState<ProviderAuthProviderStatus | null>(null);
   const [methodProvider, setMethodProvider] = useState<ProviderAuthProviderStatus | null>(null);
   const [inputValue, setInputValue] = useState("");
@@ -528,6 +528,16 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
     <section className="provider-auth-section">
       <div className="provider-auth-title-row">
         <h3>Provider authentication</h3>
+        <div className="provider-auth-header-actions">
+        {agent.supportsProviderUsageRefresh === true && agent.supportsProviderUsage === true && (
+          <button type="button" className="secondary-button provider-auth-neutral-button" title="Refresh usage" aria-label="Refresh usage"
+            aria-describedby="provider-actions-disclosure" aria-busy={usageRefreshing}
+            disabled={agent.status === "offline" || usageRefreshing || busy || checkActive || session !== null && !terminal(session.state)}
+            onClick={() => void refreshUsage()}>
+            <Icon name="refresh" size={12} className={usageRefreshing ? "provider-usage-refreshing" : undefined} />
+            Refresh usage
+          </button>
+        )}
         {agent.supportsProviderAuthChecks === true && (
           checkActive ? (
             <button type="button" className="secondary-button provider-auth-neutral-button" aria-label="Cancel live provider checks" disabled={busy} onClick={() => void cancelCheck()}>
@@ -537,19 +547,25 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
             <button
               type="button"
               className="secondary-button provider-auth-neutral-button"
-              aria-label="Run live checks for all displayed providers"
-              aria-describedby="provider-auth-check-disclosure"
-              disabled={busy || status === null || session !== null && !terminal(session.state)}
+              aria-label="Check access"
+              aria-describedby="provider-actions-disclosure"
+              disabled={usageRefreshing || busy || status === null || session !== null && !terminal(session.state)}
               onClick={() => void startCheck()}
             >
-              Run check
+              Check access
             </button>
           )
         )}
+        </div>
       </div>
-      {agent.supportsProviderAuthChecks === true && (
-        <p id="provider-auth-check-disclosure" className="provider-auth-check-disclosure">Runs one small request per displayed provider; this may use quota or refresh OAuth.</p>
+      {(agent.supportsProviderUsageRefresh === true || agent.supportsProviderAuthChecks === true) && (
+        <p id="provider-actions-disclosure" className="provider-auth-check-disclosure">
+          {agent.supportsProviderUsageRefresh === true && "Refresh usage reads subscription limits without inference."}
+          {agent.supportsProviderUsageRefresh === true && agent.supportsProviderAuthChecks === true && " "}
+          {agent.supportsProviderAuthChecks === true && "Check access sends one small model request per displayed provider and may use quota or refresh OAuth."}
+        </p>
       )}
+      {usageFeedback !== null && <p role="status" className="provider-auth-check-disclosure">{usageFeedback}</p>}
       {status === null && authError === null && <p aria-live="polite">Loading provider status…</p>}
       <div className="provider-auth-list">
         {status?.providers.map((provider) => {
@@ -578,7 +594,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
                 </span>
               </div>
               {actionable && (
-                <button type="button" className="secondary-button provider-auth-neutral-button" disabled={busy || checkActive} onClick={() => openFlow(provider)}>
+                <button type="button" className="secondary-button provider-auth-neutral-button" disabled={usageRefreshing || busy || checkActive} onClick={() => openFlow(provider)}>
                   {provider.state === "missing" ? "Authenticate" : "Re-authenticate"}
                 </button>
               )}

@@ -1,4 +1,4 @@
-import type { ProviderUsageSnapshot } from "./types";
+import { parseProviderUsageSnapshot } from "@mono-agent/agent-contracts/provider-usage";
 import type { TagSummary, TagColor, ProjectColor } from "./types";
 import type {
   ActiveThreads,
@@ -721,10 +721,15 @@ export const api = {
     return result.agent;
   },
 
-  providerUsage: (sourceId: string, signal?: AbortSignal) => request<ProviderUsageSnapshot>(
+  providerUsage: (sourceId: string, signal?: AbortSignal) => request<unknown>(
     `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-usage`,
     { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, ...(signal === undefined ? {} : { signal }) },
-  ),
+  ).then(parseProviderUsageSnapshot),
+
+  refreshProviderUsage: (sourceId: string, signal?: AbortSignal) => request<unknown>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-usage/refresh`,
+    { method: "POST", body: "{}", headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, ...(signal === undefined ? {} : { signal }) },
+  ).then(parseProviderUsageSnapshot),
 
   providerAuthStatus: (
     sourceId: string,

@@ -732,7 +732,7 @@ cross-resource requests fail. See
 
 ## Architecture
 
-Agent settings uses the compact project/tag sheet layout and shows core subscription meters beneath matching Claude, Codex and OpenCode Go auth rows. The live-only `supportsProviderUsage` capability enables an independent no-store `/api/v1/agents/:id/provider-usage` proxy, with connection-generation fencing. The web host never reads the Pi store; the agent shares its five-minute cache with the read-only `ProviderUsage` tool.
+Agent settings uses the compact project/tag sheet layout and shows core subscription meters beneath matching Claude, Codex and OpenCode Go auth rows. The live-only `supportsProviderUsage` capability enables an independent no-store `/api/v1/agents/:id/provider-usage` proxy, with connection-generation fencing. The web host never reads the Pi store; the agent shares its five-minute cache with the read-only `ProviderUsage` tool. An additive live `supportsProviderUsageRefresh` capability exposes the compact **Refresh usage** text button next to **Check access**. Its exact-origin, no-store `POST /api/v1/agents/:id/provider-usage/refresh` awaits fresh account-usage data, bypassing successful cache freshness but not backoff. Pending/failure feedback retains usable meters and actual fetch timestamps; late responses are fenced to the sheet owner. Refresh usage supplies passive **Credential OK** evidence, never inference proof. Older agents retain cached reads without the manual control.
 
 ### Silent cron history
 
@@ -1124,6 +1124,26 @@ import a communication adapter or another operator surface.
 - [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
 
 ## Verification
+
+The frontend's standalone install does not depend on ancestor workspace
+`node_modules` or built framework packages. Both Vite configs resolve only
+`@mono-agent/agent-contracts/provider-usage` to its canonical, dependency-free
+TypeScript source; the app's TypeScript path mapping uses that same file.
+Keep runtime imports off the Node-only contracts barrel. The standalone
+manifest declares the Node types needed by its config/test tooling.
+
+To reproduce a clean browser install, run this from a source checkout:
+
+```sh
+pnpm --dir packages/web/webapp run test:standalone
+```
+
+It creates and removes an OS-temp source fixture with no ancestor dependencies,
+installs only the frozen webapp dependencies and Chromium into that fixture,
+then runs focused unit checks, typecheck, production build and the full browser
+suite. It copies the canonical contract source and the existing pure web helpers,
+not a contracts package install or dist tree. Normal local browser tests still use
+`pnpm --dir packages/web/webapp run test:browser`.
 
 ```sh
 pnpm --filter @mono-agent/web run typecheck

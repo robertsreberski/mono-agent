@@ -73,6 +73,15 @@ beforeEach(() => {
   apiMock.cancelProviderAuthCheck.mockResolvedValue(undefined);
 });
 
+function expectCompactProviderActions() {
+  const buttons = document.querySelectorAll(".provider-auth-section .secondary-button, .provider-auth-section .primary-button");
+  expect(buttons.length).toBeGreaterThan(0);
+  for (const button of buttons) {
+    expect(getComputedStyle(button).fontSize).toBe("10px");
+    expect(button.getBoundingClientRect().height).toBe(28);
+  }
+}
+
 describe("provider authentication controls in Chromium", () => {
   it.each([
     { width: 1_440, height: 900, kind: "auth" },
@@ -87,7 +96,7 @@ describe("provider authentication controls in Chromium", () => {
     begin.mockReturnValueOnce(pending.promise);
     const props = { onClose: () => undefined, dialogRef: createRef<HTMLElement>() };
     const view = render(<AgentSettingsDialog open {...props} />);
-    const name = kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers";
+    const name = kind === "auth" ? "Re-authenticate" : "Check access";
     await userEvent.click((await screen.findAllByRole("button", { name }))[0]!);
     view.rerender(<AgentSettingsDialog open={false} {...props} />);
     view.rerender(<AgentSettingsDialog open {...props} />);
@@ -102,9 +111,9 @@ describe("provider authentication controls in Chromium", () => {
     }));
     expect(cancel).toHaveBeenCalledExactlyOnceWith("alpha", `late-closed-${kind}`, expect.any(AbortSignal));
     expect(screen.queryByText("STALE CLOSED FLOW")).not.toBeInTheDocument();
-    const run = screen.getByRole("button", { name: "Run live checks for all displayed providers" });
+    const run = screen.getByRole("button", { name: "Check access" });
     expect(run).toBeEnabled();
-    expect(run.getBoundingClientRect().height).toBeGreaterThanOrEqual(28);
+    expectCompactProviderActions();
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   });
 
@@ -118,9 +127,9 @@ describe("provider authentication controls in Chromium", () => {
     expect(recovery.every((button) => button.classList.contains("provider-auth-neutral-button"))).toBe(true);
     expect(recovery.every((button) => button.getBoundingClientRect().height >= 28)).toBe(true);
 
-    const run = screen.getByRole("button", { name: "Run live checks for all displayed providers" });
+    const run = screen.getByRole("button", { name: "Check access" });
     expect(run.classList.contains("provider-auth-neutral-button")).toBe(true);
-    expect(run.getBoundingClientRect().height).toBeGreaterThanOrEqual(28);
+    expectCompactProviderActions();
     await userEvent.click(run);
 
     await waitFor(() => expect(apiMock.beginProviderAuthCheck).toHaveBeenCalledOnce());
@@ -128,6 +137,8 @@ describe("provider authentication controls in Chromium", () => {
     expect(screen.getByText("Auth failed")).toBeVisible();
     expect(screen.getByText("Quota blocked")).toBeVisible();
     expect(screen.getByText("Checks complete: 1 of 3 passed.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Check access" })).toHaveTextContent("Check access");
+    expect(screen.queryByText(/Run again|Run check/)).toBeNull();
     expect(apiMock.providerAuthCheck).not.toHaveBeenCalled();
   });
 
@@ -171,11 +182,12 @@ describe("provider authentication controls in Chromium", () => {
     await userEvent.click(screen.getByRole("button", { name: "OAuth paste-back" }));
     expect(await screen.findByText("OLD FLOW ACTIVE")).toBeVisible();
     const restart = screen.getByRole("button", { name: "Re-authenticate" });
-    expect(restart.getBoundingClientRect().height).toBeGreaterThanOrEqual(28);
+    expectCompactProviderActions();
     expect(restart.classList.contains("provider-auth-neutral-button")).toBe(true);
 
     await userEvent.click(restart);
     expect(screen.getByRole("button", { name: "OAuth paste-back" })).toBeVisible();
+    expectCompactProviderActions();
     await userEvent.click(screen.getByRole("button", { name: "API key" }));
     expect(screen.getByText("Restarting authentication…")).toBeVisible();
     expect(screen.getByText("OLD FLOW ACTIVE")).toBeVisible();
@@ -208,9 +220,10 @@ describe("provider authentication controls in Chromium", () => {
     }));
     const rendered = render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Check access" }));
     expect(await screen.findByRole("button", { name: "Cancel live provider checks" })).toBeVisible();
-    expect(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }, { timeout: 2_000 })).toBeVisible();
+    expectCompactProviderActions();
+    expect(await screen.findByRole("button", { name: "Check access" }, { timeout: 2_000 })).toBeVisible();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(apiMock.providerAuthCheck).toHaveBeenCalledOnce();
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);

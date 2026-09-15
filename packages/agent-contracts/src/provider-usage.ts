@@ -38,6 +38,8 @@ export interface ProviderUsageSnapshot {
 }
 export interface ProviderUsageOperator {
   snapshot(provider?: ProviderUsageId): Promise<ProviderUsageSnapshot>;
+  /** Explicit account-usage refresh; awaits shared fetches, never bypasses error backoff. */
+  refresh?(provider?: ProviderUsageId): Promise<ProviderUsageSnapshot>;
 }
 export function isProviderUsageId(value: unknown): value is ProviderUsageId {
   return typeof value === "string" && (PROVIDER_USAGE_IDS as readonly string[]).includes(value);

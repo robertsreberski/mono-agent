@@ -579,6 +579,23 @@ unsupportedReplyPartDeliveryOutcomes
 writeSettingsJson
 ```
 
+**`@mono-agent/agent-contracts/provider-usage`**
+
+```text
+PROVIDER_USAGE_ERRORS
+PROVIDER_USAGE_IDS
+PROVIDER_USAGE_LABELS
+PROVIDER_USAGE_SCHEMA
+ProviderUsage
+ProviderUsageErrorCode
+ProviderUsageId
+ProviderUsageOperator
+ProviderUsageSnapshot
+ProviderUsageWindow
+isProviderUsageId
+parseProviderUsageSnapshot
+```
+
 <!-- public-api-inventory:end -->
 
 Persistent Agent/AgentSend can run detached through the app-private in-process
@@ -592,6 +609,14 @@ clients. New readers continue to accept old external Exec/Bash stored records
 without a `kind` field. Mixed-version network clients are not promised compatibility
 with internal Agent/AgentSend projections, whose discriminant and instance identity
 are required.
+
+The browser-safe `@mono-agent/agent-contracts/provider-usage` entrypoint exposes
+the same strict parser and usage DTOs without the Node-only root helpers.
+`ProviderUsageOperator.snapshot()` retains its cached-read contract. Optional
+`refresh()` awaits shared account-usage work, bypassing successful freshness but
+not error backoff. Capability-aware hosts expose it separately; snapshot-only
+implementations remain valid. Both return the same strictly parsed, secret-free
+`mono-agent.provider-usage.v1` projection, without changing inference evidence.
 
 ## Dependency Boundary
 

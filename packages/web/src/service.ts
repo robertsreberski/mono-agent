@@ -880,6 +880,7 @@ export class WebService {
       ...agent,
       ...(providerAuth ? { supportsProviderAuth: true as const } : {}),
       ...(providerUsage ? { supportsProviderUsage: true as const } : {}),
+      ...(providerUsage && connection?.info.supportsProviderUsageRefresh === true ? { supportsProviderUsageRefresh: true as const } : {}),
       ...(providerAuthChecks ? { supportsProviderAuthChecks: true as const } : {}),
     };
   }
@@ -892,6 +893,7 @@ export class WebService {
     const projected = this.decorateProjectedCapabilities(agent);
     return [
       projected.supportsProviderUsage === true ? "providerUsage" : "",
+      projected.supportsProviderUsageRefresh === true ? "providerUsageRefresh" : "",
       projected.supportsProviderAuth === true ? "providerAuth" : "",
       projected.supportsProviderAuthChecks === true ? "providerAuthChecks" : "",
     ].join("|");
@@ -1724,12 +1726,13 @@ export class WebService {
     return page;
   }
 
-  async providerUsage(sourceId: string, provider?: ProviderUsageId): Promise<ProviderUsageSnapshot> {
+  async providerUsage(sourceId: string, provider?: ProviderUsageId, refresh = false): Promise<ProviderUsageSnapshot> {
     if (this.store.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     const connection = this.connections.get(sourceId);
     if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
     if (connection.info.supportsProviderUsage !== true) throw new WebConsoleError("provider_usage_unavailable", "This agent does not expose provider usage.", 409);
-    const snapshot = await connection.client.providerUsage(provider, AbortSignal.timeout(15_000));
+    if (refresh && connection.info.supportsProviderUsageRefresh !== true) throw new WebConsoleError("provider_usage_refresh_unavailable", "This agent does not support manual usage refresh.", 409);
+    const snapshot = await (refresh ? connection.client.refreshProviderUsage(provider, AbortSignal.timeout(15_000)) : connection.client.providerUsage(provider, AbortSignal.timeout(15_000)));
     if (this.connections.get(sourceId)?.generation !== connection.generation) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
     return snapshot;
   }
