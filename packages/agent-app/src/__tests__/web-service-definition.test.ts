@@ -61,6 +61,16 @@ describe("managed web definition decoding", () => {
   it("rejects an unrelated command that merely contains the marker tokens", () => {
     // A token immediately before `web` is not a recognized launcher+entrypoint.
     expect(decodeManagedWebDefinition(["/bin/echo", "web", "run", "--port", "5050"])).toBeUndefined();
+    // Padding with positional tokens must not turn an unrelated launcher into a
+    // recognized managed worker: the executable and entrypoint filenames matter.
+    expect(decodeManagedWebDefinition(["/usr/bin/env", "-i", "/bin/echo", "ignored", "web", "run", "--port", "5050"]))
+      .toBeUndefined();
+    expect(decodeManagedWebDefinition(["/usr/bin/env", "-i", "/usr/bin/node", "/bin/echo", "web", "run", "--port", "5050"]))
+      .toBeUndefined();
+    expect(decodeManagedWebDefinition(["/usr/bin/env", "-i", "/usr/bin/echo", "/managed/dist/cli.js", "web", "run", "--port", "5050"]))
+      .toBeUndefined();
+    expect(decodeManagedWebDefinition(["/usr/bin/env", "-i", "/usr/bin/node", "/managed/dist/main.js", "web", "run", "--port", "5050"]))
+      .toBeUndefined();
     expect(decodeManagedWebDefinition(["/bin/sh", "-c", "web run --port 5050"])).toBeUndefined();
     expect(decodeManagedWebDefinition(["/usr/bin/env", "-i", "web", "run", "--port", "5050"])).toBeUndefined();
     expect(decodeManagedWebDefinition(["/usr/bin/env", "-i", "/bin/echo", "web", "run", "--port", "5050"])).toBeUndefined();
@@ -105,6 +115,17 @@ describe("managed web definition decoding", () => {
         environment: {},
       });
       expect(decodeManagedWebDefinition(argv)).toMatchObject({ name: label });
+    }
+
+    // Real producer shapes: a version-manager or system node binary plus the
+    // packaged CLI entrypoint, and the managed runtime's pinned layout.
+    const producerPaths: ReadonlyArray<readonly [string, string]> = [
+      ["/Users/operator/.nvm/versions/node/v24.15.0/bin/node", "/opt/mono-agent/packages/agent-app/dist/cli.js"],
+      ["/usr/local/bin/node", "/Users/operator/.mono-agent/runtime/abc123/node_modules/@mono-agent/agent-app/dist/cli.js"],
+    ];
+    for (const [nodePath, cliPath] of producerPaths) {
+      expect(decodeManagedWebDefinition(["/usr/bin/env", "-i", nodePath, cliPath, "web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum"]))
+        .toEqual({ host: "127.0.0.1", port: 5050, theme: "plum" });
     }
 
     // The Linux builder layout: env assignments before node, then the `--`

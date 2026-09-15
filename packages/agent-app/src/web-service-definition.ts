@@ -1,3 +1,5 @@
+import { basename } from "node:path";
+
 import type { WebTheme } from "@mono-agent/web";
 
 /**
@@ -58,6 +60,26 @@ function isPathToken(value: string | undefined): value is string {
   return value !== undefined && value.length > 0 && !value.startsWith("-");
 }
 
+/**
+ * The Node executable the producers persist. Both builders write the binary
+ * that is running the CLI (`process.execPath`): a system node, a version-manager
+ * node, or the same binary recorded in the managed runtime layout. The install
+ * directory and version are deliberately not part of the check.
+ */
+function isManagedNodePath(value: string | undefined): value is string {
+  return isPathToken(value) && /^node(?:\.exe)?$/iu.test(basename(value));
+}
+
+/**
+ * The CLI entrypoint the producers persist: the `bin.mono-agent` target
+ * `dist/cli.js` from the running package, or its pinned copy under the managed
+ * runtime's install root. Only the filename is checked, so install paths stay
+ * independent.
+ */
+function isManagedCliPath(value: string | undefined): value is string {
+  return isPathToken(value) && basename(value) === "cli.js";
+}
+
 /** One `--flag value` pair, unique per flag, with the value kept as opaque data. */
 function readManagedOptionPairs(
   suffix: readonly string[],
@@ -87,10 +109,10 @@ function isValidManagedBindHost(value: string): boolean {
  * Decode the managed `web run` invocation persisted by `buildWebLaunchdProgramArguments`
  * (macOS LaunchAgent) or `workerArgv` (Linux systemd unit).
  *
- * Returns `undefined` unless argv is `<launcher prefix> <cli entrypoint> web run <options>`
- * with one value per recognized option and no unknown or duplicated token, so a
- * caller can fail closed instead of reinterpreting an unrelated command as an
- * owned web definition. Three deliberate legacy omissions are preserved:
+ * Returns `undefined` unless argv is `env -i [assignments] node [--] cli.js web run <options>`
+ * — the exact shape both producers write, with one value per recognized option
+ * and no unknown or duplicated token — so a caller can fail closed instead of
+ * reinterpreting an unrelated command as an owned web definition. Three deliberate legacy omissions are preserved:
  * `--name` (pre-name definitions), `--theme` (pre-theme definitions; evergreen)
  * and `--host` (definitions written while the worker's own default was the
  * historical wide bind).
@@ -106,11 +128,13 @@ export function decodeManagedWebDefinition(argv: readonly string[]): ManagedWebD
   if (argv[index] !== "-i") return undefined;
   index += 1;
   while (index < argv.length && MANAGED_WEB_ENVIRONMENT_ASSIGNMENT.test(argv[index] ?? "")) index += 1;
-  // Node entrypoint, then the optional Linux `--` separator, then the CLI path.
-  if (!isPathToken(argv[index])) return undefined;
+  // Node executable, then the optional Linux `--` separator, then the CLI
+  // entrypoint. Filenames are validated (not merely token positions), so an
+  // unrelated env-wrapped command cannot be reinterpreted as the worker.
+  if (!isManagedNodePath(argv[index])) return undefined;
   index += 1;
   if (argv[index] === "--") index += 1;
-  if (!isPathToken(argv[index])) return undefined;
+  if (!isManagedCliPath(argv[index])) return undefined;
   index += 1;
   if (argv[index] !== "web" || argv[index + 1] !== "run") return undefined;
   index += 2;

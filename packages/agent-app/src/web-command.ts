@@ -277,6 +277,10 @@ type TailscaleServeResult =
         readonly httpsPort?: number;
         readonly proxyTarget?: string;
       };
+      /** Present after a migrated route: whether the prior exact route is live again. */
+      readonly priorRouteRestored?: boolean;
+      /** Present after a migrated route: whether the replacement handler was provably removed. */
+      readonly replacementHandlerRemoved?: boolean;
     };
 
 export type TailscaleRouteOutcome = "none" | "rolled-back" | "restored" | "uncertain";
@@ -928,9 +932,11 @@ async function startWebBackground(
               options.shareTailnet === true,
             );
     if (tailscale.kind === "unavailable" && tailscale.requiresServiceRollback === true) {
-      const routeState = tailscale.routeOutcome === "restored"
-        ? "the prior owned route was restored"
-        : "the prior owned route could not be confirmed restored; inspect `tailscale serve status` before retrying";
+      const routeState = tailscale.priorRouteRestored !== true
+        ? "the prior owned route could not be confirmed restored; inspect `tailscale serve status` before retrying"
+        : tailscale.replacementHandlerRemoved === false
+          ? `the prior owned route was restored, but the replacement handler may remain${sharingAttemptDescription(tailscale)}; inspect \`tailscale serve status\` before retrying`
+          : "the prior owned route was restored";
       return await fail(
         `Tailscale route migration failed and the replacement web worker cannot remain active (${routeState}): ${tailscale.detail}`,
       );
@@ -1878,6 +1884,7 @@ export async function ensureTailscaleServe(
   let existing = ownershipRead.kind === "valid" ? ownershipRead.ownership : undefined;
   let priorMigration: { readonly ownership: TailscaleServeOwnership; readonly contents: string } | undefined;
   let attemptedHttpsPort: number | undefined;
+  let replacementClaimAttempted = false;
   const attempted = (): { readonly httpsPort?: number; readonly proxyTarget?: string } => ({
     ...(attemptedHttpsPort === undefined ? {} : { httpsPort: attemptedHttpsPort }),
     ...(proxyTarget === undefined ? {} : { proxyTarget }),
@@ -1898,11 +1905,16 @@ export async function ensureTailscaleServe(
       runner,
       deps,
     );
+    // The replacement handler was never claimed (or was never confirmed), so a
+    // claim attempt leaves its removal unproven.
+    const replacementHandlerRemoved = !replacementClaimAttempted;
     return {
       kind: "unavailable",
       detail: `${detail}; ${restored.detail}`,
       requiresServiceRollback: true,
-      routeOutcome: restored.ok ? "restored" : "uncertain",
+      priorRouteRestored: restored.ok,
+      replacementHandlerRemoved,
+      routeOutcome: restored.ok && replacementHandlerRemoved ? "restored" : "uncertain",
       attempted: {
         httpsPort: priorMigration.ownership.httpsPort,
         proxyTarget: priorMigration.ownership.proxyTarget,
@@ -1940,7 +1952,11 @@ export async function ensureTailscaleServe(
       kind: "unavailable",
       detail: `${detail}; replacement cleanup: ${replacementCleanup.detail}; prior route: ${restored.detail}`,
       requiresServiceRollback: true,
-      routeOutcome: restored.ok ? "restored" : "uncertain",
+      priorRouteRestored: restored.ok,
+      replacementHandlerRemoved: replacementCleanup.ok,
+      // "restored" requires both: a live prior route must never imply that the
+      // replacement handler was removed.
+      routeOutcome: restored.ok && replacementCleanup.ok ? "restored" : "uncertain",
       // The uncertain handler is the replacement attempt; the restore outcome is
       // stated in the detail above.
       attempted: attempt,
@@ -2010,6 +2026,7 @@ export async function ensureTailscaleServe(
     return await failMigration("ports 443 and 8443-8499 are already assigned; no handler was changed");
   }
   attemptedHttpsPort = httpsPort;
+  replacementClaimAttempted = true;
   const configured = await runner(["serve", "--bg", `--https=${String(httpsPort)}`, proxyTarget]);
   if (configured.code !== 0) {
     return await failMigration(commandDetail(configured) || `tailscale serve exited ${String(configured.code)}`);
@@ -2105,11 +2122,10 @@ async function restorePriorTailscaleRoute(
       detail: `the prior HTTPS route could not be restored because status failed: ${before.detail}`,
     };
   }
-  const tcp = isRecord(before.status.TCP) ? before.status.TCP : {};
-  if (Object.hasOwn(tcp, String(ownership.httpsPort))) {
+  if (attemptedPortState(before.status, ownership.httpsPort) !== "absent") {
     return {
       ok: false,
-      detail: "the prior HTTPS route could not be restored because its port is no longer free; its old ownership record was not republished",
+      detail: "the prior HTTPS route could not be restored because its port still has a handler or an unreadable inventory; its old ownership record was not republished",
     };
   }
   const configured = await runner([
@@ -2167,12 +2183,18 @@ export function tailscaleProxyTarget(bindHost: string, appPort: number): string 
   return `http://${urlHost(normalized)}:${String(appPort)}`;
 }
 
-/** True when the attempted HTTPS port has no TCP entry and no Web handler at all. */
-function attemptedPortIsAbsent(status: Record<string, unknown>, httpsPort: number): boolean {
+/**
+ * Whether the attempted HTTPS port is provably free of every handler. Only an
+ * absent — or empty — TCP/Web inventory proves that: a handler on the port under
+ * a different key, or a present but malformed container, cannot.
+ */
+function attemptedPortState(status: Record<string, unknown>, httpsPort: number): "absent" | "occupied" {
+  if (status.TCP !== undefined && !isRecord(status.TCP)) return "occupied";
+  if (status.Web !== undefined && !isRecord(status.Web)) return "occupied";
   const tcp = isRecord(status.TCP) ? status.TCP : {};
   const web = isRecord(status.Web) ? status.Web : {};
-  if (Object.hasOwn(tcp, String(httpsPort))) return false;
-  return !Object.keys(web).some((key) => key.endsWith(`:${String(httpsPort)}`));
+  if (Object.hasOwn(tcp, String(httpsPort))) return "occupied";
+  return Object.keys(web).some((key) => key.endsWith(`:${String(httpsPort)}`)) ? "occupied" : "absent";
 }
 
 async function rollbackJustCreatedTailscaleRoute(
@@ -2192,7 +2214,7 @@ async function rollbackJustCreatedTailscaleRoute(
   if (webKey === undefined) {
     // No exact match is not the same as no route: only a port with no handler at
     // all proves the attempted route is gone.
-    return attemptedPortIsAbsent(current.status, httpsPort)
+    return attemptedPortState(current.status, httpsPort) === "absent"
       ? { ok: true, detail: `no handler remained on HTTPS port ${String(httpsPort)}` }
       : {
           ok: false,
@@ -2241,10 +2263,10 @@ async function rollbackExactTailscaleRoute(
       detail: `the off command succeeded but the handler's absence could not be verified: ${after.detail}`,
     };
   }
-  if (classifyOwnedTailscaleRoute(after.status, ownership).kind !== "absent") {
+  if (attemptedPortState(after.status, ownership.httpsPort) !== "absent") {
     return {
       ok: false,
-      detail: "the off command succeeded but the handler is still present or its shape changed; it was not touched further",
+      detail: `the off command succeeded but HTTPS port ${String(ownership.httpsPort)} still has a handler or an unreadable inventory; nothing else was touched`,
     };
   }
   return { ok: true, detail: "the exact handler was removed and its absence was verified" };
