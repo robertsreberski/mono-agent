@@ -3138,9 +3138,12 @@ describe("migration-aware Tailscale failure finalization (R1/R2)", () => {
             }),
           };
         }
-        // The two post-off cases must reach the real off command: the pre-off
-        // read still shows the exact created handler.
-        if ((options.afterOff === "differentWebKey" || options.afterOff === "absent") && readIndex === 3) {
+        // Every post-off case must reach the real off command: the pre-off read
+        // still shows the exact created handler, so the rollback issues the off
+        // and only then reads the inventory under test.
+        if (readIndex === 3
+          && (options.afterOff === "differentWebKey" || options.afterOff === "absent"
+            || options.afterOff === "malformed" || options.afterOff === "error")) {
           return {
             code: 0,
             stderr: "",
@@ -3213,10 +3216,33 @@ describe("migration-aware Tailscale failure finalization (R1/R2)", () => {
     expect(calls.filter((args) => args.join(" ") === "serve --https=443 off")).toHaveLength(1);
   });
 
-  it("treats an unverifiable absence after a successful off command as uncertain", async () => {
-    const { paths, runner } = await rollbackOutcome({ afterOff: "error", offExit: 0 });
+  /** The rollback must issue exactly one off and re-read status afterwards. */
+  const expectRealOffThenStatusRead = (calls: readonly (readonly string[])[]): void => {
+    const offCalls = calls.filter((args) => args.join(" ") === "serve --https=443 off");
+    expect(offCalls).toHaveLength(1);
+    const offIndex = calls.findIndex((args) => args.join(" ") === "serve --https=443 off");
+    expect(calls.some((args, index) => index > offIndex && args[0] === "serve" && args[1] === "status")).toBe(true);
+  };
+
+  it.each([
+    { afterOff: "absent", offExit: 0, expected: "rolled-back" },
+    { afterOff: "differentWebKey", offExit: 0, expected: "uncertain" },
+    { afterOff: "malformed", offExit: 0, expected: "uncertain" },
+  ] as const)(
+    "finalizes a post-off $afterOff inventory as $expected after a real off",
+    async ({ afterOff, offExit, expected }) => {
+      const { paths, calls, runner } = await rollbackOutcome({ afterOff, offExit });
+      const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: paths.stateDir, tailscale: runner });
+      expect(result.kind === "unavailable" ? result.routeOutcome : undefined).toBe(expected);
+      expectRealOffThenStatusRead(calls);
+    },
+  );
+
+  it("treats an unverifiable status read after a real off as uncertain", async () => {
+    const { paths, calls, runner } = await rollbackOutcome({ afterOff: "error", offExit: 0 });
     const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: paths.stateDir, tailscale: runner });
     expect(result.kind === "unavailable" ? result.routeOutcome : undefined).toBe("uncertain");
+    expectRealOffThenStatusRead(calls);
   });
 
   it("keeps an unmatched handler untouched and reports uncertainty", async () => {
