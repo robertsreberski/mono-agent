@@ -273,7 +273,7 @@ describe("pi MCP tool helpers", () => {
     }, { cwd: "/repo", toolLimits })).toMatchObject({ timeout_ms: 120_000 });
   });
 
-  it("states the host's configured background ceiling in the tool schema", () => {
+  it("keeps host ceilings out of the tool schema", () => {
     // The model must be able to size the work BEFORE launching. Learning the
     // budget only from a start receipt means it has already committed to a plan.
     const [bash, exec] = ["Bash", "Exec"].map((name) => getPiBuiltinTools([name], {
@@ -285,10 +285,10 @@ describe("pi MCP tool helpers", () => {
     }).find((tool) => tool.name === name));
 
     for (const tool of [bash, exec]) {
-      expect(tool.parameters.properties.background.description).toContain("8h (28800000 ms)");
+      expect(tool.parameters.properties.background.description).not.toContain("28800000");
       expect(tool.parameters.properties.background.description).toContain("max_runtime_ms");
-      expect(tool.parameters.properties.timeout_ms.description).toContain("2m (120000 ms)");
-      expect(tool.parameters.properties.timeout_ms.description).toContain("8h (28800000 ms)");
+      expect(tool.parameters.properties.timeout_ms.description).toContain("current command ceiling");
+      expect(tool.parameters.properties.timeout_ms.description).not.toContain("28800000");
     }
   });
 
@@ -299,7 +299,7 @@ describe("pi MCP tool helpers", () => {
     }).find((tool) => tool.name === "Bash");
 
     expect(bash.parameters.properties.background.description).not.toContain("ms)");
-    expect(bash.parameters.properties.timeout_ms.description).toContain("2m (120000 ms)");
+    expect(bash.parameters.properties.timeout_ms.description).toContain("current command ceiling");
   });
 
   it("returns image files read by the builtin Read tool as an image content block", async () => {
@@ -1266,7 +1266,7 @@ describe("pi MCP tool helpers", () => {
 // The always-created built-ins getPiBuiltinTools owns. NodeRepl is run-owned and
 // joins this set only when its controller is supplied. ReadSkill (legacy alias
 // read_skill) is appended separately only when skills are supplied.
-const BUILTIN_TOOL_NAMES = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec", "WebFetch", "WebSearch"];
+const BUILTIN_TOOL_NAMES = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec", "Monitor", "MonitorStop", "WebFetch", "WebSearch"];
 
 function toolNames(tools) {
   return tools.map((tool) => tool.name).sort();
@@ -1506,10 +1506,41 @@ it.each([1, 30_000, 1_800_000])("advertises and normalizes a per-run command cei
   for (const name of ["Bash", "Exec"]) {
     const toolLimits = { bashTimeoutMs };
     const tool = getPiBuiltinTools([name], { toolLimits }).find((t) => t.name === name);
-    expect(tool.description).toContain(`${bashTimeoutMs} ms`);
-    expect(tool.parameters.properties.timeout_ms.description).toContain(`${bashTimeoutMs} ms`);
-    expect(tool.parameters.properties.timeout_ms.description).toContain("Background commands are unavailable");
+    expect(tool.description).toContain("host_turn_context");
+    expect(tool.parameters.properties.timeout_ms.description).not.toContain(`${bashTimeoutMs} ms`);
+    expect(tool.parameters.properties.timeout_ms.description).toContain("requires current host admission");
     expect(normalizePiBuiltinToolParams(name, { timeout_ms: 3_600_000 }, { toolLimits }).timeout_ms).toBe(bashTimeoutMs);
     expect(normalizePiBuiltinToolParams(name, {}, { toolLimits }).timeout_ms).toBe(bashTimeoutMs);
   }
+});
+
+
+it("sorts servers and source tools before collision naming regardless of randomized discovery order", async () => {
+  let seed = 42;
+  const random = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;
+  const shuffle = (items) => {
+    const result = [...items];
+    for (let i = result.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [result[i], result[j]] = [result[j], result[i]]; }
+    return result;
+  };
+  const connect = vi.spyOn(McpClient.prototype, "connect").mockImplementation(async () => {
+    await new Promise((resolve) => setTimeout(resolve, Math.floor(random() * 5)));
+  });
+  const close = vi.spyOn(McpClient.prototype, "close").mockResolvedValue(undefined);
+  const list = vi.spyOn(McpClient.prototype, "listTools").mockImplementation(async () => {
+    await new Promise((resolve) => setTimeout(resolve, Math.floor(random() * 5)));
+    return { tools: shuffle(["shared", "Read", "alpha"]).map((name) => ({ name, description: name, inputSchema: { type: "object", properties: {} } })) };
+  });
+  try {
+    let baseline;
+    for (let i = 0; i < 12; i++) {
+      const servers = Object.fromEntries(shuffle(["z", "A", "a"]).map((name) => [name, { type: "http", url: "http://127.0.0.1:19000/mcp" }]));
+      const result = await initPiMcpTools(servers, new Set(["Read"]));
+      const bytes = JSON.stringify(result.tools.map(({ name, description, parameters }) => ({ name, description, parameters })));
+      baseline ??= bytes;
+      expect(bytes).toBe(baseline);
+      expect(result.tools.map((tool) => tool.name)).toEqual(["mcp__A__Read", "alpha", "shared", "mcp__a__Read", "mcp__a__alpha", "mcp__a__shared", "mcp__z__Read", "mcp__z__alpha", "mcp__z__shared"]);
+      await closePiMcpClients(result.clients);
+    }
+  } finally { connect.mockRestore(); close.mockRestore(); list.mockRestore(); }
 });

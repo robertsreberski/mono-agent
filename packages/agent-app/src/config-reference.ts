@@ -1266,6 +1266,8 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.enum = SANDBOX_NETWORK_MODES.filter((mode) => mode !== "all");
   } else if (field.jsonPath === "sandbox.fallback") {
     schema.enum = SANDBOX_FALLBACKS;
+  } else if (field.jsonPath === "providers.piNative.cacheRetention") {
+    schema.enum = ["short", "long"];
   } else if (field.jsonPath === "providers.piNative.transport") {
     schema.enum = PI_TRANSPORTS;
   } else if (field.jsonPath === "tools.web.coordination") {
@@ -1553,6 +1555,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
 
 function exampleFor(id: string): SettingsJsonValue {
   const examples: Record<string, SettingsJsonValue> = {
+    "providers.piNative.cacheRetention": "long",
     "agent.name": "Research Partner",
     "runtime.model": "openai-codex:gpt-5.6-terra",
     "runtime.fallbacks": [
@@ -1643,6 +1646,7 @@ function exampleFor(id: string): SettingsJsonValue {
 }
 
 function descriptionFor(id: string): string {
+  if (id === "providers.piNative.cacheRetention") return "Optional Anthropic Messages cache retention (short or long). Unset preserves Pi defaults/environment. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.";
   if (id === "providers.piNative.promptCacheDiagnostics") return "Emit metadata-only prompt-cache request fingerprints into run artifacts; never prompt text, tool arguments, cache keys, endpoints or credentials.";
   const section = id.split(".")[0] ?? "config";
   const name = id.split(".").slice(1).join(".");

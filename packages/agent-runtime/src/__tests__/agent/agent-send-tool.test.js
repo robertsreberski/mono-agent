@@ -201,3 +201,18 @@ describe("AgentSend recovery boundary", () => {
     },
   );
 });
+
+
+it("keeps optional continuation definitions stable and refuses unavailable operations before instance access", async () => {
+  const { options, instances } = setup();
+  const context = { persistentExposure: true };
+  const unavailable = createAgentSendTool({ run: options.run }, context);
+  const current = createAgentSendTool(options, context);
+  const capable = createAgentSendTool({ ...options, instances: { ...instances, reserve: vi.fn(), releaseReservation: vi.fn(), inspect: vi.fn(), checkAcknowledgement: vi.fn() }, backgroundSubagentController: {} }, context);
+  const definition = ({ name, description, parameters }) => JSON.stringify({ name, description, parameters });
+  expect(definition(current)).toBe(definition(unavailable)); expect(definition(capable)).toBe(definition(current));
+  await expect(unavailable.execute("no", { id: "x", message: "work" })).rejects.toThrow(/unavailable/);
+  await expect(current.execute("no", { id: "x", message: "work", background: true })).rejects.toThrow(/unavailable/);
+  await expect(current.execute("no", { id: "x", inspect: true })).rejects.toThrow(/unavailable/);
+  expect(instances.get).not.toHaveBeenCalled(); expect(options.run).not.toHaveBeenCalled();
+});

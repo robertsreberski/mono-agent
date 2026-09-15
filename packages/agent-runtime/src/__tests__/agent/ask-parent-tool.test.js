@@ -44,3 +44,14 @@ it("retries a rejected publication but refuses duplicates after commit", async (
   await expect(tool.execute("duplicate", { question: "Again?" })).rejects.toThrow(/already submitted/);
   expect(submit).toHaveBeenCalledTimes(2);
 });
+
+
+it("persistent child exposure stays stable without a current publication controller", async () => {
+  const submit = vi.fn();
+  const unavailable = createAskParentTool(null, true);
+  const available = createAskParentTool({ submit }, true);
+  const definition = ({ name, description, parameters }) => JSON.stringify({ name, description, parameters });
+  expect(definition(unavailable)).toBe(definition(available));
+  await expect(unavailable.execute("no", { question: "Can I proceed?" })).rejects.toThrow(/unavailable/);
+  expect(submit).not.toHaveBeenCalled();
+});

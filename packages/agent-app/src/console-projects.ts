@@ -70,20 +70,22 @@ export function createConsoleProjectsRuntimeExtension(options: {
     const web = metadata?.web as Record<string, unknown> | undefined;
     const capability = web?.consoleProjects as Record<string, unknown> | undefined;
     const names = (Object.keys(CONSOLE_PROJECT_SCHEMAS) as ToolName[]).filter((tool) => isConsoleProjectToolAllowed(tool, options.policy));
-    if (names.length === 0 || metadata?.source !== "web" || capability?.schema !== 1 || web?.trigger !== undefined
+    if (names.length === 0) return none;
+    const eligible = !(metadata?.source !== "web" || capability?.schema !== 1 || web?.trigger !== undefined
       || typeof web?.threadId !== "string" || typeof web.turnId !== "string"
       || input.request.conversationId.replace(/#\d{4}-\d{2}-\d{2}$/u, "") !== `web:${web.threadId}`
-      || input.request.abortSignal.aborted) return none;
+      || input.request.abortSignal.aborted);
     // Metadata is an availability hint, never authentication: owner discovery issues the actual turn-bound capability.
-    let call: Awaited<ReturnType<typeof createWebConsoleToolClient>>;
-    try { call = await (options.createClient ?? createWebConsoleToolClient)({ sourceId: options.sourceId, threadId: web.threadId, turnId: web.turnId }); }
-    catch { options.onUnavailable?.(); return none; }
+    let call: Awaited<ReturnType<typeof createWebConsoleToolClient>> | undefined;
+    if (eligible) try { call = await (options.createClient ?? createWebConsoleToolClient)({ sourceId: options.sourceId, threadId: web!.threadId as string, turnId: web!.turnId as string }); }
+    catch { options.onUnavailable?.(); }
     let closed = false;
     const extension = createRequestScopedMcpRuntimeExtension({
       serverName: SERVER, startingMessage: "Console tools are starting",
       createServer: () => {
         const server = new McpServer({ name: SERVER, version: "1.0.0" });
         for (const tool of names) server.registerTool(tool, { description: descriptions[tool], inputSchema: CONSOLE_PROJECT_SCHEMAS[tool] }, async (args: Record<string, unknown>) => {
+          if (!call) return { isError: true, content: [{ type: "text" as const, text: "Console capability is unavailable for this turn." }] };
           if (closed || input.request.abortSignal.aborted) return { isError: true, content: [{ type: "text" as const, text: "The originating turn is no longer writable." }] };
           try {
             // Each independent invocation gets a new identity. There is deliberately no transport retry.
@@ -99,6 +101,6 @@ export function createConsoleProjectsRuntimeExtension(options: {
       },
     });
     const bound = await extension(input);
-    return { ...bound, cleanup: async () => { closed = true; await bound.cleanup?.(); } };
+    return { ...bound, runtimeOptions: { ...bound.runtimeOptions, hostCapabilities: Object.fromEntries(names.map((name) => [name, { available: Boolean(call), ...(!call ? { reason: "console_capability_unavailable" } : {}) }])) }, cleanup: async () => { closed = true; await bound.cleanup?.(); } };
   };
 }

@@ -2982,3 +2982,16 @@ describe("echoed model references are bounded and cannot forge diagnostic lines"
     }
   });
 });
+
+
+it("resolves cache retention env over provider JSON, with no default and strict values", () => {
+  const env = { ...baseEnv, MONO_AGENT_MODEL: "anthropic:claude-sonnet-4-6" };
+  expect(loadMonoAgentConfig({ cwd: "/repo", env }).providers?.piNative?.cacheRetention).toBeUndefined();
+  const json = { ...env, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { cacheRetention: "long" } }) };
+  expect(loadMonoAgentConfig({ cwd: "/repo", env: json }).providers?.piNative?.cacheRetention).toBe("long");
+  expect(loadMonoAgentConfig({ cwd: "/repo", env: { ...json, MONO_AGENT_PI_CACHE_RETENTION: "short" } }).providers?.piNative?.cacheRetention).toBe("short");
+  for (const value of ["none", "1h", "invalid", true]) {
+    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PI_CACHE_RETENTION: String(value) } })).toThrow();
+    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { cacheRetention: value } }) } })).toThrow();
+  }
+});

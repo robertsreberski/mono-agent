@@ -39,9 +39,9 @@ afterEach(() => {
 });
 
 describe("Monitor tool registration", () => {
-  it("registers neither tool without a controller and both with one", () => {
+  it("registers the same definitions with and without a controller", () => {
     const withoutController = getPiBuiltinTools(["Monitor", "MonitorStop", "Bash"]);
-    expect(withoutController.map((tool) => tool.name)).toEqual(["Bash"]);
+    expect(withoutController.map((tool) => tool.name)).toEqual(["Bash", "Monitor", "MonitorStop"]);
 
     const withController = getPiBuiltinTools(["Monitor", "MonitorStop", "Bash"], {
       monitorsController: { start: vi.fn(), stop: vi.fn() },
@@ -49,7 +49,7 @@ describe("Monitor tool registration", () => {
     expect(withController.map((tool) => tool.name).sort()).toEqual(["Bash", "Monitor", "MonitorStop"]);
   });
 
-  it("states the host ceilings in the schema when the controller publishes limits", () => {
+  it("keeps dynamic host ceilings out of the schema", () => {
     const tools = getPiBuiltinTools(["Monitor"], {
       monitorsController: {
         start: vi.fn(),
@@ -68,10 +68,10 @@ describe("Monitor tool registration", () => {
     expect(monitor.parameters.properties.wake_on).toMatchObject({ enum: ["batch", "exit"], default: "batch" });
     expect(monitor.parameters.properties.dedupe).toMatchObject({ enum: ["none", "batch"], default: "none" });
     expect(monitor.parameters.properties.min_wake_interval_ms).toMatchObject({ minimum: 0, default: 0 });
-    expect(monitor.parameters.properties.min_wake_interval_ms.description).toContain("5000ms");
-    expect(monitor.parameters.properties.timeout_ms.description).toContain("1h (3600000 ms)");
-    expect(monitor.parameters.properties.persistent.description).toContain("12h (43200000 ms)");
-    expect(monitor.description).toContain("3 monitors at once");
+    expect(monitor.parameters.properties.min_wake_interval_ms.description).not.toContain("5000ms");
+    expect(monitor.parameters.properties.timeout_ms.description).not.toContain("1h (3600000 ms)");
+    expect(monitor.parameters.properties.persistent.description).not.toContain("12h (43200000 ms)");
+    expect(monitor.description).not.toContain("3 monitors at once");
   });
 
   it("omits an unstated ceiling instead of inventing one", () => {

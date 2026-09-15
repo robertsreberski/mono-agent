@@ -517,6 +517,8 @@ export interface PiNativeProviderConfig {
   readonly transport?: PiTransport;
   /** Emit metadata-only prompt-cache request fingerprints into run artifacts (default false). */
   readonly promptCacheDiagnostics?: boolean;
+  /** Optional Anthropic Messages cache retention. Unset preserves Pi defaults/environment. */
+  readonly cacheRetention?: "short" | "long";
   /** Max retry attempts for the pi provider transport (0-8; default 2). */
   readonly piMaxRetries?: number;
   /** Maximum delay between retry attempts, in milliseconds (default 60000). */

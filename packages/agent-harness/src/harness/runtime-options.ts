@@ -53,7 +53,7 @@ export function mergeRuntimeOptions(
         merged[key] = mergeStringLists(merged[key], value);
         continue;
       }
-      if (key === "mcpServers") {
+      if ((key === "mcpServers" || key === "hostCapabilities" || key === "toolExposure")) {
         merged[key] = {
           ...(isRecord(merged[key]) ? merged[key] : {}),
           ...(isRecord(value) ? value : {}),

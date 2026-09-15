@@ -84,6 +84,23 @@ existing MCP client instead of creating a client per UI call; host LRU/idle
 eviction closes the client, transport, and sandbox cleanup.
 See [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
 
+### Optional Anthropic cache retention
+
+`providers.piNative.cacheRetention` accepts `"short"` or `"long"`; its environment
+variable is `MONO_AGENT_PI_CACHE_RETENTION`. Nonempty MONO_AGENT environment wins
+over JSON, then unset. Either explicit resolved value overrides Pi's separate
+ambient `PI_CACHE_RETENTION`; unset forwards nothing and preserves Pi behavior.
+The opt-in is default-off only when no external `PI_CACHE_RETENTION=long` is set.
+The runtime forwards retention only to Anthropic Messages, including child
+routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
+unsupported models receive no one-hour TTL.
+
+One-hour writes cost **2× normal input**, reads **0.1×**, versus **1.25×** for
+short-cache writes. Model support is required, and no cache hit is guaranteed.
+Metadata-only diagnostics record the requested setting and observed cache TTL;
+an ephemeral Anthropic cache control without an explicit TTL denotes five
+minutes. Evaluate the measurement gates before separately authorizing spending.
+
 ## Architecture
 
 `createPiOAuthApiKeyResolver` accepts optional `{ rejectedAccessToken, signal }` for a bounded usage read: only the still-current rejected token is forced through the existing OAuth refresh inside the serialized auth-file lane. Already-replaced tokens retain normal expiry behavior. Failed or cancelled refresh writes nothing; ordinary one-argument callers are unchanged.
@@ -188,6 +205,24 @@ supports mutually exclusive `inspect: true` and explicit message + `ack`.
 Inspection starts no provider. Consumed/conflicting acknowledgements return a
 typed non-executing response rather than replaying an execution receipt; the app
 owns current-policy inspection, continuity eligibility and durable consumption.
+
+### Tool exposure versus admission
+
+Tool definitions follow the configured authority profile, not the current turn's
+controllers. User, process-job wake, monitor wake and cron turns keep the same
+provider-visible definitions within an unchanged profile; persistent children
+have their own profile and retain structural recursion/MCP exclusions.
+Unavailable operations remain visible but refuse before execution. Current
+availability/reasons, lineage budgets, command ceilings, monitor limits and
+persistent-child/recovery capabilities appear only in the latest non-authorizing
+`host_turn_context`, never in tool schemas or canonical history. Children use
+the same envelope formatter. No previous controller or tool snapshot is retained.
+
+Builtins, skill names, MCP servers and source tool names use deterministic
+code-unit ordering, including before MCP collision naming. Real configuration,
+model, output-schema or skill-catalog changes can still change definitions, as
+can third-party schema changes and explicitly warned infrastructure discovery
+failures. Stable definitions do not guarantee a provider cache hit.
 
 ## Public API
 

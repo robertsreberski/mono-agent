@@ -29,12 +29,12 @@ afterEach(() => {
 });
 
 describe("Exec", () => {
-  it("reports the exhausted request budget even without a background controller", () => {
+  it("does not place an exhausted request budget in tool definitions", () => {
     for (const tool of getPiBuiltinTools(["Exec", "Bash"], {
       processJobsAvailability: { chainDepth: 32, maxChainDepth: 32, remainingStarts: 0, unavailableReason: "chain_depth_exhausted" },
     })) {
-      expect(tool.parameters.properties).not.toHaveProperty("background");
-      expect(tool.parameters.properties.description.description).toContain("chainDepth=32, maxChainDepth=32, remainingStarts=0, unavailableReason=chain_depth_exhausted");
+      expect(tool.parameters.properties).toHaveProperty("background");
+      expect(tool.parameters.properties.description.description).not.toContain("chainDepth");
     }
   });
 
@@ -53,11 +53,11 @@ describe("Exec", () => {
       expect((await run({ ...params, background: true }, options(workspace))).outcome.code).toBe("background_unsupported");
     },
   );
-  it("keeps the disabled schema byte-identical and injects background only with a controller", () => {
+  it("keeps definitions byte-identical with and without a controller", () => {
     const withoutController = getPiBuiltinTools(["Exec", "Bash"]);
     const baseline = Object.fromEntries(withoutController.map((tool) => [tool.name, JSON.stringify(tool.parameters)]));
-    expect(JSON.parse(baseline.Exec).properties).not.toHaveProperty("background");
-    expect(JSON.parse(baseline.Bash).properties).not.toHaveProperty("background");
+    expect(JSON.parse(baseline.Exec).properties).toHaveProperty("background");
+    expect(JSON.parse(baseline.Bash).properties).toHaveProperty("background");
 
     const withController = getPiBuiltinTools(["Exec", "Bash"], {
       processJobsController: { start: vi.fn() },
@@ -67,7 +67,7 @@ describe("Exec", () => {
     expect(withController.find((tool) => tool.name === "Bash").parameters.properties.background)
       .toEqual(expect.objectContaining({ type: "boolean" }));
     expect(withController.find((tool) => tool.name === "Exec").parameters.properties.background.description)
-      .toContain("Do not use for commands that daemonize");
+      .toContain("Do not daemonize");
     for (const name of ["Exec", "Bash"]) {
       expect(withController.find((tool) => tool.name === name).parameters.properties.description)
         .toEqual(expect.objectContaining({ type: "string" }));
@@ -75,6 +75,7 @@ describe("Exec", () => {
         .toContain("Always provide this when background=true");
     }
 
+    expect(Object.fromEntries(withController.map((tool) => [tool.name, JSON.stringify(tool.parameters)]))).toEqual(baseline);
     const disabledAgain = getPiBuiltinTools(["Exec", "Bash"]);
     expect(Object.fromEntries(disabledAgain.map((tool) => [tool.name, JSON.stringify(tool.parameters)]))).toEqual(baseline);
   });
@@ -1280,9 +1281,9 @@ describe("per-run foreground command ceilings", () => {
       const cap = bashTimeoutMs ?? 120_000;
       const timer = vi.spyOn(globalThis, "setTimeout");
       const tool = getPiBuiltinTools([name], { ...options(workspace), toolLimits }).find((t) => t.name === name);
-      expect(tool.description).toContain(`${cap} ms`);
-      expect(tool.parameters.properties.timeout_ms.description).toContain(`${cap} ms`);
-      expect(tool.parameters.properties).not.toHaveProperty("background");
+      expect(tool.description).toContain("host_turn_context");
+      expect(tool.parameters.properties.timeout_ms.description).not.toContain(`${cap} ms`);
+      expect(tool.parameters.properties).toHaveProperty("background");
       for (const timeout_ms of [undefined, 3_600_000]) {
         timer.mockClear();
         expect((await run({ ...params, timeout_ms }, { ...options(workspace), toolLimits })).outcome.status).toBe("ok");

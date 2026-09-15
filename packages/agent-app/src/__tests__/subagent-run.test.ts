@@ -1,3 +1,4 @@
+import { HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/agent-harness";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -198,11 +199,11 @@ describe("configured subagents", () => {
     expect(result).toMatchObject({ text: "child answer" });
     expect(runtime.run).toHaveBeenCalledOnce();
     const [prompt, options] = runtime.run.mock.calls[0] as unknown as [string, Record<string, unknown>];
-    expect(prompt).toBe("You research.");
+    expect(prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
     expect(options).toMatchObject({
       model: PRIMARY,
       maxTurns: 12,
-      messages: [{ role: "user", content: "find X" }],
+      messages: [{ role: "user", content: expect.stringMatching(/<host_turn_context>[\s\S]*<\/host_turn_context>\n\nfind X$/u) }],
       allowedTools: ["Read", "Grep"],
       mcpServers: {},
       subagents: { depth: 1 },
@@ -382,7 +383,7 @@ describe("subagent confinement and context inheritance", () => {
   it("stays inert when the parent disclosed no skills", async () => {
     const { prompt, options } = await runChild();
 
-    expect(prompt).toBe("You research.");
+    expect(prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
     expect(options).not.toHaveProperty("skills");
     expect(options).not.toHaveProperty("skillsRoot");
   });
@@ -392,11 +393,11 @@ describe("subagent confinement and context inheritance", () => {
     // silently omitting the tool rather than erroring, so never send one alone.
     const noRoot = await runChild({ skills: SKILLS });
     expect(noRoot.options).not.toHaveProperty("skills");
-    expect(noRoot.prompt).toBe("You research.");
+    expect(noRoot.prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
 
     const noSkills = await runChild({ skillsRoot: "/repo/skills" });
     expect(noSkills.options).not.toHaveProperty("skills");
-    expect(noSkills.prompt).toBe("You research.");
+    expect(noSkills.prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
   });
 
   it("withholds skills from a profile that denies ReadSkill, under either spelling", async () => {
@@ -407,7 +408,7 @@ describe("subagent confinement and context inheritance", () => {
         definition: { name: "researcher", disallowedTools: [denied] },
       });
       expect(options, denied).not.toHaveProperty("skills");
-      expect(prompt, denied).toBe("You research.");
+      expect(prompt, denied).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
     }
   });
 
@@ -421,7 +422,7 @@ describe("subagent confinement and context inheritance", () => {
     );
 
     expect(options).not.toHaveProperty("skills");
-    expect(prompt).toBe("You research.");
+    expect(prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
   });
 
   it("withholds skills from a profile pinned to a runtime that cannot use them", async () => {
@@ -451,7 +452,7 @@ describe("subagent confinement and context inheritance", () => {
 
     const [prompt, options] = overrideRuntime.run.mock.calls[0] as unknown as [string, Record<string, unknown>];
     expect(options).not.toHaveProperty("skills");
-    expect(prompt).toBe("You research.");
+    expect(prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
   });
 });
 
@@ -668,7 +669,7 @@ it("reapplies current denies and MCP catalog after registry/config restart while
     const resumed = await extension({ request: { conversationId: "c" }, runId: "r2" } as never);
     await createAgentSendTool(resumed.runtimeOptions!.subagents).execute("b", { id: "research", message: "next" });
     const [prompt, options] = runtime.run.mock.calls[1]!;
-    expect(prompt).toBe("You research.");
+    expect(prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
     expect(options).toMatchObject({ model: PRIMARY, effort: "high", mcpServers: { selected: { command: "new-server" } } });
     expect(options.disallowedTools).toEqual(expect.arrayContaining(["Read", "mcp__selected__danger", "Agent", "AgentSend"]));
     await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: {} }));
@@ -721,4 +722,13 @@ describe("AskParent child policy and durable controller", () => {
       expect(result.details.subagent.status).toBe(["allowed", "retry"].includes(policy) ? "awaiting_reply" : "ok");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+});
+
+
+it.each(["short", "long"] as const)("forwards configured %s retention to parent and child routes", async (cacheRetention) => {
+  const config = { ...monoConfig({ enabled: true, definitions: [RESEARCHER] }), providers: { piNative: { cacheRetention, promptCacheDiagnostics: true } } } as MonoAgentConfig;
+  const { runtime, subagents } = await buildSubagents(config);
+  expect(harnessMock.mock.calls[0]?.[0].runtimeOptions).toMatchObject({ cacheRetention });
+  await (subagents?.run as (request: unknown) => Promise<unknown>)({ systemPrompt: "You research.", prompt: "find X", definition: { name: "researcher", allowedTools: ["Read"] }, maxTurns: 1, depth: 1, abortSignal: new AbortController().signal, onEvent: () => {} });
+  expect(runtime.run.mock.calls[0]?.[1]).toMatchObject({ cacheRetention, promptCacheDiagnostics: true });
 });
