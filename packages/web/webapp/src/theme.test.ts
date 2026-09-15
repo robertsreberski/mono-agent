@@ -82,7 +82,7 @@ describe("initial PWA chrome", () => {
     expect(initialDocument.querySelectorAll(".status-bar-surface")).toHaveLength(1);
   });
 
-  it("starts with evergreen header colors and the default iOS status mode", () => {
+  it("starts with evergreen header colors and paints the iOS status band itself", () => {
     const initialDocument = new DOMParser().parseFromString(indexHtml, "text/html");
     const light = initialDocument.head.querySelector<HTMLMetaElement>(
       'meta[name="theme-color"][media="(prefers-color-scheme: light)"]',
@@ -96,7 +96,10 @@ describe("initial PWA chrome", () => {
 
     expect(light?.content).toBe(THEME_CHROME_COLORS.evergreen.light);
     expect(dark?.content).toBe(THEME_CHROME_COLORS.evergreen.dark);
-    expect(statusMode?.content).toBe("default");
+    // `black-translucent` is what puts the band behind the clock inside the
+    // document, where the header's own surface paints it; `default` hands it to
+    // a system strip whose colour is cached until relaunch (WebKit 301994).
+    expect(statusMode?.content).toBe("black-translucent");
   });
 
   it("keeps manifest chrome and launch background distinct", () => {
