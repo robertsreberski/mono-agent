@@ -988,6 +988,7 @@ describe("background native subagent cards", () => {
     const meta = card.querySelector(".process-job-live-meta");
     expect(meta).toHaveTextContent("implementer");
     expect(meta).toHaveTextContent("45 tools, 1 failed");
+    expect(meta).toHaveTextContent("$0.01");
     expect(meta).not.toHaveTextContent(/wake|exit|signal/iu);
     expect(meta?.querySelector("dt")).toBeNull();
     expect(screen.getByRole("img", { name: /Ran with anthropic:claude-sonnet-4\.5/u })).not.toHaveClass("is-requested");
@@ -999,6 +1000,7 @@ describe("background native subagent cards", () => {
     const meta = view.container.querySelector(".process-job-live-meta");
     expect(meta).toHaveTextContent("implementer");
     expect(meta).toHaveTextContent("45 tools, 1 failed");
+    expect(meta).not.toHaveTextContent("$");
     expect(meta?.querySelectorAll("dt")).toHaveLength(0);
     expect(meta?.querySelectorAll(".route-badge")).toHaveLength(1);
     expect(screen.getByRole("img", { name: /requested, not a confirmed run/u })).toHaveClass("is-requested");
@@ -1017,12 +1019,13 @@ describe("background native subagent cards", () => {
     expect(badge).toHaveClass("is-fallback");
     expect(badge.querySelector(".route-badge-flag")).toHaveTextContent("!");
 
-    const { route: _route, ...legacyProgress } = job.subagentProgress!;
+    const { route: _route, costUsd: _costUsd, ...legacyProgress } = job.subagentProgress!;
     view.unmount();
     const legacy = render(part({ job: { ...job, subagentProgress: legacyProgress } }));
     fireEvent.click(screen.getByRole("group", { name: "Agent background job succeeded" }).querySelector("summary")!);
     expect(legacy.container.querySelector(".route-badge")).toBeNull();
     expect(legacy.container.querySelector(".process-job-live-meta")).toHaveTextContent("implementer·45 tools, 1 failed");
+    expect(legacy.container.querySelector(".process-job-live-meta")).not.toHaveTextContent("$");
   });
 
   it("normalizes a retained empty executed route back to requested-only", () => {

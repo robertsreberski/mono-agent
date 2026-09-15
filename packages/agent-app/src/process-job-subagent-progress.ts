@@ -181,6 +181,13 @@ function routePart(
   return result;
 }
 
+/** Keep only an honestly priced, contract-bounded detached turn cost. */
+export function pricedSubagentCostUsd(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= Number.MAX_SAFE_INTEGER
+    ? value
+    : undefined;
+}
+
 /** Keeps only safe snapshots. The child collector owns exactly-once call events. */
 export class SubagentJobProgress {
   private value: ProcessJobSubagentProgress = { revision: 0, profile: "Subagent", toolCalls: 0, failedCalls: 0, recent: [] };
@@ -237,14 +244,16 @@ export class SubagentJobProgress {
     return true;
   }
 
-  finish(answer?: string): ProcessJobSubagentProgress {
+  finish(answer?: string, costUsd?: number): ProcessJobSubagentProgress {
     if (!this.sealed) {
       this.sealed = true;
       const open = this.value.recent.filter((call) => call.status === "running").length;
       const answerHead = answer === undefined ? undefined : this.safe(answer, 8_000, true);
+      const pricedCost = pricedSubagentCostUsd(costUsd);
       this.value = { ...this.value, revision: this.value.revision + 1,
         failedCalls: Math.min(this.value.toolCalls, this.value.failedCalls + open),
         recent: this.value.recent.map((call) => call.status === "running" ? { ...call, status: "failed" } : call),
+        ...(pricedCost === undefined ? {} : { costUsd: pricedCost }),
         ...(answerHead === undefined ? {} : { answerHead, answerTruncated: Buffer.byteLength(answer!) > 8_000 }) };
     }
     return this.snapshot();

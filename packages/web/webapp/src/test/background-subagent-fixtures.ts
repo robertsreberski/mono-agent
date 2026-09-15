@@ -27,7 +27,7 @@ export function backgroundSubagentJob(finished = false, tool: "Agent" | "AgentSe
       route: { requested: { model: "anthropic:claude-sonnet-4.5", effort: "high" },
         ...(finished ? { executed: { model: "anthropic:claude-sonnet-4.5", effort: "high" }, disposition: "requested" as const } : {}) },
       toolCalls: 45, failedCalls: 1, recent,
-      ...(finished ? { answerHead: "Synthetic report\n\nReviewed the fixture and completed the checks.\nNo real provider or user data was used.", answerTruncated: false } : {}) },
+      ...(finished ? { costUsd: 0.0123, answerHead: "Synthetic report\n\nReviewed the fixture and completed the checks.\nNo real provider or user data was used.", answerTruncated: false } : {}) },
   };
 }
 
