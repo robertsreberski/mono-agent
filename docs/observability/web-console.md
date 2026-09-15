@@ -33,19 +33,20 @@ mono-agent web start --theme ocean
 mono-agent web
 ```
 
-Bare `mono-agent web` is read-only: it prints service status, the usable URLs, and lifecycle help. It does not start, stop, or rewrite the service. The default listener is `0.0.0.0:5050`, so the same process is directly reachable from localhost, the trusted local network, and the machine's Tailscale address.
+Bare `mono-agent web` is read-only: it prints service status, the usable URLs, and lifecycle help. It does not start, stop, or rewrite the service. A fresh install binds `127.0.0.1:5050`; `--host <addr>` (for example `0.0.0.0`) widens the listener explicitly, and an existing managed service keeps the bind it was published with.
 
 ```bash
 mono-agent web start --theme ocean  # install/start with a distinctive shell
 mono-agent web start --name "Flockbox"  # label tabs and the installed PWA
+mono-agent web start --share-tailnet  # macOS: publish an owned Tailscale HTTPS route
 mono-agent web stop
 mono-agent web restart
-mono-agent web status
+mono-agent web status --json
 mono-agent web logs
 mono-agent web run         # foreground service, including non-macOS hosts
 ```
 
-Use `--loopback` with `start` or `run` to bind `127.0.0.1` instead. That bind narrows the HTTP listener, not every way the console can be reached: managed `start`/`restart` inspects Tailscale and claims an owned Serve HTTPS route while the service runs, so a loopback-bind managed console can still be reachable from the tailnet, while the foreground `run` command never configures Serve. Advanced `--host` and `--port` overrides are available when `0.0.0.0:5050` is not appropriate. The lifecycle status records the effective bind, theme, console name, and any owned Tailscale route so later commands operate on the same service rather than guessing; `mono-agent web` prints the effective URLs and `tailscale serve status` shows the Serve route.
+`--loopback` (the fresh default) binds `127.0.0.1`, `--host <addr>` binds wider, and the bind narrows the HTTP listener only — not every way the console can be reached. A managed macOS `start`/`restart` re-verifies an existing mono-agent-owned Tailscale Serve HTTPS route and publishes one only when asked with `--share-tailnet`; the foreground `run` command never configures Serve, `stop` removes only the exact route mono-agent owns, and no mode removes an unowned Serve handler, reverse proxy, or tunnel that already points at the port. The lifecycle status records the effective bind, theme, console name, and any owned Tailscale route so later commands operate on the same service rather than guessing; `mono-agent web` prints the effective URLs, `mono-agent web status --json` prints the listener and the owned route as separate fields, and `tailscale serve status` shows the Serve route. An installed service is never re-bound to the fresh default: a stopped install's bind/port/theme/name are recovered from its LaunchAgent definition, and an unreadable definition fails closed before anything changes.
 
 ## Console identity and curated themes
 
@@ -99,11 +100,11 @@ colors. Theme choice is explicit rather than inferred from the hostname.
 The console intentionally has no application authentication or multi-user accounts. Anyone who can reach its HTTP listener can read retained conversations, upload files, cancel turns, send instructions to every discovered agent, and operate provider-authentication flows. Treat the listener as an owner-equivalent operator surface:
 
 - run it only on a trusted LAN or tailnet;
-- when other devices must not reach it, bind the foreground `mono-agent web run --loopback` and confirm nothing else publishes it; a managed `start --loopback` narrows only the HTTP listener and may publish an owned Tailscale Serve route, and a foreground run does not remove a Serve route, reverse proxy, or tunnel that already points at the port;
+- when other devices must not reach it, keep the foreground `mono-agent web run --loopback` and confirm nothing else publishes it; a managed `start`/`restart` re-verifies an existing owned Tailscale Serve route and publishes a new one only with `--share-tailnet`; `web stop` removes that exact owned route, and no mode removes an unowned Serve handler, reverse proxy, or tunnel that already points at the port;
 - do not publish port `5050` through a public router, tunnel, or unrestricted reverse proxy;
 - keep operating-system and Tailscale network admission controls as the access boundary.
 
-Foreground startup changes only the listener. A Serve handler, reverse proxy, or tunnel that already points at the port keeps working until you remove it yourself, so inspect `tailscale serve status` and your own proxy configuration before relying on loopback for local-only access — this matters most for a machine that ran a managed console before.
+Neither the bind nor the absence of a mono-agent-owned route proves local-only access: other proxies, tunnels, or routes are not inspected. Inspect `tailscale serve status` and your own proxy configuration before relying on loopback for local-only access — this matters most for a machine that ran a managed console before. A managed `--share-tailnet` failure is reported with a nonzero exit and the healthy local console stays running; it never claims the route was published.
 
 The server rejects unexpected Host/Origin combinations and does not enable cross-origin API access, but those checks are browser request-integrity controls, not authentication. Cron mutations additionally require the addressed agent's operator API key, an explicit agent-side opt-in, a source-qualified job route, and an agent-issued confirmation; those gates do not turn the web console into a multi-user authenticated application. Plain LAN HTTP is not encrypted. Tailscale transport protects direct tailnet traffic, while Tailscale Serve provides browser-trusted HTTPS when available.
 

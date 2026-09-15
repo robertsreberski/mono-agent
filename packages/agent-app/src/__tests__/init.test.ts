@@ -73,7 +73,8 @@ describe("initMonoAgentFolder", () => {
       selectedSkills: ["mono-agent-memory"],
       skillDisclosure: "index",
     });
-    expect(config.webhook.enabled).toBe(true);
+    // Browser-first default: no channel is enabled, so no webhook smoke block.
+    expect(config.webhook).toBeUndefined();
     expect(config.memory).toBeUndefined();
     // Deliberate behavior change: the default scaffold now allows all tools (`["*"]`).
     expect(config.tools.allowedTools).toEqual(["*"]);

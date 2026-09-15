@@ -95,7 +95,7 @@ mono-agent web            # read-only status, effective URLs, and lifecycle help
 
 Two differences matter before you use the managed path:
 
-- **macOS**: managed `start`/`restart` inspects Tailscale and claims its own Serve HTTPS route while the service runs. `--loopback` narrows only the local HTTP listener, so a managed console can still be reachable from the tailnet — and because it has **no application login**, anyone who can reach it can operate the discovered agents. `mono-agent web` prints the effective URLs; `tailscale serve status` shows the route.
+- **macOS**: managed `start`/`restart` re-verifies an existing mono-agent-owned Tailscale Serve HTTPS route and creates a new one only with `--share-tailnet`. The bind narrows only the local HTTP listener, so a console with an owned route can still be reachable from the tailnet, and other proxies/routes are not inspected — because there is **no application login**, anyone who can reach it can operate the discovered agents. `mono-agent web` prints the effective URLs; `mono-agent web status --json` separates the listener from the owned route; `tailscale serve status` shows the route.
 - **Linux**: `start` uses the systemd user service and HTTPS routes are managed externally. See [Linux services](/observability/linux-services/).
 
 Where no usable service manager exists, the foreground command above is the supported path. Read the [web console guide](/observability/web-console/) for persistent threads, attachments, notifications, service lifecycle, and the full security boundary.
@@ -128,7 +128,7 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 
 | Command | Purpose |
 | --- | --- |
-| `init` | Non-destructive scaffold of a config, `IDENTITY.md`, and `.mono-agent/`. A fresh built-in Journal/BuJo selection also gets one empty provider-free managed generation; pre-existing memory roots are never changed. On a TTY with no flags it runs the step-by-step **wizard** (preset or custom; walks you through model, channels, memory, tools, sandbox, observability); any flag or a non-TTY writes the scaffold silently. `setup` is an alias. |
+| `init` | Non-destructive scaffold of a config, `IDENTITY.md`, and `.mono-agent/`. A fresh built-in Journal/BuJo selection also gets one empty provider-free managed generation; pre-existing memory roots are never changed. On a TTY with no flags it runs the step-by-step **wizard** (preset or custom; name/Role, model routes, an optional-capabilities gate for channels/memory/observability that defaults to No, then tools and sandbox); any flag or a non-TTY writes the scaffold silently. `setup` is an alias. |
 | `presets` | List the built-in setup presets (`list`) or show a preset's generated config, `.env.example`, and checklist (`show <id>`). Replaces the removed `recipes` command. |
 | `validate` | Validate `mono-agent.config.json` and live checks that can be tested safely before starting. |
 | `start` | Start the host for every configured channel as a macOS `launchd` or Linux systemd user service; use `--foreground` where no service manager exists. |
@@ -149,12 +149,12 @@ cd my-agent
 mono-agent init
 ```
 
-On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: name the agent, enter the exact Role destined for `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure any number of fallbacks and their exact efforts, then choose capabilities. The review says whether that Role will be written or an existing identity preserved. Escape goes back. A concrete creation review precedes provider/SRT mutations.
+On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: name the agent, enter the exact Role destined for `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure any number of fallbacks and their exact efforts, then decide whether to add optional capabilities (channels, memory, observability — default No for a custom start; seeded presets open the gate at Yes) and confirm the tool/access and sandbox choices. The review says whether that Role will be written or an existing identity preserved. Escape goes back. A concrete creation review precedes provider/SRT mutations.
 
 Bare `init` behaves differently per platform and input mode, and the docs do not hide it:
 
-- **macOS, interactive**: it proves every selected route sequentially, prepares the private managed runtime, starts or refreshes the single canonical per-config `launchd` agent, waits for a fresh exact-snapshot ready trace source, then prints the edit → `validate` → `restart` → console handoff. Interrupted preflight can resume fingerprint-matching successes or restart all checks.
-- **Linux, interactive**: the wizard still runs and proves the routes, but it does not start the systemd user service for you. It prints the manual `validate` → `start` steps, and those require a usable systemd **user** manager; without one, run `mono-agent start --foreground` in terminal 1 and `mono-agent web run --loopback` in terminal 2, because the console needs that agent process to stay alive.
+- **macOS, interactive**: it proves every selected route sequentially, prepares the private managed runtime, starts or refreshes the single canonical per-config `launchd` agent, waits for a fresh exact-snapshot ready trace source, then prints the browser-first handoff: confirm the running agent with `status`, run `mono-agent web run --loopback` in a second terminal, and open `http://127.0.0.1:5050`. Interrupted preflight can resume fingerprint-matching successes or restart all checks.
+- **Linux, interactive**: the wizard still runs and proves the routes, but it does not start the systemd user service for you. It prints the manual start handoff — terminal 1 `mono-agent start` (which requires a usable systemd **user** manager) or `mono-agent start --foreground` without one, then terminal 2 `mono-agent web run --loopback`, because the console needs that agent process to stay alive.
 - **Any flag, `--yes`, or a non-TTY**: init is scaffold-only. It never runs the readiness proof, never starts a process, and never labels the result ready.
 
 Off macOS, edit the preserved scaffold manually, validate, start the service or foreground process, and open the browser console or `mono-agent tui`. See [Setup security and managed runtime](/reference/setup-security/) for the closure, environment, single-instance, and snapshot-integrity contracts behind the managed path.

@@ -100,7 +100,11 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
   if (wantsWizard) {
     // Existing-config pre-check — don't walk the wizard into a guaranteed no-op.
     if (await pathExists(resolve(cwd, "mono-agent.config.json"))) {
-      process.stdout.write(ui.hint("Found an existing mono-agent.config.json — `mono-agent init` never overwrites. Run `mono-agent validate`, or start in an empty folder.\n"));
+      process.stdout.write(ui.hint(
+        "Found an existing mono-agent.config.json — `mono-agent init` never overwrites. Run `mono-agent validate`, " +
+        "start the agent if it is not running, then `mono-agent web run --loopback` for the browser console " +
+        `(open http://${BROWSER_CONSOLE_HOST}:${String(BROWSER_CONSOLE_PORT)}).\n`,
+      ));
       return 0;
     }
     let resolvedPiAuthPath = resolveEffectivePiAuthPath({
@@ -1517,11 +1521,11 @@ function focusedConfigurationRepairStep(sectionIds: readonly string[]): number |
   for (const id of sectionIds) {
     if (id === "agent") mapped.add(0);
     else if (id === "runtime" || id === "credentials") mapped.add(1);
-    else if (id === "memory" || id.startsWith("memory:")) mapped.add(3);
-    else if (id === "context" || id.startsWith("channel:")) mapped.add(4);
-    else if (id === "tools") mapped.add(5);
-    else if (id === "sandbox") mapped.add(6);
-    else if (id === "observability") mapped.add(7);
+    else if (id === "memory" || id.startsWith("memory:")) mapped.add(4);
+    else if (id === "context" || id.startsWith("channel:")) mapped.add(5);
+    else if (id === "tools") mapped.add(6);
+    else if (id === "sandbox") mapped.add(7);
+    else if (id === "observability") mapped.add(8);
   }
   return mapped.size === 1 ? [...mapped][0] : undefined;
 }
@@ -1530,11 +1534,11 @@ function configurationRecoveryEditLabel(step: number | undefined): string {
   switch (step) {
     case 0: return "Edit agent name";
     case 1: return "Edit model routes";
-    case 3: return "Edit memory";
-    case 4: return "Edit capability details";
-    case 5: return "Edit tools";
-    case 6: return "Edit route safety and sandbox";
-    case 7: return "Edit observability";
+    case 4: return "Edit memory";
+    case 5: return "Edit capability details";
+    case 6: return "Edit tools";
+    case 7: return "Edit route safety and sandbox";
+    case 8: return "Edit observability";
     default: return "Edit setup choices";
   }
 }
@@ -2146,49 +2150,92 @@ function printSecretsChecklist(
   }
 }
 
-function printNextSteps(configPath: string): void {
-  const startCommand = process.platform === "darwin" || process.platform === "linux" ? "mono-agent start" : "mono-agent start --foreground";
-  const tuiCommand = process.platform === "darwin" || process.platform === "linux"
-    ? `mono-agent tui ${ui.style.dim("(chat with the running background agent)")}`
-    : `mono-agent tui ${ui.style.dim("(ordinary chat after foreground startup)")}`;
-  process.stdout.write(
-    "\n" +
-      ui.heading("Next steps") +
-      `  ${ui.style.bold("1.")} Edit ${configPath} ${ui.style.dim("(model, channels, skills, memory, sandbox)")}\n` +
-      `  ${ui.style.bold("2.")} mono-agent validate\n` +
-      `  ${ui.style.bold("3.")} ${startCommand}\n` +
-      `  ${ui.style.bold("4.")} ${tuiCommand}\n`,
+/**
+ * Browser-console defaults for the handoff text. Mirrored from
+ * `web-command.ts` (DEFAULT_WEB_HOST/DEFAULT_WEB_PORT) instead of importing that
+ * large module into the init path; `cli-first-run-state.test.ts` asserts parity.
+ */
+export const BROWSER_CONSOLE_HOST = "127.0.0.1";
+export const BROWSER_CONSOLE_PORT = 5050;
+const BROWSER_CONSOLE_COMMAND = "mono-agent web run --loopback";
+const BROWSER_CONSOLE_URL = `http://${BROWSER_CONSOLE_HOST}:${String(BROWSER_CONSOLE_PORT)}`;
+
+/**
+ * The one truthful console caveat, shared by every handoff: the loopback bind
+ * narrows the listener only — an existing Tailscale Serve route, reverse proxy,
+ * or tunnel that already points at the port is not removed, and the console has
+ * no application login.
+ */
+function browserConsoleBoundaryLine(): string {
+  return ui.style.dim(
+    "The console has no login, so keep it on loopback. --loopback narrows the listener only: an existing proxy, " +
+    "tunnel, or Tailscale route that points at the port is not removed.\n",
   );
+}
+
+/** Machine-local discovery: a remote session can only reach this console by forwarding the port. */
+function remoteSessionHintLines(): readonly string[] {
+  if (process.env.SSH_CONNECTION === undefined && process.env.SSH_TTY === undefined) return [];
+  return [ui.style.dim(
+    "Remote session: the console discovers agents on the machine it runs on. Forward the port to the computer with " +
+    `the browser (ssh -L ${String(BROWSER_CONSOLE_PORT)}:${BROWSER_CONSOLE_HOST}:${String(BROWSER_CONSOLE_PORT)} <this-host>) ` +
+    `and open ${BROWSER_CONSOLE_URL} there — or move both the agent and the console to that computer.\n`,
+  )];
+}
+
+function printNextSteps(configPath: string): void {
+  const startCommand = process.platform === "darwin" || process.platform === "linux"
+    ? "mono-agent start"
+    : "mono-agent start --foreground";
+  const lines = [
+    "\n" + ui.heading("Next steps"),
+    ui.style.dim("Scaffold only: no readiness proof and no process was started.\n"),
+    `  ${ui.style.bold("1.")} mono-agent validate\n`,
+    `  ${ui.style.bold("2.")} ${startCommand} ${ui.style.dim("(add --foreground where no user service manager exists)")}\n`,
+    `  ${ui.style.bold("3.")} ${BROWSER_CONSOLE_COMMAND} ${ui.style.dim("(keep this terminal open)")}\n`,
+    `  ${ui.style.bold("4.")} Open ${ui.style.cyan(BROWSER_CONSOLE_URL)} and send a message ${ui.style.dim(`(add --port <n> if ${String(BROWSER_CONSOLE_PORT)} is taken)`)}\n`,
+    ui.style.dim(`Edit ${configPath} to change model, channels, skills, memory, sandbox, or observability.\n`),
+    browserConsoleBoundaryLine(),
+    ...remoteSessionHintLines(),
+  ];
+  process.stdout.write(lines.join(""));
 }
 
 function printUnsupportedGuidedInitHandoff(configPath: string, envFile?: string): void {
   const flags = guidedHandoffFlags(configPath, envFile);
   const backgroundSupported = process.platform === "linux";
   const startCommand = backgroundSupported ? "mono-agent start" : "mono-agent start --foreground";
-  process.stdout.write(
-    "\n" +
-      ui.heading("Manual start required") +
-      ui.style.yellow(backgroundSupported
-        ? "Guided init does not start the Linux systemd user service automatically.\n"
-        : "Automatic background start requires macOS launchd or Linux systemd.\n") +
-      ui.style.dim("The validated agent files were preserved, but no agent process was started and readiness is not claimed.\n") +
-      `  ${ui.style.bold("Configure manually:")} edit ${configPath} and IDENTITY.md, then run mono-agent validate${flags}\n` +
-      `  ${ui.style.bold("Start:")} ${startCommand}${flags}\n` +
-      `  ${ui.style.bold("Terminal 2:")} mono-agent tui${flags} ${ui.style.dim("(ordinary chat after startup completes)")}\n` +
-      (backgroundSupported ? "" : ui.style.dim("Keep the foreground process running while using the TUI.\n")),
-  );
+  const lines = [
+    "\n" + ui.heading("Manual start required"),
+    ui.style.yellow(backgroundSupported
+      ? "Guided init does not start the Linux systemd user service automatically.\n"
+      : "Automatic background start requires macOS launchd or Linux systemd.\n"),
+    ui.style.dim("The validated agent files were preserved, but no agent process was started and readiness is not claimed.\n"),
+    `  ${ui.style.bold("Terminal 1:")} ${startCommand}${flags}` +
+      (backgroundSupported ? ` ${ui.style.dim("(add --foreground when no usable systemd user manager exists)")}` : "") + "\n",
+    `  ${ui.style.bold("Terminal 2:")} ${BROWSER_CONSOLE_COMMAND} ${ui.style.dim("(keep it open)")}\n`,
+    `  ${ui.style.bold("Then open:")} ${ui.style.cyan(BROWSER_CONSOLE_URL)} and send a message ${ui.style.dim(`(add --port <n> if ${String(BROWSER_CONSOLE_PORT)} is taken)`)}\n`,
+    ...(backgroundSupported
+      ? []
+      : [ui.style.dim("Keep the foreground agent process running while you use the console.\n")]),
+    browserConsoleBoundaryLine(),
+    ...remoteSessionHintLines(),
+  ];
+  process.stdout.write(lines.join(""));
 }
 
 function printReadyAgentHandoff(configPath: string, envFile?: string): void {
   const flags = guidedHandoffFlags(configPath, envFile);
-  process.stdout.write(
-    "\n" +
-      ui.heading("Configure and use the agent") +
-      `  ${ui.style.bold("1.")} Edit ${configPath} and the configured identity document.\n` +
-      `  ${ui.style.bold("2.")} mono-agent validate${flags}\n` +
-      `  ${ui.style.bold("3.")} mono-agent restart${flags} ${ui.style.dim("(after configuration changes)")}\n` +
-      `  ${ui.style.bold("4.")} mono-agent tui${flags} ${ui.style.dim("(ordinary chat with the running agent)")}\n`,
-  );
+  const lines = [
+    "\n" + ui.heading("Chat in the browser"),
+    `  ${ui.style.bold("1.")} mono-agent status${flags} ${ui.style.dim("(confirm the background agent is running)")}\n`,
+    `  ${ui.style.bold("2.")} ${BROWSER_CONSOLE_COMMAND} ${ui.style.dim("(second terminal; keep it open)")}\n`,
+    `  ${ui.style.bold("3.")} Open ${ui.style.cyan(BROWSER_CONSOLE_URL)} and send a message ${ui.style.dim(`(add --port <n> if ${String(BROWSER_CONSOLE_PORT)} is taken)`)}\n`,
+    browserConsoleBoundaryLine(),
+    ...remoteSessionHintLines(),
+    ui.style.dim(`After editing ${configPath}: mono-agent validate${flags}, then mono-agent restart${flags}.\n`),
+  ];
+  process.stdout.write(lines.join(""));
 }
 
 function printUnexpectedGuidedBackgroundFailure(configPath: string, envFile: string | undefined, error: unknown): void {

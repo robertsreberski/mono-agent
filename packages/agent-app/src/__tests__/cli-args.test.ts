@@ -503,11 +503,15 @@ describe("parseCliArgs", () => {
   });
 
   it("rejects --json on lifecycle/interactive commands with a usage error naming the JSON surfaces", () => {
-    for (const command of ["init", "auth", "start", "stop", "restart", "logs", "tui", "web", "backfill"] as const) {
+    for (const command of ["init", "auth", "start", "stop", "restart", "logs", "tui", "backfill"] as const) {
       expect(() => parseCliArgs([command, "--json"])).toThrow(/--json is not supported/u);
     }
     // The error names the supported surfaces so a caller knows where JSON lives.
     expect(() => parseCliArgs(["start", "--json"])).toThrow(/config, presets, status/u);
+    // `web` is JSON-capable only for its read-only status action.
+    expect(() => parseCliArgs(["web", "--json"])).toThrow(/--json is only supported for `mono-agent web status`/u);
+    expect(() => parseCliArgs(["web", "start", "--json"])).toThrow(/--json is only supported for `mono-agent web status`/u);
+    expect(parseCliArgs(["web", "status", "--json"])).toMatchObject({ command: "web", json: true });
   });
 
   it("gates install-skill/sandbox --json to their read-only subcommands", () => {
@@ -678,6 +682,21 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["start", "--loopback"])).toThrow(/loopback/u);
     expect(() => parseCliArgs(["status", "--theme", "plum"])).toThrow(/theme/u);
     expect(() => parseCliArgs(["web", "status", "--theme", "plum"])).toThrow(/web start/u);
+    // --share-tailnet is an explicit managed start/restart request only.
+    expect(parseCliArgs(["web", "start", "--share-tailnet"])).toMatchObject({
+      command: "web",
+      positionals: ["start"],
+      shareTailnet: true,
+    });
+    expect(parseCliArgs(["web", "restart", "--share-tailnet", "--loopback"])).toMatchObject({
+      command: "web",
+      positionals: ["restart"],
+      shareTailnet: true,
+      loopback: true,
+    });
+    expect(() => parseCliArgs(["web", "run", "--share-tailnet"])).toThrow(/foreground `web run` never manages a Tailscale route/u);
+    expect(() => parseCliArgs(["web", "status", "--share-tailnet"])).toThrow(/web start/u);
+    expect(() => parseCliArgs(["start", "--share-tailnet"])).toThrow(/only supported for `mono-agent web start`/u);
     expect(() => parseCliArgs(["web", "start", "--theme", " "])).toThrow(/must not be empty/u);
     expect(parseCliArgs(["web", "start", "--name", "Flockbox"])).toMatchObject({
       command: "web",
@@ -761,7 +780,7 @@ describe("parseCliArgs", () => {
     expect(lineFor("runs [report|audit]")).toContain("[--json]");
     expect(lineFor("memory <subcommand>")).toContain("[--json]");
     expect(lineFor("monitors list|get|cancel")).toContain("[--json]");
-    expect(lineFor("web [start|stop|status|...]")).not.toContain("[--json]");
+    expect(lineFor("web [start|stop|status|...]")).toContain("[--json]");
     expect(lineFor("backfill")).not.toContain("[--json]");
 
     // The removed `sessions` command never appears in the summary.
@@ -791,7 +810,8 @@ describe("parseCliArgs", () => {
 
     const webDetail = helpTopicText("web");
     expect(webDetail).toContain("web reset --all --yes");
-    expect(webDetail).toContain("0.0.0.0:5050");
+    expect(webDetail).toContain("127.0.0.1:5050");
+    expect(webDetail).toContain("--share-tailnet");
     expect(webDetail).toContain("evergreen (default), ocean, plum, and terracotta");
 
     const bridgeDetail = helpTopicText("bridge");

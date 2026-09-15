@@ -10,6 +10,18 @@ import { pruneTraceSources } from "@mono-agent/observability";
 import { isLoopbackHost } from "@mono-agent/agent-contracts";
 import type { WebTheme } from "@mono-agent/web";
 
+import {
+  DEFAULT_WEB_HOST,
+  DEFAULT_WEB_PORT,
+  DEFAULT_WEB_THEME,
+  decodeManagedWebDefinition,
+  invalidWebConsoleName,
+  isWebTheme,
+  LEGACY_DEFAULT_WEB_HOST,
+  WEB_THEMES,
+} from "./web-service-definition.js";
+import type { ManagedWebDefinition } from "./web-service-definition.js";
+
 import { resolveGlobalTraceRegistryDir } from "./app-config.js";
 import {
   acquireFilesystemLifecycleLock,
@@ -72,8 +84,18 @@ import * as ui from "./ui.js";
 
 export { WEB_LAUNCHD_LABEL } from "./launchd.js";
 
-export const DEFAULT_WEB_HOST = "0.0.0.0";
-export const DEFAULT_WEB_PORT = 5050;
+export {
+  DEFAULT_WEB_HOST,
+  DEFAULT_WEB_PORT,
+  LEGACY_DEFAULT_WEB_HOST,
+  WEB_THEMES,
+  DEFAULT_WEB_THEME,
+  WEB_CONSOLE_NAME_MAX_CHARACTERS,
+  isWebTheme,
+  invalidWebConsoleName,
+  decodeManagedWebDefinition,
+  type ManagedWebDefinition,
+} from "./web-service-definition.js";
 // Deliberately outside `com.mono-agent.*`: fleet discovery reserves that prefix
 // for configured agent instances.
 export const MANAGED_WEB_WORKER_ENV = "MONO_AGENT_MANAGED_WEB_WORKER";
@@ -87,11 +109,6 @@ const TAILSCALE_FALLBACK_PORT_END = 8499;
 const TAILSCALE_STATUS_ATTEMPTS = 3;
 const TAILSCALE_STATUS_RETRY_MS = 200;
 const WEB_PACKAGE_NAME = "@mono-agent/web";
-const WEB_THEMES = ["evergreen", "ocean", "plum", "terracotta"] as const satisfies readonly WebTheme[];
-const DEFAULT_WEB_THEME: WebTheme = "evergreen";
-// Mirrors WEB_CONSOLE_NAME_MAX_CHARACTERS in @mono-agent/web; declared locally so this
-// command keeps its type-only dependency on the lazily loaded web package.
-const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80 satisfies typeof import("@mono-agent/web").WEB_CONSOLE_NAME_MAX_CHARACTERS;
 
 interface WebServerHandle {
   readonly url: string;
@@ -129,6 +146,8 @@ export interface RunWebCommandOptions {
   readonly theme?: string;
   readonly name?: string;
   readonly loopback?: boolean;
+  readonly shareTailnet?: boolean;
+  readonly json?: boolean;
   readonly follow?: boolean;
   readonly lines?: number;
   readonly all?: boolean;
@@ -237,11 +256,39 @@ export interface TailscaleServeOwnership {
 type TailscaleServeResult =
   | { readonly kind: "active"; readonly ownership: TailscaleServeOwnership; readonly reused: boolean }
   | {
+      /** No owned route exists and none was requested; no Tailscale command was run. */
+      readonly kind: "not-requested";
+    }
+  | {
       readonly kind: "unavailable";
       readonly detail: string;
       /** The old owned route was migrated, so the replacement worker must also be rolled back. */
       readonly requiresServiceRollback?: true;
+      /**
+       * Structured cleanup evidence for explicit-share failures; never derived
+       * by parsing `detail`. `none` means this command ran no route-changing
+       * command, `rolled-back` means the newly created handler was removed
+       * again, `restored` means a migrated prior handler was put back, and
+       * `uncertain` means a handler may remain and must be inspected.
+       */
+      readonly routeOutcome?: TailscaleRouteOutcome;
+      /** What the command attempted, for inspection guidance when cleanup is uncertain. */
+      readonly attempted?: {
+        readonly httpsPort?: number;
+        readonly proxyTarget?: string;
+      };
+      /** Present after a migrated route: whether the prior exact route is live again. */
+      readonly priorRouteRestored?: boolean;
+      /** Present after a migrated route: whether the replacement handler was provably removed. */
+      readonly replacementHandlerRemoved?: boolean;
     };
+
+export type TailscaleRouteOutcome = "none" | "rolled-back" | "restored" | "uncertain";
+
+interface TailscaleCleanupResult {
+  readonly ok: boolean;
+  readonly detail: string;
+}
 
 type TailscaleOwnershipRead =
   | { readonly kind: "absent" }
@@ -265,17 +312,19 @@ export function renderWebHelp(): string {
     "mono-agent web — always-on multi-agent web console",
     "",
     "  mono-agent web",
-    "  mono-agent web start [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>]",
-    "  mono-agent web restart [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>]",
-    "  mono-agent web stop | status",
+    "  mono-agent web start [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>] [--share-tailnet]",
+    "  mono-agent web restart [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>] [--share-tailnet]",
+    "  mono-agent web stop | status [--json]",
     "  mono-agent web logs [--follow|-f] [--lines <n>]",
     "  mono-agent web run [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>]",
     "  mono-agent web reset --all --yes",
     "",
-    `Default bind: ${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)} (LAN/Tailnet reachable; no app login).`,
+    `Default bind: ${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)} (loopback listener; no app login).`,
+    "--host <addr> binds wider (for example 0.0.0.0 for the LAN).",
+    "macOS start/restart publish an owned Tailscale Serve HTTPS route only with --share-tailnet;",
+    "an existing mono-agent-owned route is re-verified on restart. Linux HTTPS routes are externally managed.",
     `Themes: ${WEB_THEMES.join(", ")} (default: ${DEFAULT_WEB_THEME}).`,
     "--name sets the installed PWA label, browser tab title, and rail brand; --name - restores the hostname default.",
-    "--loopback narrows the bind to 127.0.0.1. macOS start/restart claim a free Tailscale Serve HTTPS port; Linux HTTPS routes are externally managed.",
     "",
   ].join("\n");
 }
@@ -296,6 +345,16 @@ export async function runWebCommand(
   const validation = validateWebFlags(action, options);
   if (validation !== undefined) {
     stderr.write(ui.errorLine(validation));
+    stdout.write(renderWebHelp());
+    return 2;
+  }
+  // The Linux lifecycle publishes no Tailscale route of its own; refuse the flag
+  // instead of accepting a meaningless request.
+  if ((deps.platform ?? process.platform) === "linux"
+    && options.shareTailnet === true && (action === "start" || action === "restart")) {
+    stderr.write(ui.errorLine(
+      "Linux HTTPS routes are externally managed; --share-tailnet manages the macOS Tailscale Serve route.",
+    ));
     stdout.write(renderWebHelp());
     return 2;
   }
@@ -362,6 +421,12 @@ function validateWebFlags(action: string | undefined, options: RunWebCommandOpti
   if (options.loopback === true && options.host !== undefined) {
     return "Choose either --loopback or --host, not both.";
   }
+  if (options.shareTailnet === true && action !== "start" && action !== "restart") {
+    return "--share-tailnet is only supported for `mono-agent web start` and `mono-agent web restart`.";
+  }
+  if (options.json === true && action !== "status") {
+    return "--json is only supported for `mono-agent web status`.";
+  }
   if (options.port !== undefined && options.port === 0) {
     return "mono-agent web requires a stable --port between 1 and 65535.";
   }
@@ -413,7 +478,13 @@ async function runWebForeground(options: RunWebCommandOptions, deps: RunWebComma
       env: options.env,
     });
   } catch (error) {
-    stderr.write(ui.errorLine(`mono-agent web failed to start: ${errorMessage(error)}`));
+    const detail = errorMessage(error);
+    stderr.write(ui.errorLine(`mono-agent web failed to start: ${detail}`));
+    if (/EADDRINUSE|address already in use/iu.test(detail)) {
+      stderr.write(ui.hint(
+        `Port ${String(port)} is already in use. Inspect the managed console with \`mono-agent web\`, or retry with --port <n>.`,
+      ));
+    }
     return 1;
   }
   printWebUrls(stdout, handle.url, handle.port ?? port, host, deps.discoverNetworkAddresses);
@@ -520,6 +591,12 @@ async function startWebBackground(
     const existing = await launchdServiceInfo(launchctl, WEB_LAUNCHD_LABEL, uid);
     let helper = await launchdServiceInfo(launchctl, WEB_MAINTENANCE_LAUNCHD_LABEL, uid);
     if (existing.loaded && !restart) {
+      if (options.shareTailnet === true) {
+        stderr.write(ui.errorLine(
+          "mono-agent web is already managed by launchd; use `mono-agent web restart --share-tailnet` to publish its owned Tailscale route.",
+        ));
+        return 1;
+      }
       if (options.theme !== undefined) {
         stderr.write(ui.errorLine(
           `mono-agent web is already managed by launchd; use \`mono-agent web restart --theme ${options.theme}\` to change its theme.`,
@@ -598,6 +675,19 @@ async function startWebBackground(
       return 1;
     }
     const existingPlist = await readOptionalText(paths.launchd.plistPath);
+    // Validate a persisted definition BEFORE installing a runtime, stopping a
+    // loaded helper, or publishing anything: an unreadable or foreign
+    // definition must fail with nothing changed rather than after mutation.
+    const priorRecord = recordRead.kind === "valid" ? recordRead.record : undefined;
+    const priorDefinition = priorRecord === undefined && existingPlist !== undefined
+      ? installedWebDefinition(existingPlist)
+      : undefined;
+    if (priorRecord === undefined && existingPlist !== undefined && priorDefinition === undefined) {
+      return await fail(
+        "Refusing to start because the existing web LaunchAgent definition could not be validated; its recorded bind was preserved and nothing was changed",
+      );
+    }
+    const prior = priorRecord ?? priorDefinition;
     if (pendingMaintenanceIntent !== undefined) {
       let currentMainIdentity: string;
       try {
@@ -704,11 +794,10 @@ async function startWebBackground(
       previousStopped = restart && previous !== undefined;
     }
 
-    const priorRecord = recordRead.kind === "valid" ? recordRead.record : undefined;
-    const host = effectiveHost(options, priorRecord?.host);
-    const port = options.port ?? priorRecord?.port ?? DEFAULT_WEB_PORT;
-    const theme = selectedWebTheme(options.theme, priorRecord?.theme);
-    const consoleName = selectedWebConsoleName(options.name, priorRecord?.name);
+    const host = effectiveHost(options, prior?.host);
+    const port = options.port ?? prior?.port ?? DEFAULT_WEB_PORT;
+    const theme = selectedWebTheme(options.theme, prior?.theme);
+    const consoleName = selectedWebConsoleName(options.name, prior?.name);
     if (existingPlist !== undefined) {
       try {
         pendingMaintenanceIntent = await maintainStoppedWebLogsBeforePublication(
@@ -725,11 +814,18 @@ async function startWebBackground(
     const recordedTailscaleDnsName = priorTailscaleOwnership.kind === "valid"
       ? tailscaleWebHostname(priorTailscaleOwnership.ownership.webKey)
       : undefined;
+    // New route creation is explicit-only (`--share-tailnet`). An existing exact
+    // owned route — or an ownership record we must truthfully report as
+    // unverifiable — is always inspected, so a restart keeps or diagnoses the
+    // route the install actually has. A pristine unshared start never runs the
+    // Tailscale CLI at all.
+    const inspectTailscale = options.shareTailnet === true || priorTailscaleOwnership.kind !== "absent";
     // A healthy existing Serve route must keep working through a transient
     // LocalAPI outage during restart. The owner-private, exact-route record is
     // re-verified by ensureTailscaleServe after the replacement worker starts.
-    const tailscaleDnsName = await readTailscaleDnsName(tailscaleRunner, deps.sleep)
-      ?? recordedTailscaleDnsName;
+    const tailscaleDnsName = inspectTailscale
+      ? await readTailscaleDnsName(tailscaleRunner, deps.sleep) ?? recordedTailscaleDnsName
+      : undefined;
     const allowedHosts = mergeWebAllowedHosts(options.env.MONO_AGENT_WEB_ALLOWED_HOSTS, tailscaleDnsName);
     const environment = {
       ...selectBackgroundOperationalEnvironment(options.env),
@@ -808,18 +904,42 @@ async function startWebBackground(
       }
     }
 
-    const tailscale = tailscaleDnsName === undefined
-      ? { kind: "unavailable" as const, detail: "the node's exact Tailscale DNS name could not be resolved; no Serve handler was changed" }
-      : await ensureTailscaleServe(
-          paths,
-          host,
-          port,
-          options.env,
-          { ...deps, tailscale: tailscaleRunner },
-          tailscaleDnsName,
-        );
+    const tailscale: TailscaleServeResult = !inspectTailscale
+      ? { kind: "not-requested" }
+      : priorTailscaleOwnership.kind === "invalid"
+        ? await ensureTailscaleServe(
+            paths,
+            host,
+            port,
+            options.env,
+            { ...deps, tailscale: tailscaleRunner },
+            undefined,
+            options.shareTailnet === true,
+          )
+        : tailscaleDnsName === undefined
+          ? {
+              kind: "unavailable",
+              detail: "the node's exact Tailscale DNS name could not be resolved; no Serve handler was changed",
+              routeOutcome: "none",
+            }
+          : await ensureTailscaleServe(
+              paths,
+              host,
+              port,
+              options.env,
+              { ...deps, tailscale: tailscaleRunner },
+              tailscaleDnsName,
+              options.shareTailnet === true,
+            );
     if (tailscale.kind === "unavailable" && tailscale.requiresServiceRollback === true) {
-      return await fail(`Tailscale route migration failed and the replacement web worker cannot remain active: ${tailscale.detail}`);
+      const routeState = tailscale.priorRouteRestored !== true
+        ? "the prior owned route could not be confirmed restored; inspect `tailscale serve status` before retrying"
+        : tailscale.replacementHandlerRemoved === false
+          ? `the prior owned route was restored, but the replacement handler may remain${sharingAttemptDescription(tailscale)}; inspect \`tailscale serve status\` before retrying`
+          : "the prior owned route was restored";
+      return await fail(
+        `Tailscale route migration failed and the replacement web worker cannot remain active (${routeState}): ${tailscale.detail}`,
+      );
     }
 
     stdout.write(`${ui.badge("ok")}${ui.style.bold(restart ? "Restarted mono-agent web" : "Started mono-agent web")}\n`);
@@ -827,10 +947,48 @@ async function startWebBackground(
     stdout.write("No app authentication is enabled; anyone who can reach this port can operate discovered agents.\n");
 
     if (tailscale.kind === "active") {
-      stdout.write(`Tailscale HTTPS → ${tailscale.ownership.url}${tailscale.reused ? " (existing owned handler)" : ""}\n`);
+      stdout.write(`mono-agent-owned Tailscale route: ${tailscale.ownership.url}${tailscale.reused ? " (existing owned handler)" : ""}\n`);
+      stdout.write(ui.style.dim("Other proxies and routes are not inspected.\n"));
+    } else if (tailscale.kind === "not-requested") {
+      stdout.write("mono-agent-owned Tailscale route: none (other proxies and routes are not inspected).\n");
+      if (options.shareTailnet !== true) {
+        stdout.write(ui.hint("Publish this console on your tailnet with: mono-agent web restart --share-tailnet\n"));
+      }
+    } else if (options.shareTailnet === true) {
+      // An explicit sharing request must never look successful when it failed,
+      // and it must never claim a route is absent unless the structured cleanup
+      // evidence actually proves that.
+      stderr.write(ui.errorLine(`Sharing failed: ${tailscale.detail}`));
+      const listener = `The local console is running at http://${urlHost(host)}:${String(port)}/.`;
+      const target = sharingAttemptDescription(tailscale);
+      const outcome = tailscale.routeOutcome ?? "uncertain";
+      if (outcome === "none") {
+        stderr.write(ui.style.yellow(
+          `${listener} No Tailscale handler was changed by this command.${target}\n`,
+        ));
+      } else if (outcome === "rolled-back") {
+        stderr.write(ui.style.yellow(
+          `${listener} The newly created Tailscale handler was rolled back; no mono-agent-owned route remains.${target}\n`,
+        ));
+      } else if (outcome === "restored") {
+        stderr.write(ui.style.yellow(
+          `${listener} The previously owned Tailscale route was restored.${target}\n`,
+        ));
+      } else {
+        stderr.write(ui.style.yellow(
+          `${listener} A Tailscale handler may remain: inspect \`tailscale serve status\`${target} and remove only the handler ` +
+          "this command created (`mono-agent web stop` removes only a route it provably owns).\n",
+        ));
+      }
+      return 1;
     } else {
       stderr.write(ui.style.yellow(`⚠ Tailscale Serve was not configured: ${tailscale.detail}\n`));
-      stderr.write(ui.hint(`LAN HTTP remains healthy on port ${String(port)}. Resolve Tailscale, then run mono-agent web restart.`));
+      if (tailscale.routeOutcome === "uncertain") {
+        stderr.write(ui.style.yellow(
+          `⚠ A Tailscale handler may remain: inspect \`tailscale serve status\`${sharingAttemptDescription(tailscale)}.\n`,
+        ));
+      }
+      stderr.write(ui.hint(`The console remains reachable on ${host}:${String(port)}. Resolve Tailscale, then run mono-agent web restart --share-tailnet.\n`));
     }
     return 0;
   } catch (error) {
@@ -945,10 +1103,25 @@ async function statusWeb(
   const paths = webPaths(deps.homeDir);
   const recordRead = await readServiceRecord(paths.recordPath);
   const record = recordRead.kind === "valid" ? recordRead.record : undefined;
-  const host = record?.host ?? DEFAULT_WEB_HOST;
-  const port = record?.port ?? DEFAULT_WEB_PORT;
-  const theme = record?.theme ?? DEFAULT_WEB_THEME;
-  const consoleName = record?.name;
+  // A stopped install can retain its LaunchAgent definition without a service
+  // record. Decode it with the same validator the start path uses; an
+  // unreadable definition stays unknown and is never advertised as the fresh
+  // default.
+  const installedPlist = record === undefined ? await readOptionalText(paths.launchd.plistPath) : undefined;
+  const recoveredDefinition = installedPlist === undefined ? undefined : installedWebDefinition(installedPlist);
+  const definitionUnknown = installedPlist !== undefined && recoveredDefinition === undefined;
+  const configured = record ?? recoveredDefinition;
+  const listenerSource = definitionUnknown
+    ? "unknown"
+    : record !== undefined
+      ? "service record"
+      : recoveredDefinition !== undefined
+        ? "installed definition"
+        : "fresh default";
+  const host = configured?.host ?? DEFAULT_WEB_HOST;
+  const port = configured?.port ?? DEFAULT_WEB_PORT;
+  const theme = configured?.theme ?? DEFAULT_WEB_THEME;
+  const consoleName = configured?.name;
   let service: LaunchdServiceInfo = { loaded: false };
   let helper: LaunchdWebMaintenanceInfo = { loaded: false };
   if ((deps.platform ?? process.platform) === "darwin") {
@@ -959,7 +1132,7 @@ async function statusWeb(
       (deps.inspectMaintenanceService ?? launchdWebMaintenanceInfo)(runner, uid),
     ]);
   }
-  const healthState = recordRead.kind === "invalid" || !service.loaded
+  const healthState = recordRead.kind === "invalid" || definitionUnknown || !service.loaded
     ? "unavailable"
     : deps.healthcheck === undefined
       ? await webHealthStatus(healthUrl(host, port))
@@ -1043,12 +1216,85 @@ async function statusWeb(
   } catch {
     maintenanceProblems.push("managed web log inventory could not be inspected");
   }
+  const owned = await readTailscaleOwnership(paths.tailscalePath);
+  let ownedRoute: {
+    readonly state: "none" | "exact" | "missing" | "changed" | "unverifiable" | "invalid";
+    readonly url?: string;
+    readonly detail?: string;
+  };
+  if (owned.kind === "absent") {
+    ownedRoute = { state: "none" };
+  } else if (owned.kind === "invalid") {
+    ownedRoute = { state: "invalid", detail: owned.detail };
+  } else {
+    const inspection = await inspectOwnedTailscaleRoute(owned.ownership, deps);
+    if (inspection.kind === "exact") {
+      ownedRoute = { state: "exact", url: owned.ownership.url };
+    } else if (inspection.kind === "absent") {
+      ownedRoute = {
+        state: "missing",
+        detail: "the recorded handler is no longer present; the ownership record was left untouched",
+      };
+    } else if (inspection.kind === "changed") {
+      ownedRoute = {
+        state: "changed",
+        detail: "the ownership record does not match the current handler; existing handlers were not changed",
+      };
+    } else {
+      // An inspection failure is not evidence of a mismatch.
+      ownedRoute = { state: "unverifiable", detail: inspection.detail };
+    }
+  }
+  const serviceState = service.loaded
+    ? healthState === "degraded" ? "running, push degraded" : healthy ? "running" : "loaded, not healthy"
+    : "stopped";
+  const code = (strictExit && (!healthy || maintenanceProblems.length > 0))
+    || recordRead.kind === "invalid"
+    || definitionUnknown
+    ? 1
+    : 0;
+  const uniqueProblems = [...new Set(maintenanceProblems)];
+  const listenerDetail = recordRead.kind === "invalid"
+    ? "invalid service record"
+    : definitionUnknown
+      ? "unknown (installed LaunchAgent definition could not be validated)"
+      : `${host}:${String(port)} (${service.loaded && healthy ? "running" : "configured; not proven running"})`;
+  if (options.json === true) {
+    // Listener and exact owned route are reported separately; their mere
+    // absence proves nothing about other proxies, tunnels, or routes.
+    stdout.write(`${JSON.stringify({
+      ok: code === 0,
+      action: "status",
+      listener: definitionUnknown || recordRead.kind === "invalid"
+        ? { host: null, port: null, url: null, source: listenerSource, provenRunning: false }
+        : {
+            host,
+            port,
+            url: `http://${urlHost(host)}:${String(port)}/`,
+            source: listenerSource,
+            provenRunning: service.loaded && healthy,
+          },
+      console: {
+        theme: recordRead.kind === "invalid" ? null : theme,
+        name: consoleName ?? null,
+        state: paths.stateDir,
+      },
+      service: { state: serviceState, pid: service.pid ?? null, healthy },
+      authentication: "none",
+      ownedTailscaleRoute: ownedRoute,
+      maintenance: { summary: maintenanceSummary, problems: uniqueProblems },
+      recordError: recordRead.kind === "invalid" ? recordRead.detail : null,
+      definitionError: definitionUnknown
+        ? "the installed LaunchAgent definition could not be validated"
+        : null,
+      note: "other proxies and routes are not inspected; network reachability is the access boundary",
+    }, null, 2)}\n`);
+    return code;
+  }
   stdout.write(ui.rule("Web console status"));
   stdout.write(ui.keyValue([
-    ["service", service.loaded
-      ? healthState === "degraded" ? "running, push degraded" : healthy ? "running" : "loaded, not healthy"
-      : "stopped"],
-    ["bind", recordRead.kind === "invalid" ? "invalid service record" : `${host}:${String(port)}`],
+    ["service", serviceState],
+    ["listener", listenerDetail],
     ["theme", recordRead.kind === "invalid" ? "invalid service record" : theme],
     ["name", recordRead.kind === "invalid"
       ? "invalid service record"
@@ -1056,10 +1302,14 @@ async function statusWeb(
     ["state", paths.stateDir],
     ["pid", service.pid === undefined ? "—" : String(service.pid)],
     ["log maintenance", maintenanceSummary],
-    ["authentication", "none (network reachability is the boundary)"],
+    ["authentication", "none (no application login; network reachability is the access boundary)"],
   ]));
   if (recordRead.kind === "invalid") stdout.write(ui.errorLine(recordRead.detail));
-  else {
+  else if (definitionUnknown) {
+    stdout.write(ui.errorLine(
+      "The installed LaunchAgent definition could not be validated; the effective listener is unknown and was not probed.",
+    ));
+  } else {
     printWebUrls(
       stdout,
       `http://${urlHost(host)}:${String(port)}/`,
@@ -1068,26 +1318,24 @@ async function statusWeb(
       deps.discoverNetworkAddresses,
     );
   }
-  const owned = await readTailscaleOwnership(paths.tailscalePath);
-  if (owned.kind === "absent") {
-    stdout.write("Tailscale HTTPS: not owned by mono-agent web.\n");
-  } else if (owned.kind === "invalid") {
-    stdout.write(`Tailscale HTTPS: ${owned.detail}\n`);
+  if (ownedRoute.state === "none") {
+    stdout.write("mono-agent-owned Tailscale route: none (other proxies and routes are not inspected).\n");
+  } else if (ownedRoute.state === "exact") {
+    stdout.write(`mono-agent-owned Tailscale route: ${ownedRoute.url ?? ""}\n`);
   } else {
-    const inspection = await inspectOwnedTailscaleRoute(owned.ownership, deps);
-    stdout.write(inspection.kind === "exact"
-      ? `Tailscale HTTPS: ${owned.ownership.url}\n`
-      : "Tailscale HTTPS: ownership record is stale or cannot be verified; existing handlers will not be changed.\n");
+    stdout.write(
+      `mono-agent-owned Tailscale route: ${ownedRoute.state} - ${ownedRoute.detail ?? "unverifiable"} (other proxies and routes are not inspected).\n`,
+    );
   }
   if (!service.loaded) stdout.write(ui.hint("Start it with: mono-agent web start"));
   else if (!healthy) stdout.write(ui.hint("Inspect: mono-agent web logs"));
-  for (const problem of [...new Set(maintenanceProblems)]) stdout.write(ui.errorLine(problem));
+  for (const problem of uniqueProblems) stdout.write(ui.errorLine(problem));
   if (pendingIntent !== undefined && helper.pid === undefined) {
     stdout.write(pendingRecoveryRequiresStopStart
       ? ui.hint("Recover it with `mono-agent web stop`, then `mono-agent web start`; the prior stop or plist identity is unproven.")
       : ui.hint("Recover it with exactly: mono-agent web restart"));
   }
-  return (strictExit && (!healthy || maintenanceProblems.length > 0)) || recordRead.kind === "invalid" ? 1 : 0;
+  return code;
 }
 
 async function tailWebLogs(options: RunWebCommandOptions, deps: RunWebCommandDeps): Promise<number> {
@@ -1189,10 +1437,6 @@ function effectiveHost(options: RunWebCommandOptions, priorHost?: string): strin
   return options.loopback === true ? "127.0.0.1" : options.host ?? priorHost ?? DEFAULT_WEB_HOST;
 }
 
-function isWebTheme(value: unknown): value is WebTheme {
-  return typeof value === "string" && (WEB_THEMES as readonly string[]).includes(value);
-}
-
 function selectedWebTheme(value?: string, priorTheme?: WebTheme): WebTheme {
   if (value === undefined) return priorTheme ?? DEFAULT_WEB_THEME;
   return value as WebTheme;
@@ -1209,17 +1453,28 @@ function selectedWebConsoleName(value?: string, priorName?: string): string | un
   return name === "-" ? undefined : name;
 }
 
-/** Reject labels the manifest, launchd argv, or launcher cannot carry faithfully. */
-function invalidWebConsoleName(value: string): string | undefined {
-  const name = value.trim();
-  if (name.length === 0) return "--name must not be empty.";
-  if (/[\u0000-\u001f\u007f-\u009f\u2028-\u202e]/u.test(name)) {
-    return "--name must not contain control characters, line separators, or bidirectional overrides.";
+/**
+ * Recover the published console definition from a stopped install's main
+ * LaunchAgent plist. Returns undefined unless the persisted argv is a
+ * recognized managed `web run` invocation, so the caller refuses instead of
+ * guessing a fresh default for an existing service.
+ */
+function installedWebDefinition(xml: string): ManagedWebDefinition | undefined {
+  let args: readonly string[];
+  try {
+    args = plistProgramArguments(xml);
+  } catch {
+    return undefined;
   }
-  if ([...name].length > WEB_CONSOLE_NAME_MAX_CHARACTERS) {
-    return `--name must be at most ${String(WEB_CONSOLE_NAME_MAX_CHARACTERS)} characters.`;
-  }
-  return undefined;
+  return decodeManagedWebDefinition(args);
+}
+
+/** Structured inspection guidance for a failure whose cleanup result is uncertain. */
+function sharingAttemptDescription(result: Extract<TailscaleServeResult, { kind: "unavailable" }>): string {
+  const port = result.attempted?.httpsPort;
+  const target = result.attempted?.proxyTarget;
+  if (port === undefined) return "";
+  return ` (attempted HTTPS port ${String(port)}${target === undefined ? "" : ` -> ${target}`})`;
 }
 
 function shellQuote(value: string): string {
@@ -1612,17 +1867,37 @@ export async function ensureTailscaleServe(
   env: Record<string, string | undefined>,
   deps: RunWebCommandDeps,
   expectedDnsName?: string,
+  /**
+   * Whether a missing route may be created. Only an explicit `--share-tailnet`
+   * passes true; an existing exact owned route is always verified/migrated, and
+   * a record whose handler is provably absent is cleared but never replaced
+   * without the explicit flag.
+   */
+  allowCreate = true,
 ): Promise<TailscaleServeResult> {
   const runner = deps.tailscale ?? makeTailscaleRunner(env);
   const proxyTarget = tailscaleProxyTarget(bindHost, appPort);
   const ownershipRead = await readTailscaleOwnership(paths.tailscalePath);
   if (ownershipRead.kind === "invalid") {
-    return { kind: "unavailable", detail: ownershipRead.detail };
+    return { kind: "unavailable", detail: ownershipRead.detail, routeOutcome: "none" };
   }
   let existing = ownershipRead.kind === "valid" ? ownershipRead.ownership : undefined;
   let priorMigration: { readonly ownership: TailscaleServeOwnership; readonly contents: string } | undefined;
+  let attemptedHttpsPort: number | undefined;
+  let replacementClaimAttempted = false;
+  const attempted = (): { readonly httpsPort?: number; readonly proxyTarget?: string } => ({
+    ...(attemptedHttpsPort === undefined ? {} : { httpsPort: attemptedHttpsPort }),
+    ...(proxyTarget === undefined ? {} : { proxyTarget }),
+  });
   const failMigration = async (detail: string): Promise<TailscaleServeResult> => {
-    if (priorMigration === undefined) return { kind: "unavailable", detail };
+    if (priorMigration === undefined) {
+      return {
+        kind: "unavailable",
+        detail,
+        routeOutcome: attemptedHttpsPort === undefined ? "none" : "uncertain",
+        attempted: attempted(),
+      };
+    }
     const restored = await restorePriorTailscaleRoute(
       paths,
       priorMigration.ownership,
@@ -1630,19 +1905,77 @@ export async function ensureTailscaleServe(
       runner,
       deps,
     );
-    return { kind: "unavailable", detail: `${detail}; ${restored}`, requiresServiceRollback: true };
+    // The replacement handler was never claimed (or was never confirmed), so a
+    // claim attempt leaves its removal unproven.
+    const replacementHandlerRemoved = !replacementClaimAttempted;
+    return {
+      kind: "unavailable",
+      detail: `${detail}; ${restored.detail}`,
+      requiresServiceRollback: true,
+      priorRouteRestored: restored.ok,
+      replacementHandlerRemoved,
+      routeOutcome: restored.ok && replacementHandlerRemoved ? "restored" : "uncertain",
+      attempted: {
+        httpsPort: priorMigration.ownership.httpsPort,
+        proxyTarget: priorMigration.ownership.proxyTarget,
+      },
+    };
+  };
+  /**
+   * Finalize a failure that happened AFTER a new handler was claimed. When this
+   * command migrated an existing owned route, the prior route and its ownership
+   * record are already gone, so the replacement worker must be rolled back
+   * unless the prior exact route is safely restored first — every post-claim
+   * failure funnels through here instead of returning ad hoc results.
+   */
+  const failAfterClaim = async (
+    detail: string,
+    replacementCleanup: TailscaleCleanupResult,
+    attempt: { readonly httpsPort: number; readonly proxyTarget: string },
+  ): Promise<TailscaleServeResult> => {
+    if (priorMigration === undefined) {
+      return {
+        kind: "unavailable",
+        detail: `${detail}; ${replacementCleanup.detail}`,
+        routeOutcome: replacementCleanup.ok ? "rolled-back" : "uncertain",
+        attempted: attempt,
+      };
+    }
+    const restored = await restorePriorTailscaleRoute(
+      paths,
+      priorMigration.ownership,
+      priorMigration.contents,
+      runner,
+      deps,
+    );
+    return {
+      kind: "unavailable",
+      detail: `${detail}; replacement cleanup: ${replacementCleanup.detail}; prior route: ${restored.detail}`,
+      requiresServiceRollback: true,
+      priorRouteRestored: restored.ok,
+      replacementHandlerRemoved: replacementCleanup.ok,
+      // "restored" requires both: a live prior route must never imply that the
+      // replacement handler was removed.
+      routeOutcome: restored.ok && replacementCleanup.ok ? "restored" : "uncertain",
+      // The uncertain handler is the replacement attempt; the restore outcome is
+      // stated in the detail above.
+      attempted: attempt,
+    };
   };
   if (proxyTarget === undefined) {
     return {
       kind: "unavailable",
       detail: `bind host ${bindHost} is not reachable through a loopback proxy; use --host 0.0.0.0, --host ::, or --loopback`,
+      routeOutcome: "none",
     };
   }
   if (existing !== undefined) {
     const inspection = await inspectOwnedTailscaleRoute(existing, deps, runner);
     if (inspection.kind === "absent") {
       const cleared = await clearProvablyAbsentTailscaleOwnership(paths, existing, runner);
-      if (cleared.kind === "unavailable") return { kind: "unavailable", detail: cleared.detail };
+      if (cleared.kind === "unavailable") {
+        return { kind: "unavailable", detail: cleared.detail, routeOutcome: "none" };
+      }
       existing = undefined;
     } else if (inspection.kind !== "exact") {
       return {
@@ -1650,34 +1983,50 @@ export async function ensureTailscaleServe(
         detail: inspection.kind === "unavailable"
           ? inspection.detail
           : "the prior Tailscale ownership record no longer matches its exact handler; refusing to overwrite it",
+        routeOutcome: "none",
       };
     }
   }
+  // No exact owned route remains. Creating one requires the explicit flag: a
+  // proven-absent ownership record never authorizes a new route on its own.
+  if (existing === undefined && !allowCreate) return { kind: "not-requested" };
   if (existing !== undefined) {
     if (expectedDnsName !== undefined && tailscaleWebHostname(existing.webKey) !== expectedDnsName) {
       return {
         kind: "unavailable",
         detail: "the owned Tailscale handler hostname does not match this node's exact DNS name; refusing to reuse or replace it",
+        routeOutcome: "none",
       };
     }
     if (proxyTarget !== undefined && existing.proxyTarget === proxyTarget) {
       return { kind: "active", ownership: existing, reused: true };
     }
     if (ownershipRead.kind !== "valid") {
-      return { kind: "unavailable", detail: "the prior Tailscale ownership record changed during migration; refusing to remove its handler" };
+      return {
+        kind: "unavailable",
+        detail: "the prior Tailscale ownership record changed during migration; refusing to remove its handler",
+        routeOutcome: "none",
+      };
     }
     priorMigration = { ownership: existing, contents: ownershipRead.contents };
     const removed = await removeOwnedTailscaleServe(paths, { ...deps, tailscale: runner });
     if (removed.kind === "unavailable") {
       return await failMigration(`could not migrate the prior exact Tailscale handler: ${removed.detail}`);
     }
+    attemptedHttpsPort = existing.httpsPort;
   }
+  // Reaching this point means a route must be created: either no owned route
+  // existed (the explicit flag was required and was checked above) or an exact
+  // owned route was just migrated to this worker's target, whose replacement is
+  // part of the install's existing exposure rather than a new one.
   const initial = await readTailscaleServeStatus(runner);
   if (initial.kind === "error") return await failMigration(initial.detail);
   const httpsPort = chooseTailscaleHttpsPort(initial.status);
   if (httpsPort === undefined) {
     return await failMigration("ports 443 and 8443-8499 are already assigned; no handler was changed");
   }
+  attemptedHttpsPort = httpsPort;
+  replacementClaimAttempted = true;
   const configured = await runner(["serve", "--bg", `--https=${String(httpsPort)}`, proxyTarget]);
   if (configured.code !== 0) {
     return await failMigration(commandDetail(configured) || `tailscale serve exited ${String(configured.code)}`);
@@ -1693,25 +2042,45 @@ export async function ensureTailscaleServe(
       proxyTarget,
       expectedDnsName ?? observedDnsName,
     );
-    return await failMigration(`handler command succeeded but verification failed: ${after.detail}; ${rollback}`);
+    return await failAfterClaim(
+      `handler command succeeded but verification failed: ${after.detail}`,
+      rollback,
+      { httpsPort, proxyTarget },
+    );
   }
   if (expectedDnsName !== undefined && observedDnsName !== expectedDnsName) {
     const rollback = await rollbackJustCreatedTailscaleRoute(runner, httpsPort, proxyTarget, observedDnsName);
-    return await failMigration(`handler command succeeded but the node's exact Tailscale DNS name changed or became unavailable; ${rollback}`);
+    return await failAfterClaim(
+      "handler command succeeded but the node's exact Tailscale DNS name changed or became unavailable",
+      rollback,
+      { httpsPort, proxyTarget },
+    );
   }
   const dnsName = expectedDnsName ?? observedDnsName;
   const webKey = findTailscaleWebKey(after.status, httpsPort, proxyTarget, dnsName);
   if (webKey === undefined) {
     const rollback = await rollbackJustCreatedTailscaleRoute(runner, httpsPort, proxyTarget, dnsName);
-    return await failMigration(`handler command succeeded but the exact proxy target could not be verified; ${rollback}`);
+    return await failAfterClaim(
+      "handler command succeeded but the exact proxy target could not be verified",
+      rollback,
+      { httpsPort, proxyTarget },
+    );
   }
   if (!isExactExpectedTailscaleRoute(after.status, webKey, httpsPort, proxyTarget)) {
     const rollback = await rollbackJustCreatedTailscaleRoute(runner, httpsPort, proxyTarget, dnsName);
-    return await failMigration(`handler command succeeded but its TCP or Web handler set was not the exact root Proxy-only shape; ${rollback}`);
+    return await failAfterClaim(
+      "handler command succeeded but its TCP or Web handler set was not the exact root Proxy-only shape",
+      rollback,
+      { httpsPort, proxyTarget },
+    );
   }
   if (expectedDnsName !== undefined && tailscaleWebHostname(webKey) !== expectedDnsName) {
     const rollback = await rollbackJustCreatedTailscaleRoute(runner, httpsPort, proxyTarget, dnsName);
-    return await failMigration(`handler command succeeded under an unexpected Tailscale hostname; ${rollback}`);
+    return await failAfterClaim(
+      "handler command succeeded under an unexpected Tailscale hostname",
+      rollback,
+      { httpsPort, proxyTarget },
+    );
   }
   const hostname = webKey.slice(0, webKey.lastIndexOf(":"));
   const ownership: TailscaleServeOwnership = {
@@ -1730,7 +2099,11 @@ export async function ensureTailscaleServe(
     );
   } catch (error) {
     const rollback = await rollbackExactTailscaleRoute(runner, after.status, ownership);
-    return await failMigration(`could not durably record Tailscale handler ownership: ${errorMessage(error)}; ${rollback}`);
+    return await failAfterClaim(
+      `could not durably record Tailscale handler ownership: ${errorMessage(error)}`,
+      rollback,
+      { httpsPort, proxyTarget },
+    );
   }
   return { kind: "active", ownership, reused: false };
 }
@@ -1741,12 +2114,19 @@ async function restorePriorTailscaleRoute(
   ownershipContents: string,
   runner: CommandRunner,
   deps: RunWebCommandDeps,
-): Promise<string> {
+): Promise<TailscaleCleanupResult> {
   const before = await readTailscaleServeStatus(runner);
-  if (before.kind === "error") return `the prior HTTPS route could not be restored because status failed: ${before.detail}`;
-  const tcp = isRecord(before.status.TCP) ? before.status.TCP : {};
-  if (Object.hasOwn(tcp, String(ownership.httpsPort))) {
-    return "the prior HTTPS route could not be restored because its port is no longer free; its old ownership record was not republished";
+  if (before.kind === "error") {
+    return {
+      ok: false,
+      detail: `the prior HTTPS route could not be restored because status failed: ${before.detail}`,
+    };
+  }
+  if (attemptedPortState(before.status, ownership.httpsPort) !== "absent") {
+    return {
+      ok: false,
+      detail: "the prior HTTPS route could not be restored because its port still has a handler or an unreadable inventory; its old ownership record was not republished",
+    };
   }
   const configured = await runner([
     "serve",
@@ -1755,7 +2135,10 @@ async function restorePriorTailscaleRoute(
     ownership.proxyTarget,
   ]);
   if (configured.code !== 0) {
-    return `the prior HTTPS route could not be restored: ${commandDetail(configured) || `exit ${String(configured.code)}`}`;
+    return {
+      ok: false,
+      detail: `the prior HTTPS route could not be restored: ${commandDetail(configured) || `exit ${String(configured.code)}`}`,
+    };
   }
   const after = await readTailscaleServeStatus(runner);
   if (after.kind === "error" || !routeMatches(after.status, ownership)) {
@@ -1767,15 +2150,21 @@ async function restorePriorTailscaleRoute(
         undefined,
       );
     }
-    return "the prior HTTPS route command succeeded but its exact previous handler set was not restored";
+    return {
+      ok: false,
+      detail: "the prior HTTPS route command succeeded but its exact previous handler set was not restored",
+    };
   }
   try {
     await (deps.writePrivateFile ?? writeOwnerPrivateLaunchdFile)(paths.tailscalePath, ownershipContents);
   } catch (error) {
     const rollback = await rollbackExactTailscaleRoute(runner, after.status, ownership);
-    return `the prior HTTPS route was recreated but ownership could not be republished (${errorMessage(error)}); ${rollback}`;
+    return {
+      ok: false,
+      detail: `the prior HTTPS route was recreated but ownership could not be republished (${errorMessage(error)}); ${rollback.detail}`,
+    };
   }
-  return "the prior exact HTTPS route and ownership record were restored";
+  return { ok: true, detail: "the prior exact HTTPS route and ownership record were restored" };
 }
 
 export function tailscaleProxyTarget(bindHost: string, appPort: number): string | undefined {
@@ -1794,20 +2183,49 @@ export function tailscaleProxyTarget(bindHost: string, appPort: number): string 
   return `http://${urlHost(normalized)}:${String(appPort)}`;
 }
 
+/**
+ * Whether the attempted HTTPS port is provably free of every handler. Only an
+ * absent — or empty — TCP/Web inventory proves that: a handler on the port under
+ * a different key, or a present but malformed container, cannot.
+ */
+function attemptedPortState(status: Record<string, unknown>, httpsPort: number): "absent" | "occupied" {
+  if (status.TCP !== undefined && !isRecord(status.TCP)) return "occupied";
+  if (status.Web !== undefined && !isRecord(status.Web)) return "occupied";
+  const tcp = isRecord(status.TCP) ? status.TCP : {};
+  const web = isRecord(status.Web) ? status.Web : {};
+  if (Object.hasOwn(tcp, String(httpsPort))) return "occupied";
+  return Object.keys(web).some((key) => key.endsWith(`:${String(httpsPort)}`)) ? "occupied" : "absent";
+}
+
 async function rollbackJustCreatedTailscaleRoute(
   runner: CommandRunner,
   httpsPort: number,
   proxyTarget: string,
   dnsName: string | undefined,
-): Promise<string> {
+): Promise<TailscaleCleanupResult> {
   const current = await readTailscaleServeStatus(runner);
   if (current.kind === "error") {
-    return `rollback could not verify an exact handler (${current.detail}); no unrelated handler was changed`;
+    return {
+      ok: false,
+      detail: `rollback could not verify an exact handler (${current.detail}); no unrelated handler was changed`,
+    };
   }
   const webKey = findTailscaleWebKey(current.status, httpsPort, proxyTarget, dnsName);
-  if (webKey === undefined) return "no exact newly-created handler remained to remove";
+  if (webKey === undefined) {
+    // No exact match is not the same as no route: only a port with no handler at
+    // all proves the attempted route is gone.
+    return attemptedPortState(current.status, httpsPort) === "absent"
+      ? { ok: true, detail: `no handler remained on HTTPS port ${String(httpsPort)}` }
+      : {
+          ok: false,
+          detail: `HTTPS port ${String(httpsPort)} still has a handler that does not match the exact created shape; nothing was removed`,
+        };
+  }
   if (!isExactExpectedTailscaleRoute(current.status, webKey, httpsPort, proxyTarget)) {
-    return "rollback refused because the newly-created port no longer had the exact root Proxy-only shape";
+    return {
+      ok: false,
+      detail: "rollback refused because the newly-created port no longer had the exact root Proxy-only shape",
+    };
   }
   const ownership: TailscaleServeOwnership = {
     schema: TAILSCALE_OWNERSHIP_SCHEMA,
@@ -1825,12 +2243,33 @@ async function rollbackExactTailscaleRoute(
   runner: CommandRunner,
   status: Record<string, unknown>,
   ownership: TailscaleServeOwnership,
-): Promise<string> {
-  if (!routeMatches(status, ownership)) return "rollback refused because the handler no longer matched exactly";
+): Promise<TailscaleCleanupResult> {
+  if (!routeMatches(status, ownership)) {
+    return { ok: false, detail: "rollback refused because the handler no longer matched exactly" };
+  }
   const removed = await runner(["serve", `--https=${String(ownership.httpsPort)}`, "off"]);
-  return removed.code === 0
-    ? "the exact newly-created handler was rolled back"
-    : `rollback of the exact newly-created handler failed: ${commandDetail(removed) || `exit ${String(removed.code)}`}`;
+  if (removed.code !== 0) {
+    return {
+      ok: false,
+      detail: `rollback of the exact handler failed: ${commandDetail(removed) || `exit ${String(removed.code)}`}`,
+    };
+  }
+  // A zero exit is not proof of removal: re-read status and require the exact
+  // handler to be provably absent before claiming it was rolled back.
+  const after = await readTailscaleServeStatus(runner);
+  if (after.kind === "error") {
+    return {
+      ok: false,
+      detail: `the off command succeeded but the handler's absence could not be verified: ${after.detail}`,
+    };
+  }
+  if (attemptedPortState(after.status, ownership.httpsPort) !== "absent") {
+    return {
+      ok: false,
+      detail: `the off command succeeded but HTTPS port ${String(ownership.httpsPort)} still has a handler or an unreadable inventory; nothing else was touched`,
+    };
+  }
+  return { ok: true, detail: "the exact handler was removed and its absence was verified" };
 }
 
 export async function removeOwnedTailscaleServe(
