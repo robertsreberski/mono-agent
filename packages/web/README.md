@@ -118,6 +118,15 @@ The hint stays visible on phones as well as desktops. Escape dismisses input
 suggestions without stopping a run; use Stop response (or `/stop`) deliberately.
 Mid-turn plain-text sends use the active turn’s live-input admission path.
 
+On iPhone and iPad the installed console paints the band behind the status bar
+itself (`apple-mobile-web-app-status-bar-style: black-translucent`), so that
+band follows the active theme instead of a system strip whose colour iOS samples
+once and caches until the app is relaunched. iOS reads that choice when the app
+is added to the Home Screen: a console installed before this change keeps its
+old status band until it is removed and added again. Status-bar glyph contrast
+follows the system appearance, which is what the console’s light and dark themes
+follow as well.
+
 Cancellation requests accept an optional `origin` (`user-stop`,
 `client-disconnect`, `client-reconnect`, `service-shutdown`, or `api`) on
 `POST /api/v1/threads/:id/cancel`. Omitted origins remain compatible as `api`.
