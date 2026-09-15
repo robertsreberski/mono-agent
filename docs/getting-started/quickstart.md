@@ -42,7 +42,7 @@ cd my-agent
 mono-agent init
 ```
 
-The wizard starts from a [preset](/reference/presets/) or custom answers, asks what the agent should be called, and labels the next answer as the exact Role text for `IDENTITY.md` → `## Role`. Creation review repeats both the destination and the exact text. If `IDENTITY.md` already exists, the wizard says it will remain unchanged and that the entered Role will not be written. It then walks the same model, channel, memory, runtime-appropriate tool/safety, and observability decisions either way, and proves every selected route before the readiness gate. The full walkthrough, the automated flag set, and the files it writes are in [Setup details](#setup-details-guided-init-flags-and-files).
+The wizard starts from a [preset](/reference/presets/) or custom answers, asks what the agent should be called, and labels the next answer as the exact Role text for `IDENTITY.md` → `## Role`. Creation review repeats both the destination and the exact text. If `IDENTITY.md` already exists, the wizard says it will remain unchanged and that the entered Role will not be written. It then asks for the primary and fallback routes, whether to add optional capabilities now — **channels, memory, and observability, default No** — and finally the tool/access consent and the managed-sandbox choice before the concrete creation review and the readiness proof. The full walkthrough, the automated flag set, and the files it writes are in [Setup details](#setup-details-guided-init-flags-and-files).
 
 ## 2. Validate (`cli`)
 
@@ -71,7 +71,7 @@ Point validate at a non-default config or env file with `mono-agent validate --c
 mono-agent start
 ```
 
-Guided macOS init has already started this service before configuration mode. Run `mono-agent status` to inspect it; use `mono-agent start` when continuing from a scaffold, from Linux guided setup, or from a manually recovered setup. This boots the runtime and every enabled channel. The webhook channel listens on loopback (`127.0.0.1`) and, because the default `port` is `0`, picks a free port. `start` prints the resolved webhook **invoke URL** — copy it if you want the scriptable smoke test below.
+Guided macOS init has already started this service before configuration mode. Run `mono-agent status` to inspect it; use `mono-agent start` when continuing from a scaffold, from Linux guided setup, or from a manually recovered setup. This boots the runtime and every enabled channel. The browser console does not need a channel: it discovers the running agent through the operator endpoint. If you enabled the webhook channel (`--with webhook`, the `starter` preset, or `webhook.enabled: true`), it listens on loopback (`127.0.0.1`) and, because its default `port` is `0`, picks a free port; `start` then prints the resolved webhook **invoke URL** — copy it if you want the scriptable smoke test below.
 
 `mono-agent start` installs a service: macOS `launchd`, or a Linux systemd **user** service. Where no usable service manager exists — and on any other platform — run the blocking foreground process in its own terminal instead:
 
@@ -95,7 +95,7 @@ Open `http://127.0.0.1:5050` (unless `--port` changed it), select the running ag
 
 ## 5. Optional: drive it from a script or the terminal
 
-The default scaffold also enables the loopback webhook channel — a channel that needs no credentials of its own and is the fastest way to drive the agent from a shell or script. The default endpoint path is `/webhook/invoke` and the default mode is `sync`, so the HTTP response carries the agent's reply directly:
+The webhook channel is **opt-in**: the browser-first default scaffold enables no channel. Add it with `mono-agent init --with webhook` (or the `starter` preset, whose whole purpose is the webhook smoke agent), or set `"webhook": { "enabled": true }` in the config. It needs no credentials of its own and is the fastest way to drive the agent from a shell or script. The default endpoint path is `/webhook/invoke` and the default mode is `sync`, so the HTTP response carries the agent's reply directly:
 
 ```bash
 PORT=3000 # Replace 3000 with the port printed by `mono-agent start`.
@@ -159,7 +159,7 @@ when its server uses authentication, name the populated owner-only `.env` variab
 
 After the explicit **Creation review**, the wizard makes one disposable no-tool call for every selected route, sequentially, with a 90-second cloud or 240-second local deadline per route. A detected Pi auth-store entry or declared `apiKeyEnv` credential skips redundant authentication, but it is not called verified until the exact route succeeds. Escape or Ctrl-C interrupts safely. Recovery can resume routes already verified under the same non-secret plan fingerprint, restart all checks, edit choices, or cancel without writing. Choosing authentication repair clears all prior route proofs before the checks rerun. Provider failure, timeout, empty output, or any tool action fails that route. On macOS, **Agent ready** additionally requires the committed config and every selected credential, channel, sandbox, memory, and observability expectation to be ready. The managed background process must then prove its live identity, exact committed snapshot, durable environment, and reachable operator endpoint before the wizard prints its handoff. See [Setup security and managed runtime](/reference/setup-security/) for the closure-integrity, single-instance, frozen-input, and snapshot-commitment contracts behind that proof.
 
-On Linux the wizard completes the same route and configuration checks, then stops with a **Manual start required** handoff instead of installing the systemd user service for you; the printed `mono-agent start` step needs a usable systemd **user** manager. Without one, keep `mono-agent start --foreground` in one terminal and `mono-agent web run --loopback` in a second.
+On Linux the wizard completes the same route and configuration checks, then stops with a **Manual start required** handoff instead of installing the systemd user service for you. That handoff starts the agent in one terminal (`mono-agent start`, which needs a usable systemd **user** manager, or `mono-agent start --foreground` without one) and prints `mono-agent web run --loopback` for the browser console in a second terminal.
 
 Passing any flag or running without a TTY skips the wizard and writes a scaffold only. It never runs the readiness proof, starts a process, or labels the result ready. These flags remain useful for automation:
 
@@ -172,6 +172,7 @@ Optional flags:
 | `--fallback <ref>` | Repeatable canonical fallback route. Follow immediately with `--fallback-effort <provider-default\|level>` when needed. |
 | `--auth` | Opt in to provider setup before writing: the app-owned Pi OAuth flows and local-provider preflight. Detected credentials are reused |
 | `--memory lite\|journal\|bujo` | Adds a `memory` section with the chosen tier. Omit it and no memory is configured. See [Capture and Recall](/memory/capture-and-recall/). |
+| `--with <channel>` | Adds a channel the browser-first default does not enable, comma-separated: `telegram`, `slack`, `webhook`, `openaiApi`, `cron`. Use `--with webhook` for the zero-credential scriptable smoke channel. |
 
 A fuller example:
 
@@ -188,7 +189,7 @@ mono-agent init \
 
 `init` is non-destructive for scaffold/config files (`app.cli-init`): existing config, identity, and capability files are reported as unchanged. Guided secret setup is the explicit exception and may securely harden/update `.env` plus `.gitignore`. In a clean folder it creates:
 
-- **`mono-agent.config.json`** — the single config file that declares the whole agent. It enables the **webhook channel** (`webhook.enabled: true`) as the zero-credential smoke channel so you can get a response immediately, and wires `artifacts`, `traceability`, and `context.identityPath` to the scaffolded paths.
+- **`mono-agent.config.json`** — the single config file that declares the whole agent. It enables no channel by default: the browser console discovers a running agent through the operator endpoint, and channels are added explicitly (`--with webhook`, a preset, or an edited config). It also wires `artifacts`, `traceability`, and `context.identityPath` to the scaffolded paths; adding `--with webhook` writes `webhook.enabled: true` for the zero-credential smoke channel.
 - **`IDENTITY.md`** — the reviewed Role is stored only as the body of `## Role`, alongside boundaries and a Knowledge section that references any `AGENTS.md`, `CLAUDE.md`, `README.md`, or `SOUL.md` already present in the folder. An existing file is preserved byte-for-byte; in that case the entered Role is not written, and you add or edit its `## Role` section later. See [Identity and Soul](/context/identity-and-soul/).
 - **`skills/mono-agent-memory`** — the versioned project-local memory skill selected with index disclosure. `ReadSkill` loads its body only when needed. `skills/.mono-agent-managed.json` records its hash for safe drift checks and updates.
 - **`.mono-agent/`** — working directories: `.mono-agent/artifacts` (run output) and `.mono-agent/workspace`.

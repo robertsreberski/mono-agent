@@ -235,7 +235,11 @@ export function alwaysOnTools(answers: WizardAnswers): readonly string[] {
 const BASE_ANSWERS: WizardAnswers = {
   model: DEFAULT_MODEL,
   fallbacks: [],
-  channels: ["channel:webhook"],
+  // Browser-first default: no channel is selected by default. The browser
+  // conversation needs the running operator surface, not a channel; the
+  // webhook smoke channel stays reachable explicitly (`--with webhook`, the
+  // `starter` preset) and every other preset keeps its own explicit channels.
+  channels: [],
   // `memory` is intentionally omitted (no memory section) — with
   // exactOptionalPropertyTypes an optional key must be absent, not `undefined`.
   sandbox: false,

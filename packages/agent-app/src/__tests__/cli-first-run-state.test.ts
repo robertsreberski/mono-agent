@@ -162,7 +162,9 @@ vi.mock("../init.js", async (importOriginal) => {
 });
 
 import { runCli } from "../cli.js";
+import { BROWSER_CONSOLE_HOST, BROWSER_CONSOLE_PORT } from "../cli-init-command.js";
 import { DEFAULT_MODEL } from "../modules/index.js";
+import { DEFAULT_WEB_PORT } from "../web-command.js";
 import { defaultAnswers } from "../wizard/answers.js";
 
 /** Provider id of the route `defaultAnswers()` selects, e.g. `openai-codex`. */
@@ -279,7 +281,7 @@ afterEach(async () => {
 });
 
 describe("guided init state transitions", () => {
-  it("keeps an absent default dotenv implicit and ends guided init with manual next steps", async () => {
+  it("keeps an absent default dotenv implicit and ends guided init with the browser handoff", async () => {
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",
       answers: defaultAnswers(),
@@ -297,9 +299,15 @@ describe("guided init state transitions", () => {
     expect(mocks.runTui).not.toHaveBeenCalled();
     const output = vi.mocked(process.stdout.write).mock.calls.map(([chunk]) => String(chunk)).join("");
     expect(output).toContain("Agent ready");
+    expect(output).toContain("Chat in the browser");
+    expect(output).toContain("mono-agent status --config");
+    expect(output).toContain("mono-agent web run --loopback");
+    expect(output).toContain("http://127.0.0.1:5050");
     expect(output).toContain("mono-agent validate --config");
     expect(output).toContain("mono-agent restart --config");
-    expect(output).toContain("mono-agent tui --config");
+    expect(output).toContain("no login");
+    expect(output).not.toContain("mono-agent tui");
+    expect(output).not.toContain("this computer only");
     await expect(access(join(process.cwd(), ".env"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -404,13 +412,83 @@ describe("guided init state transitions", () => {
     expect(mocks.runTui).not.toHaveBeenCalled();
     const output = vi.mocked(process.stdout.write).mock.calls.map(([chunk]) => String(chunk)).join("");
     expect(output).toContain("Guided init does not start the Linux systemd user service automatically");
+    expect(output).toContain("Terminal 1:");
     expect(output).toContain("mono-agent start --config");
-    expect(output).toContain("Configure manually:");
-    expect(output).toContain("mono-agent tui --config");
-    expect(output).not.toContain("mono-agent tui --configure");
+    expect(output).toContain("--foreground when no usable systemd user manager exists");
+    expect(output).toContain("Terminal 2:");
+    expect(output).toContain("mono-agent web run --loopback");
+    expect(output).toContain("http://127.0.0.1:5050");
     expect(output).not.toContain("--env-file");
     expect(output).toContain("readiness is not claimed");
     expect(output).not.toContain("Agent ready");
+    expect(output).not.toContain("mono-agent tui");
+    expect(output).not.toContain("this computer only");
+  });
+
+  it("keeps the browser-console handoff defaults in parity with the web command", () => {
+    expect(BROWSER_CONSOLE_HOST).toBe("127.0.0.1");
+    expect(BROWSER_CONSOLE_PORT).toBe(DEFAULT_WEB_PORT);
+  });
+
+  it("writes a scaffold-only browser handoff with no webhook channel for flag runs", async () => {
+    await expect(runCli(["init", "--yes", "--name", "Scaffold Agent"])).resolves.toBe(0);
+
+    expect(mocks.runInitWizard).not.toHaveBeenCalled();
+    const output = vi.mocked(process.stdout.write).mock.calls.map(([chunk]) => String(chunk)).join("");
+    expect(output).toContain("Scaffold only: no readiness proof and no process was started.");
+    expect(output).toContain("mono-agent web run --loopback");
+    expect(output).toContain("http://127.0.0.1:5050");
+    expect(output).not.toContain("Agent ready");
+    expect(output).not.toContain("mono-agent tui");
+
+    const config = JSON.parse(
+      await readFile(join(process.cwd(), "mono-agent.config.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(config.webhook).toBeUndefined();
+  });
+
+  it("quotes config and env paths with spaces in the guided browser handoff", async () => {
+    const spaced = await mkdtemp(join(tmpdir(), "mono agent spaced "));
+    temporaryDirectories.push(spaced);
+    process.chdir(spaced);
+    await writeFile(join(spaced, ".env"), "OPERATOR_NOTE=keep\n");
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers(),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      runProviderSetup: false,
+    });
+
+    await expect(runCli(["init"])).resolves.toBe(0);
+
+    const output = vi.mocked(process.stdout.write).mock.calls.map(([chunk]) => String(chunk)).join("");
+    expect(output).toContain("Chat in the browser");
+    expect(output).toContain("--config '");
+    expect(output).toContain("--env-file '");
+  });
+
+  it("gives a remote session only the port-forwarding path to the browser console", async () => {
+    process.env.SSH_CONNECTION = "10.0.0.1 50000 10.0.0.2 22";
+    try {
+      mocks.runInitWizard.mockResolvedValue({
+        status: "answers",
+        answers: defaultAnswers(),
+        moduleSecrets: {},
+        providerSetupSecrets: {},
+        runProviderSetup: false,
+      });
+
+      await expect(runCli(["init"])).resolves.toBe(0);
+
+      const output = vi.mocked(process.stdout.write).mock.calls.map(([chunk]) => String(chunk)).join("");
+      expect(output).toContain("Remote session:");
+      expect(output).toContain("ssh -L 5050:127.0.0.1:5050");
+      expect(output).toContain("move both the agent and the console");
+      expect(output).not.toContain("run the console where the browser is");
+    } finally {
+      delete process.env.SSH_CONNECTION;
+    }
   });
 
   it("hardens an existing provider key even when the selected plan has no module secrets", async () => {
@@ -1304,7 +1382,7 @@ describe("guided init state transitions", () => {
 
     expect(mocks.runSetupRepairWizard).toHaveBeenCalledWith(expect.objectContaining({
       answers,
-      initialStep: 4,
+      initialStep: 5,
     }));
     expect(mocks.runAllRouteReadinessProbe).not.toHaveBeenCalled();
   });

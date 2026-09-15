@@ -233,6 +233,7 @@ describe("wizard production flow", () => {
     promptMock.multiselectAnswers.push(["channel:webhook"]);
     promptMock.confirmAnswers.push(
       true, // add fallbacks
+      true, // optional capabilities gate
       true, // allow all
       true, // accept the one per-route matrix
       false, // Phoenix
@@ -278,6 +279,98 @@ describe("wizard production flow", () => {
     ]);
   });
 
+  it("defaults the optional gate to No for a custom start and writes no advanced capabilities", async () => {
+    promptMock.selectAnswers.push("__custom__", "", "create");
+    promptMock.autocompleteAnswers.push("openai-codex:gpt-5.6-terra");
+    promptMock.textAnswers.push("Browser First Agent");
+    promptMock.confirmAnswers.push(
+      false, // no fallbacks
+      false, // optional capabilities declined
+      true, // allow all tools
+      true, // managed SRT
+    );
+
+    const result = await runInitWizard({ cwd: "/tmp/browser-first-agent" });
+
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.answers.channels).toEqual([]);
+    expect(result.answers.memory).toBeUndefined();
+    expect(result.answers.observability).toBe(false);
+    const gate = promptMock.confirmCalls.find((call) =>
+      call.message === "Add optional capabilities now? (channels, memory, observability)");
+    expect(gate?.initialValue).toBe(false);
+    expect(promptMock.selectCalls.some((call) => call.message === "How will you talk to this agent?")).toBe(false);
+    const workspaceNote = promptMock.notes.find((note) => note.title === "Workspace and access")?.message ?? "";
+    expect(workspaceNote).toContain("Starting workspace:");
+    expect(workspaceNote).toContain("does not restrict or grant access");
+    const review = promptMock.notes.find((note) => note.title === "Creation review")?.message ?? "";
+    const capabilitiesLine = review.split("\n").find((line) => line.startsWith("Capabilities:")) ?? "";
+    expect(capabilitiesLine).not.toContain("Webhook");
+    expect(capabilitiesLine).not.toContain("memory");
+    expect(review).toContain("mono-agent web run --loopback");
+  });
+
+  it("declines a preset's seeded channels and memory at the gate and writes neither", async () => {
+    promptMock.selectAnswers.push("telegram-assistant", "", "create");
+    promptMock.autocompleteAnswers.push("openai-codex:gpt-5.6-terra");
+    promptMock.textAnswers.push("Declined Preset Agent");
+    promptMock.confirmAnswers.push(
+      false, // no fallbacks
+      false, // decline the seeded optional capabilities
+      true, // allow all tools
+      true, // managed SRT
+    );
+
+    const result = await runInitWizard({ cwd: "/tmp/declined-preset-agent" });
+
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    const gate = promptMock.confirmCalls.find((call) =>
+      call.message === "Add optional capabilities now? (channels, memory, observability)");
+    expect(gate?.initialValue).toBe(true);
+    expect(result.answers.channels).toEqual([]);
+    expect(result.answers.memory).toBeUndefined();
+    expect(result.moduleSecrets).toEqual({});
+    expect(promptMock.passwordCalls).toHaveLength(0);
+  });
+
+  it("keeps capabilities accepted from review when the gate is answered No afterwards", async () => {
+    promptMock.selectAnswers.push(
+      "__custom__",
+      "", // provider-default effort
+      "edit", // review #1
+      "2", // add optional capabilities
+      "", // memory
+      "edit", // review #2
+      "2", // add optional capabilities
+      "create", // review #3
+    );
+    promptMock.autocompleteAnswers.push("openai-codex:gpt-5.6-terra");
+    promptMock.textAnswers.push("Gate Edit Agent", "0 8 * * *");
+    promptMock.multiselectAnswers.push(["channel:cron"]);
+    promptMock.confirmAnswers.push(
+      false, // no fallbacks
+      false, // gate #1: decline (default path)
+      true, // allow all tools (default path)
+      true, // managed SRT (default path)
+      true, // gate #2: accept from review
+      true, // allow all tools (advanced path)
+      true, // managed SRT (advanced path)
+      false, // observability
+      false, // gate #3: No must not wipe the accepted channel
+    );
+
+    const result = await runInitWizard({ cwd: "/tmp/gate-edit-agent" });
+
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.answers.channels).toEqual(["channel:cron"]);
+    expect(result.answers.moduleInputs["channel:cron"]?.cronExpression).toBe("0 8 * * *");
+    expect(result.answers.memory).toBeUndefined();
+    expect(result.answers.observability).toBe(false);
+  });
+
   it("warns in Creation review that an existing IDENTITY.md keeps its current Role", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "wizard-existing-identity-"));
     try {
@@ -286,7 +379,7 @@ describe("wizard production flow", () => {
       promptMock.autocompleteAnswers.push("openai-codex:gpt-5.6-terra");
       promptMock.textAnswers.push("Preserved Identity Agent");
       promptMock.multiselectAnswers.push(["channel:webhook"]);
-      promptMock.confirmAnswers.push(false, true, true, false);
+      promptMock.confirmAnswers.push(false, true, true, true, false);
 
       const result = await runInitWizard({ cwd });
 
@@ -309,6 +402,7 @@ describe("wizard production flow", () => {
     promptMock.multiselectAnswers.push(["channel:webhook"]);
     promptMock.confirmAnswers.push(
       false, // no fallback
+      true, // optional capabilities gate
       true, // allow all
       true, // high-risk provider-native
       false, // Phoenix
@@ -328,7 +422,7 @@ describe("wizard production flow", () => {
     promptMock.autocompleteAnswers.push("openai-codex:gpt-5.6-terra");
     promptMock.textAnswers.push("Research Companion");
     promptMock.multiselectAnswers.push(["channel:webhook"]);
-    promptMock.confirmAnswers.push(false, true, true, false);
+    promptMock.confirmAnswers.push(false, true, true, true, false);
 
     const result = await runInitWizard({ cwd: "/tmp/research-companion" });
 
@@ -344,7 +438,7 @@ describe("wizard production flow", () => {
     promptMock.autocompleteAnswers.push(ESCAPE, "openai-codex:gpt-5.6-sol");
     promptMock.textAnswers.push("Polished Production Agent", "Polished Production Agent");
     promptMock.multiselectAnswers.push(["channel:webhook"]);
-    promptMock.confirmAnswers.push(false, true, true, false);
+    promptMock.confirmAnswers.push(false, true, true, true, false);
 
     const result = await withTtyStdin(() => runInitWizard({ cwd: "/tmp/research-companion" }));
 
@@ -368,7 +462,7 @@ describe("wizard production flow", () => {
     promptMock.autocompleteAnswers.push("openai-codex:gpt-5.6-terra");
     promptMock.textAnswers.push("Discovery Agent", "Discovery Agent");
     promptMock.multiselectAnswers.push(["channel:webhook"]);
-    promptMock.confirmAnswers.push(false, true, true, false);
+    promptMock.confirmAnswers.push(false, true, true, true, false);
 
     const result = await withTtyStdin(() => runInitWizard({ cwd: "/tmp/discovery-agent" }));
 
@@ -384,7 +478,7 @@ describe("wizard production flow", () => {
     promptMock.autocompleteAnswers.push("openai-codex:gpt-5.6-terra");
     promptMock.textAnswers.push("Loopback API");
     promptMock.multiselectAnswers.push(["channel:openai-api"]);
-    promptMock.confirmAnswers.push(false, true, true, false);
+    promptMock.confirmAnswers.push(false, true, true, true, false);
 
     const result = await runInitWizard({ cwd: "/tmp/loopback-api" });
 
@@ -406,6 +500,7 @@ describe("wizard production flow", () => {
     promptMock.multiselectAnswers.push(["channel:webhook"]);
     promptMock.confirmAnswers.push(
       false, // no fallback
+      true, // optional capabilities gate
       true, // allow all tools
       true, // managed SRT
       false, // Phoenix
@@ -443,6 +538,7 @@ describe("wizard production flow", () => {
     promptMock.multiselectAnswers.push(["channel:webhook"]);
     promptMock.confirmAnswers.push(
       false, // no fallback
+      true, // optional capabilities gate
       true, // allow all tools
       true, // managed SRT
       false, // Phoenix
@@ -482,7 +578,7 @@ describe("wizard production flow", () => {
     promptMock.autocompleteAnswers.push("opencode-go:kimi-k2.6");
     promptMock.textAnswers.push("Secure Store Agent");
     promptMock.multiselectAnswers.push(["channel:webhook"]);
-    promptMock.confirmAnswers.push(false, true, true, false);
+    promptMock.confirmAnswers.push(false, true, true, true, false);
     promptMock.passwordAnswers.push("auth-store-secret-value");
 
     const result = await runInitWizard({ cwd: "/tmp/secure-store-agent" });
@@ -516,6 +612,7 @@ describe("wizard production flow", () => {
     promptMock.multiselectAnswers.push(["channel:webhook"]);
     promptMock.confirmAnswers.push(
       false, // no fallbacks after replacing the primary model
+      true, // optional capabilities gate
       true, // allow all tools
       true, // managed SRT
       false, // Phoenix
@@ -560,6 +657,7 @@ describe("wizard production flow", () => {
     promptMock.multiselectAnswers.push(["channel:webhook"]);
     promptMock.confirmAnswers.push(
       true, // add fallbacks
+      true, // optional capabilities gate
       true, // allow all tools
       true, // managed SRT
       false, // Phoenix
@@ -603,6 +701,7 @@ describe("wizard production flow", () => {
     promptMock.multiselectAnswers.push(["channel:webhook"]);
     promptMock.confirmAnswers.push(
       false, // no fallbacks
+      true, // optional capabilities gate
       true, // allow all tools
       true, // managed SRT
       false, // Phoenix
@@ -634,6 +733,7 @@ describe("wizard production flow", () => {
     promptMock.multiselectAnswers.push(["channel:webhook"]);
     promptMock.confirmAnswers.push(
       false, // no fallbacks
+      true, // optional capabilities gate
       true, // allow all tools
       true, // managed SRT
       false, // Phoenix
@@ -664,12 +764,43 @@ describe("wizard production flow", () => {
     await expect(runInitWizard({ cwd: "/tmp/agent" })).resolves.toEqual({ status: "cancelled" });
   });
 
+  it("re-confirms tools and sandbox when a repair edit changes the runtime family", async () => {
+    promptMock.autocompleteAnswers.push("ollama:qwen3:8b");
+    promptMock.selectAnswers.push("", "create");
+    promptMock.confirmAnswers.push(
+      false, // no fallbacks
+      true, // allow all tools (re-confirmed after the family change)
+      true, // managed SRT (re-confirmed after the family change)
+    );
+
+    const result = await runSetupRepairWizard({
+      cwd: "/tmp/agent",
+      initialStep: 1,
+      answers: defaultAnswers({ model: "openai-codex:gpt-5.6-terra" }),
+      runProviderSetup: false,
+      providerSetupSecrets: {},
+      providerEnvironmentSecrets: {},
+      piApiKeyPersistenceByProvider: {},
+      credentialStates: { "openai-codex": "credential_detected" },
+      moduleSecrets: {},
+    });
+
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.answers.model).toBe("ollama:qwen3:8b");
+    expect(promptMock.confirmCalls.filter((call) =>
+      String(call.message).startsWith("Allow all tools?")).length).toBe(1);
+    expect(promptMock.confirmCalls.filter((call) =>
+      String(call.message).startsWith("Install and use managed SRT")).length).toBe(1);
+    expect(promptMock.notes.filter((note) => note.title === "Creation review")).toHaveLength(1);
+  });
+
   it("forwards cron validation to Clack and trims the accepted value", async () => {
     promptMock.selectAnswers.push("__custom__", "", "", "create");
     promptMock.autocompleteAnswers.push("openai-codex:gpt-5.6-terra");
     promptMock.textAnswers.push("Cron Agent", "  15 9 * * 1-5  ");
     promptMock.multiselectAnswers.push(["channel:cron"]);
-    promptMock.confirmAnswers.push(false, true, true, false);
+    promptMock.confirmAnswers.push(false, true, true, true, false);
 
     const result = await runInitWizard({ cwd: "/tmp/cron-agent" });
 
@@ -693,7 +824,7 @@ describe("wizard production flow", () => {
       channels: ["channel:cron"],
       moduleInputs: { "channel:cron": { cronExpression: "30 7 * * 1-5" } },
     });
-    promptMock.selectAnswers.push("edit", "4", "create");
+    promptMock.selectAnswers.push("edit", "5", "create");
     promptMock.textAnswers.push("  45 6 * * 1-5  ");
 
     const result = await runSetupRepairWizard({
@@ -800,7 +931,7 @@ describe("wizard production flow", () => {
   it("keeps provider setup stable when a memory edit reuses the selected host model", async () => {
     promptMock.selectAnswers.push(
       "edit",
-      "3",
+      "4",
       "memory:bujo",
       "lmstudio",
       "create",
@@ -845,7 +976,7 @@ describe("wizard production flow", () => {
   });
 
   it("replaces the complete managed-memory provider bag when an edit switches services", async () => {
-    promptMock.selectAnswers.push("edit", "4", "ollama", "create");
+    promptMock.selectAnswers.push("edit", "5", "ollama", "create");
     promptMock.autocompleteAnswers.push("nomic-embed-text:v1.5");
     promptMock.textAnswers.push("http://localhost:11434", "");
 
@@ -884,7 +1015,7 @@ describe("wizard production flow", () => {
   it("keeps manual model and positive dimension explicit when typed discovery and probing are unavailable", async () => {
     memoryEmbeddingMock.discover.mockResolvedValueOnce([]);
     memoryEmbeddingMock.probe.mockRejectedValueOnce(new Error("service unavailable"));
-    promptMock.selectAnswers.push("edit", "4", "lmstudio", "create");
+    promptMock.selectAnswers.push("edit", "5", "lmstudio", "create");
     promptMock.textAnswers.push(
       "http://localhost:1234",
       "",
