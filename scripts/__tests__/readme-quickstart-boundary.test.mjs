@@ -162,7 +162,7 @@ describe("root README Quickstart boundary", () => {
       "re-verifies an existing mono-agent-owned Tailscale Serve HTTPS route and publishes one only when asked with `--share-tailnet`",
     );
     expect(webConsole).toContain(
-      "no mode removes a Serve handler, reverse proxy, or tunnel that already points at the port",
+      "`stop` removes only the exact route mono-agent owns, and no mode removes an unowned Serve handler, reverse proxy, or tunnel that already points at the port",
     );
     expect(webConsole).toContain(
       "Neither the bind nor the absence of a mono-agent-owned route proves local-only access: other proxies, tunnels, or routes are not inspected.",
@@ -171,6 +171,41 @@ describe("root README Quickstart boundary", () => {
     expect(webConsole).not.toMatch(/use `--loopback` when other devices must not reach it/iu);
     expect(webConsole).not.toMatch(/keep it local with the foreground `mono-agent web run --loopback`/iu);
     expect(webConsole).not.toMatch(/claims an owned Serve HTTPS route/iu);
+  });
+
+  it("keeps the README home and first-run page honest about managed Serve publication", () => {
+    const readme = readRepoFile("README.md");
+    const home = readRepoFile("docs/index.md");
+    for (const [page, label] of [[readme, "README.md"], [home, "docs/index.md"]]) {
+      expect(page, label).toContain("--share-tailnet");
+      expect(page, label).not.toMatch(/managed startup also publishes/i);
+      expect(page, label).not.toMatch(/claims its own Tailscale Serve/i);
+    }
+    // The recommended install is still the release, so the source-only default
+    // must be named next to it.
+    expect(readme).toContain("0.21.1");
+  });
+
+  it("distinguishes exact owned-route removal from unowned proxies", () => {
+    const webConsole = readRepoFile("docs/observability/web-console.md");
+    const security = readRepoFile("docs/reference/setup-security.md");
+    expect(webConsole).toContain("`stop` removes only the exact route mono-agent owns");
+    expect(security).toContain("`web stop` removes only the exact route mono-agent owns");
+    for (const [page, label] of [[webConsole, "web-console.md"], [security, "setup-security.md"]]) {
+      expect(page, label).not.toMatch(/no mode removes a Serve handler/i);
+    }
+  });
+
+  it("records the released console network defaults as different from source", () => {
+    const releaseStatus = readRepoFile("docs/reference/release-status.md");
+    expect(releaseStatus).toContain("Browser-first guided setup");
+    expect(releaseStatus).toContain("Loopback console default");
+    expect(releaseStatus).toContain("Explicit `--share-tailnet`");
+    expect(releaseStatus).toContain("Report-ready `web status --json`");
+    expect(releaseStatus).toContain("still binds a **managed** console to `0.0.0.0:5050`");
+    expect(releaseStatus).toContain("claims a Tailscale Serve HTTPS route automatically");
+    expect(releaseStatus).toContain("the compatible local-first path is the foreground `mono-agent web run --loopback`");
+    expect(releaseStatus).toContain("A source build is required for the new flags.");
   });
 
   it("separates managed apply commands from the foreground apply path", () => {

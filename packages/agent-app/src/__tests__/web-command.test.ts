@@ -2227,6 +2227,10 @@ const EXACT_ABSENT_OWNERSHIP = {
   configuredAt: new Date(0).toISOString(),
 };
 
+/** The macOS managed worker prefix `buildWebLaunchdProgramArguments` writes before `web run …`. */
+const managedWebArgv = (...args: readonly string[]): string[] =>
+  ["/usr/bin/env", "-i", "PATH=/usr/bin", "/managed/node", "/managed/dist/cli.js", ...args];
+
 /** Reports the node DNS name and an empty Serve table (the owned route is absent). */
 function absentRouteRunner(): CommandRunner {
   return async (args) => {
@@ -2319,7 +2323,8 @@ describe("web console exposure contract", () => {
 
     expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
     expect(captured.stderr).toContain("Sharing failed:");
-    expect(captured.stderr).toContain("no mono-agent-owned Tailscale route was created");
+    expect(captured.stderr).toContain("No Tailscale handler was changed by this command");
+    expect(captured.stderr).not.toContain("route was created");
     expect(captured.stdout).toContain(`http://${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)}/`);
     expect(captured.stdout).not.toContain("Tailscale route: http");
     await expect(stat(paths.tailscalePath)).rejects.toMatchObject({ code: "ENOENT" });
@@ -2360,7 +2365,11 @@ describe("web console exposure contract", () => {
     expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
     expect(calls).toContainEqual(["serve", "--bg", "--https=443", "http://127.0.0.1:5050"]);
     expect(captured.stderr).toContain("Sharing failed:");
-    expect(captured.stderr).toContain("no mono-agent-owned Tailscale route was created");
+    // A failed claim is not proof that nothing was created: never assert absence.
+    expect(captured.stderr).toContain("A Tailscale handler may remain");
+    expect(captured.stderr).toContain("attempted HTTPS port 443 -> http://127.0.0.1:5050");
+    expect(captured.stderr).toContain("tailscale serve status");
+    expect(captured.stderr).not.toContain("route was created");
     await expect(stat(paths.tailscalePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -2380,7 +2389,8 @@ describe("web console exposure contract", () => {
 
     expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
     expect(captured.stderr).toContain("Sharing failed:");
-    expect(captured.stderr).toContain("rolled back");
+    expect(captured.stderr).toContain("The newly created Tailscale handler was rolled back; no mono-agent-owned route remains");
+    expect(captured.stderr).toContain("attempted HTTPS port 443");
     expect(runner).toHaveBeenCalledWith(["serve", "--https=443", "off"]);
   });
 
@@ -2462,7 +2472,7 @@ describe("web console exposure contract", () => {
     expect(jsonCode).toBe(1);
     const status = JSON.parse(jsonOutput.stdout) as {
       ok: boolean;
-      listener: { host: string; port: number; url: string };
+      listener: { host: string; port: number; url: string; source: string; provenRunning: boolean };
       ownedTailscaleRoute: { state: string };
       authentication: string;
       note: string;
@@ -2472,10 +2482,296 @@ describe("web console exposure contract", () => {
       host: DEFAULT_WEB_HOST,
       port: DEFAULT_WEB_PORT,
       url: `http://${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)}/`,
+      source: "fresh default",
+      provenRunning: false,
     });
     expect(status.ownedTailscaleRoute.state).toBe("none");
     expect(status.authentication).toBe("none");
     expect(status.note).toContain("not inspected");
+  });
+
+  it("refuses a foreign or ambiguous persisted definition without touching launchd", async () => {
+    const cases: ReadonlyArray<readonly string[]> = [
+      // An unrelated command with plausible values is not a managed web definition.
+      ["/bin/echo", "--host", "0.0.0.0", "--port", "5051", "--theme", "plum"],
+      // Duplicate options are ambiguous, not a last-one-wins invitation.
+      [...managedWebArgv("web", "run", "--host", "0.0.0.0", "--port", "5051", "--port", "5052", "--theme", "plum")],
+      // A non-numeric port must never reach a definition.
+      [...managedWebArgv("web", "run", "--host", "0.0.0.0", "--port", "not-a-number", "--theme", "plum")],
+    ];
+    for (const argv of cases) {
+      const home = await testHome();
+      const paths = webPaths(home);
+      await prepareState({ stateDir: paths.stateDir });
+      await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+      const plist = buildWebPlistXml({
+        label: WEB_LAUNCHD_LABEL,
+        nodePath: "/managed/node",
+        cliPath: "/managed/dist/cli.js",
+        cwd: paths.stateDir,
+        host: "0.0.0.0",
+        port: 5051,
+        theme: "plum",
+        stdoutPath: paths.launchd.stdoutPath,
+        stderrPath: paths.launchd.stderrPath,
+        environment: {},
+      });
+      // Replace the managed argv with the case under test while keeping a valid plist.
+      const foreign = plist.replace(
+        /<array>[\s\S]*?<\/array>/u,
+        `<array>\n${argv.map((token) => `    <string>${token}</string>`).join("\n")}\n  </array>`,
+      );
+      await writeFile(paths.launchd.plistPath, foreign, { mode: 0o600 });
+      const runtime = vi.fn(async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }));
+      const { fixture, captured, deps } = await managedStartHarness(home, { ensureManagedRuntime: runtime });
+
+      expect(await runWebCommand({ positionals: ["start"], env: {} }, deps)).toBe(1);
+
+      expect(captured.stderr).toContain("could not be validated");
+      expect(runtime).not.toHaveBeenCalled();
+      expect(fixture.calls.some((args) => args[0] === "bootout")).toBe(false);
+      expect(fixture.calls.some((args) => args[0] === "bootstrap")).toBe(false);
+      expect(await readFile(paths.launchd.plistPath, "utf8")).toBe(foreign);
+      await expect(stat(paths.recordPath)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it("keeps a loaded maintenance helper untouched when the main definition is invalid", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "not a plist\n", { mode: 0o600 });
+    const fixture = pairedLaunchctlFixture({ worker: false, helper: true });
+    const runtime = vi.fn(async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }));
+    const captured = { stdout: "", stderr: "" };
+    const code = await runWebCommand({ positionals: ["start"], env: {} }, {
+      platform: "darwin" as NodeJS.Platform,
+      homeDir: home,
+      getuid: () => 501,
+      prepareState,
+      acquireLifecycleLock: async () => async () => undefined,
+      launchctl: fixture.runner,
+      sleep: async () => undefined,
+      ensureManagedRuntime: runtime,
+      healthcheck: async () => true,
+      isAlive: fixture.isAlive,
+      stdout: { write: (text: string) => { captured.stdout += text; } },
+      stderr: { write: (text: string) => { captured.stderr += text; } },
+    });
+
+    expect(code).toBe(1);
+    expect(captured.stderr).toContain("could not be validated");
+    expect(fixture.loaded.get(WEB_MAINTENANCE_LAUNCHD_LABEL)).toBe(true);
+    expect(runtime).not.toHaveBeenCalled();
+    expect(fixture.calls.some((args) => args[0] === "bootout")).toBe(false);
+    expect(fixture.calls.some((args) => args[0] === "bootstrap")).toBe(false);
+    expect(await readFile(paths.launchd.plistPath, "utf8")).toBe("not a plist\n");
+  });
+
+  it("reports a stopped install's recovered listener instead of the fresh default", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, buildWebPlistXml({
+      label: WEB_LAUNCHD_LABEL,
+      nodePath: "/managed/node",
+      cliPath: "/managed/dist/cli.js",
+      cwd: paths.stateDir,
+      host: LEGACY_DEFAULT_WEB_HOST,
+      port: 5051,
+      theme: "plum",
+      name: "Legacy Console",
+      stdoutPath: paths.launchd.stdoutPath,
+      stderrPath: paths.launchd.stderrPath,
+      environment: {},
+    }), { mode: 0o600 });
+    const captured = { stdout: "", stderr: "" };
+    const deps = {
+      platform: "freebsd" as NodeJS.Platform,
+      homeDir: home,
+      stdout: { write: (text: string) => { captured.stdout += text; } },
+      stderr: { write: (text: string) => { captured.stderr += text; } },
+    };
+
+    expect(await runWebCommand({ positionals: ["status"], env: {} }, deps)).toBe(1);
+    expect(captured.stdout).toContain(`0.0.0.0:5051 (configured; not proven running)`);
+    expect(captured.stdout).not.toContain(`127.0.0.1:5050`);
+    expect(captured.stdout).toContain("plum");
+
+    const jsonCaptured = { stdout: "", stderr: "" };
+    expect(await runWebCommand({ positionals: ["status"], json: true, env: {} }, {
+      ...deps,
+      stdout: { write: (text: string) => { jsonCaptured.stdout += text; } },
+      stderr: { write: (text: string) => { jsonCaptured.stderr += text; } },
+    })).toBe(1);
+    const status = JSON.parse(jsonCaptured.stdout) as {
+      listener: { host: string | null; port: number | null; source: string; provenRunning: boolean };
+      definitionError: string | null;
+    };
+    expect(status.listener).toMatchObject({
+      host: LEGACY_DEFAULT_WEB_HOST,
+      port: 5051,
+      source: "installed definition",
+      provenRunning: false,
+    });
+    expect(status.definitionError).toBeNull();
+  });
+
+  it("keeps an unreadable status definition unknown without probing it", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "not a plist\n", { mode: 0o600 });
+    const healthcheck = vi.fn(async () => true);
+    const captured = { stdout: "", stderr: "" };
+
+    expect(await runWebCommand({ positionals: ["status"], json: true, env: {} }, {
+      platform: "darwin" as NodeJS.Platform,
+      homeDir: home,
+      getuid: () => 501,
+      launchctl: pairedLaunchctlFixture().runner,
+      healthcheck,
+      stdout: { write: (text: string) => { captured.stdout += text; } },
+      stderr: { write: (text: string) => { captured.stderr += text; } },
+    })).toBe(1);
+
+    const status = JSON.parse(captured.stdout) as {
+      ok: boolean;
+      listener: { host: null; port: null; url: null; source: string };
+      definitionError: string | null;
+    };
+    expect(status.ok).toBe(false);
+    expect(status.listener).toMatchObject({ host: null, port: null, url: null, source: "unknown" });
+    expect(status.definitionError).toContain("could not be validated");
+    expect(healthcheck).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes unverifiable, changed, and missing owned routes in status", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await writeFile(paths.tailscalePath, `${JSON.stringify(EXACT_ABSENT_OWNERSHIP, undefined, 2)}\n`, { mode: 0o600 });
+
+    const statusWith = async (tailscale: CommandRunner) => {
+      const captured = { stdout: "", stderr: "" };
+      const code = await runWebCommand({ positionals: ["status"], json: true, env: {} }, {
+        platform: "freebsd" as NodeJS.Platform,
+        homeDir: home,
+        tailscale,
+        stdout: { write: (text: string) => { captured.stdout += text; } },
+        stderr: { write: (text: string) => { captured.stderr += text; } },
+      });
+      return { code, captured };
+    };
+
+    // Inspection failure is not evidence of a mismatch.
+    const failing = await statusWith(async (args) => {
+      if (args[0] === "serve" && args[1] === "status") return { code: 1, stdout: "", stderr: "LocalAPI unavailable" };
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    });
+    const failingStatus = JSON.parse(failing.captured.stdout) as {
+      ownedTailscaleRoute: { state: string; detail?: string };
+    };
+    expect(failingStatus.ownedTailscaleRoute.state).toBe("unverifiable");
+    expect(failingStatus.ownedTailscaleRoute.detail).toContain("LocalAPI unavailable");
+
+    // A different handler at the same port is a real mismatch.
+    const changed = await statusWith(async (args) => {
+      if (args[0] === "serve" && args[1] === "status") {
+        return {
+          code: 0,
+          stderr: "",
+          stdout: JSON.stringify({
+            TCP: { "8443": { HTTPS: true } },
+            Web: { "host.example.ts.net:8443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } },
+          }),
+        };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    });
+    const changedStatus = JSON.parse(changed.captured.stdout) as {
+      ownedTailscaleRoute: { state: string; detail?: string };
+    };
+    expect(changedStatus.ownedTailscaleRoute.state).toBe("changed");
+    expect(changedStatus.ownedTailscaleRoute.detail).toContain("does not match");
+
+    // The recorded handler is provably gone: report that, not a mismatch.
+    const missing = await statusWith(absentRouteRunner());
+    const missingStatus = JSON.parse(missing.captured.stdout) as {
+      ownedTailscaleRoute: { state: string; detail?: string };
+    };
+    expect(missingStatus.ownedTailscaleRoute.state).toBe("missing");
+    expect(missingStatus.ownedTailscaleRoute.detail).toContain("no longer present");
+
+    // Human output uses the same distinctions.
+    const human = { stdout: "", stderr: "" };
+    await runWebCommand({ positionals: ["status"], env: {} }, {
+      platform: "freebsd" as NodeJS.Platform,
+      homeDir: home,
+      tailscale: absentRouteRunner(),
+      stdout: { write: (text: string) => { human.stdout += text; } },
+      stderr: { write: (text: string) => { human.stderr += text; } },
+    });
+    expect(human.stdout).toContain("mono-agent-owned Tailscale route: missing");
+    await expect(stat(paths.tailscalePath)).resolves.toBeDefined();
+  });
+
+  it("never claims absence when an explicit share's cleanup could not be proven", async () => {
+    const home = await testHome();
+    const runner: CommandRunner = async (args) => {
+      if (args[0] === "serve" && args[1] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {} }) };
+      }
+      if (args[0] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+      }
+      // The claim fails, so ownership is never written and no rollback can be
+      // proven: the outcome must stay uncertain rather than claiming absence.
+      return { code: 1, stderr: "serve off failed", stdout: "" };
+    };
+    const { fixture, captured, deps } = await managedStartHarness(home, {
+      tailscale: runner,
+      writePrivateFile: async (path: string, contents: string) => {
+        if (path.endsWith("tailscale-serve.json")) throw new Error("disk full");
+        await writeFile(path, contents, { mode: 0o600 });
+      },
+    });
+
+    expect(await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, deps)).toBe(1);
+
+    expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+    expect(captured.stderr).toContain("Sharing failed:");
+    expect(captured.stderr).toContain("A Tailscale handler may remain");
+    expect(captured.stderr).toContain("attempted HTTPS port 443");
+    expect(captured.stderr).toContain("tailscale serve status");
+    expect(captured.stderr).not.toContain("no mono-agent-owned route remains");
+  });
+
+  it("reports a verification failure whose rollback is unverifiable as uncertain", async () => {
+    const home = await testHome();
+    let statusReads = 0;
+    const runner: CommandRunner = async (args) => {
+      if (args[0] === "serve" && args[1] === "status") {
+        statusReads += 1;
+        if (statusReads === 1) return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {} }) };
+        return { code: 1, stderr: "LocalAPI unavailable", stdout: "" };
+      }
+      if (args[0] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+      }
+      return { code: 0, stderr: "", stdout: "" };
+    };
+    const { fixture, captured, deps } = await managedStartHarness(home, { tailscale: runner });
+
+    expect(await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, deps)).toBe(1);
+
+    expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+    expect(captured.stderr).toContain("handler command succeeded but verification failed");
+    expect(captured.stderr).toContain("A Tailscale handler may remain");
+    expect(captured.stderr).not.toContain("no mono-agent-owned route remains");
   });
 });
 
