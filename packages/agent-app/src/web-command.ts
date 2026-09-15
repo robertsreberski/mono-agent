@@ -72,8 +72,17 @@ import * as ui from "./ui.js";
 
 export { WEB_LAUNCHD_LABEL } from "./launchd.js";
 
-export const DEFAULT_WEB_HOST = "0.0.0.0";
+/**
+ * Fresh-install bind for the CLI console commands. A pristine install binds
+ * loopback; `--host <addr>` widens it explicitly, and `--share-tailnet` (macOS
+ * managed start/restart) publishes the owned Tailscale Serve route. Installed
+ * services keep whatever bind they were published with. The `@mono-agent/web`
+ * library keeps its own independent default; this constant governs the CLI.
+ */
+export const DEFAULT_WEB_HOST = "127.0.0.1";
 export const DEFAULT_WEB_PORT = 5050;
+/** Historical wide bind, used only to interpret/repair pre-existing definitions and tests. */
+export const LEGACY_DEFAULT_WEB_HOST = "0.0.0.0";
 // Deliberately outside `com.mono-agent.*`: fleet discovery reserves that prefix
 // for configured agent instances.
 export const MANAGED_WEB_WORKER_ENV = "MONO_AGENT_MANAGED_WEB_WORKER";
@@ -129,6 +138,8 @@ export interface RunWebCommandOptions {
   readonly theme?: string;
   readonly name?: string;
   readonly loopback?: boolean;
+  readonly shareTailnet?: boolean;
+  readonly json?: boolean;
   readonly follow?: boolean;
   readonly lines?: number;
   readonly all?: boolean;
@@ -237,6 +248,10 @@ export interface TailscaleServeOwnership {
 type TailscaleServeResult =
   | { readonly kind: "active"; readonly ownership: TailscaleServeOwnership; readonly reused: boolean }
   | {
+      /** No owned route exists and none was requested; no Tailscale command was run. */
+      readonly kind: "not-requested";
+    }
+  | {
       readonly kind: "unavailable";
       readonly detail: string;
       /** The old owned route was migrated, so the replacement worker must also be rolled back. */
@@ -265,17 +280,19 @@ export function renderWebHelp(): string {
     "mono-agent web — always-on multi-agent web console",
     "",
     "  mono-agent web",
-    "  mono-agent web start [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>]",
-    "  mono-agent web restart [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>]",
-    "  mono-agent web stop | status",
+    "  mono-agent web start [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>] [--share-tailnet]",
+    "  mono-agent web restart [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>] [--share-tailnet]",
+    "  mono-agent web stop | status [--json]",
     "  mono-agent web logs [--follow|-f] [--lines <n>]",
     "  mono-agent web run [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>]",
     "  mono-agent web reset --all --yes",
     "",
-    `Default bind: ${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)} (LAN/Tailnet reachable; no app login).`,
+    `Default bind: ${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)} (loopback listener; no app login).`,
+    "--host <addr> binds wider (for example 0.0.0.0 for the LAN).",
+    "macOS start/restart publish an owned Tailscale Serve HTTPS route only with --share-tailnet;",
+    "an existing mono-agent-owned route is re-verified on restart. Linux HTTPS routes are externally managed.",
     `Themes: ${WEB_THEMES.join(", ")} (default: ${DEFAULT_WEB_THEME}).`,
     "--name sets the installed PWA label, browser tab title, and rail brand; --name - restores the hostname default.",
-    "--loopback narrows the bind to 127.0.0.1. macOS start/restart claim a free Tailscale Serve HTTPS port; Linux HTTPS routes are externally managed.",
     "",
   ].join("\n");
 }
@@ -296,6 +313,16 @@ export async function runWebCommand(
   const validation = validateWebFlags(action, options);
   if (validation !== undefined) {
     stderr.write(ui.errorLine(validation));
+    stdout.write(renderWebHelp());
+    return 2;
+  }
+  // The Linux lifecycle publishes no Tailscale route of its own; refuse the flag
+  // instead of accepting a meaningless request.
+  if ((deps.platform ?? process.platform) === "linux"
+    && options.shareTailnet === true && (action === "start" || action === "restart")) {
+    stderr.write(ui.errorLine(
+      "Linux HTTPS routes are externally managed; --share-tailnet manages the macOS Tailscale Serve route.",
+    ));
     stdout.write(renderWebHelp());
     return 2;
   }
@@ -362,6 +389,12 @@ function validateWebFlags(action: string | undefined, options: RunWebCommandOpti
   if (options.loopback === true && options.host !== undefined) {
     return "Choose either --loopback or --host, not both.";
   }
+  if (options.shareTailnet === true && action !== "start" && action !== "restart") {
+    return "--share-tailnet is only supported for `mono-agent web start` and `mono-agent web restart`.";
+  }
+  if (options.json === true && action !== "status") {
+    return "--json is only supported for `mono-agent web status`.";
+  }
   if (options.port !== undefined && options.port === 0) {
     return "mono-agent web requires a stable --port between 1 and 65535.";
   }
@@ -413,7 +446,13 @@ async function runWebForeground(options: RunWebCommandOptions, deps: RunWebComma
       env: options.env,
     });
   } catch (error) {
-    stderr.write(ui.errorLine(`mono-agent web failed to start: ${errorMessage(error)}`));
+    const detail = errorMessage(error);
+    stderr.write(ui.errorLine(`mono-agent web failed to start: ${detail}`));
+    if (/EADDRINUSE|address already in use/iu.test(detail)) {
+      stderr.write(ui.hint(
+        `Port ${String(port)} is already in use. Inspect the managed console with \`mono-agent web\`, or retry with --port <n>.`,
+      ));
+    }
     return 1;
   }
   printWebUrls(stdout, handle.url, handle.port ?? port, host, deps.discoverNetworkAddresses);
@@ -520,6 +559,12 @@ async function startWebBackground(
     const existing = await launchdServiceInfo(launchctl, WEB_LAUNCHD_LABEL, uid);
     let helper = await launchdServiceInfo(launchctl, WEB_MAINTENANCE_LAUNCHD_LABEL, uid);
     if (existing.loaded && !restart) {
+      if (options.shareTailnet === true) {
+        stderr.write(ui.errorLine(
+          "mono-agent web is already managed by launchd; use `mono-agent web restart --share-tailnet` to publish its owned Tailscale route.",
+        ));
+        return 1;
+      }
       if (options.theme !== undefined) {
         stderr.write(ui.errorLine(
           `mono-agent web is already managed by launchd; use \`mono-agent web restart --theme ${options.theme}\` to change its theme.`,
@@ -705,10 +750,23 @@ async function startWebBackground(
     }
 
     const priorRecord = recordRead.kind === "valid" ? recordRead.record : undefined;
-    const host = effectiveHost(options, priorRecord?.host);
-    const port = options.port ?? priorRecord?.port ?? DEFAULT_WEB_PORT;
-    const theme = selectedWebTheme(options.theme, priorRecord?.theme);
-    const consoleName = selectedWebConsoleName(options.name, priorRecord?.name);
+    // A stopped install can retain its LaunchAgent plist without a service
+    // record. That is not a fresh install: recover the bind/port/theme/name it
+    // was published with, or refuse before any mutation — never apply the fresh
+    // loopback default to an existing service.
+    const priorDefinition = priorRecord === undefined && existingPlist !== undefined
+      ? installedWebDefinition(existingPlist)
+      : undefined;
+    if (priorRecord === undefined && existingPlist !== undefined && priorDefinition === undefined) {
+      return await fail(
+        "Refusing to start because the existing web LaunchAgent definition could not be validated; its recorded bind was preserved and nothing was changed",
+      );
+    }
+    const prior = priorRecord ?? priorDefinition;
+    const host = effectiveHost(options, prior?.host);
+    const port = options.port ?? prior?.port ?? DEFAULT_WEB_PORT;
+    const theme = selectedWebTheme(options.theme, prior?.theme);
+    const consoleName = selectedWebConsoleName(options.name, prior?.name);
     if (existingPlist !== undefined) {
       try {
         pendingMaintenanceIntent = await maintainStoppedWebLogsBeforePublication(
@@ -725,11 +783,18 @@ async function startWebBackground(
     const recordedTailscaleDnsName = priorTailscaleOwnership.kind === "valid"
       ? tailscaleWebHostname(priorTailscaleOwnership.ownership.webKey)
       : undefined;
+    // New route creation is explicit-only (`--share-tailnet`). An existing exact
+    // owned route — or an ownership record we must truthfully report as
+    // unverifiable — is always inspected, so a restart keeps or diagnoses the
+    // route the install actually has. A pristine unshared start never runs the
+    // Tailscale CLI at all.
+    const inspectTailscale = options.shareTailnet === true || priorTailscaleOwnership.kind !== "absent";
     // A healthy existing Serve route must keep working through a transient
     // LocalAPI outage during restart. The owner-private, exact-route record is
     // re-verified by ensureTailscaleServe after the replacement worker starts.
-    const tailscaleDnsName = await readTailscaleDnsName(tailscaleRunner, deps.sleep)
-      ?? recordedTailscaleDnsName;
+    const tailscaleDnsName = inspectTailscale
+      ? await readTailscaleDnsName(tailscaleRunner, deps.sleep) ?? recordedTailscaleDnsName
+      : undefined;
     const allowedHosts = mergeWebAllowedHosts(options.env.MONO_AGENT_WEB_ALLOWED_HOSTS, tailscaleDnsName);
     const environment = {
       ...selectBackgroundOperationalEnvironment(options.env),
@@ -808,16 +873,32 @@ async function startWebBackground(
       }
     }
 
-    const tailscale = tailscaleDnsName === undefined
-      ? { kind: "unavailable" as const, detail: "the node's exact Tailscale DNS name could not be resolved; no Serve handler was changed" }
-      : await ensureTailscaleServe(
-          paths,
-          host,
-          port,
-          options.env,
-          { ...deps, tailscale: tailscaleRunner },
-          tailscaleDnsName,
-        );
+    const tailscale: TailscaleServeResult = !inspectTailscale
+      ? { kind: "not-requested" }
+      : priorTailscaleOwnership.kind === "invalid"
+        ? await ensureTailscaleServe(
+            paths,
+            host,
+            port,
+            options.env,
+            { ...deps, tailscale: tailscaleRunner },
+            undefined,
+            options.shareTailnet === true,
+          )
+        : tailscaleDnsName === undefined
+          ? {
+              kind: "unavailable",
+              detail: "the node's exact Tailscale DNS name could not be resolved; no Serve handler was changed",
+            }
+          : await ensureTailscaleServe(
+              paths,
+              host,
+              port,
+              options.env,
+              { ...deps, tailscale: tailscaleRunner },
+              tailscaleDnsName,
+              options.shareTailnet === true,
+            );
     if (tailscale.kind === "unavailable" && tailscale.requiresServiceRollback === true) {
       return await fail(`Tailscale route migration failed and the replacement web worker cannot remain active: ${tailscale.detail}`);
     }
@@ -827,10 +908,23 @@ async function startWebBackground(
     stdout.write("No app authentication is enabled; anyone who can reach this port can operate discovered agents.\n");
 
     if (tailscale.kind === "active") {
-      stdout.write(`Tailscale HTTPS → ${tailscale.ownership.url}${tailscale.reused ? " (existing owned handler)" : ""}\n`);
+      stdout.write(`mono-agent-owned Tailscale route: ${tailscale.ownership.url}${tailscale.reused ? " (existing owned handler)" : ""}\n`);
+      stdout.write(ui.style.dim("Other proxies and routes are not inspected.\n"));
+    } else if (tailscale.kind === "not-requested") {
+      stdout.write("mono-agent-owned Tailscale route: none (other proxies and routes are not inspected).\n");
+      if (options.shareTailnet !== true) {
+        stdout.write(ui.hint("Publish this console on your tailnet with: mono-agent web restart --share-tailnet\n"));
+      }
+    } else if (options.shareTailnet === true) {
+      // An explicit sharing request must never look successful when it failed.
+      stderr.write(ui.errorLine(`Sharing failed: ${tailscale.detail}`));
+      stderr.write(ui.style.yellow(
+        `The local console is running at http://${urlHost(host)}:${String(port)}/; no mono-agent-owned Tailscale route was created.\n`,
+      ));
+      return 1;
     } else {
       stderr.write(ui.style.yellow(`⚠ Tailscale Serve was not configured: ${tailscale.detail}\n`));
-      stderr.write(ui.hint(`LAN HTTP remains healthy on port ${String(port)}. Resolve Tailscale, then run mono-agent web restart.`));
+      stderr.write(ui.hint(`The console remains reachable on ${host}:${String(port)}. Resolve Tailscale, then run mono-agent web restart --share-tailnet.\n`));
     }
     return 0;
   } catch (error) {
@@ -1043,12 +1137,53 @@ async function statusWeb(
   } catch {
     maintenanceProblems.push("managed web log inventory could not be inspected");
   }
+  const owned = await readTailscaleOwnership(paths.tailscalePath);
+  let ownedRoute: { readonly state: "none" | "exact" | "stale" | "invalid"; readonly url?: string; readonly detail?: string };
+  if (owned.kind === "absent") {
+    ownedRoute = { state: "none" };
+  } else if (owned.kind === "invalid") {
+    ownedRoute = { state: "invalid", detail: owned.detail };
+  } else {
+    const inspection = await inspectOwnedTailscaleRoute(owned.ownership, deps);
+    ownedRoute = inspection.kind === "exact"
+      ? { state: "exact", url: owned.ownership.url }
+      : {
+          state: "stale",
+          detail: "the ownership record no longer matches the current handler; existing handlers were not changed",
+        };
+  }
+  const serviceState = service.loaded
+    ? healthState === "degraded" ? "running, push degraded" : healthy ? "running" : "loaded, not healthy"
+    : "stopped";
+  const code = (strictExit && (!healthy || maintenanceProblems.length > 0)) || recordRead.kind === "invalid" ? 1 : 0;
+  const uniqueProblems = [...new Set(maintenanceProblems)];
+  if (options.json === true) {
+    // Listener and exact owned route are reported separately; their mere
+    // absence proves nothing about other proxies, tunnels, or routes.
+    stdout.write(`${JSON.stringify({
+      ok: code === 0,
+      action: "status",
+      listener: recordRead.kind === "invalid"
+        ? { host: null, port: null, url: null }
+        : { host, port, url: `http://${urlHost(host)}:${String(port)}/` },
+      console: {
+        theme: recordRead.kind === "invalid" ? null : theme,
+        name: consoleName ?? null,
+        state: paths.stateDir,
+      },
+      service: { state: serviceState, pid: service.pid ?? null, healthy },
+      authentication: "none",
+      ownedTailscaleRoute: ownedRoute,
+      maintenance: { summary: maintenanceSummary, problems: uniqueProblems },
+      recordError: recordRead.kind === "invalid" ? recordRead.detail : null,
+      note: "other proxies and routes are not inspected; network reachability is the access boundary",
+    }, null, 2)}\n`);
+    return code;
+  }
   stdout.write(ui.rule("Web console status"));
   stdout.write(ui.keyValue([
-    ["service", service.loaded
-      ? healthState === "degraded" ? "running, push degraded" : healthy ? "running" : "loaded, not healthy"
-      : "stopped"],
-    ["bind", recordRead.kind === "invalid" ? "invalid service record" : `${host}:${String(port)}`],
+    ["service", serviceState],
+    ["listener", recordRead.kind === "invalid" ? "invalid service record" : `${host}:${String(port)}`],
     ["theme", recordRead.kind === "invalid" ? "invalid service record" : theme],
     ["name", recordRead.kind === "invalid"
       ? "invalid service record"
@@ -1056,7 +1191,7 @@ async function statusWeb(
     ["state", paths.stateDir],
     ["pid", service.pid === undefined ? "—" : String(service.pid)],
     ["log maintenance", maintenanceSummary],
-    ["authentication", "none (network reachability is the boundary)"],
+    ["authentication", "none (no application login; network reachability is the access boundary)"],
   ]));
   if (recordRead.kind === "invalid") stdout.write(ui.errorLine(recordRead.detail));
   else {
@@ -1068,26 +1203,22 @@ async function statusWeb(
       deps.discoverNetworkAddresses,
     );
   }
-  const owned = await readTailscaleOwnership(paths.tailscalePath);
-  if (owned.kind === "absent") {
-    stdout.write("Tailscale HTTPS: not owned by mono-agent web.\n");
-  } else if (owned.kind === "invalid") {
-    stdout.write(`Tailscale HTTPS: ${owned.detail}\n`);
+  if (ownedRoute.state === "none") {
+    stdout.write("mono-agent-owned Tailscale route: none (other proxies and routes are not inspected).\n");
+  } else if (ownedRoute.state === "exact") {
+    stdout.write(`mono-agent-owned Tailscale route: ${ownedRoute.url ?? ""}\n`);
   } else {
-    const inspection = await inspectOwnedTailscaleRoute(owned.ownership, deps);
-    stdout.write(inspection.kind === "exact"
-      ? `Tailscale HTTPS: ${owned.ownership.url}\n`
-      : "Tailscale HTTPS: ownership record is stale or cannot be verified; existing handlers will not be changed.\n");
+    stdout.write(`mono-agent-owned Tailscale route: ${ownedRoute.detail ?? "unverifiable"}.\n`);
   }
   if (!service.loaded) stdout.write(ui.hint("Start it with: mono-agent web start"));
   else if (!healthy) stdout.write(ui.hint("Inspect: mono-agent web logs"));
-  for (const problem of [...new Set(maintenanceProblems)]) stdout.write(ui.errorLine(problem));
+  for (const problem of uniqueProblems) stdout.write(ui.errorLine(problem));
   if (pendingIntent !== undefined && helper.pid === undefined) {
     stdout.write(pendingRecoveryRequiresStopStart
       ? ui.hint("Recover it with `mono-agent web stop`, then `mono-agent web start`; the prior stop or plist identity is unproven.")
       : ui.hint("Recover it with exactly: mono-agent web restart"));
   }
-  return (strictExit && (!healthy || maintenanceProblems.length > 0)) || recordRead.kind === "invalid" ? 1 : 0;
+  return code;
 }
 
 async function tailWebLogs(options: RunWebCommandOptions, deps: RunWebCommandDeps): Promise<number> {
@@ -1220,6 +1351,47 @@ function invalidWebConsoleName(value: string): string | undefined {
     return `--name must be at most ${String(WEB_CONSOLE_NAME_MAX_CHARACTERS)} characters.`;
   }
   return undefined;
+}
+
+/**
+ * Recover the published console definition from a stopped install's main
+ * LaunchAgent plist. Returns undefined when the argv is not the exact managed
+ * shape, so the caller refuses instead of guessing a fresh default for an
+ * existing service.
+ */
+function installedWebDefinition(xml: string): {
+  readonly host: string;
+  readonly port: number;
+  readonly theme: WebTheme;
+  readonly name?: string;
+} | undefined {
+  let args: readonly string[];
+  try {
+    args = plistProgramArguments(xml);
+  } catch {
+    return undefined;
+  }
+  const option = (flag: string): string | undefined => {
+    const index = args.indexOf(flag);
+    return index < 0 ? undefined : args[index + 1];
+  };
+  const host = option("--host");
+  const rawPort = option("--port");
+  const rawTheme = option("--theme");
+  const name = option("--name");
+  const port = rawPort === undefined ? Number.NaN : Number(rawPort);
+  if (host === undefined || host.trim().length === 0
+    || !Number.isSafeInteger(port) || port < 1 || port > 65_535
+    || rawTheme === undefined || !isWebTheme(rawTheme)
+    || (name !== undefined && invalidWebConsoleName(name) !== undefined)) {
+    return undefined;
+  }
+  return {
+    host,
+    port,
+    theme: rawTheme,
+    ...(name === undefined ? {} : { name }),
+  };
 }
 
 function shellQuote(value: string): string {
@@ -1612,6 +1784,13 @@ export async function ensureTailscaleServe(
   env: Record<string, string | undefined>,
   deps: RunWebCommandDeps,
   expectedDnsName?: string,
+  /**
+   * Whether a missing route may be created. Only an explicit `--share-tailnet`
+   * passes true; an existing exact owned route is always verified/migrated, and
+   * a record whose handler is provably absent is cleared but never replaced
+   * without the explicit flag.
+   */
+  allowCreate = true,
 ): Promise<TailscaleServeResult> {
   const runner = deps.tailscale ?? makeTailscaleRunner(env);
   const proxyTarget = tailscaleProxyTarget(bindHost, appPort);
@@ -1653,6 +1832,9 @@ export async function ensureTailscaleServe(
       };
     }
   }
+  // No exact owned route remains. Creating one requires the explicit flag: a
+  // proven-absent ownership record never authorizes a new route on its own.
+  if (existing === undefined && !allowCreate) return { kind: "not-requested" };
   if (existing !== undefined) {
     if (expectedDnsName !== undefined && tailscaleWebHostname(existing.webKey) !== expectedDnsName) {
       return {
@@ -1672,6 +1854,10 @@ export async function ensureTailscaleServe(
       return await failMigration(`could not migrate the prior exact Tailscale handler: ${removed.detail}`);
     }
   }
+  // Reaching this point means a route must be created: either no owned route
+  // existed (the explicit flag was required and was checked above) or an exact
+  // owned route was just migrated to this worker's target, whose replacement is
+  // part of the install's existing exposure rather than a new one.
   const initial = await readTailscaleServeStatus(runner);
   if (initial.kind === "error") return await failMigration(initial.detail);
   const httpsPort = chooseTailscaleHttpsPort(initial.status);

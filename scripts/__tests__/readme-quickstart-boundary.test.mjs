@@ -152,24 +152,25 @@ describe("root README Quickstart boundary", () => {
     expect(releaseStatus).toContain("/getting-started/install/#run-an-unreleased-build");
   });
 
-  it("keeps the canonical console page honest about managed loopback reachability", () => {
-    // The same correction applies to the reference the README links: a managed
-    // loopback bind may still be published through an owned Tailscale Serve
-    // route, and a foreground run leaves any existing route in place — so the
-    // page must not sell loopback as a local-only guarantee.
+  it("keeps the canonical console page honest about explicit sharing and loopback", () => {
+    // The same contract applies to the reference the README links: a new
+    // mono-agent-owned Tailscale route is created only with --share-tailnet, an
+    // existing owned route is re-verified, and neither the bind nor the absence
+    // of an owned route is a local-only guarantee.
     const webConsole = readRepoFile("docs/observability/web-console.md");
     expect(webConsole).toContain(
-      "managed `start`/`restart` inspects Tailscale and claims an owned Serve HTTPS route",
+      "re-verifies an existing mono-agent-owned Tailscale Serve HTTPS route and publishes one only when asked with `--share-tailnet`",
     );
     expect(webConsole).toContain(
-      "narrows only the HTTP listener and may publish an owned Tailscale Serve route",
+      "no mode removes a Serve handler, reverse proxy, or tunnel that already points at the port",
     );
     expect(webConsole).toContain(
-      "a foreground run does not remove a Serve route, reverse proxy, or tunnel that already points at the port",
+      "Neither the bind nor the absence of a mono-agent-owned route proves local-only access: other proxies, tunnels, or routes are not inspected.",
     );
     expect(webConsole).toContain("before relying on loopback for local-only access");
     expect(webConsole).not.toMatch(/use `--loopback` when other devices must not reach it/iu);
     expect(webConsole).not.toMatch(/keep it local with the foreground `mono-agent web run --loopback`/iu);
+    expect(webConsole).not.toMatch(/claims an owned Serve HTTPS route/iu);
   });
 
   it("separates managed apply commands from the foreground apply path", () => {

@@ -10,6 +10,7 @@ import {
   DEFAULT_WEB_HOST,
   DEFAULT_WEB_PORT,
   ensureTailscaleServe,
+  LEGACY_DEFAULT_WEB_HOST,
   removeOwnedTailscaleServe,
   runWebCommand,
   tailscaleProxyTarget,
@@ -17,9 +18,10 @@ import {
   webPaths,
   WEB_LAUNCHD_LABEL,
 } from "../web-command.js";
-import type { CommandRunner } from "../web-command.js";
+import type { CommandRunner, RunWebCommandDeps } from "../web-command.js";
 import {
   buildWebMaintenancePlistXml,
+  buildWebPlistXml,
   WEB_MAINTENANCE_LAUNCHD_LABEL,
   webMaintenanceCalendarMinute,
 } from "../launchd.js";
@@ -126,15 +128,15 @@ describe("runWebCommand", () => {
     expect(output).toContain("service");
     expect(output).toContain("stopped");
     expect(output).toContain("evergreen");
+    // Fresh install default: a pristine console binds loopback and reports no
+    // owned route; no LAN/tailnet URL is advertised without an explicit --host.
     expect(output).toContain("http://127.0.0.1:5050/");
-    expect(output).toContain("http://192.168.2.42:5050/");
-    expect(output).toContain("http://100.64.0.7:5050/");
+    expect(output).toContain("mono-agent-owned Tailscale route: none");
+    expect(output).toContain("--share-tailnet");
+    expect(output).not.toContain("http://192.168.2.42:5050/");
+    expect(output).not.toContain("http://100.64.0.7:5050/");
     expect(output).not.toContain("fd7a:115c:a1e0::7");
-    expect(output.match(/http:\/\/192\.168\.2\.42:5050\//gu)).toHaveLength(1);
     expect(output).not.toContain("203.0.113.9");
-    expect(output).not.toContain("2001:4860:4860::8888");
-    expect(output).not.toContain("http://[fe80::7]:5050/");
-    expect(output).not.toContain("fe80::7%25en0");
     expect(output).not.toContain("http://0.0.0.0:5050/");
     expect(startServer).not.toHaveBeenCalled();
     expect(resetState).not.toHaveBeenCalled();
@@ -1047,7 +1049,7 @@ describe("runWebCommand", () => {
   it("restores and reboots the previous worker when a restart replacement never becomes healthy", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     await prepareState({ stateDir: paths.stateDir });
     await mkdir(paths.launchd.launchAgentsDir, { mode: 0o700 });
     const oldPlist = "old verified plist\n";
@@ -1149,7 +1151,7 @@ describe("runWebCommand", () => {
   it("publishes the helper from the fresh composite main identity before either bootstrap", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     const launchd = pairedLaunchctlFixture();
 
     await expect(runWebCommand(
@@ -1187,7 +1189,7 @@ describe("runWebCommand", () => {
   it("regenerates the helper after a byte-identical main rewrite with a new inode identity", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     const launchd = pairedLaunchctlFixture();
     const deps = {
       platform: "darwin" as const,
@@ -1305,7 +1307,7 @@ describe("runWebCommand", () => {
   it("never bootstraps a partial pair when helper regeneration fails", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     const launchd = pairedLaunchctlFixture();
     const writer = async (path: string, contents: string): Promise<void> => {
       if (path === paths.maintenancePlistPath) throw new Error("injected helper publication failure");
@@ -1338,7 +1340,7 @@ describe("runWebCommand", () => {
   it("removes a partial first-start publication when the plist write fails", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     let writes = 0;
     const writePrivateFile = async (path: string, contents: string) => {
       writes += 1;
@@ -1374,7 +1376,7 @@ describe("runWebCommand", () => {
   it("pins the node's exact Tailscale DNS hostname into the worker before claiming Serve", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     let loaded = false;
     const launchctl = async (args: readonly string[]) => {
       if (args[0] === "print") return { code: loaded ? 0 : 1, stdout: loaded ? "pid = 777\n" : "", stderr: "" };
@@ -1398,6 +1400,7 @@ describe("runWebCommand", () => {
       {
         positionals: ["start"],
         theme: "terracotta",
+        shareTailnet: true,
         env: {
           MONO_AGENT_WEB_ALLOWED_HOSTS: "console.home.arpa",
           MONO_AGENT_WEB_PUSH_SUBJECT: "mailto:owner@example.test",
@@ -1561,7 +1564,7 @@ describe("runWebCommand", () => {
     const home = await testHome();
     const paths = webPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, {
       homeDir: home,
       tailscale: scriptedClaimRunner(),
@@ -1621,7 +1624,7 @@ describe("runWebCommand", () => {
   it("boots out a partially loaded first start and removes its artifacts after bootstrap failure", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     let loaded = false;
     const calls: string[][] = [];
     const launchctl = async (args: readonly string[]) => {
@@ -1668,7 +1671,7 @@ describe("runWebCommand", () => {
   it("stops a crash-looping first start and removes its artifacts after readiness timeout", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     let loaded = false;
     const calls: string[][] = [];
     const launchctl = async (args: readonly string[]) => {
@@ -2185,6 +2188,294 @@ describe("Tailscale Serve ownership", () => {
     const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: home, tailscale: runner });
     expect(result).toMatchObject({ kind: "unavailable" });
     expect(runner).toHaveBeenCalledWith(["serve", "--https=443", "off"]);
+  });
+});
+
+/**
+ * A managed-start harness: paired launchd fixture, captured stdout/stderr, and
+ * deps that always prove the replacement worker healthy unless overridden.
+ */
+async function managedStartHarness(home: string, overrides: Partial<RunWebCommandDeps> = {}) {
+  await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
+  const fixture = pairedLaunchctlFixture();
+  const captured = { stdout: "", stderr: "" };
+  const deps: RunWebCommandDeps = {
+    platform: "darwin" as NodeJS.Platform,
+    homeDir: home,
+    getuid: () => 501,
+    prepareState,
+    acquireLifecycleLock: async () => async () => undefined,
+    launchctl: fixture.runner,
+    sleep: async () => undefined,
+    ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
+    healthcheck: async () => true,
+    isAlive: fixture.isAlive,
+    stdout: { write: (text: string) => { captured.stdout += text; } },
+    stderr: { write: (text: string) => { captured.stderr += text; } },
+    ...overrides,
+  };
+  return { fixture, captured, deps };
+}
+
+const EXACT_ABSENT_OWNERSHIP = {
+  schema: "mono-agent.web-tailscale-serve.v1",
+  webKey: "host.example.ts.net:8443",
+  httpsPort: 8443,
+  proxyTarget: "http://127.0.0.1:5050",
+  configSha256: "a".repeat(64),
+  url: "https://host.example.ts.net:8443/",
+  configuredAt: new Date(0).toISOString(),
+};
+
+/** Reports the node DNS name and an empty Serve table (the owned route is absent). */
+function absentRouteRunner(): CommandRunner {
+  return async (args) => {
+    if (args[0] === "serve" && args[1] === "status") {
+      return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {} }) };
+    }
+    if (args[0] === "status") {
+      return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+    }
+    return { code: 1, stderr: "unexpected command", stdout: "" };
+  };
+}
+
+describe("web console exposure contract", () => {
+  it("binds loopback on a pristine start and never runs the Tailscale CLI", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    const tailscale = vi.fn(absentRouteRunner());
+    const { captured, deps } = await managedStartHarness(home, { tailscale });
+
+    expect(await runWebCommand({ positionals: ["start"], env: {} }, deps)).toBe(0);
+
+    expect(tailscale).not.toHaveBeenCalled();
+    const plist = await readFile(paths.launchd.plistPath, "utf8");
+    expect(plist).toContain("<string>--host</string>");
+    expect(plist).toContain(`<string>${DEFAULT_WEB_HOST}</string>`);
+    expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).toMatchObject({
+      host: DEFAULT_WEB_HOST,
+      port: DEFAULT_WEB_PORT,
+    });
+    expect(captured.stdout).toContain("mono-agent-owned Tailscale route: none");
+    expect(captured.stdout).toContain(`http://${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)}/`);
+    expect(captured.stdout).not.toContain(LEGACY_DEFAULT_WEB_HOST);
+    expect(captured.stderr).not.toContain("Tailscale");
+  });
+
+  it("recovers a stopped install's published bind from its LaunchAgent definition", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, buildWebPlistXml({
+      label: WEB_LAUNCHD_LABEL,
+      nodePath: "/managed/node",
+      cliPath: "/managed/dist/cli.js",
+      cwd: paths.stateDir,
+      host: LEGACY_DEFAULT_WEB_HOST,
+      port: 5051,
+      theme: "plum",
+      name: "Legacy Console",
+      stdoutPath: paths.launchd.stdoutPath,
+      stderrPath: paths.launchd.stderrPath,
+      environment: {},
+    }), { mode: 0o600 });
+    // No service record: this install is stopped, not fresh.
+    const { deps } = await managedStartHarness(home);
+
+    expect(await runWebCommand({ positionals: ["start"], env: {} }, deps)).toBe(0);
+
+    const record = JSON.parse(await readFile(paths.recordPath, "utf8")) as Record<string, unknown>;
+    expect(record).toMatchObject({ host: LEGACY_DEFAULT_WEB_HOST, port: 5051, theme: "plum", name: "Legacy Console" });
+    const plist = await readFile(paths.launchd.plistPath, "utf8");
+    expect(plist).toContain(`<string>${LEGACY_DEFAULT_WEB_HOST}</string>`);
+    expect(plist).toContain("<string>5051</string>");
+    expect(plist).toContain("<string>Legacy Console</string>");
+  });
+
+  it("refuses to start over an unvalidated existing definition without mutating it", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "not a plist\n", { mode: 0o600 });
+    const { fixture, captured, deps } = await managedStartHarness(home);
+
+    expect(await runWebCommand({ positionals: ["start"], env: {} }, deps)).toBe(1);
+
+    expect(captured.stderr).toContain("could not be validated");
+    expect(await readFile(paths.launchd.plistPath, "utf8")).toBe("not a plist\n");
+    expect(fixture.calls.some((args) => args[0] === "bootstrap")).toBe(false);
+    await expect(readFile(paths.recordPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the healthy worker and exits nonzero when an explicit share cannot resolve the DNS name", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    const { fixture, captured, deps } = await managedStartHarness(home, { tailscale: unavailableTailscaleRunner() });
+
+    expect(await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, deps)).toBe(1);
+
+    expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+    expect(captured.stderr).toContain("Sharing failed:");
+    expect(captured.stderr).toContain("no mono-agent-owned Tailscale route was created");
+    expect(captured.stdout).toContain(`http://${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)}/`);
+    expect(captured.stdout).not.toContain("Tailscale route: http");
+    await expect(stat(paths.tailscalePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the healthy worker and exits nonzero when the ownership record is invalid", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await writeFile(paths.tailscalePath, "{\"schema\":\"not-ours\"}\n", { mode: 0o600 });
+    const { fixture, captured, deps } = await managedStartHarness(home, { tailscale: absentRouteRunner() });
+
+    expect(await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, deps)).toBe(1);
+
+    expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+    expect(captured.stderr).toContain("Sharing failed:");
+    expect(await readFile(paths.tailscalePath, "utf8")).toBe("{\"schema\":\"not-ours\"}\n");
+  });
+
+  it("keeps the healthy worker and exits nonzero when the explicit share claim fails", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "serve" && args[1] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {} }) };
+      }
+      if (args[0] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+      }
+      return { code: 1, stderr: "serve failed", stdout: "" };
+    };
+    const { fixture, captured, deps } = await managedStartHarness(home, { tailscale: runner });
+
+    expect(await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, deps)).toBe(1);
+
+    expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+    expect(calls).toContainEqual(["serve", "--bg", "--https=443", "http://127.0.0.1:5050"]);
+    expect(captured.stderr).toContain("Sharing failed:");
+    expect(captured.stderr).toContain("no mono-agent-owned Tailscale route was created");
+    await expect(stat(paths.tailscalePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the healthy worker and exits nonzero when ownership cannot be recorded", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    const runner = vi.fn(scriptedClaimRunner());
+    const { fixture, captured, deps } = await managedStartHarness(home, {
+      tailscale: runner,
+      writePrivateFile: async (path: string, contents: string) => {
+        if (path === paths.tailscalePath) throw new Error("disk full");
+        await writeFile(path, contents, { mode: 0o600 });
+      },
+    });
+
+    expect(await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, deps)).toBe(1);
+
+    expect(fixture.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+    expect(captured.stderr).toContain("Sharing failed:");
+    expect(captured.stderr).toContain("rolled back");
+    expect(runner).toHaveBeenCalledWith(["serve", "--https=443", "off"]);
+  });
+
+  it("does not create a route for a proven-absent ownership record without --share-tailnet", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await writeFile(paths.tailscalePath, `${JSON.stringify(EXACT_ABSENT_OWNERSHIP, undefined, 2)}\n`, { mode: 0o600 });
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (args) => {
+      calls.push([...args]);
+      return await absentRouteRunner()(args);
+    };
+    const { captured, deps } = await managedStartHarness(home, { tailscale: runner });
+
+    expect(await runWebCommand({ positionals: ["start"], env: {} }, deps)).toBe(0);
+
+    expect(calls.some((args) => args[0] === "serve" && args[1] === "--bg")).toBe(false);
+    await expect(stat(paths.tailscalePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(captured.stdout).toContain("mono-agent-owned Tailscale route: none");
+  });
+
+  it("refuses --share-tailnet on a bare start when the console is already managed", async () => {
+    const home = await testHome();
+    const fixture = pairedLaunchctlFixture({ worker: true, helper: true });
+    const captured = { stdout: "", stderr: "" };
+    const code = await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, {
+      platform: "darwin" as NodeJS.Platform,
+      homeDir: home,
+      getuid: () => 501,
+      prepareState,
+      launchctl: fixture.runner,
+      stdout: { write: (text: string) => { captured.stdout += text; } },
+      stderr: { write: (text: string) => { captured.stderr += text; } },
+    });
+
+    expect(code).toBe(1);
+    expect(captured.stderr).toContain("mono-agent web restart --share-tailnet");
+  });
+
+  it("rejects --share-tailnet for the Linux managed lifecycle", async () => {
+    const home = await testHome();
+    const captured = { stdout: "", stderr: "" };
+    const code = await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, {
+      platform: "linux" as NodeJS.Platform,
+      homeDir: home,
+      stdout: { write: (text: string) => { captured.stdout += text; } },
+      stderr: { write: (text: string) => { captured.stderr += text; } },
+    });
+
+    expect(code).toBe(2);
+    expect(captured.stderr).toContain("Linux HTTPS routes are externally managed");
+  });
+
+  it("reports the listener and the owned route separately, including JSON", async () => {
+    const home = await testHome();
+    const human = { stdout: "", stderr: "" };
+    const humanCode = await runWebCommand({ positionals: ["status"], env: {} }, {
+      platform: "freebsd" as NodeJS.Platform,
+      homeDir: home,
+      stdout: { write: (text: string) => { human.stdout += text; } },
+      stderr: { write: (text: string) => { human.stderr += text; } },
+    });
+    expect(humanCode).toBe(1);
+    expect(human.stdout).toContain("listener");
+    expect(human.stdout).toContain(`127.0.0.1:${String(DEFAULT_WEB_PORT)}`);
+    expect(human.stdout).toContain("mono-agent-owned Tailscale route: none");
+    expect(human.stdout).toContain("other proxies and routes are not inspected");
+    expect(human.stdout).toContain("no application login");
+    expect(human.stdout).not.toMatch(/this computer only/iu);
+
+    const jsonOutput = { stdout: "", stderr: "" };
+    const jsonCode = await runWebCommand({ positionals: ["status"], json: true, env: {} }, {
+      platform: "freebsd" as NodeJS.Platform,
+      homeDir: home,
+      stdout: { write: (text: string) => { jsonOutput.stdout += text; } },
+      stderr: { write: (text: string) => { jsonOutput.stderr += text; } },
+    });
+    expect(jsonCode).toBe(1);
+    const status = JSON.parse(jsonOutput.stdout) as {
+      ok: boolean;
+      listener: { host: string; port: number; url: string };
+      ownedTailscaleRoute: { state: string };
+      authentication: string;
+      note: string;
+    };
+    expect(status.ok).toBe(false);
+    expect(status.listener).toEqual({
+      host: DEFAULT_WEB_HOST,
+      port: DEFAULT_WEB_PORT,
+      url: `http://${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)}/`,
+    });
+    expect(status.ownedTailscaleRoute.state).toBe("none");
+    expect(status.authentication).toBe("none");
+    expect(status.note).toContain("not inspected");
   });
 });
 

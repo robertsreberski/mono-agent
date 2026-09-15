@@ -284,6 +284,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.theme === undefined ? {} : { theme: args.theme }),
         ...(args.name === undefined ? {} : { name: args.name }),
         ...(args.loopback === true ? { loopback: true } : {}),
+        ...(args.shareTailnet === true ? { shareTailnet: true } : {}),
+        ...(args.json === true ? { json: true } : {}),
         ...(args.follow === true ? { follow: true } : {}),
         ...(args.lines === undefined ? {} : { lines: args.lines }),
         ...(args.all === true ? { all: true } : {}),

@@ -95,7 +95,7 @@ mono-agent web            # read-only status, effective URLs, and lifecycle help
 
 Two differences matter before you use the managed path:
 
-- **macOS**: managed `start`/`restart` inspects Tailscale and claims its own Serve HTTPS route while the service runs. `--loopback` narrows only the local HTTP listener, so a managed console can still be reachable from the tailnet — and because it has **no application login**, anyone who can reach it can operate the discovered agents. `mono-agent web` prints the effective URLs; `tailscale serve status` shows the route.
+- **macOS**: managed `start`/`restart` re-verifies an existing mono-agent-owned Tailscale Serve HTTPS route and creates a new one only with `--share-tailnet`. The bind narrows only the local HTTP listener, so a console with an owned route can still be reachable from the tailnet, and other proxies/routes are not inspected — because there is **no application login**, anyone who can reach it can operate the discovered agents. `mono-agent web` prints the effective URLs; `mono-agent web status --json` separates the listener from the owned route; `tailscale serve status` shows the route.
 - **Linux**: `start` uses the systemd user service and HTTPS routes are managed externally. See [Linux services](/observability/linux-services/).
 
 Where no usable service manager exists, the foreground command above is the supported path. Read the [web console guide](/observability/web-console/) for persistent threads, attachments, notifications, service lifecycle, and the full security boundary.
@@ -149,7 +149,7 @@ cd my-agent
 mono-agent init
 ```
 
-On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: name the agent, enter the exact Role destined for `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure any number of fallbacks and their exact efforts, then decide whether to add optional capabilities (channels, memory, observability — default No) and confirm the tool/access and sandbox choices. The review says whether that Role will be written or an existing identity preserved. Escape goes back. A concrete creation review precedes provider/SRT mutations.
+On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: name the agent, enter the exact Role destined for `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure any number of fallbacks and their exact efforts, then decide whether to add optional capabilities (channels, memory, observability — default No for a custom start; seeded presets open the gate at Yes) and confirm the tool/access and sandbox choices. The review says whether that Role will be written or an existing identity preserved. Escape goes back. A concrete creation review precedes provider/SRT mutations.
 
 Bare `init` behaves differently per platform and input mode, and the docs do not hide it:
 

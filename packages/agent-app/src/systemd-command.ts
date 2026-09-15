@@ -29,6 +29,13 @@ import type { RunWebCommandOptions } from "./web-command.js";
 const cliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
 type Action = "start" | "restart" | "stop" | "status" | "logs";
 
+// Mirrors of the CLI web defaults. Declared locally (type-checked against the
+// canonical exports) so this module keeps its dynamic import of web-command and
+// introduces no import cycle. A pristine install binds loopback; a legacy unit
+// that was published without --host keeps its historical wide bind.
+const FRESH_WEB_HOST: typeof import("./web-command.js").DEFAULT_WEB_HOST = "127.0.0.1";
+const LEGACY_WEB_HOST: typeof import("./web-command.js").LEGACY_DEFAULT_WEB_HOST = "0.0.0.0";
+
 /** Clear the systemd manager's ambient environment; provider settings come from dotenv. */
 function workerArgv(args: readonly string[], environment: Readonly<Record<string, string>>): readonly string[] {
   return ["/usr/bin/env", "-i", ...Object.entries(environment).map(([key, value]) => `${key}=${value}`), process.execPath, "--", cliPath, ...args];
@@ -191,7 +198,9 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
       const index = installed?.argv.indexOf(key) ?? -1;
       return index < 0 ? undefined : installed?.argv[index + 1];
     };
-    const host = options.loopback ? "127.0.0.1" : options.host ?? previousOption("--host") ?? "0.0.0.0";
+    const host = options.loopback
+      ? "127.0.0.1"
+      : options.host ?? previousOption("--host") ?? (installed === undefined ? FRESH_WEB_HOST : LEGACY_WEB_HOST);
     const port = options.port ?? Number(previousOption("--port") ?? 5050);
     const theme = options.theme ?? previousOption("--theme") ?? "evergreen";
     // No default: an absent name means the worker falls back to the machine hostname.
@@ -207,9 +216,27 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
     if (action === "status") {
       const service = await inspectSystemd(identity, deps);
       const healthy = service.activeState === "active" && service.pid > 0 && await ready();
+      const code = options.positionals.length === 0 ? 0 : healthy ? 0 : 1;
+      if (options.json === true) {
+        stdout.write(`${JSON.stringify({
+          ok: code === 0,
+          action: "status",
+          listener: { host, port, url },
+          console: { theme, name: consoleName ?? null },
+          service: {
+            state: service.activeState ?? "unknown",
+            pid: service.pid > 0 ? service.pid : null,
+            healthy,
+          },
+          authentication: "none",
+          ownedTailscaleRoute: { state: "not-managed", detail: "Linux HTTPS routes are externally managed" },
+          note: "other proxies and routes are not inspected; network reachability is the access boundary",
+        }, null, 2)}\n`);
+        return code;
+      }
       report(identity, service, healthy, deps);
       stdout.write(`Web: ${url}\nTheme: ${theme}\nName: ${consoleName ?? "— (machine hostname)"}\nHTTPS routes: externally managed; inspect tailscale serve status.\n`);
-      return options.positionals.length === 0 ? 0 : healthy ? 0 : 1;
+      return code;
     }
     if (action !== "start" && action !== "restart") throw new Error(`Unsupported systemd web action: ${action}`);
     const environment = operationalEnvironment(options.env);

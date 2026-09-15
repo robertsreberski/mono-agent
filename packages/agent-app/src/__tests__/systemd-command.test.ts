@@ -250,4 +250,43 @@ describe("Linux web command composition", () => {
     expect(mocks.start).toHaveBeenCalledOnce();
     expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining(["--host", "127.0.0.1", "--port", "5050"]));
   });
+
+  it("binds loopback on a fresh install with no installed unit", async () => {
+    mocks.inspect.mockResolvedValue({ ...service, activeState: "inactive", pid: 0 });
+    // Nothing answers before the install; the service is healthy once started.
+    mocks.health.mockResolvedValueOnce(false).mockResolvedValue(true);
+    expect(await runSystemdWebCommand({ positionals: ["start"], env: {} }, output())).toBe(0);
+    expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining(["--host", "127.0.0.1", "--port", "5050"]));
+  });
+
+  it("keeps the historical wide bind of an installed unit that never recorded --host", async () => {
+    mocks.read.mockResolvedValue({ argv: ["web", "run", "--port", "5050", "--theme", "plum"] });
+    mocks.health.mockResolvedValue(true);
+    expect(await runSystemdWebCommand({ positionals: ["restart"], env: {} }, output())).toBe(0);
+    expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining(["--host", "0.0.0.0", "--port", "5050"]));
+  });
+
+  it("preserves an installed unit's explicit host", async () => {
+    mocks.read.mockResolvedValue({ argv: ["web", "run", "--host", "10.0.0.5", "--port", "6060", "--theme", "plum"] });
+    mocks.health.mockResolvedValue(true);
+    expect(await runSystemdWebCommand({ positionals: ["restart"], env: {} }, output())).toBe(0);
+    expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining(["--host", "10.0.0.5", "--port", "6060"]));
+  });
+
+  it("reports listener and externally managed HTTPS routes in JSON status", async () => {
+    mocks.health.mockResolvedValue(true);
+    const deps = output();
+    expect(await runSystemdWebCommand({ positionals: ["status"], json: true, env: {} }, deps)).toBe(0);
+    const status = JSON.parse(deps.stdout.write.mock.calls[0]![0] as string) as {
+      ok: boolean;
+      listener: { host: string; port: number; url: string };
+      ownedTailscaleRoute: { state: string };
+      note: string;
+    };
+    expect(status.ok).toBe(true);
+    expect(status.listener).toMatchObject({ host: "127.0.0.1", port: 5050, url: "http://127.0.0.1:5050/" });
+    expect(status.ownedTailscaleRoute.state).toBe("not-managed");
+    expect(status.note).toContain("not inspected");
+    expect(deps.stdout.write).toHaveBeenCalledOnce();
+  });
 });
