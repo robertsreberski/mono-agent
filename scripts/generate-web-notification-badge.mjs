@@ -5,9 +5,10 @@
 // alpha channel, so the badge MUST be a transparent-background silhouette. Reusing the
 // opaque square icon-192.png produces a solid filled rectangle in the status bar.
 //
-// The glyph is the sparkle from icon.svg. That path's cubic segments trace an astroid
-// with points on the axes at radius 72; fitting the t=0.5 midpoint (-25.5, -24) gives
-// |x/R|^p + |y/R|^p = 1 with p = 0.65 to within 0.1%.
+// The notification badge intentionally keeps the earlier four-point signal silhouette:
+// the woven app mark loses its crossings when Android reduces it to a tiny monochrome
+// alpha mask. The cubic approximation has points on the axes at radius 72; fitting the
+// t=0.5 midpoint (-25.5, -24) gives |x/R|^p + |y/R|^p = 1 with p = 0.65 to within 0.1%.
 //
 // Run: node scripts/generate-web-notification-badge.mjs
 import { deflateSync } from "node:zlib";
