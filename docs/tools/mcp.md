@@ -545,8 +545,11 @@ Providers without usable credentials are omitted; an empty providers array does 
 prove any remaining quota. Last-good stale data is not current quota truth.
 
 The tool prefers this agent's `providers.piAuthPath`, using the existing Pi
-resolver for OAuth refresh. Copilot additionally discovers local editor and GitHub
-CLI github.com credentials, in the documented [usage credential order](/observability/web-console/#subscription-usage).
+resolver for Claude/Codex OAuth refresh. Copilot OAuth quota reads use the GitHub
+device-flow token in `credential.refresh`, never inference `access`, and never
+invoke the resolver for expiry or rejection. Only absent Pi Copilot credentials
+allow local editor and GitHub CLI github.com discovery; unusable/enterprise Pi
+entries are omitted without local fallback, in the documented [usage credential order](/observability/web-console/#subscription-usage).
 It does not accept credentials, paths, URLs or
 account identifiers. Console and tool share one five-minute per-provider cache
 and coalesced refresh/backoff. There is no forced-refresh argument, vendor write,

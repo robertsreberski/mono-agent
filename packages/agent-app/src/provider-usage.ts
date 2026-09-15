@@ -22,15 +22,30 @@ interface Entry { identity: string; value?: ProviderUsage; nextAt: number; fligh
 class UsageFailure extends Error {
   constructor(readonly code: ProviderUsageErrorCode, readonly retryAt?: number) { super(PROVIDER_USAGE_ERRORS[code]); }
 }
-function identity(selected: SelectedCredential): string {
+/** Match Pi 0.85.1 normalizeDomain, but reject malformed persisted markers instead of defaulting them. */
+function copilotHost(marker: unknown): string | undefined {
+  if (marker === undefined) return "github.com";
+  if (typeof marker !== "string") return undefined;
+  const trimmed = marker.trim();
+  if (!trimmed) return "github.com";
+  try { return new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`).hostname || undefined; }
+  catch { return undefined; }
+}
+function identity(provider: ProviderUsageId, selected: SelectedCredential): string {
   // Private in-memory equality key, never persisted or returned.
-  return createHash("sha256").update(JSON.stringify(selected)).digest("hex");
+  const { credential, source } = selected;
+  const value = provider === "github-copilot" && source === "pi" && credential.type === "oauth"
+    ? { source, type: credential.type, refresh: credential.refresh, host: copilotHost(credential.enterpriseUrl) }
+    : selected;
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 function nonempty(value: unknown): value is string { return typeof value === "string" && value.trim().length > 0; }
 function usable(provider: ProviderUsageId, selected: SelectedCredential | undefined, now: number): selected is SelectedCredential {
   if (!selected) return false;
   const { credential } = selected;
   if (provider === "opencode-go" || provider === "github-copilot" && credential.type === "api_key") return credential.type === "api_key" && nonempty(credential.key);
+  if (provider === "github-copilot") return credential.type === "oauth" && nonempty(credential.refresh)
+    && copilotHost(credential.enterpriseUrl) === "github.com";
   return credential.type === "oauth" && Number.isFinite(credential.expires)
     && (nonempty(credential.refresh) || (nonempty(credential.access) && credential.expires > now));
 }
@@ -56,7 +71,7 @@ export function createProviderUsageService(options: {
   readonly resolver?: Resolver;
   readonly fetch?: typeof fetch;
   readonly now?: () => number;
-  /** Private local lookup seam; never used when a usable Pi credential exists. */
+  /** Private local lookup seam; never used when a Pi Copilot credential exists. */
   readonly copilotCredential?: () => Promise<string | undefined>;
   readonly timeoutMs?: number;
   /** Passive evidence only, once per retained vendor fetch (never on cache reads). */
@@ -68,28 +83,21 @@ export function createProviderUsageService(options: {
   const localCopilot = options.copilotCredential ?? createCopilotCredentialDiscovery();
   const entries = new Map<ProviderUsageId, Entry>();
   const lifetime = new AbortController();
-  async function piCredentialFor(provider: ProviderUsageId): Promise<SelectedCredential | undefined> {
+  async function piCredentialFor(provider: ProviderUsageId): Promise<SelectedCredential | null | undefined> {
     try {
       const credential = await resolver.readCredential?.(provider);
       return credential === undefined ? undefined : { credential, source: "pi" };
-    } catch { return undefined; } // No usable credential evidence; never expose auth-file errors.
+    } catch { return null; } // Unknown ownership, not proven absence; never expose auth-file errors.
   }
   async function credentialFor(provider: ProviderUsageId): Promise<SelectedCredential | undefined> {
     const pi = await piCredentialFor(provider);
-    if (provider !== "github-copilot" || usable(provider, pi, now())) return pi;
+    if (pi === null) return undefined;
+    // Presence owns the account even when unusable; never pair it with an unrelated local login.
+    if (provider !== "github-copilot" || pi !== undefined) return pi;
     try {
       const key = await localCopilot();
       return nonempty(key) ? { credential: { type: "api_key", key }, source: "local" } : undefined;
     } catch { return undefined; }
-  }
-  async function refreshedCredential(provider: ProviderUsageId, previous: SelectedCredential): Promise<SelectedCredential> {
-    const fresh = await piCredentialFor(provider);
-    // Copilot's resolver returns an inference token, not GitHub's OAuth access.
-    // Never substitute that token (or stale access) when the persisted re-read fails.
-    if (provider === "github-copilot" && (fresh?.credential.type !== "oauth" || !nonempty(fresh.credential.access))) {
-      throw new UsageFailure("unavailable");
-    }
-    return fresh ?? previous;
   }
   async function refresh(provider: ProviderUsageId, entry: Entry, initial: SelectedCredential): Promise<ProviderUsage | undefined> {
     const generation = initial.source === "local" ? undefined : options.outcomes?.generation();
@@ -97,14 +105,15 @@ export function createProviderUsageService(options: {
     let selected = initial;
     let { credential } = selected;
     try {
-      let token = credential.type === "api_key" ? credential.key : credential.access;
-      if (selected.source === "pi" && credential.type === "oauth" && (!nonempty(token) || credential.expires <= now())) {
+      // Pi's refresh is the GitHub device token; access/expiry/catalog belong to inference only.
+      let token = credential.type === "api_key" ? credential.key : provider === "github-copilot" ? credential.refresh : credential.access;
+      if (provider !== "github-copilot" && selected.source === "pi" && credential.type === "oauth" && (!nonempty(token) || credential.expires <= now())) {
         try { token = await resolver(provider, { signal }); }
         catch { throw new UsageFailure("auth_failed"); }
-        selected = await refreshedCredential(provider, selected);
+        selected = await piCredentialFor(provider) ?? selected;
         credential = selected.credential;
         if (credential.type === "oauth" && nonempty(credential.access)) token = credential.access;
-        entry.identity = identity(selected);
+        entry.identity = identity(provider, selected);
       }
       if (!nonempty(token)) throw new UsageFailure("auth_failed");
       let response: Response | undefined;
@@ -119,14 +128,15 @@ export function createProviderUsageService(options: {
           "X-Github-Api-Version": "2025-04-01",
         });
         response = await request(URLS[provider], { method: "GET", headers, signal, redirect: "error" });
-        if (attempt === 0 && credential.type === "oauth" && selected.source === "pi" && (response.status === 401 || response.status === 403)) {
+        // The resolver's rejectedAccessToken contract cannot refresh a GitHub device token.
+        if (provider !== "github-copilot" && attempt === 0 && credential.type === "oauth" && selected.source === "pi" && (response.status === 401 || response.status === 403)) {
           await response.body?.cancel();
           try { token = await resolver(provider, { rejectedAccessToken: token, signal }); }
           catch { throw new UsageFailure("auth_failed"); }
-          selected = await refreshedCredential(provider, selected);
+          selected = await piCredentialFor(provider) ?? selected;
           credential = selected.credential;
           if (credential.type === "oauth" && nonempty(credential.access)) token = credential.access;
-          entry.identity = identity(selected);
+          entry.identity = identity(provider, selected);
           if (!nonempty(token)) throw new UsageFailure("auth_failed");
           continue;
         }
@@ -169,7 +179,7 @@ export function createProviderUsageService(options: {
     // Removed/replaced credentials must not disclose another account's cached usage.
     // A Pi-owned fetch may validate only Pi, never invoke local discovery on failure.
     const current = await (initial.source === "pi" ? piCredentialFor(provider) : credentialFor(provider));
-    if (lifetime.signal.aborted || !current || identity(current) !== entry.identity) {
+    if (lifetime.signal.aborted || !current || identity(provider, current) !== entry.identity) {
       if (entries.get(provider) === entry) entries.delete(provider);
       return undefined;
     }
@@ -187,7 +197,7 @@ export function createProviderUsageService(options: {
       if (!entries.get(provider)?.flight) entries.delete(provider);
       return undefined;
     }
-    const key = identity(credential);
+    const key = identity(provider, credential);
     let entry = entries.get(provider);
     if (entry?.flight && entry.identity !== key) {
       await entry.flight; // never overlap fetches, even across credential rotation
