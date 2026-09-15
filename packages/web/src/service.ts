@@ -150,6 +150,17 @@ const DEFAULT_DISCOVERY_INTERVAL_MS = 5_000;
 const DEFAULT_PURGE_INTERVAL_MS = 60 * 60 * 1_000;
 const INFO_TIMEOUT_MS = 2_500;
 /**
+ * Consecutive `/v1/info` probe failures tolerated before a discovered agent is
+ * reported offline. ONE missed probe is not evidence of a dead agent: the
+ * operator's info route is a synchronous handler, so a probe that runs out
+ * `INFO_TIMEOUT_MS` was queued behind a blocked event loop -- a busy agent --
+ * while the same route answers an idle agent in well under a millisecond.
+ * Tolerating a few samples costs about 15s at the discovery interval, and the
+ * trace heartbeat's own 30s staleness is the independent backstop that still
+ * reports an agent which is genuinely gone.
+ */
+export const PROBE_FAILURE_TOLERANCE = 3;
+/**
  * How rarely a still-connected agent is re-asked about the job cards this
  * console still draws as running. Reconnecting is the event that matters; this
  * is only the floor under a console that never loses the connection but did
@@ -511,6 +522,12 @@ export interface CreateWebServiceOptions extends WebStatePathOptions, DiscoverOp
   readonly logger?: WebServiceLogger;
   readonly clock?: () => Date;
   readonly discoveryIntervalMs?: number;
+  /**
+   * Consecutive operator probe failures tolerated before a discovered agent is
+   * reported offline. Test/embedding override; production uses
+   * `PROBE_FAILURE_TOLERANCE`.
+   */
+  readonly probeFailureTolerance?: number;
   readonly purgeIntervalMs?: number;
   readonly discoverImpl?: (options: DiscoverOperatorAgentsOptions) => Promise<readonly DiscoveredOperatorAgent[]>;
   /** Test/embedding override; production defaults to one 64 MiB weighted attachment turn. */
@@ -674,6 +691,15 @@ export class WebService {
    * `refreshAgentsOnce` can tell that provider authentication itself moved.
    */
   private projectedCapabilities = new Map<string, string>();
+  /**
+   * Source id -> the consecutive `INFO_TIMEOUT_MS` probe failures seen for that
+   * agent's CURRENT generation, and the generation they belong to. One failed
+   * sample is usually a blocked event loop rather than a dead agent, so it is
+   * the COUNT that reaches `PROBE_FAILURE_TOLERANCE` and makes it evidence of
+   * anything. Keyed by generation, so a restart can neither inherit the
+   * previous process's failures nor hide behind them.
+   */
+  private readonly probeFailures = new Map<string, { readonly generation: string; readonly count: number }>();
   /** Bounded catalog-admitted model refs per agent, seeded from `modelOptions`
    *  and appended to by every proxied `/v1/models` page. Admission is `has`,
    *  metadata is `get`. Map preserves insertion order, so evicting the oldest
@@ -3428,6 +3454,8 @@ export class WebService {
       agentGeneration(agent),
     ]));
     this.reconcileModelCatalogCache(generations);
+    this.reconcileProbeFailures(generations);
+    const tolerance = this.options.probeFailureTolerance ?? PROBE_FAILURE_TOLERANCE;
     const summaries = await Promise.all(discovered.map(async (agent): Promise<WebAgentSummary> => {
       const generation = generations.get(agent.source.sourceId)!;
       if (agent.baseUrl === undefined) return offlineSummary(agent, generation);
@@ -3440,6 +3468,10 @@ export class WebService {
       });
       try {
         const info = await client.info(AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]));
+        // A probe that answered is the evidence the counter exists to require,
+        // so the next failure starts a fresh count rather than resuming one
+        // from a stall that this pass has just disproved.
+        this.probeFailures.delete(agent.source.sourceId);
         nextConnections.set(agent.source.sourceId, { client, info, generation });
         this.seedModelCatalogFromOptions(agent.source.sourceId, generation, info.modelOptions);
         await this.restorePersistedModelAdmission(
@@ -3474,6 +3506,34 @@ export class WebService {
           sourceId: agent.source.sourceId,
           error: errorMessage(error),
         });
+        const failures = this.recordProbeFailure(agent.source.sourceId, generation);
+        const previous = this.store.getAgent(agent.source.sourceId);
+        // Below the tolerance the agent keeps the summary it already had. The
+        // info route is synchronous, so a probe that timed out was queued
+        // behind a busy event loop -- a working agent reported offline is what
+        // makes the console unusable -- while the trace heartbeat's 30s
+        // staleness, which reads `degraded` rather than depending on this
+        // probe, is the backstop that still reports an agent that is really
+        // gone. The stored summary is returned unchanged, deliberately: this
+        // pass learned nothing new about the agent, and a copy rebuilt from the
+        // pass's heartbeat would only rewrite the same row with a newer
+        // `updatedAt`.
+        //
+        // The same generation is required for both the summary and the
+        // connection it is returned with. A restarted agent is a different
+        // process behind the same source id: the summary it replaces cannot
+        // speak for it, and its predecessor's client must not be handed out as
+        // if it were live either.
+        if (failures < tolerance
+          && previous !== undefined
+          && previous.generation === generation
+          && previous.status !== "offline") {
+          const connection = this.connections.get(agent.source.sourceId);
+          if (connection !== undefined && connection.generation === generation) {
+            nextConnections.set(agent.source.sourceId, connection);
+          }
+          return previous;
+        }
         return offlineSummary(agent, generation);
       }
     }));
@@ -3520,6 +3580,32 @@ export class WebService {
     await this.reconcileDueProcessJobCards(previousConnections, nextConnections, signal);
     for (const threadId of this.store.queuedLiveInputThreadIds()) {
       void this.drainQueuedLiveInputs(threadId);
+    }
+  }
+
+  /**
+   * Count one more consecutive probe failure for `sourceId`'s current
+   * generation and return the running total. The generation is compared here,
+   * not only in the sweep below, so the count can never be inherited: a count
+   * earned by one process must not spend another process's tolerance.
+   */
+  private recordProbeFailure(sourceId: string, generation: string): number {
+    const seen = this.probeFailures.get(sourceId);
+    const count = seen !== undefined && seen.generation === generation ? seen.count + 1 : 1;
+    this.probeFailures.set(sourceId, { generation, count });
+    return count;
+  }
+
+  /**
+   * Bind failure counts to the agents discovery still reports, and to the
+   * generations those agents are on now -- the same sweep
+   * `reconcileModelCatalogCache` makes, for the same reason. A replaced
+   * generation starts from zero failures, and a departed source id takes its
+   * count with it instead of accumulating for the life of the process.
+   */
+  private reconcileProbeFailures(generations: ReadonlyMap<string, string>): void {
+    for (const [sourceId, seen] of this.probeFailures) {
+      if (generations.get(sourceId) !== seen.generation) this.probeFailures.delete(sourceId);
     }
   }
 
