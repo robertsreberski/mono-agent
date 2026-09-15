@@ -8,6 +8,7 @@ import { usageRecord } from "./provider-usage-mappers.js";
 
 const FILE_BYTES = 64 * 1024;
 const TOKEN_BYTES = 4096;
+const APP_ID_LENGTH = 256;
 const PROCESS_BYTES = 8192;
 interface ProcessOptions {
   readonly env: NodeJS.ProcessEnv;
@@ -75,7 +76,10 @@ export function createCopilotCredentialDiscovery(options: DiscoveryOptions = {})
         try {
           const data = usageRecord(JSON.parse(text));
           for (const key of Object.keys(data).sort()) {
-            if (key !== "github.com" && !/^github\.com:[A-Za-z0-9_-]+$/.test(key)) continue;
+            // App ids are opaque (current editor ids include dots), not hostnames.
+            if (key !== "github.com" && (!key.startsWith("github.com:")
+              || key.length <= "github.com:".length || key.length > "github.com:".length + APP_ID_LENGTH
+              || /[\x00-\x1f\x7f-\x9f]/.test(key))) continue;
             const found = token(usageRecord(data[key]).oauth_token);
             if (found) return found;
           }

@@ -23,6 +23,21 @@ describe("private Copilot local credential discovery", () => {
     ].slice(0, Math.min(3, source + 1)));
     expect(f.run).toHaveBeenCalledTimes(source === 3 ? 1 : 0);
   });
+  it.each(["github.com:Iv1.b507a08c87ecfe98", `github.com:${"a".repeat(256)}`])("accepts bounded opaque editor app key %s before other sources", async (host) => {
+    const f = fixture([editor("synthetic-apps", host), editor("synthetic-hosts", "github.com")]);
+    expect(await f.discover()).toBe("synthetic-apps");
+    expect(f.readFile).toHaveBeenCalledTimes(1);
+    expect(f.run).not.toHaveBeenCalled();
+  });
+  it.each([
+    "github.com.evil:Iv1.app", "evilgithub.com:Iv1.app", "https://github.com:Iv1.app", "GitHub.com:Iv1.app",
+    "github.com:", `github.com:${"a".repeat(257)}`, `github.com:${"a".repeat(4096)}`,
+    ...["\0", "\n", "\r", "\t", "\x7f", "\x85", "\x9f"].map((control) => `github.com:Iv1.${control}app`),
+  ])("rejects lookalike, empty, oversized and control-bearing editor keys (%#)", async (host) => {
+    const f = fixture([editor("synthetic-invalid", host), editor("synthetic-fallback", "github.com")]);
+    expect(await f.discover()).toBe("synthetic-fallback");
+    expect(f.run).not.toHaveBeenCalled();
+  });
   it("scopes editor host/app keys and active gh token to github.com only", async () => {
     const f = fixture([editor("enterprise", "github.company") , editor("lookalike", "github.com.evil"),
       "github.company:\n  oauth_token: enterprise\ngithub.com:\n  users:\n    other:\n      oauth_token: other-account\n  oauth_token: 'synthetic-active'\n"]);

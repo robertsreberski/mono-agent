@@ -58,7 +58,7 @@ function fixture(pi = false) {
   let key: string | undefined = "SECRET_LOCAL";
   let credential: Record<string, unknown> | undefined = pi ? { type: "oauth", access: "SECRET_PI", refresh: "SECRET_REFRESH", expires: NOW + 100000 } : undefined;
   const local = vi.fn(async () => key);
-  const resolver = Object.assign(vi.fn(async () => { credential = { ...credential, access: "SECRET_NEW", expires: time + 100000 }; return "SECRET_NEW"; }), { readCredential: vi.fn(async (provider: string) => provider === "github-copilot" ? credential : undefined) });
+  const resolver = Object.assign(vi.fn(async () => { credential = { ...credential, access: "SECRET_NEW", expires: time + 100000 }; return "SECRET_INFERENCE"; }), { readCredential: vi.fn(async (provider: string) => provider === "github-copilot" ? credential : undefined) });
   const fetch = vi.fn(async (_url: unknown, _init?: RequestInit) => Response.json(paid));
   const outcomes = { generation: () => 0, recordAccountSuccess: vi.fn(), recordAccountFailure: vi.fn() };
   const service = createProviderUsageService({ resolver: resolver as never, copilotCredential: local, fetch: fetch as never, now: () => time, outcomes });
@@ -95,6 +95,70 @@ describe("Copilot usage credentials, HTTP and retention", () => {
     expect((await f.service.snapshot()).providers[0]?.error?.code).toBe("auth_failed");
     expect(f.resolver).toHaveBeenCalledTimes(2); expect(f.local).not.toHaveBeenCalled();
     expect(f.outcomes.recordAccountFailure).toHaveBeenCalledTimes(1);
+  });
+  it.each(["expiry", "401", "403"])("ignores unknown Pi usageSource ownership during %s refresh", async (trigger) => {
+    for (const rejected of [false, true]) {
+      const f = fixture(true);
+      f.setPi({ type: "oauth", access: "SECRET_PI", refresh: "SECRET_REFRESH", expires: trigger === "expiry" ? NOW - 1 : NOW + 100000, usageSource: "local" });
+      if (trigger !== "expiry") f.fetch.mockResolvedValueOnce(new Response("SECRET_VENDOR", { status: Number(trigger) }));
+      if (rejected) f.fetch.mockImplementation(async () => new Response("SECRET_VENDOR", { status: 401 }));
+      const result = await f.service.snapshot("github-copilot");
+      expect(result.providers[0]?.error?.code).toBe(rejected ? "auth_failed" : undefined);
+      expect(f.resolver).toHaveBeenCalledTimes(trigger === "expiry" && rejected ? 2 : 1);
+      expect(f.fetch).toHaveBeenCalledTimes(trigger === "expiry" && !rejected ? 1 : 2);
+      expect(f.fetch.mock.calls.at(-1)?.[1]?.headers).toMatchObject({ Authorization: "token SECRET_NEW" });
+      expect(f.local).not.toHaveBeenCalled();
+      expect(f.outcomes.recordAccountSuccess).toHaveBeenCalledTimes(rejected ? 0 : 1);
+      expect(f.outcomes.recordAccountFailure).toHaveBeenCalledTimes(rejected ? 1 : 0);
+      expect(JSON.stringify(result)).not.toMatch(/SECRET|usageSource|identity/);
+      expect(JSON.stringify(f.fetch.mock.calls)).not.toContain("SECRET_INFERENCE");
+    }
+  });
+  describe.each(["expiry", "401", "403"])("persisted OAuth access required after %s refresh", (trigger) => {
+    it.each(["unavailable", "throws", "wrong-type", "missing-access", "empty-access", "blank-access"])("fails unavailable on %s re-read without resolver-token leakage or auth evidence", async (failure) => {
+      const f = fixture(true);
+      if (trigger === "expiry") f.setPi({ type: "oauth", access: "SECRET_OLD", refresh: "SECRET_REFRESH", expires: NOW - 1 });
+      else f.fetch.mockResolvedValueOnce(new Response("SECRET_VENDOR", { status: Number(trigger) }));
+      // The read fails transiently; the final ownership fence can still see the original credential.
+      f.resolver.mockImplementationOnce(async () => {
+        if (failure === "throws") f.resolver.readCredential.mockRejectedValueOnce(new Error("SECRET_READ_ERROR"));
+        else f.resolver.readCredential.mockResolvedValueOnce(failure === "unavailable" ? undefined
+          : failure === "wrong-type" ? { type: "api_key", key: "SECRET_WRONG_TYPE" }
+          : { type: "oauth", refresh: "SECRET_REFRESH", expires: NOW + 100000,
+            ...(failure === "missing-access" ? {} : { access: failure === "empty-access" ? "" : "   " }) });
+        return "SECRET_INFERENCE";
+      });
+      const result = await f.service.snapshot("github-copilot");
+      expect(result.providers[0]?.error?.code).toBe("unavailable");
+      expect(f.resolver).toHaveBeenCalledExactlyOnceWith("github-copilot", expect.objectContaining({
+        signal: expect.any(AbortSignal), ...(trigger === "expiry" ? {} : { rejectedAccessToken: "SECRET_PI" }),
+      }));
+      expect(f.fetch).toHaveBeenCalledTimes(trigger === "expiry" ? 0 : 1);
+      expect(JSON.stringify(f.fetch.mock.calls)).not.toMatch(/SECRET_INFERENCE|SECRET_WRONG_TYPE/);
+      expect(JSON.stringify(result)).not.toMatch(/SECRET|usageSource|identity/);
+      expect(f.local).not.toHaveBeenCalled();
+      expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled();
+      expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
+      expect(await f.service.refresh("github-copilot")).toEqual(result); // failure backoff also covers manual reads
+      expect(f.resolver).toHaveBeenCalledTimes(1);
+      expect(f.fetch).toHaveBeenCalledTimes(trigger === "expiry" ? 0 : 1);
+    });
+    it.each(["removed", "rotated"])("keeps the retention fence when Pi is %s during refresh", async (change) => {
+      const f = fixture(true);
+      if (trigger === "expiry") f.setPi({ type: "oauth", access: "SECRET_OLD", refresh: "SECRET_REFRESH", expires: NOW - 1 });
+      else f.fetch.mockResolvedValueOnce(new Response("SECRET_VENDOR", { status: Number(trigger) }));
+      f.resolver.mockImplementationOnce(async () => {
+        f.setPi(change === "removed" ? undefined : { type: "api_key", key: "SECRET_ROTATED" });
+        return "SECRET_INFERENCE";
+      });
+      expect((await f.service.snapshot("github-copilot")).providers).toEqual([]);
+      expect(f.fetch).toHaveBeenCalledTimes(trigger === "expiry" ? 0 : 1);
+      expect(f.resolver).toHaveBeenCalledTimes(1);
+      expect(f.local).not.toHaveBeenCalled();
+      expect(f.outcomes.recordAccountSuccess).not.toHaveBeenCalled();
+      expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
+      expect(JSON.stringify(f.fetch.mock.calls)).not.toContain("SECRET_INFERENCE");
+    });
   });
   it("uses Pi api keys without OAuth refresh and falls back only from unusable Pi", async () => {
     const f = fixture(); f.setPi({ type: "api_key", key: "SECRET_PI_KEY" });

@@ -108,6 +108,23 @@ describe("shared provider usage cache and safe failures", () => {
     expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
     await f.service.snapshot(); expect(f.fetch).toHaveBeenCalledTimes(2);
   });
+  it.each(["anthropic", "openai-codex"] as const)("preserves %s resolver-token fallback outside Copilot", async (provider) => {
+    for (const trigger of ["expiry", "401", "403"]) {
+      const f = fixture(provider);
+      if (trigger === "expiry") f.setCredential({ type: "oauth", refresh: "fixture-refresh", expires: NOW - 1 });
+      else f.fetch.mockResolvedValueOnce(new Response("private", { status: Number(trigger) }));
+      f.resolver.mockImplementationOnce(async () => {
+        f.setCredential({ type: "oauth", refresh: "fixture-refresh", expires: NOW + 100000 });
+        return "fixture-resolver";
+      });
+      expect((await f.service.snapshot(provider)).providers[0]?.error).toBeUndefined();
+      expect(f.resolver).toHaveBeenCalledTimes(1);
+      expect(f.fetch).toHaveBeenCalledTimes(trigger === "expiry" ? 1 : 2);
+      expect(f.fetch.mock.calls.at(-1)?.[1]?.headers).toMatchObject({ Authorization: "Bearer fixture-resolver" });
+      expect(f.outcomes.recordAccountSuccess).toHaveBeenCalledTimes(1);
+      expect(f.outcomes.recordAccountFailure).not.toHaveBeenCalled();
+    }
+  });
   it("never loops on rejected OAuth credentials and keeps error cache", async () => {
     const f = fixture(); f.fetch.mockImplementation(async () => new Response("SECRET_BODY", { status: 403 }));
     expect((await f.service.snapshot()).providers[0]?.error?.code).toBe("auth_failed");
