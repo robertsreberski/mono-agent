@@ -20,7 +20,7 @@ import type { WebEvent, WebMessage, WebMessageDelta, WebMessagePart } from "../c
 import { WEB_MAX_TURN_TEXT_CHARACTERS } from "../contracts.js";
 import { formatCronReplyContext } from "../cron-reply-context.js";
 import { applyDeltaOps, WebStore, WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
-import { agentGeneration, WebService, WeightedTurnBudget } from "../service.js";
+import { agentGeneration, PROBE_FAILURE_TOLERANCE, WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, fakeMonitor, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
@@ -334,10 +334,145 @@ describe("projected web capabilities", () => {
     try {
       expect((await service.bootstrap()).agents[0]?.supportsProviderAuth).toBe(true);
       reachable = false;
-      await service.refreshAgents();
+      // The tolerance is exhausted first: until the failures are conclusive the
+      // agent keeps the badge and the connection it had (see the probe-tolerance
+      // suite below), so only the sample that reaches the threshold is evidence
+      // that this agent has no live connection to use the route through.
+      for (let attempt = 0; attempt < PROBE_FAILURE_TOLERANCE; attempt += 1) await service.refreshAgents();
       const agent = (await service.bootstrap()).agents[0];
       expect(agent).toMatchObject({ sourceId: "agent-one", status: "offline" });
       expect(agent?.supportsProviderAuth).toBeUndefined();
+    } finally {
+      await service.stop();
+    }
+  });
+});
+
+/**
+ * Presence is a probe, and a probe is a sample: the operator's `/v1/info` route
+ * is a synchronous handler, so an answer that runs out the timeout means the
+ * event loop was blocked behind other work -- a busy agent -- not that the
+ * agent is gone. Flipping the badge on one sample made every busy agent flicker,
+ * so presence now needs consecutive failures. These cases pin the tolerance, the
+ * sample that still reports a dead agent, and the two paths tolerance must never
+ * cover: an unpublished operator endpoint, and a new generation.
+ */
+describe("operator probe failure tolerance", () => {
+  /** A fleet whose operator endpoint answers only while `reachable()` holds. */
+  function probeFetch(reachable: () => boolean): typeof fetch {
+    const upstream = operatorFetch();
+    return (async (input: string | URL | Request, init?: RequestInit) => {
+      if (!reachable()) throw new Error("operator probe failed");
+      return upstream(input, init);
+    }) as typeof fetch;
+  }
+
+  it("keeps an agent online through a failed probe and still reaches it through the retained connection", async () => {
+    let reachable = true;
+    const service = await createService({ fetchImpl: probeFetch(() => reachable) });
+    try {
+      expect((await service.bootstrap()).agents[0]).toMatchObject({ status: "online", supportsAttachments: true });
+      reachable = false;
+      await service.refreshAgents();
+      // The badge, and everything the last answered probe learned about the
+      // agent, survive the single failed sample.
+      expect((await service.bootstrap()).agents[0]).toMatchObject({
+        sourceId: "agent-one",
+        status: "online",
+        supportsAttachments: true,
+      });
+      // The connection is retained for that same window, so an operation issued
+      // during the stall reaches the agent and fails on its own terms
+      // (`agent_unreachable`) instead of being refused up front as
+      // `agent_offline` -- the agent is slow, not disconnected.
+      await expect(service.providerAuthStatus("agent-one")).rejects.toMatchObject({ code: "agent_unreachable" });
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it(`reports an agent offline after ${PROBE_FAILURE_TOLERANCE} consecutive failed probes`, async () => {
+    let reachable = true;
+    const service = await createService({ fetchImpl: probeFetch(() => reachable) });
+    try {
+      reachable = false;
+      for (let attempt = 1; attempt < PROBE_FAILURE_TOLERANCE; attempt += 1) {
+        await service.refreshAgents();
+        expect((await service.bootstrap()).agents[0]?.status).toBe("online");
+      }
+      // The tolerance-th consecutive failure is the sample that counts as
+      // evidence: an endpoint that has not answered for the whole window is
+      // offline, and the route that needs a live connection is refused again.
+      await service.refreshAgents();
+      expect((await service.bootstrap()).agents[0]).toMatchObject({ status: "offline", supportsAttachments: false });
+      await expect(service.providerAuthStatus("agent-one")).rejects.toMatchObject({ code: "agent_offline" });
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("counts from scratch once a probe answers again", async () => {
+    let reachable = true;
+    const service = await createService({ fetchImpl: probeFetch(() => reachable) });
+    try {
+      reachable = false;
+      for (let attempt = 1; attempt < PROBE_FAILURE_TOLERANCE; attempt += 1) await service.refreshAgents();
+      expect((await service.bootstrap()).agents[0]?.status).toBe("online");
+      reachable = true;
+      await service.refreshAgents();
+      // One tolerated failure, not the one that would have followed the two
+      // above it: the answered probe cleared the count.
+      reachable = false;
+      await service.refreshAgents();
+      expect((await service.bootstrap()).agents[0]?.status).toBe("online");
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("reports an agent whose operator endpoint is missing offline immediately", async () => {
+    let published = false;
+    const source = fakeDiscoveredAgent().source;
+    const service = await createService({
+      discoverImpl: async () => [published ? fakeDiscoveredAgent({ source }) : { source }],
+    });
+    try {
+      // No `baseUrl` means the operator endpoint was never published, so this
+      // agent was never reachable to begin with.
+      expect((await service.bootstrap()).agents[0]).toMatchObject({ sourceId: "agent-one", status: "offline" });
+      published = true;
+      await service.refreshAgents();
+      expect((await service.bootstrap()).agents[0]?.status).toBe("online");
+      published = false;
+      await service.refreshAgents();
+      // A missing endpoint is a real outage rather than a stall -- there is
+      // nothing to retry -- so the tolerance must not hold the badge open for
+      // it, not even for an agent that was online a pass ago.
+      expect((await service.bootstrap()).agents[0]).toMatchObject({ sourceId: "agent-one", status: "offline" });
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("does not mask a restarted agent's first failed probe", async () => {
+    let reachable = true;
+    let discovered = fakeDiscoveredAgent();
+    const service = await createService({
+      discoverImpl: async () => [discovered],
+      fetchImpl: probeFetch(() => reachable),
+    });
+    try {
+      reachable = false;
+      await service.refreshAgents();
+      expect((await service.bootstrap()).agents[0]?.status).toBe("online");
+      // The agent restarts while still unreachable: same source id, new process
+      // and endpoint. The tolerance the previous process was spending is not
+      // the new one's to spend, and the summary it replaces cannot speak for it.
+      discovered = fakeDiscoveredAgent({
+        source: { ...discovered.source, pid: 456, startedAt: "2026-07-17T10:00:00.000Z" },
+      });
+      await service.refreshAgents();
+      expect((await service.bootstrap()).agents[0]).toMatchObject({ status: "offline" });
     } finally {
       await service.stop();
     }
