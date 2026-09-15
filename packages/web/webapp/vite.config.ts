@@ -1,11 +1,13 @@
 /// <reference types="vitest/config" />
 
 import react from "@vitejs/plugin-react";
+import { sharedSourceAliases } from "./shared-sources";
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 import { configDefaults } from "vitest/config";
 
 export default defineConfig({
+  resolve: { alias: sharedSourceAliases },
   base: "/",
   plugins: [
     react(),

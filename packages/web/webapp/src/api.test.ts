@@ -1008,3 +1008,18 @@ describe("the session byte meter", () => {
     expect(dataUsage().bytes).toBe(0);
   });
 });
+
+
+describe("manual usage refresh boundary", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("uses an explicit same-origin POST and strictly parses the usage projection", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ schema: "mono-agent.provider-usage.v1", providers: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await api.refreshProviderUsage("agent one")).toEqual({ schema: "mono-agent.provider-usage.v1", providers: [] });
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/agents/agent%20one/provider-usage/refresh", expect.objectContaining({
+      method: "POST", body: "{}", headers: expect.objectContaining({ "X-Mono-Agent-Web-Origin": window.location.origin }),
+    }));
+    fetchMock.mockResolvedValueOnce(Response.json({ schema: "mono-agent.provider-usage.v1", providers: [], account_id: "DROP" }));
+    await expect(api.refreshProviderUsage("agent one")).rejects.toThrow("Invalid provider usage projection");
+  });
+});

@@ -150,6 +150,24 @@ credentials get one refresh through the existing Pi resolver and one retry.
 Claude rejection includes a re-login hint (usage requires `user:profile` scope);
 an OpenCode entitlement rejection means no Go subscription, not a bad key.
 
+**Refresh usage**, the compact text button beside **Check access**, explicitly
+reads subscription limits without running inference. Both provider actions use
+compact 10px labels at the sheet’s 28px control height, with one shared explanation. It is available only when
+the agent advertises manual refresh support. While pending it spins and disables
+conflicting authentication/check actions. It bypasses a successful cache's
+five-minute freshness and awaits the shared fetch, but never bypasses error
+backoff or `Retry-After`. Existing in-flight reads are coalesced, not duplicated.
+Failures keep last-good meters and their actual fetch time; partial or suppressed
+updates are not reported as a successful refresh of every row. Successful usage
+refresh earns only **Credential OK**, unlike the model request made by **Check access**.
+
+Manual intent uses `POST` to the same usage paths with `/refresh` appended, an
+empty JSON object, and an optional exact `provider` query filter. Discovery adds
+`refresh: true` to `capabilities.providerUsage: {version: 1}`; older agents keep
+ordinary cached reads and do not expose a misleading refresh control. A manual
+request to an unsupported agent fails explicitly rather than returning cached
+data as a successful refresh.
+
 The independent read routes are agent `${basePath}/v1/provider-usage` and console
 `/api/v1/agents/:id/provider-usage`, with an optional exact `provider` filter.
 They are no-store, use the existing owner/operator and same-origin protections,
@@ -207,14 +225,14 @@ callback cannot update the replacement session or auth store. The console keeps
 polling identical active snapshots; an expired retained session releases the
 local running control, while transient status-read failures remain retryable.
 
-**Run check** is one explicit section-level action for all provider rows already
+**Check access** is one explicit section-level action for all provider rows already
 displayed. It sends one tiny request to each provider's deterministically chosen
 cheapest eligible model, with no fallback or alternate-model retry, and reports
 partial results inline. A pass proves only that provider, credential, and model
 worked at the check time. Missing or incomparable prices, including multiple
 candidates when any price is unknown, make no request; a sole eligible candidate
 with unknown price is the one documented exception. Opening or polling settings
-never sends inference requests; subscription usage reads use the cached account API. Clicking **Run check** may consume quota or incur a
+never sends inference requests; subscription usage reads use the cached account API. Clicking **Check access** may consume quota or incur a
 minimum charge, and Pi may refresh OAuth and atomically update the agent's auth
 store. Checks run at most two providers concurrently, time out, can be cancelled,
 and observe a one-minute cooldown.

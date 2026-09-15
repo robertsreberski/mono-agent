@@ -55,7 +55,7 @@ export function createProviderUsageService(options: {
   readonly timeoutMs?: number;
   /** Passive evidence only, once per retained vendor fetch (never on cache reads). */
   readonly outcomes?: Pick<ProviderAuthObservationTracker, "generation" | "recordAccountSuccess" | "recordAccountFailure">;
-}): ProviderUsageOperator & { stop(): void } {
+}): Required<ProviderUsageOperator> & { stop(): void } {
   const resolver = options.resolver ?? createPiOAuthApiKeyResolver({ ...(options.path === undefined ? {} : { path: options.path }) });
   const now = options.now ?? Date.now;
   const request = options.fetch ?? fetch;
@@ -145,7 +145,7 @@ export function createProviderUsageService(options: {
     }
     return entry.value;
   }
-  async function read(provider: ProviderUsageId): Promise<ProviderUsage | undefined> {
+  async function read(provider: ProviderUsageId, manual = false): Promise<ProviderUsage | undefined> {
     if (lifetime.signal.aborted) return undefined;
     const credential = await credentialFor(provider);
     if (!usable(provider, credential, now())) {
@@ -156,21 +156,33 @@ export function createProviderUsageService(options: {
     let entry = entries.get(provider);
     if (entry?.flight && entry.identity !== key) {
       await entry.flight; // never overlap fetches, even across credential rotation
-      return read(provider);
+      return read(provider, manual);
     }
     if (!entry || entry.identity !== key) { entry = { identity: key, nextAt: 0 }; entries.set(provider, entry); }
-    if (entry.value && now() < entry.nextAt) return structuredClone(entry.value);
+    // Join through credential/observation validation, even if the fetch has
+    // already populated a value while its final retention check is pending.
+    if (manual && entry.flight) {
+      const value = await entry.flight;
+      return value === undefined ? undefined : structuredClone(value);
+    }
+    // Manual reads bypass successful freshness, never a failure/Retry-After fence.
+    // An existing fetch is shared, including SWR and credential-refresh work.
+    if (entry.value && now() < entry.nextAt && (!manual || entry.value.error !== undefined)) return structuredClone(entry.value);
     if (!entry.flight) {
       const owned = entry;
       owned.flight = refresh(provider, owned, credential).finally(() => { delete owned.flight; });
     }
-    if (entry.value?.windows.length) return { ...structuredClone(entry.value), stale: true };
+    if (!manual && entry.value?.windows.length) return { ...structuredClone(entry.value), stale: true };
     const value = await entry.flight;
     return value === undefined ? undefined : structuredClone(value);
   }
   return {
     async snapshot(provider) {
-      const results = await Promise.all((provider === undefined ? PROVIDER_USAGE_IDS : [provider]).map(read));
+      const results = await Promise.all((provider === undefined ? PROVIDER_USAGE_IDS : [provider]).map((id) => read(id)));
+      return { schema: PROVIDER_USAGE_SCHEMA, providers: results.filter((p): p is ProviderUsage => p !== undefined) };
+    },
+    async refresh(provider) {
+      const results = await Promise.all((provider === undefined ? PROVIDER_USAGE_IDS : [provider]).map((id) => read(id, true)));
       return { schema: PROVIDER_USAGE_SCHEMA, providers: results.filter((p): p is ProviderUsage => p !== undefined) };
     },
     stop() { lifetime.abort(); entries.clear(); },

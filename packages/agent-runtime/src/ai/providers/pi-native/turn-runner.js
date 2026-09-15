@@ -293,6 +293,11 @@ export async function buildTurnHarness(runState, {
     systemPrompt: appendStructuredOutputInstruction(systemPrompt, outputSchema, options.prompts),
     tools,
     streamOptions: { transport, maxRetries, maxRetryDelayMs },
+    // Harness retries are separate from pi-ai transport retries. A health probe
+    // must not issue another request even for a retryable terminal error.
+    ...(Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0
+      ? { retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 } }
+      : {}),
     steeringMode,
     followUpMode: steeringMode,
     promptCacheDiagnostics: options.promptCacheDiagnostics,

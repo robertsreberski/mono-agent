@@ -1063,15 +1063,15 @@ it("sends Monitor owner authorization only on exact wake turn and steering reque
 });
 
 
-it("validates provider usage at the HTTP boundary and rejects identifier-bearing projections", async () => {
+it.each([false, true])("validates usage projection at the HTTP boundary (refresh=%s)", async (refresh) => {
   const headers: Record<string, unknown>[] = [];
   let invalid = false;
   const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "fixture-key", fetchImpl: (async (_url, init) => {
     headers.push(init?.headers as Record<string, unknown>);
     return Response.json({ schema: "mono-agent.provider-usage.v1", providers: [], ...(invalid ? { account_id: "DROP" } : {}) });
   }) as typeof fetch });
-  expect((await client.providerUsage()).providers).toEqual([]);
+  expect((await (refresh ? client.refreshProviderUsage() : client.providerUsage())).providers).toEqual([]);
   expect(JSON.stringify(headers)).toContain("fixture-key");
   invalid = true;
-  await expect(client.providerUsage()).rejects.toThrow("Invalid provider usage projection");
+  await expect(refresh ? client.refreshProviderUsage() : client.providerUsage()).rejects.toThrow("Invalid provider usage projection");
 });

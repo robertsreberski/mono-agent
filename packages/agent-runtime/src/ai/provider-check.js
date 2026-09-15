@@ -45,6 +45,7 @@ export async function runPiProviderCheck(input) {
       mcpServers: {},
       maxTurns: 1,
       piMaxRetries: 0,
+      compaction: { enabled: false },
       providerCheckMaxTokens: 4,
       providerCheckAuthContext: {
         async env(name) { return input.environment?.[name]; },
@@ -61,6 +62,9 @@ export async function runPiProviderCheck(input) {
       ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
     });
   } catch (error) {
+    if (input.abortSignal?.aborted === true) {
+      return { state: "inconclusive", code: "cancelled", message: "The provider check did not complete." };
+    }
     return classifyProviderCheckFailure(error instanceof Error ? error.message : "", undefined);
   }
   if (result?.cancelled === true || input.abortSignal?.aborted === true) {

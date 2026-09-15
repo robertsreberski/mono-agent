@@ -160,7 +160,7 @@ describe("agentGeneration", () => {
 });
 
 describe("projected web capabilities", () => {
-  it("projects usage capability live and fences a response across a generation change", async () => {
+  it.each([false, true])("projects usage capability and fences a response across generation change (refresh=%s)", async (refresh) => {
     let advertised = true;
     let discovered = fakeDiscoveredAgent();
     let finish: ((response: Response) => void) | undefined;
@@ -169,14 +169,15 @@ describe("projected web capabilities", () => {
       discoverImpl: async () => [discovered],
       fetchImpl: (async (input, init) => {
         const url = String(input);
-        if (url.endsWith("/v1/info")) return Response.json({ schema: 1, capabilities: advertised ? { providerUsage: { version: 1 } } : {} });
+        if (url.endsWith("/v1/info")) return Response.json({ schema: 1, capabilities: advertised ? { providerUsage: { version: 1, refresh: true } } : {} });
         if (url.includes("/v1/provider-usage")) return new Promise<Response>((resolve) => { finish = resolve; });
         return other(input, init);
       }) as typeof fetch,
     });
     try {
       expect((await service.bootstrap()).agents[0]?.supportsProviderUsage).toBe(true);
-      const pending = service.providerUsage("agent-one");
+      expect((await service.bootstrap()).agents[0]?.supportsProviderUsageRefresh).toBe(true);
+      const pending = service.providerUsage("agent-one", undefined, refresh);
       const rejected = expect(pending).rejects.toMatchObject({ code: "agent_generation_changed" });
       await waitFor(() => finish !== undefined);
       advertised = false;
@@ -186,6 +187,18 @@ describe("projected web capabilities", () => {
       await rejected;
       expect((await service.bootstrap()).agents[0]?.supportsProviderUsage).toBeUndefined();
       await expect(service.providerUsage("agent-one")).rejects.toMatchObject({ code: "provider_usage_unavailable" });
+    } finally { await service.stop(); }
+  });
+
+  it("refuses manual refresh on an old usage-capable agent without requesting cached data", async () => {
+    const request = vi.fn(async (input: Parameters<typeof fetch>[0]) => String(input).endsWith("/v1/info")
+      ? Response.json({ schema: 1, capabilities: { providerUsage: { version: 1 } } })
+      : Response.json({}));
+    const service = await createService({ fetchImpl: request as typeof fetch });
+    try {
+      expect((await service.bootstrap()).agents[0]?.supportsProviderUsageRefresh).toBeUndefined();
+      await expect(service.providerUsage("agent-one", undefined, true)).rejects.toMatchObject({ code: "provider_usage_refresh_unavailable" });
+      expect(request.mock.calls.some(([url]) => String(url).includes("/v1/provider-usage"))).toBe(false);
     } finally { await service.stop(); }
   });
 
