@@ -144,7 +144,18 @@
    while leaving the reader's own text-size preference working; `none` would
    take that away too. It belongs here and nowhere else: scoping it to one
    subtree only moves the bug to the next one. */
-html, body, #root { width: 100%; min-width: 320px; height: 100%; margin: 0; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* The document box is `100dvh`, not `100%`, because a percentage resolves
+   against the initial containing block and the ICB is not the visible area of
+   an installed iOS/iPadOS 26 web app. A Home Screen app installed without
+   `apple-mobile-web-app-status-bar-style: black-translucent` — which this
+   console deliberately is, see index.html — is laid out below an opaque system
+   bar, yet `vh`, `lvh` and the ICB still measure the whole screen, while `svh`
+   and `dvh` measure the content area (WebKit 316008, 301994). The document was
+   therefore exactly that bar taller than the app shell below it, and the extra
+   strip was pannable: a drag pushed the chat header up under the system bar.
+   `dvh` is the same unit `.app-shell` already uses, so the shell and the
+   document it lives in now measure the same viewport everywhere. */
+html, body, #root { width: 100%; min-width: 320px; height: 100dvh; margin: 0; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 /* Installed iOS can sample a real fixed element at the viewport top rather
    than theme-color. Keep its paint and the document fallback on the header's
    surface, without overlaying UI or participating in layout. CSS variables
@@ -152,7 +163,11 @@ html, body, #root { width: 100%; min-width: 320px; height: 100%; margin: 0; -web
 html { --status-bar-bg: var(--panel); background: var(--status-bar-bg); }
 /* These full-screen states deliberately use a different surface. */
 html:has(#root > :is(.initial-state, .fatal-state)) { --status-bar-bg: var(--surface); }
-body { overflow: hidden; background: var(--status-bar-bg); color: var(--text); }
+/* `overscroll-behavior: none` is the second half of that fix: the console owns
+   its scrollers (`.thread-viewport` already contains its own overscroll), so a
+   drag that reaches the end of one must not chain into the document and pan the
+   whole app, and the viewport must not rubber-band into the system bar. */
+body { overflow: hidden; overscroll-behavior: none; background: var(--status-bar-bg); color: var(--text); }
 .status-bar-surface {
   position: fixed;
   top: 0;
