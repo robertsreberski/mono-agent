@@ -244,3 +244,73 @@ it.each([
   if (ttl === '1h') expect(JSON.stringify(payloads[0])).toContain('"ttl":"1h"');
   else expect(JSON.stringify(payloads[0])).not.toContain('"ttl":"1h"');
 });
+
+it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MCP and builtin %s definitions stable on real request-scoped endpoints', async (api) => {
+  const { getPiBuiltinTools, initPiMcpTools, closePiMcpClients } = await import('../../agent/tools/pi-bridge.js');
+  const { createSetConversationTitleRuntimeExtension } = await import('../../../../agent-app/src/conversation-title.ts');
+  const { createConsoleProjectsRuntimeExtension } = await import('../../../../agent-app/src/console-projects.ts');
+  const { createMemoryRememberRuntimeExtension } = await import('../../../../agent-app/src/memory-remember.ts');
+  const { createAdapterSendToolsServer } = await import('../../../../agent-app/src/adapter-send-tools.ts');
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
+  const { composeRuntimeOptionExtensions } = await import('../../../../agent-app/src/runtime-option-extensions.ts');
+  const { composeHostTurnEnvelope, formatHostCapabilities } = await import('../../../../agent-harness/src/context/turn-envelope.ts');
+  const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
+  const model = { ...fauxProvider({ provider: 'app-wire-fixture', models: [{ id: 'fixture' }] }).getModel(), api, baseUrl: 'https://fixture.invalid/v1' };
+  const mutations = vi.fn(); const bridgeFetch = vi.fn();
+  let baseline; const envelopes = new Set();
+  for (const [index, kind] of ['user', 'job-wake', 'monitor-wake', 'cron', 'exhausted-lineage', 'absent-controller'].entries()) {
+    const interactive = ['user', 'exhausted-lineage'].includes(kind);
+    const web = { threadId: 'thread', turnId: `turn-${index}`, conversationTitle: { schema: 1, writable: true }, consoleProjects: { schema: 1 },
+      ...(['job-wake', 'monitor-wake'].includes(kind) ? { trigger: kind } : {}) };
+    const metadata = kind === 'cron' ? { source: 'cron' } : kind === 'absent-controller' ? { source: 'web' } : { source: 'web', web };
+    const input = { request: { conversationId: 'web:thread', userMessage: kind, abortSignal: new AbortController().signal, metadata }, runId: `run-${index}`, context: {} };
+    const store = { supportsRemember: () => interactive, remember: mutations };
+    const adapterServer = await createAdapterSendToolsServer({ askUser: {
+        bridgeUrl: 'http://127.0.0.1:1', bridgeToken: 'synthetic-test-value', timeoutMs: interactive ? null : 1000,
+        // Wake turns retain AskUser's existing admission; only missing target refuses.
+        ...(kind === 'absent-controller' ? {} : { producerConversationId: 'web:thread', interactionConversationId: 'web:thread' }),
+      } }, {}, undefined, { fetchImpl: bridgeFetch });
+    const adapterClient = new Client({ name: "wire-fixture", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await adapterServer.connect(serverTransport); await adapterClient.connect(clientTransport);
+    const adapterTools = (await adapterClient.listTools()).tools.map(({ name, description, inputSchema }) => ({ name, description, parameters: inputSchema }));
+    const extension = composeRuntimeOptionExtensions([
+      createSetConversationTitleRuntimeExtension(),
+      createConsoleProjectsRuntimeExtension({ sourceId: 'fixture', policy: { allowedTools: ['*'], disallowedTools: [] }, createClient: async () => mutations }),
+      createMemoryRememberRuntimeExtension(store),
+    ]);
+    const bound = await extension(input);
+    const runOptions = { ...bound.runtimeOptions, toolLimits: { bashTimeoutMs: 120000 - index * 1000 },
+      processJobsAvailability: { chainDepth: index, maxChainDepth: 4, remainingStarts: Math.max(0, 4 - index), ...(index >= 4 ? { unavailableReason: 'chain_depth_exhausted' } : {}) } };
+    const builtins = getPiBuiltinTools(['Bash', 'Exec', 'Read', 'Monitor', 'MonitorStop'], { toolLimits: runOptions.toolLimits });
+    const mcp = await initPiMcpTools(runOptions.mcpServers, new Set(builtins.map((tool) => tool.name)));
+    try {
+      expect(mcp.warnings).toEqual([]);
+      if (!interactive) {
+        for (const [name, args] of [['SetConversationTitle', { title: 'No mutation' }], ['CreateProject', { name: 'No mutation' }], ['Remember', { text: 'Must not be persisted.' }]]) {
+          const result = await mcp.tools.find((tool) => tool.name === name).execute('refused', args);
+          expect(result.details.mcp_result_is_error, name).toBe(true);
+          if (name === "Remember") expect(result.details.raw?.structuredContent).toMatchObject({ stored: false });
+          else expect(result.details.raw?.structuredContent).toBeUndefined();
+        }
+      }
+      if (kind === 'absent-controller') {
+        const result = await adapterClient.callTool({ name: 'AskUser', arguments: { questions: [{ header: 'Question', question: 'Proceed?', options: [{ label: 'Yes', description: 'Proceed' }, { label: 'No', description: 'Stop' }] }] } });
+        expect(result.isError).toBe(true);
+      }
+      const envelope = composeHostTurnEnvelope(formatHostCapabilities(runOptions), kind); envelopes.add(envelope);
+      let payload;
+      await send(model, { systemPrompt: 'fixed', tools: [...builtins, ...mcp.tools, ...adapterTools], messages: [{ role: 'user', content: envelope, timestamp: 1 }] }, {
+        apiKey: 'synthetic-test-value', maxRetries: 0, fetch: async (_url, init) => {
+          payload = JSON.parse(init.body);
+          return new Response(JSON.stringify({ error: { message: 'intercepted', type: 'test_error' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+        },
+      }).result();
+      expect(payload).toBeDefined(); const bytes = JSON.stringify(payload.tools); baseline ??= bytes;
+      expect(bytes, kind).toBe(baseline);
+      expect(bytes).toContain('SetConversationTitle'); expect(bytes).toContain('Remember'); expect(bytes).toContain('AskUser'); expect(bytes).toContain('CreateProject');
+    } finally { await closePiMcpClients(mcp.clients); await bound.cleanup?.(); await adapterClient.close(); await adapterServer.close(); }
+  }
+  expect(envelopes.size).toBe(6); expect(mutations).not.toHaveBeenCalled(); expect(bridgeFetch).not.toHaveBeenCalled();
+});
