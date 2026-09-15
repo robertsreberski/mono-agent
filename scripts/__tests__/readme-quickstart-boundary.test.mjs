@@ -26,7 +26,7 @@ describe("root README Quickstart boundary", () => {
     "Quickstart: An Agent Folder From One Config File",
   );
 
-  it("keeps the complete runnable command flow in order", () => {
+  it("keeps the complete web-first runnable command flow in order", () => {
     const commands = [
       "npm i -g create-mono-agent",
       "mkdir my-agent",
@@ -34,8 +34,8 @@ describe("root README Quickstart boundary", () => {
       "mono-agent init",
       "mono-agent validate",
       "mono-agent start",
-      "PORT=3000",
-      'curl -s "http://127.0.0.1:${PORT}/webhook/invoke"',
+      "mono-agent web start --loopback",
+      "http://127.0.0.1:5050",
     ];
 
     let cursor = -1;
@@ -48,6 +48,15 @@ describe("root README Quickstart boundary", () => {
     expect(quickstart.split("\n").length).toBeLessThanOrEqual(70);
     expect(quickstart).toContain("./docs/getting-started/quickstart.md");
     expect(quickstart).toContain("./docs/reference/setup-security.md");
+  });
+
+  it("keeps the first browser conversation the documented path", () => {
+    // The beginner path must not require a terminal-only smoke channel or the
+    // terminal console: the browser console is the documented first surface.
+    expect(quickstart).not.toMatch(/\bcurl\b/u);
+    expect(quickstart).not.toMatch(/mono-agent tui\b/u);
+    expect(quickstart).not.toMatch(/mono-agent-tui\b/u);
+    expect(readme).toContain("./docs/reference/release-status.md");
   });
 
   it("keeps deep setup internals outside the runnable section", () => {
@@ -94,5 +103,17 @@ describe("root README Quickstart boundary", () => {
 
     expect(referenceIndex).toContain("[Setup security and managed runtime](/reference/setup-security/)");
     expect(firstAgent).toContain("[Setup security and managed runtime](/reference/setup-security/)");
+  });
+
+  it("keeps the installed-vs-source release status discoverable from the first-read pages", () => {
+    const releaseStatus = readRepoFile("docs/reference/release-status.md");
+    const install = readRepoFile("docs/getting-started/install.md");
+    const referenceIndex = readRepoFile("docs/reference/index.md");
+
+    expect(install).toContain("[Release status](/reference/release-status/)");
+    expect(referenceIndex).toContain("[Release status](/reference/release-status/)");
+    expect(releaseStatus).toContain("## Source-only capability groups");
+    expect(releaseStatus).toContain("## How this page is kept honest");
+    expect(releaseStatus).toContain("/getting-started/install/#run-an-unreleased-build");
   });
 });
