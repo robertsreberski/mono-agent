@@ -157,9 +157,12 @@
    document it lives in now measure the same viewport everywhere. */
 html, body, #root { width: 100%; min-width: 320px; height: 100dvh; margin: 0; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 /* Installed iOS can sample a real fixed element at the viewport top rather
-   than theme-color. Keep its paint and the document fallback on the header's
-   surface, without overlaying UI or participating in layout. CSS variables
-   follow the same theme/media changes as the header, not a JS color snapshot. */
+   than theme-color. With `black-translucent` the header's own surface is what
+   shows behind the status bar, so this is now the launch and document fallback
+   for the same band — it still paints the header's surface, without overlaying
+   UI or participating in layout, and it still matters for an older install that
+   has not been re-added to the Home Screen yet. CSS variables follow the same
+   theme/media changes as the header, not a JS color snapshot. */
 html { --status-bar-bg: var(--panel); background: var(--status-bar-bg); }
 /* These full-screen states deliberately use a different surface. */
 html:has(#root > :is(.initial-state, .fatal-state)) { --status-bar-bg: var(--surface); }
