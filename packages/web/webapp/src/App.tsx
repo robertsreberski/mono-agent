@@ -90,6 +90,43 @@ const isMobileViewport = (): boolean =>
  */
 const NOTIFICATION_OPEN_CONVERSATION_EVENT = "mono-agent:open-conversation";
 type MobileScreen = "dashboard" | "conversation";
+type MobileHistoryEntry =
+  | { readonly version: 1; readonly surface: MobileScreen }
+  | { readonly version: 1; readonly surface: "project"; readonly projectId: string };
+const MOBILE_HISTORY_STATE_KEY = "monoAgentMobileNavigation";
+
+const mobileHistoryEntry = (state: unknown): MobileHistoryEntry | null => {
+  if (typeof state !== "object" || state === null || Array.isArray(state)) return null;
+  const candidate = (state as Record<string, unknown>)[MOBILE_HISTORY_STATE_KEY];
+  if (typeof candidate !== "object" || candidate === null) return null;
+  const entry = candidate as Record<string, unknown>;
+  if (entry.version !== 1) return null;
+  if (entry.surface === "dashboard" || entry.surface === "conversation") {
+    return { version: 1, surface: entry.surface };
+  }
+  if (entry.surface === "project" && typeof entry.projectId === "string" && entry.projectId.length > 0) {
+    return { version: 1, surface: "project", projectId: entry.projectId };
+  }
+  return null;
+};
+
+const stateWithMobileHistoryEntry = (entry: MobileHistoryEntry): Record<string, unknown> => ({
+  ...(typeof window.history.state === "object"
+    && window.history.state !== null
+    && !Array.isArray(window.history.state)
+    ? window.history.state as Record<string, unknown>
+    : {}),
+  [MOBILE_HISTORY_STATE_KEY]: entry,
+});
+
+const replaceMobileHistoryEntry = (entry: MobileHistoryEntry): void => {
+  window.history.replaceState(stateWithMobileHistoryEntry(entry), "", window.location.href);
+};
+
+const pushMobileHistoryEntry = (entry: MobileHistoryEntry): void => {
+  window.history.pushState(stateWithMobileHistoryEntry(entry), "", window.location.href);
+};
+
 const initialMobileScreen = (): MobileScreen => {
   if (/^\/agents\//u.test(window.location.pathname)) return "conversation";
   try {
@@ -380,6 +417,7 @@ export function App() {
     hasServerSnapshot,
     hasRunningThread,
     openProjectId,
+    openProjectById,
     retry,
     setConversationVisible,
   } = useConsoleStore();
@@ -415,19 +453,112 @@ export function App() {
     setConversationVisible(documentVisible && (!mobile || conversationOpen));
   }, [conversationOpen, documentVisible, mobile, setConversationVisible]);
 
-  const openConversation = useCallback(() => setScreen("conversation"), []);
-  const showDashboard = useCallback(() => setScreen("dashboard"), []);
+  const openConversation = useCallback(() => {
+    if (isMobileViewport()) {
+      const current = mobileHistoryEntry(window.history.state);
+      if (current?.surface !== "conversation") {
+        pushMobileHistoryEntry({ version: 1, surface: "conversation" });
+      }
+    }
+    setScreen("conversation");
+  }, []);
+  const showDashboard = useCallback(() => {
+    if (isMobileViewport() && mobileHistoryEntry(window.history.state)?.surface === "conversation") {
+      setScreen("dashboard");
+      window.history.back();
+      return;
+    }
+    setScreen("dashboard");
+  }, []);
   const closePalette = useCallback(() => setPalette(false), []);
   const closeAgentSettings = useCallback(() => setAgentSettings(false), []);
   const closeProjectSettings = useCallback(() => setProjectSettings(null), []);
   const togglePalette = useCallback(() => setPalette((current) => !current), []);
 
-  // A project page lives in the dashboard slot. Opening one from the pushed
-  // conversation screen on a phone must bring that slot back, or the page
-  // lands aria-hidden and inert behind the conversation.
+  const previousProjectIdRef = useRef<string | null>(openProjectId);
+  const projectHistoryCloseRef = useRef(false);
+  const mobileHistoryInitializedRef = useRef(false);
+
+  // A project page is another pushed mobile surface. When it replaces a
+  // conversation, replace that entry too: the project's Back contract returns
+  // to the Dashboard, not to the conversation it replaced.
   useEffect(() => {
-    if (openProjectId !== null && mobile) setScreen("dashboard");
+    const previousProjectId = previousProjectIdRef.current;
+    previousProjectIdRef.current = openProjectId;
+    if (!mobile) return;
+    if (openProjectId !== null) {
+      setScreen("dashboard");
+      const current = mobileHistoryEntry(window.history.state);
+      if (current?.surface === "project" && current.projectId === openProjectId) return;
+      const projectEntry = { version: 1, surface: "project", projectId: openProjectId } as const;
+      if (current === null) {
+        replaceMobileHistoryEntry({ version: 1, surface: "dashboard" });
+        pushMobileHistoryEntry(projectEntry);
+      } else if (current.surface === "dashboard") pushMobileHistoryEntry(projectEntry);
+      else replaceMobileHistoryEntry(projectEntry);
+      return;
+    }
+    if (previousProjectId === null) return;
+    if (projectHistoryCloseRef.current) {
+      projectHistoryCloseRef.current = false;
+      return;
+    }
+    if (mobileHistoryEntry(window.history.state)?.surface === "project") window.history.back();
   }, [mobile, openProjectId]);
+
+  const closeMobileProject = useCallback(() => {
+    const ownsProjectEntry = isMobileViewport()
+      && mobileHistoryEntry(window.history.state)?.surface === "project";
+    if (ownsProjectEntry) projectHistoryCloseRef.current = true;
+    closeProject();
+    if (ownsProjectEntry) window.history.back();
+  }, [closeProject]);
+
+  useEffect(() => {
+    if (!mobile) {
+      mobileHistoryInitializedRef.current = false;
+      return;
+    }
+    if (mobileHistoryInitializedRef.current) return;
+    mobileHistoryInitializedRef.current = true;
+    const initialEntry = mobileHistoryEntry(window.history.state);
+    if (initialEntry === null) {
+      replaceMobileHistoryEntry({ version: 1, surface: "dashboard" });
+      if (screen === "conversation") {
+        pushMobileHistoryEntry({ version: 1, surface: "conversation" });
+      } else if (openProjectId !== null) {
+        pushMobileHistoryEntry({ version: 1, surface: "project", projectId: openProjectId });
+      }
+      return;
+    }
+    if (initialEntry.surface === "project") {
+      setScreen("dashboard");
+      if (openProjectId !== initialEntry.projectId) openProjectById(initialEntry.projectId);
+      return;
+    }
+    if (openProjectId !== null) closeProject();
+    setScreen(initialEntry.surface);
+  }, [closeProject, mobile, openProjectById, openProjectId, screen]);
+
+  useEffect(() => {
+    if (!mobile) return;
+    const onPopState = (event: PopStateEvent) => {
+      const entry = mobileHistoryEntry(event.state);
+      if (entry === null) return;
+      if (entry.surface === "project") {
+        setScreen("dashboard");
+        if (openProjectId !== entry.projectId) openProjectById(entry.projectId);
+        return;
+      }
+      if (openProjectId !== null) {
+        projectHistoryCloseRef.current = true;
+        closeProject();
+      }
+      setScreen(entry.surface);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [closeProject, mobile, openProjectById, openProjectId]);
 
   // A notification names a conversation, not a screen: selecting its thread
   // without pushing it leaves the chat behind the mobile dashboard. The
@@ -482,9 +613,9 @@ export function App() {
     if (!isMobileDrawerSwipe(start, end, "right")) return;
 
     event.preventDefault();
-    if (start.intent === "close-project") closeProject();
+    if (start.intent === "close-project") closeMobileProject();
     else showDashboard();
-  }, [closeProject, showDashboard]);
+  }, [closeMobileProject, showDashboard]);
 
   const cancelDrawerGesture = useCallback(() => {
     drawerGestureRef.current = null;
@@ -708,7 +839,11 @@ export function App() {
         {/* A row is marked as the open conversation only where that
             conversation is on screen: beside the list on a desktop, and on a
             phone only once it has been pushed over this one. */}
-        <Dashboard onNavigate={openConversation} highlightSelected={!mobile || conversationOpen} />
+        <Dashboard
+          onNavigate={openConversation}
+          onCloseProject={closeMobileProject}
+          highlightSelected={!mobile || conversationOpen}
+        />
       </div>
       <div
         ref={chatRef}

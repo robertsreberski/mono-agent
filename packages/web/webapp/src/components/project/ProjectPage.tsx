@@ -23,10 +23,12 @@ const conversationCountLabel = (count: number): string =>
 export function ProjectPage({
   project,
   onNavigate,
+  onClose,
   highlightSelected = true,
 }: {
   readonly project: ProjectSummary;
   readonly onNavigate?: () => void;
+  readonly onClose?: () => void;
   readonly highlightSelected?: boolean;
 }) {
   const {
@@ -79,7 +81,7 @@ export function ProjectPage({
           className="project-back"
           aria-label={`Back to ${agentLabel} conversations`}
           title={`Back to ${agentLabel} conversations`}
-          onClick={closeProject}
+          onClick={onClose ?? closeProject}
         >
           <Icon name="chevron-left" size={20} />
           <span>{agentLabel}</span>
