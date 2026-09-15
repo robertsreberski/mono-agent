@@ -568,7 +568,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
       {usageFeedback !== null && <p role="status" className="provider-auth-check-disclosure">{usageFeedback}</p>}
       {agent.supportsProviderAuth === true && status === null && authError === null && <p aria-live="polite">Loading provider status…</p>}
       <div className="provider-auth-list">
-        {status?.providers.map((provider) => {
+        {agent.supportsProviderAuth === true && status?.providers.map((provider) => {
           const actionable = provider.methods.length > 0;
           const presentation = providerAuthPresentation(provider);
           const checkResult = check?.results.find((result) => result.providerId === provider.providerId);
@@ -603,7 +603,15 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
             </article>
           );
         })}
-
+        {agent.supportsProviderUsage === true && agent.supportsProviderAuth !== true && usage?.providers.map((provider) => (
+          <article className="provider-auth-card" key={provider.providerId}>
+            <div className="provider-auth-heading">
+              <b>{provider.label}</b>
+              {provider.plan !== undefined && <span className="provider-usage-plan">{provider.plan}</span>}
+            </div>
+            <ProviderUsageMeters usage={provider} />
+          </article>
+        ))}
       </div>
       {methodProvider !== null && methodProvider.methods.length > 1 && !checkActive && (
         <div className="provider-auth-flow">

@@ -147,6 +147,22 @@ describe("compact Agent settings subscription meters", () => {
     if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-settings-${name}-refresh-error.png` });
   });
 
+  it("renders scoped meters without auth controls for an independent usage capability", async () => {
+    await page.viewport(viewport.width, viewport.height);
+    store.selectedAgent = agent("fixture", { supportsProviderUsage: true, supportsProviderUsageRefresh: true });
+    render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    await screen.findByRole("progressbar", { name: "GitHub Copilot Credits used" });
+    expect(screen.getByRole("heading", { name: "Subscription usage" })).toBeVisible();
+    expect(screen.getAllByRole("progressbar")).toHaveLength(8);
+    expect(document.querySelectorAll(".provider-auth-card")).toHaveLength(4);
+    expect(document.querySelectorAll(".provider-auth-card button, .provider-auth-state, .provider-auth-check-result")).toHaveLength(0);
+    expect(screen.queryByText("Usage only")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Check access" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Refresh usage" })).toBeVisible();
+    expect(mocks.providerAuthStatus).not.toHaveBeenCalled();
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(viewport.width);
+  });
+
   it("hides credential-only usage while retaining the active provider's meters", async () => {
     await commands.emulateColorScheme("light");
     await page.viewport(viewport.width, viewport.height);

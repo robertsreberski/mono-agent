@@ -3,6 +3,7 @@ import { createRef } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent } from "../test/fixtures";
+import type { ProviderUsageSnapshot } from "../types";
 import "../styles.css";
 
 const storeMock = vi.hoisted(() => ({
@@ -119,6 +120,43 @@ const advanceProviderPollsUntil = async (expectation: () => void, maxPolls = 12)
 };
 
 describe("AgentSettingsDialog", () => {
+  const usageSnapshot: ProviderUsageSnapshot = { schema: "mono-agent.provider-usage.v1", providers: [
+    { providerId: "github-copilot", label: "GitHub Copilot", plan: "Individual", fetchedAt: "2026-09-15T12:00:00Z", stale: false,
+      windows: [{ kind: "credits", label: "Credits", usedPercent: 42, periodMs: 2592000000 }] },
+  ] };
+
+  it("renders meter-only cards when usage is supported without auth support", async () => {
+    storeMock.selectedAgent = agent("alpha", { supportsProviderUsage: true, supportsProviderUsageRefresh: true });
+    apiMock.providerUsage.mockResolvedValue(usageSnapshot);
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    expect(await screen.findByRole("progressbar", { name: "GitHub Copilot Credits used" })).toHaveAttribute("value", "42");
+    expect(screen.getByRole("heading", { name: "Subscription usage" })).toBeInTheDocument();
+    expect(screen.getByText("Individual")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh usage" })).toBeEnabled();
+    expect(screen.getByText("GitHub Copilot").closest("article")!.querySelector("button, .provider-auth-state, .provider-auth-check-result")).toBeNull();
+    expect(screen.queryByText("Usage only")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Check access" })).toBeNull();
+    expect(apiMock.providerAuthStatus).not.toHaveBeenCalled();
+  });
+
+  it("never falls back to unmatched usage while auth status is loading or after it loads", async () => {
+    storeMock.selectedAgent = agent("alpha", { supportsProviderAuth: true, supportsProviderUsage: true });
+    apiMock.providerUsage.mockResolvedValue(usageSnapshot);
+    const status = deferred<ReturnType<typeof providerAuthStatusSnapshot>>();
+    apiMock.providerAuthStatus.mockReturnValue(status.promise);
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(apiMock.providerUsage).toHaveBeenCalled();
+    expect(screen.getByText("Loading provider status…")).toBeInTheDocument();
+    expect(screen.queryByText("GitHub Copilot")).toBeNull();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    await act(async () => status.resolve(providerAuthStatusSnapshot("not_verified")));
+    expect(screen.queryByText("Loading provider status…")).toBeNull();
+    expect(screen.getByRole("button", { name: "Re-authenticate" })).toBeInTheDocument();
+    expect(screen.queryByText("GitHub Copilot")).toBeNull();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
   it("offers refresh only with the additive capability and disables it while offline", async () => {
     storeMock.selectedAgent = agent("alpha", { supportsProviderAuth: true, supportsProviderUsage: true });
     apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
