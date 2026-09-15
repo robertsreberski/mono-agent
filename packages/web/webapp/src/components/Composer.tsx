@@ -75,7 +75,10 @@ export const buildComposerCommands = ({
     : []),
 ];
 
-export function Composer({ runSettings }: { readonly runSettings?: ReactNode } = {}) {
+export function Composer({ runSettings, notice }: {
+  readonly runSettings?: ReactNode;
+  readonly notice?: ReactNode;
+} = {}) {
   const store = useConsoleStore();
   const {
     connection,
@@ -241,6 +244,7 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
           />
         )}
         <ComposerQuotePreview />
+        {notice}
         <ComposerPrimitive.AttachmentDropzone
           className="composer-dropzone"
           disabled={!canUpload}
