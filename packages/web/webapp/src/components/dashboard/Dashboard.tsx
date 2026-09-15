@@ -30,9 +30,11 @@ import { flattenCatalogModels } from "../route-label";
  */
 export function Dashboard({
   onNavigate,
+  onCloseProject,
   highlightSelected = true,
 }: {
   readonly onNavigate?: () => void;
+  readonly onCloseProject?: () => void;
   readonly highlightSelected?: boolean;
 }) {
   const {
@@ -134,7 +136,14 @@ export function Dashboard({
   // An open project takes this whole slot: the desktop left column and the
   // mobile entrance screen draw the project page instead of the Dashboard.
   if (openProject !== null) {
-    return <ProjectPage project={openProject} onNavigate={onNavigate} highlightSelected={highlightSelected} />;
+    return (
+      <ProjectPage
+        project={openProject}
+        onNavigate={onNavigate}
+        onClose={onCloseProject}
+        highlightSelected={highlightSelected}
+      />
+    );
   }
 
   return (
