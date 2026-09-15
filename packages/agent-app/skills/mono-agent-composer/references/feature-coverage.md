@@ -180,8 +180,10 @@ channel sends. There is no separate config key or background/wake behavior.
 ### Subscription usage (Claude, Codex, OpenCode Go, GitHub Copilot)
 
 The app automatically exposes `ProviderUsage` on policy-permitted turns and
-usage meters under matching provider-auth rows in Agent settings, plus usage-only
-cards for unmatched providers. It reads usable credentials in `providers.piAuthPath`:
+usage meters under matching provider-auth rows in Agent settings. Only providers
+activated by this agent’s primary/fallback, agent-host memory LLM, and enabled
+cron/webhook model references qualify; credentials alone do not activate a provider.
+It reads usable credentials in `providers.piAuthPath`:
 Claude/Codex OAuth, OpenCode Go's static key, or GitHub Copilot OAuth/API key.
 Copilot OAuth uses GitHub's device token in `refresh`, never inference `access`;
 inference expiry/rotation does not refresh or invalidate quota usage. Copilot

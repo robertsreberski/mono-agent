@@ -1,3 +1,4 @@
+import { createAgentProviderUsage } from "./provider-usage-scope.js";
 import { createProviderUsageService } from "./provider-usage.js";
 // Internal host implementation; `app.ts` remains the stable public facade.
 import { resolve } from "node:path";
@@ -423,7 +424,12 @@ export class MonoAgentAppController implements MonoAgentApp {
       service = createProviderUsageService({ ...(path ? { path } : {}), outcomes: this.providerAuthObservations });
       this.providerUsageServices.set(path, service);
     }
-    return service;
+    return createAgentProviderUsage({
+      config,
+      drivers: this.drivers,
+      input: { cwd: this.cwd, configPath: this.configReadPath, env: this.env },
+      service,
+    });
   }
   /** Process-local proof/failure cache shared by every responder and auth status. */
   readonly providerAuthObservations = createProviderAuthObservationTracker();

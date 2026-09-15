@@ -125,8 +125,9 @@ on desktop and coarse-touch screens. Provider text actions remain 28px high.
 ### Subscription usage
 
 Agents with the `providerUsage` v1 capability show subscription meters under
-matching provider-auth rows. Unmatched usage providers appear as **Usage only**
-cards, without an auth badge, live-check result or authentication controls:
+matching provider-auth rows, only for providers activated by this agent’s configured
+primary/fallback, agent-host memory LLM, and enabled cron/webhook model references.
+Credentials alone do not activate a provider; unmatched usage is not displayed:
 
 | Provider | Core meters | Plan |
 | --- | --- | --- |
