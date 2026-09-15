@@ -2,7 +2,7 @@
 title: "Deprecations & compatibility decisions"
 description: "Track scheduled removals and intentionally permanent compatibility behavior across mono-agent releases."
 sidebar:
-  order: 8
+  order: 9
 ---
 
 This page is the canonical removal tracker for deprecated mono-agent surfaces.

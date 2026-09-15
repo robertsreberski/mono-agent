@@ -29,9 +29,9 @@ export default defineConfig({
       title: 'mono-agent',
       favicon: '/favicon.svg',
       description:
-        'Config-first agent framework — one mono-agent.config.json turns any folder ' +
-        'into a running agent over webhook, OpenAI-compatible API, Telegram, Slack, ' +
-        'WhatsApp, A2A, and cron, with tiered memory, sandboxing, and observability.',
+        'Config-first AI agent for coding and non-coding work in a persistent web ' +
+        'workspace — one mono-agent.config.json defines the model routes, tools, ' +
+        'skills, memory, channels, and sandbox.',
       social: [
         {
           icon: 'github',
@@ -44,15 +44,32 @@ export default defineConfig({
         baseUrl: 'https://github.com/robertsreberski/mono-agent/edit/main/docs/',
       },
       // Curated section order, mirroring the old just-the-docs nav_order.
+      // The browser console is the primary product surface, so it gets its own
+      // top-level entry instead of being buried in the observability list; the
+      // page keeps its stable /observability/web-console/ URL. Because a page
+      // listed manually is still emitted by a sibling autogenerate group, the
+      // observability group below spells out its pages explicitly — add new
+      // observability pages to that list.
       sidebar: [
         { label: 'Getting Started', items: [{ autogenerate: { directory: 'getting-started' } }] },
+        { label: 'Web workspace', items: [{ label: 'Browser console', slug: 'observability/web-console' }] },
         { label: 'Configuration', items: [{ autogenerate: { directory: 'config' } }] },
         { label: 'Runtime & Providers', items: [{ autogenerate: { directory: 'runtime' } }] },
         { label: 'Channels', items: [{ autogenerate: { directory: 'channels' } }] },
         { label: 'Memory', items: [{ autogenerate: { directory: 'memory' } }] },
         { label: 'Context & Skills', items: [{ autogenerate: { directory: 'context' } }] },
         { label: 'Tools, MCP & Sandbox', items: [{ autogenerate: { directory: 'tools' } }] },
-        { label: 'Observability & CLI', items: [{ autogenerate: { directory: 'observability' } }] },
+        {
+          label: 'Observability & CLI',
+          items: [
+            { slug: 'observability' },
+            { slug: 'observability/artifacts-and-traces' },
+            { slug: 'observability/phoenix-and-backfill' },
+            { slug: 'observability/cli-reference' },
+            { slug: 'observability/tui' },
+            { slug: 'observability/linux-services' },
+          ],
+        },
         { label: 'Programmatic', items: [{ autogenerate: { directory: 'programmatic' } }] },
         { label: 'Playbooks', items: [{ autogenerate: { directory: 'playbooks' } }] },
         { label: 'Reference', items: [{ autogenerate: { directory: 'reference' } }] },
