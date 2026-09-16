@@ -9,6 +9,8 @@ export interface SubagentDisposition {
   continuity: SubagentContinuity;
   reason?: SubagentFailureReason;
   closeAfterSuccess?: boolean;
+  /** Intentional parent stop, certified continuity and released ownership only. */
+  resumeAfterStop?: true;
 }
 export interface ManagedSubagentAdmission {
   readonly instanceIncarnation: string;

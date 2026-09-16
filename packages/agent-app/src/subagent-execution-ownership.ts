@@ -13,6 +13,7 @@ export interface SubagentExecutionOwnership {
   turnToken: string;
   owner: { pid: number; incarnation: ProcessIncarnation; settlement: "not_started" | "running" | "settled" | "dead" | "unknown" };
   revoked: boolean;
+  parentStopRequested?: true;
   publication: { sequence: number; state: "pending" | "confirmed"; receiptPending?: boolean; receiptRecorded?: number };
   command?: SubagentOwnedCommand;
   /** Host-bound attempt/call keys. Never evict keys while the turn can execute. */
@@ -75,7 +76,8 @@ export function hasSubagentObligation(record: OwnershipRecord): boolean {
 /** Validate before a durable store or registry can act on owner identity. */
 export function isSubagentExecutionOwnership(value: unknown): value is SubagentExecutionOwnership {
   if (!object(value) || !exact(value, ["schemaVersion", "instanceIncarnation", "turnToken", "owner", "revoked", "publication", "seenCalls",
-    ...["command", "registryRoot", "disposition", "usage"].filter((key) => Object.hasOwn(value, key))])
+    ...["command", "registryRoot", "disposition", "usage", "parentStopRequested"].filter((key) => Object.hasOwn(value, key))])
+    || (Object.hasOwn(value, "parentStopRequested") && value.parentStopRequested !== true)
     || (value.registryRoot !== undefined && !canonicalPath(value.registryRoot))
     || (value.usage !== undefined && !usage(value.usage))
     || (value.disposition !== undefined && !disposition(value.disposition))
@@ -92,6 +94,8 @@ export function isSubagentExecutionOwnership(value: unknown): value is SubagentE
     || !value.seenCalls.every((key) => text(key, 512)) || new Set(value.seenCalls).size !== value.seenCalls.length
     || Buffer.byteLength(JSON.stringify(value.seenCalls), "utf8") > SUBAGENT_SEEN_CALLS_MAX_BYTES
     || (value.command !== undefined && (!isSubagentOwnedCommand(value.command) || !value.seenCalls.includes(value.command.callKey)))) return false;
+  if (object(value.disposition) && value.disposition.resumeAfterStop === true
+    && (value.parentStopRequested !== true || !["settled", "not_started"].includes(String(value.owner.settlement)))) return false;
   if (["settled", "dead", "unknown"].includes(String(value.owner.settlement)) && !value.revoked) return false;
   if (value.owner.settlement === "not_started" && (value.command !== undefined || value.seenCalls.length > 0)) return false;
   return Buffer.byteLength(JSON.stringify(value), "utf8") <= SUBAGENT_OWNERSHIP_MAX_BYTES;
@@ -127,7 +131,10 @@ function object(value: unknown): value is Record<string, unknown> { return typeo
 function exact(value: Record<string, unknown>, keys: readonly string[]): boolean { return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }
 
 function disposition(value: unknown): value is SubagentDisposition {
-  return object(value) && exact(value, ["status", "continuity", ...["reason", "closeAfterSuccess"].filter((key) => Object.hasOwn(value, key))])
+  return object(value) && exact(value, ["status", "continuity", ...["reason", "closeAfterSuccess", "resumeAfterStop"].filter((key) => Object.hasOwn(value, key))])
+    && (!Object.hasOwn(value, "resumeAfterStop") || (value.resumeAfterStop === true && value.continuity === "retained"
+      && ((value.status === "cancelled" && value.reason === "cancelled")
+        || (["ok", "awaiting_reply"].includes(String(value.status)) && value.reason === undefined))))
     && (value.closeAfterSuccess === undefined || typeof value.closeAfterSuccess === "boolean")
     && ["ok", "awaiting_reply", "failed", "timeout", "cancelled", "empty", "interrupted", "busy"].includes(String(value.status))
     && ["retained", "lost", "unknown"].includes(String(value.continuity))

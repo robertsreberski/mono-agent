@@ -21,7 +21,16 @@ export interface InternalProcessJobRequest {
   cleanup(): Promise<void>;
 }
 
+export interface SubagentStopIdentity { readonly instanceId: string; readonly instanceIncarnation: string; readonly turnToken: string }
+export interface SubagentStopProof {
+  readonly jobId: string;
+  readonly stopRequested: boolean;
+  readonly childStillBusy: boolean;
+  readonly resumable: boolean;
+  readonly disposition: string | null;
+}
 export interface InternalProcessJobsController {
+  stop?(identity: SubagentStopIdentity): Promise<SubagentStopProof>;
   readonly managed?: boolean;
   startInternal(request: InternalProcessJobRequest): Promise<ProcessJobStartResult>;
 }

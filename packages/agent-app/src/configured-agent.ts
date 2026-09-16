@@ -701,6 +701,7 @@ function inlineSubagentCeiling(config: MonoAgentConfig): readonly string[] {
 interface SubagentRunRequest {
   readonly ownedForegroundProcesses?: OwnedForegroundProcesses;
   readonly detached?: true;
+  readonly turnToken?: string;
   readonly deadlineAt?: number;
   readonly instance?: { readonly id: string; readonly sessionId: string; readonly sessionsRoot: string };
   readonly model?: RuntimeModelReference;
@@ -806,7 +807,7 @@ export function buildSubagentsOptions(
   // and a policy that only blocks one of them is not a policy.
   const skillsDeniedGlobally = isReadSkillDenied(config.tools.disallowedTools);
 
-  const run = async (request: SubagentRunRequest): Promise<RuntimeResult> => {
+  const run = async (request: SubagentRunRequest): Promise<RuntimeResult & { subagentContinuity?: { turnToken: string; state: "retained" | "unknown" | "lost" } }> => {
     // A profile model must go through `runtimeForModel`: the router overrides
     // `options.model` per chain entry, so handing a different model to the
     // shared router is silently ignored and the child would run on the chain
@@ -866,8 +867,11 @@ export function buildSubagentsOptions(
       ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
       ...(askParentController === undefined ? {} : { askParentController }),
     };
+    const recovery = request.detached && request.instance && request.turnToken && runtime.recoverSession
+      ? { runId: request.turnToken, revision: 0 } : undefined;
     const result = await runtime.run(`${childSystemPrompt}\n\n${HOST_TURN_CONTEXT_GUIDANCE}`, {
       ...childCapabilityOptions,
+      ...(recovery ? { sessionRecovery: recovery } : {}),
       ...(config.providers?.piNative?.cacheRetention === undefined ? {} : { cacheRetention: config.providers.piNative.cacheRetention }),
       ...(config.providers?.piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: config.providers.piNative.promptCacheDiagnostics }),
       ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
@@ -920,15 +924,27 @@ export function buildSubagentsOptions(
       // Depth propagation is the recursion lock the kernel also enforces.
       subagents: { depth: request.depth },
     } as unknown as RuntimeRunOptions);
+    // Only the selected runtime can certify its durable tail. A matching id alone
+    // is not recovery evidence; router fallback intentionally drops the receipt.
+    let retained = false;
+    const receipt = result.providerSessionRecovery;
+    if (recovery && receipt && receipt.runId === recovery.runId && receipt.revision === 0
+      && receipt.providerSessionId === request.instance!.sessionId
+      && result.providerSessionId === request.instance!.sessionId
+      && receipt.modelKey === modelReferenceKey(childModel) && typeof receipt.tipId === "string" && receipt.tipId.length > 0) {
+      try { retained = await runtime.recoverSession!(receipt, { appliedInputIds: [] }); } catch { /* Fail closed. */ }
+    }
+    const continuity = request.turnToken ? { subagentContinuity: { turnToken: request.turnToken,
+      state: result.failureKind === "session_continuity_lost" ? "lost" as const : retained ? "retained" as const : "unknown" as const } } : {};
     // Router retries/backups deliberately withhold session ids. Do not promise
     // retained child context for an answer that was produced outside this epoch.
     if (request.instance && !result.error && !result.failureKind && !result.cancelled
       && result.providerSessionId !== request.instance.sessionId) {
-      return { ...result, failureKind: "session_continuity_lost",
+      return { ...result, ...continuity, ...(request.turnToken ? { subagentContinuity: { turnToken: request.turnToken, state: "lost" as const } } : {}), failureKind: "session_continuity_lost",
         error: "The child answered outside its persistent session (for example after retry or fallback). This turn was not retained; close the instance and create another with the context it needs." };
     }
     return subagentQuestion && !result.error && !result.failureKind && !result.cancelled
-      ? { ...result, subagentQuestion } : result;
+      ? { ...result, ...continuity, subagentQuestion } : { ...result, ...continuity };
   };
 
   return {

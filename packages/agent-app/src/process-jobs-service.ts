@@ -1,3 +1,4 @@
+import type { SubagentStopIdentity, SubagentStopProof } from "./process-jobs-internal.js";
 import type { SubagentVerificationTarget, SubagentVerificationObservation } from "./subagent-verification-observer.js";
 import type { SubagentCommandReceipts } from "./subagent-command-receipts.js";
 import { boundSubagentCommandReceipts } from "./process-jobs-store.js";
@@ -369,7 +370,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
 
   internalController(origin: ProcessJobOriginRecord, chainDepth: number | (() => number)): InternalProcessJobsController {
     const captured = structuredClone(origin);
-    return Object.freeze({ managed: this.managedRegistry !== undefined, startInternal: (request: InternalProcessJobRequest) => this.start(
+    return Object.freeze({ managed: this.managedRegistry !== undefined, stop: (identity: SubagentStopIdentity) => this.stopSubagent(captured.conversationId, identity), startInternal: (request: InternalProcessJobRequest) => this.start(
       captured, typeof chainDepth === "function" ? chainDepth() : chainDepth, request,
     ) });
   }
@@ -424,8 +425,34 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   async cancel(jobId: string): Promise<ProcessJobProjection> {
+    return this.cancelOwned(jobId);
+  }
+
+  private async stopSubagent(conversationId: string, identity: SubagentStopIdentity): Promise<SubagentStopProof> {
+    if (!isSubagentUuid(identity.turnToken) || !isSubagentUuid(identity.instanceIncarnation) || !this.managedRegistry) {
+      throw Object.assign(new Error("subagent_stop_unavailable"), { code: "subagent_stop_unavailable", stopRequested: false });
+    }
+    const ownerIdentity: SubagentOwnerIdentity = { ...identity, conversationId, jobId: identity.turnToken, storeRoot: this.settings.stateDir };
+    const deadline = Date.now() + 4_000;
+    await this.cancelOwned(identity.turnToken, ownerIdentity);
+    for (;;) {
+      const record = await this.storeGet(identity.turnToken, "subagent.stop_proof");
+      if (!record?.subagentOwnership || !sameSubagentOwner(ownerIdentity, this.managedIdentity(record))) {
+        throw Object.assign(new Error("subagent_stale_turn"), { code: "subagent_stale_turn", stopRequested: "unknown" });
+      }
+      const owner = record.subagentOwnership;
+      const busy = !isTerminalProcessJobState(record.state) || hasSubagentObligation(record);
+      if (!busy || Date.now() >= deadline) return { jobId: record.jobId, stopRequested: owner.parentStopRequested === true,
+        childStillBusy: busy, disposition: owner.disposition?.status ?? null,
+        resumable: !busy && owner.disposition?.continuity === "retained"
+          && (owner.disposition.resumeAfterStop === true || !owner.disposition.reason) };
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  private async cancelOwned(jobId: string, stopIdentity?: SubagentOwnerIdentity): Promise<ProcessJobProjection> {
     const overlay = this.completionOverlays.get(jobId);
-    if (overlay !== undefined) {
+    if (overlay !== undefined && !stopIdentity) {
       if (overlay.state === "cancelled") return structuredClone(overlay);
       throw new ProcessJobServiceError("process_job_conflict", `Process job is already ${overlay.state}.`);
     }
@@ -433,12 +460,20 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       let cancelled = false;
       const record = await this.storeMutate("cancel", (records) => {
         const current = requireRecord(records, jobId);
+        if (stopIdentity && (!this.storageOperational || this.stopping || current.kind !== "internal" || !current.subagentOwnership
+          || current.subagentOwnership.registryRoot !== this.managedRegistry?.root || !sameSubagentOwner(stopIdentity, this.managedIdentity(current)))) {
+          throw Object.assign(new Error("subagent_stale_turn"), { code: "subagent_stale_turn", stopRequested: false });
+        }
         if (isTerminalProcessJobState(current.state)) {
+          if (stopIdentity) return structuredClone(current);
           if (current.state !== "cancelled") {
             throw new ProcessJobServiceError("process_job_conflict", `Process job is already ${current.state}.`);
           }
           return structuredClone(current);
         }
+        // A later parent request must not bless an operator cancellation already
+        // in flight. Repeated parent requests retain their original authority.
+        if (stopIdentity && !current.cancelRequested) current.subagentOwnership!.parentStopRequested = true;
         current.cancelRequested = true;
         if (current.state === "queued") {
           transitionTerminal(
@@ -631,6 +666,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       // Positive job/disposition proof can certify the registry while its durable
       // acknowledgement still pins retention/capacity. It is not absence evidence.
       return { state: "released", identity, sequence: owner.publication.sequence, receiptPending: hasPendingSubagentReleaseReceipt(record), receiptRecorded: owner.publication.receiptRecorded === owner.publication.sequence, continuity: owner.disposition?.continuity ?? "unknown",
+        ...(owner.disposition?.resumeAfterStop ? { resumeAfterStop: true as const } : {}),
         ...(owner.disposition?.reason ? { reason: owner.disposition.reason } : {}) };
     }).catch(() => ({ state: "unavailable" as const }));
   }
@@ -671,10 +707,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       })),
       settled: async (outcome) => {
         commands.revoke();
-        const progressCostAdded = await this.withManagedLock(async () => await this.storeMutate("subagent.true_settlement", (records) => {
+        const settlement = await this.withManagedLock(async () => await this.storeMutate("subagent.true_settlement", (records) => {
           const record = requireRecord(records, jobId);
           const owner = record.subagentOwnership!;
-          if (owner.owner.settlement === "settled") return false;
+          if (owner.owner.settlement === "settled") return { progressCostAdded: false, parentStopRequested: owner.parentStopRequested };
           owner.owner.settlement = "settled"; owner.revoked = true;
           if (outcome?.usage) owner.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, ...outcome.usage };
           const costUsd = pricedSubagentCostUsd(owner.usage?.costUsd);
@@ -689,10 +725,11 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             progressCostAdded = true;
           }
           if (owner.disposition) { owner.publication.sequence++; owner.publication.state = "pending"; }
-          return progressCostAdded;
+          return { progressCostAdded, parentStopRequested: owner.parentStopRequested };
         }));
-        await this.publishManaged(jobId, outcome);
-        if (progressCostAdded) this.scheduleSurfaceUpdate(jobId);
+        if (outcome && settlement.parentStopRequested) await this.reportManaged(jobId, outcome);
+        else await this.publishManaged(jobId, outcome);
+        if (settlement.progressCostAdded) this.scheduleSurfaceUpdate(jobId);
       },
       report: async (outcome) => { commands.revoke(); await this.reportManaged(jobId, outcome); },
     };
@@ -719,17 +756,25 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     if (!record || !owner || !this.managedRegistry || owner.registryRoot !== this.managedRegistry.root) throw new Error("Managed subagent registry is unavailable.");
     const status = (["ok", "awaiting_reply", "timeout", "cancelled", "empty", "interrupted", "busy"].includes(outcome.status) ? outcome.status : "failed") as SubagentDisposition["status"];
     const incomingFailure = !["ok", "awaiting_reply", "busy"].includes(status);
-    if (owner.disposition && (owner.disposition.reason || !incomingFailure)) { await this.publishManaged(jobId, outcome); return; }
+    const continuity = outcome.failureKind === "session_continuity_lost" ? "lost"
+      : owner.parentStopRequested && outcome.continuity?.turnToken === owner.turnToken ? outcome.continuity.state
+      : owner.parentStopRequested && owner.owner.settlement === "not_started" ? "retained" : undefined;
+    const resumeAfterStop = owner.parentStopRequested === true && continuity === "retained"
+      && ["settled", "not_started"].includes(owner.owner.settlement)
+      && ["cancelled", "ok", "awaiting_reply"].includes(status)
+      && (!owner.disposition?.reason || owner.disposition.reason === "cancelled");
+    if (owner.disposition && (owner.disposition.resumeAfterStop || (!resumeAfterStop && (owner.disposition.reason || !incomingFailure)))) { await this.publishManaged(jobId, outcome); return; }
     const disposition: SubagentDisposition = { status,
+      ...(resumeAfterStop ? { resumeAfterStop: true } : {}),
       ...(outcome.closeAfterSuccess ? { closeAfterSuccess: true } : {}),
-      continuity: outcome.failureKind === "session_continuity_lost" ? "lost" : owner.disposition?.continuity === "retained" || (["ok", "awaiting_reply"].includes(status) && owner.owner.settlement === "settled") ? "retained" : "unknown",
+      continuity: continuity ?? (outcome.failureKind === "session_continuity_lost" ? "lost" : owner.disposition?.continuity === "retained" || (["ok", "awaiting_reply"].includes(status) && owner.owner.settlement === "settled") ? "retained" : "unknown"),
       ...(["ok", "awaiting_reply", "busy"].includes(status) ? {} : { reason: outcome.failureKind ?? (status === "failed" ? "failed" : status as "timeout" | "cancelled" | "empty" | "interrupted") }) };
     await this.withManagedRegistry(async (registry) => await registry.publish("intent", { identity: this.managedIdentity(record), sequence: owner.publication.sequence + 1,
       disposition, released: false }));
     await this.withManagedLock(async () => await this.storeMutate("subagent.report", (records) => {
       const record = requireRecord(records, jobId);
       const current = record.subagentOwnership!;
-      if (!current.disposition?.reason) current.disposition = disposition;
+      if (!current.disposition?.reason || resumeAfterStop) current.disposition = disposition;
       if (outcome.usage) current.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, ...outcome.usage };
       if (outcome.question) record.subagentQuestion = outcome.question;
       current.revoked = true;
