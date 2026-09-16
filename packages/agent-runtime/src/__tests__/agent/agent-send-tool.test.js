@@ -216,3 +216,53 @@ it("keeps optional continuation definitions stable and refuses unavailable opera
   await expect(current.execute("no", { id: "x", inspect: true })).rejects.toThrow(/unavailable/);
   expect(instances.get).not.toHaveBeenCalled(); expect(options.run).not.toHaveBeenCalled();
 });
+
+
+describe("AgentSend stop", () => {
+  it.each([{ message: "next" }, { close: false }, { background: false }, { inspect: false }, { ack: "token" }, { description: "stop" }, { jobId: "arbitrary" }, { stop: false }])("stop is exclusive and precedes busy-message validation: %j", async (extra) => {
+    const f = setup();
+    const result = await f.send.execute("stop", { id: "helper", stop: true, ...extra });
+    expect(result).toMatchObject({ isError: true, details: { executed: false, stop: { code: "subagent_stop_invalid_request", instanceId: "helper", jobId: null, stopRequested: false } } });
+    expect(f.instances.get).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it("stop unavailable does not execute", async () => {
+    const f = setup();
+    const result = await f.send.execute("stop", { id: "helper", stop: true });
+    expect(result.details).toEqual({ tool: "AgentSend", executed: false, stop: { code: "subagent_stop_unavailable", instanceId: "helper", jobId: null, stopRequested: false } });
+    expect(result.isError).toBe(true); expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it("resolves only the captured active turn and returns bounded busy evidence", async () => {
+    const stop = vi.fn(async () => ({ jobId: "owned-token", stopRequested: true, childStillBusy: true, resumable: false, disposition: "cancelled" }));
+    const f = setup({ backgroundSubagentController: { stop } });
+    f.records.set("helper", { id: "helper", incarnation: "epoch", status: "running", turns: 1, activeTurn: { kind: "detached", token: "owned-token" } });
+    const result = await f.send.execute("stop", { id: "helper", stop: true });
+    expect(stop).toHaveBeenCalledWith({ instanceId: "helper", instanceIncarnation: "epoch", turnToken: "owned-token" });
+    expect(result.details).toEqual({ tool: "AgentSend", executed: false, stop: { instanceId: "helper", jobId: "owned-token", status: "stop_requested", instanceStatus: "running", turns: 1, disposition: "cancelled", stopRequested: true, childStillBusy: true, resumable: false } });
+    expect(JSON.parse(result.content[0].text)).toEqual(result.details.stop);
+    expect(f.options.run).not.toHaveBeenCalled();
+    await expect(f.send.execute("message", { id: "helper", message: "next" })).rejects.toThrow("busy");
+    await expect(f.send.execute("close", { id: "helper", close: true })).rejects.toThrow("busy");
+  });
+  it.each([false, true])("accepts only the exact settled turn certificate (successor=%s)", async (successor) => {
+    const f = setup();
+    f.records.set("helper", { id: "helper", incarnation: "epoch", status: "running", turns: 0, activeTurn: { kind: "detached", token: "owned-token" } });
+    f.options.backgroundSubagentController = { stop: async () => {
+      f.records.set("helper", { id: "helper", incarnation: "epoch", status: "idle", turns: 1, settledTurnToken: successor ? "successor" : "owned-token" });
+      return { jobId: "owned-token", stopRequested: true, childStillBusy: false, resumable: true, disposition: "cancelled" };
+    } };
+    const result = await createAgentSendTool(f.options).execute("stop", { id: "helper", stop: true });
+    if (successor) expect(result).toMatchObject({ isError: true, details: { stop: { code: "subagent_stale_turn" } } });
+    else expect(result.details).toEqual({ tool: "AgentSend", executed: false, stop: { instanceId: "helper", jobId: "owned-token", status: "stopped", instanceStatus: "idle", turns: 1, disposition: "cancelled", stopRequested: true, childStillBusy: false, resumable: true } });
+    expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it("bounds controller/storage hangs without claiming acceptance", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = setup({ backgroundSubagentController: { stop: vi.fn(() => new Promise(() => {})) } });
+      f.records.set("helper", { id: "helper", incarnation: "epoch", status: "running", turns: 1, activeTurn: { kind: "detached", token: "owned-token" } });
+      const result = f.send.execute("stop", { id: "helper", stop: true });
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(await result).toMatchObject({ isError: true, details: { stop: { code: "subagent_stop_unavailable", stopRequested: "unknown" } } });
+    } finally { vi.useRealTimers(); }
+  });
+});

@@ -80,6 +80,147 @@ async function managedFixture(retireSession: (id: string, root: string) => Promi
   return { ...f, registry, instances: await registry.open(origin.conversationId) };
 }
 
+describe("parent stop", () => {
+  it("parent stop cancels queued reservation without a provider call", async () => {
+    const f = await managedFixture(undefined, { maxQueued: 1 }); const gate = deferred<any>();
+    const run = vi.fn(() => gate.promise); const { agent, send } = tools(f, run);
+    const first = await agent.execute("hold", { id: "holder", persist: true, background: true, prompt: "hold" });
+    try {
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      const queued = await agent.execute("queue", { id: "helper", persist: true, background: true, prompt: "queue" });
+      const stopped = await send.execute("stop", { id: "helper", stop: true });
+      expect(stopped.details.stop).toMatchObject({ status: "stopped", turns: 0, resumable: true, jobId: queued.details.jobId });
+      expect(run).toHaveBeenCalledOnce();
+      expect(await f.instances.get("helper")).toMatchObject({ status: "idle", turns: 0 });
+      expect((await f.instances.get("helper"))?.recovery).toBeUndefined();
+      await send.execute("close", { id: "helper", close: true });
+    } finally { gate.resolve({ text: "done" }); await done(f.service, first.details.jobId); }
+  }, 15_000);
+  it("cooperative stop permits ordinary resume and close", async () => {
+    const f = await managedFixture(); const entered = deferred<void>(); const sessions: string[] = [];
+    const run = vi.fn(async (request: any) => {
+      sessions.push(request.instance.sessionId);
+      if (sessions.length === 1) { entered.resolve(); await new Promise<void>((resolve) => request.abortSignal.addEventListener("abort", () => resolve(), { once: true })); }
+      return { text: "retained", subagentContinuity: { turnToken: request.turnToken, state: "retained" } };
+    });
+    const { agent, send } = tools(f, run);
+    const first = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" }); await entered.promise;
+    const results = await Promise.all([send.execute("stop", { id: "helper", stop: true }), send.execute("repeat", { id: "helper", stop: true })]);
+    // Under package-wide compiler/crash-test contention, durable fsync can
+    // exceed the public six-second limit. That must stay an honest incomplete
+    // receipt, never a test-only expansion of the product deadline.
+    for (const result of results) {
+      if (result.details.stop.status === "stopped") expect(result.details.stop).toMatchObject({ resumable: true, childStillBusy: false, turns: 1 });
+      else if (result.details.stop.status === "stop_requested") expect(result.details.stop).toMatchObject({ resumable: false, childStillBusy: true, stopRequested: true });
+      else expect(result.details.stop).toMatchObject({ code: "subagent_stop_unavailable", stopRequested: expect.toBeOneOf([true, "unknown"]) });
+    }
+    await done(f.service, first.details.jobId);
+    expect((await send.execute("idle", { id: "helper", stop: true })).details.stop.status).toBe("already_idle");
+    const next = await send.execute("resume", { id: "helper", background: true, message: "next" }); await done(f.service, next.details.jobId);
+    expect(sessions).toEqual([sessions[0], sessions[0]]);
+    await send.execute("close", { id: "helper", close: true });
+    expect(f.wake).toHaveBeenCalledTimes(2);
+  }, 40_000);
+  it("uncooperative stop retains capacity and returns childStillBusy; late settlement cannot finish a successor", async () => {
+    const f = await managedFixture(); const gate = deferred<any>(); let request: any;
+    const run = vi.fn(async (input: any) => { request = input; return gate.promise; }); const { agent, send } = tools(f, run);
+    const first = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    try {
+      const stopped = await send.execute("stop", { id: "helper", stop: true });
+      expect(stopped.details.stop).toMatchObject({ status: "stop_requested", childStillBusy: true, resumable: false });
+      expect(await f.instances.get("helper")).toMatchObject({ status: "running", turns: 0 });
+      expect((await f.store.get(first.details.jobId))?.subagentOwnership?.owner.settlement).toBe("running");
+      await expect(send.execute("busy", { id: "helper", message: "next" })).rejects.toThrow("busy");
+      await expect(send.execute("close", { id: "helper", close: true })).rejects.toThrow("busy");
+      await expect(agent.execute("capacity", { id: "other", persist: true, background: true, prompt: "no" })).rejects.toThrow();
+      gate.resolve({ text: "late", subagentContinuity: { turnToken: request.turnToken, state: "retained" } });
+      await vi.waitFor(async () => { const record = await f.instances.get("helper"); expect(record).toMatchObject({ status: "idle", turns: 1 }); expect(record?.recoveryBlocked).not.toBe(true); }, { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+      const successorGate = deferred<any>(); const successorTools = tools(f, async () => successorGate.promise);
+      const successor = await successorTools.send.execute("resume", { id: "helper", background: true, message: "next" });
+      await vi.waitFor(async () => expect(await f.instances.get("helper")).toMatchObject({ status: "running" }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+      await f.service.refreshSubagentOwner!({ storeRoot: f.service.settings.stateDir, jobId: first.details.jobId, conversationId: origin.conversationId, instanceId: "helper", instanceIncarnation: (await f.instances.get("helper"))!.incarnation!, turnToken: first.details.jobId });
+      expect(await f.instances.get("helper")).toMatchObject({ status: "running", turns: 1, activeTurn: { token: successor.details.jobId } });
+      successorGate.resolve({ text: "next" }); await done(f.service, successor.details.jobId);
+    } finally { gate.resolve({ text: "cleanup" }); }
+  }, 40_000);
+  it.each([false, true])("stop races completion and AskParent without fabricating cancellation (question=%s)", async (question) => {
+    const f = await managedFixture(); const gate = deferred<any>(); const reached = deferred<void>(); const proceed = deferred<void>();
+    const { agent, options } = tools(f, async () => gate.promise);
+    const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
+    const controller = options.backgroundSubagentController;
+    const send = createAgentSendTool({ ...options, backgroundSubagentController: { ...controller,
+      stop: async (identity: any) => { reached.resolve(); await proceed.promise; return controller.stop!(identity); } } });
+    const stopping = send.execute("stop", { id: "helper", stop: true }); await reached.promise;
+    gate.resolve({ text: "completed first", ...(question ? { subagentQuestion: { question: "Choose scope?" } } : {}) });
+    await done(f.service, started.details.jobId); proceed.resolve();
+    const result = await stopping;
+    if (result.details.stop.status === "stopped") expect(result.details.stop).toMatchObject({ disposition: question ? "awaiting_reply" : "ok", stopRequested: false, resumable: true });
+    else expect(result.details.stop).toMatchObject({ code: "subagent_stop_unavailable", stopRequested: "unknown" });
+    expect((await send.execute("idle", { id: "helper", stop: true })).details.stop).toMatchObject({ status: "already_idle", disposition: question ? "awaiting_reply" : "ok", resumable: true });
+    expect(await f.instances.get("helper")).toMatchObject({ turns: 1, status: question ? "awaiting_reply" : "idle" });
+    expect(f.wake).toHaveBeenCalledOnce();
+  }, 15_000);
+  it("publication failure and restart remain fenced until the exact stop certificate is acknowledged", async () => {
+    const f = await managedFixture(); const entered = deferred<void>(); const root = resolve(f.root, "children");
+    f.service.bindManagedSubagents!({ root,
+      verify: async (identity) => await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        if (phase === "confirm" && publication.released) throw new Error("injected publication failure");
+        await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+      } });
+    const { agent, send } = tools(f, async (request: any) => { entered.resolve(); await new Promise<void>((resolve) => request.abortSignal.addEventListener("abort", () => resolve(), { once: true })); return { text: "partial", subagentContinuity: { turnToken: request.turnToken, state: "retained" } }; });
+    const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" }); await entered.promise;
+    expect((await send.execute("stop", { id: "helper", stop: true })).details.stop).toMatchObject({ status: "stop_requested", resumable: false, childStillBusy: true });
+    await expect(send.execute("resume", { id: "helper", message: "no" })).rejects.toThrow("busy");
+    expect(f.wake).not.toHaveBeenCalled();
+    await f.service.stop();
+    const reopened = await openProcessJobsService(f.options); services.push(reopened);
+    const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {},
+      ownerForReservation: (jobId) => ({ jobId, storeRoot: reopened.settings.stateDir }),
+      resolveOwner: (identity) => reopened.resolveSubagentOwner!(identity),
+      checkOwnerIndex: (conversationId, known) => reopened.checkSubagentOwnerIndex!(conversationId, known) });
+    reopened.bindManagedSubagents!({ root,
+      verify: async (identity) => await (await registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => await (await registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication) });
+    await reopened.activateWakes(); await done(reopened, started.details.jobId);
+    const instances = await registry.open(origin.conversationId);
+    const record = await instances.get("helper"); expect(record).toMatchObject({ status: "idle", turns: 1 });
+    expect(record?.recoveryBlocked).not.toBe(true); expect(record?.recovery).toBeUndefined();
+    await instances.close("helper"); expect(f.wake).toHaveBeenCalledOnce();
+  }, 20_000);
+  it("parent stop cannot retroactively authorize an operator cancellation", async () => {
+    const f = await managedFixture(); const gate = deferred<any>(); let request: any;
+    const { agent, send } = tools(f, async (input: any) => { request = input; return gate.promise; });
+    const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
+    await vi.waitFor(() => expect(request).toBeDefined());
+    await f.service.cancel(started.details.jobId);
+    const stopping = send.execute("stop", { id: "helper", stop: true });
+    gate.resolve({ text: "partial", subagentContinuity: { turnToken: request.turnToken, state: "retained" } });
+    expect((await stopping).details.stop).toMatchObject({ code: "subagent_stop_recovery_required", stopRequested: false });
+    expect((await f.store.get(started.details.jobId))?.subagentOwnership?.parentStopRequested).not.toBe(true);
+    await expect(send.execute("resume", { id: "helper", message: "no" })).rejects.toThrow("subagent_recovery_required");
+  }, 15_000);
+  it("stop cannot cross conversation/incarnation", async () => {
+    const f = await managedFixture(); const gate = deferred<any>(); const run = vi.fn(() => gate.promise); const { agent } = tools(f, run);
+    const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
+    const record = (await f.instances.get("helper"))!;
+    try {
+      const identity = { instanceId: record.id, instanceIncarnation: record.incarnation!, turnToken: started.details.jobId };
+      await expect(f.service.internalController({ ...origin, conversationId: "other" }, 0).stop!(identity)).rejects.toMatchObject({ code: "subagent_stale_turn" });
+      await expect(f.service.internalController(origin, 0).stop!({ ...identity, instanceIncarnation: randomUUID() })).rejects.toMatchObject({ code: "subagent_stale_turn" });
+      expect((await f.store.get(started.details.jobId))?.cancelRequested).not.toBe(true);
+    } finally { gate.resolve({ text: "done" }); await done(f.service, started.details.jobId); }
+  }, 15_000);
+  it.each([undefined, { turnToken: "wrong", state: "retained" }])("missing/mismatched recovery evidence never authorizes resume: %j", async (continuity) => {
+    const f = await managedFixture(); const entered = deferred<void>();
+    const { agent, send } = tools(f, async (request: any) => { entered.resolve(); await new Promise<void>((resolve) => request.abortSignal.addEventListener("abort", () => resolve(), { once: true })); return { cancelled: true, subagentContinuity: continuity }; });
+    await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" }); await entered.promise;
+    expect((await send.execute("stop", { id: "helper", stop: true })).details.stop).toMatchObject({ code: "subagent_stop_recovery_required", stopRequested: true });
+    await expect(send.execute("resume", { id: "helper", message: "next" })).rejects.toThrow("subagent_recovery_required");
+  }, 15_000);
+});
+
 describe("managed detached production execution", () => {
   it("G05: failed admission after active intent remains fenced without starting the provider", async () => {
     const f = await managedFixture(); const run = vi.fn(async () => ({ text: "must not run" }));
@@ -943,6 +1084,84 @@ describe("detached persistent subagents", () => {
   });
 });
 
+
+it.each(["missing", "run", "revision", "session", "model", "tip", "false", "throw"])("missing/mismatched recovery receipt never authorizes resume: %s", async (fault) => {
+  const f = await managedFixture();
+  const config = loadMonoAgentConfig({ cwd: f.root, env: {
+    MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
+    MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root: resolve(f.root, "children") } }),
+  } });
+  const instance = await f.instances.create(spec); const turnToken = randomUUID();
+  const receipt = { runId: fault === "run" ? "wrong" : turnToken, revision: fault === "revision" ? 1 : 0,
+    providerSessionId: fault === "session" ? "wrong" : instance.sessionId,
+    modelKey: fault === "model" ? "wrong:model" : config.runtime.model.reference, tipId: fault === "tip" ? "" : "tip" };
+  const recoverSession = vi.fn(async () => { if (fault === "throw") throw new Error("recovery failed"); return false; });
+  const runtime = { recoverSession, run: vi.fn(async (_prompt: string, _options: any) => ({ cancelled: true, providerSessionId: instance.sessionId,
+    ...(fault === "missing" ? {} : { providerSessionRecovery: receipt }) })) };
+  const options: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
+    { conversationId: origin.conversationId, runId: "parent", instances: f.instances });
+  const result = await options.subagents.run({ instance, turnToken, detached: true, definition: spec.definition, prompt: "first", systemPrompt: "stable", maxTurns: 2, depth: 1, abortSignal: new AbortController().signal });
+  expect(result.subagentContinuity).toEqual({ turnToken, state: "unknown" });
+  expect(runtime.run.mock.calls[0]?.[1]).toMatchObject({ sessionRecovery: { runId: turnToken, revision: 0 } });
+  expect(recoverSession).toHaveBeenCalledTimes(["false", "throw"].includes(fault) ? 1 : 0);
+});
+
+it("stop seals first and resumed tool-bearing turns on the same native session", async () => {
+  const owner = createMonoRuntime();
+  const f = await managedFixture(async (id, root) => owner.retireDurableSession!(id, root));
+  try {
+    await writeFile(resolve(f.root, "evidence.txt"), "prior tool evidence");
+    const config = loadMonoAgentConfig({ cwd: f.root, env: {
+      MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
+      MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root: resolve(f.root, "children") } }),
+    } });
+    const piPath = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
+    const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import(piPath);
+    const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
+    const models = createModels(); models.setProvider(faux.provider); const calls: any[] = []; const contexts: any[] = [];
+    const runtime = { recoverSession: owner.recoverSession!.bind(owner), run: async (prompt: string, options: any) => {
+      calls.push(options);
+      return generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+    } };
+    const subagents: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
+      { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
+    subagents.backgroundSubagentController = f.service.internalController(origin, 0);
+    const agent = createAgentTool(subagents, { model: config.runtime.model, cwd: f.root });
+    const send = createAgentSendTool(subagents, { model: config.runtime.model, cwd: f.root });
+    for (let turn = 0; turn < 2; turn++) {
+      const entered = deferred<void>();
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("Read", { file_path: "evidence.txt" }, { id: `read-${turn}` })]),
+        async (context: any, options: any) => {
+          contexts.push(structuredClone(context.messages)); entered.resolve();
+          await new Promise<void>((resolve) => options.signal.addEventListener("abort", () => resolve(), { once: true }));
+          return fauxAssistantMessage([fauxText("interrupted")], { stopReason: "aborted" });
+        },
+      ]);
+      const started = turn === 0
+        ? await agent.execute("start", { persist: true, background: true, id: "helper", prompt: "remember original context" })
+        : await send.execute("continue", { id: "helper", background: true, message: "second tool-bearing turn" });
+      await entered.promise;
+      const result = await send.execute("stop", { id: "helper", stop: true });
+      expect(result.details.stop).toMatchObject({ status: "stopped", resumable: true, childStillBusy: false, disposition: "cancelled", turns: turn + 1 });
+      await done(f.service, started.details.jobId);
+    }
+    const record = (await f.instances.get("helper"))!;
+    await owner.disposeSession!(record.sessionId);
+    let resumed: any;
+    faux.setResponses([(context: any) => { resumed = context; return fauxAssistantMessage([fauxText("resumed with evidence")]); }]);
+    const next = await send.execute("resume", { id: "helper", message: "resume after disposal", background: true });
+    expect((await done(f.service, next.details.jobId)).state).toBe("succeeded");
+    expect(calls.every((call) => call.sessionId === record.sessionId)).toBe(true);
+    expect(JSON.stringify(resumed.messages)).toContain("remember original context");
+    expect(JSON.stringify(resumed.messages)).toContain("second tool-bearing turn");
+    expect(JSON.stringify(resumed.messages)).toContain("prior tool evidence");
+    expect(resumed.messages.filter((message: any) => message.role === "toolResult")).toHaveLength(2);
+    expect(contexts[1].slice(0, contexts[0].length)).toEqual(contexts[0]);
+    await send.execute("close", { id: "helper", close: true });
+    expect((await f.instances.get("helper"))?.status).toBe("closed");
+  } finally { await owner.disposeAllSessions?.(); }
+}, 25_000);
 
 it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-session disposal", async () => {
   const owner = createMonoRuntime(); const releaseConfirmation = deferred<void>(); let delayed = false;
