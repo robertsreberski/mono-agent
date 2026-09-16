@@ -539,7 +539,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           await execution?.managed?.started();
           const underlying = Promise.resolve().then(() => subagents.run({
             ...(detached && execution ? { detached: true, deadlineAt: execution.deadlineAt } : {}),
-            ...(execution?.managed ? { ownedForegroundProcesses: execution.managed.ownedForegroundProcesses } : {}),
+            ...(execution?.managed ? { ownedForegroundProcesses: execution.managed.ownedForegroundProcesses, turnToken: instance?.activeTurn?.token } : {}),
             ...(instance ? { instance: { id: instance.id, sessionId: instance.sessionId, sessionsRoot: instance.sessionsRoot } } : {}),
             systemPrompt: instance?.systemPrompt ?? profile.systemPrompt,
             prompt: params.prompt,
@@ -569,7 +569,11 @@ export function createAgentTool(subagents, context = {}, continuation) {
           }));
           // Observe the actual provider promise before racing reporting/deadline.
           const running = execution?.managed ? Promise.resolve(underlying).then(async (value) => {
-            await execution.managed.settled({ status: "ok", usage: detachedUsage(value, collector.usage()) });
+            const actual = classifyOutcome({ result: value, thrown: undefined, timedOut });
+            await execution.managed.settled({ status: timedOut ? "timeout" : signal?.aborted ? "cancelled" : actual.status,
+              ...(value?.subagentContinuity ? { continuity: value.subagentContinuity } : {}),
+              ...(value?.failureKind === "session_continuity_lost" ? { failureKind: value.failureKind } : {}),
+              ...(actual.question ? { question: actual.question } : {}), usage: detachedUsage(value, collector.usage()) });
             return value;
           }, async (error) => {
             await execution.managed.settled({ status: "failed", usage: detachedUsage(undefined, collector.usage()) });
@@ -611,7 +615,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         if (instance && !abandoned) {
           const state = classifyOutcome({ result, thrown, timedOut });
           const usage = result?.usage ?? {};
-          const instanceOutcome = { ...(execution?.managed && continuation?.close && state.status === "ok" && !signal?.aborted ? { closeAfterSuccess: true } : {}), status: timedOut ? "timeout" : signal?.aborted ? "cancelled" : state.status,
+          const instanceOutcome = { ...(result?.subagentContinuity ? { continuity: result.subagentContinuity } : {}), ...(execution?.managed && continuation?.close && state.status === "ok" && !signal?.aborted ? { closeAfterSuccess: true } : {}), status: timedOut ? "timeout" : signal?.aborted ? "cancelled" : state.status,
             ...(result?.failureKind === "session_continuity_lost" ? { failureKind: "session_continuity_lost" } : {}),
             answerHead: state.answer, ...(state.question ? { question: state.question } : {}), usage: detached ? detachedUsage(result, collector.usage()) : { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
               cacheRead: numberOrZero(usage.cache_read_tokens ?? usage.cacheRead ?? usage.cacheReadTokens), cacheWrite: numberOrZero(usage.cache_write_tokens ?? usage.cache_creation_tokens ?? usage.cacheWrite ?? usage.cacheWriteTokens),
