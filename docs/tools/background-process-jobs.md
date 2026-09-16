@@ -659,7 +659,40 @@ Completion, failure and AskParent deliver one terminal wake; AskParent preserves
 `awaiting_reply` and its structured question for a later AgentSend. Do not poll or
 replay a started job. Message plus close closes only after a successful answer.
 
-Timeout/cancellation requests abort and waits through the Agent grace period.
+### Parent stop and resume
+
+Use `AgentSend({id, stop: true})` alone to cooperatively stop a queued or running
+managed detached child. It is exclusive with message, close, background,
+inspect, ack and description (even explicitly false values). It invokes no new
+provider turn (`executed:false`) and accepts no job id. Foreground children are
+not stoppable through this operation. Stop never force-kills an in-process
+provider or rolls back filesystem/network effects.
+
+The operation waits at most six seconds, including storage work:
+
+- `stopped`, `resumable:true`: the matched job, provider, owned commands and
+  registry publication have settled, and native session continuity is certified.
+- `already_idle`, `resumable:true`: no stop was needed; ordinary continuation is
+  admissible.
+- `stop_requested`, `childStillBusy:true`, `resumable:false`: cancellation was
+  accepted, but settlement remains unproven. Ownership and capacity remain held.
+  Ordinary messages and close remain blocked; do not poll or replay the job.
+
+Only after a resumable receipt, use `AgentSend({id, message: "Continue"})`
+(optionally `background:true`) to resume the same warm instance and prior
+context, or `AgentSend({id, close:true})` to retire it. A queued stop charges no
+turn; a begun stopped turn charges one. Completion winning the race keeps its
+actual disposition, and pending AskParent questions survive stopping.
+
+Lost or unproven continuity returns `subagent_stop_recovery_required`, not a
+resumable receipt. Unsupported ownership/storage returns
+`subagent_stop_unavailable`; uncertain cancellation acceptance is reported as
+`stopRequested:"unknown"`. A stale captured turn is refused. These errors never
+authorize bypassing recovery fences. Intentional, certified parent stops do not
+require a failure acknowledgement; unrelated timeout, cancellation and failure
+recovery rules below are unchanged.
+
+Timeout/cancellation requests abort and wait through the Agent grace period.
 If execution remains unresolved, the terminal job reports `childStillBusy:true`.
 The instance stays busy and retains its turn lock and independent runtime
 protection lease until actual settlement. Process death alone does not prove

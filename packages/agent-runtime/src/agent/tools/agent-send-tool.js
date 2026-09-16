@@ -1,4 +1,5 @@
 // @ts-check
+import { stopSubagent } from "./agent-send-stop.js";
 import { createAgentTool } from "./agent-tool.js";
 
 /**
@@ -12,21 +13,23 @@ export function createAgentSendTool(subagents, context = {}) {
   const background = instances?.reserve && instances?.releaseReservation && subagents.backgroundSubagentController;
   return {
     name: "AgentSend", label: "AgentSend",
-    description: "Continue a persistent subagent by id with its full prior context. Instance ids appear in the Session envelope and Agent results. Use close: true when done." + " Set background: true with a message for detached work; this exact conversation wakes on completion or AskParent. Do not poll or replay." + " Use inspect: true alone for bounded recovery evidence; it executes no provider. After independent verification, a retained-only ack with a message explicitly authorizes one continuation. Lost/unknown continuity requires close/create, never replay.",
+    description: "Continue a persistent subagent by id with its full prior context. Instance ids appear in the Session envelope and Agent results. Use close: true when done. Use stop: true alone with id to cooperatively stop a queued/running detached turn, then send an ordinary message or close only after a resumable receipt. Stop never sends instructions, force-kills, or rolls back external effects." + " Set background: true with a message for detached work; this exact conversation wakes on completion or AskParent. Do not poll or replay." + " Use inspect: true alone for bounded recovery evidence; it executes no provider. After independent verification, a retained-only ack with a message explicitly authorizes one continuation. Lost/unknown continuity requires close/create, never replay.",
     parameters: {
       type: "object", additionalProperties: false, required: ["id"],
       properties: {
         id: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,39}$" },
         message: { type: "string", minLength: 1 },
         close: { type: "boolean" },
+        stop: { type: "boolean", const: true },
         background: { type: "boolean" },
         description: { type: "string", maxLength: 80 },
         inspect: { type: "boolean" },
         ack: { type: "string", maxLength: 128 },
       },
     },
-    /** @param {string} callId @param {{id: string, message?: string, close?: boolean, description?: string, background?: boolean, inspect?: boolean, ack?: string}} params @param {AbortSignal} [signal] */
+    /** @param {string} callId @param {{id: string, message?: string, close?: boolean, stop?: boolean, description?: string, background?: boolean, inspect?: boolean, ack?: string}} params @param {AbortSignal} [signal] */
     async execute(callId, params, signal) {
+      if (Object.hasOwn(params, "stop")) return stopSubagent(subagents, params, signal);
       if (!instances) throw new Error("Error: persistent subagent instances are unavailable in this conversation.");
       if (signal?.aborted) throw new Error("tool execution aborted");
       if (params.inspect !== undefined && typeof params.inspect !== "boolean") throw new Error("Error: inspect must be a boolean.");

@@ -324,6 +324,10 @@
  * @property {RuntimeSubagentDefinition} definition
  * @property {string} sessionId
  * @property {string} sessionsRoot
+ * @property {string} [settledTurnToken]
+ * @property {string} [lastStatus]
+ * @property {object} [recovery]
+ * @property {boolean} [recoveryBlocked]
  * @property {string} status
  * @property {{question: string, options?: string[]}} [pendingQuestion]
  * @property {{token: string}} [reservation]
@@ -356,7 +360,7 @@
  * @typedef {Object} RuntimeSubagentsOptions
  * @property {ReadonlyArray<RuntimeSubagentDefinition>} [definitions] Named profiles.
  * @property {ReadonlyArray<{name: string, model: RuntimeModelRef, key: string}>} [models] Call-time model choices. Absent means no model parameter.
- * @property {{managed?: boolean, startInternal(request: {managed?: {instanceIncarnation: string, turnToken: string}, kind: "internal", tool: "Agent"|"AgentSend", jobId: string, instanceId: string, description?: string, timeoutMs: number, cleanup(): Promise<void>, run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: *) => void, execution?: {deadlineAt: number, managed?: any}): Promise<{answer?: string, output: string, status: string, childStillBusy?: boolean, question?: {question: string, options?: string[]}}>}): Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null}>}} [backgroundSubagentController]
+ * @property {{managed?: boolean, stop?(identity: {instanceId: string, instanceIncarnation: string, turnToken: string}): Promise<{jobId: string, stopRequested: boolean, childStillBusy: boolean, resumable: boolean, disposition: string|null}>, startInternal(request: {managed?: {instanceIncarnation: string, turnToken: string}, kind: "internal", tool: "Agent"|"AgentSend", jobId: string, instanceId: string, description?: string, timeoutMs: number, cleanup(): Promise<void>, run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: *) => void, execution?: {deadlineAt: number, managed?: any}): Promise<{answer?: string, output: string, status: string, childStillBusy?: boolean, question?: {question: string, options?: string[]}}>}): Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null}>}} [backgroundSubagentController]
  * @property {RuntimeSubagentInstances} [instances] Conversation-scoped persistence; absent preserves stateless Agent.
  * @property {RuntimeInlineSubagentsOptions} [inline] Call-time authoring policy.
  * @property {number} [maxConcurrent] In-flight subagents per parent turn. Default 5.
@@ -369,6 +373,7 @@
 
 /**
  * @typedef {Object} RuntimeResult
+ * @property {{turnToken: string, state: "retained"|"unknown"|"lost"}} [subagentContinuity] App-owned detached settlement evidence.
  * @property {{question: string, options?: string[]}} [subagentQuestion]
  * @property {string|null} [text]
  * @property {*} [structuredResult]

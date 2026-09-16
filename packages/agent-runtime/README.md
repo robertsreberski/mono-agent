@@ -836,7 +836,7 @@ Pinned or overridden routes appear in the result header and `details.subagent.re
 `details.subagent.executed` records the successful child route when available.
 
 Hosts may inject a conversation-scoped `subagents.instances` facade to enable
-`Agent({persist: true, id?})` and `AgentSend({id, message?, close?})`. Continuations
+`Agent({persist: true, id?})` and `AgentSend({id, message?, close?, stop?})`. Continuations
 retain the child’s selected profile and use `sessionId`, `piSessionsRoot`, and
 `sessionKeepAlive` for true durable resume. Both tools share caps and deny child
 recursion. A persistent child's host injects `askParentController.submit(question)`
@@ -851,6 +851,10 @@ Persistent Agent/AgentSend can run detached through the app-private in-process
 ProcessJobs lane. Durable admission reserves the child; completion and AskParent
 wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
+`AgentSend({id, stop:true})` cooperatively stops managed detached work without
+starting a new turn. Only a proven `resumable:true` receipt permits ordinary
+message continuation on the same session or `close:true`; `stop_requested`
+keeps messages/close blocked. Stop neither force-kills nor undoes external effects.
 Detached usage belongs to the durable child outcome and bounded job result; it
 does not change the finalized parent run totals. Process-job deadlines retain
 timeout status in both the job and child instance, distinct from cancellation.
