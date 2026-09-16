@@ -103,7 +103,7 @@ import {
 import { conversationTitleFromFrame } from "./conversation-title.js";
 import { parseCronReplyContext } from "./cron-reply-context.js";
 import type { WebTag, CreateWebTagInput, PatchWebTagInput, WebTagChangedPayload } from "./contracts.js";
-import { withProjectContext, type ProjectContextSource } from "./project-context.js";
+import { formatQuotedTurn, withProjectContext, type ProjectContextSource } from "./project-context.js";
 import {
   advertisedEffortLevels,
   effectiveModelForAgent,
@@ -460,15 +460,6 @@ function nameWholePayloads(part: WebToolCallPart | WebSubagentPart): WebToolCall
   };
 }
 
-function formatQuotedTurn(quote: string, text: string): string {
-  const blockquote = quote
-    .trim()
-    .split(/\r?\n/u)
-    .map((line) => `> ${line}`)
-    .join("\n");
-  return `Quoted context:\n${blockquote}\n\n${text}`;
-}
-
 function assertTurnTextWithinLimit(operatorText: string): void {
   if (operatorText.length <= WEB_MAX_TURN_TEXT_CHARACTERS) return;
   throw new WebConsoleError(
@@ -743,6 +734,7 @@ export class WebService {
     replyAccessKey: Buffer,
   ) {
     this.store = store;
+    store.onConversationMarker = ({ threadId, messageId, updatedAt }) => this.emit("message.changed", threadId, { messageId, updatedAt });
     this.lease = lease;
     this.options = options;
     this.pushIdentity = pushIdentity;
@@ -1990,7 +1982,7 @@ export class WebService {
       ...(requestedModel === undefined ? {} : { requestedModel }),
       ...(requestedEffort === undefined ? {} : { requestedEffort }),
     });
-    this.launchTurn(started, connection.client, operatorText);
+    this.launchTurn(started, connection.client, quotedText);
     // The operator's own row, inserted by `beginTurn` and announced by nothing
     // else. A console that did not issue this turn holds neither it nor the
     // assistant row the deltas are about to describe, and it no longer answers
@@ -2095,7 +2087,7 @@ export class WebService {
     });
 
     if (claimed.created && started !== undefined) {
-      this.launchTurn(started, connection.client, operatorText);
+      this.launchTurn(started, connection.client, quotedText);
       this.emit("message.changed", threadId, { messageId: started.userMessageId, updatedAt: started.thread.updatedAt });
       this.emit("turn.changed", threadId, { turn: started.thread.runState });
       this.emitThread("threads.changed", { thread: started.thread });
@@ -2390,6 +2382,7 @@ export class WebService {
       // webhook channels stay excluded here and in `assertConsoleToolTurn`.
       const consoleTools = started.thread.trigger === undefined;
       if (consoleTools) this.consoleToolTurns.add(started.turnId);
+      this.store.markTurnDispatchStarted(started.turnId);
       const response = await client.turn({
         conversationId: started.conversationId,
         text: operatorText,
@@ -2476,6 +2469,7 @@ export class WebService {
     operatorText: string,
     hostWakeDeliveryKey?: string,
   ): { readonly completion: Promise<void>; readonly admitted: Promise<boolean> } {
+    operatorText = withProjectContext(operatorText, this.projectContextForThread(started.thread.id), this.store.conversationMarkersForTurn(started.turnId));
     const threadId = started.thread.id;
     const controller = new AbortController();
     let resolveAdmitted!: (admitted: boolean) => void;
@@ -2639,7 +2633,7 @@ export class WebService {
         if (started === undefined) return;
         // Resolved anew: the queued text was stored unprefixed, and the
         // membership or context may have changed while it waited.
-        const operatorText = this.withProjectPrefix(threadId, started.text);
+        const operatorText = withProjectContext(started.text, this.projectContextForThread(threadId), this.store.conversationMarkersForTurn(started.turnId));
         if (operatorText.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
           // Never dispatch an over-limit turn, and never throw into the void
           // drain: the promoted turn settles on the launch-failure path, which
@@ -2647,7 +2641,7 @@ export class WebService {
           this.failTurnBeforeDispatch(threadId, started.turnId, operatorText.length);
           continue;
         }
-        this.launchTurn(started, connection.client, operatorText);
+        this.launchTurn(started, connection.client, started.text);
         // BOTH rows. `promoteNextQueuedLiveInput` rewrites the queued operator
         // message (its live-input status becomes "applied") as well as opening
         // the assistant row, and a console that heard only about the second was
@@ -2877,7 +2871,7 @@ export class WebService {
       const { completion, admitted } = this.launchTurn(
         started,
         refreshedConnection.client,
-        followUpText,
+        input.wakePrompt,
         input.deliveryKey,
       );
       // Receipt ownership moves to the durable turn below. The turn remains
@@ -3112,7 +3106,7 @@ export class WebService {
       const { completion } = this.launchTurn(
         started,
         refreshedConnection.client,
-        followUpText,
+        input.wakePrompt,
         input.deliveryKey,
       );
       this.emit("message.changed", input.threadId, {

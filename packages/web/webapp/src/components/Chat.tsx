@@ -1,5 +1,5 @@
 import { ConversationTags } from "./tag/ConversationTags";
-import { ProjectBadge, StartProjectMarkers } from "./project/ProjectIdentity";
+import { ProjectBadge } from "./project/ProjectIdentity";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { Menu } from "@base-ui/react/menu";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -637,7 +637,6 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
                     Load earlier messages
                   </button>
                 )}
-                <StartProjectMarkers />
                 <ThreadPrimitive.Messages
                   components={{
                     UserMessage,

@@ -556,34 +556,25 @@ export type TagChangedPayload =
  */
 
 export type ProjectColor = "default" | "blue" | "purple" | "amber" | "rose";
-export interface ProjectTransition {
-  readonly id: number;
-  readonly afterMessageId: string | null;
-  readonly turnId: string | null;
-  readonly before: { readonly id: string; readonly name: string; readonly color: ProjectColor } | null;
-  readonly after: { readonly id: string; readonly name: string; readonly color: ProjectColor } | null;
-  readonly createdAt: string;
-}
-
-/** One end of a {@link ModelTransition}: a resolved route, never a guess. */
 export interface RouteSelection {
   readonly model: string | null;
   readonly effort: string | null;
 }
 
-/**
- * One change of the conversation's selected model/effort, mirrored from
- * `WebModelTransition`: written where the change took effect, between the last
- * turn on the old route and the first turn admitted on the new one. A provider
- * fallback is not one of these; that stays in the run's own attribution.
- */
-export interface ModelTransition {
-  readonly id: number;
-  readonly afterMessageId: string | null;
-  readonly turnId: string | null;
-  readonly before: RouteSelection;
-  readonly after: RouteSelection;
-  readonly createdAt: string;
+export type ConversationMarkerPart = {
+  readonly type: "conversation-marker";
+  /** Actual event instant, independent of monotonic transcript ordering. */
+  readonly at: string;
+} & (
+  | { readonly kind: "model"; readonly before: RouteSelection; readonly after: RouteSelection }
+  | { readonly kind: "project"; readonly before: ProjectIdentity | null; readonly after: ProjectIdentity | null }
+  | { readonly kind: "resumed"; readonly previousMessageAt: string; readonly idleMs: number }
+);
+
+export interface ProjectIdentity {
+  readonly id: string;
+  readonly name: string;
+  readonly color: ProjectColor;
 }
 
 export interface ProjectSummary {
@@ -716,6 +707,7 @@ export interface CronReplyContextPart {
 }
 
 export type MessagePart =
+  | ConversationMarkerPart
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "reasoning"; readonly text: string }
   | CronReplyContextPart
@@ -856,10 +848,6 @@ export interface WebAttachment {
 }
 
 export interface WebMessage {
-  /** Browser presentation only, attached after loading the independent sidecars. */
-  readonly projectTransitions?: readonly ProjectTransition[];
-  /** Browser presentation only, attached after loading the independent sidecars. */
-  readonly modelTransitions?: readonly ModelTransition[];
   readonly id: string;
   readonly threadId: string;
   readonly turnId?: string;
@@ -941,8 +929,6 @@ export interface MessageDelta {
 }
 
 export interface ThreadDetail {
-  readonly projectTransitions?: readonly ProjectTransition[];
-  readonly modelTransitions?: readonly ModelTransition[];
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
   readonly messagesNextCursor?: string;
@@ -992,8 +978,6 @@ export interface ThreadSearchPage {
 }
 
 export interface MessagePage {
-  readonly projectTransitions?: readonly ProjectTransition[];
-  readonly modelTransitions?: readonly ModelTransition[];
   readonly messages: readonly WebMessage[];
   readonly nextCursor?: string;
 }
