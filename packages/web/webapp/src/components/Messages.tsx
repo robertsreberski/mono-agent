@@ -1545,17 +1545,21 @@ export function SystemMessage() {
   if (marker?.kind === "model") return <ModelMarkers transitions={[marker]} />;
   if (marker?.kind === "project") return <ProjectMarkers transitions={[marker]} />;
   if (marker?.kind === "resumed") {
-    // The same fact the agent is told: when the conversation came back, and
-    // how long it had been quiet. Whole minutes are enough for a rule.
-    const idleMinutes = Math.floor(marker.idleMs / 60_000);
-    const idle = `${Math.floor(idleMinutes / 60)}h ${idleMinutes % 60}m`;
-    const label = `Conversation resumed ${new Date(marker.at).toLocaleString()} after ${idle} idle`;
+    // A rule has to survive a phone width, so it stays short: no seconds, no
+    // idle duration (the agent still gets that in its own context), and the
+    // year only when the conversation resumed in a different one.
+    const at = new Date(marker.at);
+    const label = `Resumed ${at.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      ...(at.getFullYear() === new Date().getFullYear() ? {} : { year: "numeric" }),
+    })}`;
     return <div className="model-transition" role="note" aria-label={label} title={label}>
       <span className="model-transition-label">
         <Icon name="spark" size={11} />
-        <span>Conversation resumed {new Date(marker.at).toLocaleString()}</span>
-        <span className="model-transition-arrow" aria-hidden="true">·</span>
-        <span>after {idle} idle</span>
+        <span>{label}</span>
       </span>
     </div>;
   }

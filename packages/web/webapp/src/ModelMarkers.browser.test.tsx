@@ -98,6 +98,19 @@ const message = (id: string, role: "user" | "assistant" | "system", text: string
   updatedAt: at,
 });
 
+// Sep 12 of the current year: the rule prints the year only for another one,
+// so a fixed calendar date would drift into a different rendering next January.
+const resumedAt = new Date(new Date().getFullYear(), 8, 12, 9, 4, 40);
+
+const resumedLabel = (): string => `Resumed ${resumedAt.toLocaleString(undefined,
+  { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`;
+
+const resumedRow = (): WebMessage => ({
+  ...message("resume-marker", "system", "", new Date(resumedAt.getTime() + 1_000).toISOString()),
+  parts: [{ type: "conversation-marker", kind: "resumed", at: resumedAt.toISOString(),
+    previousMessageAt: new Date(resumedAt.getTime() - 7_480_000).toISOString(), idleMs: 7_480_000 }],
+});
+
 const detail = (): ThreadDetail => ({
   thread: routed,
   messages: [
@@ -196,20 +209,19 @@ describe("route change markers in the transcript", () => {
     await capture("transcript-desktop-light-1280x900");
   });
 
-  it("renders a resumed system row as a local-time quiet rule without bubble chrome", async () => {
+  it("renders a resumed system row as a short local-time quiet rule without bubble chrome", async () => {
     await page.viewport(1_280, 900);
     const data = detail();
-    const resumed = { ...message("resume-marker", "system", "", "2026-09-12T09:04:41.000Z"),
-      parts: [{ type: "conversation-marker" as const, kind: "resumed" as const, at: "2026-09-12T09:04:40.000Z", previousMessageAt: "2026-09-12T07:00:00.000Z", idleMs: 7_480_000 }] };
-    vi.mocked(api.thread).mockResolvedValue({ ...data, messages: [...data.messages.slice(0, 2), resumed, ...data.messages.slice(-2)] });
+    vi.mocked(api.thread).mockResolvedValue({ ...data, messages: [...data.messages.slice(0, 2), resumedRow(), ...data.messages.slice(-2)] });
     openConsole();
     await settled();
-    const at = "2026-09-12T09:04:40.000Z";
-    const marker = screen.getByText(`Conversation resumed ${new Date(at).toLocaleString()}`);
+    const marker = screen.getByText(resumedLabel());
     const rule = marker.closest('[role="note"]');
     expect(rule).toBeVisible();
-    expect(rule).toHaveAccessibleName(`Conversation resumed ${new Date(at).toLocaleString()} after 2h 4m idle`);
-    expect(screen.getByText("after 2h 4m idle")).toBeVisible();
+    expect(rule).toHaveAccessibleName(resumedLabel());
+    // No seconds, and the idle duration stays in the agent's context only.
+    expect(rule).not.toHaveTextContent(/:\d\d:\d\d/u);
+    expect(rule).not.toHaveTextContent(/idle/u);
     expect(marker.closest(".message")).toBeNull();
     expect(marker.getBoundingClientRect().bottom).toBeLessThan(screen.getByText("Try that again, with more care about the wording.").getBoundingClientRect().top);
     await capture("transcript-resumed-desktop-1280x900");
@@ -221,6 +233,8 @@ describe("route change markers in the transcript", () => {
     // and the shot would be of neither layout.
     await page.viewport(390, 844);
     await emulate("light");
+    const data = detail();
+    vi.mocked(api.thread).mockResolvedValue({ ...data, messages: [...data.messages.slice(0, 2), resumedRow(), ...data.messages.slice(2)] });
     openConsole();
     // The phone shell opens on the conversation list, so the transcript is one
     // tap away rather than already on screen.
@@ -233,6 +247,13 @@ describe("route change markers in the transcript", () => {
     expect(marker).toHaveTextContent("Fable 5.1 · medium");
     expect(marker.getBoundingClientRect().right).toBeLessThanOrEqual(390);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
+
+    // The resume rule is the longest of the three: it has to stay on one line
+    // at 390px, which is what the shortened date buys.
+    const resumed = await screen.findByRole("note", { name: resumedLabel() });
+    expect(resumed).toBeVisible();
+    expect(screen.getByText(resumedLabel()).getClientRects()).toHaveLength(1);
+    expect(resumed.getBoundingClientRect().right).toBeLessThanOrEqual(390);
     await capture("transcript-phone-light-390x844");
 
     await emulate("dark");
