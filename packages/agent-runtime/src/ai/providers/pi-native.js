@@ -77,6 +77,7 @@ import {
   runProactiveCompaction,
   runReactiveCompaction,
 } from "./pi-native/compaction-driver.js";
+import { armMidRunCompaction } from "./pi-native/mid-run-compaction.js";
 import {
   activateTurnHarness,
   buildTurnHarness,
@@ -348,6 +349,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   let mcpClients = [];
   let closeRunTools = async () => {};
   let harness = null;
+  /** @type {null | {disarm: () => Promise<void>}} */
+  let midRunCompaction = null;
   // The ONE explicit runState the extracted modules (stream subscriber, session
   // lifecycle, compaction driver, turn runner, result builder) read/write.
   // Reassignable scalars/refs live here so a module can rebind them (an
@@ -385,6 +388,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       compactedThisRun: false,
       policy: null,
       diagnostics: {},
+      // Usage of this run's own transcript that a mid-run compaction summarized
+      // away. Those tokens were billed to this run, so they are added back to
+      // the sliced transcript usage (see mid-run-compaction.js).
+      carriedUsage: null,
+      carriedUsageMeasured: false,
     },
     session: null,
     // Fresh stateless calls own a private repo, even when attribution matches a
@@ -696,6 +704,21 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       runtimeWarnings,
     });
 
+    // Mid-run compaction: the proactive check above fires at most once, before
+    // the request. Inside one long prompt the transcript keeps growing, so arm
+    // Pi's own checkpoint compaction for the lifetime of this prompt with the
+    // bridge's guarded session_before_compact decision installed. Pi captures
+    // the lane's compaction settings into the operation at accept time, so this
+    // must happen BEFORE harness.prompt(); the same-operation compaction never
+    // starts a second run and so cannot disturb the live-input epoch below.
+    midRunCompaction = await armMidRunCompaction(runState, {
+      harness,
+      options,
+      reference,
+      onEvent,
+      runtimeWarnings,
+    });
+
     // Arm the main-prompt epoch after proactive compaction so compaction and
     // transcript seeding cannot be mistaken for live-input consumption.
     runState.recoveryBaselineTipId = await runState.session.getLeafId();
@@ -737,12 +760,20 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       liveInputEpoch.finish(promptResult.operationId);
     } finally {
       // Stop joins unresolved native enqueue and reconciles every returned
-      // entry before the exact-operation subscription is removed.
-      try { await liveInput.stop(); } finally {
-        runState.recoveryInputIds = liveInputEpoch.consumedInputIds();
-        liveInputEpoch.close();
+      // entry before the exact-operation subscription is removed. Mid-run
+      // compaction is disarmed last so a compaction settled during teardown is
+      // still accounted for, and so the harness returns to its
+      // compaction-disabled default before any later prompt on this run.
+      try {
+        try { await liveInput.stop(); } finally {
+          runState.recoveryInputIds = liveInputEpoch.consumedInputIds();
+          liveInputEpoch.close();
+        }
+      } finally {
+        await midRunCompaction.disarm();
       }
     }
+
 
     runState.externalAbort ||= !!options.abortSignal?.aborted;
 
@@ -806,7 +837,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     const { runTranscript, lastAssistant, stopReason, finalText, finalThinking } = state;
     const runAssistantCount = state.assistantMessages.length;
 
-    const ownUsage = usageFromMessages(runTranscript);
+    // Run-owned usage survives a mid-run compaction: the compaction collapses
+    // part of this run's own transcript into a summary, so the usage of the
+    // messages it removed is carried forward (and the baseline re-anchored) by
+    // the mid-run controller instead of being silently lost here.
+    const ownUsage = usageFromMessages(runTranscript, runState.compaction.carriedUsage);
     // Priced from this agent's own tokens: it is the fallback for a run the
     // provider did not price, and only these tokens are this model's.
     const estimatedCost = estimateCost({
@@ -978,7 +1013,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       providerSessionId,
       runtimeWarnings,
       capabilitiesUsed,
-      usageMeasured: hasMeasuredUsage(runTranscript),
+      usageMeasured: hasMeasuredUsage(runTranscript) || runState.compaction.carriedUsageMeasured === true,
       structuredResult: runState.structuredResult,
       effectiveEffort: providerEffectiveEffort,
     }), ...(providerSessionRecovery ? { providerSessionRecovery } : {}) };
@@ -1018,6 +1053,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       effectiveEffort: harness?.getThinkingLevel?.(),
     });
   } finally {
+    // Safety net for a throw between arming and the prompt: disarm is
+    // idempotent, and it must run before the harness closes so the session's
+    // compaction settings are restored while they still can be.
+    try { await midRunCompaction?.disarm(); } catch { /* best-effort */ }
     try { await harness?.close?.(); } catch { /* best-effort */ }
     if (runState.sessionEntry) runState.sessionEntry.busy = false;
     if (runState.registeredSessionEntry) runState.registeredSessionEntry.busy = false;

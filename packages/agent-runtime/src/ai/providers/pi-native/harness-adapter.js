@@ -196,6 +196,9 @@ export async function createPiHarnessAdapter(session, options) {
     ? "sequential"
     : "parallel";
 
+  // Flipped by the bridge's mid-run compaction controller for the lifetime of a
+  // single prompt; read by the permanent compaction-owner hook below.
+  let midRunCompactionArmed = false;
   /** @type {any} */
   let created;
   /** @type {any} */
@@ -230,9 +233,19 @@ export async function createPiHarnessAdapter(session, options) {
     await lane.setThinkingLevel(options.thinkingLevel ?? "off", PI_CONTEXT);
     await lane.setActiveTools(activeToolNames, PI_CONTEXT);
 
-    rawHarness.hooks.on("before_compaction", (event) => (
-      event.reason === "manual" ? undefined : { decline: true }
-    ), { id: "mono-agent-compaction-owner" });
+    // mono-agent owns compaction policy, so every compaction Pi proposes on its
+    // own is declined here — EXCEPT the in-run `threshold` task while the bridge
+    // has explicitly armed mid-run compaction and installed its guarded
+    // `session_before_compact` decision (see mid-run-compaction.js). Declining
+    // is safe for both: a declined threshold task resumes the run, and overflow
+    // recovery stays with the bridge's reactive path. `undefined` defers to the
+    // next registration rather than accepting (pi-agent-core hooks.js
+    // `firstStructural`), which is what lets the bridge's own hook decide.
+    rawHarness.hooks.on("before_compaction", (event) => {
+      if (event.reason === "manual") return undefined;
+      if (event.reason === "threshold" && midRunCompactionArmed) return undefined;
+      return { decline: true };
+    }, { id: "mono-agent-compaction-owner" });
     // Pi terminates only when every result in a batch carries the hint. Keep
     // mixed batches closed too, and never execute calls after a durable question.
     if (activeToolNames.includes("AskParent")) {
@@ -273,6 +286,12 @@ export async function createPiHarnessAdapter(session, options) {
     },
     async setCompactionSettings(settings) {
       await rawHarness.setCompactionSettings(settings, PI_CONTEXT);
+    },
+    // Admit Pi's own in-run `threshold` compaction task while the bridge has a
+    // guarded decision installed. Pi captures the lane's compaction settings
+    // into the operation at accept time, so this must be armed before prompt().
+    setMidRunCompactionArmed(value) {
+      midRunCompactionArmed = value === true;
     },
     async appendMessage(message) {
       const entryId = await lane.appendMessage(message, PI_CONTEXT);

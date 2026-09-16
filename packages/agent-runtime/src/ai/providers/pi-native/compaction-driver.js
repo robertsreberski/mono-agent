@@ -1,8 +1,11 @@
 // @ts-check
 // Context auto-compaction for the pi-native bridge.
 //
-// Pi supports checkpoint/overflow compaction. Mono-agent disables that native
-// path and drives guarded proactive compaction plus one overflow recovery here.
+// Pi supports checkpoint/overflow compaction. Mono-agent keeps Pi's overflow
+// recovery disabled and owns the decision itself: guarded proactive compaction
+// before the request and one overflow recovery here, plus the mid-run
+// checkpoint path in mid-run-compaction.js, which reuses this module's guarded
+// hook while Pi's own threshold scheduling is armed for one prompt.
 // Pi owns preparation, cut rules, prompts and context token estimation.
 // The bridge owns policy, fixed overhead and persistence/savings guards.
 //
@@ -245,6 +248,278 @@ function emitCompactionEvent(onEvent, {
   }
 }
 
+/**
+ * Fresh per-attempt accounting block carried on every `context_compaction`
+ * event. One object per compaction attempt; `requests` is appended to by the
+ * summary-model facade.
+ */
+export function createCompactionAccounting() {
+  return { version: 1, requests: [], splitTurn: null, generatedSummaryTokens: null,
+    appendedMetadataBytes: null, tailEstimateTokens: null, transcriptBefore: null, transcriptAfter: null,
+    fullRequestBefore: null, fullRequestAfter: null, afterSource: null, policy: null, preparation: null };
+}
+
+/**
+ * Build the `(observer, event)` emitter that stamps the live accounting
+ * snapshot (and elapsed time) onto each lifecycle event.
+ * @param {any} accounting
+ * @param {number} started
+ */
+export function createCompactionEmitter(accounting, started) {
+  return (observer, event) => emitCompactionEvent((value) => observer?.({ ...value,
+    tokenCountsExact: false, accounting: { ...accounting, requests: accounting.requests.map((row) => ({ ...row })),
+      durationMs: Math.round(performance.now() - started),
+      generatedSummaryTokens: accounting.requests.length && accounting.requests.every((row) => row.generatedSummaryTokens !== null) ? accounting.requests.reduce((sum, row) => sum + row.generatedSummaryTokens, 0) : null } }), event);
+}
+
+/**
+ * The bridge's guarded `session_before_compact` decision, shared by the
+ * idle-harness path (`tryCompact` → `harness.compact()`) and the mid-run
+ * checkpoint path (Pi's own threshold task, decided inside an active prompt).
+ *
+ * Pi's hook contract (node_modules/@earendil-works/pi-agent-core/dist/harness/
+ * hooks.js:235-254 `firstStructural`) AWAITS each handler and takes the first
+ * `{decline}` / `{compaction}` result, so the whole preparation + summary +
+ * savings guard can run inside it. Returning `undefined` would hand the
+ * compaction back to Pi's own summariser, so every path here returns one or the
+ * other.
+ *
+ * Both caller vetoes run BEFORE the paid summary request: `beforeAttempt` sees
+ * only the raw event (trigger/re-entrancy guards), `beforeSummary` additionally
+ * sees Pi's preparation, so a caller can decline a cut that cannot save enough
+ * without paying a model call for the proof. The idle path does not use either.
+ * @param {any} params
+ */
+export function createGuardedCompactionHook({
+  harness,
+  trigger,
+  operationId,
+  effectivePolicy,
+  compactionSettings,
+  accounting,
+  fixedOverheadTokens = null,
+  beforeAttempt = null,
+  beforeSummary = null,
+}) {
+  /** @type {null | {kind: string, reason?: string, tokensBefore?: number|null, tokensAfter?: number|null, savings?: number|null, firstKeptEntryId?: string|null, retainedTailLength?: number, compaction?: any, error?: any}} */
+  let decision = null;
+  const handler = async (event) => {
+    decision = null;
+    try {
+      if (typeof beforeAttempt === "function") {
+        const veto = await beforeAttempt(event);
+        if (veto) {
+          decision = { kind: "guard_skipped", reason: veto.reason || "guarded" };
+          return { cancel: true };
+        }
+      }
+      let settings = compactionSettings;
+      let prepared = prepareCompaction(event.branchEntries, settings);
+      if (prepared.ok === false) {
+        decision = { kind: "failed", error: prepared.error };
+        return { cancel: true };
+      }
+      if (!prepared.value) {
+        decision = { kind: "nothing_to_compact" };
+        return { cancel: true };
+      }
+      if (prepared.value.isSplitTurn) {
+        settings = {
+          ...settings,
+          reserveTokens: piSummaryReserveTokens(effectivePolicy.summaryMaxTokens, true),
+        };
+        prepared = prepareCompaction(event.branchEntries, settings);
+        if (prepared.ok === false) {
+          decision = { kind: "failed", error: prepared.error };
+          return { cancel: true };
+        }
+        if (!prepared.value) {
+          decision = { kind: "nothing_to_compact" };
+          return { cancel: true };
+        }
+      }
+      if (typeof beforeSummary === "function") {
+        const veto = await beforeSummary({ prepared: prepared.value, event });
+        if (veto) {
+          decision = { kind: "guard_skipped", reason: veto.reason || "guarded" };
+          return { cancel: true };
+        }
+      }
+      accounting.splitTurn = prepared.value.isSplitTurn;
+      accounting.transcriptBefore = await estimateBuiltContextTokens(event.branchEntries);
+      accounting.fullRequestBefore = fixedOverheadTokens === null || accounting.transcriptBefore === null ? null : accounting.transcriptBefore + fixedOverheadTokens;
+      accounting.tailEstimateTokens = prepared.value.retainedTail.reduce((sum, message) => sum + estimateTokens(message), 0);
+      const input = prepareSummaryInput(prepared.value);
+      accounting.preparation = input.metadata;
+      const compacted = await compactPreparedContext(
+        input.preparation,
+        summaryModels(harness.models, { operationId, focus: input.focus, evidence: input.evidence, requests: accounting.requests }),
+        harness.getModel(),
+        event.customInstructions,
+        typeof harness.getThinkingLevel === "function" ? harness.getThinkingLevel() : undefined,
+        undefined,
+        undefined,
+        event.context || BACKGROUND_CONTEXT,
+      );
+      if (compacted.ok === false) {
+        decision = { kind: "failed", error: compacted.error };
+        return { cancel: true };
+      }
+      const tokensBefore = await estimateBuiltContextTokens(event.branchEntries);
+      const tokensAfter = await previewCompactedContext(event.branchEntries, compacted.value);
+      accounting.transcriptAfter = tokensAfter;
+      accounting.afterSource = "preview";
+      accounting.fullRequestAfter = fixedOverheadTokens === null || tokensAfter === null ? null : tokensAfter + fixedOverheadTokens;
+      accounting.generatedSummaryTokens = accounting.requests.reduce((sum, request) => sum + (request.generatedSummaryTokens || 0), 0);
+      const lists = /** @type {{readFiles: string[], modifiedFiles: string[]}} */ (compacted.value.details);
+      accounting.appendedMetadataBytes = Buffer.byteLength([
+        lists.readFiles.length ? `\n\n<read-files>\n${lists.readFiles.join("\n")}\n</read-files>` : "",
+        lists.modifiedFiles.length ? `\n\n<modified-files>\n${lists.modifiedFiles.join("\n")}\n</modified-files>` : "",
+      ].join(""));
+      const savings = tokensBefore === null || tokensAfter === null ? null : tokensBefore - tokensAfter;
+      const firstRetainedMessage = prepared.value.retainedTail[0];
+      const firstKeptEntryId = firstRetainedMessage
+        ? event.branchEntries.find((entry) => entry?.type === "message" && entry.message === firstRetainedMessage)?.id || null
+        : null;
+      if (savings === null || savings <= 0) {
+        decision = { kind: "not_reducible", tokensBefore, tokensAfter, savings };
+        return { cancel: true };
+      }
+      if (trigger === "proactive" && savings < effectivePolicy.compactionMinSavingsTokens) {
+        decision = { kind: "insufficient_savings", tokensBefore, tokensAfter, savings };
+        return { cancel: true };
+      }
+      decision = {
+        kind: "accepted",
+        tokensBefore,
+        tokensAfter,
+        savings,
+        firstKeptEntryId,
+        retainedTailLength: compacted.value.retainedTail.length,
+        compaction: compacted.value,
+      };
+      return { compaction: compacted.value };
+    } catch (error) {
+      decision = { kind: "failed", error };
+      return { cancel: true };
+    }
+  };
+  return { handler, getDecision: () => decision };
+}
+
+/**
+ * Turn a non-accepted guarded decision (or a thrown compaction error) into the
+ * runtime warning, the terminal `context_compaction` event and the bridge's
+ * compaction result. Shared by the idle and mid-run paths so both report
+ * skips/failures identically.
+ * @param {any} params
+ * @returns {{applied: false, tokensBefore: number|null, tokensAfter: number|null, reduced: boolean|null, nothingToCompact: boolean}}
+ */
+export function reportGuardedCompactionOutcome({
+  decision,
+  error,
+  trigger,
+  model,
+  operationId,
+  emit,
+  onEvent,
+  runtimeWarnings,
+  effectivePolicy,
+}) {
+  if (decision?.kind === "not_reducible" || decision?.kind === "insufficient_savings") {
+    const warningKind = decision.kind === "not_reducible"
+      ? "context_compaction_not_reducible"
+      : "context_compaction_insufficient_savings";
+    runtimeWarnings?.push({
+      warning_kind: warningKind,
+      source: "pi",
+      trigger,
+      tokens_before: decision.tokensBefore ?? null,
+      tokens_after: decision.tokensAfter ?? null,
+      savings_tokens: decision.savings ?? null,
+      ...(decision.kind === "insufficient_savings"
+        ? { minimum_savings_tokens: effectivePolicy.compactionMinSavingsTokens }
+        : {}),
+    });
+    emit(onEvent, {
+      operationId,
+      status: "skipped",
+      trigger,
+      model,
+      tokensBefore: decision.tokensBefore,
+      tokensAfter: decision.tokensAfter,
+      reason: decision.kind,
+    });
+    return {
+      applied: false,
+      tokensBefore: decision.tokensBefore ?? null,
+      tokensAfter: decision.tokensAfter ?? null,
+      reduced: false,
+      nothingToCompact: false,
+    };
+  }
+  if (decision?.kind === "nothing_to_compact") {
+    runtimeWarnings?.push({
+      warning_kind: "context_compaction_nothing_to_compact",
+      source: "pi",
+      trigger,
+      message: "Nothing to compact",
+    });
+    emit(onEvent, {
+      operationId,
+      status: "skipped",
+      trigger,
+      model,
+      reason: "nothing_to_compact",
+    });
+    return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact: true };
+  }
+  const effectiveError = decision?.kind === "failed" && decision.error
+    ? decision.error
+    : error;
+  const message = effectiveError?.message || String(effectiveError);
+  const code = effectiveError?.code;
+  const tag = effectiveError?._tag;
+  const nothingToCompact = tag === "NothingToCompact"
+    || (code === "compaction" && /nothing to compact/i.test(message));
+  const busy = tag === "LaneBusy" || code === "busy";
+  const warningKind = nothingToCompact
+    ? "context_compaction_nothing_to_compact"
+    : code === "auth"
+      ? "context_compaction_auth_failed"
+      : busy
+        ? "context_compaction_busy"
+        : "context_compaction_failed";
+  runtimeWarnings?.push({ warning_kind: warningKind, source: "pi", trigger, message });
+  emit(onEvent, {
+    operationId,
+    status: nothingToCompact ? "skipped" : "failed",
+    trigger,
+    model,
+    reason: nothingToCompact
+      ? "nothing_to_compact"
+      : code === "auth"
+        ? "authentication"
+        : busy
+          ? "busy"
+          : code === "aborted"
+            ? "cancelled"
+            : "provider_error",
+    ...(nothingToCompact
+      ? {}
+      : {
+        message: code === "auth"
+          ? "Compaction authentication failed."
+          : busy
+            ? "Context was busy and could not be compacted."
+            : code === "aborted"
+              ? "Compaction was cancelled."
+              : "Compaction failed.",
+      }),
+  });
+  return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact };
+}
+
 // Run a single guarded compaction. Requires the harness idle (callers
 // waitForIdle first). Never throws — classifies AgentHarnessError into a warning
 // and reports back whether anything was compacted. Fires onCompactionRecorded on
@@ -262,13 +537,8 @@ export async function tryCompact(harness, {
 }) {
   const operationId = randomUUID();
   const started = performance.now();
-  const accounting = { version: 1, requests: [], splitTurn: null, generatedSummaryTokens: null,
-    appendedMetadataBytes: null, tailEstimateTokens: null, transcriptBefore: null, transcriptAfter: null,
-    fullRequestBefore: null, fullRequestAfter: null, afterSource: null, policy: null, preparation: null };
-  const emit = (observer, event) => emitCompactionEvent((value) => observer?.({ ...value,
-    tokenCountsExact: false, accounting: { ...accounting, requests: accounting.requests.map((row) => ({ ...row })),
-      durationMs: Math.round(performance.now() - started),
-      generatedSummaryTokens: accounting.requests.length && accounting.requests.every((row) => row.generatedSummaryTokens !== null) ? accounting.requests.reduce((sum, row) => sum + row.generatedSummaryTokens, 0) : null } }), event);
+  const accounting = createCompactionAccounting();
+  const emit = createCompactionEmitter(accounting, started);
   emit(onEvent, {
     operationId,
     status: "running",
@@ -279,6 +549,7 @@ export async function tryCompact(harness, {
   /** @type {null | {kind: string, tokensBefore?: number|null, tokensAfter?: number|null, savings?: number|null, firstKeptEntryId?: string|null, error?: any}} */
   let hookDecision = null;
   let removeHook = null;
+  let readDecision = () => hookDecision;
   try {
     const adaptivePolicy = resolveAgentCompactionPolicy({}, {
       contextWindow: typeof harness?.getModel === "function" ? harness.getModel()?.contextWindow : undefined,
@@ -296,85 +567,19 @@ export async function tryCompact(harness, {
     if (typeof harness?.on !== "function") {
       throw new Error("Pi AgentHarness does not expose session_before_compact hooks");
     }
-    removeHook = harness.on("session_before_compact", async (event) => {
-      try {
-        let settings = compactionSettings;
-        let prepared = prepareCompaction(event.branchEntries, settings);
-        if (prepared.ok === false) {
-          hookDecision = { kind: "failed", error: prepared.error };
-          return { cancel: true };
-        }
-        if (!prepared.value) {
-          hookDecision = { kind: "nothing_to_compact" };
-          return { cancel: true };
-        }
-        if (prepared.value.isSplitTurn) {
-          settings = {
-            ...settings,
-            reserveTokens: piSummaryReserveTokens(effectivePolicy.summaryMaxTokens, true),
-          };
-          prepared = prepareCompaction(event.branchEntries, settings);
-          if (prepared.ok === false) {
-            hookDecision = { kind: "failed", error: prepared.error };
-            return { cancel: true };
-          }
-          if (!prepared.value) {
-            hookDecision = { kind: "nothing_to_compact" };
-            return { cancel: true };
-          }
-        }
-        accounting.splitTurn = prepared.value.isSplitTurn;
-        accounting.transcriptBefore = await estimateBuiltContextTokens(event.branchEntries);
-        accounting.fullRequestBefore = fixedOverheadTokens === null || accounting.transcriptBefore === null ? null : accounting.transcriptBefore + fixedOverheadTokens;
-        accounting.tailEstimateTokens = prepared.value.retainedTail.reduce((sum, message) => sum + estimateTokens(message), 0);
-        const input = prepareSummaryInput(prepared.value);
-        accounting.preparation = input.metadata;
-        const compacted = await compactPreparedContext(
-          input.preparation,
-          summaryModels(harness.models, { operationId, focus: input.focus, evidence: input.evidence, requests: accounting.requests }),
-          harness.getModel(),
-          event.customInstructions,
-          typeof harness.getThinkingLevel === "function" ? harness.getThinkingLevel() : undefined,
-          undefined,
-          undefined,
-          event.context || BACKGROUND_CONTEXT,
-        );
-        if (compacted.ok === false) {
-          hookDecision = { kind: "failed", error: compacted.error };
-          return { cancel: true };
-        }
-        const tokensBefore = await estimateBuiltContextTokens(event.branchEntries);
-        const tokensAfter = await previewCompactedContext(event.branchEntries, compacted.value);
-        accounting.transcriptAfter = tokensAfter;
-        accounting.afterSource = "preview";
-        accounting.fullRequestAfter = fixedOverheadTokens === null || tokensAfter === null ? null : tokensAfter + fixedOverheadTokens;
-        accounting.generatedSummaryTokens = accounting.requests.reduce((sum, request) => sum + (request.generatedSummaryTokens || 0), 0);
-        const lists = /** @type {{readFiles: string[], modifiedFiles: string[]}} */ (compacted.value.details);
-        accounting.appendedMetadataBytes = Buffer.byteLength([
-          lists.readFiles.length ? `\n\n<read-files>\n${lists.readFiles.join("\n")}\n</read-files>` : "",
-          lists.modifiedFiles.length ? `\n\n<modified-files>\n${lists.modifiedFiles.join("\n")}\n</modified-files>` : "",
-        ].join(""));
-        const savings = tokensBefore === null || tokensAfter === null ? null : tokensBefore - tokensAfter;
-        const firstRetainedMessage = prepared.value.retainedTail[0];
-        const firstKeptEntryId = firstRetainedMessage
-          ? event.branchEntries.find((entry) => entry?.type === "message" && entry.message === firstRetainedMessage)?.id || null
-          : null;
-        if (savings === null || savings <= 0) {
-          hookDecision = { kind: "not_reducible", tokensBefore, tokensAfter, savings };
-          return { cancel: true };
-        }
-        if (trigger === "proactive" && savings < effectivePolicy.compactionMinSavingsTokens) {
-          hookDecision = { kind: "insufficient_savings", tokensBefore, tokensAfter, savings };
-          return { cancel: true };
-        }
-        hookDecision = { kind: "accepted", tokensBefore, tokensAfter, savings, firstKeptEntryId };
-        return { compaction: compacted.value };
-      } catch (error) {
-        hookDecision = { kind: "failed", error };
-        return { cancel: true };
-      }
+    const guarded = createGuardedCompactionHook({
+      harness,
+      trigger,
+      operationId,
+      effectivePolicy,
+      compactionSettings,
+      accounting,
+      fixedOverheadTokens,
     });
+    readDecision = guarded.getDecision;
+    removeHook = harness.on("session_before_compact", guarded.handler);
     const result = await harness.compact();
+    hookDecision = readDecision();
     const measuredTokensBefore = hookDecision?.tokensBefore ?? null;
     const tokensBefore = Number(result?.tokensBefore) || null;
     const measuredTokensAfter = await estimateSessionMessageTokens(session);
@@ -430,98 +635,18 @@ export async function tryCompact(harness, {
     }
     return { applied: true, tokensBefore, tokensAfter, reduced, nothingToCompact: false };
   } catch (err) {
-    if (hookDecision?.kind === "not_reducible" || hookDecision?.kind === "insufficient_savings") {
-      const warningKind = hookDecision.kind === "not_reducible"
-        ? "context_compaction_not_reducible"
-        : "context_compaction_insufficient_savings";
-      runtimeWarnings?.push({
-        warning_kind: warningKind,
-        source: "pi",
-        trigger,
-        tokens_before: hookDecision.tokensBefore ?? null,
-        tokens_after: hookDecision.tokensAfter ?? null,
-        savings_tokens: hookDecision.savings ?? null,
-        ...(hookDecision.kind === "insufficient_savings"
-          ? { minimum_savings_tokens: effectivePolicy.compactionMinSavingsTokens }
-          : {}),
-      });
-      emit(onEvent, {
-        operationId,
-        status: "skipped",
-        trigger,
-        model,
-        tokensBefore: hookDecision.tokensBefore,
-        tokensAfter: hookDecision.tokensAfter,
-        reason: hookDecision.kind,
-      });
-      return {
-        applied: false,
-        tokensBefore: hookDecision.tokensBefore ?? null,
-        tokensAfter: hookDecision.tokensAfter ?? null,
-        reduced: false,
-        nothingToCompact: false,
-      };
-    }
-    if (hookDecision?.kind === "nothing_to_compact") {
-      runtimeWarnings?.push({
-        warning_kind: "context_compaction_nothing_to_compact",
-        source: "pi",
-        trigger,
-        message: "Nothing to compact",
-      });
-      emit(onEvent, {
-        operationId,
-        status: "skipped",
-        trigger,
-        model,
-        reason: "nothing_to_compact",
-      });
-      return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact: true };
-    }
-    const effectiveError = hookDecision?.kind === "failed" && hookDecision.error
-      ? hookDecision.error
-      : err;
-    const message = effectiveError?.message || String(effectiveError);
-    const code = effectiveError?.code;
-    const tag = effectiveError?._tag;
-    const nothingToCompact = tag === "NothingToCompact"
-      || (code === "compaction" && /nothing to compact/i.test(message));
-    const busy = tag === "LaneBusy" || code === "busy";
-    const warningKind = nothingToCompact
-      ? "context_compaction_nothing_to_compact"
-      : code === "auth"
-        ? "context_compaction_auth_failed"
-        : busy
-          ? "context_compaction_busy"
-          : "context_compaction_failed";
-    runtimeWarnings?.push({ warning_kind: warningKind, source: "pi", trigger, message });
-    emit(onEvent, {
-      operationId,
-      status: nothingToCompact ? "skipped" : "failed",
+    hookDecision = readDecision() || hookDecision;
+    return reportGuardedCompactionOutcome({
+      decision: hookDecision,
+      error: err,
       trigger,
       model,
-      reason: nothingToCompact
-        ? "nothing_to_compact"
-        : code === "auth"
-          ? "authentication"
-          : busy
-            ? "busy"
-            : code === "aborted"
-              ? "cancelled"
-              : "provider_error",
-      ...(nothingToCompact
-        ? {}
-        : {
-          message: code === "auth"
-            ? "Compaction authentication failed."
-            : busy
-              ? "Context was busy and could not be compacted."
-              : code === "aborted"
-                ? "Compaction was cancelled."
-                : "Compaction failed.",
-        }),
+      operationId,
+      emit,
+      onEvent,
+      runtimeWarnings,
+      effectivePolicy,
     });
-    return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact };
   } finally {
     removeHook?.();
     if (typeof harness?.setCompactionSettings === "function") {
