@@ -789,7 +789,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .context-display-trigger[data-state="last_measured"] .context-display-trigger-percent,
 .context-display-trigger[data-state="unavailable"] .context-display-trigger-percent { color: var(--text-soft); }
 .context-display-positioner { z-index: 111; }
-.context-display-popover { width: min(300px, calc(100vw - 24px)); padding: 14px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 13px; box-shadow: var(--shadow-lg); }
+.context-display-popover { width: min(300px, calc(100vw - 24px)); max-height: min(560px, calc(100dvh - 24px)); padding: 14px; overflow-y: auto; overscroll-behavior: contain; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 13px; box-shadow: var(--shadow-lg); }
 .context-display-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 12px; }
 .context-display-title { margin: 0; font-size: 12px; font-weight: 720; }
 .context-display-status { color: var(--text-soft); font-family: var(--font-mono); font-size: 8px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
@@ -801,6 +801,10 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .context-display-model code { overflow-wrap: anywhere; color: var(--text-soft); font-family: var(--font-mono); font-size: 9px; }
 .context-display-section + .context-display-section, .context-display-cost-breakdown { margin-top: 14px; }
 .context-display-section-title { margin: 0 0 8px; color: var(--text-soft); font-size: 10px; font-weight: 720; }
+.context-display-provider-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.context-display-provider-heading .context-display-section-title { margin-bottom: 0; }
+.context-display-provider-usage .provider-usage { grid-template-columns: 1fr; padding-top: 8px; }
+.context-display-provider-loading { margin: 8px 0 0; color: var(--text-muted); font-size: 10px; }
 .context-display-window { display: grid; gap: 7px; margin-bottom: 12px; }
 .context-display-window-summary { display: flex; justify-content: space-between; gap: 12px; color: var(--text-muted); font-size: 10px; }
 .context-display-percent { color: var(--accent); font-family: var(--font-mono); font-weight: 700; }
