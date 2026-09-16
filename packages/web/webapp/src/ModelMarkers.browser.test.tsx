@@ -199,13 +199,17 @@ describe("route change markers in the transcript", () => {
   it("renders a resumed system row as a local-time quiet rule without bubble chrome", async () => {
     await page.viewport(1_280, 900);
     const data = detail();
-    const resumed = { ...message("resume-marker", "system", "", "2026-09-12T09:04:40.000Z"),
+    const resumed = { ...message("resume-marker", "system", "", "2026-09-12T09:04:41.000Z"),
       parts: [{ type: "conversation-marker" as const, kind: "resumed" as const, at: "2026-09-12T09:04:40.000Z", previousMessageAt: "2026-09-12T07:00:00.000Z", idleMs: 7_480_000 }] };
     vi.mocked(api.thread).mockResolvedValue({ ...data, messages: [...data.messages.slice(0, 2), resumed, ...data.messages.slice(-2)] });
     openConsole();
     await settled();
-    const marker = screen.getByText(`Conversation resumed ${new Date(resumed.createdAt).toLocaleString()}`);
-    expect(marker.closest('[role="note"]')).toBeVisible();
+    const at = "2026-09-12T09:04:40.000Z";
+    const marker = screen.getByText(`Conversation resumed ${new Date(at).toLocaleString()}`);
+    const rule = marker.closest('[role="note"]');
+    expect(rule).toBeVisible();
+    expect(rule).toHaveAccessibleName(`Conversation resumed ${new Date(at).toLocaleString()} after 2h 4m idle`);
+    expect(screen.getByText("after 2h 4m idle")).toBeVisible();
     expect(marker.closest(".message")).toBeNull();
     expect(marker.getBoundingClientRect().bottom).toBeLessThan(screen.getByText("Try that again, with more care about the wording.").getBoundingClientRect().top);
   });

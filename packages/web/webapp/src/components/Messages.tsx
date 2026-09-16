@@ -1544,9 +1544,21 @@ export function SystemMessage() {
   });
   if (marker?.kind === "model") return <ModelMarkers transitions={[marker]} />;
   if (marker?.kind === "project") return <ProjectMarkers transitions={[marker]} />;
-  if (marker?.kind === "resumed") return <div className="model-transition" role="note">
-    <span className="model-transition-label">Conversation resumed {new Date(marker.at).toLocaleString()}</span>
-  </div>;
+  if (marker?.kind === "resumed") {
+    // The same fact the agent is told: when the conversation came back, and
+    // how long it had been quiet. Whole minutes are enough for a rule.
+    const idleMinutes = Math.floor(marker.idleMs / 60_000);
+    const idle = `${Math.floor(idleMinutes / 60)}h ${idleMinutes % 60}m`;
+    const label = `Conversation resumed ${new Date(marker.at).toLocaleString()} after ${idle} idle`;
+    return <div className="model-transition" role="note" aria-label={label} title={label}>
+      <span className="model-transition-label">
+        <Icon name="spark" size={11} />
+        <span>Conversation resumed {new Date(marker.at).toLocaleString()}</span>
+        <span className="model-transition-arrow" aria-hidden="true">·</span>
+        <span>after {idle} idle</span>
+      </span>
+    </div>;
+  }
   return (
     <>
     <MessagePrimitive.Root className="message message-system">
