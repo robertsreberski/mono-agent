@@ -235,7 +235,7 @@ function ConversationTitle() {
 
 export function ModelControls() {
   const {
-    usage, selectorModels, model, effort, setModel, setEffort,
+    usage, providerUsage, selectorModels, model, effort, setModel, setEffort,
     agentDefaultModel, hasRunOverride, resetRunOverride, disabled, hasSettings,
     catalogStatusByProvider, openCatalog, requestProvider, agentProviders,
     showModelChangeHint,
@@ -269,6 +269,7 @@ export function ModelControls() {
           context={usage.context}
           processed={usage.processed}
           conversationCost={usage.cost}
+          providerUsage={providerUsage}
         />
       )}
       {hasSettings && (
