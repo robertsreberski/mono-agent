@@ -212,6 +212,7 @@ describe("route change markers in the transcript", () => {
     expect(screen.getByText("after 2h 4m idle")).toBeVisible();
     expect(marker.closest(".message")).toBeNull();
     expect(marker.getBoundingClientRect().bottom).toBeLessThan(screen.getByText("Try that again, with more care about the wording.").getBoundingClientRect().top);
+    await capture("transcript-resumed-desktop-1280x900");
   });
 
   it("keeps the rule inside a phone transcript", async () => {
