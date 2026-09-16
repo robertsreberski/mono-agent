@@ -181,6 +181,7 @@ const partHasTranscriptPresentation = (part: MessagePart): boolean => {
       return true;
     case "steer":
       return true;
+    case "conversation-marker":
     case "cron-reply-context":
       return true;
     case "tool-call":

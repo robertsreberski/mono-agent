@@ -355,9 +355,16 @@ resolved route, not from picker writes: flipping the selector and coming back
 before sending leaves nothing behind, a run of flips leaves one marker, a route
 nothing resolved is never claimed as a change, and the first routed turn is a
 baseline rather than a change. A provider fallback is not a route change and
-stays in the message's own attribution, above. `modelTransitions` sidecars
-accompany detail and message pages exactly as `projectTransitions` do, and
-schema 28 adds their records.
+stays in the message's own attribution, above. Markers are durable system rows
+in the transcript, paged and announced live just like messages. An operator
+message after more than one hour without a visible non-marker message also
+adds a `Conversation resumed` rule with the browser-local date and time.
+Active-turn steering and background wakes do not create resume markers.
+
+Each dispatched turn receives a compact `<conversation_markers>` prefix with
+changes since the previous dispatch attempt, after project/tag context. Resume
+context includes the idle duration and server-local timestamp with zone and
+numeric offset. Stored operator text stays untouched.
 
 The dashboard header's settings action opens a separate **Agent settings** dialog.
 Its model and effort choices become the defaults for subsequently created web
@@ -592,12 +599,13 @@ Color edits are immediate presentation changes. Deleting a project with active
 members or pending references is refused; archiving a pending destination is
 also refused until its turns finish.
 
-Immutable join/leave/move markers retain historical name/color and the actual
-message boundary. `projectTransitions` sidecars accompany detail and message
-pages; they are independent of model messages, prompts, search, cost, counts,
-and copy text. `pendingProject` on the conversation describes deferred intent.
-Schema 27 adds these records and atomic console-tool operation receipts; the
-existing web-state reset and conversation deletion cascade remove owned records.
+Immutable join/leave/move transcript rows retain historical name/color and the
+actual event time, including the initial membership. Markers are excluded from
+search prose and conversation excerpts. `pendingProject` on the conversation
+describes deferred intent. Schema 32 drops the legacy model/project transition
+tables without copying their content; existing messages and console-tool
+receipts remain. Back up web state before upgrading if legacy markers must be
+recoverable.
 
 Web turns can use the app-owned console tools described in
 [Console project tools](../../docs/tools/mcp.md#console-project-tools). Turns
@@ -951,6 +959,7 @@ WebBootstrap
 WebBootstrapScope
 WebConsoleError
 WebConsoleIdentity
+WebConversationMarkerPart
 WebCronReplyContextPart
 WebCronReplyReceipt
 WebCronReplySnapshotKind
@@ -968,7 +977,7 @@ WebNotificationTriggerKind
 WebProject
 WebProjectChangedPayload
 WebProjectColor
-WebProjectTransition
+WebProjectIdentity
 WebPushBootstrap
 WebPushSubscriptionState
 WebPushSubscriptionStatus

@@ -64,21 +64,14 @@ const monitorWake = (
 });
 
 describe("coalesceMonitorWakeMessages", () => {
-  it("does not coalesce across a project transition anchor", () => {
-    const first = monitorWake("1");
-    const anchor = monitorWake("2", monitor(), { projectTransitions: [{ id: 1, afterMessageId: "2", turnId: "turn-2", before: null, after: { id: "p", name: "P", color: "blue" }, createdAt: "2026-09-12T00:00:00Z" }] });
-    const last = monitorWake("3");
-    const result = coalesceMonitorWakeMessages([first, anchor, last]);
-    expect(result.map((item) => item.id)).toEqual(["1", "2", "3"]);
-    expect(convertWebMessage(anchor).metadata?.custom?.projectTransitions).toEqual(anchor.projectTransitions);
-  });
-  it("does not coalesce across a route change anchor", () => {
-    const first = monitorWake("1");
-    const anchor = monitorWake("2", monitor(), { modelTransitions: [{ id: 1, afterMessageId: "2", turnId: "turn-3", before: { model: "provider/sol", effort: "low" }, after: { model: "provider/astra", effort: "high" }, createdAt: "2026-09-12T00:00:00Z" }] });
-    const last = monitorWake("3");
-    const result = coalesceMonitorWakeMessages([first, anchor, last]);
-    expect(result.map((item) => item.id)).toEqual(["1", "2", "3"]);
-    expect(convertWebMessage(anchor).metadata?.custom?.modelTransitions).toEqual(anchor.modelTransitions);
+  it("maps durable marker rows and never coalesces monitor activity across them", () => {
+    const marker = { type: "conversation-marker", kind: "project", before: null,
+      after: { id: "p", name: "P", color: "blue" }, at: "2026-09-12T00:00:00Z" } as const;
+    const row = monitorWake("2", monitor(), { role: "system", parts: [marker] });
+    expect(coalesceMonitorWakeMessages([monitorWake("1"), row, monitorWake("3")]).map((m) => m.id)).toEqual(["1", "2", "3"]);
+    expect(convertWebMessage(row).metadata?.custom?.conversationMarker).toEqual({ type: "data-conversation-marker", data: marker });
+    expect(convertWebMessage(row).role).toBe("system");
+    expect(convertWebMessage(row).content).toEqual([{ type: "text", text: "" }]);
   });
   it("uses the newest same-Monitor wake as one chronological presentation carrier", () => {
     const firstProjection = monitor({

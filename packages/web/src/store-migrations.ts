@@ -205,6 +205,11 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
   { version: 31, name: "turn-cancel-origin", up: ({ database }) => {
     addColumn(database, "turns", "cancel_origin", "TEXT CHECK (cancel_origin IN ('user-stop', 'client-disconnect', 'client-reconnect', 'service-shutdown', 'api'))");
   } },
+  { version: 32, name: "transcript-markers", up: ({ database }) => {
+    database.exec("DROP TABLE IF EXISTS model_transitions; DROP TABLE IF EXISTS project_transitions;");
+    addColumn(database, "turns", "conversation_markers_json", "TEXT");
+    addColumn(database, "turns", "dispatch_started_at", "TEXT");
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -254,8 +259,6 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       threads: ["trigger_kind", "run_model", "run_effort", "project_id", "read_revision"],
       console_tool_operations: ["operation_id", "thread_id", "turn_id", "payload_sha256", "result_json"],
       pending_project_memberships: ["thread_id", "project_id", "turn_id"],
-      project_transitions: ["thread_id", "after_message_id", "turn_id", "before_json", "after_json", "created_at"],
-      model_transitions: ["thread_id", "after_message_id", "turn_id", "before_json", "after_json", "created_at"],
       tags: ["id", "source_id", "name", "color", "created_at", "updated_at", "revision"],
       thread_tags: ["thread_id", "tag_id", "created_at"],
       projects: ["color", "source_id", "name", "context", "created_at", "updated_at", "archived_at", "revision"],
@@ -265,7 +268,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       notification_deliveries: ["message_id", "job_id", "run_id"],
       agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
       messages: ["seq", "cron_suppressed"],
-      turns: ["cancel_origin", "project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
+      turns: ["conversation_markers_json", "dispatch_started_at", "cancel_origin", "project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
       live_inputs: ["dispatch_started_at"],
       web_submissions: [
         "thread_id", "submission_id", "payload_sha256", "outcome", "reason", "message_id", "turn_id", "input_id", "created_at",
@@ -276,6 +279,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ],
     };
     for (const [table, names] of Object.entries(required)) assertColumns(database, table, names);
+    if (database.prepare("SELECT 1 FROM sqlite_master WHERE name IN ('model_transitions', 'project_transitions')").get() !== undefined) throw new Error("Legacy transition tables remain.");
     const readRevision = (database.prepare("PRAGMA table_info(threads)").all() as Array<{
       name: string; type: string; notnull: number; dflt_value: string | null;
     }>).find((column) => column.name === "read_revision");

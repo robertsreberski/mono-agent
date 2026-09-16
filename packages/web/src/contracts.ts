@@ -445,16 +445,6 @@ export type WebTagChangedPayload =
 
 export type WebProjectColor = "default" | "blue" | "purple" | "amber" | "rose";
 
-export interface WebProjectTransition {
-  readonly id: number;
-  readonly afterMessageId: string | null;
-  readonly turnId: string | null;
-  readonly before: { readonly id: string; readonly name: string; readonly color: WebProjectColor } | null;
-  readonly after: { readonly id: string; readonly name: string; readonly color: WebProjectColor } | null;
-  readonly createdAt: string;
-}
-
-/** One end of a {@link WebModelTransition}: a resolved route, never a guess. */
 export interface WebRouteSelection {
   /** Resolved model id, or null when nothing reported one for that turn. */
   readonly model: string | null;
@@ -462,30 +452,20 @@ export interface WebRouteSelection {
   readonly effort: string | null;
 }
 
-/**
- * One change of the conversation's SELECTED route, recorded where it took
- * effect: between the last turn that ran on the old model/effort and the first
- * turn admitted on the new one.
- *
- * Deliberately not a log of picker writes. The model picker persists an
- * override the moment it is touched and can be flipped any number of times
- * before the next turn is sent, so each row is written at turn admission by
- * comparing that turn's frozen resolved route with the last turn that reported
- * one. A flip that came back to where it started leaves no row, a run of flips
- * leaves one, and a route nothing resolved is never claimed as a change.
- *
- * A provider fallback is NOT a route change: what a run actually executed with
- * stays in that run's own {@link WebRunAttribution}. `turnId` names the first
- * turn on the new route, and `afterMessageId` the settled message it follows
- * (null only for a row whose anchor predates the loaded page).
- */
-export interface WebModelTransition {
-  readonly id: number;
-  readonly afterMessageId: string | null;
-  readonly turnId: string | null;
-  readonly before: WebRouteSelection;
-  readonly after: WebRouteSelection;
-  readonly createdAt: string;
+export type WebConversationMarkerPart = {
+  readonly type: "conversation-marker";
+  /** Actual event instant, independent of monotonic transcript ordering. */
+  readonly at: string;
+} & (
+  | { readonly kind: "model"; readonly before: WebRouteSelection; readonly after: WebRouteSelection }
+  | { readonly kind: "project"; readonly before: WebProjectIdentity | null; readonly after: WebProjectIdentity | null }
+  | { readonly kind: "resumed"; readonly previousMessageAt: string; readonly idleMs: number }
+);
+
+export interface WebProjectIdentity {
+  readonly id: string;
+  readonly name: string;
+  readonly color: WebProjectColor;
 }
 
 export interface WebProject {
@@ -617,6 +597,7 @@ export interface WebToolCall {
 }
 
 export type WebMessagePart =
+  | WebConversationMarkerPart
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "reasoning"; readonly text: string }
   | WebCronReplyContextPart
@@ -806,8 +787,6 @@ export interface WebQuote {
 }
 
 export interface WebThreadDetail {
-  readonly projectTransitions?: readonly WebProjectTransition[];
-  readonly modelTransitions?: readonly WebModelTransition[];
   readonly thread: WebThread;
   readonly messages: readonly WebMessage[];
   /** Opaque keyset cursor for the next older message page. */
@@ -857,8 +836,6 @@ export interface WebActiveThreads {
 }
 
 export interface WebMessagePage {
-  readonly projectTransitions?: readonly WebProjectTransition[];
-  readonly modelTransitions?: readonly WebModelTransition[];
   readonly messages: readonly WebMessage[];
   readonly nextCursor?: string;
 }

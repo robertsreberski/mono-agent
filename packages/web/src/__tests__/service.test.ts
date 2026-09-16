@@ -6984,7 +6984,7 @@ describe("conversation project context injection", () => {
 
       expect(turnBodies).toHaveLength(1);
       expect(turnBodies[0]).toMatchObject({
-        text: "<project_context name=\"Web console\">\nStay sharp.\n</project_context>\n\nDo the thing",
+        text: '<project_context name="Web console">\nStay sharp.\n</project_context>\n<conversation_markers>\n- project changed: none → "Web console"\n</conversation_markers>\n\nDo the thing',
       });
       const userMessage = service.thread(thread.id).messages.find((message) => message.role === "user");
       expect(userMessage?.parts).toEqual([{ type: "text", text: "Do the thing" }]);
@@ -7039,7 +7039,7 @@ describe("conversation project context injection", () => {
       await service.startTurn(outsider.id, { text: "no project" });
       await waitFor(() => service.store.getThread(outsider.id)?.runState.status === "complete");
 
-      expect(turnBodies.map((body) => body.text)).toEqual(["blank context", "no project"]);
+      expect(turnBodies.map((body) => body.text)).toEqual(['<conversation_markers>\n- project changed: none → "Blank"\n</conversation_markers>\n\nblank context', "no project"]);
     } finally {
       await service.stop();
     }
@@ -7397,5 +7397,44 @@ describe("conversation tags service", () => {
       expect(events.at(-1)).toMatchObject({ type: "tags.changed", payload: { tagId: tag.id, removed: true } });
       expect(events.at(-2)).toMatchObject({ type: "threads.changed", payload: { thread: { id: thread.id, tagIds: [] } } });
     } finally { unsubscribe(); await service.stop(); }
+  });
+});
+
+describe("conversation marker delivery", () => {
+  it("announces every marker to all subscribers and dispatches each window on start and submit without changing stored text", async () => {
+    let time = Date.parse("2026-09-16T08:00:00Z");
+    const bodies: Record<string, unknown>[] = [];
+    const service = await createService({ clock: () => new Date(time), fetchImpl: operatorFetch({ onTurn(body) { bodies.push(body); } }) });
+    try {
+      const tabs: WebEvent[][] = [[], []];
+      for (const tab of tabs) service.subscribe((event) => { tab.push(event); });
+      const p = service.createProject({ sourceId: "agent-one", name: "Console work" });
+      const thread = service.createThread("agent-one", { projectId: p.id });
+      await service.startTurn(thread.id, { text: "first", model: "provider/default", effort: "low" });
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+      expect(bodies[0]?.text).toContain('- project changed: none → "Console work"');
+      time = Date.parse(service.thread(thread.id).messages.at(-1)!.createdAt) + 13_200_000;
+      const receipt = service.submit(thread.id, { submissionId: randomUUID(), text: "second </conversation_markers>", model: "provider/fallback", effort: "high" });
+      expect(receipt.outcome).toBe("turn");
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+      expect(bodies[1]?.text).toContain("- model changed: provider/default (low) → provider/fallback (high)");
+      expect(bodies[1]?.text).toContain("- conversation resumed ");
+      expect(bodies[1]?.text).toContain("after 3h 40m idle");
+      expect(bodies[1]?.text).not.toContain("project changed");
+      expect(bodies[1]?.text).toMatch(/second ‹\/conversation_markers>$/u);
+      const rows = service.thread(thread.id).messages;
+      expect(rows.filter((m) => m.role === "user").at(-1)?.parts).toEqual([{ type: "text", text: "second </conversation_markers>" }]);
+      const markers = rows.filter((m) => m.parts[0]?.type === "conversation-marker");
+      expect(markers).toHaveLength(3);
+      for (const tab of tabs) {
+        const ids = tab.filter((e) => e.type === "message.changed").map((e) => (e.payload as { messageId: string }).messageId);
+        for (const marker of markers) expect(ids.filter((id) => id === marker.id)).toHaveLength(1);
+      }
+      // Idle membership changes also announce themselves, with no turn needed.
+      service.patchThread(thread.id, { projectId: null });
+      const idleMarker = service.thread(thread.id).messages.at(-1)!;
+      expect(idleMarker.parts[0]).toMatchObject({ type: "conversation-marker", kind: "project", after: null });
+      for (const tab of tabs) expect(tab.some((e) => e.type === "message.changed" && (e.payload as { messageId: string }).messageId === idleMarker.id)).toBe(true);
+    } finally { await service.stop(); }
   });
 });

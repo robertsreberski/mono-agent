@@ -2436,6 +2436,54 @@ describe("web HTTP server", () => {
     }
   });
 
+  it("round-trips transcript markers over HTTP and two SSE connections with one-row paging", async () => {
+    let time = Date.parse("2026-09-16T08:00:00Z");
+    const dispatches: Record<string, unknown>[] = [];
+    const { baseUrl } = await start({ clock: () => new Date(time), fetchImpl: operatorFetch({ onTurn(body) { dispatches.push(body); } }) });
+    const threadId = await createThread(baseUrl, "agent-one");
+    await settleTurn(baseUrl, threadId, "first");
+    const streams = await Promise.all([`?thread=${threadId}`, ""].map(async (query) => {
+      const response = await fetch(`${baseUrl}/api/v1/events${query}`);
+      const reader = response.body!.getReader();
+      const next = sseEventReader(reader);
+      expect(await next()).toMatchObject({ type: "ready" });
+      return { reader, next };
+    }));
+    try {
+      time += 7_200_000;
+      const created = await json(await fetch(`${baseUrl}/api/v1/projects`, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sourceId: "agent-one", name: "Wire markers" }) }));
+      const projectId = (created.project as { id: string }).id;
+      expect((await fetch(`${baseUrl}/api/v1/threads/${threadId}`, { method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, model: "provider/fallback" }) })).status).toBe(200);
+      const detail = await settleTurn(baseUrl, threadId, "second");
+      const rows = wireMessages(detail);
+      const markers = rows.filter((m) => m.parts[0]?.type === "conversation-marker");
+      expect(markers.map((m) => m.parts[0]?.kind)).toEqual(["project", "model", "resumed"]);
+      expect(detail).not.toHaveProperty("projectTransitions");
+      expect(detail).not.toHaveProperty("modelTransitions");
+      for (const stream of streams) {
+        const ids = new Set<string>();
+        for (let count = 0; count < 50 && !markers.every((m) => ids.has(m.id)); count += 1) {
+          const event = await stream.next();
+          if (event.type === "message.changed") ids.add((event.payload as { messageId: string }).messageId);
+        }
+        for (const marker of markers) expect(ids.has(marker.id)).toBe(true);
+      }
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages?limit=1${cursor === undefined ? "" : `&before=${encodeURIComponent(cursor)}`}`));
+        ids.unshift(...wireMessages(page).map((m) => m.id));
+        cursor = page.nextCursor as string | undefined;
+      } while (cursor !== undefined);
+      expect(ids).toEqual(rows.map((m) => m.id));
+      expect(dispatches[1]?.text).toContain("<conversation_markers>");
+      expect(dispatches[1]?.text).toContain("conversation resumed");
+      expect(dispatches[1]?.text).toMatch(/\n\nsecond$/u);
+    } finally { await Promise.all(streams.map((s) => s.reader.cancel())); }
+  });
+
   it("streams content for the conversation a console subscribed to and hints for everything else", async () => {
     const lines = [
       JSON.stringify({ kind: "append", delta: "hello " }),

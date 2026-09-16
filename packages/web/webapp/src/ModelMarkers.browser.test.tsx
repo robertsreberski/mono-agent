@@ -86,7 +86,7 @@ const routed = thread("routed", "alpha", {
   runEffort: "medium",
 });
 
-const message = (id: string, role: "user" | "assistant", text: string, at: string): WebMessage => ({
+const message = (id: string, role: "user" | "assistant" | "system", text: string, at: string): WebMessage => ({
   id,
   threadId: routed.id,
   turnId: id.startsWith("first") ? "turn-first" : "turn-second",
@@ -103,25 +103,20 @@ const detail = (): ThreadDetail => ({
   messages: [
     message("first-user", "user", "Draft the release note for the console.", "2026-09-12T09:00:00.000Z"),
     message("first-assistant", "assistant", "Here is a first pass at the release note.", "2026-09-12T09:00:04.000Z"),
+    { ...message("project-marker", "system", "", "2026-09-12T09:04:40.000Z"), parts: [{ type: "conversation-marker", kind: "project",
+    before: null,
+    after: { id: "project-web", name: "Web console", color: "blue" },
+    at: "2026-09-12T09:04:30.000Z",
+  }] },
+    { ...message("model-marker", "system", "", "2026-09-12T09:04:40.000Z"), parts: [{ type: "conversation-marker", kind: "model",
+    before: { model: SOL, effort: "high" },
+    after: { model: FABLE, effort: "medium" },
+    at: "2026-09-12T09:04:40.000Z",
+  }] },
     message("second-user", "user", "Try that again, with more care about the wording.", "2026-09-12T09:05:00.000Z"),
     message("second-assistant", "assistant", "Reworked, with the tone tightened throughout.", "2026-09-12T09:05:06.000Z"),
   ],
-  modelTransitions: [{
-    id: 1,
-    afterMessageId: "first-assistant",
-    turnId: "turn-second",
-    before: { model: SOL, effort: "high" },
-    after: { model: FABLE, effort: "medium" },
-    createdAt: "2026-09-12T09:04:40.000Z",
-  }],
-  projectTransitions: [{
-    id: 1,
-    afterMessageId: "first-assistant",
-    turnId: "turn-second",
-    before: null,
-    after: { id: "project-web", name: "Web console", color: "blue" },
-    createdAt: "2026-09-12T09:04:30.000Z",
-  }],
+
 });
 
 const persistence = createThreadPersistence();
@@ -182,6 +177,7 @@ describe("route change markers in the transcript", () => {
       name: `Model changed from ${SOL}, effort High to ${FABLE}, effort Medium`,
     });
     expect(marker).toBeVisible();
+    expect(marker.closest(".message")).toBeNull();
     expect(marker).toHaveTextContent("Sol 5.6 · high");
     expect(marker).toHaveTextContent("Fable 5.1 · medium");
     // Between the turns it sits between, and telling itself apart from the
@@ -200,6 +196,25 @@ describe("route change markers in the transcript", () => {
     await capture("transcript-desktop-light-1280x900");
   });
 
+  it("renders a resumed system row as a local-time quiet rule without bubble chrome", async () => {
+    await page.viewport(1_280, 900);
+    const data = detail();
+    const resumed = { ...message("resume-marker", "system", "", "2026-09-12T09:04:41.000Z"),
+      parts: [{ type: "conversation-marker" as const, kind: "resumed" as const, at: "2026-09-12T09:04:40.000Z", previousMessageAt: "2026-09-12T07:00:00.000Z", idleMs: 7_480_000 }] };
+    vi.mocked(api.thread).mockResolvedValue({ ...data, messages: [...data.messages.slice(0, 2), resumed, ...data.messages.slice(-2)] });
+    openConsole();
+    await settled();
+    const at = "2026-09-12T09:04:40.000Z";
+    const marker = screen.getByText(`Conversation resumed ${new Date(at).toLocaleString()}`);
+    const rule = marker.closest('[role="note"]');
+    expect(rule).toBeVisible();
+    expect(rule).toHaveAccessibleName(`Conversation resumed ${new Date(at).toLocaleString()} after 2h 4m idle`);
+    expect(screen.getByText("after 2h 4m idle")).toBeVisible();
+    expect(marker.closest(".message")).toBeNull();
+    expect(marker.getBoundingClientRect().bottom).toBeLessThan(screen.getByText("Try that again, with more care about the wording.").getBoundingClientRect().top);
+    await capture("transcript-resumed-desktop-1280x900");
+  });
+
   it("keeps the rule inside a phone transcript", async () => {
     // The viewport is set BEFORE the console mounts: the mobile shell picks its
     // layout at mount, so resizing a desktop tree leaves the drawer half open
@@ -214,6 +229,7 @@ describe("route change markers in the transcript", () => {
 
     const marker = await screen.findByRole("note", { name: /Model changed from/u });
     expect(marker).toBeVisible();
+    expect(marker.closest(".message")).toBeNull();
     expect(marker).toHaveTextContent("Fable 5.1 · medium");
     expect(marker.getBoundingClientRect().right).toBeLessThanOrEqual(390);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
