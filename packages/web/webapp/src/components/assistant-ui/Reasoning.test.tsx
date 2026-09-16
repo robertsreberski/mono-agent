@@ -218,7 +218,7 @@ describe("ActivityGroup", () => {
     expect(getComputedStyle(container.querySelector<HTMLElement>(".activity-row")!).minWidth).toBe("0");
   });
 
-  it("stays open while running, force-collapses on settle, and can be reopened afterward", () => {
+  it("can close while running, keeps that choice through updates, and can reopen after settling", () => {
     const { container, rerender } = render(
       <ActivityGroup streaming>
         <p>Live activity</p>
@@ -229,7 +229,7 @@ describe("ActivityGroup", () => {
     const activeTrigger = screen.getByRole("button", { name: "Activity in progress" });
     expect(activeTrigger).toHaveAttribute("aria-expanded", "true");
     fireEvent.click(activeTrigger);
-    expect(activeTrigger).toHaveAttribute("aria-expanded", "true");
+    expect(activeTrigger).toHaveAttribute("aria-expanded", "false");
 
     rerender(
       <ActivityGroup streaming>
@@ -239,9 +239,8 @@ describe("ActivityGroup", () => {
     );
     expect(screen.getByRole("button", { name: "Activity in progress" })).toHaveAttribute(
       "aria-expanded",
-      "true",
+      "false",
     );
-    expect(screen.getByText("Another tool completed")).toBeVisible();
 
     rerender(
       <ActivityGroup streaming={false}>
