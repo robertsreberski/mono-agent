@@ -358,7 +358,9 @@ baseline rather than a change. A provider fallback is not a route change and
 stays in the message's own attribution, above. Markers are durable system rows
 in the transcript, paged and announced live just like messages. An operator
 message after more than one hour without a visible non-marker message also
-adds a `Conversation resumed` rule with the browser-local date and time.
+adds a short `Resumed` rule with the browser-local date and time, to the minute
+(the year only when it differs from the current one, and the idle duration only
+in the agent's own context).
 Active-turn steering and background wakes do not create resume markers.
 
 Each dispatched turn receives a compact `<conversation_markers>` prefix with
