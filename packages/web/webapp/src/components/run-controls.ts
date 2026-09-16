@@ -1,7 +1,8 @@
+import { isProviderUsageId } from "@mono-agent/agent-contracts/provider-usage";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useConsoleStore } from "../console-store";
-import type { ThreadDetail } from "../types";
-import { conversationConsoleUsage, type ConsoleUsage } from "../usage";
+import type { ProviderUsageId, ThreadDetail } from "../types";
+import { conversationConsoleUsage, type ConsoleContextProjection, type ConsoleUsage } from "../usage";
 import { sameModel } from "./model-comparison";
 import {
   buildSelectorModels,
@@ -46,6 +47,16 @@ export function modelChangeNoticeInput(
     lastRequestedModel,
     hasAssistantMessage: detail?.messages.some((message) => message.role === "assistant") ?? false,
   };
+}
+
+export function activeProviderUsageId(
+  effectiveModel: string,
+  context: ConsoleContextProjection | undefined,
+): ProviderUsageId | null {
+  const model = effectiveModel.trim() || context?.measuredModel || context?.usage?.model;
+  if (model === undefined) return null;
+  const provider = providerOfModel(model);
+  return isProviderUsageId(provider) ? provider : null;
 }
 
 /**
@@ -114,6 +125,10 @@ export function useRunControls() {
           },
     };
   }, [detail, effectiveModel, selectedThread]);
+  const providerUsageId = useMemo(
+    () => activeProviderUsageId(effectiveModel, usage?.context),
+    [effectiveModel, usage?.context],
+  );
 
   const changeNoticeInput = useMemo(
     () => modelChangeNoticeInput(detail, effectiveModel),
@@ -165,6 +180,9 @@ export function useRunControls() {
 
   return {
     usage,
+    providerUsage: selectedAgent !== null && providerUsageId !== null
+      ? { agent: selectedAgent, providerId: providerUsageId }
+      : undefined,
     selectorModels,
     model,
     effort,

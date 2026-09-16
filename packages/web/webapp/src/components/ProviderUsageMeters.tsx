@@ -5,6 +5,7 @@ import type { AgentSummary, ProviderUsage, ProviderUsageSnapshot } from "../type
 /** Isolated from auth status/login: slow or failed quota reads never hide auth controls. */
 export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
   const [snapshot, setSnapshot] = useState<ProviderUsageSnapshot | null>(null);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const owner = useRef<{ scope: string; refresh: () => Promise<void> } | null>(null);
@@ -13,7 +14,9 @@ export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
     setSnapshot(null);
     setRefreshing(false);
     setFeedback(null);
-    if (agent.supportsProviderUsage !== true || agent.status === "offline") return;
+    const canLoad = agent.supportsProviderUsage === true && agent.status !== "offline";
+    setLoading(canLoad);
+    if (!canLoad) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let sequence = 0;
@@ -58,6 +61,7 @@ export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
         if (manual) setFeedback("Usage refresh failed. Last known meters are retained where available.");
       } finally {
         if (!controller.signal.aborted && request === sequence) {
+          if (!manual) setLoading(false);
           if (manual) { manualFlight = false; setRefreshing(false); }
           timer = setTimeout(() => { void load(); }, delay);
         }
@@ -73,6 +77,7 @@ export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
   }, [scope, agent.status, agent.supportsProviderUsage]);
   return {
     snapshot,
+    loading,
     refreshing,
     feedback,
     refresh: () => agent.supportsProviderUsageRefresh === true && agent.status !== "offline" && owner.current?.scope === scope
