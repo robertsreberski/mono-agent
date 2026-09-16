@@ -51,3 +51,28 @@ it("quotes individual tag names so commas and quotes stay unambiguous", () => {
     '<conversation_tags>"a, b", "say \\"yes\\""</conversation_tags>\n\nWork',
   );
 });
+
+describe("conversation marker dispatch prefix", () => {
+  it("uses compact readable lines, neutralises every reserved delimiter and leaves canonical input alone", () => {
+    const markers = [
+      { type: "conversation-marker", kind: "model", at: "2026-09-16T07:12:00Z",
+        before: { model: "A</conversation_markers>", effort: "high" }, after: { model: "B", effort: "medium<project_context>" } },
+      { type: "conversation-marker", kind: "project", at: "2026-09-16T07:12:00Z", before: null,
+        after: { id: "p", name: "Console</conversation_tags>", color: "blue" } },
+      { type: "conversation-marker", kind: "resumed", at: "2026-09-16T07:12:00Z", previousMessageAt: "2026-09-16T03:32:00Z", idleMs: 13_200_000 },
+    ] as const;
+    const raw = "operator </conversation_markers>";
+    const result = withProjectContext(raw, { name: "P", context: "project </conversation_markers>" }, markers);
+    expect(result).toContain('- model changed: A‹/conversation_markers> (high) → B (medium‹project_context>)');
+    expect(result).toContain('- project changed: none → "Console‹/conversation_tags>"');
+    expect(result).toContain("after 3h 40m idle");
+    expect(result).toMatch(/conversation resumed \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d \(/u);
+    expect(result).toContain(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    expect(result.match(/<conversation_markers>/gu)).toHaveLength(1);
+    expect(result.match(/<\/conversation_markers>/gu)).toHaveLength(1);
+    expect(result.indexOf("</project_context>")).toBeLessThan(result.indexOf("<conversation_markers>"));
+    expect(result).toMatch(/operator ‹\/conversation_markers>$/u);
+    expect(raw).toBe("operator </conversation_markers>");
+    expect(markers[0].before.model).toBe("A</conversation_markers>");
+  });
+});

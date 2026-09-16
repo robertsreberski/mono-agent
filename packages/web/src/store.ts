@@ -50,8 +50,7 @@ import {
   type WebMessagePage,
   type WebProject,
   type WebProjectColor,
-  type WebProjectTransition,
-  type WebModelTransition,
+  type WebConversationMarkerPart,
   type WebRouteSelection,
   type WebThreadNotificationTriggerKind,
   type WebQuote,
@@ -76,7 +75,8 @@ import {
 } from "./contracts.js";
 import { formatCronReplyContext, type CronReplySnapshotCandidate } from "./cron-reply-context.js";
 import type { WebTag, CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
-import type { ProjectContextSource } from "./project-context.js";
+import { withProjectContext, formatQuotedTurn, type ProjectContextSource } from "./project-context.js";
+import { isConversationMarker } from "./conversation-markers.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
@@ -2761,7 +2761,7 @@ export class WebStore {
       `).run(id, sourceId, projectId, `web:${id}`, now, now, model, effort);
       this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, 1, 'created', ?)")
         .run(id, now);
-      if (projectId !== null) this.applyProjectMembership(id, null, projectId, now);
+      if (projectId !== null) this.applyProjectMembership(id, null, projectId);
       this.setSetting("current_thread_id", id);
     });
     return this.requireThread(id);
@@ -3035,8 +3035,6 @@ export class WebStore {
     return {
       thread,
       messages: page.messages,
-      projectTransitions: page.projectTransitions ?? [],
-      modelTransitions: page.modelTransitions ?? [],
       ...(page.nextCursor === undefined ? {} : { messagesNextCursor: page.nextCursor }),
     };
   }
@@ -3095,8 +3093,6 @@ export class WebStore {
     const oldest = pageRows[0];
     return {
       messages: pageRows.map((row) => this.mapMessage(row)),
-      projectTransitions: this.projectTransitions(resolved, { anchors: pageRows.map((row) => row.id), includeStart: !hasMore }),
-      modelTransitions: this.modelTransitions(resolved, { anchors: pageRows.map((row) => row.id), includeStart: !hasMore }),
       ...(hasMore && oldest !== undefined
         ? {
             nextCursor: encodeCursor({
@@ -3392,7 +3388,7 @@ export class WebStore {
         throw new WebConsoleError("project_busy", "Wait for active and pending conversation turns before deleting this project.", 409);
       }
       for (const memberId of members) {
-        this.applyProjectMembership(memberId, id, null, now);
+        this.applyProjectMembership(memberId, id, null);
         this.database.prepare("UPDATE threads SET revision = revision + 1 WHERE id = ?").run(memberId);
       }
       for (const memberId of members) this.recordThreadRevision(memberId, "project_changed", now);
@@ -3479,7 +3475,7 @@ export class WebStore {
       .get(threadId) as { id: string } | undefined;
     if (before === after || active === undefined) {
       this.database.prepare("DELETE FROM pending_project_memberships WHERE thread_id = ?").run(threadId);
-      if (before !== after) this.applyProjectMembership(threadId, before, after, now);
+      if (before !== after) this.applyProjectMembership(threadId, before, after);
       return;
     }
     this.database.prepare(`INSERT INTO pending_project_memberships(thread_id, project_id, turn_id) VALUES (?, ?, ?)
@@ -3492,42 +3488,92 @@ export class WebStore {
     if (pending === undefined || (turnId !== undefined && pending.turnId !== turnId)) return;
     if (this.database.prepare("SELECT 1 FROM turns WHERE thread_id = ? AND status = 'running'").get(threadId)) return;
     const before = this.requireThread(threadId).projectId;
-    this.applyProjectMembership(threadId, before, pending.projectId, now, pending.turnId);
+    this.applyProjectMembership(threadId, before, pending.projectId);
     this.database.prepare("DELETE FROM pending_project_memberships WHERE thread_id = ?").run(threadId);
   }
 
-  private applyProjectMembership(threadId: string, before: string | null, after: string | null, now: string, turnId?: string): void {
+  private applyProjectMembership(threadId: string, before: string | null, after: string | null): void {
     if (before === after) return;
-    this.recordProjectTransition(threadId, before, after, now, turnId);
+    this.recordProjectMarker(threadId, before, after);
     this.database.prepare("UPDATE threads SET project_id = ? WHERE id = ?").run(after, threadId);
     for (const id of [before, after]) if (id !== null) {
       this.database.prepare("UPDATE projects SET revision = revision + 1 WHERE id = ?").run(id);
     }
   }
 
-  private recordProjectTransition(threadId: string, before: string | null, after: string | null, now: string, turnId?: string): void {
-    const identity = (id: string | null): WebProjectTransition["before"] => {
+  private recordProjectMarker(threadId: string, before: string | null, after: string | null): void {
+    const identity = (id: string | null) => {
       if (id === null) return null;
       const project = this.requireProject(id);
       return { id, name: project.name, color: project.color };
     };
-    const anchor = turnId === undefined
-      ? this.database.prepare(`SELECT messages.id, messages.turn_id FROM messages
-          LEFT JOIN turns ON turns.id = messages.turn_id
-          WHERE messages.thread_id = ? AND (turns.status IS NULL OR turns.status <> 'running')
-            AND NOT EXISTS (SELECT 1 FROM live_inputs WHERE message_id = messages.id)
-          ORDER BY messages.rowid DESC LIMIT 1`).get(threadId) as { id: string; turn_id: string | null } | undefined
-      : { id: this.requireTurn(turnId).assistant_message_id, turn_id: turnId };
-    this.database.prepare(`INSERT INTO project_transitions
-      (thread_id, after_message_id, turn_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(threadId, anchor?.id ?? null, anchor?.turn_id ?? null, JSON.stringify(identity(before)), JSON.stringify(identity(after)), now);
+    this.insertMarker(threadId, null, this.projectTurnAdmissionTime(threadId), {
+      type: "conversation-marker", kind: "project", at: this.now(), before: identity(before), after: identity(after),
+    });
   }
+
+  private insertMarker(threadId: string, turnId: string | null, createdAt: string, marker: WebConversationMarkerPart): void {
+    const id = randomUUID();
+    this.database.prepare(`INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+      VALUES (?, ?, ?, 'system', ?, ?, ?, 'complete')`)
+      .run(id, threadId, turnId, serializeParts([marker]), createdAt, createdAt);
+    this.pendingMarkers.push({ threadId, messageId: id, updatedAt: createdAt });
+  }
+
+  private recordResumeMarker(threadId: string, turnId: string, createdAt: string): void {
+    const previous = this.database.prepare(`SELECT m.created_at FROM messages m WHERE m.thread_id = ?
+      AND ${visibleMessageSql("m")} AND NOT (${markerMessageSql("m")})
+      AND (m.turn_id IS NULL OR m.turn_id <> ?)
+      ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1`).get(threadId, turnId) as { created_at: string } | undefined;
+    const at = this.now();
+    const idleMs = previous === undefined ? 0 : Date.parse(at) - Date.parse(previous.created_at);
+    if (previous !== undefined && idleMs > 3_600_000) this.insertMarker(threadId, turnId, createdAt, {
+      type: "conversation-marker", kind: "resumed", at, previousMessageAt: previous.created_at, idleMs,
+    });
+  }
+
+  private captureConversationMarkers(turnId: string, threadId: string, text: string, validateLimit = true): void {
+    // All admission markers rank before the virtual user boundary. Unbound
+    // markers have monotonic instants, so strictly newer groups are the window.
+    const previous = this.database.prepare(`SELECT started_at FROM turns
+      WHERE thread_id = ? AND id <> ? AND dispatch_started_at IS NOT NULL
+      ORDER BY started_at DESC, rowid DESC LIMIT 1`).get(threadId, turnId) as { started_at: string } | undefined;
+    const rows = this.database.prepare(`SELECT m.parts_json FROM messages m LEFT JOIN turns t ON t.id = m.turn_id
+      WHERE m.thread_id = ? AND ${markerMessageSql("m")}
+      AND (? IS NULL OR COALESCE(t.started_at, m.created_at) > ?)
+      ORDER BY COALESCE(t.started_at, m.created_at), ${messageRoleRankSql("m", "t")}, m.created_at, m.rowid`)
+      .all(threadId, previous?.started_at ?? null, previous?.started_at ?? null) as Array<{ parts_json: string }>;
+    const markers = rows.flatMap((row) => parseParts(row.parts_json).filter(isConversationMarker));
+    this.database.prepare("UPDATE turns SET conversation_markers_json = ? WHERE id = ?").run(JSON.stringify(markers), turnId);
+    if (validateLimit && withProjectContext(text, this.projectContextForThread(threadId), markers).length > WEB_MAX_TURN_TEXT_CHARACTERS) {
+      throw new WebConsoleError("turn_text_too_large", "The message and its conversation context exceed the turn text limit.", 413);
+    }
+  }
+
+  conversationMarkersForTurn(turnId: string): readonly WebConversationMarkerPart[] {
+    const row = this.database.prepare("SELECT conversation_markers_json FROM turns WHERE id = ?").get(turnId) as { conversation_markers_json: string | null } | undefined;
+    if (row?.conversation_markers_json == null) return [];
+    const markers: unknown = JSON.parse(row.conversation_markers_json);
+    if (!Array.isArray(markers) || !markers.every(isConversationMarker)) throw new WebConsoleError("storage_corrupt", "Invalid turn marker snapshot.", 500);
+    return markers;
+  }
+
+  markTurnDispatchStarted(turnId: string): void {
+    this.database.prepare("UPDATE turns SET dispatch_started_at = COALESCE(dispatch_started_at, ?) WHERE id = ?").run(this.now(), turnId);
+  }
+
+  /** Observers run only after the outer transaction commits and its depth clears. */
+  onConversationMarker: ((marker: { threadId: string; messageId: string; updatedAt: string }) => void) | undefined;
+  private pendingMarkers: Array<{ threadId: string; messageId: string; updatedAt: string }> = [];
 
   /** Keep causal turn groups ordered when the wall clock ties or moves backwards. */
   private projectTurnAdmissionTime(threadId: string): string {
     const now = this.now();
-    const previous = this.database.prepare("SELECT MAX(started_at) AS latest FROM turns WHERE thread_id = ?")
-      .get(threadId) as { latest: string | null };
+    const previous = this.database.prepare(`SELECT MAX(at) AS latest FROM (
+      SELECT started_at AS at FROM turns WHERE thread_id = ?
+      UNION ALL SELECT created_at AS at FROM messages WHERE thread_id = ? AND turn_id IS NULL
+    )`)
+      .get(threadId, threadId) as { latest: string | null };
     return previous.latest !== null && previous.latest >= now
       ? new Date(Date.parse(previous.latest) + 1).toISOString() : now;
   }
@@ -3544,15 +3590,6 @@ export class WebStore {
     this.database.prepare("UPDATE turns SET project_context_json = ? WHERE id = ?").run(JSON.stringify({ name: row?.name ?? "", context: row?.context ?? "", tags: this.tagNamesForThread(threadId) }), turnId);
   }
 
-  projectTransitions(threadId: string, page?: { readonly anchors: readonly string[]; readonly includeStart: boolean }): WebProjectTransition[] {
-    return (this.database.prepare(`SELECT * FROM project_transitions WHERE thread_id = ?
-        ${page === undefined ? "" : "AND (after_message_id IN (SELECT value FROM json_each(?)) OR (? = 1 AND after_message_id IS NULL))"} ORDER BY id`)
-      .all(this.resolveThreadId(threadId), ...(page === undefined ? [] : [JSON.stringify(page.anchors), page.includeStart ? 1 : 0])) as Array<{ id: number; after_message_id: string | null; turn_id: string | null; before_json: string; after_json: string; created_at: string }>).map((row) => ({
-        id: row.id, afterMessageId: row.after_message_id, turnId: row.turn_id,
-        before: JSON.parse(row.before_json), after: JSON.parse(row.after_json), createdAt: row.created_at,
-      }));
-  }
-
   /**
    * Record a change of the conversation's selected route at the boundary where
    * it takes effect, for the turn `turnId` that was just admitted.
@@ -3566,13 +3603,12 @@ export class WebStore {
    * the agent's own default is reported the same way as a picker change --
    * because the route the next turn runs on is what actually changed.
    *
-   * Called inside the admitting transaction, after that turn's own messages
-   * exist: the anchor is the newest settled message NOT part of this turn, so
-   * the rule renders between the two turns. Nothing is recorded when either
+   * Called inside the admitting transaction. A marker ranks before its user
+   * row, independently of insertion order. Nothing is recorded when either
    * side is unresolved, when this is the first routed turn (it establishes the
    * baseline rather than changing anything), or when no message precedes it.
    */
-  private recordModelTransition(threadId: string, turnId: string, now: string): void {
+  private recordModelMarker(threadId: string, turnId: string, now: string): void {
     type RouteRow = { requested_model: string | null; requested_effort: string | null };
     const selection = (row: RouteRow): WebRouteSelection =>
       ({ model: row.requested_model, effort: row.requested_effort });
@@ -3593,27 +3629,15 @@ export class WebStore {
     const effortChanged = previous.requested_effort !== null && current.requested_effort !== null
       && previous.requested_effort !== current.requested_effort;
     if (!modelChanged && !effortChanged) return;
-    const anchor = this.database.prepare(`SELECT messages.id FROM messages
-        LEFT JOIN turns ON turns.id = messages.turn_id
-        WHERE messages.thread_id = ? AND (messages.turn_id IS NULL OR messages.turn_id <> ?)
-          AND (turns.status IS NULL OR turns.status <> 'running')
-          AND ${visibleMessageSql("messages")}
-          AND NOT EXISTS (SELECT 1 FROM live_inputs WHERE message_id = messages.id)
-        ORDER BY messages.rowid DESC LIMIT 1`)
-      .get(threadId, turnId) as { id: string } | undefined;
+    const anchor = this.database.prepare(`SELECT 1 FROM messages m LEFT JOIN turns t ON t.id = m.turn_id
+      WHERE m.thread_id = ? AND (m.turn_id IS NULL OR m.turn_id <> ?)
+      AND (t.status IS NULL OR t.status <> 'running') AND ${visibleMessageSql("m")}
+      AND NOT (${markerMessageSql("m")})
+      AND NOT EXISTS (SELECT 1 FROM live_inputs WHERE message_id = m.id) LIMIT 1`).get(threadId, turnId);
     if (anchor === undefined) return;
-    this.database.prepare(`INSERT INTO model_transitions
-      (thread_id, after_message_id, turn_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(threadId, anchor.id, turnId, JSON.stringify(selection(previous)), JSON.stringify(selection(current)), now);
-  }
-
-  modelTransitions(threadId: string, page?: { readonly anchors: readonly string[]; readonly includeStart: boolean }): WebModelTransition[] {
-    return (this.database.prepare(`SELECT * FROM model_transitions WHERE thread_id = ?
-        ${page === undefined ? "" : "AND (after_message_id IN (SELECT value FROM json_each(?)) OR (? = 1 AND after_message_id IS NULL))"} ORDER BY id`)
-      .all(this.resolveThreadId(threadId), ...(page === undefined ? [] : [JSON.stringify(page.anchors), page.includeStart ? 1 : 0])) as Array<{ id: number; after_message_id: string | null; turn_id: string | null; before_json: string; after_json: string; created_at: string }>).map((row) => ({
-        id: row.id, afterMessageId: row.after_message_id, turnId: row.turn_id,
-        before: JSON.parse(row.before_json), after: JSON.parse(row.after_json), createdAt: row.created_at,
-      }));
+    this.insertMarker(threadId, turnId, now, {
+      type: "conversation-marker", kind: "model", at: this.now(), before: selection(previous), after: selection(current),
+    });
   }
 
   private getProjectRow(id: string): ProjectRow | undefined {
@@ -4015,9 +4039,10 @@ export class WebStore {
     const turnId = randomUUID();
     const userMessageId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.projectTurnAdmissionTime(threadId);
+    let now = this.projectTurnAdmissionTime(threadId);
     this.transaction(() => {
       this.applyPendingProjectMembership(threadId, now);
+      now = this.projectTurnAdmissionTime(threadId);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -4067,7 +4092,9 @@ export class WebStore {
         WHERE id = ?
       `).run(title, now, threadId);
       this.captureProjectContext(turnId, threadId);
-      this.recordModelTransition(threadId, turnId, now);
+      this.recordModelMarker(threadId, turnId, now);
+      this.recordResumeMarker(threadId, turnId, now);
+      this.captureConversationMarkers(turnId, threadId, input.quote === undefined ? input.text : formatQuotedTurn(input.quote.text, input.text));
       this.recordThreadRevision(threadId, "turn_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -4118,7 +4145,7 @@ export class WebStore {
     }
     const turnId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.projectTurnAdmissionTime(threadId);
+    let now = this.projectTurnAdmissionTime(threadId);
     if (input.processJobWake !== undefined) {
       const card = this.database.prepare(`
         SELECT 1 FROM process_job_cards AS cards
@@ -4139,6 +4166,7 @@ export class WebStore {
       : [{ type: "process-job-wake", ...input.processJobWake }];
     this.transaction(() => {
       this.applyPendingProjectMembership(threadId, now);
+      now = this.projectTurnAdmissionTime(threadId);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -4166,7 +4194,8 @@ export class WebStore {
         "UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?",
       ).run(now, threadId);
       this.captureProjectContext(turnId, threadId);
-      this.recordModelTransition(threadId, turnId, now);
+      this.recordModelMarker(threadId, turnId, now);
+      this.captureConversationMarkers(turnId, threadId, input.prompt);
       this.recordThreadRevision(threadId, "background_follow_up_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -4433,10 +4462,11 @@ export class WebStore {
     if (!thread.canSend || thread.archivedAt !== null) return undefined;
     const turnId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.projectTurnAdmissionTime(threadId);
+    let now = this.projectTurnAdmissionTime(threadId);
     const userMessage = this.requireRawParts(row.message_id);
     this.transaction(() => {
       this.applyPendingProjectMembership(threadId, now);
+      now = this.projectTurnAdmissionTime(threadId);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -4457,7 +4487,10 @@ export class WebStore {
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, threadId);
       this.captureProjectContext(turnId, threadId);
-      this.recordModelTransition(threadId, turnId, now);
+      this.recordModelMarker(threadId, turnId, now);
+      // Already accepted queue entries settle on the existing before-dispatch
+      // failure path instead of rolling back forever at the head of the queue.
+      this.captureConversationMarkers(turnId, threadId, row.text, false);
       this.recordThreadRevision(threadId, "turn_started", now);
     });
     return {
@@ -6459,7 +6492,7 @@ export class WebStore {
           PARTITION BY m.thread_id ORDER BY m.created_at DESC, m.rowid DESC
         ) AS rn
         FROM messages m
-        WHERE m.thread_id IN (SELECT value FROM json_each(?)) AND ${visibleMessageSql("m")}
+        WHERE m.thread_id IN (SELECT value FROM json_each(?)) AND ${visibleMessageSql("m")} AND NOT (${markerMessageSql("m")})
       ) WHERE rn = 1
     `).all(JSON.stringify(threadIds)) as unknown as MessageRow[];
     const monitor = this.monitorAssociatedTurnIds(rows.flatMap((row) =>
@@ -6832,16 +6865,21 @@ export class WebStore {
     if (this.transactionDepth > 0) return operation();
     this.database.exec("BEGIN IMMEDIATE");
     this.transactionDepth += 1;
+    let result: T;
     try {
-      const result = operation();
+      result = operation();
       this.database.exec("COMMIT");
-      return result;
     } catch (error) {
+      this.pendingMarkers = [];
       this.database.exec("ROLLBACK");
       throw error;
     } finally {
       this.transactionDepth -= 1;
     }
+    const markers = this.pendingMarkers;
+    this.pendingMarkers = [];
+    for (const marker of markers) this.onConversationMarker?.(marker);
+    return result;
   }
 
   private now(): string {
@@ -7345,8 +7383,13 @@ function parseStoredCronRun(serialized: string): WebCronRunSummary {
   return run as WebCronRunSummary;
 }
 
+function markerMessageSql(alias: string): string {
+  return `COALESCE(json_extract(${alias}.parts_json, '$[0].type') = 'conversation-marker', 0)`;
+}
+
 function messageRoleRankSql(messageAlias: string, turnAlias: string): string {
-  return `CASE WHEN ${messageAlias}.turn_id IS NOT NULL AND ${messageAlias}.role = 'user' THEN 0
+  return `CASE WHEN ${markerMessageSql(messageAlias)} THEN -1
+    WHEN ${messageAlias}.turn_id IS NOT NULL AND ${messageAlias}.role = 'user' THEN 0
     WHEN ${messageAlias}.turn_id IS NOT NULL AND ${messageAlias}.role = 'system' THEN 1
     WHEN ${messageAlias}.turn_id IS NOT NULL THEN 2 ELSE 3 END`;
 }
@@ -8857,6 +8900,7 @@ function hasOnlyKeys(value: Readonly<Record<string, unknown>>, allowed: Readonly
 function isWebMessagePart(value: unknown): value is WebMessagePart {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const part = value as Record<string, unknown>;
+  if (part.type === "conversation-marker") return isConversationMarker(part);
   if (part.type === "text" || part.type === "reasoning") return typeof part.text === "string";
   if (part.type === "tool-call") return isWebToolCall(part);
   if (part.type === "subagent") {

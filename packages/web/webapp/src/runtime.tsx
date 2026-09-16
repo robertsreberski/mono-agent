@@ -165,6 +165,7 @@ const hasMonitorWakePresentationBoundary = (message: WebMessage): boolean =>
         return part.event === "cron_run";
       case "process-job":
       case "process-job-wake":
+      case "conversation-marker":
       case "steer":
       case "cron-reply-context":
       case "error":
@@ -206,9 +207,7 @@ export const coalesceMonitorWakeMessages = (
 
   for (const message of messages) {
     const monitorId = monitorIdForMessage(message);
-    const hasBoundary = hasMonitorWakePresentationBoundary(message)
-      || (message.projectTransitions?.length ?? 0) > 0
-      || (message.modelTransitions?.length ?? 0) > 0;
+    const hasBoundary = hasMonitorWakePresentationBoundary(message);
     const currentCanCarry = message.role === "assistant"
       && monitorId !== undefined
       && (message.status === "running" || message.status === "complete")
@@ -304,6 +303,8 @@ const convertPart = (
         data: jsonObject(processJobTerminalEvent(job, part.deliveryKey)),
       };
     }
+    case "conversation-marker":
+      return { type: "data-conversation-marker", data: jsonObject(part) };
     case "steer":
       // A consumed steer renders as the operator's own message in place, so
       // it converts to a named data part that deliberately belongs to neither
@@ -589,15 +590,18 @@ export const convertWebMessage = (
   return {
     id: message.id,
     role: message.role,
-    content,
+    // assistant-ui restricts system content to one text part. Keep the named
+    // data projection on THIS row's metadata, not on a neighbouring message.
+    content: message.role === "system" && content[0]?.type === "data-conversation-marker"
+      ? [{ type: "text", text: "" }] : content,
     createdAt: new Date(message.createdAt),
     ...(message.role === "assistant" ? { status } : {}),
     attachments:
       message.role === "user" ? message.attachments.map(completeAttachment) : undefined,
     metadata: {
       custom: {
-        projectTransitions: message.projectTransitions,
-        modelTransitions: message.modelTransitions,
+        ...(message.role === "system" && content[0]?.type === "data-conversation-marker"
+          ? { conversationMarker: content[0] } : {}),
         turnId: message.turnId,
         updatedAt: message.updatedAt,
         ...(message.finishedAt === undefined ? {} : { finishedAt: message.finishedAt }),
@@ -855,31 +859,17 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   const presentation = useMemo(
     () => projectProcessJobPresentation(
       coalesceMonitorWakeMessages(
-        (store.detail?.messages ?? []).map((message) => {
-          const transitions = store.detail?.projectTransitions?.filter((item) => item.afterMessageId === message.id) ?? [];
-          const routeChanges = store.detail?.modelTransitions?.filter((item) => item.afterMessageId === message.id) ?? [];
-          return transitions.length === 0 && routeChanges.length === 0
-            ? message
-            : {
-                ...message,
-                ...(transitions.length === 0 ? {} : { projectTransitions: transitions }),
-                ...(routeChanges.length === 0 ? {} : { modelTransitions: routeChanges }),
-              };
-        }).filter((message) =>
+        (store.detail?.messages ?? []).filter((message) =>
           !isLegacySilentCronMessage(message)
           && !(message.role === "assistant" && message.status === "complete"
             && message.attachments.length === 0
             && !message.parts.some((part) => part.type === "process-job-wake" || part.type === "steer")
-            && (message.projectTransitions?.length ?? 0) === 0
-            && (message.modelTransitions?.length ?? 0) === 0
             && convertWebMessage(message).content?.length === 0)),
       ),
       { threadId: store.selectedThreadId },
     ),
     [
       store.detail?.messages,
-      store.detail?.modelTransitions,
-      store.detail?.projectTransitions,
       store.selectedThreadId,
     ],
   );

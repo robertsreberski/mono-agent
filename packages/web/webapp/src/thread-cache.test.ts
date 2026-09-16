@@ -79,6 +79,13 @@ describe("applyMessageDelta", () => {
     });
   }
 
+  it("validates marker parts on cache delta replay", () => {
+    const part = { type: "conversation-marker", kind: "resumed", at: "2026-09-16T10:00:00Z", previousMessageAt: "2026-09-16T08:00:00Z", idleMs: 7_200_000 } as const;
+    expect(applyMessageDelta(message("m1", { role: "system" }), delta({ ops: [{ op: "set", index: 0, part }] })).parts).toEqual([part]);
+    expect(readMessageDelta(delta({ ops: [{ op: "set", index: 0, part: { ...part, idleMs: 1 } }] }))).toBeUndefined();
+    expect(readMessageDelta(delta({ ops: [{ op: "set", index: 0, part }] }))).toBeDefined();
+  });
+
   it("returns a new message carrying the delta's own status, stamp and version", () => {
     const held = message("m1", { status: "running", seq: 4 });
 

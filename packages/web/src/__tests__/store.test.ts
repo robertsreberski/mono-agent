@@ -105,6 +105,11 @@ function measureStatements<T>(store: WebStore, read: () => T): { statements: num
   }
 }
 
+function transcriptMarkers(store: WebStore, threadId: string, kind: "model" | "project" | "resumed") {
+  return store.getThreadDetail(threadId)!.messages.flatMap((message) => message.parts.flatMap((part) =>
+    part.type === "conversation-marker" && part.kind === kind ? [{ ...part, turnId: message.turnId }] : []));
+}
+
 describe("WebStore", () => {
   it("scopes chats before pagination and search while retaining webhook conversations", async () => {
     const base = await temporaryRoot();
@@ -5798,21 +5803,21 @@ describe("WebStore conversation projects", () => {
       expect(store.getThread(thread.id)).not.toHaveProperty("pendingProject");
       store.patchThread(thread.id, { projectId: second.id });
       store.patchThread(thread.id, { projectId: second.id });
-      expect(store.projectTransitions(thread.id)).toHaveLength(1);
+      expect(transcriptMarkers(store, thread.id, "project")).toHaveLength(1);
       if (outcome === "complete") store.completeTurn(turn.turnId, "done");
       else if (outcome === "interrupted") store.interruptTurn(turn.turnId);
       else store.failTurn(turn.turnId, { message: "stopped", cancelled: outcome === "cancelled" });
       expect(store.getThread(thread.id)).toMatchObject({ projectId: second.id });
       expect(store.getThread(thread.id)).not.toHaveProperty("pendingProject");
       expect(store.projectContextForThread(thread.id)).toEqual({ name: "Second", context: "Next" });
-      expect(store.projectTransitions(thread.id)).toHaveLength(2);
-      expect(store.projectTransitions(thread.id)[1]).toMatchObject({
-        afterMessageId: turn.assistantMessageId, turnId: turn.turnId,
+      expect(transcriptMarkers(store, thread.id, "project")).toHaveLength(2);
+      expect(transcriptMarkers(store, thread.id, "project")[1]).toMatchObject({
+        turnId: undefined,
         before: { id: first.id, name: "Edited", color: "amber" },
         after: { id: second.id, name: "Second", color: "rose" },
       });
       store.deleteProject(second.id);
-      expect(store.projectTransitions(thread.id)[2]).toMatchObject({ before: { name: "Second", color: "rose" }, after: null });
+      expect(transcriptMarkers(store, thread.id, "project")[2]).toMatchObject({ before: { name: "Second", color: "rose" }, after: null });
       expect(JSON.stringify(store.getThreadDetail(thread.id))).not.toContain("Edited context");
     } finally { store.close(); }
   });
@@ -5829,29 +5834,29 @@ describe("WebStore conversation projects", () => {
       expect(store.projectContextForThread(thread.id)).toBeUndefined();
       store.completeTurn(turn.turnId, "");
       expect(store.projectContextForThread(thread.id)).toEqual({ name: "P", context: "Next" });
-      expect(store.projectTransitions(thread.id)[0]).toMatchObject({ afterMessageId: turn.assistantMessageId });
+      expect(transcriptMarkers(store, thread.id, "project")[0]).toMatchObject({ kind: "project", turnId: undefined });
     } finally { store.close(); }
   });
 
-  it("pages every transition with its actual anchor, including start and repeated idle changes", async () => {
+  it("pages markers as independent rows including initial and repeated idle membership changes", async () => {
     const { store } = await openStore();
     try {
       const project = store.createProject({ sourceId: "agent-one", name: "P" });
       const thread = store.createThread("agent-one", { projectId: project.id });
-      expect(store.listMessagesPage(thread.id, { limit: 1 }).projectTransitions).toHaveLength(1);
       const turn = store.beginTurn({ threadId: thread.id, text: "work", attachmentIds: [] });
-      store.patchThread(thread.id, { projectId: null });
       store.completeTurn(turn.turnId, "done");
-      store.patchThread(thread.id, { projectId: project.id });
       store.patchThread(thread.id, { projectId: null });
-      const latest = store.listMessagesPage(thread.id, { limit: 1 });
-      expect(latest.messages.map((message) => message.id)).toEqual([turn.assistantMessageId]);
-      expect(latest.projectTransitions).toHaveLength(3);
-      const oldest = store.listMessagesPage(thread.id, { limit: 1, before: latest.nextCursor! });
-      expect(oldest.messages.map((message) => message.id)).toEqual([turn.userMessageId]);
-      expect(oldest.projectTransitions).toHaveLength(1);
-      expect(oldest.projectTransitions?.[0]?.afterMessageId).toBeNull();
-      expect(store.getThread(thread.id)?.messageCount).toBe(2);
+      store.patchThread(thread.id, { projectId: project.id });
+      const messages = [];
+      let cursor: string | undefined;
+      do {
+        const page = store.listMessagesPage(thread.id, { limit: 1, ...(cursor === undefined ? {} : { before: cursor }) });
+        messages.unshift(...page.messages);
+        cursor = page.nextCursor;
+      } while (cursor !== undefined);
+      expect(messages.map((m) => m.role)).toEqual(["system", "user", "assistant", "system", "system"]);
+      expect(messages.filter((m) => m.role === "system").every((m) => m.parts[0]?.type === "conversation-marker")).toBe(true);
+      expect(store.getThread(thread.id)?.messageCount).toBe(5);
     } finally { store.close(); }
   });
 
@@ -5875,7 +5880,7 @@ describe("WebStore conversation projects", () => {
     try {
       expect(store.getThread(threadId)).toMatchObject({ projectId });
       expect(store.getThread(threadId)).not.toHaveProperty("pendingProject");
-      expect(store.projectTransitions(threadId)).toHaveLength(1);
+      expect(transcriptMarkers(store, threadId, "project")).toHaveLength(1);
       expect(store.projectContextForThread(threadId)).toEqual({ name: "After restart", context: "Fresh" });
     } finally { store.close(); }
   });
@@ -5895,7 +5900,7 @@ describe("WebStore conversation projects", () => {
       const second = queued === undefined ? store.beginTurn({ threadId: thread.id, text: "second", attachmentIds: [] }) : store.promoteNextQueuedLiveInput(thread.id)!;
       store.completeTurn(second.turnId, "second answer");
       expect(store.listMessagesPage(thread.id).messages.map((item) => item.id)).toEqual([
-        first.userMessageId, first.assistantMessageId, second.userMessageId, second.assistantMessageId,
+        first.userMessageId, first.assistantMessageId, expect.any(String), second.userMessageId, second.assistantMessageId,
       ]);
     } finally { store.close(); }
   });
@@ -6221,11 +6226,11 @@ describe("WebStore model transitions", () => {
     try {
       const thread = store.createThread("agent-one");
       const first = ran(store, thread.id, "one", "provider/sol", "low");
-      expect(store.modelTransitions(thread.id)).toEqual([]);
+      expect(transcriptMarkers(store, thread.id, "model")).toEqual([]);
       const second = ran(store, thread.id, "two", "provider/astra", "high");
-      expect(store.modelTransitions(thread.id)).toHaveLength(1);
-      expect(store.modelTransitions(thread.id)[0]).toMatchObject({
-        afterMessageId: first.assistantMessageId,
+      expect(transcriptMarkers(store, thread.id, "model")).toHaveLength(1);
+      expect(transcriptMarkers(store, thread.id, "model")[0]).toMatchObject({
+
         turnId: second.turnId,
         before: { model: "provider/sol", effort: "low" },
         after: { model: "provider/astra", effort: "high" },
@@ -6242,11 +6247,11 @@ describe("WebStore model transitions", () => {
       store.patchThread(thread.id, { model: "provider/astra" });
       store.patchThread(thread.id, { model: "provider/sol" });
       ran(store, thread.id, "two", "provider/sol", "low");
-      expect(store.modelTransitions(thread.id)).toEqual([]);
+      expect(transcriptMarkers(store, thread.id, "model")).toEqual([]);
       // Effort alone still counts, and it names itself by the pair it changed.
       ran(store, thread.id, "three", "provider/sol", "high");
-      expect(store.modelTransitions(thread.id)).toHaveLength(1);
-      expect(store.modelTransitions(thread.id)[0]).toMatchObject({
+      expect(transcriptMarkers(store, thread.id, "model")).toHaveLength(1);
+      expect(transcriptMarkers(store, thread.id, "model")[0]).toMatchObject({
         before: { model: "provider/sol", effort: "low" },
         after: { model: "provider/sol", effort: "high" },
       });
@@ -6261,21 +6266,21 @@ describe("WebStore model transitions", () => {
       // baseline: the one before it is what the next turn is measured against.
       const unreported = store.beginTurn({ threadId: thread.id, text: "unreported", attachmentIds: [] });
       store.completeTurn(unreported.turnId, "answered");
-      expect(store.modelTransitions(thread.id)).toEqual([]);
+      expect(transcriptMarkers(store, thread.id, "model")).toEqual([]);
       const first = ran(store, thread.id, "one", "provider/sol", "low");
-      expect(store.modelTransitions(thread.id)).toEqual([]);
+      expect(transcriptMarkers(store, thread.id, "model")).toEqual([]);
       const blind = store.beginTurn({ threadId: thread.id, text: "blind", attachmentIds: [] });
       store.completeTurn(blind.turnId, "answered");
       const next = ran(store, thread.id, "two", "provider/astra", "low");
-      expect(store.modelTransitions(thread.id)).toHaveLength(1);
-      expect(store.modelTransitions(thread.id)[0]).toMatchObject({
-        afterMessageId: blind.assistantMessageId,
+      expect(transcriptMarkers(store, thread.id, "model")).toHaveLength(1);
+      expect(transcriptMarkers(store, thread.id, "model")[0]).toMatchObject({
+
         turnId: next.turnId,
         before: { model: "provider/sol", effort: "low" },
       });
       // An effort only one side reports stays unclaimed while the model holds.
       ran(store, thread.id, "three", "provider/astra");
-      expect(store.modelTransitions(thread.id)).toHaveLength(1);
+      expect(transcriptMarkers(store, thread.id, "model")).toHaveLength(1);
     } finally { store.close(); }
   });
 
@@ -6286,8 +6291,8 @@ describe("WebStore model transitions", () => {
       const first = ran(store, thread.id, "one", "provider/sol", "low");
       const wake = store.beginAssistantTurn({ threadId: thread.id, prompt: "wake", requestedModel: "provider/astra", requestedEffort: "low" });
       store.completeTurn(wake.turnId, "woke");
-      expect(store.modelTransitions(thread.id)).toMatchObject([
-        { afterMessageId: first.assistantMessageId, turnId: wake.turnId, after: { model: "provider/astra" } },
+      expect(transcriptMarkers(store, thread.id, "model")).toMatchObject([
+        { turnId: wake.turnId, after: { model: "provider/astra" } },
       ]);
       const queued = store.reserveLiveInput(thread.id, "queued work");
       store.queueLiveInput(queued.input.id);
@@ -6298,23 +6303,22 @@ describe("WebStore model transitions", () => {
       // The queued input froze the agent default, which resolves to no reported
       // route, so the promotion claims nothing; the turn after it is measured
       // against the last route that WAS reported.
-      expect(store.modelTransitions(thread.id)).toHaveLength(1);
+      expect(transcriptMarkers(store, thread.id, "model")).toHaveLength(1);
       const last = ran(store, thread.id, "last", "provider/terra", "high");
-      const rows = store.modelTransitions(thread.id);
+      const rows = transcriptMarkers(store, thread.id, "model");
       expect(rows).toHaveLength(2);
       expect(rows[1]).toMatchObject({
-        afterMessageId: promoted!.assistantMessageId,
+
         turnId: last.turnId,
         before: { model: "provider/astra" },
         after: { model: "provider/terra", effort: "high" },
       });
       const detail = store.getThreadDetail(thread.id);
-      expect(detail?.modelTransitions).toHaveLength(2);
+      expect(detail?.messages.filter((m) => m.parts[0]?.type === "conversation-marker")).toHaveLength(2);
       const latest = store.listMessagesPage(thread.id, { limit: 1 });
-      expect(latest.modelTransitions).toEqual([]);
+      expect(latest.messages[0]?.role).toBe("assistant");
       const pageWithAnchor = store.listMessagesPage(thread.id, { limit: 3 });
-      expect(pageWithAnchor.modelTransitions).toHaveLength(1);
-      expect(pageWithAnchor.modelTransitions?.[0]?.afterMessageId).toBe(promoted!.assistantMessageId);
+      expect(pageWithAnchor.messages.map((m) => m.role)).toEqual(["system", "user", "assistant"]);
     } finally { store.close(); }
   });
 });
@@ -6638,6 +6642,141 @@ describe("WebStore conversation read watermark", () => {
       for (const args of [{ conversationId: null }, { conversationId: "" }, { conversationId: 7 }, { all: true }, { sourceId: "agent-two" }]) {
         expect(() => run(args)).toThrowError(expect.objectContaining({ code: "invalid_console_tool" }));
       }
+    } finally { store.close(); }
+  });
+});
+
+describe("durable conversation markers", () => {
+  async function fixture() {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    let time = Date.parse("2026-09-16T08:00:00Z");
+    const store = await WebStore.open({ stateDir: join(root, "state"), clock: () => new Date(time) });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    return { store, thread, setTime: (value: number) => { time = value; }, time };
+  }
+
+  it.each([0, 3_600_000, 3_600_001, -1])("only resumes after more than one hour (%s ms), using creation not update time", async (idle) => {
+    const { store, thread, setTime, time } = await fixture();
+    try {
+      const first = store.beginTurn({ threadId: thread.id, text: "first", attachmentIds: [] });
+      expect(transcriptMarkers(store, thread.id, "resumed")).toEqual([]);
+      setTime(time + 100_000);
+      store.completeTurn(first.turnId, "answer");
+      setTime(time + idle);
+      const next = store.beginTurn({ threadId: thread.id, text: "next", attachmentIds: [] });
+      expect(transcriptMarkers(store, thread.id, "resumed")).toHaveLength(idle > 3_600_000 ? 1 : 0);
+      if (idle > 3_600_000) {
+        const rows = store.listMessagesPage(thread.id).messages;
+        expect(rows.map((m) => m.role)).toEqual(["user", "assistant", "system", "user", "assistant"]);
+        expect(rows[2]).toMatchObject({ turnId: next.turnId, createdAt: rows[3]!.createdAt, seq: 0,
+          parts: [{ type: "conversation-marker", kind: "resumed", idleMs: idle, at: new Date(time + idle).toISOString() }] });
+      }
+    } finally { store.close(); }
+  });
+
+  it("freezes the undispatched marker window, excludes prior admission markers, and keeps rows out of excerpts/search", async () => {
+    const { store, thread, setTime, time } = await fixture();
+    try {
+      const p = store.createProject({ sourceId: "agent-one", name: "Quizzacious", context: "" });
+      store.patchThread(thread.id, { projectId: p.id });
+      const first = store.beginTurn({ threadId: thread.id, text: "plain", attachmentIds: [], requestedModel: "A" });
+      expect(store.conversationMarkersForTurn(first.turnId).map((m) => m.kind)).toEqual(["project"]);
+      // Failed attachment preparation never stamps dispatch; the next attempt replays this marker.
+      store.failTurn(first.turnId, { message: "attachment unavailable" });
+      const retry = store.beginTurn({ threadId: thread.id, text: "retry", attachmentIds: [], requestedModel: "B" });
+      expect(store.conversationMarkersForTurn(retry.turnId).map((m) => m.kind)).toEqual(["project", "model"]);
+      store.markTurnDispatchStarted(retry.turnId);
+      store.completeTurn(retry.turnId, "retained preview");
+      setTime(time + 4_000_000);
+      store.patchThread(thread.id, { projectId: null });
+      expect(store.getThread(thread.id)?.lastMessagePreview).toBe("retained preview");
+      expect(store.searchThreads({ sourceId: "agent-one", query: "Quizzacious" }).hits).toEqual([]);
+      const next = store.beginTurn({ threadId: thread.id, text: "raw text", attachmentIds: [], requestedModel: "C" });
+      expect(store.conversationMarkersForTurn(next.turnId).map((m) => m.kind)).toEqual(["project", "model", "resumed"]);
+      expect(store.getMessage(next.userMessageId)?.parts).toEqual([{ type: "text", text: "raw text" }]);
+      store.patchThread(thread.id, { projectId: p.id });
+      expect(store.conversationMarkersForTurn(next.turnId).map((m) => m.kind)).toEqual(["project", "model", "resumed"]);
+      store.markTurnDispatchStarted(next.turnId);
+      store.completeTurn(next.turnId, "done");
+      const wake = store.beginAssistantTurn({ threadId: thread.id, prompt: "wake" });
+      expect(store.conversationMarkersForTurn(wake.turnId).map((m) => m.kind)).toEqual(["project"]);
+    } finally { store.close(); }
+  });
+
+  it("orders project and admission markers through tied and regressed clocks with one-row backward paging", async () => {
+    const { store, thread, setTime, time } = await fixture();
+    try {
+      const first = store.beginTurn({ threadId: thread.id, text: "one", attachmentIds: [], requestedModel: "A" });
+      store.completeTurn(first.turnId, "answer");
+      setTime(time - 60_000);
+      const p = store.createProject({ sourceId: "agent-one", name: "P" });
+      store.patchThread(thread.id, { projectId: p.id });
+      const second = store.beginTurn({ threadId: thread.id, text: "two", attachmentIds: [], requestedModel: "B" });
+      const expected = store.listMessagesPage(thread.id).messages;
+      expect(expected.map((m) => m.role)).toEqual(["user", "assistant", "system", "system", "user", "assistant"]);
+      expect(expected[3]?.turnId).toBe(second.turnId);
+      expect(expected[2]?.parts[0]).toMatchObject({ at: new Date(time - 60_000).toISOString() });
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = store.listMessagesPage(thread.id, { limit: 1, ...(cursor === undefined ? {} : { before: cursor }) });
+        ids.unshift(...page.messages.map((m) => m.id));
+        cursor = page.nextCursor;
+      } while (cursor !== undefined);
+      expect(ids).toEqual(expected.map((m) => m.id));
+    } finally { store.close(); }
+  });
+
+  it("rolls back markers and notifications on complete-prefix overflow, and notifies only after commit", async () => {
+    const { store, thread } = await fixture();
+    try {
+      const first = store.beginTurn({ threadId: thread.id, text: "one", attachmentIds: [], requestedModel: "A" });
+      store.completeTurn(first.turnId, "answer");
+      const seen: string[] = [];
+      store.onConversationMarker = ({ messageId }) => {
+        expect(store.getMessage(messageId)).toBeDefined();
+        expect((store as unknown as { transactionDepth: number }).transactionDepth).toBe(0);
+        seen.push(messageId);
+      };
+      expect(() => store.beginTurn({ threadId: thread.id, text: "x".repeat(200_000), attachmentIds: [], requestedModel: "B" }))
+        .toThrowError(expect.objectContaining({ code: "turn_text_too_large" }));
+      expect(seen).toEqual([]);
+      expect(transcriptMarkers(store, thread.id, "model")).toEqual([]);
+      expect(store.getThread(thread.id)?.runState.status).toBe("complete");
+      store.beginTurn({ threadId: thread.id, text: "two", attachmentIds: [], requestedModel: "B" });
+      expect(seen).toHaveLength(1);
+    } finally { store.close(); }
+  });
+
+  it("does not roll back a committed marker when an observer throws, or leak it into the next transaction", async () => {
+    const { store, thread } = await fixture();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P" });
+      store.onConversationMarker = () => { throw new Error("observer failed"); };
+      expect(() => store.patchThread(thread.id, { projectId: project.id })).toThrow("observer failed");
+      expect(store.getThread(thread.id)?.projectId).toBe(project.id);
+      expect(transcriptMarkers(store, thread.id, "project")).toHaveLength(1);
+      const seen = vi.fn();
+      store.onConversationMarker = seen;
+      store.patchThread(thread.id, { title: "renamed" });
+      expect(seen).not.toHaveBeenCalled();
+      store.patchThread(thread.id, { projectId: null });
+      expect(seen).toHaveBeenCalledTimes(1);
+    } finally { store.close(); }
+  });
+
+  it("never resumes assistant-only admissions or live-input sends during an active turn", async () => {
+    const { store, thread, setTime, time } = await fixture();
+    try {
+      const first = store.beginTurn({ threadId: thread.id, text: "one", attachmentIds: [] });
+      setTime(time + 8_000_000);
+      store.reserveLiveInput(thread.id, "steer");
+      expect(transcriptMarkers(store, thread.id, "resumed")).toEqual([]);
+      store.completeTurn(first.turnId, "done");
+      store.beginAssistantTurn({ threadId: thread.id, prompt: "wake" });
+      expect(transcriptMarkers(store, thread.id, "resumed")).toEqual([]);
     } finally { store.close(); }
   });
 });

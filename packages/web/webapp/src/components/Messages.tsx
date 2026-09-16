@@ -1,5 +1,6 @@
-import { MessageModelMarkers } from "./ModelMarkers";
-import { MessageProjectMarkers } from "./project/ProjectIdentity";
+import { ModelMarkers } from "./ModelMarkers";
+import { isConversationMarker } from "../conversation-markers";
+import { ProjectMarkers } from "./project/ProjectIdentity";
 import { isSilentCronData } from "../cron-visibility";
 import {
   ActionBarPrimitive,
@@ -1514,20 +1515,11 @@ export function UserMessage() {
       <LiveInputStatus />
       <MessageActions label="Copy message" />
     </MessagePrimitive.Root>
-    <MessageProjectMarkers />
-    <MessageModelMarkers />
     </>
   );
 }
 
 export function AssistantMessage() {
-  const markerOnly = useAuiState((state) => state.message.content.length === 0
-    && state.message.metadata.custom?.runStatus === "complete"
-    && ((Array.isArray(state.message.metadata.custom?.projectTransitions)
-      && state.message.metadata.custom.projectTransitions.length > 0)
-      || (Array.isArray(state.message.metadata.custom?.modelTransitions)
-        && state.message.metadata.custom.modelTransitions.length > 0)));
-  if (markerOnly) return <><MessageProjectMarkers /><MessageModelMarkers /></>;
   return (
     <>
     <MessagePrimitive.Root className="message message-assistant">
@@ -1541,20 +1533,25 @@ export function AssistantMessage() {
         </div>
       </MessageGallery>
     </MessagePrimitive.Root>
-    <MessageProjectMarkers />
-    <MessageModelMarkers />
     </>
   );
 }
 
 export function SystemMessage() {
+  const marker = useAuiState((state) => {
+    const part = state.message.metadata.custom?.conversationMarker as { data?: unknown } | undefined;
+    return isConversationMarker(part?.data) ? part.data : undefined;
+  });
+  if (marker?.kind === "model") return <ModelMarkers transitions={[marker]} />;
+  if (marker?.kind === "project") return <ProjectMarkers transitions={[marker]} />;
+  if (marker?.kind === "resumed") return <div className="model-transition" role="note">
+    <span className="model-transition-label">Conversation resumed {new Date(marker.at).toLocaleString()}</span>
+  </div>;
   return (
     <>
     <MessagePrimitive.Root className="message message-system">
       <MessagePrimitive.Parts components={parts} />
     </MessagePrimitive.Root>
-    <MessageProjectMarkers />
-    <MessageModelMarkers />
     </>
   );
 }

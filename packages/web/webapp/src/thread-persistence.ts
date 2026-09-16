@@ -1,6 +1,4 @@
-import { readModelTransitions } from "./model-transitions";
-import { readProjectTransitions } from "./project-transitions";
-import type { ModelTransition, ProjectTransition } from "./types";
+import { isConversationMarker } from "./conversation-markers";
 import { sanitizeCronTranscript } from "./cron-visibility";
 import { mergeSeenRevisions, readSeenRevisions, type SeenRevision } from "./unread";
 import type { ThreadCacheEntry } from "./thread-cache";
@@ -83,8 +81,6 @@ const SEEN_KEY = "seen";
 
 /** One conversation, as it is written to the device. */
 export interface PersistedThread {
-  readonly projectTransitions?: readonly ProjectTransition[];
-  readonly modelTransitions?: readonly ModelTransition[];
   readonly id: string;
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
@@ -289,7 +285,7 @@ const isStoredMessage = (value: unknown): value is WebMessage =>
   // The two the renderer AND the write path walk unconditionally. A row that
   // reached the cache without them turned the next flush into a `TypeError` --
   // an unhandled rejection, with persistence dead behind it.
-  && Array.isArray(value.parts)
+  && Array.isArray(value.parts) && value.parts.every((part: unknown) => !isRecord(part) || part.type !== "conversation-marker" || isConversationMarker(part))
   && Array.isArray(value.attachments);
 
 /**
@@ -309,12 +305,10 @@ const readThreadRow = (value: unknown): PersistedThread | undefined => {
     id: value.id,
     thread: sanitized.thread,
     messages: sanitized.messages,
-    projectTransitions: readProjectTransitions(value.projectTransitions),
-    modelTransitions: readModelTransitions(value.modelTransitions),
     ...(typeof value.messagesNextCursor === "string"
       ? { messagesNextCursor: value.messagesNextCursor }
       : {}),
-    ...(typeof value.etag === "string" && !sanitized.changed ? { etag: value.etag } : {}),
+    ...(typeof value.etag === "string" && !sanitized.changed && !("modelTransitions" in value) && !("projectTransitions" in value) ? { etag: value.etag } : {}),
     repairedToolCallIds: stringsOf(value.repairedToolCallIds),
     pagedInIds: stringsOf(value.pagedInIds).filter((id) => sanitized.messages.some((message) => message.id === id)),
     savedAt: typeof value.savedAt === "number" ? value.savedAt : 0,
@@ -604,8 +598,6 @@ export const createThreadPersistence = (
     entry: ThreadCacheEntry,
   ): boolean => previous !== undefined
     && previous.thread === entry.thread
-    && previous.projectTransitions === entry.projectTransitions
-    && previous.modelTransitions === entry.modelTransitions
     && previous.messages === entry.messages
     && previous.messagesNextCursor === entry.messagesNextCursor
     && previous.etag === entry.etag
@@ -619,8 +611,6 @@ export const createThreadPersistence = (
       id: entry.thread.id,
       thread: entry.thread,
       messages: transcript.messages,
-      projectTransitions: entry.projectTransitions ?? [],
-      modelTransitions: entry.modelTransitions ?? [],
       ...(entry.messagesNextCursor === undefined
         ? {}
         : { messagesNextCursor: entry.messagesNextCursor }),
