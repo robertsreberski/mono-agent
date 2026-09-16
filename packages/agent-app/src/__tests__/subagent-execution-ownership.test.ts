@@ -85,3 +85,21 @@ describe("strict bounded ownership schema", () => {
     expect(isSubagentOwnedCommand({ ...command(), ...patch })).toBe(false);
   });
 });
+
+
+it("validates intentional stop certificates without weakening ownership or publication holds", () => {
+  const value = ownership(); value.parentStopRequested = true;
+  expect(isSubagentExecutionOwnership(value)).toBe(true);
+  expect(isSubagentExecutionOwnership({ ...value, parentStopRequested: false })).toBe(false);
+  value.disposition = { status: "cancelled", reason: "cancelled", continuity: "retained", resumeAfterStop: true };
+  expect(isSubagentExecutionOwnership(value)).toBe(false); // still running
+  value.owner.settlement = "settled"; value.revoked = true;
+  expect(isSubagentExecutionOwnership(value)).toBe(true);
+  expect(isSubagentExecutionOwnership({ ...value, parentStopRequested: undefined })).toBe(false);
+  expect(isSubagentExecutionOwnership({ ...value, disposition: { ...value.disposition, continuity: "unknown" } })).toBe(false);
+  expect(isSubagentExecutionOwnership({ ...value, disposition: { ...value.disposition, status: "timeout" } })).toBe(false);
+  value.command = { ...command(), state: "cleanup_unknown" }; value.seenCalls = [value.command.callKey];
+  expect(hasSubagentObligation({ kind: "internal", subagentOwnership: value })).toBe(true);
+  value.command.state = "released";
+  expect(hasSubagentObligation({ kind: "internal", subagentOwnership: value })).toBe(true); // pending publication
+});

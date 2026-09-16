@@ -329,7 +329,12 @@ route. Use `Agent` with `persist:true, background:true`, then `AgentSend` with a
 message and optional `background:true`. A durable started receipt schedules an
 exact-origin wake, including AskParent questions. Do not poll or replay; a
 terminal job with `childStillBusy:true` does not permit another send until the
-child actually settles. Restart interrupts and wakes without replay.
+child actually settles. Use `AgentSend({id, stop:true})` alone for cooperative
+stop (detached turns only, no rollback or force-kill). A `resumable:true` receipt
+permits ordinary message continuation on the same session or `close:true`;
+`stop_requested` retains ownership and blocks messages/close. Lost or unknown
+continuity requires explicit recovery, not replay. Restart interrupts and wakes
+without replay.
 Recovery acknowledgement is retained-context only and single-use. A failed
 acknowledged `close:true` continuation leaves the child and pending AskParent
 question available, while private registry I/O failures remain path-free and do

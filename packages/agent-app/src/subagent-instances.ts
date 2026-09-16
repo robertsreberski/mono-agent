@@ -40,6 +40,8 @@ export interface SubagentInstance {
   /** Derived public guidance, never accepted as stored ownership authority. */
   recoveryBlocked?: boolean;
   recoveryJobId?: string;
+  /** Derived host-only identity of the last managed publication. */
+  settledTurnToken?: string;
   reservation?: { token: string };
   status: "queued" | "idle" | "running" | "awaiting_reply" | "closed" | "expired";
   pendingQuestion?: SubagentQuestion;
@@ -76,7 +78,7 @@ export interface SubagentRecoveryInspection {
   readonly ack?: string;
 }
 export interface InstanceSpec { verification?: SubagentVerificationDeclaration; id?: string; name: string; systemPrompt: string; definition: InstanceDefinition }
-export interface InstanceOutcome { status: string; closeAfterSuccess?: boolean; failureKind?: "session_continuity_lost"; usage?: Partial<InstanceUsage>; answerHead?: string; question?: SubagentQuestion }
+export interface InstanceOutcome { status: string; continuity?: { turnToken: string; state: "retained" | "lost" | "unknown" }; closeAfterSuccess?: boolean; failureKind?: "session_continuity_lost"; usage?: Partial<InstanceUsage>; answerHead?: string; question?: SubagentQuestion }
 export interface InstanceRegistryHandle {
   verifyOwner(identity: SubagentOwnerIdentity): Promise<{ retained: boolean; verification?: SubagentVerificationTarget }>;
   inspect(id: string, access?: unknown): Promise<SubagentRecoveryInspection>;
@@ -311,7 +313,9 @@ export function createSubagentInstanceRegistry(options: {
         if (!isSubagentRecoveryFence(fence)) return;
         if (record.recovery && (record.recovery.turnToken !== fence.turnToken || record.recovery.sequence > fence.sequence
           || (record.recovery.sequence === fence.sequence && (record.recovery.reason !== fence.reason || record.recovery.continuity !== fence.continuity)))) return;
-        record.recovery = fence;
+        if (proof.resumeAfterStop === true && proof.continuity === "retained" && !proof.receiptPending
+          && (!record.recovery || record.recovery.turnToken === identity.turnToken)) delete record.recovery;
+        else record.recovery = fence;
         record.status = record.pendingQuestion ? "awaiting_reply" : "idle";
         record.lastStatus = "interrupted";
         delete record.activeTurn;
@@ -389,6 +393,7 @@ export function createSubagentInstanceRegistry(options: {
             if (value && typeof value === "object" && "sessionId" in value) {
               const { ownerLink: _owner, ownerReceipt: _receipt, recoveryBinding: _binding, verificationTarget: _verification, ...publicRecord } = value as StoredSubagentInstance;
               return structuredClone({ ...publicRecord,
+                ...(_receipt ? { settledTurnToken: _receipt.turnToken } : {}),
                 ...(publicRecord.recovery || (_receipt && !_receipt.acknowledged) ? { recoveryBlocked: true } : {}),
                 ...(_receipt && publicRecord.recovery?.turnToken === _receipt.turnToken ? { recoveryJobId: _receipt.jobId } : {}) });
             }
@@ -475,13 +480,15 @@ export function createSubagentInstanceRegistry(options: {
             if (!record.activeTurn || !record.ownerLink || !sameSubagentOwner(identity, { ...record.ownerLink,
               conversationId, instanceId: record.id, instanceIncarnation: record.incarnation, turnToken: record.activeTurn.token })) throw new SubagentRecoveryError("subagent_stale_turn");
             const disposition = publication.disposition;
-            if (disposition.reason) record.recovery = { turnToken: identity.turnToken, sequence: publication.sequence,
+            if (disposition.reason && !disposition.resumeAfterStop) record.recovery = { turnToken: identity.turnToken, sequence: publication.sequence,
               reason: disposition.reason, continuity: disposition.continuity };
             if (phase === "intent") return;
             record.ownerReceipt = { jobId: identity.jobId, storeRoot: identity.storeRoot, turnToken: identity.turnToken, sequence: publication.sequence, finalized: false, acknowledged: false };
             if (!publication.released) return;
             if (disposition.status === "ok" && disposition.closeAfterSuccess && record.verificationTarget
               && !await options.authorizeClosure?.(subjectOf(record)).catch(() => false)) throw new SubagentRecoveryError("subagent_recovery_policy_unavailable");
+            if (disposition.resumeAfterStop && disposition.continuity === "retained"
+              && record.recovery?.turnToken === identity.turnToken) delete record.recovery;
             const wasRunning = record.status === "running";
             const question = publication.outcome?.question;
             if (disposition.status === "awaiting_reply" && question) {
