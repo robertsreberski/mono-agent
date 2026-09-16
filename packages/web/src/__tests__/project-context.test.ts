@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 import { composeProjectPrefix, neutraliseProjectContext, withProjectContext } from "../project-context.js";
@@ -53,6 +54,24 @@ it("quotes individual tag names so commas and quotes stay unambiguous", () => {
 });
 
 describe("conversation marker dispatch prefix", () => {
+  it.each([
+    ["Europe/Warsaw", "2026-01-16T09:12:00+01:00", "2026-07-16T10:12:00+02:00"],
+    ["America/New_York", "2026-01-16T03:12:00-05:00", "2026-07-16T04:12:00-04:00"],
+  ])("uses the server's %s zone and the event's seasonal offset", (zone, winter, summer) => {
+    // A fresh process applies TZ at startup, without mutating the test worker
+    // or depending on the reviewer's system zone. Node's supported TS stripping
+    // reads the same source module the service uses, not a possibly stale build.
+    const source = new URL("../project-context.ts", import.meta.url).href;
+    const output = execFileSync(process.execPath, ["--input-type=module", "-e", `
+      import { markerLocalTime } from ${JSON.stringify(source)};
+      console.log(JSON.stringify(["2026-01-16T08:12:00Z", "2026-07-16T08:12:00Z"].map(markerLocalTime)));
+    `], { env: { ...process.env, TZ: zone }, encoding: "utf8" });
+    const times = JSON.parse(output) as string[];
+    expect(times[0]?.startsWith(`${winter} (`)).toBe(true);
+    expect(times[1]?.startsWith(`${summer} (`)).toBe(true);
+    for (const time of times) expect(time.endsWith(` ${zone})`)).toBe(true);
+  });
+
   it("uses compact readable lines, neutralises every reserved delimiter and leaves canonical input alone", () => {
     const markers = [
       { type: "conversation-marker", kind: "model", at: "2026-09-16T07:12:00Z",
