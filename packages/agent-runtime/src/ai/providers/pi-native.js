@@ -381,11 +381,12 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // Auto-compaction sub-state. The policy is (re)computed at the decision
     // point against the model actually serving the request; these flags track
     // whether a compaction fired so the run reports context_compaction_applied
-    // honestly and never double-compacts.
+    // honestly and suppresses redundant fresh compactions.
     compaction: {
       applied: false,
       reactiveAttempted: false,
       compactedThisRun: false,
+      lastMidRunCompaction: null,
       policy: null,
       diagnostics: {},
       // Usage of this run's own transcript that a mid-run compaction summarized

@@ -101,7 +101,7 @@ function assistantCountOf(messages) {
 export function midRunReserveTokens(piWindow, triggerTokens, fixedOverheadTokens) {
   const window = Number(piWindow) || 0;
   const transcriptTrigger = Math.max(1, Math.floor((Number(triggerTokens) || 0) - (Number(fixedOverheadTokens) || 0)));
-  if (window <= 0 || transcriptTrigger >= window) return null;
+  if (window <= 0 || transcriptTrigger > window) return null;
   return window - transcriptTrigger + 1;
 }
 
@@ -455,6 +455,13 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
     }
     runState.compaction.applied = true;
     runState.compaction.compactedThisRun = true;
+    // Reactive recovery must distinguish an immediate overflow from one after
+    // many more rounds. Use the same raw transcript estimate and growth budget
+    // as the checkpoint guards, not provider usage that may predate this cut.
+    runState.compaction.lastMidRunCompaction = {
+      transcriptTokens: decision.tokensAfter,
+      growthRequirement,
+    };
     stats.applied += 1;
     // Deliberately NOT `context_compaction_proactive`: that diagnostic means the
     // pre-request pass fired. A mid-run compaction reports itself under the

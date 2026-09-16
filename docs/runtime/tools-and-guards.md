@@ -381,8 +381,9 @@ Compaction is delegated to the active provider bridge rather than hand-rolled in
   then instead of drifting until the turn ends. The check runs at Pi's own
   durable checkpoints, which are only reached once a whole tool batch has
   finished, and the compaction is applied inside the same run: it never starts a
-  second request, consumes queued steering input, or splits a tool call from its
-  result. Guards keep it cheap — at most one attempt in flight, at most one
+  second agent run, appends a user message, consumes queued steering input, or
+  splits a tool call from its result. The summary itself is a separate paid
+  provider request. Guards keep it cheap — at most one attempt in flight, at most one
   evaluation per completed round, a re-check of the trigger before a summary is
   requested, no summary at all when the retained recent messages already hold
   nearly all of the context, and required fresh assistant progress plus

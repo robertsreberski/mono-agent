@@ -21,6 +21,8 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
+import { shouldCompact } from "@earendil-works/pi-agent-core";
+import { runReactiveCompaction } from "../../ai/providers/pi-native/compaction-driver.js";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import {
   createMidRunCompaction,
@@ -238,6 +240,17 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
     models: { completeSimple, getModel: () => model },
     getModel: () => model,
     getThinkingLevel: () => "off",
+    waitForIdle: vi.fn(),
+    prompt: vi.fn(),
+    compact: vi.fn(async () => {
+      const entries = entriesFor(transcript);
+      const result = await hooks.at(-1)?.({
+        reason: "manual", branchEntries: entries, signal: new AbortController().signal,
+      });
+      if (!result?.compaction) throw new Error("Compaction cancelled");
+      commitCompaction(entries, result.compaction);
+      return result.compaction;
+    }),
     setCompactionSettings: vi.fn(async (value) => { settings.push(value); }),
     setMidRunCompactionArmed: (value) => { midRunArmed = value; },
     on: (type, handler) => {
@@ -251,6 +264,7 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
     },
   };
   const runState = {
+    session: { buildContext: async () => ({ messages: [...transcript] }) },
     sessionBaselineCount: 0,
     compaction: {
       applied: false,
@@ -267,6 +281,18 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
   const recorded = [];
   /** @type {Array<any>} */
   const transcript = [];
+  function commitCompaction(entries, compaction) {
+    const committed = {
+      type: "compaction",
+      id: `c${transcript.length}`,
+      parentId: entries.at(-1)?.id || null,
+      timestamp: Date.now(),
+      ...compaction,
+      fromHook: true,
+    };
+    const rebuilt = buildPiSessionContext([...entries, committed], { includeFailed: true });
+    transcript.splice(0, transcript.length, ...rebuilt);
+  }
   const controller = createMidRunCompaction(runState, {
     harness,
     options: { onCompactionRecorded: (row) => recorded.push(row), runId: "r1" },
@@ -276,6 +302,7 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
   });
   return {
     controller,
+    harness,
     runState,
     events,
     runtimeWarnings,
@@ -304,20 +331,7 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
       });
       if (result?.compaction !== undefined) {
         if (status === "completed") {
-          const committed = {
-            type: "compaction",
-            id: `c${transcript.length}`,
-            parentId: entries.at(-1)?.id || null,
-            timestamp: Date.now(),
-            summary: result.compaction.summary,
-            retainedTail: result.compaction.retainedTail,
-            tokensBefore: result.compaction.tokensBefore,
-            details: result.compaction.details,
-            usage: result.compaction.usage,
-            fromHook: true,
-          };
-          const rebuilt = buildPiSessionContext([...entries, committed], { includeFailed: true });
-          transcript.splice(0, transcript.length, ...rebuilt);
+          commitCompaction(entries, result.compaction);
         }
         for (const listener of subscribers) {
           listener({ type: "compaction_end", lane: "main", reason: "threshold", status, entryId: "c1" });
@@ -384,6 +398,47 @@ describe("mid-run compaction guards", () => {
     expect(fixture.summaryRequests()).toBeGreaterThan(afterFirst);
     expect(fixture.controller.stats.attempts).toBe(2);
     expect(fixture.controller.stats.applied).toBe(2);
+  });
+
+  it.each([
+    ["fresh", 0, false],
+    ["slightly grown", 100, false],
+    ["stale", 40_000, true],
+  ])("preserves one-shot overflow recovery after a %s mid-run compaction", async (_label, growth, shouldRecover) => {
+    const fixture = controllerFixture();
+    await fixture.controller.arm();
+    fixture.setTranscript(growingTranscript(2));
+    await fixture.checkpoint();
+    expect(fixture.controller.stats.applied).toBe(1);
+    expect(fixture.runState.compaction.compactedThisRun).toBe(true);
+    await fixture.controller.disarm();
+
+    // More rounds can accumulate before a provider with a lower real ceiling
+    // rejects the next request. No new checkpoint compaction has committed.
+    if (growth) fixture.append(assistantMessage("x".repeat(growth)), userMessage("continue"));
+    const overflow = { stopReason: "error", lastAssistant: { errorMessage: "context length exceeded, too many tokens" } };
+    const recovered = { stopReason: "endTurn" };
+    const captureState = vi.fn(async () => recovered);
+    const params = {
+      harness: fixture.harness, runtime: {}, resolved: { reference: `faux:midrun-${growth}` },
+      options: {}, promptText: "continue", promptImages: [], reference: "faux:m",
+      onEvent: (event) => fixture.events.push(event), runtimeWarnings: fixture.runtimeWarnings,
+      state: overflow, runError: null, captureState,
+    };
+    const result = await runReactiveCompaction(fixture.runState, params);
+    expect(fixture.runState.compaction.reactiveAttempted).toBe(true);
+    expect(fixture.harness.compact).toHaveBeenCalledTimes(shouldRecover ? 1 : 0);
+    expect(fixture.harness.prompt).toHaveBeenCalledTimes(shouldRecover ? 1 : 0);
+    expect(captureState).toHaveBeenCalledTimes(shouldRecover ? 1 : 0);
+    expect(result.state).toBe(shouldRecover ? recovered : overflow);
+    if (shouldRecover) {
+      expect(fixture.runState.compaction.diagnostics.context_compaction_reduced).toBe(true);
+      expect(fixture.events.at(-1)).toMatchObject({ status: "succeeded", trigger: "overflow" });
+    }
+    // A second overflow cannot buy another summary or re-prompt.
+    await runReactiveCompaction(fixture.runState, params);
+    expect(fixture.harness.compact).toHaveBeenCalledTimes(shouldRecover ? 1 : 0);
+    expect(fixture.harness.prompt).toHaveBeenCalledTimes(shouldRecover ? 1 : 0);
   });
 
   it("requires additional growth after a skipped attempt instead of re-paying each round", async () => {
@@ -477,6 +532,19 @@ describe("mid-run transcript accounting", () => {
     expect(midRunReserveTokens(272_000, 190_400, 5_000)).toBe(272_000 - 185_400 + 1);
     expect(midRunReserveTokens(100_000, 190_400, 0)).toBeNull();
     expect(midRunReserveTokens(0, 10, 0)).toBeNull();
+  });
+
+  it("accepts reserve 1 when the transcript trigger equals Pi's window", async () => {
+    const reserveTokens = midRunReserveTokens(100_000, 100_400, 400);
+    expect(reserveTokens).toBe(1);
+    const settings = { enabled: true, reserveTokens, keepRecentTokens: 4_000 };
+    expect(shouldCompact(99_999, 100_000, settings)).toBe(false);
+    expect(shouldCompact(100_000, 100_000, settings)).toBe(true);
+    const fixture = controllerFixture({ policy: { triggerTokens: 100_400 } });
+    expect(await fixture.controller.arm()).toBe(true);
+    expect(fixture.settings[0].reserveTokens).toBe(1);
+    expect(fixture.runtimeWarnings).toHaveLength(0);
+    await fixture.controller.disarm();
   });
 
   it("re-anchors the baseline and carries the usage of run-owned messages that were summarized away", () => {

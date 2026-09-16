@@ -874,9 +874,18 @@ export async function runReactiveCompaction(runState, {
       context_learned_window: learnedLimit,
       context_learned_window_source: statedLimit ? "provider" : (learnedLimit ? "generic_overflow" : "unavailable"),
     });
-    // A second compaction immediately after a fresh proactive one is almost
-    // always "nothing to compact"; skip it and surface the original error.
-    if (!c.compactedThisRun) {
+    // A fresh compaction is almost always "nothing to compact". But a mid-run
+    // cut can be many rounds old: meaningful growth since that cut restores
+    // eligibility for the single guarded overflow recovery. Compare raw
+    // transcript estimates on both sides; provider usage may predate the cut.
+    let staleMidRunCompaction = false;
+    if (c.lastMidRunCompaction) {
+      const messages = (await runState.session.buildContext()).messages;
+      const transcriptTokens = messages.reduce((total, message) => total + (Number(estimateTokens(message)) || 0), 0);
+      staleMidRunCompaction = transcriptTokens - c.lastMidRunCompaction.transcriptTokens
+        >= c.lastMidRunCompaction.growthRequirement;
+    }
+    if (!c.compactedThisRun || staleMidRunCompaction) {
       await harness.waitForIdle();
       const res = await tryCompact(harness, {
         trigger: "reactive_overflow",
