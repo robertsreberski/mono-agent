@@ -1168,15 +1168,20 @@ are evidence of payload changes, not proof of cache misses; delta/unsupported
 prefix comparisons remain unknown. Pi summary requests retain their existing
 `cacheRetention: "none"` behavior.
 
-The sole pi bridge runs on pi-agent-core's native `AgentHarness`. Pi supports native checkpoint and overflow compaction; mono-agent disables that path
-and drives guarded compaction itself: before each turn it estimates the
-running model's context usage and calls `AgentHarness.compact()` when near the window
-(proactive), and if a turn still overflows it compacts once and re-prompts exactly once
-only after a rebuilt-context preview proves positive reduction (reactive recovery).
-The bridge installs a one-shot `session_before_compact` hook around the public harness
-operation, using Pi's public `prepareCompaction()` and `compact()` primitives so the
-harness still owns phase changes, persistence, and events. Non-reducing previews and
-proactive savings below policy are cancelled before persistence.
+The sole pi bridge runs on pi-agent-core's native `AgentHarness`. Mono-agent
+keeps Pi's native overflow recovery disabled but arms its checkpoint compaction
+for the main prompt. The bridge's guarded `session_before_compact` hook decides
+whether to compact before each turn and between completed model/tool rounds,
+using Pi's public `prepareCompaction()` and `compact()` primitives. Pi still owns
+phase changes, persistence, and events. Before the prompt, the bridge invokes
+`AgentHarness.compact()`; mid-run, Pi schedules the hook inside the same agent run.
+Each summary is a separate paid provider request, guarded by projected savings,
+fresh assistant progress and meaningful growth between mid-run attempts.
+Non-reducing previews and proactive savings below policy are cancelled before
+persistence. If a turn still overflows, guarded reactive recovery compacts and
+re-prompts at most once, only after a preview proves positive reduction. A fresh
+compaction suppresses recovery, but meaningful transcript growth after a mid-run
+compaction makes recovery eligible again.
 
 The context window auto-tracks the model actually serving the request
 (`harness.getModel()`). Numeric provider limits become learned ceilings; generic

@@ -344,11 +344,14 @@ provider exposes queue-after-turn), not durability/cost:
 
 The pi runtime is built on pi-agent-core's native `AgentHarness` (the hand-rolled
 bridge was removed once native reached parity); it owns the session and
-pi-ai-managed retry. `AgentHarness` supports native checkpoint and overflow compaction; mono-agent
-disables that path and drives its own guarded policy through a one-shot `session_before_compact` hook: before
-each turn it compares the full request estimate with an adaptive trigger, and if
-a turn still overflows it retries exactly once only after a preview verifies a
-positive reduction. Runs report `context_compaction_applied` as `true` (a
+pi-ai-managed retry. Mono-agent disables Pi's native overflow recovery but arms
+native checkpoint compaction for the main prompt. Its guarded
+`session_before_compact` hook enforces policy before each turn and between
+completed model/tool rounds. Mid-run summaries are separate paid provider
+requests inside the same agent run; savings and growth guards limit attempts.
+If a turn still overflows, bridge-owned recovery re-prompts at most once after a
+preview verifies positive reduction. Fresh compaction suppresses recovery;
+meaningful transcript growth after a mid-run cut restores eligibility. Runs report `context_compaction_applied` as `true` (a
 compaction fired), `false` (enabled but not needed), or `null` (disabled via
 `runtime.compaction.enabled: false`).
 

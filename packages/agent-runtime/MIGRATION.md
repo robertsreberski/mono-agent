@@ -537,15 +537,21 @@ These were Pi-bridge knobs the native path does not consume.
   `runtime.reasoningSummary` config field has also been removed.
 - `piCodexTransport` was doc-only and is removed. No replacement is needed.
 
-### 3. Pi context compaction: bridge-driven via AgentHarness.compact()
+### 3. Pi context compaction: guarded pre-turn, mid-run and overflow recovery
 
-`AgentHarness` has no automatic compaction, so the pi bridge drives it directly
-(the legacy low-level `transformContext` / `afterToolCall` hooks and
-`createAgentCompactionManager` were removed):
+`AgentHarness` supports automatic checkpoint and overflow compaction. The pi
+bridge arms checkpoints for the main prompt with its guarded
+`session_before_compact` hook, while keeping native overflow recovery disabled
+in favor of bridge-owned recovery (the legacy low-level `transformContext` /
+`afterToolCall` hooks and `createAgentCompactionManager` were removed):
 
 - Before each turn the bridge estimates the running model's context usage and
-  calls `AgentHarness.compact()` when near the window (proactive). If a turn still
-  overflows the bridge compacts once and re-prompts (reactive recovery).
+  calls `AgentHarness.compact()` when near the window (proactive). During the
+  prompt, Pi checkpoints run the same guards between completed model/tool rounds
+  without starting a second agent run. Summaries remain separate paid provider
+  requests. If a turn still overflows, the bridge compacts and re-prompts at most
+  once after verified reduction (reactive recovery). A fresh compaction suppresses
+  recovery; meaningful growth after a mid-run cut restores eligibility.
 - Runs report **`capabilitiesUsed.context_compaction_applied`** as `true` (a
   compaction fired), `false` (enabled but not needed), or `null` (disabled via
   `runtime.compaction.enabled: false`). If you assert on this value, expect this

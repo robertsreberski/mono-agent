@@ -373,9 +373,21 @@ changes do not prove cache misses, and delta/unsupported prefix comparisons rema
 unknown. Summary requests keep Pi's existing disabled-cache setting.
 
 
-Compaction is delegated to the active provider bridge rather than hand-rolled in the runtime. On the pi-native bridge, the bridge drives `AgentHarness.compact()`:
+Compaction is delegated to the active provider bridge rather than hand-rolled in the runtime. On the pi-native bridge, the bridge owns the decision in all three cases:
 
 - **Proactively** — before a turn when the running model is near its context window.
+- **Mid-run** — between completed model/tool rounds of a single turn, so a long
+  tool-using run that crosses the trigger while it is still working compacts
+  then instead of drifting until the turn ends. The check runs at Pi's own
+  durable checkpoints, which are only reached once a whole tool batch has
+  finished, and the compaction is applied inside the same run: it never starts a
+  second agent run, appends a user message, consumes queued steering input, or
+  splits a tool call from its result. The summary itself is a separate paid
+  provider request. Guards keep it cheap — at most one attempt in flight, at most one
+  evaluation per completed round, a re-check of the trigger before a summary is
+  requested, no summary at all when the retained recent messages already hold
+  nearly all of the context, and required fresh assistant progress plus
+  meaningful growth before any further attempt.
 - **Reactively** — if a turn still overflows, it compacts and re-prompts once
   only after the rebuilt context preview proves a positive reduction. A
   non-reducing compaction is cancelled before persistence and is not sent back
@@ -393,13 +405,15 @@ Every run reports `context_compaction_applied`:
 
 | Value | Meaning |
 | --- | --- |
-| `true` | Compaction fired this run. |
+| `true` | Compaction fired this run (before the request or mid-run). |
 | `false` | Enabled but not needed. |
 | `null` | Compaction disabled (or the bridge does not support it). |
 
 Pi diagnostics also report the full proactive request estimate and fixed
 overhead components on every check, plus `context_compaction_reactive_attempted`,
-`context_compaction_tokens_after`, and `context_compaction_reduced`. If the
+`context_compaction_tokens_after`, and `context_compaction_reduced`. Mid-run
+activity is reported separately as `context_compaction_midrun_armed`,
+`context_compaction_midrun_attempts` and `context_compaction_midrun_applied`. If the
 request still exceeds the primary model's window, the run is classified as
 `context_limit`; the fallback router may then try the next configured model.
 
