@@ -169,6 +169,10 @@ Persistent Agent/AgentSend can run detached through the app-private in-process
 ProcessJobs lane. Durable admission reserves the child; completion and AskParent
 wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
+`AgentSend({id, stop:true})` cooperatively stops managed detached work without
+starting a new turn. Only a proven `resumable:true` receipt permits ordinary
+message continuation on the same session or `close:true`; `stop_requested`
+keeps messages/close blocked. Stop neither force-kills nor undoes external effects.
 Detached children receive a foreground Bash/Exec ceiling bounded by their own
 job’s remaining runtime and `subagents.commandTimeoutMs` (default 30 minutes).
 The job deadline remains authoritative; child-owned background commands are
@@ -1282,3 +1286,15 @@ pnpm run check:architecture
 
 Smoke path: `mono-agent init` in a temp folder, `mono-agent validate`, then
 `mono-agent start` and a `curl` POST against the printed webhook invoke URL.
+
+For the detached-child stop contract, run from the repository root:
+
+```bash
+pnpm --filter @mono-agent/agent-app... run build
+node packages/agent-app/scripts/smoke-subagent-stop.mjs
+```
+
+This uses built app packages, the runtime's shipped JavaScript and a controlled
+Pi provider (no network credentials). It prints JSON evidence for tool-bearing
+stop/resume/close and bounded uncooperative stop, then removes its private
+throwaway state under the worktree's `node_modules`.

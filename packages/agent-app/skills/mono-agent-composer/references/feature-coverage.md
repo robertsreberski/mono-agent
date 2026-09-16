@@ -15,7 +15,7 @@ idempotency key and a 4096-byte conversation id.
 | --- | --- | --- | --- |
 | Model backends: Pi-only `<provider>:<model>` (OpenAI, OpenAI-Codex, Copilot, Anthropic, OpenRouter, OpenCode-through-Pi, Ollama, LM Studio, ...); a legacy `pi:` prefix is canonicalized away | config | `runtime.model` | `runtime.multi-backend` |
 | Subagent delegation via the Agent tool | config | pi runtime only. Requires BOTH `subagents.enabled: true` and `Agent` in `tools.allowedTools`. Each definition needs exactly one of `prompt` or `promptPath`; omitted `allowedTools` means a read-only default set and `"*"` is rejected. Subagents are capped by `maxConcurrent` (5) and `maxPerTurn` (20), never receive Agent/AskUser/channel-send tools, and cannot spawn subagents | `runtime.subagents` |
-| Persistent subagent instances | config | `subagents.instances` controls root, live capacity, idle TTL and total child turns. `Agent({persist:true})` creates an instance and `AgentSend` continues or closes it in the same conversation; registries and Pi transcripts survive restarts. Disabling instances preserves stateless Agent. With ProcessJobs on an exact-conversation Pi route, persistent Agent/AgentSend accept background:true, return a durable receipt and wake once; unresolved timeout/cancellation reports childStillBusy:true and retains ownership until actual settlement | `runtime.subagent-instances` |
+| Persistent subagent instances | config | `subagents.instances` controls root, live capacity, idle TTL and total child turns. `Agent({persist:true})` creates an instance and `AgentSend` continues or closes it in the same conversation, or cooperatively stops detached work with exclusive `stop:true`; registries and Pi transcripts survive restarts. Disabling instances preserves stateless Agent. With ProcessJobs on an exact-conversation Pi route, persistent Agent/AgentSend accept background:true, return a durable receipt and wake once; unresolved timeout/cancellation reports childStillBusy:true and retains ownership until actual settlement | `runtime.subagent-instances` |
 | Same-model retries before failover | config | `runtime.retry.primaryAttempts` (default 2) gives the primary a second attempt before the chain advances; per-route `runtime.fallbacks[].attempts` opts a backup in. Only transient provider failures retry — context overflow and bad credentials still advance. Set `primaryAttempts` to 1 to disable | `runtime.retry` |
 | Backup models on retryable provider failure | config | `runtime.fallbacks[]`, each route owning optional exact effort (omission = provider default) | `runtime.fallback-models` |
 | Effort, max turns, workspace | config + cli | `runtime.effort` (`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`; `mono-agent init --effort <level>`). Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. `max` degrades to `xhigh` unless the resolved model advertises it. `mono-agent doctor` validates effort against the model's advertised levels and warns, naming the nearest supported level, when a configured value is outside that set. Ranking above `max` only prevents keyword downgrade. `runtime.maxTurns`, `runtime.workspace` | `runtime.effort`, `runtime.max-turns`, `runtime.workspace` |
@@ -146,7 +146,10 @@ with a non-empty allow-list. Only `tools` requires an authored `systemPrompt`.
 
 
 Persistent in-process helpers use `Agent({persist: true, id?})` followed by
-`AgentSend({id, message?, close?})`. Allow both tool names. With subagents enabled,
+`AgentSend({id, message?, close?, stop?})`. Use `stop:true` alone for a queued/running
+detached turn; only a proven `resumable:true` receipt allows ordinary continuation
+or close. `stop_requested` preserves busy ownership; no live steering, rollback
+or force-kill is implied. Allow both tool names. With subagents enabled,
 `subagents.instances.enabled` defaults true; `root` defaults beside artifacts,
 `maxPerConversation` defaults 8, `idleTtlMs` defaults one day, and `maxTurns`
 defaults 60 child turns. Registries and Pi transcripts survive restarts and are
