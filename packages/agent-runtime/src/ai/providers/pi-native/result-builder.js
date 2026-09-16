@@ -15,11 +15,23 @@ import { structuredOutputRetryDiagnostics } from "./structured-output.js";
 
 /**
  * Sum assistant-message usage across a transcript slice.
+ *
+ * `carried` seeds the accumulator with usage this run already produced but that
+ * a mid-run compaction has since summarized out of the transcript: those tokens
+ * were billed and are still this run's, so dropping them would under-report the
+ * run (see pi-native/mid-run-compaction.js).
  * @param {Array<any>} [messages]
+ * @param {{input?: number, output?: number, cacheRead?: number, cacheWrite?: number, cost?: number}|null} [carried]
  * @returns {{input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}}
  */
-export function usageFromMessages(messages = []) {
-  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+export function usageFromMessages(messages = [], carried = null) {
+  const usage = {
+    input: Number(carried?.input) || 0,
+    output: Number(carried?.output) || 0,
+    cacheRead: Number(carried?.cacheRead) || 0,
+    cacheWrite: Number(carried?.cacheWrite) || 0,
+    cost: Number(carried?.cost) || 0,
+  };
   for (const message of messages) {
     if (message?.role !== "assistant") continue;
     const next = message.usage || {};
