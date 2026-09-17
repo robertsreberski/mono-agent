@@ -824,21 +824,33 @@ skill/startup-context reload on its next turn.
 
 The app publishes a cached, content-free `memoryHealth` snapshot in the primary
 trace-source heartbeat and any enabled best-effort global mirror. Built-in
-health is computed through a dynamic memory import so a native SQLite ABI
-failure becomes sanitized `unknown` health
-instead of crashing unrelated CLI startup. Concurrent refreshes coalesce; in
-steady state, ordinary trace events and the completion-based timer never run a
-full audit less than 30 seconds after the prior completion. Startup and reload
-make one explicit post-lifecycle exception so the registered snapshot reflects
-the newly started store. The timer is unreferenced and invalidated at
-stop/reconfigure entry, and the same
-snapshot is used for both registries. The shape is limited to backend/mode,
-closed status and issue vocabularies, ISO check time, and eight whitelisted
-counts—never paths, ids, content, payloads, or raw errors.
+health is audited in a dedicated, lazily started worker thread, so synchronous
+SQLite and canonical-source inspection do not block the controller event loop.
+The periodic worker uses one stability attempt; a real concurrent mutation is
+reported as `mutation_in_progress` and retried on the next normal cycle rather
+than immediately repeating the full audit. Only the deterministic canonical
+graph projection is memoized, and only while the fingerprint of every canonical
+source byte is unchanged. SQLite integrity and inventory, queues, runtime,
+locks, temporary artifacts, mutation markers, and parity against the current DB
+are recomputed on every cycle.
 
-Unexpected built-in audit failures use the stable `health_check_failed` issue,
-while durable work that exceeds its ownership grace uses `work_stalled`; both
-are fixed metadata-only classifications.
+Concurrent refreshes coalesce; in steady state, ordinary trace events and the
+completion-based timer never run an audit less than 30 seconds after the prior
+completion. Startup and reload make one explicit post-lifecycle exception so
+the registered snapshot reflects the newly started store. Stop and reconfigure
+fence pending work, retire the worker without delaying lifecycle teardown, and
+reject results from a replaced store. The timer and idle worker are
+unreferenced, and the same snapshot is used for both registries. `checkedAt` is
+the time of the complete audit that produced the published snapshot, including
+cycles whose unchanged canonical projection was reused.
+
+The shape is limited to backend/mode, closed status and issue vocabularies, ISO
+check time, and eight whitelisted counts—never paths, ids, content, payloads, or
+raw errors. Worker startup, timeout, crash, malformed response, and unexpected
+audit failures publish fresh sanitized `unknown` health with the stable
+`health_check_failed` issue rather than stale counts. Durable work that exceeds
+its ownership grace uses `work_stalled`; both are fixed metadata-only
+classifications.
 
 Operator automation should use:
 
