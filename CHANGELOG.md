@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Tolerate transient discovery gaps in the web console. Inconclusive
+  presence samples no longer drop a discovered agent at once, so a busy
+  event loop or a briefly missing endpoint does not read as a dead agent.
+
+## 0.22.0 — Persistent subagents and Projects (2026-09-16)
+
+### Persistent subagents
+
 - Persistent Agent/AgentSend support detached process-job execution and exact-origin wakes, retaining busy ownership after unresolved cancellation.
 
 - Let persistent children ask their parent for direction with child-only
@@ -20,20 +28,23 @@
   profile pins; unpinned children inherit the parent's effective model and effort.
   Report requested and executed routes when a child route is pinned or overridden.
 
-- Label a conversation that belongs to a project wherever it is listed: on its
-  row in the console's conversation list and archive shelf, on its card in
-  Active now, and on a search hit. Conversation summaries carry the project's
-  name as `projectName`, so a card for another agent's project can name it
-  without that agent's project list. The chat header's project badge is set in
-  sentence case at the conversation title's left edge.
+- Recover restart-safe persistent subagent ownership, let the parent stop a
+  busy persistent subagent and resume it later, bound a detached child's
+  foreground commands by its process job, and keep turn-continuity
+  publication resilient when a handoff races the parent.
 
-- Add project colors, a tinted chat badge, and persisted join/leave/move markers.
-  Membership changes wait for the active turn boundary; steering retains frozen
-  project context. Busy deletion and pending-destination archival return conflicts.
-  Add authenticated, source-scoped console project/conversation MCP tools with
-  atomic create-and-attach and operation receipts, plus `SearchConversations`
-  (the search bar's full-text search) and archived/limit options on
-  `ListConversations`. Storage appends migration 27.
+- Show detached subagents as lifecycle rows with a scrollable progress card,
+  fold the background launch call into its job-started row, and show the
+  child-busy notice only for terminal jobs.
+
+- Badge a subagent's model and effort from delegation start, show run
+  attribution only for deviations, and mark a conversation's model changes in
+  its transcript.
+
+- Compact context mid-turn, not only before the turn, so long delegated runs
+  stay within budget without waiting for a turn boundary.
+
+### Projects and tags
 
 - Add Projects to the web console: per-agent named containers of conversations
   with a free-text context (at most 4,000 characters) that is prepended,
@@ -49,12 +60,92 @@
   `projects.changed` events. Storage migrates to schema 26
   with `projects` and `threads.project_id`.
 
-- Conversation rows now show compact current model and effort labels across the
-  dashboard, running cards, and search results. Subagent activity shows a smaller
-  per-call route label, retaining fallback warnings and effective-effort details.
-  Model versions remain visible, with signal bars reflecting each model's
-  advertised effort levels (text when unknown). Phone layouts give delegation
-  tasks priority over their compact routing and timing metadata.
+- Add project colors, a tinted chat badge, and persisted join/leave/move markers.
+  Membership changes wait for the active turn boundary; steering retains frozen
+  project context. Busy deletion and pending-destination archival return conflicts.
+  Add authenticated, source-scoped console project/conversation MCP tools with
+  atomic create-and-attach and operation receipts, plus `SearchConversations`
+  (the search bar's full-text search) and archived/limit options on
+  `ListConversations`. Storage appends migration 27.
+
+- Label a conversation that belongs to a project wherever it is listed: on its
+  row in the console's conversation list and archive shelf, on its card in
+  Active now, and on a search hit. Conversation summaries carry the project's
+  name as `projectName`, so a card for another agent's project can name it
+  without that agent's project list. The chat header's project badge is set in
+  sentence case at the conversation title's left edge.
+
+- Add agent-scoped conversation tags, polish conversation status and inline
+  tags, and move the model-change notice above the composer input.
+
+- Keep the dashboard Projects section collapsible with persisted state, close
+  an open project page with a right swipe on mobile, and allow console
+  project tools during background wakes.
+
+### Dashboard and installed console
+
+- Replace the agent rail and conversation sidebar with one Dashboard where
+  Running speaks for the whole fleet, with device-local unread marks, settled
+  reply excerpts up front, and a phone layout tightened from use.
+
+- Focus dashboard search on results, omit idle Completed statuses from
+  conversation rows, and open conversations straight from PWA notifications.
+
+- Apply one palette across the console with cron jobs in the conversation
+  list, and refresh the PWA console icon.
+
+- Keep the installed console's status band aligned with its header on phones
+  and tablets, tolerating sub-pixel drift and system-bar panning, and align
+  mobile PWA Back with screen navigation.
+
+- Sort Automations by recent invocation, and explain pending cron-Reply
+  collisions with friendly copy carrying the pending-since time.
+
+### Background jobs in the console
+
+- Stack background jobs by conversation and show active jobs by default, with
+  the job lifecycle visible in response activity and wakes rendered
+  chronologically.
+
+- Hold a process-job wake receipt until its follow-up turn is admitted, so a
+  wake never lands before the work it announces.
+
+- Widen and align the job card's tool-call list, keep job accent to Activity
+  rows, and say when a background job has produced no output yet.
+
+### Usage, cost, and providers
+
+- Meter subscription usage in compact agent settings and a `ProviderUsage`
+  tool, with GitHub Copilot meters over OAuth quota scoped to activated
+  providers.
+
+- Show completed agent-job cost, surface active provider usage in the context
+  popover, and compact the settings touch controls.
+
+- Stabilize tool definitions for prompt caching, add opt-in Anthropic cache
+  retention, and route `deepseek-v4.1-flash` through the opencode-go catalog
+  supplement.
+
+### Input, replies, and platform
+
+- Keep unsent composer text across app restarts, fix Enter behavior alongside
+  cancelled-turn continuity, and keep a waiting follow-up at its turn's foot
+  sized like a user message.
+
+- Preserve reasoning-split replies with paged change markers, and keep a
+  thought from splitting a live reply's sentence.
+
+- Accept audio uploads as agent attachments, including Voice Memos reported
+  as `audio/x-m4a`.
+
+- Supersede stale reply-file publish failures on retry, record transcript
+  markers as rows the agent can see, and move onboarding browser-first with
+  explicit web sharing.
+
+- Publish systemd dotenv snapshots with session environment attestation, and
+  tolerate transient operator probe failures without dropping the agent.
+
+### Tool output and model labels
 
 - Per-tool output truncation now persists the full output in the configured
   app. Bash, Exec, NodeRepl, Read, WebFetch, Grep and Glob trim oversized
@@ -80,14 +171,14 @@
   a `tool_payload_saved_paths` artifact reference in tool history. Without a
   sink the text says the full result was not saved.
 
-- **Breaking: the minimum supported Node.js version is now 24.15.0** (previously
-  22.19.0). Node 22 bundles ICU 77, whose `windows-1252` decoder maps the C1
-  bytes to raw control characters instead of the WHATWG code points, so
-  `WebFetch` returned `U+0093`/`U+0094` where a cp1252 page meant curly quotes.
-  ICU 78, shipped from Node 24.14.0 onward, decodes them correctly. Rather than
-  carry two decoding behaviours across the supported range, the floor moves to a
-  Node line that decodes retrieved documents correctly. Upgrade Node before
-  installing or updating mono-agent.
+- Conversation rows now show compact current model and effort labels across the
+  dashboard, running cards, and search results. Subagent activity shows a smaller
+  per-call route label, retaining fallback warnings and effective-effort details.
+  Model versions remain visible, with signal bars reflecting each model's
+  advertised effort levels (text when unknown). Phone layouts give delegation
+  tasks priority over their compact routing and timing metadata.
+
+## 0.21.1 — Image cap and upload fixes (2026-09-10)
 
 - Cap every inline image handed to a model at 2,000 px per edge, down from
   8,000 px, and apply the same normalization to MCP tool results. Anthropic
@@ -101,41 +192,16 @@
   in bytes, so a wide desktop capture passed every guard. Images already within
   the ceiling are forwarded byte-identical, and source files are never modified.
 
-- Extend the configured app's startup-and-hourly artifact retention sweep to
-  own raw `tool-output/<runId>/` directories under the existing
-  `artifacts.retention` age, count, and dry-run policy. Selection is path/mtime
-  based so aged recordless orphans are cleaned; running, uncertain, or recently
-  modified directories are kept conservatively, symlinked or unsafe paths fail closed, and
-  pruned opaque `SessionHistory` references degrade to `available: false`.
-- Resolve inherited reasoning effort per selected model route. Model-only web,
-  Slack, Telegram, cron, and webhook overrides now keep `runtime.effort` only
-  for the configured primary or a model whose advertised ladder admits it;
-  configured fallbacks use their own pinned effort or provider default. The web
-  console labels provider-default inheritance accurately, and explicit effort
-  overrides remain unchanged.
-- Bound every WebSearch backend to 4,000-character marked snippets and a 64 KiB
-  ranked body, pass Ollama the caller's result limit, and preserve complete
-  trust framing. Oversized text tool results now retain a framed UTF-8-safe
-  head/tail sample, while configured app runs persist raw blocks best-effort in
-  owner-private `tool-output/<runId>` files that can become opaque
-  `SessionHistory` references. Publication creates and verifies directory
-  components individually at mode `0700`, accepts pre-existing owner-controlled
-  components only when they are not group- or world-writable, rechecks the
-  run-directory identity after opening, and removes identity-proven files after
-  final validation failure; Node's lack
-  of fd-relative `openat` leaves a documented residual same-user rename window.
-- **Breaking: framework self-configuration has been removed.** The dedicated
-  SELF-CONFIG session, `ProposeAgentConfiguration`, `mono-agent tui --configure`,
-  `/configure`, host-side proposal review/apply/restart transaction, and bundled
-  `mono-agent-configure` skill no longer exist. Edit `mono-agent.config.json` or
-  `IDENTITY.md`, run `mono-agent validate`, restart, and use the ordinary TUI.
-  Existing `mono-agent-configure` selections are ignored at runtime and reported
-  as waiting by validation so running consumers do not break. With index
-  disclosure, active selected skill bodies load in full without `ReadSkill`
-  until the retired selector is removed. Run
-  `mono-agent install-skill --project --check`, then `--update` to retire exact
-  manifest-owned legacy state. Modified or colliding copies are preserved and
-  require operator resolution.
+- Quiet the background-job surfaces: drop the empty-body padding, redraw
+  event rows without the quote-bar stripe, and stop listing host-local
+  artifact paths the console cannot open.
+
+- Stop declaring `Content-Length` on Slack external file uploads.
+
+## 0.21.0 — Turn continuity and console scale (2026-09-10)
+
+### Continuity and recovery
+
 - Preserve natural conversation continuity after any admitted, non-isolated run
   settles as cancelled or failed before its success commit. The next turn
   receives a 48 KiB redacted account of the request, partial assistant output,
@@ -149,11 +215,19 @@
   tag-safe JSON explicitly framed as untrusted evidence and cannot select host
   provenance. A hard process death that never unwinds through the harness
   remains artifact/web reconciliation only and cannot publish canonical history.
-- Make web-console model routing explicit per run: requested, attempted, and
-  answering models, classified fallback/retry history, Pi's effective thinking
-  level, and nested subagent attribution are now visible without exposing raw
-  provider diagnostics. Standalone process-job and Monitor revival turns now
-  reuse the conversation's remembered web model/effort snapshot.
+
+- Resume warm durable Pi sessions after cancelled or transiently failed turns,
+  keeping model-override conversations on a warm session bound to the
+  requested model, and keep the primary's durable Pi session when fallbacks
+  are configured.
+
+- Preserve and account for compaction summaries across turns, guide
+  interrupted-run recovery in the app, surface the policy reason when
+  `PublishReplyFile` rejects a file, and reconcile deferred tool history
+  writes so late results land safely.
+
+### Search, models, and effort
+
 - Add explicit Ollama Web Search alongside the existing SearXNG, Codex, and
   keyless routes. Preserve `auto` as SearXNG → Codex → keyless, repair the
   canonical nested SearXNG config while retaining its legacy endpoint alias,
@@ -162,29 +236,184 @@
   parser handling, safer HTML-to-Markdown conversion, structured failures, and
   explicit browser-first rendering through an isolated `agent-browser` session
   without treating authentication or access challenges as bypassable.
-- Add per-agent web-console defaults for the model and effort of new
-  conversations, with SQLite persistence, config/override source labels, and a
-  one-click revert to resolved config. Existing threads and non-web channels
-  remain unaffected.
-- Preserve no-expiry `AskUser` waits in web and remote-TUI turns by removing
-  Undici's implicit five-minute inactivity deadline from long-lived operator
-  streams. Host-wake delivery keeps its explicit ten-minute request bound.
+
+- Bound every WebSearch backend to 4,000-character marked snippets and a 64 KiB
+  ranked body, pass Ollama the caller's result limit, and preserve complete
+  trust framing. Oversized text tool results now retain a framed UTF-8-safe
+  head/tail sample, while configured app runs persist raw blocks best-effort in
+  owner-private `tool-output/<runId>` files that can become opaque
+  `SessionHistory` references. Publication creates and verifies directory
+  components individually at mode `0700`, accepts pre-existing owner-controlled
+  components only when they are not group- or world-writable, rechecks the
+  run-directory identity after opening, and removes identity-proven files after
+  final validation failure; Node's lack
+  of fd-relative `openat` leaves a documented residual same-user rename window.
+
+- Extend the configured app's startup-and-hourly artifact retention sweep to
+  own raw `tool-output/<runId>/` directories under the existing
+  `artifacts.retention` age, count, and dry-run policy. Selection is path/mtime
+  based so aged recordless orphans are cleaned; running, uncertain, or recently
+  modified directories are kept conservatively, symlinked or unsafe paths fail closed, and
+  pruned opaque `SessionHistory` references degrade to `available: false`.
+
+- Make web-console model routing explicit per run: requested, attempted, and
+  answering models, classified fallback/retry history, Pi's effective thinking
+  level, and nested subagent attribution are now visible without exposing raw
+  provider diagnostics. Standalone process-job and Monitor revival turns now
+  reuse the conversation's remembered web model/effort snapshot.
+
+- Resolve inherited reasoning effort per selected model route. Model-only web,
+  Slack, Telegram, cron, and webhook overrides now keep `runtime.effort` only
+  for the configured primary or a model whose advertised ladder admits it;
+  configured fallbacks use their own pinned effort or provider default. The web
+  console labels provider-default inheritance accurately, and explicit effort
+  overrides remain unchanged.
+
 - Upgrade the exact-pinned Pi AI, Agent Core, and TUI dependencies to 0.85.1,
   exposing GPT-6 Astra as `openai:gpt-6-astra` for OpenAI API keys and
   `openai-codex:gpt-6-astra` for Codex subscriptions. Adopt Pi's corrected
   30-minute long prompt-cache request shape for GPT-5.6+ OpenAI Responses
   models, plus its fullscreen Alt-wheel and list-hover TUI fixes.
-- Remove the repository-owned final-agent and SearXNG demos together with their
-  root commands, build provenance, verification, CI, and documentation wiring.
+
+- Expose prompt-cache measurements, stabilize provider prompt caching, keep
+  tool definitions stable across turn admission, and add opt-in Anthropic
+  cache retention with per-request cohort summaries.
+
+- Enable keyless provider auth in the operator adapter.
+
+### Console performance and sync
+
+- Serve the console faster: compress responses, cache immutable assets,
+  refresh only what each event invalidates, and read threads through indexes
+  of turns by thread and messages by turn.
+
+- Resync cheaply: boot from one bucket with thread-event summaries and shaped
+  transcripts, then stay current through a sync core of conversation cache,
+  subscribed stream, conditional resync, and on-device persistence.
+
+### Conversations and input
+
+- Add per-agent web-console defaults for the model and effort of new
+  conversations, with SQLite persistence, config/override source labels, and a
+  one-click revert to resolved config. Existing threads and non-web channels
+  remain unaffected.
+
+- Preserve no-expiry `AskUser` waits in web and remote-TUI turns by removing
+  Undici's implicit five-minute inactivity deadline from long-lived operator
+  streams. Host-wake delivery keeps its explicit ten-minute request bound.
+
+- Stream message deltas to the subscribed thread, time the Activity header by
+  the turn's wall-clock window, and keep the console mounted across switches
+  with scroll reset and explicit loading and recovery states.
+
+- Reconcile the selected conversation after the first stream ready, and show
+  pending state while restoring and creating conversations.
+
+- Add an explicit Steer action to the composer, shown only while a turn runs.
+
+- Restore live input for interactive model overrides, and make live-input
+  consumption settlement reliable from entry id to acknowledgement.
+
+- Migrate both schema-17 message layouts safely.
+
+- Coalesce consecutive monitor activity turns, avoid redundant status wakes,
+  and preserve meaningful web replies before terminal no-ops.
+
+### Process jobs, cron, and memory
+
+- Fold the process-job card into the activity log, show live output tails,
+  drop the trailing progress indicator after running jobs, keep workflows
+  moving after background jobs complete, and show the current conversation
+  and background-job status together.
+
+- Answer cron results from the console with a simpler footer, render imported
+  cron reply context as a card, show a quiet read-only cron schedule, and
+  hide silent cron runs at the storage read boundary.
+
+- Browse the memory journal within bounds with evidence routing, naming
+  memory tools in guidance and showing cursor and coverage in text.
+
+### Console appearance and devices
+
+- Stabilize per-chat model selection, hide removed agents and embedding
+  models without losing selector focus, and keep the persisted catalog model
+  selected.
+
+- Polish console drafts, model labels, attribution, and the composer model
+  selector; keep a finished turn settled when its stale start arrives, keep a
+  selected conversation at the bottom, and stop announcing an agent change on
+  every discovery heartbeat.
+
+- Name the installed console with reversible overrides, complete badge
+  handling on Android, and align PWA chrome with the header.
+
+- Add mobile drawer swipe gestures, streamline mobile conversation controls,
+  keep the composer toolbar on one row, show the scroll control only when
+  needed, and pin short chat composers to the bottom.
+
+- Coordinate local agent research with reusable page slices, add a data mode
+  with byte meter, fetch images once, load MCP apps on demand, and make
+  automatic search resilient.
+
+- Add provider re-authentication, preserve the provider-auth capability in
+  bootstrap, verify authentication with safe login restart, and compact the
+  scrollable provider-auth settings.
+
+### Channels, lifecycle, and platform
+
+- Add a Facebook Messenger channel plugin with signed webhooks, per-sender
+  queues, typing indicators, and chunked Send API delivery.
+
+- Add Linux systemd user lifecycle commands with hardened edge cases.
+
+- **Breaking: framework self-configuration has been removed.** The dedicated
+  SELF-CONFIG session, `ProposeAgentConfiguration`, `mono-agent tui --configure`,
+  `/configure`, host-side proposal review/apply/restart transaction, and bundled
+  `mono-agent-configure` skill no longer exist. Edit `mono-agent.config.json` or
+  `IDENTITY.md`, run `mono-agent validate`, restart, and use the ordinary TUI.
+  Existing `mono-agent-configure` selections are ignored at runtime and reported
+  as waiting by validation so running consumers do not break. With index
+  disclosure, active selected skill bodies load in full without `ReadSkill`
+  until the retired selector is removed. Run
+  `mono-agent install-skill --project --check`, then `--update` to retire exact
+  manifest-owned legacy state. Modified or colliding copies are preserved and
+  require operator resolution.
+
+- **Breaking: the minimum supported Node.js version is now 24.15.0** (previously
+  22.19.0). Node 22 bundles ICU 77, whose `windows-1252` decoder maps the C1
+  bytes to raw control characters instead of the WHATWG code points, so
+  `WebFetch` returned `U+0093`/`U+0094` where a cp1252 page meant curly quotes.
+  ICU 78, shipped from Node 24.14.0 onward, decodes them correctly. Rather than
+  carry two decoding behaviours across the supported range, the floor moves to a
+  Node line that decodes retrieved documents correctly. Upgrade Node before
+  installing or updating mono-agent.
+
+## 0.20.14 — Release retry (2026-09-04)
+
+- Ship the lockstep 0.20.14 release with no product change beyond awaiting
+  durable monitor events in the race-sensitive tests.
+
+## 0.20.13 — Release recovery (2026-09-04)
+
+- Republish the 0.20.12 payload as 0.20.13 after the 0.20.12 run stopped
+  before publication, isolating the post-timeout test from host scheduling
+  latency.
+
+## 0.20.12 — Pi-only runtime with provider catalogs (2026-09-04)
+
+### Single Pi runtime
+
 - **Breaking: mono-agent runs only its Pi implementation.** The `claude-sdk`,
   `claude-code-cli`, `codex-app-cli`, `opencode-app-cli` and `acp-stdio` runtime
   bridges are removed, along with the backend dispatch table. The ACP *server*
   bridge, `install-skill --target claude|codex`, `docs-mcp-pairing` and the Codex
   web-search backend are unaffected.
+
 - **Breaking: model references are `<provider>:<model>`,** split at the first
   colon only. A leading `pi:` is canonicalized away; `codex:`, `claude:`,
   `claude-code:`, `codex-cli:`, `acp:` and `vercel:` are rejected at load with
   the replacement named.
+
 - **Breaking: `runtime.executionMode`, `memory.llm.executionMode`,
   `runtime.routeSafety` and `runtime.fallbackModels` are retired,** together with
   their environment twins `MONO_AGENT_EXECUTION_MODE`,
@@ -197,6 +426,9 @@
   message, instead of one per run; a config carrying both stops at the key and
   names the variable on the next run. An empty assignment (`KEY=`) is still
   treated as unset.
+
+### Provider-widened selection
+
 - **New `providers` config map** declaring which providers an agent supports,
   widening selection to those providers' advertised catalogs instead of just
   `runtime.model` and its fallbacks. Each provider advertises at most
@@ -204,11 +436,30 @@
   `models` allowlist. `ollama` and `lmstudio` are zero-config autodiscovered.
   Agents advertise it additively — a slim `providers` array on `/v1/info` plus a
   lazy `GET /v1/models` — with no wire-schema bump.
+
 - **Per-conversation model and effort overrides persist server-side** (web store
   v10 → v12: v11 adds per-thread `run_model`/`run_effort`, v12 adds
   `agents.providers_json`), so a choice made on the desktop shows up on the phone
   instead of living in one browser's localStorage. The console selector groups
   and filters by provider.
+
+- Harden the new selection surface: gate `providers` as a real boundary,
+  canonicalize catalog choices, advertise only runnable routes, resolve channel
+  projections once, measure the `/v1/info` payload instead of estimating it,
+  stop the `/v1/info` budget from discarding valid configured routes, drop the
+  configured-route ceiling, follow catalog cursors, honour thread overrides,
+  stop rejecting catalog efforts, and let the environment override the
+  provider map.
+
+- Bind console catalog and thread writes to a generation and order them, so a
+  failed write can neither destroy what it replaced nor read as a no-op, and
+  keep agent invalidations compact.
+
+- Gate subagent models on the provider map, withdraw dead run options, and
+  stop `doctor` from false-warning on effort.
+
+### Operate and migrate
+
 - **Retired config keys, retired environment variables and non-Pi model
   references are migrated by hand.** Each fails at load naming its own repair —
   including the concrete replacement for a rejected model reference, which the
@@ -220,6 +471,7 @@
   `docs/reference/deprecations.md` for the retired-surface reference.
   `configVersion: 1` files are outside that checklist: that schema was never
   accepted by the shipped loader and is rejected whole, so re-author them.
+
 - **Operator-authored text is bounded wherever a diagnostic quotes it back.**
   `doctor` and `validate` truncate every model, provider and reason they echo, so
   a mistyped megabyte in `runtime.model` no longer produces a megabyte of report.
@@ -228,11 +480,104 @@
   nothing authorable as a file is refused — and rejected rather than truncated,
   because silently shortening an identity changes which route a request reaches.
 
+- Assert webhook endpoint identity where endpoints are built.
+
+### Memory and monitors
+
+- Add the `Remember` memory tool and refocus `SetConversationTitle`.
+
+- Add conversation monitors with Monitor wake turns in web conversations,
+  presented as compact activity.
+
+## 0.20.11 — Inline console images (2026-09-03)
+
+- Show images inline in console messages: render them as a grid inside the
+  message with a single image uncropped, open full size with paging, counter,
+  and download, and keep generated reply images so they survive their source
+  deadline.
+
+- Render a displayable raster image as just the image, moving file metadata
+  into the lightbox, and share one sideways-scrolling row for adjacent images
+  so a set reads as a set.
+
+- Remove the repository-owned final-agent and SearXNG demos together with their
+  root commands, build provenance, verification, CI, and documentation wiring.
+
+- Configure native Slack message unfurls.
+
+## 0.20.10 — Activity log redesign (2026-08-30)
+
+- Rebuild the activity log around a single row shape — glyph, name, summary,
+  failure tag, duration, chevron — for single calls, `Read ×4` clusters,
+  thoughts, and delegations alike, repairing what the 0.20.9 clustering hid.
+
+## 0.20.9 — Conversation search and timeline (2026-08-30)
+
+- Search every conversation's message text from the console sidebar, backed by
+  a transactional full-text index that backfills existing stores, and cluster
+  the activity timeline around the same read path.
+
+- Keep Telegram reply history so responses preserve their native reply
+  context.
+
+- Constrain the console's model effort choices to the levels each model
+  actually supports.
+
+## 0.20.8 — Conversation titles and model catalog (2026-08-28)
+
+- Add agent-managed conversation titles to the web console.
+
+- Show safe purpose descriptions on background process jobs.
+
 - Upgrade the exact-pinned Pi AI catalog and TUI to 0.84.3, including GitHub
   Copilot support for Gemini 3.7 Flash and Grok 4.6, provider-required OAuth
   cancellation signals, and the current GPT-5.6 Terra pricing metadata. Keep
   Pi Agent Core at 0.83.0 because 0.84.3's replacement durable harness does not
   yet implement mono-agent's prompt, subscription, compaction, or abort paths.
+
+## 0.20.7 — Slack upload encoding fix (2026-08-27)
+
+- Send Slack external-upload metadata form-encoded so reply-file uploads
+  succeed.
+
+## 0.20.6 — Slack upload diagnostics (2026-08-27)
+
+- Expose safe Slack reply-file upload diagnostics: name the failed
+  external-upload phase with bounded, redacted error fields while keeping
+  textual fallback behavior unchanged.
+
+## 0.20.5 — Background jobs and memory repairs (2026-08-25)
+
+- Let background jobs outlive the foreground timeout: derive their budget from
+  the requested `timeout_ms` without the 120-second clamp, and report the
+  granted budget back to the model.
+
+- Make console MCP App cards reversible: a Hide/Show toggle replaces the
+  terminal Close, degraded and never-loaded cards explain why and offer
+  Reopen, and tall apps are no longer clipped.
+
+- Repair memory capture and retention: state the BuJo length limit as its own
+  rule, repair noncausal retained supersedes, and stop rejecting tool-less
+  memory providers under private-state protection.
+
+- Harden process supervision: reap sandboxed grandchildren as a group with
+  escalation to SIGKILL, and keep background file proofs stable across
+  reboot.
+
+## 0.20.4 — Cron, failover, and AskUser fixes (2026-08-23)
+
+- Quiet tool-history bookkeeping in rendered turns so successful persistence
+  shows nothing and only a failed write names its error code, slim the
+  context chip to the remaining percentage with the rest in its popover, and
+  document background-job expectations alongside the capability.
+
+- Fail over to the next configured model when a provider stream ends without
+  a finish reason, instead of treating the run as terminal.
+
+- Keep cron operator actions enabled after a config-view reload, and focus
+  the cron dialog on open.
+
+- Keep an answered AskUser card answered across re-renders and reloads.
 
 ## 0.20.3 — Subscription-backed web search (2026-08-17)
 
