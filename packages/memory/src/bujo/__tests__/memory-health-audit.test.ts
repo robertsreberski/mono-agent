@@ -89,6 +89,23 @@ describe("strict BuJo memory health", () => {
     });
   });
 
+  it("keeps three stability attempts by default while a one-attempt audit preserves mutation truth", () => {
+    const root = tempRoot();
+    const db = openMemoryDb({ path: join(root, "memory.db") });
+    db.close();
+    writeCaptureIntent(root, [], {}, NOW.toISOString());
+    publishRuntime(root, "lite");
+
+    const periodic = auditBujoMemoryHealth({ root, mode: "lite", now: NOW, maxStabilityAttempts: 1 });
+    const strictDefault = auditBujoMemoryHealth({ root, mode: "lite", now: NOW });
+    const strictExplicit = auditBujoMemoryHealth({ root, mode: "lite", now: NOW, maxStabilityAttempts: 3 });
+
+    expect(periodic.issues).toContain("mutation_in_progress");
+    expect(strictDefault).toEqual(strictExplicit);
+    expect(strictDefault.issues).toContain("mutation_in_progress");
+    expect(() => auditBujoMemoryHealth({ root, mode: "lite", maxStabilityAttempts: 4 })).toThrow(/invalid strict health options/iu);
+  });
+
   it("keeps a normal live Lite append healthy despite repairable source provenance", async () => {
     const root = tempRoot();
     const store = createBujoMemoryStore({ root, clock: () => NOW });

@@ -193,8 +193,21 @@ rescales, fills missing fields, or coerces model values.
 `@mono-agent/memory/bujo` also exposes a synchronous provider-free strict health
 audit. It takes a snapshot-coherent view of managed identity, SQLite and
 canonical parity, durable intake/outbox state, temporary artifacts, and runtime
-metadata. Its closed result contains no paths, filenames, ids, memory/model
-text, payloads, or raw errors:
+metadata. Direct callers and `mono-agent memory audit --strict` retain the
+default three-attempt stability budget. The agent app's periodic observer runs
+the same audit in a worker with an explicit one-attempt budget, so genuine
+concurrent mutation remains visible and waits for the next scheduled cycle
+instead of causing immediate repeated work.
+
+Canonical parity may reuse its deterministic graph projection only when the
+fingerprint of all canonical source bytes is unchanged. The audit still reads
+and fingerprints those sources and recomputes SQLite integrity and inventory,
+queues, runtime, locks, temporary artifacts, mutation markers, and parity on
+every call. A fingerprint difference always rebuilds the projection. This is an
+internal optimization and adds no public package API.
+
+The closed result contains no paths, filenames, ids, memory/model text,
+payloads, or raw errors:
 
 ```ts
 import { auditBujoMemoryHealth } from "@mono-agent/memory/bujo";
