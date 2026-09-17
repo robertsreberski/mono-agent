@@ -420,7 +420,6 @@ const ActivityGroupImpl = ({
     <ReasoningRoot
       className={joinClassNames("activity-root", className)}
       collapseOnSettle
-      open={isStreaming ? true : undefined}
       streaming={isStreaming}
     >
       <ReasoningTrigger active={isStreaming} className="activity-trigger">
