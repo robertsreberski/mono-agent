@@ -2,16 +2,25 @@
 
 /** Stop is a host-owned operation, not a new child turn. Never accept job ids from tool input.
  * @param {import('../../ai/types.js').RuntimeSubagentsOptions|null|undefined} subagents
- * @param {{id: string, stop?: boolean}} params
+ * @param {{id: string, stop?: boolean, description?: string}} params
  * @param {AbortSignal} [signal]
  */
 export async function stopSubagent(subagents, params, signal) {
   let jobId = null;
   /** @type {boolean|"unknown"} */
   let stopRequested = false;
-  const error = (code) => receipt({ code, instanceId: typeof params.id === "string" ? params.id : null, jobId, stopRequested }, true);
-  if (params.stop !== true || typeof params.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(params.id)
-    || Object.keys(params).some((key) => !["id", "stop"].includes(key))) return error("subagent_stop_invalid_request");
+  /** @param {string} code @param {string} [message] */
+  const error = (code, message) => receipt({ code, instanceId: typeof params.id === "string" ? params.id : null, jobId, stopRequested,
+    ...(message === undefined ? {} : { message }) }, true);
+  if (params.stop !== true) return error("subagent_stop_not_requested", "stop must be exactly true.");
+  if (typeof params.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(params.id)) {
+    return error("subagent_stop_invalid_id", "id must be a string matching ^[a-z0-9][a-z0-9-]{0,39}$ (1-40 lowercase letters, digits or hyphens, starting with a letter or digit).");
+  }
+  if (params.description !== undefined && (typeof params.description !== "string" || params.description.length > 80)) {
+    return error("subagent_stop_invalid_request", "description must be a string of at most 80 characters.");
+  }
+  const unexpected = Object.keys(params).filter((key) => !["id", "stop", "description"].includes(key)).sort();
+  if (unexpected.length) return error("subagent_stop_unexpected_parameters", `stop takes only id and optional description (unexpected: ${unexpected.join(", ")}).`);
   if (signal?.aborted) throw new Error("tool execution aborted");
   const instances = subagents?.instances;
   const controller = subagents?.backgroundSubagentController;
