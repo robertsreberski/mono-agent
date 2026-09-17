@@ -108,6 +108,7 @@ Generated regions are marked in their files. Edit the catalog, exports, or confi
 ## Pull requests
 
 - All tracked changes land through a PR.
+- File an `Unreleased` entry in `CHANGELOG.md` for every user-visible change, or opt out with a `Changelog: none` line when there is none (`skills/changelog/SKILL.md`).
 - Explain the behavior change, package boundary, verification, and any accepted risk.
 - Give every review finding a disposition: fixed, follow-up issue, or rejected with a reason.
 - Do not release, publish, deploy, or restart consumers unless the request explicitly includes that step.

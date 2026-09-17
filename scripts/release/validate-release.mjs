@@ -5,6 +5,8 @@ import { pathToFileURL } from "node:url";
 
 import { MINIMUM_NODE_VERSION, SUPPORTED_NODE_ENGINE } from "../node-version.mjs";
 
+import { parseChangelog } from "../check-changelog.mjs";
+
 import {
   DEPENDENCY_SECTIONS,
   REPO_ROOT,
@@ -47,6 +49,10 @@ export function validateRelease({
   packages = discoverPackages(),
   rootPackageJson = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")),
   nodeVersionFile = fs.readFileSync(path.join(REPO_ROOT, ".nvmrc"), "utf8").trim(),
+  // Pass the real CHANGELOG.md text (main() does) to require a filed release
+  // section. Null skips the rule so unit tests can exercise the package graph
+  // without changelog fixtures.
+  changelogText = null,
   silent = false,
 } = {}) {
   const version = releaseVersionFromTag(tag);
@@ -132,6 +138,13 @@ export function validateRelease({
     }
   }
 
+  if (changelogText !== null) {
+    const { sections } = parseChangelog(changelogText);
+    if (!sections.some((section) => section.kind === "version" && section.versionText === version)) {
+      issues.push(`CHANGELOG.md must contain a \`## ${version}\` section for release ${tag}`);
+    }
+  }
+
   const publishOrder = issues.length ? [] : sortForPublish(publishable);
 
   if (issues.length) {
@@ -155,7 +168,8 @@ export function validateRelease({
 
 async function main() {
   const tag = argValue("--tag") || process.env.GITHUB_REF_NAME;
-  validateRelease({ tag });
+  const changelogText = fs.readFileSync(path.join(REPO_ROOT, "CHANGELOG.md"), "utf8");
+  validateRelease({ tag, changelogText });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

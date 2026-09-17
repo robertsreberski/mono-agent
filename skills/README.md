@@ -44,6 +44,7 @@ Only high-risk runtime changes add a local full gate and one live smoke.
 | `fleet-deploy` | Restart or deploy only the explicitly requested live consumers |
 | `live-smoke` | Run one real end-to-end scenario matching the changed surface |
 | `release-lockstep` | Cut and registry-verify a lockstep npm release; no implicit deploy |
+| `changelog` | File an `Unreleased` entry per user-visible change; cut release notes |
 | `docs-sync` | Update and verify only documentation surfaces affected by a change |
 | `pi-upstream-recon` | Reading vendored pi source before building; pi bumps |
 | `new-package` | Adding a package that passes `check:architecture` first try |
