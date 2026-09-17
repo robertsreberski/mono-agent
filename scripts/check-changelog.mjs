@@ -415,7 +415,12 @@ export function evaluatePrGate({
   }
   return {
     status: "fail",
-    detail: `${fileName}: PR adds no new bullet under \`## Unreleased\``,
+    // Name the repair. This is the one message every contributor meets, and a
+    // gate that only states the violation makes the opt-out look unavailable.
+    detail: `${fileName}: PR adds no new bullet under \`## Unreleased\`.`
+      + " Add one describing the user-visible change (see skills/changelog/SKILL.md),"
+      + " or opt out with a `Changelog: none` line in the PR body"
+      + " or the `skip-changelog` label when the change has no user-visible effect.",
   };
 }
 
