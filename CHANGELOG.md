@@ -1018,6 +1018,104 @@
 - All catalog-publishable packages move together to 0.17.1. Keep every
   `@mono-agent/*` package and `create-mono-agent` on the same exact version.
 
+## 0.17.0 — ACP bridge and activity consolidation (2026-08-02)
+
+### ACP bridge
+
+- Add an ACP bridge for managed instances, omitting unsupported tool
+  environments.
+
+### Console activity
+
+- Fold a finished turn into one activity log that a console thread can
+  resume, render a subagent delegation as a folded tree, stop re-slicing a
+  turn's answer across the prose before it, and make shell tool previews say
+  something.
+- Unbreak console prose, fit the tree on a phone, and own subagent cost.
+
+### Memory and Slack
+
+- Offer known entity ids back to capture extraction.
+- Choose Slack's message boundaries instead of letting Slack split them, use
+  query transport for read methods, tell the agent which surface it is
+  talking in, and stop two Slack threads from sharing one run.
+
+## 0.16.0 — Subagent skills and Slack context (2026-07-30)
+
+- Let subagents inherit the parent skill index.
+- Send the surrounding Slack conversation as turn context and resolve real
+  speaker names for inbound turns.
+- Surface provider failover to whoever is watching the run, and settle a
+  subagent header when its launch was rejected.
+
+## 0.15.4 — Same-model retries and the Agent tool (2026-07-29)
+
+### Same-model retries before failover
+
+- A fallback route can now retry itself before the chain advances.
+  `runtime.retry.primaryAttempts` (default `2`) sets the total attempts on
+  `runtime.model` including the first, and each `runtime.fallbacks[]` entry
+  takes an optional `attempts` (omitted = single shot). `runtime.retry.backoffMs`
+  doubles per retry, capped by `runtime.retry.maxBackoffMs`. Set
+  `primaryAttempts: 1` to restore the previous single-shot behavior.
+- Retries fire only for transient provider failures — overloaded, rate-limited,
+  timeout, network, 5xx, and terminated streams. `context_limit` and
+  `provider_auth` still advance immediately, because a second identical request
+  against the same window or the same credentials cannot succeed. Cancellation
+  and mid-turn sandbox/safety failures never retry.
+- Agents with no configured backups now get a retry-only single-entry chain, so
+  the primary-retry default applies to them too.
+- A retry drops the route's provider session (the failed attempt already
+  appended to it), emits the new `provider_status` kind `retry_started` rather
+  than a failover event, and appends its own `failoverHistory` entry carrying
+  `retryIndex` with its own request id and failure subkind.
+- The router retry is a whole-turn retry layered outside each bridge's transport
+  retries. On a `pi` primary the defaults allow up to six provider stream starts
+  (2 router attempts x 3 pi stream tries); lower
+  `providers.piNative.piMaxRetries` when raising `primaryAttempts`.
+- `mono.agent.failover.count` now counts failed provider attempts rather than
+  route transitions, so a primary-then-fallback run reports `2` where it
+  previously reported `1`.
+
+### Subagents: the `Agent` tool
+
+- The main agent can now deploy independent subagents on the pi runtime. `Agent`
+  takes `{prompt, name?, description?}`, resolves `name` against
+  `subagents.definitions[]` or falls back to a read-only general-purpose
+  researcher, and returns the subagent's final answer plus a compact
+  per-tool-call activity log capped at roughly 24KB.
+- Requires BOTH `subagents.enabled: true` and `Agent` in `tools.allowedTools`;
+  `mono-agent validate` warns when only one half is set.
+- Every subagent tool call streams live to the TUI and web console as
+  `<profile>▸<tool>`, bracketed by the subagent's own start/finish rows. Ids
+  are namespaced per subagent so concurrent helpers running the same tool stay
+  distinct. No wire-schema change and no TUI/web changes were needed.
+- `maxConcurrent` (default 5) bounds simultaneous subagents; `maxPerTurn`
+  (default 20) bounds the total per turn and is the real runaway guard. Each
+  subagent gets `maxTurns` (100) and `timeoutMs` (5 min), and its timeout starts
+  only once it begins rather than while queued.
+- Subagents are read-only unless a profile enumerates more, never receive
+  `Agent`/`AskUser`/channel-send tools, get no MCP servers unless named, inherit
+  the sandbox without being able to widen it, and cannot spawn subagents.
+  A profile without a `model` inherits the parent's configured route, so
+  subagents get the fallback chain and same-model retries too.
+
+### Fixes
+
+- `provider_status.from` / `.to` are populated again. The router emitted model
+  references as objects while the responder read them as strings, so both fields
+  were silently dropped and the TUI rendered `failover ? -> ?`.
+
+### Research and attribution
+
+- Add local-first web research tools, render GitHub-Flavored Markdown tables
+  in the console, and bound browser socket identifiers.
+- Render subagent activity grouped under its agent, author specialized
+  subagents at call time with relativized tool paths, make the agent aware of
+  who is speaking, treat a trailing NOTHING_TO_REPORT as silence, show the
+  command in shell activity ledger lines, and surface Telegram taps that
+  match no callback protocol.
+
 ## 0.15.3 — Configured Codex MCP approvals (2026-07-28)
 
 ### Direct Codex MCP calls
