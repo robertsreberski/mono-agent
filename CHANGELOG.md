@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Let `AgentSend` accept and ignore an optional `description` when stopping a
+  subagent, and explain invalid stop requests with specific codes and messages.
+
 - Tolerate transient discovery gaps in the web console. Inconclusive
   presence samples no longer drop a discovered agent at once, so a busy
   event loop or a briefly missing endpoint does not read as a dead agent.
