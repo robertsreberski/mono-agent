@@ -92,27 +92,17 @@ function operatorCronOverview(overrides: Record<string, unknown> = {}): Record<s
 }
 
 describe("agentGeneration", () => {
-  it("does not collide two different processes onto one generation", () => {
-    // The tuple was joined with a delimiter that can occur inside its own
-    // fields, so two DIFFERENT `(baseUrl, pid, startedAt)` tuples flattened to
-    // one string and hashed to one token. Two live processes sharing a
-    // generation is exactly the state the token exists to make impossible: the
-    // console would go on serving one process's `/v1/models` pages to the
-    // other. Neither tuple below is one a first-party agent produces --- that
-    // is why this is robustness and not a fleet regression --- but a digest
-    // whose only defence is what its inputs happen to look like is not a
-    // digest of three fields, it is a digest of one string.
+  it("does not collide two different process tuples onto one generation", () => {
+    // Simple concatenation flattens these different `(pid, startedAt)` tuples
+    // to the same string. Length-prefixing keeps the process identity a tuple.
     const left = fakeDiscoveredAgent({
-      baseUrl: "http://127.0.0.1:45123/gui|1",
-      source: { ...fakeDiscoveredAgent().source, pid: 2, startedAt: "2026-07-17T08:00:00.000Z" },
+      source: { ...fakeDiscoveredAgent().source, pid: 12, startedAt: "3:x" },
     });
     const right = fakeDiscoveredAgent({
-      baseUrl: "http://127.0.0.1:45123/gui",
-      source: { ...fakeDiscoveredAgent().source, pid: 1, startedAt: "2|2026-07-17T08:00:00.000Z" },
+      source: { ...fakeDiscoveredAgent().source, pid: 1, startedAt: "23:x" },
     });
-    // Both flatten to the identical `|`-joined string, and did hash alike.
-    expect([left.baseUrl, left.source.pid, left.source.startedAt].join("|"))
-      .toBe([right.baseUrl, right.source.pid, right.source.startedAt].join("|"));
+    expect(`${String(left.source.pid)}${left.source.startedAt}`)
+      .toBe(`${String(right.source.pid)}${right.source.startedAt}`);
     expect(agentGeneration(left)).not.toBe(agentGeneration(right));
   });
 
@@ -140,9 +130,11 @@ describe("agentGeneration", () => {
     const base = fakeDiscoveredAgent();
     expect(agentGeneration(base)).toBe(agentGeneration(fakeDiscoveredAgent()));
     expect(agentGeneration(base)).toHaveLength(16);
-    // And it never carries the endpoint or pid it is built from.
-    expect(agentGeneration(base)).not.toContain("45123");
+    // And it never carries the pid it is built from.
     expect(agentGeneration(base)).not.toContain("123");
+    const moved = fakeDiscoveredAgent({ ...base, baseUrl: "http://127.0.0.1:45124/gui" });
+    // Endpoint churn does not replace the process behind the summary.
+    expect(agentGeneration(moved)).toBe(agentGeneration(base));
     const restarted = fakeDiscoveredAgent({
       source: { ...base.source, pid: 124, startedAt: "2026-07-17T08:30:00.000Z" },
     });
@@ -353,9 +345,10 @@ describe("projected web capabilities", () => {
  * is a synchronous handler, so an answer that runs out the timeout means the
  * event loop was blocked behind other work -- a busy agent -- not that the
  * agent is gone. Flipping the badge on one sample made every busy agent flicker,
- * so presence now needs consecutive failures. These cases pin the tolerance, the
- * sample that still reports a dead agent, and the two paths tolerance must never
- * cover: an unpublished operator endpoint, and a new generation.
+ * so presence now needs consecutive failures. These cases pin the shared
+ * tolerance for failed probes, transient endpoint omissions, and failed registry
+ * walks, plus the authoritative paths it must never cover: a terminal manifest,
+ * a departed source, and a new process generation.
  */
 describe("operator probe failure tolerance", () => {
   /** A fleet whose operator endpoint answers only while `reachable()` holds. */
@@ -430,25 +423,125 @@ describe("operator probe failure tolerance", () => {
     }
   });
 
-  it("reports an agent whose operator endpoint is missing offline immediately", async () => {
-    let published = false;
-    const source = fakeDiscoveredAgent().source;
+  it("keeps the summary through a transient endpoint omission and recovers without an offline transition", async () => {
+    const published = fakeDiscoveredAgent();
+    let discovered = published;
+    const service = await createService({ discoverImpl: async () => [discovered] });
+    try {
+      expect((await service.bootstrap()).agents[0]).toMatchObject({ status: "online", supportsAttachments: true });
+      discovered = { source: published.source };
+      await service.refreshAgents();
+      expect((await service.bootstrap()).agents[0]).toMatchObject({ status: "online", supportsAttachments: true });
+      // The summary can survive because process identity is unchanged, but no
+      // cached client is authoritative while discovery publishes no endpoint.
+      await expect(service.providerAuthStatus("agent-one")).rejects.toMatchObject({ code: "agent_offline" });
+      discovered = published;
+      await service.refreshAgents();
+      expect((await service.bootstrap()).agents[0]).toMatchObject({ status: "online", supportsAttachments: true });
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it(`reports a running agent offline after ${PROBE_FAILURE_TOLERANCE} consecutive endpoint omissions`, async () => {
+    const published = fakeDiscoveredAgent();
+    let discovered = published;
+    const service = await createService({ discoverImpl: async () => [discovered] });
+    try {
+      discovered = { source: published.source };
+      for (let attempt = 1; attempt < PROBE_FAILURE_TOLERANCE; attempt += 1) {
+        await service.refreshAgents();
+        expect((await service.bootstrap()).agents[0]?.status).toBe("online");
+      }
+      await service.refreshAgents();
+      expect((await service.bootstrap()).agents[0]).toMatchObject({
+        sourceId: "agent-one",
+        status: "offline",
+        supportsAttachments: false,
+      });
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("retains a same-process summary across an endpoint move without retaining the old client", async () => {
+    let reachable = true;
+    let discovered = fakeDiscoveredAgent();
+    const upstream = operatorFetch({
+      providerAuthStatus: {
+        schema: "mono-agent.provider-auth.v1",
+        generatedAt: "2026-07-17T09:00:00.000Z",
+        providers: [],
+      },
+    });
     const service = await createService({
-      discoverImpl: async () => [published ? fakeDiscoveredAgent({ source }) : { source }],
+      discoverImpl: async () => [discovered],
+      fetchImpl: (async (input, init) => {
+        if (!reachable) throw new Error("operator probe failed");
+        return upstream(input, init);
+      }) as typeof fetch,
     });
     try {
-      // No `baseUrl` means the operator endpoint was never published, so this
-      // agent was never reachable to begin with.
-      expect((await service.bootstrap()).agents[0]).toMatchObject({ sourceId: "agent-one", status: "offline" });
-      published = true;
+      const generation = (await service.bootstrap()).agents[0]?.generation;
+      discovered = { ...discovered, baseUrl: "http://127.0.0.1:45124/gui" };
+      reachable = false;
+      await service.refreshAgents();
+      expect((await service.bootstrap()).agents[0]).toMatchObject({ status: "online", generation });
+      // The old endpoint's client is not handed out under the retained summary.
+      await expect(service.providerAuthStatus("agent-one")).rejects.toMatchObject({ code: "agent_offline" });
+      reachable = true;
+      await service.refreshAgents();
+      expect((await service.bootstrap()).agents[0]).toMatchObject({ status: "online", generation });
+      await expect(service.providerAuthStatus("agent-one")).resolves.toBeDefined();
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("retains summaries for one discovery exception but reports them offline after repeated exceptions", async () => {
+    let discoveryFails = false;
+    const service = await createService({
+      discoverImpl: async () => {
+        if (discoveryFails) throw new Error("registry unavailable");
+        return [fakeDiscoveredAgent()];
+      },
+    });
+    try {
+      discoveryFails = true;
+      await service.refreshAgents();
+      expect((await service.bootstrap()).agents[0]).toMatchObject({ status: "online", supportsAttachments: true });
+      // A registry exception cannot re-establish the process/endpoint binding,
+      // so the summary remains visible while operations fail closed.
+      await expect(service.providerAuthStatus("agent-one")).rejects.toMatchObject({ code: "agent_offline" });
+      for (let attempt = 2; attempt < PROBE_FAILURE_TOLERANCE; attempt += 1) {
+        await service.refreshAgents();
+        expect((await service.bootstrap()).agents[0]?.status).toBe("online");
+      }
+      await service.refreshAgents();
+      expect((await service.bootstrap()).agents[0]?.status).toBe("offline");
+
+      discoveryFails = false;
       await service.refreshAgents();
       expect((await service.bootstrap()).agents[0]?.status).toBe("online");
-      published = false;
+      discoveryFails = true;
       await service.refreshAgents();
-      // A missing endpoint is a real outage rather than a stall -- there is
-      // nothing to retry -- so the tolerance must not hold the badge open for
-      // it, not even for an agent that was online a pass ago.
-      expect((await service.bootstrap()).agents[0]).toMatchObject({ sourceId: "agent-one", status: "offline" });
+      expect((await service.bootstrap()).agents[0]?.status).toBe("online");
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("treats a stopped manifest as immediately authoritative", async () => {
+    let discovered = fakeDiscoveredAgent();
+    const service = await createService({ discoverImpl: async () => [discovered] });
+    try {
+      discovered = {
+        ...discovered,
+        source: { ...discovered.source, status: "stopped", health: "stopped" },
+      };
+      await service.refreshAgents();
+      expect((await service.bootstrap()).agents[0]?.status).toBe("offline");
+      await expect(service.providerAuthStatus("agent-one")).rejects.toMatchObject({ code: "agent_offline" });
     } finally {
       await service.stop();
     }
@@ -3384,7 +3477,7 @@ describe("WebService", () => {
     await service.stop();
   });
 
-  it("keeps agents visible as offline when discovery itself fails", async () => {
+  it("keeps agents visible through tolerated discovery failures and marks them offline at the threshold", async () => {
     let failDiscovery = false;
     const service = await createService({
       discoverImpl: async () => {
@@ -3401,15 +3494,20 @@ describe("WebService", () => {
     failDiscovery = true;
     await service.refreshAgents();
     expect((await service.bootstrap())).toMatchObject({
-      agents: [expect.objectContaining({ sourceId: "agent-one", status: "offline" })],
+      agents: [expect.objectContaining({ sourceId: "agent-one", status: "online" })],
       threads: [expect.objectContaining({ id: thread.id })],
       currentThreadId: thread.id,
     });
+    // The first failure removes live-connection capabilities, which is one
+    // transition even though the retained summary remains online.
     expect(events).toEqual([undefined]);
 
-    // A repeated failure is not another state transition or invalidation.
     await service.refreshAgents();
+    expect((await service.bootstrap()).agents[0]?.status).toBe("online");
     expect(events).toEqual([undefined]);
+    await service.refreshAgents();
+    expect((await service.bootstrap()).agents[0]?.status).toBe("offline");
+    expect(events).toEqual([undefined, undefined]);
     unsubscribe();
     await service.stop();
   });

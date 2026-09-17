@@ -150,11 +150,13 @@ const DEFAULT_DISCOVERY_INTERVAL_MS = 5_000;
 const DEFAULT_PURGE_INTERVAL_MS = 60 * 60 * 1_000;
 const INFO_TIMEOUT_MS = 2_500;
 /**
- * Consecutive `/v1/info` probe failures tolerated before a discovered agent is
- * reported offline. ONE missed probe is not evidence of a dead agent: the
- * operator's info route is a synchronous handler, so a probe that runs out
+ * Consecutive inconclusive presence samples tolerated before a discovered
+ * agent is reported offline. ONE missed probe is not evidence of a dead agent:
+ * the operator's info route is a synchronous handler, so a probe that runs out
  * `INFO_TIMEOUT_MS` was queued behind a blocked event loop -- a busy agent --
- * while the same route answers an idle agent in well under a millisecond.
+ * while the same route answers an idle agent in well under a millisecond. A
+ * running manifest can likewise omit its operator endpoint for one publication,
+ * and one failed registry walk is not an authoritative empty fleet.
  * Tolerating a few samples costs about 15s at the discovery interval, and the
  * trace heartbeat's own 30s staleness is the independent backstop that still
  * reports an agent which is genuinely gone.
@@ -514,9 +516,10 @@ export interface CreateWebServiceOptions extends WebStatePathOptions, DiscoverOp
   readonly clock?: () => Date;
   readonly discoveryIntervalMs?: number;
   /**
-   * Consecutive operator probe failures tolerated before a discovered agent is
-   * reported offline. Test/embedding override; production uses
-   * `PROBE_FAILURE_TOLERANCE`.
+   * Consecutive inconclusive presence samples tolerated before a discovered
+   * agent is reported offline. This covers failed operator probes, temporarily
+   * absent endpoint metadata, and registry discovery failures. Test/embedding
+   * override; production uses `PROBE_FAILURE_TOLERANCE`.
    */
   readonly probeFailureTolerance?: number;
   readonly purgeIntervalMs?: number;
@@ -553,6 +556,7 @@ type HostWakeReceipt = NonNullable<DeliverWebNotificationResult["delivery"]>;
 interface AgentConnection {
   readonly client: OperatorClient;
   readonly info: OperatorInfo;
+  /** Process plus endpoint identity; unlike a summary generation, an endpoint move retires this client. */
   readonly generation: string;
 }
 
@@ -683,14 +687,20 @@ export class WebService {
    */
   private projectedCapabilities = new Map<string, string>();
   /**
-   * Source id -> the consecutive `INFO_TIMEOUT_MS` probe failures seen for that
-   * agent's CURRENT generation, and the generation they belong to. One failed
-   * sample is usually a blocked event loop rather than a dead agent, so it is
-   * the COUNT that reaches `PROBE_FAILURE_TOLERANCE` and makes it evidence of
-   * anything. Keyed by generation, so a restart can neither inherit the
-   * previous process's failures nor hide behind them.
+   * Source id -> consecutive failed probe or missing-endpoint samples for that
+   * agent's CURRENT process generation. One failed sample can be a blocked event
+   * loop or transient channel-status publication rather than a dead agent, so it
+   * is the COUNT that reaches `PROBE_FAILURE_TOLERANCE` and makes it evidence of
+   * anything. Keyed by process generation, so endpoint churn keeps one budget
+   * while a restart can neither inherit the previous process's failures nor hide
+   * behind them.
    */
   private readonly probeFailures = new Map<string, { readonly generation: string; readonly count: number }>();
+  /**
+   * Consecutive failed registry walks. A successful walk resets this fleet-wide
+   * counter even when individual operator probes in that result fail.
+   */
+  private discoveryFailures = 0;
   /** Bounded catalog-admitted model refs per agent, seeded from `modelOptions`
    *  and appended to by every proxied `/v1/models` page. Admission is `has`,
    *  metadata is `get`. Map preserves insertion order, so evicting the oldest
@@ -3425,24 +3435,40 @@ export class WebService {
       });
     } catch (error) {
       this.options.logger?.warn?.("Web agent discovery failed.", { error: errorMessage(error) });
-      const changed = this.store.markDiscoveredAgentsOffline();
+      this.discoveryFailures += 1;
+      const tolerance = this.options.probeFailureTolerance ?? PROBE_FAILURE_TOLERANCE;
+      const changed = this.discoveryFailures >= tolerance
+        ? this.store.markDiscoveredAgentsOffline()
+        : false;
+
+      // A failed registry walk says nothing about whether the process behind a
+      // source id restarted or moved. Keep its last summary below the tolerance,
+      // but never hand out a client whose endpoint/process binding discovery
+      // could not re-establish: sending through that stale authority is less safe
+      // than temporarily refusing an operation. Capabilities derived from those
+      // clients disappear in the same pass and are announced independently of
+      // whether the retained summary itself changed.
       this.connections = new Map();
-      // The live connection that backs the projection is gone, so provider
-      // authentication is unavailable now.
-      // Clearing it here is what makes the recovery a transition worth
-      // announcing rather than a no-op against a stale map. It is belt and
-      // braces today: this projected capability implies a live connection, which
-      // implies a row that was not offline, so `markDiscoveredAgentsOffline`
-      // returns true and the failure is announced anyway.
-      this.projectedCapabilities = new Map();
-      if (changed) this.emit("agents.changed");
+      const projected = new Map(
+        this.store.listAgents().map((summary) => [
+          summary.sourceId,
+          this.projectedCapabilitySignature(summary),
+        ] as const),
+      );
+      const capabilityChanged = projected.size !== this.projectedCapabilities.size
+        || [...projected].some(([sourceId, signature]) =>
+          this.projectedCapabilities.get(sourceId) !== signature);
+      this.projectedCapabilities = projected;
+      if (changed || capabilityChanged) this.emit("agents.changed");
       return;
     }
+    this.discoveryFailures = 0;
 
     const nextConnections = new Map<string, AgentConnection>();
-    // What the cache is allowed to survive: the same process, at the same
-    // endpoint, since the same start. Anything else is a new generation whose
-    // catalog the previous one cannot speak for.
+    // Summary/catalog identity belongs to the process, not the endpoint string:
+    // live metadata can temporarily omit or move that endpoint without replacing
+    // the process that supplied the summary. Connections below carry the stricter
+    // endpoint-bearing identity so a client can never survive such a move.
     const generations = new Map(discovered.map((agent) => [
       agent.source.sourceId,
       agentGeneration(agent),
@@ -3452,7 +3478,25 @@ export class WebService {
     const tolerance = this.options.probeFailureTolerance ?? PROBE_FAILURE_TOLERANCE;
     const summaries = await Promise.all(discovered.map(async (agent): Promise<WebAgentSummary> => {
       const generation = generations.get(agent.source.sourceId)!;
-      if (agent.baseUrl === undefined) return offlineSummary(agent, generation);
+      // A terminal manifest is authoritative, unlike a missing channel field in
+      // an otherwise-running process. It must not spend a tolerance window or
+      // preserve either the previous summary or connection.
+      if (agent.source.status !== "running") {
+        this.probeFailures.delete(agent.source.sourceId);
+        return offlineSummary(agent, generation);
+      }
+      if (agent.baseUrl === undefined) {
+        const failures = this.recordProbeFailure(agent.source.sourceId, generation);
+        return this.retainSummaryAfterPresenceFailure(
+          agent,
+          generation,
+          undefined,
+          failures,
+          tolerance,
+          nextConnections,
+        ) ?? offlineSummary(agent, generation);
+      }
+      const connectionGeneration = agentConnectionGeneration(agent, agent.baseUrl);
       const client = new OperatorClient({
         baseUrl: agent.baseUrl,
         ...(agent.apiKey === undefined ? {} : { apiKey: agent.apiKey }),
@@ -3466,7 +3510,7 @@ export class WebService {
         // so the next failure starts a fresh count rather than resuming one
         // from a stall that this pass has just disproved.
         this.probeFailures.delete(agent.source.sourceId);
-        nextConnections.set(agent.source.sourceId, { client, info, generation });
+        nextConnections.set(agent.source.sourceId, { client, info, generation: connectionGeneration });
         this.seedModelCatalogFromOptions(agent.source.sourceId, generation, info.modelOptions);
         await this.restorePersistedModelAdmission(
           client,
@@ -3501,34 +3545,14 @@ export class WebService {
           error: errorMessage(error),
         });
         const failures = this.recordProbeFailure(agent.source.sourceId, generation);
-        const previous = this.store.getAgent(agent.source.sourceId);
-        // Below the tolerance the agent keeps the summary it already had. The
-        // info route is synchronous, so a probe that timed out was queued
-        // behind a busy event loop -- a working agent reported offline is what
-        // makes the console unusable -- while the trace heartbeat's 30s
-        // staleness, which reads `degraded` rather than depending on this
-        // probe, is the backstop that still reports an agent that is really
-        // gone. The stored summary is returned unchanged, deliberately: this
-        // pass learned nothing new about the agent, and a copy rebuilt from the
-        // pass's heartbeat would only rewrite the same row with a newer
-        // `updatedAt`.
-        //
-        // The same generation is required for both the summary and the
-        // connection it is returned with. A restarted agent is a different
-        // process behind the same source id: the summary it replaces cannot
-        // speak for it, and its predecessor's client must not be handed out as
-        // if it were live either.
-        if (failures < tolerance
-          && previous !== undefined
-          && previous.generation === generation
-          && previous.status !== "offline") {
-          const connection = this.connections.get(agent.source.sourceId);
-          if (connection !== undefined && connection.generation === generation) {
-            nextConnections.set(agent.source.sourceId, connection);
-          }
-          return previous;
-        }
-        return offlineSummary(agent, generation);
+        return this.retainSummaryAfterPresenceFailure(
+          agent,
+          generation,
+          connectionGeneration,
+          failures,
+          tolerance,
+          nextConnections,
+        ) ?? offlineSummary(agent, generation);
       }
     }));
     const previousConnections = this.connections;
@@ -3578,8 +3602,44 @@ export class WebService {
   }
 
   /**
-   * Count one more consecutive probe failure for `sourceId`'s current
-   * generation and return the running total. The generation is compared here,
+   * Preserve the last summary for an inconclusive presence sample, but only for
+   * the same process and only below the shared tolerance. A failed info request
+   * can be a busy event loop, and a missing endpoint can be one transient
+   * channel-status publication; neither single sample replaces the process that
+   * supplied the summary. The trace heartbeat's 30s staleness still independently
+   * projects `degraded`, while exhausting this shorter budget projects `offline`.
+   *
+   * Summary identity deliberately excludes the endpoint. Connection identity
+   * does not: a changed or absent endpoint never inherits the previous client,
+   * even while the process's non-offline summary is retained.
+   */
+  private retainSummaryAfterPresenceFailure(
+    agent: DiscoveredOperatorAgent,
+    generation: string,
+    connectionGeneration: string | undefined,
+    failures: number,
+    tolerance: number,
+    nextConnections: Map<string, AgentConnection>,
+  ): WebAgentSummary | undefined {
+    if (failures >= tolerance) return undefined;
+    const sourceId = agent.source.sourceId;
+    const previous = this.store.getAgent(sourceId);
+    if (previous === undefined
+      || previous.generation !== generation
+      || previous.status === "offline") return undefined;
+    const connection = this.connections.get(sourceId);
+    if (connectionGeneration !== undefined
+      && connection !== undefined
+      && connection.generation === connectionGeneration) {
+      nextConnections.set(sourceId, connection);
+    }
+    return previous;
+  }
+
+  /**
+   * Count one more consecutive failed-probe or missing-endpoint sample for
+   * `sourceId`'s current generation and return the running total. The process
+   * generation is compared here,
    * not only in the sweep below, so the count can never be inherited: a count
    * earned by one process must not spend another process's tolerance.
    */
@@ -4802,42 +4862,39 @@ export class WeightedTurnBudget {
 
 /**
  * The identity of the agent PROCESS behind a source id. `sourceId` is stable
- * across restarts by design, so it cannot scope anything the running process
- * told us: a reconfigured agent restarts at a new endpoint, with a new pid and
- * a new `startedAt`, and advertises a different catalog under the same id.
- * Deliberately excludes `updatedAt`, which every heartbeat moves.
+ * across restarts by design, so the pid and `startedAt` scope everything the
+ * running process told us. The operator endpoint is deliberately excluded: one
+ * live process can republish it after a transient channel-status omission or a
+ * port move, and neither event invalidates its retained summary or model catalog.
+ * `updatedAt` is excluded because every heartbeat moves it.
  *
- * This is what the model catalog cache is scoped to -- and, since the browser
- * caches the same `/v1/models` pages and had nothing generation-shaped to
- * watch, what `WebAgentSummary.generation` carries to it.
+ * This is what the model catalog cache, probe-failure budget, and
+ * `WebAgentSummary.generation` are scoped to. A separate endpoint-bearing digest
+ * below fences cached clients, because endpoint churn is harmless to a summary
+ * but must always retire an `OperatorClient` bound to the old address.
  *
- * Hashed because it now goes on the wire: the raw form names the agent's
- * operator endpoint and pid, and the console has no reason to hand those to a
- * page. The token only has to be stable while one process lives and different
- * once it is replaced, which a digest of those three fields is.
- *
- * Length-prefixed rather than `|`-joined. A separator that can occur inside a
- * field is not a separator: two different accepted tuples whose parts happen to
- * contain the delimiter flatten to the same string and hash to the same token,
- * and two distinct processes sharing a generation is precisely the state the
- * token exists to make impossible. Nothing first-party produces such a tuple
- * today, which is why this is robustness rather than a live defect --- but a
- * digest whose only defence is what its inputs happen to look like is one
- * unrelated change away from being wrong.
- *
- * Hashed as UTF-16 code units for the same reason the prefix replaced the
- * delimiter. UTF-8 has no encoding for an unpaired surrogate, so a lone high
- * surrogate and a lone low surrogate both became the replacement character and
- * two different one-character fields -- identically length-prefixed -- hashed
- * alike. `utf16le` is a lossless transcription of exactly the code units the
- * length prefix counts, so what is hashed is what was measured.
+ * Hashed because the token goes on the wire and the console has no reason to
+ * expose a pid. Parts are length-prefixed rather than concatenated or joined by
+ * a delimiter, and hashed as UTF-16 code units: that preserves the exact tuple
+ * even for accepted strings containing separators or unpaired surrogates.
  */
 export function agentGeneration(agent: DiscoveredOperatorAgent): string {
-  const parts = [
-    agent.baseUrl ?? "",
+  return agentIdentityDigest([
     String(agent.source.pid ?? ""),
     agent.source.startedAt,
-  ];
+  ]);
+}
+
+/** The stricter process-plus-endpoint identity carried only by cached clients. */
+function agentConnectionGeneration(agent: DiscoveredOperatorAgent, baseUrl: string): string {
+  return agentIdentityDigest([
+    baseUrl,
+    String(agent.source.pid ?? ""),
+    agent.source.startedAt,
+  ]);
+}
+
+function agentIdentityDigest(parts: readonly string[]): string {
   return createHash("sha256")
     .update(parts.map((part) => `${String(part.length)}:${part}`).join(""), "utf16le")
     .digest("hex")
