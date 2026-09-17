@@ -661,12 +661,24 @@ replay a started job. Message plus close closes only after a successful answer.
 
 ### Parent stop and resume
 
-Use `AgentSend({id, stop: true})` alone to cooperatively stop a queued or running
-managed detached child. It is exclusive with message, close, background,
-inspect, ack and description (even explicitly false values). It invokes no new
-provider turn (`executed:false`) and accepts no job id. Foreground children are
+Use `AgentSend({id, stop: true})` to cooperatively stop a queued or running
+managed detached child. An optional `description` string of at most 80 characters
+is accepted and ignored: stop creates no job to label. Stop is exclusive with
+message, close, background, inspect and ack (even explicitly false values).
+It invokes no new provider turn (`executed:false`) and accepts no job id. Foreground children are
 not stoppable through this operation. Stop never force-kills an in-process
 provider or rolls back filesystem/network effects.
+
+Invalid requests return a JSON error receipt with a human-readable `message`,
+`stopRequested:false` and `executed:false`, before instance lookup:
+
+- `subagent_stop_not_requested`: `stop` must be exactly `true`.
+- `subagent_stop_invalid_id`: `id` must be a string of 1–40 lowercase letters,
+  digits or hyphens, starting with a letter or digit.
+- `subagent_stop_invalid_request`: `description` must be a string of at most
+  80 characters.
+- `subagent_stop_unexpected_parameters`: only `id`, `stop` and `description`
+  are accepted; the message lists unexpected keys in sorted order.
 
 The operation waits at most six seconds, including storage work:
 
