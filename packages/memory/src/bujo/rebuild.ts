@@ -64,6 +64,7 @@ import {
   type ReplayProjectionV1,
 } from "./replay-projection.js";
 import type { BujoTier, Bullet } from "./types.js";
+import { projectCanonicalGraphForAudit } from "./audit-canonical-projection-cache.js";
 import {
   CANONICAL_VISIBLE_BULLET,
   assertStrictBulletRaw,
@@ -476,8 +477,11 @@ export function auditCanonicalIndexHealth(
   root: string,
   tier: BujoTier,
   db: MemoryDb,
+  maxAttempts = 3,
 ): CanonicalIndexHealthAudit {
-  const maxAttempts = 3;
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
+    throw new Error("memory-rebuild: canonical audit attempts must be a positive integer.");
+  }
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const mutationBefore = inspectCanonicalIndexMutation(root);
     if (mutationBefore === "invalid") return { status: "invalid" };
@@ -491,7 +495,7 @@ export function auditCanonicalIndexHealth(
     let plan: BuildPlan;
     try {
       before = snapshotCanonicalSources(root, tier);
-      plan = buildPlan(before, tier);
+      plan = buildPlan(before, tier, undefined, true);
     } catch (error) {
       const mutation = inspectCanonicalIndexMutation(root);
       if (mutation === "invalid") return { status: "invalid" };
@@ -1244,6 +1248,7 @@ function buildPlan(
   snapshot: SourceSnapshot,
   tier: BujoTier,
   replayOverride?: ReplayProjectionV1,
+  reuseAuditProjection = false,
 ): BuildPlan {
   const rawRecords: MemoryRecord[] = [];
   let skippedUnstructuredRecords = 0;
@@ -1308,9 +1313,14 @@ function buildPlan(
     records.set(record.id, record);
   }
 
-  const graph = tier === "bujo"
-    ? projectCanonicalGraph(parseCanonicalGraphStrict(snapshot.graph?.bytes.toString("utf8")), [...records.values()])
-    : emptyCanonicalGraphProjection();
+  const graphRecords = tier === "bujo"
+    ? parseCanonicalGraphStrict(snapshot.graph?.bytes.toString("utf8"))
+    : undefined;
+  const graph = graphRecords === undefined
+    ? emptyCanonicalGraphProjection()
+    : reuseAuditProjection
+      ? projectCanonicalGraphForAudit(snapshot.fingerprint, graphRecords, [...records.values()])
+      : projectCanonicalGraph(graphRecords, [...records.values()]);
   for (const support of graph.collectionSupports) {
     const record = records.get(support.memoryId);
     if (record === undefined) throw new Error("memory-rebuild: collection support lost its memory endpoint.");

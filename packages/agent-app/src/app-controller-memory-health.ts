@@ -121,6 +121,7 @@ export async function computeMemoryHealth(controller: MemoryHealthControllerPort
     return traceMemoryHealthFromBujo(await controller.memoryHealthWorker.audit({
       root: memory.path,
       mode: memory.mode,
+      maxStabilityAttempts: 1,
       ...(memory.embeddings === undefined
         ? {}
         : {

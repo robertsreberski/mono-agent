@@ -42,6 +42,7 @@ import { canonicalContinuationJson, continuationDigest, type ContinuationStatusS
 
 const builtMemoryHealthWorkerUrl = new URL("../../dist/memory-health-worker.js", import.meta.url);
 const malformedMemoryHealthWorkerUrl = new URL("./fixtures/memory-health-worker-malformed.mjs", import.meta.url);
+const oneAttemptMemoryHealthWorkerUrl = new URL("./fixtures/memory-health-worker-one-attempt.mjs", import.meta.url);
 
 let dir: string;
 
@@ -1241,6 +1242,24 @@ describe("startMonoAgentApp", () => {
     await applying;
     expect(controller.memoryHealthRefreshTimer?._idleTimeout).toBe(30_000);
     await app.stop();
+  });
+
+  it("requests one stability attempt for periodic built-in auditing", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      memory: { mode: "lite", path: "./memory", writeMode: "append-host-summary" },
+    });
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      drivers: [],
+      memoryHealthWorkerUrl: oneAttemptMemoryHealthWorkerUrl,
+    });
+    try {
+      expect(app.memoryHealth).toMatchObject({ backend: "bujo", mode: "lite", status: "healthy" });
+    } finally {
+      await app.stop();
+    }
   });
 
   it("publishes a closed health_check_failed issue when built-in auditing throws", async () => {
