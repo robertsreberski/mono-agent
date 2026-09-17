@@ -6,6 +6,10 @@
   presence samples no longer drop a discovered agent at once, so a busy
   event loop or a briefly missing endpoint does not read as a dead agent.
 
+- Require every pull request to file an `Unreleased` changelog entry, cut
+  release notes with a refusing-when-empty script, and publish the filed
+  section as the GitHub Release body.
+
 ## 0.22.0 — Persistent subagents and Projects (2026-09-16)
 
 ### Persistent subagents
