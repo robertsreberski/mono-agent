@@ -1,0 +1,4 @@
+interface:
+  display_name: "Changelog"
+  short_description: "File changelog entries and cut release notes"
+  default_prompt: "Use $changelog to file an Unreleased entry for user-visible changes and cut versioned release notes."

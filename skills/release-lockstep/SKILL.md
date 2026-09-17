@@ -21,7 +21,23 @@ a `tier`), 1 `tier: "alias"` package (`create-mono-agent` under `packages/*`), a
 docs-mcp, memory-supermemory, messenger-adapter, and whatsapp-adapter). Plugin extras are version-bumped and
 published alongside core.
 
-## 1. Bump in a worktree
+## 1. File the release notes
+
+Cut the accumulated `## Unreleased` entries into the new version section
+before bumping anything (see `skills/changelog/SKILL.md`):
+
+```bash
+node scripts/release/cut-changelog.mjs --version X.Y.Z --title "Short theme" --check
+node scripts/release/cut-changelog.mjs --version X.Y.Z --title "Short theme"
+pnpm run check:changelog
+```
+
+The script refuses an empty `Unreleased`, a duplicate or non-greater
+version, and a malformed file. The release PR then carries the notes, and
+`release:validate` requires the matching `## X.Y.Z` section before the tag
+can be cut.
+
+## 2. Bump in a worktree
 
 Set the version in every catalog-publishable manifest, exact internal workspace
 range, and consumer manifest, then refresh the lockfile:
@@ -37,7 +53,7 @@ mirror their own package version:
 grep -rnE "_VERSION\s*[:=]\s*[\"'][0-9]" packages/*/src extras/*/src --include="*.ts" | grep -v __tests__
 ```
 
-## 2. Run one preflight path
+## 3. Run one preflight path
 
 First check whether the exact parent SHA already has successful hosted CI.
 
@@ -72,7 +88,7 @@ pnpm run verify:all
 and packed consumer. Do not rerun its overlapping commands at the same SHA.
 Never tag a failed preflight.
 
-## 3. Merge, tag, and watch once
+## 4. Merge, tag, and watch once
 
 Merge the version PR, confirm `main` is clean and at the intended release
 commit, then:
@@ -86,6 +102,8 @@ gh run watch <run-id>
 
 Use one watcher. If the run fails immediately for an account or billing
 condition, inspect it once, stop polling, and report the external failure.
+After publication succeeds the workflow creates the GitHub Release for the
+tag, using the filed `## X.Y.Z` section as the body.
 
 The supported publisher is the tag workflow. A local fallback is allowed only
 when the user supplied or explicitly authorized `NPM_DEV_TOKEN`, the tag points
@@ -102,7 +120,7 @@ Never print the token, persist it in the repository, or retry publishing with a
 different package set. The publisher freezes all tarballs, stages them, verifies
 integrity, then promotes the complete set.
 
-## 4. Verify the public registry once
+## 5. Verify the public registry once
 
 The local proxy npm configuration can break npmjs reads. Use the pinned registry
 or blank user config:
@@ -117,10 +135,11 @@ human-readable spot check. Fresh publication may take about a minute to become
 visible, so let the verifier's bounded retry finish instead of starting parallel
 poll loops.
 
-## 5. Closeout
+## 6. Closeout
 
 Report the release commit, tag, publish path (CI or authorized local fallback),
-and registry verification. Then stop. If consumer adoption was also requested,
+and registry verification. Confirm the tag workflow created the GitHub Release
+from the filed `## X.Y.Z` section. Then stop. If consumer adoption was also requested,
 start a separate exact-target workflow with `fleet-deploy` or that consumer's
 own runbook.
 

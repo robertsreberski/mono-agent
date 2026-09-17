@@ -6,7 +6,10 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  # contents: write (up from read) so the workflow can create the GitHub
+  # Release for the tag after publication. No other permission is widened:
+  # provenance and npm publishing still ride on id-token: write plus NPM_TOKEN.
+  contents: write
   # Static OIDC readiness. The current staged all-package promotion still uses
   # NPM_TOKEN for `npm dist-tag add`, which npm trusted publishing does not
   # support; release docs keep the tokenless/public-provenance item blocked.
@@ -174,3 +177,13 @@ jobs:
           run_create_info_smoke version-long version --version
           run_create_info_smoke version-short version -v
           "$TMP_ROOT/create/bin/mono-agent" --help
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BODY_FILE="$(mktemp)"
+          trap 'rm -f -- "$BODY_FILE"' EXIT
+          node scripts/release/changelog-section.mjs --version "${GITHUB_REF_NAME#v}" > "$BODY_FILE"
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$BODY_FILE"

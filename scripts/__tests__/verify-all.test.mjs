@@ -16,6 +16,9 @@ const EXPECTED_CI_NODE_MATRIX = Object.freeze(["24.18.0"]);
 const CI_CHECKOUT_STEP = [
   "      - name: Checkout",
   "        uses: actions/checkout@v4",
+  "        with:",
+  "          fetch-depth: \"0\"",
+  "          fetch-tags: \"true\"",
 ].join("\n");
 const CI_SETUP_NODE_STEP = [
   "      - name: Setup Node",
@@ -83,6 +86,7 @@ describe("verify-all", () => {
       "check:consumer-docs-consistency",
       "check:getting-started-version-pins",
       "check:docs",
+      "check:changelog",
       "release:validate",
       "check:architecture",
       "build",
@@ -173,6 +177,7 @@ describe("verify-all", () => {
       "check:consumer-docs-consistency",
       "check:getting-started-version-pins",
       "check:docs",
+      "check:changelog",
       "release:validate",
       "check:architecture",
       "build",
@@ -512,6 +517,69 @@ describe("verify-all", () => {
     expect(() => parseCiVerifyJob(insertedUnknown)).toThrow(/Unclassified CI action step/u);
   });
 
+  it("rejects checkout input drift and unmodeled nested inputs", () => {
+    const source = readCiWorkflow();
+    const fetchDepth = "          fetch-depth: \"0\"";
+    const fetchTags = "          fetch-tags: \"true\"";
+    const mutations = [
+      replaceExactly(source, fetchDepth, "          fetch-depth: \"1\""),
+      replaceExactly(source, fetchTags, "          fetch-tags: \"false\""),
+      replaceExactly(source, `${fetchTags}\n`, ""),
+      replaceExactly(source, fetchDepth, `${fetchDepth}\n          lfs: \"true\"`),
+    ];
+
+    for (const mutation of mutations) {
+      expect(() => parseCiVerifyJob(mutation)).toThrow(/CI action inputs drifted: checkout/u);
+    }
+  });
+
+  it("requires the changelog step to carry the exact PR-context env", () => {
+    const source = readCiWorkflow();
+    const changelogStep = [
+      "      - name: Check changelog",
+      "        env:",
+      "          CHANGELOG_BASE_REF: ${{ github.event.pull_request.base.sha }}",
+      "          CHANGELOG_PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}",
+      "          CHANGELOG_PR_BODY: ${{ github.event.pull_request.body }}",
+      "        run: pnpm run check:changelog",
+    ].join("\n");
+    expect(source).toContain(changelogStep);
+  });
+
+  it("rejects changelog PR-context env drift and env on any other step", () => {
+    const source = readCiWorkflow();
+    const architecture = [
+      "      - name: Check package architecture",
+      "        run: pnpm run check:architecture",
+    ].join("\n");
+    const mutations = [
+      replaceExactly(
+        source,
+        "          CHANGELOG_PR_BODY: ${{ github.event.pull_request.body }}",
+        "          CHANGELOG_PR_BODY: ${{ github.event.pull_request.body }}\n          CHANGELOG_EXTRA: reacquired",
+      ),
+      replaceExactly(
+        source,
+        "          CHANGELOG_BASE_REF: ${{ github.event.pull_request.base.sha }}",
+        "          CHANGELOG_BASE_REF: ${{ github.sha }}",
+      ),
+      replaceExactly(
+        source,
+        architecture,
+        [
+          "      - name: Check package architecture",
+          "        env:",
+          "          CHANGELOG_BASE_REF: ${{ github.event.pull_request.base.sha }}",
+          "        run: pnpm run check:architecture",
+        ].join("\n"),
+      ),
+    ];
+
+    for (const mutation of mutations) {
+      expect(() => parseCiVerifyJob(mutation)).toThrow(/env/u);
+    }
+  });
+
   it("rejects setup-node input drift and unmodeled nested inputs", () => {
     const source = readCiWorkflow();
     const matrixInput = "          node-version: \"${{ matrix.node-version }}\"";
@@ -661,6 +729,14 @@ describe("verify-all", () => {
       "      - name: Check documentation quality",
       "        run: pnpm run check:docs",
     ].join("\n");
+    const changelog = [
+      "      - name: Check changelog",
+      "        env:",
+      "          CHANGELOG_BASE_REF: ${{ github.event.pull_request.base.sha }}",
+      "          CHANGELOG_PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}",
+      "          CHANGELOG_PR_BODY: ${{ github.event.pull_request.body }}",
+      "        run: pnpm run check:changelog",
+    ].join("\n");
     const mutations = [
       replaceExactly(
         source,
@@ -674,8 +750,8 @@ describe("verify-all", () => {
       ),
       replaceExactly(
         source,
-        `${releaseTag}\n\n${gettingStartedPins}\n\n${docsQuality}\n\n${releaseValidate}`,
-        `${gettingStartedPins}\n\n${docsQuality}\n\n${releaseValidate}\n\n${releaseTag}`,
+        `${releaseTag}\n\n${gettingStartedPins}\n\n${docsQuality}\n\n${changelog}\n\n${releaseValidate}`,
+        `${gettingStartedPins}\n\n${docsQuality}\n\n${changelog}\n\n${releaseValidate}\n\n${releaseTag}`,
       ),
     ];
 
@@ -948,6 +1024,10 @@ function parseCiVerifyJob(source) {
     const step = requireYamlMap(stepNode, `CI verify step ${stepIndex + 1}`);
     const fields = readYamlMap(step, `CI verify step ${stepIndex + 1}`);
     const name = optionalStringField(fields, "name", `CI verify step ${stepIndex + 1}`) ?? "<unnamed>";
+    if (fields.has("env")) {
+      assertChangelogPrContextEnv(fields.get("env"), name);
+      fields.delete("env");
+    }
     const continueOnError = fields.get("continue-on-error");
     if (continueOnError !== undefined && (!isScalar(continueOnError) || continueOnError.value !== false)) {
       throw new Error(`CI step must fail fast: ${name}`);
@@ -1024,12 +1104,42 @@ function parseCiVerifyJob(source) {
 const RUN_STEP_FIELDS = new Set(["name", "id", "if", "continue-on-error", "run"]);
 const USES_STEP_FIELDS = new Set(["name", "id", "if", "continue-on-error", "uses", "with"]);
 
+// The only step allowed to carry `env`. The mapping is the PR-context channel
+// for the changelog gate: expressions evaluate inside GitHub's context, never
+// in the shell, so an arbitrary PR body cannot inject commands. Anything else
+// — another variable, another expression, another step, or no env at all —
+// must fail loudly instead of silently disabling the PR entry gate.
+const CHANGELOG_PR_CONTEXT_ENV = Object.freeze([
+  Object.freeze(["CHANGELOG_BASE_REF", "${{ github.event.pull_request.base.sha }}"]),
+  Object.freeze(["CHANGELOG_PR_LABELS", "${{ toJSON(github.event.pull_request.labels.*.name) }}"]),
+  Object.freeze(["CHANGELOG_PR_BODY", "${{ github.event.pull_request.body }}"]),
+]);
+
+function assertChangelogPrContextEnv(envNode, name) {
+  if (name !== "Check changelog") {
+    throw new Error(`Unsupported execution field env on CI step: ${name}`);
+  }
+  const entries = [];
+  for (const [key, valueNode] of readYamlMap(envNode, `CI env on ${name}`)) {
+    entries.push([key, requireYamlString(valueNode, `CI env ${key} on ${name}`)]);
+  }
+  if (JSON.stringify(entries) !== JSON.stringify(CHANGELOG_PR_CONTEXT_ENV.map((entry) => [...entry]))) {
+    throw new Error(`CI changelog PR-context env drifted: ${name}`);
+  }
+}
+
 const ACTION_STEPS = Object.freeze([
   Object.freeze({
     key: "checkout",
     position: 0,
     uses: "actions/checkout@v4",
-    withInputs: Object.freeze([]),
+    // Full history and tags: the changelog gate diffs the PR against its base
+    // and checks every reachable tag. Quoted so the strict-YAML contract reads
+    // them as the strings actions/checkout expects.
+    withInputs: Object.freeze([
+      Object.freeze(["fetch-depth", "0"]),
+      Object.freeze(["fetch-tags", "true"]),
+    ]),
   }),
   Object.freeze({
     key: "Node setup",
@@ -1110,6 +1220,11 @@ const CI_RUN_STEP_CONTRACTS = Object.freeze([
     label: "check:docs",
     command: "pnpm",
     args: ["run", "check:docs"],
+  }),
+  gateRunContract("pnpm run check:changelog", {
+    label: "check:changelog",
+    command: "pnpm",
+    args: ["run", "check:changelog"],
   }),
   setupRunContract("release-tag derivation", literalScript([
       "set -euo pipefail",
