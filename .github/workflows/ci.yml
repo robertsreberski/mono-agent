@@ -28,8 +28,14 @@ jobs:
         node-version: ["24.18.0"]
 
     steps:
+      # Full history and tags: the changelog gate diffs the PR against its base
+      # and checks every reachable tag. A shallow checkout would make both
+      # sub-checks no-op silently.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: "0"
+          fetch-tags: "true"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -82,6 +88,13 @@ jobs:
 
       - name: Check documentation quality
         run: pnpm run check:docs
+
+      - name: Check changelog
+        env:
+          CHANGELOG_BASE_REF: ${{ github.event.pull_request.base.sha }}
+          CHANGELOG_PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          CHANGELOG_PR_BODY: ${{ github.event.pull_request.body }}
+        run: pnpm run check:changelog
 
       - name: Validate release package graph
         run: pnpm run release:validate -- --tag "${{ steps.release-smoke.outputs.tag }}"
