@@ -95,6 +95,8 @@ export interface BujoMemoryHealthOptions {
   readonly configuredEmbeddingModel?: string;
   readonly configuredDimension?: number;
   readonly now?: Date;
+  /** Internal periodic budget; omitted strict callers retain three attempts. */
+  readonly maxStabilityAttempts?: number;
 }
 
 /** Closed, metadata-only health contract. No paths, ids, text, or raw errors. */
@@ -129,16 +131,17 @@ interface RollbackSourceObservation {
   readonly fingerprint?: string;
 }
 
-const MAX_STABILITY_ATTEMPTS = 3;
+const DEFAULT_MAX_STABILITY_ATTEMPTS = 3;
 
 /** Provider-free strict health across managed identity, SQLite, canonical state, queues, and runtime. */
 export function auditBujoMemoryHealth(options: BujoMemoryHealthOptions): BujoMemoryHealthReport {
   assertOptions(options);
+  const maxStabilityAttempts = options.maxStabilityAttempts ?? DEFAULT_MAX_STABILITY_ATTEMPTS;
   const now = options.now ?? new Date();
   const checkedAt = now.toISOString();
   let last: AuditAttempt | undefined;
-  for (let attempt = 1; attempt <= MAX_STABILITY_ATTEMPTS; attempt += 1) {
-    last = auditAttempt(options, now);
+  for (let attempt = 1; attempt <= maxStabilityAttempts; attempt += 1) {
+    last = auditAttempt(options, now, maxStabilityAttempts);
     if (!last.unstable) return report(options.mode, checkedAt, last.issues, last.counts);
   }
   if (last !== undefined && !last.unstable) {
@@ -158,7 +161,7 @@ export function auditBujoMemoryHealth(options: BujoMemoryHealthOptions): BujoMem
   return report(options.mode, checkedAt, issues, last?.counts ?? emptyCounts());
 }
 
-function auditAttempt(options: BujoMemoryHealthOptions, now: Date): AuditAttempt {
+function auditAttempt(options: BujoMemoryHealthOptions, now: Date, maxStabilityAttempts: number): AuditAttempt {
   const issues = new Set<MemoryHealthIssueCode>();
   const counts = mutableCounts();
   let root: string;
@@ -222,6 +225,7 @@ function auditAttempt(options: BujoMemoryHealthOptions, now: Date): AuditAttempt
       issues,
       counts,
       journalMutationBefore === "active" || runtimeIndicatesCanonicalMutation(options.mode, runtimeBefore),
+      maxStabilityAttempts,
     );
   }
   inspectRuntime(options.mode, runtimeBefore, intakeBefore, counts, issues);
@@ -259,6 +263,7 @@ function inspectDatabase(
   issues: Set<MemoryHealthIssueCode>,
   counts: Mutable<MemoryHealthCounts>,
   skipCanonical: boolean,
+  maxStabilityAttempts: number,
 ): void {
   const descriptor = manifest?.active;
   const path = descriptor === undefined
@@ -288,6 +293,7 @@ function inspectDatabase(
         options.mode,
         opened,
         !issues.has("outbox_invalid") && !skipCanonical,
+        maxStabilityAttempts,
       ));
     } catch (error) {
       issues.add(isNativeModuleError(error) ? "native_module_unavailable" : "database_unavailable");
@@ -303,7 +309,13 @@ function inspectDatabase(
   }
 }
 
-function inspectDbSnapshot(root: string, mode: BujoTier, db: MemoryDb, inspectCanonical: boolean): DbObservation {
+function inspectDbSnapshot(
+  root: string,
+  mode: BujoTier,
+  db: MemoryDb,
+  inspectCanonical: boolean,
+  maxStabilityAttempts: number,
+): DbObservation {
   const integrityOk = db.integrityCheck().toLowerCase() === "ok";
   if (!integrityOk) return { integrityOk: false, metadataValid: true, vectorDimensionValid: true };
   let metadata: IndexMetadata | undefined;
@@ -327,7 +339,7 @@ function inspectDbSnapshot(root: string, mode: BujoTier, db: MemoryDb, inspectCa
     vectorDimensionValid,
     ...(vectorDimension === undefined ? {} : { vectorDimension }),
     state: db.validationSnapshot(),
-    ...(inspectCanonical ? { canonical: auditCanonicalIndexHealth(root, mode, db) } : {}),
+    ...(inspectCanonical ? { canonical: auditCanonicalIndexHealth(root, mode, db, maxStabilityAttempts) } : {}),
   };
 }
 
@@ -770,7 +782,11 @@ function assertOptions(options: BujoMemoryHealthOptions): void {
     || (options.configuredEmbeddingModel !== undefined
       && (typeof options.configuredEmbeddingModel !== "string" || options.configuredEmbeddingModel.length === 0))
     || (options.configuredDimension !== undefined
-      && (!Number.isInteger(options.configuredDimension) || options.configuredDimension <= 0))) {
+      && (!Number.isInteger(options.configuredDimension) || options.configuredDimension <= 0))
+    || (options.maxStabilityAttempts !== undefined
+      && (!Number.isSafeInteger(options.maxStabilityAttempts)
+        || options.maxStabilityAttempts < 1
+        || options.maxStabilityAttempts > DEFAULT_MAX_STABILITY_ATTEMPTS))) {
     throw new Error("memory-bujo: invalid strict health options.");
   }
   const now = options.now ?? new Date();

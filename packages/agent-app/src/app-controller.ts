@@ -45,6 +45,7 @@ import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import { createSeenNotifyDestinationCache } from "./seen-conversations.js";
+import { MemoryHealthWorkerClient } from "./memory-health-worker-client.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
 import { reasonOf, sandboxStatusFromState } from "./app-controller-utils.js";
@@ -118,6 +119,10 @@ export interface MonoAgentAppOptions {
   readonly traceDefaults?: AppTraceDefaults;
   /** Secret-free proof of the durable files/environment observed by this worker. */
   readonly backgroundSnapshot?: BackgroundSnapshot;
+  /** Test seam for exercising the isolated memory-health worker transport. */
+  readonly memoryHealthWorkerUrl?: URL;
+  /** Test seam for exercising the isolated memory-health request deadline. */
+  readonly memoryHealthWorkerTimeoutMs?: number;
 }
 
 /**
@@ -214,6 +219,8 @@ async function startMonoAgentAppInternal(
       ...(options.sandboxEngine === undefined ? {} : { sandboxEngine: options.sandboxEngine }),
       ...(options.traceDefaults === undefined ? {} : { traceDefaults: options.traceDefaults }),
       ...(options.backgroundSnapshot === undefined ? {} : { backgroundSnapshot: options.backgroundSnapshot }),
+      ...(options.memoryHealthWorkerUrl === undefined ? {} : { memoryHealthWorkerUrl: options.memoryHealthWorkerUrl }),
+      ...(options.memoryHealthWorkerTimeoutMs === undefined ? {} : { memoryHealthWorkerTimeoutMs: options.memoryHealthWorkerTimeoutMs }),
       trustedRuntimeReadRoots,
     });
     const startedController = controller;
@@ -285,6 +292,8 @@ interface MonoAgentAppControllerInput {
   readonly sandboxEngine?: SandboxEngine;
   readonly traceDefaults?: AppTraceDefaults;
   readonly backgroundSnapshot?: BackgroundSnapshot;
+  readonly memoryHealthWorkerUrl?: URL;
+  readonly memoryHealthWorkerTimeoutMs?: number;
   readonly trustedRuntimeReadRoots: readonly string[];
 }
 
@@ -349,6 +358,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   /** One bounded forced refresh reserved by a due timer tick. */
   memoryHealthRefreshDue = false;
   memoryHealthGeneration = 0;
+  readonly memoryHealthWorker: MemoryHealthWorkerClient;
   /** Durable trace fact published only after the full current lifecycle completes. */
   startupCompleted = false;
   startupTimingValue: {
@@ -447,6 +457,10 @@ export class MonoAgentAppController implements MonoAgentApp {
     this.sandboxEngine = input.sandboxEngine;
     this.traceDefaults = input.traceDefaults;
     this.backgroundSnapshot = input.backgroundSnapshot;
+    this.memoryHealthWorker = new MemoryHealthWorkerClient({
+      ...(input.memoryHealthWorkerUrl === undefined ? {} : { workerUrl: input.memoryHealthWorkerUrl }),
+      ...(input.memoryHealthWorkerTimeoutMs === undefined ? {} : { timeoutMs: input.memoryHealthWorkerTimeoutMs }),
+    });
     this.trustedRuntimeReadRoots = [...input.trustedRuntimeReadRoots];
     for (const driver of input.drivers) {
       this.statuses.set(driver.id, {
