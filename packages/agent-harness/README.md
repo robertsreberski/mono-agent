@@ -76,9 +76,7 @@ Its bounded mailbox delivers follow-ups only when the selected backend supports
 native steering. Native queue acceptance and exact owned-operation transcript
 consumption are separate. Applied human follow-ups and ProcessJob wakes are
 then recorded as ordered user history and included in memory persistence.
-Host-owned Monitor inputs, identified by their `monitor:` delivery key, are
-applied to the provider run but excluded from canonical user history and memory
-persistence. The responder
+The responder
 correlates the acknowledgement to the pending input and emits one completed
 synthetic tool lifecycle; human follow-ups use
 `↪️ Steered: “<safe preview>”`, while consumers correlate host-owned receipts by

@@ -95,19 +95,6 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   marker exists, the terminal row falls back beside the launch. These rows
   never poll or duplicate card output; legacy or paginated-out launch receipts
   remain stack-only.
-- Accept exact-source/thread Monitor wakes through that private ingress, steer
-  them into the active run or serialize one assistant-only follow-up, retain
-  delivery identity plus a payload hash for fail-closed duplicate handling, and
-  group their secret-free projections into compact Monitor activity. The
-  browser presents adjacent activity-only follow-ups for the same watch as one
-  continuous Activity block; a visible reply or unrelated message ends that
-  block. Raw event text and delivery keys never reach the rendered row; Monitor
-  wakes have no browser-side stop control. For a verified Monitor wake, a
-  terminal no-op assistant message is suppressed while an earlier meaningful
-  answer and rich content remain visible. Push delivery waits for an outstanding
-  steering receipt and uses the normalized reply. Monitor callbacks use the
-  independent owner credential derived from the advertised private state directory.
-
 ## Install / Usage
 
 The composer’s ↵ control chooses a device-local, persisted Enter preference:
@@ -408,7 +395,7 @@ OAuth. Check sessions and observations are process-local, expire from memory,
 and are not persisted by the web service. They must be cancelled explicitly
 before starting authentication.
 
-Standalone process-job and Monitor revival turns in an existing web conversation
+Standalone process-job revival turns in an existing web conversation
 read that conversation's model/effort snapshot immediately before admission. A
 wake steered into an active run stays on that run's already selected route.
 
@@ -611,7 +598,7 @@ recoverable.
 
 Web turns can use the app-owned console tools described in
 [Console project tools](../../docs/tools/mcp.md#console-project-tools). Turns
-woken by a background process job or monitor advertise the same capability;
+woken by a background process job advertise the same capability;
 cron and webhook channels do not.
 
 Cron channels are non-sendable and non-uploadable. Configured channels may be
@@ -788,7 +775,7 @@ ledger; postconditions check the required effects.
 1. `server.ts` accepts the versioned browser API, staged uploads, and SSE
    subscriptions, then delegates stateful work to `WebConsoleService`.
 2. The service discovers agents from the trace-source registry, persists agent,
-   thread, project, message, part, process-job card, Monitor wake claim, turn, live-input, upload, preference,
+   thread, project, message, part, process-job card, turn, live-input, upload, preference,
    Web Push subscription/event/delivery, notification, and cron projection
    records through the SQLite store, and
    drives each agent over its loopback operator endpoint.
@@ -803,8 +790,8 @@ ledger; postconditions check the required effects.
    content-addressed upload bytes. Reloads and concurrent tabs still do not own
    or interrupt upstream turns.
 4. The bundled assistant-ui webapp maps those DTOs—including canonical
-   lifecycle metadata—into its external store, thread list, messages, compact
-   Monitor activity, tool cards, composer, attachments, and push-subscription
+   lifecycle metadata—into its external store, thread list, messages,
+   tool cards, composer, attachments, and push-subscription
    UI, keeping a per-conversation cache that is also written to the device
    (IndexedDB `mono-agent-web`, version 2, swept per writer on hydration) so a
    cold start draws before the first response. The same store holds this
@@ -824,16 +811,8 @@ ledger; postconditions check the required effects.
    idempotent assistant-only thread. A process-job delivery instead updates one
    source/thread-bound durable card; its normal wake turn owns the single agent
    history entry. Its receipt returns once that exact follow-up is durably
-   admitted rather than waiting for model completion. A Monitor delivery is
-   steered into an active run or becomes an assistant-only follow-up in the exact
-   existing web thread; exact host-owned receipts update one compact, secret-free
-   activity row rather than creating repeated steering cards. The browser may be
-   closed, but the web service must remain running.
-
-Monitor activity shows suppressed lines/batches and follow-up, steered, or
-unknown wake dispositions. These are host delivery counts, not model-turn or
-cost estimates. Historical v1 Monitor projections in SQLite and browser caches
-remain readable alongside v2 projections.
+   admitted rather than waiting for model completion. The browser may be closed,
+   but the web service must remain running.
 
 **Process-job card reconciliation.** A retained job card is written
 `queued`, `starting` or `running` from the agent's notification and leaves that
@@ -865,8 +844,8 @@ id discovery no longer reports, are left alone.
 | [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, agent-authored automatic titles, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, provider-auth connection-generation guarding, cancellation, notifications, and invalidation. |
 | [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including race-safe automatic-title updates that never overwrite a user rename. |
 | [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, conditionally bearer-authenticated provider-auth, and owner-authenticated process-job requests over the operator protocol. |
-| [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook delivery, source/thread-bound process-job cards, and Monitor wake turns. |
-| [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including compact Monitor activity, the loaded conversation-level process-job stack and live tails, atomic `AskUser` forms, tests, and its own dependency lockfile. |
+| [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook delivery and source/thread-bound process-job cards. |
+| [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including the loaded conversation-level process-job stack and live tails, atomic `AskUser` forms, tests, and its own dependency lockfile. |
 
 ## Public API
 
@@ -877,7 +856,7 @@ id discovery no longer reports, are left alone.
 | `startWebServer` | Start the persistent browser service and receive the actual bound URL plus idempotent stop methods. |
 | `prepareWebState` / `prepareWebStatePaths` | Create and validate the owner-private state layout before starting a custom service. |
 | `resetWebState` | Perform the explicit whole-store reset used by host lifecycle commands. |
-| `deliverWebNotification` | Deliver one idempotent cron/webhook result, source/thread-bound process-job card update, or Monitor wake through the private loopback ingress. |
+| `deliverWebNotification` | Deliver one idempotent cron/webhook result or source/thread-bound process-job card update through the private loopback ingress. |
 | `discoverAcpBridgeAgents` | Discover Worklab-importable ACP sources through a credential-free, versioned ownership contract. |
 | `discoverOperatorAgents` | Read trusted operator endpoints from trace-source manifests. |
 | `WebBootstrap`, `WebThreadDetail`, `WebEvent`, and related `Web*` DTOs | Build another client against the versioned browser API. |
@@ -909,7 +888,6 @@ CreateWebUploadInput
 DEFAULT_WEB_HOST
 DEFAULT_WEB_PORT
 DEFAULT_WEB_THEME
-DeliverWebMonitorNotificationInput
 DeliverWebNotificationInput
 DeliverWebNotificationOptions
 DeliverWebNotificationResult

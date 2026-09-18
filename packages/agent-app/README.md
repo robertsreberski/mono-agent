@@ -104,15 +104,6 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   cwd, while root or Git-metadata replacement yields an inconsistent observation.
   Repository config includes are unsupported and fail closed before status;
   initialized submodules are not traversed, so nested changes are not reported.
-- Opt in to Pi-native host-owned watches through `monitors.*`. Telegram, Slack,
-  and existing web conversations receive coalesced event batches as exact-origin
-  tool-capable wake turns; web uses ordinary assistant turns rather than a
-  Monitor card, and shares one per-thread serialization lane with ProcessJobs
-  wakes and queued user follow-ups.
-  Optional batch deduplication and wake intervals suppress unnecessary inference;
-  exit-only watches deliver one terminal wake. The host clamps intervals through
-  `monitors.maxWakeIntervalMs` (default/cap 300000) and exposes durable suppression
-  and delivery-disposition counters. `maxChainDepth` defaults to 4, with cap 64.
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `degraded` / `failed` status.
   `degraded` means a temporarily unavailable transport owns its recovery while
@@ -747,7 +738,7 @@ than redacted, so a mangled value is never persisted behind a success result.
 
 ### Console project tools
 
-Writable web turns, typed or woken by a background host job or monitor, can use `ListProjects`, `GetProject`,
+Writable web turns, typed or woken by a background host job, can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
 `SearchConversations`, `CreateConversation`, `SetConversationProject`, `ListTags`,
 `CreateTag`, `UpdateTag`, `DeleteTag`, `UpdateConversationTags`, and `MarkConversationRead` under
@@ -795,7 +786,7 @@ title remains the fallback.
 ### Channel interactions and conversation history
 
 The configured agent preserves the harness's positive `importContext`
-capability through root-ownership, monitor, process-job, posted-reply, reply-file,
+capability through root-ownership, process-job, posted-reply, reply-file,
 and MCP-App decorators. The default durable store exposes it only when complete
 batch retention and provider-state retirement or absence are provable. Slack's
 posted-reply wrapper overlays destination history only on the leased Send view;

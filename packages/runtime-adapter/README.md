@@ -121,12 +121,6 @@ default. Fallback route-attempt resolvers cannot supply or replace it.
 
 ## Architecture
 
-`MonitorStartRequest` carries optional `wakeOn`, `dedupe`, and
-`minWakeIntervalMs`; `MonitorStartResult` reports the effective values.
-`MonitorControllerLimits.maxWakeIntervalMs` publishes the host interval cap.
-The bridge rejects malformed policy and nondefault dedupe/interval with exit-only
-wakes. Defaults remain batch/none/0.
-
 `runtime-adapter` is the typed boundary between harness code and the JavaScript
 provider kernel:
 
@@ -224,14 +218,6 @@ MANAGED_SRT_TREE_SHA256
 MODEL_REFERENCE_ECHO_MAX_BYTES
 MODEL_REFERENCE_REASON_MAX_BYTES
 ModelEffortLevels
-MonitorControllerLimits
-MonitorLaunchOptions
-MonitorProcessHandle
-MonitorProcessResult
-MonitorStartRequest
-MonitorStartResult
-MonitorStopResult
-MonitorsController
 MonoRuntimeApprovalDecision
 MonoRuntimeApprovalRequest
 MonoRuntimeAttemptContext
@@ -320,7 +306,6 @@ SrtNetworkSettings
 SrtSandboxEngineOptions
 SrtSettings
 assertParsedRuntimeModelReference
-bridgeMonitorsController
 bridgeOwnedForegroundProcesses
 bridgeProcessJobsController
 createMonoRuntime

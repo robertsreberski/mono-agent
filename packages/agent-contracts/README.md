@@ -28,11 +28,6 @@ channel-driver, process-job projection, provider-auth projection, and memory con
 small dependency-free helpers for settings JSON, JSON-to-env mapping, safe
 network binding, bearer tokens, attachments, and stream framing.
 
-Monitor projections use v2 policy and suppression/delivery counters.
-`parseMonitorProjection` also accepts historical v1 projections, supplying
-compatible policy defaults and classifying historical delivered batches as
-unknown wake dispositions. New v2 records are validated strictly.
-
 ## Install / Usage
 
 Process-job projections distinguish terminal wake outcomes: `delivered`,
@@ -380,7 +375,6 @@ MAX_INFO_BODY_BYTES
 MAX_INFO_PROVIDER_ID_BYTES
 MAX_INFO_PROVIDER_ITEMS
 MAX_INFO_PROVIDER_LABEL_BYTES
-MAX_MONITOR_OUTSTANDING_LIFECYCLES
 MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES
 MAX_PROVIDER_AUTH_BODY_BYTES
 MAX_PROVIDER_AUTH_INPUT_BYTES
@@ -393,9 +387,6 @@ MAX_PROVIDER_AUTH_USAGES
 MCP_APPS_EXTENSION_ID
 MCP_APP_RESOURCE_MIME_TYPE
 MCP_APP_SUPPORTED_VERSIONS
-MONITOR_ERROR_CODES
-MONITOR_PUBLIC_ERROR_MESSAGES
-MONITOR_STATES
 MemoryBlock
 MemoryCompletedTurn
 MemoryCompletedTurnAdmissionStatus
@@ -404,16 +395,6 @@ MemoryLoadOptions
 MemoryStore
 MemoryWriteResult
 MessageRef
-MonitorErrorCode
-MonitorOperator
-MonitorProjection
-MonitorProjectionCounters
-MonitorProjectionError
-MonitorProjectionLimits
-MonitorProjectionOrigin
-MonitorProjectionTimestamps
-MonitorState
-MonitorWakeDeliveryInput
 NOTHING_TO_REPORT_SENTINEL
 NotifyDeliveryContext
 NotifyDeliveryResult
@@ -482,7 +463,6 @@ ResilientMessageStream
 ResilientMessageStreamLogger
 ResilientMessageStreamOptions
 RunningChannel
-RunningMonitorChannel
 RunningProcessJobChannel
 SUBAGENT_TOOL_SEPARATOR
 SessionToolHistoryEventMetadata
@@ -519,20 +499,16 @@ isChannelUserCancelReason
 isCodedError
 isDeliverableConversation
 isLoopbackHost
-isMonitorErrorCode
-isMonitorState
 isProcessJobErrorCode
 isProcessJobState
 isProcessJobSubagentProgress
 isProcessJobSubagentRoute
 isProviderUsageId
 isSubagentLaunchToolName
-isTerminalMonitorState
 isTerminalProviderAuthSessionState
 isWildcardHost
 layerJsonOntoEnv
 listen
-monitorPublicError
 normalizeHostForBind
 normalizeOptionalString
 normalizeTrailing
@@ -542,8 +518,6 @@ parseCronOperatorOverview
 parseCronOperatorRunDetail
 parseCronOperatorRunPage
 parseCronOperatorRunSummary
-parseMonitorProjection
-parseMonitorProjections
 parseProcessJobProjection
 parseProcessJobProjections
 parseProviderAuthCheckSessionSnapshot
