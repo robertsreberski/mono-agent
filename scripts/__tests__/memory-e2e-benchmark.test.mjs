@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFile, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, loadCorpus, makePlan, serializableProfile, sourceOnly, contextFor, validateCorpus } from "../lib/memory-e2e-dataset.mjs";
@@ -18,6 +19,15 @@ async function setup() { const loaded = await loadCorpus(); const plan = makePla
 const ready = { intake: { pending: 0, dead: 0, due: 0, transitioning: 0, retrying: 0, resolved: 1 }, shutdown: { timedOut: false, discarded: 0 } };
 
 describe("memory E2E benchmark contracts (not model quality)", () => {
+  it("standalone success exits after output even when a dependency retains a handle", () => {
+    const child = spawnSync(process.execPath, [
+      "--import=data:text/javascript,setInterval(() => {}, 10000)",
+      join(root, "scripts/memory-e2e-benchmark.mjs"), "--dry-run",
+    ], { cwd: root, encoding: "utf8", timeout: 3000 });
+    expect(child.error).toBeUndefined();
+    expect(child.status).toBe(0);
+    expect(JSON.parse(child.stdout).confirmation).toMatch(/^[0-9a-f]{64}$/u);
+  });
   it("freezes the fictional corpus and covers the five arms/six evaluation categories", async () => {
     const { corpus, sha256, plan } = await setup();
     expect(sha256).toBe("db8fe538f1abbd94511f95c356b111e5eca33cdb2e15fb2ccdaee9681b6889c0");

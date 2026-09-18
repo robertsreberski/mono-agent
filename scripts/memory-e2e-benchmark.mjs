@@ -81,9 +81,9 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().then((code) => {
     process.exitCode = code;
-    // The report is durable before ending this standalone CLI. An uncooperative
-    // transport may retain sockets; do not misrepresent process exit as cancellation.
-    if (code !== 0) process.stdout.write("", () => process.exit(code));
+    // The report is durable before ending this standalone CLI. Even successful
+    // transports can retain handles; process exit is not provider cancellation.
+    process.stdout.write("", () => process.exit(code));
   }).catch(() => {
     // Raw runtime/config failures can contain credentials and paths.
     console.error("memory-e2e: failed; check flags, built dependency closure, and the owned report if present. No quality result is implied.");

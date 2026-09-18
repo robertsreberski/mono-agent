@@ -28,7 +28,8 @@
 - Let the opt-in memory benchmark select an explicit Pi auth file with
   `--pi-auth-path` for real runs, wired into both model runtimes through the
   existing credential resolver. Plans bind only its fingerprint, never the
-  path or credential bytes.
+  path or credential bytes. Finish the standalone command after its report is
+  durable even when successful provider transports retain process handles.
 
 - Let `AgentSend` accept and ignore an optional `description` when stopping a
   subagent, and explain invalid stop requests with specific codes and messages.
