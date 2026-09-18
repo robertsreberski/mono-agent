@@ -81,6 +81,37 @@ describe("fictional E2E production-path contract, not model quality", () => {
     expect((await readdir(input.directory)).filter((name) => name.startsWith("work-"))).toEqual([]);
   }, 30000);
 
+  it.each(["reader", "capture"])("reports terminal provider admission after clean %s failure cleanup", async (stage) => {
+    const input = await fixture();
+    const failureKind = stage === "reader" ? "provider_auth" : "usage_limit";
+    const failing = vi.fn(async () => ({ failureKind, error: "private-error-canary", text: "" }));
+    const close = vi.fn(async () => {});
+    const providerFactory = vi.fn((args: any) => {
+      const value = input.providers.scriptedProviders(args);
+      return { ...value, ...(stage === "reader" ? { reader: { run: failing } } : { extractor: { run: failing } }), close };
+    });
+    const report = await input.runner.runBenchmark({ ...input, providerFactory });
+    const attempted = stage === "reader" ? 1 : 5;
+    expect(report.trials).toHaveLength(attempted);
+    expect(providerFactory).toHaveBeenCalledTimes(attempted);
+    expect(failing).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledTimes(attempted);
+    expect(report.manifest).toMatchObject({
+      admissionStopped: true,
+      trialsNotStarted: 10 - attempted,
+      providerStop: { code: "provider_failed", failureKind },
+    });
+    const trial = report.trials.at(-1);
+    expect(trial).toMatchObject(stage === "reader"
+      ? { status: "provider_failed", runtimeFailureKind: failureKind }
+      : { status: "capture_not_ready", captureFailureKind: failureKind });
+    expect(report.trials.every((row: any) => row.cleanup === "removed_owned_store")).toBe(true);
+    expect(report.summary.arms[trial.arm].failures).toContainEqual({ groupId: trial.groupId, status: trial.status, failureKind });
+    expect(report.summary.qualityMeasured).toBe(false);
+    expect(JSON.stringify(report)).not.toContain("private-error-canary");
+    expect((await readdir(input.directory)).filter((name) => name.startsWith("work-"))).toEqual([]);
+  }, 30000);
+
   it("empty valid extraction is ready, not a fabricated capture success metric", async () => {
     const input = await fixture();
     const report = await input.runner.runBenchmark({ ...input, providerFactory: (args: any) => ({ ...input.providers.scriptedProviders(args), extractor: { run: async () => ({ text: '{"memories":[],"entities":[],"relations":[]}' }) } }) });

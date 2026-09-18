@@ -262,7 +262,7 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
       if (!cleanupOk || budget.controller.signal.aborted || budget.providerStop !== null) break trialsLoop;
     }
     return {
-      manifest: { ...plan, executionKind: kind, reservations: budget.used, actualTransportAttempts: null, inputAccounting: "estimated-controlled-text-plus-allowance", providerQuality: "unmeasured", trialsNotStarted: plan.workload.trials - trials.length, admissionStopped: budget.admissionStopped || budget.controller.signal.aborted, providerStop: budget.providerStop },
+      manifest: { ...plan, executionKind: kind, reservations: budget.used, actualTransportAttempts: null, inputAccounting: "estimated-controlled-text-plus-allowance", providerQuality: "unmeasured", trialsNotStarted: plan.workload.trials - trials.length, admissionStopped: budget.providerStop !== null || budget.admissionStopped || budget.controller.signal.aborted, providerStop: budget.providerStop },
       trials, capture, events: budget.events, summary: summarize(trials, budget.events, kind),
       review: { status: "pending", reviewerKind: null, rubric: "Judge source-supported correctness, stale claims, abstention, preference usefulness and capture propositions. A small stratified sample suffices; AI review is not human annotation.", groups: groups.map((group) => ({ groupId: group.id, source: sourceOnly(group), evaluation: group.evaluation })) },
     };
