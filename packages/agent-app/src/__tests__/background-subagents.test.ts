@@ -1303,16 +1303,16 @@ it("G10: failed close after retained acknowledgement preserves the pending quest
   // real values; only the clock is held still so host latency cannot expire the
   // 1500ms deadline before the provider settles. Two source facts make the
   // ordering deterministic (process-jobs-service reportManaged/publishManaged):
-  //  * publishManaged writes the retained ok disposition durably BEFORE it
-  //    publishes "confirm", so entering an unreleased ok confirm hook proves
+  //  * reportManaged writes the retained ok disposition durably BEFORE calling
+  //    publishManaged, so entering an unreleased ok confirm hook proves
   //    settlement=settled and disposition={ok,retained} are already on disk.
   //  * reportManaged publishes its own "intent" directly, outside the per-job
   //    managedPublications chain, so the timeout intent — carrying the
   //    continuity the product actually computed — is observable while the ok
   //    confirm is still held. Only the timeout's later publishManaged run
-  //    queues behind that held confirm, which is why the release below is
-  //    required to finish the publication, and why nothing released there can
-  //    change a disposition that is already durable.
+  //    queues behind that held confirm. Releasing it finishes publication;
+  //    retained continuity comes from the durable ok report, not from when
+  //    the held confirm resumes.
   const releaseConfirmation = deferred<void>();
   const confirmHeld = deferred<void>();
   const timeoutIntent = deferred<{ status: string; continuity?: string; reason?: string }>();
@@ -1366,7 +1366,7 @@ it("G10: failed close after retained acknowledgement preserves the pending quest
     // can complete, then await the durable record under real timers.
     releaseConfirmation.resolve();
     await vi.waitFor(async () => expect((await f.store.get(timedOut.details.jobId))?.subagentOwnership?.disposition)
-      .toMatchObject({ reason: "timeout", continuity: "retained" }), { timeout: 12_000 });
+      .toMatchObject({ reason: "timeout", continuity: "retained" }), { timeout: 8_000 });
     expect((await done(f.service, timedOut.details.jobId)).state).toBe("timed_out");
     expect(await f.instances.get("helper")).toMatchObject({ status: "awaiting_reply", pendingQuestion: { question: "Pending scope?" } });
 
@@ -1381,9 +1381,11 @@ it("G10: failed close after retained acknowledgement preserves the pending quest
     const duplicate = await failedTools.send.execute("failed-close-duplicate", request);
     expect(duplicate.details).toMatchObject({ executed: false, recovery: { code: "subagent_recovery_already_consumed" } });
     expect(failedRun).toHaveBeenCalledOnce();
+  } finally {
     // Restore the clock before ungating so a failure path never resumes the held
     // hook under fake timers, and never leaves the gate closed for teardown.
-  } finally { vi.useRealTimers(); releaseConfirmation.resolve(); }
+    vi.useRealTimers(); releaseConfirmation.resolve();
+  }
 }, 15_000);
 
 it("queue expiry releases the reservation without invoking the child", async () => {
