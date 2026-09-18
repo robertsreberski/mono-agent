@@ -1306,6 +1306,62 @@ describe("silent cron projections", () => {
   });
 });
 
+describe("preflight gate skips", () => {
+  async function fixture() {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]);
+    const thread = syncCronJob(store).jobs[0]!.threadId;
+    return { store, thread };
+  }
+
+  it("renders the bounded gate reason as the run state and not as a failure", async () => {
+    const { store, thread } = await fixture();
+    try {
+      const run = cronRun({
+        runId: "gate-skip",
+        sequence: 1,
+        status: "skipped_gate",
+        completedAt: "2026-08-14T10:05:01.000Z",
+        error: "no new items",
+      });
+      const messages = store.reconcileCronRuns("agent-one", "daily:brief", [run]);
+      expect(messages).toHaveLength(1);
+      expect(store.storedCronRuns("agent-one", "daily:brief").runs[0]).toMatchObject({
+        status: "skipped_gate",
+        completedAt: "2026-08-14T10:05:01.000Z",
+        error: "no new items",
+      });
+      const parts = store.getThreadDetail(thread)!.messages[0]!.parts;
+      expect(parts).toContainEqual({ type: "text", text: "no new items" });
+      expect(parts.some((part) => part.type === "error")).toBe(false);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("falls back to a plain explanation when the gate supplied no reason", async () => {
+    const { store, thread } = await fixture();
+    try {
+      const run = cronRun({
+        runId: "gate-skip-silent",
+        sequence: 2,
+        status: "skipped_gate",
+        completedAt: "2026-08-14T10:05:01.000Z",
+      });
+      store.reconcileCronRuns("agent-one", "daily:brief", [run]);
+      const parts = store.getThreadDetail(thread)!.messages[0]!.parts;
+      expect(parts).toContainEqual({
+        type: "text",
+        text: "Firing skipped by the job's preflight gate before any model turn.",
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+});
+
 describe("cron Reply operation storage", () => {
   const operationId = "11111111-1111-4111-8111-111111111111";
   const runId = "cron:daily%3Abrief:2026-09-08T10:00:00.000Z";
