@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix `WebSearch` budgets to charge answered searches, refund failed providers,
+  and count Ollama endpoint probes once. Bound network dispatches separately
+  and include provider failures in budget-exhaustion messages.
+
 - Fix conversation render crashes when switching between cached transcripts of
   different shapes. Add local technical details and copyable diagnostics to the
   conversation recovery panel, without uploading error reports.
