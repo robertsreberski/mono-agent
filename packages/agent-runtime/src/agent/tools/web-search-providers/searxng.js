@@ -64,7 +64,7 @@ async function searchSearxng(query, options) {
         "User-Agent": "mono-agent-web/1",
       },
       body,
-      signal: options.auto ? AbortSignal.any([options.signal, AbortSignal.timeout(3000)]) : requestSignal(options.signal),
+      signal: options.chained ? AbortSignal.any([options.signal, AbortSignal.timeout(3000)]) : requestSignal(options.signal),
       redirect: "error",
     });
     const text = await readLimitedText(response);

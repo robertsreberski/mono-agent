@@ -124,7 +124,7 @@ async function performSearch(
         config: { ...config, backend },
         coordinator,
         relevanceQuery: normalizedQuery, includeDomains, excludeDomains,
-        auto: config.backend === "auto" || Array.isArray(config.backend),
+        chained: Array.isArray(config.backend) && config.backend.length > 1,
         language,
         timeRange: time_range,
         sandbox,
@@ -174,12 +174,9 @@ async function performSearch(
     return false;
   };
 
-  // A broad primary query walks the eligible provider chain before any
-  // alternate wording. Auto includes Ollama only when its block was explicitly
-  // configured; all named backend modes remain strict.
-  const eligibleBackends = config.backend === "auto"
-    ? [...(config.ollama ? ["ollama"] : []), ...(config.endpoint ? ["searxng"] : []), "codex", "keyless"]
-    : Array.isArray(config.backend) ? config.backend : [config.backend];
+  // A primary query walks the explicit ordered chain before alternate wording.
+  // A single provider name remains strict; keyless is a virtual group.
+  const eligibleBackends = Array.isArray(config.backend) ? config.backend : [config.backend];
   const disabledForCall = new Set();
   let merged = [];
   for (let queryIndex = 0; queryIndex < initialQueries.length && merged.length === 0; queryIndex += 1) {
@@ -189,7 +186,7 @@ async function performSearch(
       // Subscription search remains exactly one turn per WebSearch call.
       if (webSearchProviders.get(backend)?.primaryOnly && queryIndex > 0) continue;
       const run = (stageSignal) => runQuery(candidate, backend, stageSignal);
-      const result = webSearchProviders.get(backend)?.chainDeadlineMs && (config.backend === "auto" || Array.isArray(config.backend))
+      const result = webSearchProviders.get(backend)?.chainDeadlineMs && eligibleBackends.length > 1
         ? await withWebDeadline(signal, webSearchProviders.get(backend).chainDeadlineMs, run)
         : await run(signal);
       const usable = recordResult(result);
@@ -231,7 +228,7 @@ async function performSearch(
     const networkDenied = providerFailures.length > 0
       && providerFailures.every((entry) => entry.message === "Network access denied by sandbox policy.");
     const throttled = providerFailures.some((entry) => entry.rateLimited || entry.cooldown);
-    const strictProviderCode = config.backend !== "auto" && !Array.isArray(config.backend)
+    const strictProviderCode = !Array.isArray(config.backend)
       ? providerFailures.find((entry) => typeof entry.code === "string")?.code
       : undefined;
     const retryAfterMs = shortestRetry(providerFailures);
@@ -390,11 +387,16 @@ export function mergeRankedResults(rankedLists, limit = 10) {
 }
 
 function normalizeSearchConfig(input) {
-  const backend = input?.backend ?? "auto";
+  const backend = input?.backend ?? ["parallel", "ollama"];
+  if (backend === "auto") {
+    const previous = [...(input?.ollama ? ["ollama"] : []), ...(input?.endpoint || input?.searxng?.endpoint ? ["searxng"] : []), "codex", "keyless"];
+    return { error: `tools.web.search.backend "auto" was removed; use ${JSON.stringify(previous)} (the previous auto order for this configuration)` };
+  }
   const names = Array.isArray(backend) ? backend : [backend];
-  if (!names.length || names.some((name) => name !== "auto" && name !== "keyless" && !webSearchProviders.has(name))) {
+  if (!names.length || names.some((name) => name !== "keyless" && !webSearchProviders.has(name))) {
     return { error: "Unknown web search provider." };
   }
+  if (new Set(names).size !== names.length) return { error: "Web search chain contains duplicate providers." };
   const maxRequestsPerRun = input?.maxRequestsPerRun ?? 4;
   if (!Number.isSafeInteger(maxRequestsPerRun) || maxRequestsPerRun < 1 || maxRequestsPerRun > MAX_WEB_SEARCH_REQUESTS_PER_RUN) {
     return { error: `Web search maxRequestsPerRun must be an integer from 1 to ${MAX_WEB_SEARCH_REQUESTS_PER_RUN}.` };
