@@ -8176,6 +8176,8 @@ function parseParts(value: string): WebMessagePart[] {
   }
   // monitor-activity parts were written by versions before monitors were removed;
   // they are dropped on read so retained conversations stay loadable.
+  // If ordinary recovery later rewrites the message, they are also dropped from
+  // storage. This is accepted because retired activity can no longer render.
   const parts = Array.isArray(parsed)
     ? parsed.filter((part: unknown) => !(typeof part === "object" && part !== null
       && !Array.isArray(part) && (part as Record<string, unknown>).type === "monitor-activity"))

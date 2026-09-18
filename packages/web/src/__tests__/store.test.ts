@@ -135,6 +135,41 @@ describe("WebStore", () => {
     } finally { raw.close(); store.close(); }
   });
 
+  it("discards unrenderable retired activity when recovery rewrites an interrupted historical message", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const stateDir = join(root, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Interrupted request", attachmentIds: [] });
+    const retained = [{ type: "text", text: "Before" }, { type: "reasoning", text: "After" }];
+    const historical = JSON.stringify([retained[0], { type: "monitor-activity", monitors: [] }, retained[1]]);
+    const raw = new DatabaseSync(store.paths.database);
+    try {
+      raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?").run(historical, turn.assistantMessageId);
+      store.close();
+      // Opening recovers the still-running turn. This ordinary rewrite deliberately
+      // drops retired, unrenderable activity rather than merging dead parts back in.
+      const reopened = await WebStore.open({ stateDir });
+      const expectedParts = [...retained, {
+        type: "error",
+        code: "interrupted",
+        message: "The web service restarted before this turn completed.",
+      }];
+      try {
+        expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)).toMatchObject({
+          status: "interrupted",
+          parts: expectedParts,
+        });
+        expect(reopened.getMessage(turn.assistantMessageId)?.parts).toEqual(expectedParts);
+      } finally { reopened.close(); }
+      const row = raw.prepare("SELECT parts_json FROM messages WHERE id = ?").get(turn.assistantMessageId) as { parts_json: string };
+      expect(JSON.parse(row.parts_json)).toEqual(expectedParts);
+      expect(row.parts_json).not.toContain("monitor-activity");
+    } finally { raw.close(); store.close(); }
+  });
+
   it("scopes chats before pagination and search while retaining webhook conversations", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

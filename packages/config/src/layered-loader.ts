@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import { assertNoRetiredMonoAgentConfigJson, readMonoAgentConfigJson } from "./json-source.js";
 import type {
   MonoAgentConfigJson,
@@ -18,7 +20,11 @@ export interface LoadMonoAgentConfigWithSourcesInput {
    * env always wins for fields present in both layers.
    */
   readonly jsonPath?: string;
+  /** Disable deprecation prose for callers that produce structured diagnostics. */
+  readonly warnOnDeprecatedConfig?: boolean;
 }
+
+const warnedDeprecatedConfigPaths = new Set<string>();
 
 /**
  * Layered loader: JSON file provides defaults, env vars override.
@@ -37,7 +43,10 @@ export async function loadMonoAgentConfigWithSources(
   const jsonLayer = input.jsonPath === undefined
     ? {}
     : (await readMonoAgentConfigJson(input.jsonPath)).json;
-  if (Object.hasOwn(jsonLayer, "monitors")) {
+  const configPath = input.jsonPath === undefined ? undefined : resolve(input.jsonPath);
+  if (configPath !== undefined && input.warnOnDeprecatedConfig !== false
+    && Object.hasOwn(jsonLayer, "monitors") && !warnedDeprecatedConfigPaths.has(configPath)) {
+    warnedDeprecatedConfigPaths.add(configPath);
     console.warn("[mono-agent] Ignoring deprecated monitors config: monitors were removed. Use background process jobs for finite work.");
   }
   // Validate raw JSON before flattening it into the string-only env surface.

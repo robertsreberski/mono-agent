@@ -447,7 +447,14 @@ export function monoAgentConfigWithSchema(config: MonoAgentConfigJson): MonoAgen
 }
 
 export function allConfigReferenceFields(): readonly ConfigReferenceField[] {
-  return [...CORE_FIELDS, ...APP_FIELDS, ...CHANNEL_FIELDS];
+  return [...CORE_FIELDS, ...APP_FIELDS, ...CHANNEL_FIELDS, {
+    jsonPath: "monitors",
+    env: "--",
+    type: "object",
+    defaultLabel: "unset",
+    example: {},
+    description: "Deprecated compatibility object. The whole object, including unknown nested keys, is accepted and ignored. Use background process jobs for finite work.",
+  }];
 }
 
 export function buildMonoAgentConfigSchema(): JsonSchema {

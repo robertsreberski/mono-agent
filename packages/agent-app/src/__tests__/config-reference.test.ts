@@ -177,6 +177,11 @@ describe("config reference", () => {
       description: "Deprecated and ignored. Monitors were removed; use background process jobs for finite work.",
     });
     expect(findUnknownAppConfigPaths({ monitors: { enabled: true, legacySetting: "ignored" } })).toEqual([]);
+    expect(allConfigReferenceFields()).toContainEqual(expect.objectContaining({
+      jsonPath: "monitors",
+      type: "object",
+      description: expect.stringContaining("including unknown nested keys, is accepted and ignored"),
+    }));
   });
   it("describes string and strict named subagent model choices", () => {
     const schema = buildMonoAgentConfigSchema();

@@ -3049,7 +3049,7 @@ it("layers cache retention JSON below nonempty environment", () => {
 
 
 describe("retired settings compatibility", () => {
-  it("loads and ignores a legacy monitors block with one deprecation warning", async () => {
+  it("loads and ignores legacy monitors blocks with at most one warning per resolved config path", async () => {
     const jsonPath = join(dir, "mono-agent.config.json");
     const config = { runtime: { model: "pi:openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" } };
     await writeFile(jsonPath, JSON.stringify(config));
@@ -3058,8 +3058,16 @@ describe("retired settings compatibility", () => {
     try {
       await writeFile(jsonPath, JSON.stringify({ ...config, monitors: { enabled: true, maxActive: 999 } }));
       expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath })).toEqual(baseline);
+      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: `${dir}/./mono-agent.config.json` })).toEqual(baseline);
+      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath })).toEqual(baseline);
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("Ignoring deprecated monitors config"));
+      const secondPath = join(dir, "second.config.json");
+      await writeFile(secondPath, JSON.stringify({ ...config, monitors: { unknownNestedKey: true } }));
+      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: secondPath, warnOnDeprecatedConfig: false })).toEqual(baseline);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: secondPath })).toEqual(baseline);
+      expect(warn).toHaveBeenCalledTimes(2);
     } finally { warn.mockRestore(); }
   });
 });

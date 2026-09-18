@@ -10,7 +10,8 @@
   Use background process jobs for finite work. Legacy `monitors` config is
   accepted with a deprecation warning but has no effect; historical storage
   remains dormant. Old conversations containing monitor activity stay readable,
-  but that activity no longer renders.
+  but that activity no longer renders and is discarded if ordinary recovery
+  rewrites its message.
 
 - Fix `WebSearch` budgets to charge answered searches, refund failed providers,
   and count Ollama endpoint probes once. Bound network dispatches separately

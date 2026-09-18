@@ -416,7 +416,7 @@ async function assembleResolvedConfigView(
   }
   let config;
   try {
-    config = await loadAppCoreConfig({ env, cwd, configPath });
+    config = await loadAppCoreConfig({ env, cwd, configPath }, { warnOnDeprecatedConfig: args.json !== true });
   } catch (error) {
     if (isAppCoreConfigError(error)) {
       return { ok: false, missing: jsonResult.missing, message: error.message };
