@@ -1207,7 +1207,7 @@
                   ]
                 },
                 "maxRequestsPerRun": {
-                  "description": "Hard ceiling from 1 to 20 on actual provider search requests in one logical runtime run; cache hits, coalesced followers, cooldown skips, and quota skips consume no request. Default 4.",
+                  "description": "Hard ceiling from 1 to 20 on answered provider searches in one logical runtime run, including empty answers; failures are refunded. Cache hits, coalesced followers, cooldown skips, and quota skips consume no request. A separate dispatch ceiling is four times this limit. Default 4.",
                   "examples": [
                     4
                   ],

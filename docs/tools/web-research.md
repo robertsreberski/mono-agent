@@ -140,16 +140,28 @@ constraints. Treat snippets as leads and use `WebFetch` on the strongest
 returned URLs before searching again. Supply alternate queries only when a
 material evidence gap remains; do not split a topic into many narrow searches.
 
-`maxRequestsPerRun` is a hard integer limit from 1 through 20 on actual provider
-search requests in one logical runtime run. It defaults to 4 and is shared by
+`maxRequestsPerRun` is a hard integer limit from 1 through 20 on answered
+provider searches in one logical runtime run. It defaults to 4 and is shared by
 runtime route retries. Each child agent and later run receives a fresh budget.
-Cache hits, in-flight followers, provider cooldown skips, and Codex quota skips
-consume zero requests. A local Ollama compatibility request to each of its two
-supported paths counts as two requests because both reach the provider. When
-the limit is exhausted, WebSearch deterministically returns
-`search_budget_exhausted`, `requestsUsed`, `requestsRemaining: 0`,
-`retryInRun: false`, and `nextAction: "use_available_evidence"` without sending
-another request.
+A successful provider response costs one request, including a well-formed empty
+answer. Failed attempts are refunded; cache hits, in-flight followers, provider
+cooldown skips, sandbox denials, and Codex quota skips consume zero requests.
+Reservations are synchronous, so concurrent searches cannot oversubscribe the
+budget while responses are pending.
+
+A separate, non-refundable ceiling of `maxRequestsPerRun * 4` provider dispatches
+(16 by default) bounds network work even when every attempt fails. A local Ollama
+compatibility probe across both supported paths costs one answered search if it
+succeeds, but two dispatches. Outcomes expose `dispatchesUsed`, `maxDispatches`,
+and `dispatchesRemaining` alongside the existing request counters.
+
+When either limit refuses a dispatch, WebSearch returns `search_budget_exhausted`,
+`requestsUsed`, `requestsRemaining`, `retryInRun: false`, and
+`nextAction: "use_available_evidence"` without sending that request. The message
+includes a bounded, deduplicated summary of actual provider failures in the run
+and known retry timing, not provider URLs or raw error bodies. If the dispatch
+ceiling was reached, it explicitly says the run spent its dispatches on failing
+providers; `requestsRemaining` may still be positive in that case.
 
 A provider that returns a rate limit is deferred for the rest of that run.
 `auto` advances immediately to the next eligible provider; named backends stay

@@ -313,6 +313,9 @@ Require the validation lines for the selected backend:
   **Ollama Web Search JSON probe succeeded.**
 - auto with Ollama configured: **WebSearch backend: auto.**, the successful
   Ollama and SearXNG probes, and **WebSearch request budget: 4 per logical run.**
+  The budget counts answered searches (including empty answers), not failed
+  attempts. A separate ceiling bounds dispatches to four times that budget;
+  exhaustion reports the actual provider failures.
 - every backend: **WebFetch browser rendering: never.**, or an `agent-browser`
   version at least 0.33.1 when rendering is enabled
 
