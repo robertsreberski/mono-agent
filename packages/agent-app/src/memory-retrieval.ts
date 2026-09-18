@@ -139,8 +139,9 @@ export class MemoryRetrievalService implements MemoryStore {
         }
         return undefined;
       }
+      const block = formatRecallBlock(hits, this.source, this.maxBytes, outcome.degradation);
       this.recordServed(turnId, hits);
-      return formatRecallBlock(hits, this.source, this.maxBytes, outcome.degradation);
+      return block;
     } finally {
       if (ephemeral) this.releaseTurn(turnId);
     }
@@ -151,7 +152,18 @@ export class MemoryRetrievalService implements MemoryStore {
     query: string,
     options: { readonly topK?: number; readonly trackAccess?: boolean; readonly expandHops?: 0 | 1 } = {},
   ): Promise<readonly SharedRecallHit[]> {
-    return (await this.recallOutcomeForTurn(turnId, query, options)).hits;
+    const outcome = await this.recallOutcomeForTurn(turnId, query, {
+      ...options,
+      // The statusless compatibility surface must decide whether it can serve
+      // before recording telemetry. Degraded hits are available only through
+      // recallOutcomeForTurn(), whose caller can preserve their status.
+      trackAccess: false,
+    });
+    if (outcome.degradation !== undefined) {
+      throw new Error("Memory recall is degraded; use status-bearing recall to inspect lexical-only results.");
+    }
+    if (options.trackAccess !== false) this.recordServed(turnId, outcome.hits);
+    return outcome.hits;
   }
 
   async recallOutcomeForTurn(
@@ -325,11 +337,13 @@ export function createSharedMemoryRecallRuntimeExtension(
       recallWithOutcome: (query, options) => service.recallOutcomeForTurn(runId, query, options),
       ...(graphEnabled ? {
         supportsGraphExpansion: () => true,
-        expandGraph: (query: string, _directHits: readonly SharedRecallHit[], graphOptions?: { readonly topK?: number }) => service.recallForTurn(runId, query, {
-          ...(graphOptions?.topK === undefined ? {} : { topK: graphOptions.topK }),
-          trackAccess: false,
-          expandHops: 1,
-        }),
+        expandGraph: async (query: string, _directHits: readonly SharedRecallHit[], graphOptions?: { readonly topK?: number }) => (
+          await service.recallOutcomeForTurn(runId, query, {
+            ...(graphOptions?.topK === undefined ? {} : { topK: graphOptions.topK }),
+            trackAccess: false,
+            expandHops: 1,
+          })
+        ).hits,
         recordAccess: (ids: readonly string[]) => service.recordAccessIdsForTurn(runId, ids),
       } : {}),
       close: async () => {},
@@ -454,13 +468,16 @@ function formatRecallBlock(
 ): MemoryBlock {
   const degradedHeading = "## Memory (recalled; lexical-only — semantic retrieval unavailable)";
   const compactDegradedHeading = "## Memory degraded: lexical-only";
-  const heading = degradation?.code === "embedding_unavailable"
-    ? Buffer.byteLength(degradedHeading, "utf8") <= maxBytes
-      ? degradedHeading
-      : Buffer.byteLength(compactDegradedHeading, "utf8") <= maxBytes
-        ? compactDegradedHeading
-        : "!"
-    : "## Memory (recalled)";
+  let heading = "## Memory (recalled)";
+  if (degradation?.code === "embedding_unavailable") {
+    const firstEvidence = `- ${formatRecallRecord(hits[0]!.record)}`;
+    heading = [degradedHeading, compactDegradedHeading].find((candidate) => (
+      Buffer.byteLength(`${candidate}\n\n${firstEvidence}`, "utf8") <= maxBytes
+    )) ?? "";
+    if (heading.length === 0) {
+      throw new Error("Semantic memory retrieval is unavailable; the memory byte budget cannot include lexical-only evidence.");
+    }
+  }
   const full = [heading, "", ...hits.map((hit) => `- ${formatRecallRecord(hit.record)}`)].join("\n");
   if (Buffer.byteLength(full, "utf8") <= maxBytes) {
     return { kind: "markdown", content: full, source, truncated: false };
