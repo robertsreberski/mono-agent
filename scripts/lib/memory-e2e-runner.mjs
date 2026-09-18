@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { ARMS, sourceOnly, contextFor } from "./memory-e2e-dataset.mjs";
-import { Budget, BenchmarkError, codeOf, captureLlm, meteredEmbeddings, meteredRuntime } from "./memory-e2e-providers.mjs";
+import { Budget, BenchmarkError, bounded, codeOf, captureLlm, meteredEmbeddings, meteredRuntime } from "./memory-e2e-providers.mjs";
 import { lexicalDiagnostic, summarize } from "./memory-e2e-report.mjs";
 
 /** Repository-local built imports: deliberately not a new public app API. */
@@ -25,11 +25,11 @@ export function readySnapshot(snapshot) {
 }
 
 /** A timeout returns no success; the caller must close/settle the owned store before deletion. */
-export async function awaitReady(store, timeoutMs) {
+export async function awaitReady(store, timeoutMs, budget) {
   let timer;
   try {
     await Promise.race([
-      store.flush(),
+      budget ? budget.track(store.flush()) : store.flush(),
       new Promise((_, reject) => { timer = setTimeout(() => reject(new BenchmarkError("readiness_timeout")), timeoutMs); }),
     ]);
     const snapshot = store.queueSnapshot();
@@ -37,6 +37,38 @@ export async function awaitReady(store, timeoutMs) {
     return snapshot;
   } finally { clearTimeout(timer); }
 }
+/** One overall cleanup deadline; no deletion unless producers and raw work settle. */
+export async function cleanupTrial({ reader, ingest, service, store, providers, budget }, timeoutMs = 10000) {
+  const deadline = performance.now() + timeoutMs;
+  const remaining = () => Math.max(0, deadline - performance.now());
+  const step = async (fn) => {
+    if (remaining() <= 0) throw new BenchmarkError("cleanup_timeout");
+    return await bounded(Promise.resolve().then(fn), { timeoutMs: remaining(), code: "cleanup_timeout" });
+  };
+  const all = async (resources) => {
+    const results = await Promise.allSettled(resources.map((fn) => budget.track(Promise.resolve().then(fn))));
+    if (results.some((result) => result.status === "rejected")) throw new BenchmarkError("cleanup_failed");
+  };
+  try {
+    // Harness disposal drains admitted runs before the store can finish its own
+    // downstream intake/capture/index producers. Never snapshot settlement concurrently.
+    await step(() => all([() => reader?.dispose(), () => ingest?.dispose()]));
+    service?.releaseAllTurns();
+    await step(() => all([() => store?.close()]));
+    const shutdown = store?.queueSnapshot().shutdown;
+    if (store && (!shutdown || shutdown.timedOut || shutdown.discarded > 0)) throw new BenchmarkError("store_shutdown_unsettled");
+    budget.stopAdmission();
+    await step(() => all([() => providers?.close()]));
+    await step(() => budget.settle(remaining()));
+    // Only a proven clean boundary can reopen admission for the next trial.
+    if (!budget.controller.signal.aborted) budget.admissionStopped = false;
+  } catch (error) {
+    budget.stopAdmission();
+    budget.controller.abort();
+    throw error;
+  }
+}
+
 async function directoryBytes(directory) {
   let bytes = 0;
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -55,12 +87,12 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
     const row = { ...tag, stage, status: "started", durationMs: null };
     budget.events.push(row);
     const start = performance.now();
-    try { const result = await fn(); row.status = "completed"; return result; }
+    try { const result = await budget.wait(Promise.resolve().then(() => { budget.reserve({}); return fn(); })); row.status = "completed"; return result; }
     catch (error) { row.status = codeOf(error); throw error; }
     finally { row.durationMs = performance.now() - start; }
   };
   try {
-    for (const group of groups) for (const arm of ARMS) {
+    trialsLoop: for (const group of groups) for (const arm of ARMS) {
       const source = sourceOnly(group);
       const tag = { groupId: group.id, arm };
       const trial = { ...tag, category: group.evaluation.category, status: "started", answer: null, automatic: [], tools: [], warnings: [], readiness: [], inventory: [], semanticGrade: null, humanGrade: null };
@@ -78,7 +110,7 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
         await mkdir(workspace, { mode: 0o700 });
         await mkdir(sessionsRoot, { mode: 0o700 });
         await writeFile(identityPath, "You are a helpful assistant. Answer the current request concisely using available evidence. Do not invent personal details.\n", { mode: 0o600 });
-        providers = await providerFactory({ workspace, sessionsRoot, tag, source, modules });
+        providers = await event(tag, "provider_setup", () => providerFactory({ workspace, sessionsRoot, tag, source, modules }));
         if (providers.kind !== kind) throw new BenchmarkError("provider_mode_mismatch");
         const memoryArm = ["lite", "journal", "bujo"].includes(arm);
         const base = {
@@ -123,7 +155,7 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
               sender: { displayName: turn.speaker }, abortSignal: budget.controller.signal,
             }));
             if (response.failure || trial.warnings.includes("memory_warning")) throw new BenchmarkError("admission_failed");
-            const snapshot = await event(tag, "readiness_wait", () => awaitReady(store, plan.perCall.readinessTimeoutMs));
+            const snapshot = await event(tag, "readiness_wait", () => awaitReady(store, plan.perCall.readinessTimeoutMs, budget));
             budget.events.push({ ...tag, stage: "admission_to_ready", status: "completed", durationMs: performance.now() - admissionStarted });
             if (snapshot.intake.resolved < admitted) throw new BenchmarkError("admission_unaccounted");
             trial.readiness.push({ turnId: turn.id, snapshot });
@@ -195,20 +227,23 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
           trial.status = "not_applicable"; trial.reason = "full_history_does_not_fit";
         }
       } finally {
+        const cleanupEvent = { ...tag, stage: "cleanup", status: "started", durationMs: null };
+        const cleanupStarted = performance.now();
+        budget.events.push(cleanupEvent);
         try {
-          await event(tag, "cleanup", async () => {
-            const harnesses = await Promise.allSettled([reader?.dispose(), ingest?.dispose()]);
-            service?.releaseAllTurns();
-            const resources = await Promise.allSettled([store?.close(), providers?.close(), budget.settle()]);
-            if ([...harnesses, ...resources].some((result) => result.status === "rejected")) throw new BenchmarkError("cleanup_failed");
-          });
-        } catch { cleanupOk = false; trial.primaryStatus = trial.status; trial.status = "cleanup_failed"; budget.controller.abort(); }
+          await cleanupTrial({ reader, ingest, service, store, providers, budget }, plan.perCall.cleanupTimeoutMs ?? 10000);
+          cleanupEvent.status = "completed";
+        } catch (error) {
+          cleanupEvent.status = codeOf(error);
+          cleanupOk = false; trial.primaryStatus = trial.status; trial.status = "cleanup_failed";
+        } finally { cleanupEvent.durationMs = performance.now() - cleanupStarted; }
         if (cleanupOk) await rm(work, { recursive: true, force: true });
         trial.cleanup = cleanupOk ? "removed_owned_store" : "retained_unsettled_owned_store";
       }
+      if (!cleanupOk || budget.controller.signal.aborted) break trialsLoop;
     }
     return {
-      manifest: { ...plan, executionKind: kind, reservations: budget.used, actualTransportAttempts: null, inputAccounting: "estimated-controlled-text-plus-allowance", providerQuality: "unmeasured" },
+      manifest: { ...plan, executionKind: kind, reservations: budget.used, actualTransportAttempts: null, inputAccounting: "estimated-controlled-text-plus-allowance", providerQuality: "unmeasured", trialsNotStarted: plan.workload.trials - trials.length, admissionStopped: budget.admissionStopped || budget.controller.signal.aborted },
       trials, capture, events: budget.events, summary: summarize(trials, budget.events, kind),
       review: { status: "pending", reviewerKind: null, rubric: "Judge source-supported correctness, stale claims, abstention, preference usefulness and capture propositions. A small stratified sample suffices; AI review is not human annotation.", groups: groups.map((group) => ({ groupId: group.id, source: sourceOnly(group), evaluation: group.evaluation })) },
     };

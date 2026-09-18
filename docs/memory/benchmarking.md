@@ -161,6 +161,17 @@ node scripts/memory-e2e-benchmark.mjs --real --split development \
   --confirm-plan DIGEST_FROM_DRY_RUN
 ```
 
+The direct `--real` command requires a clean, unchanged HEAD and always removes
+and rebuilds only the app dependency closure's generated `dist`/`types` directories
+before importing production modules. The confirmation digest pins that build
+policy and source revision; the resulting manifest records the build command,
+package closure, source HEAD, Node version and SHA-256 of generated closure bytes. The runtime package ships
+tracked JavaScript, pinned by the source HEAD, plus generated declarations.
+HEAD/dirt and output identity are checked again before provider construction for
+each trial. A failed build or changed source/output refuses admission. Building
+does not itself authorize provider calls. Existing offline `dist` remains
+explicitly **unverified**, even when the offline manifest reports a clean HEAD.
+
 The reader and extractor use separate fallback-free `MonoRuntimeLike` runtimes;
 `LlmComplete` forwards the strict production prompt unchanged, with the existing
 maintenance system prompt, no tools and one model step. The built-in embedding
@@ -195,8 +206,18 @@ repeats or external suites. Concurrency is one. The initial workload ceilings ar
 
 Each reader reserves at most three model steps with a 512-token output limit;
 each extraction/reconciliation step reserves 2,048 output tokens. Model calls
-have a 60-second abort deadline, embeddings a 10-second provider timeout, each
-readiness barrier 120 seconds, and cleanup a 10-second settlement reserve.
+have a 60-second full-promise deadline, embeddings a 10-second full-promise
+deadline (including response bodies), each readiness barrier 120 seconds, and
+cleanup one overall 10-second deadline. Global cancellation also bounds these
+awaits; the original raw promises remain tracked independently of the wrappers.
+Cleanup first quiesces harnesses and the store, rejects a timed-out/discarded
+store shutdown even when `close()` resolves, then closes providers and proves
+stable raw-promise settlement. Any uncertainty retains the owned store and
+stops further trials; unstarted trial count and the safe failure stage remain
+in the report. After writing a failed report the standalone CLI exits even if
+an uncooperative transport retains sockets; that is not proof of remote request
+cancellation or billing termination.
+
 Budget exhaustion or cancellation is visible and does not become abstention.
 Reservations are charged before dispatch and are not released as zero when
 usage is missing. Configured model-step and embedding-call bounds do **not**

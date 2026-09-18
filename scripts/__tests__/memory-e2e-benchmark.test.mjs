@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFile, mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
+import { readFile, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, loadCorpus, makePlan, sourceOnly, contextFor, validateCorpus } from "../lib/memory-e2e-dataset.mjs";
-import { Budget, captureLlm, meteredRuntime, scriptedProviders, usageOf } from "../lib/memory-e2e-providers.mjs";
+import { Budget, captureLlm, meteredEmbeddings, meteredRuntime, scriptedProviders, usageOf } from "../lib/memory-e2e-providers.mjs";
 import { percentiles, ratio, lexicalDiagnostic, safeArtifact, ownedParent } from "../lib/memory-e2e-report.mjs";
-import { awaitReady, readySnapshot } from "../lib/memory-e2e-runner.mjs";
+import { awaitReady, cleanupTrial, readySnapshot } from "../lib/memory-e2e-runner.mjs";
+import { prepareRealBuild, verifyRealBuild, BUILD_POLICY } from "../lib/memory-e2e-build.mjs";
 import { main, parseArguments, profileFrom } from "../memory-e2e-benchmark.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -18,7 +20,7 @@ const ready = { intake: { pending: 0, dead: 0, due: 0, transitioning: 0, retryin
 describe("memory E2E benchmark contracts (not model quality)", () => {
   it("freezes the fictional corpus and covers the five arms/six evaluation categories", async () => {
     const { corpus, sha256, plan } = await setup();
-    expect(sha256).toMatch(/^[0-9a-f]{64}$/u);
+    expect(sha256).toBe("db8fe538f1abbd94511f95c356b111e5eca33cdb2e15fb2ccdaee9681b6889c0");
     expect(corpus.groups).toHaveLength(8);
     expect(new Set(corpus.groups.filter((g) => g.split === "evaluation").map((g) => g.evaluation.category)).size).toBe(6);
     expect(plan.arms).toEqual(ARMS);
@@ -50,6 +52,15 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(() => parseArguments(["--memory-path", "/private"])).toThrow();
     expect(() => parseArguments(["--real", "--real"])).toThrow();
     expect(() => profileFrom({ reader: "openai:model" })).toThrow("incomplete_profile");
+  });
+  it("the direct confirmed real command cannot import production/providers before a required build", async () => {
+    const profile = ["--reader", "fixture:reader", "--extractor", "fixture:extractor", "--embedding-provider", "ollama", "--embedding-model", "fixture", "--dimension", "8"];
+    let plan;
+    await main(["--dry-run", ...profile], { stdout: (text) => { plan = JSON.parse(text); } });
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
+    const prepareBuild = vi.fn(async () => { throw new Error("synthetic_build_refused"); });
+    await expect(main(["--real", ...profile, "--confirm-plan", plan.confirmation], { prepareBuild })).rejects.toThrow("synthetic_build_refused");
+    expect(prepareBuild).toHaveBeenCalledOnce(); expect(network).not.toHaveBeenCalled();
   });
   it("flush alone cannot certify pending, dead, dropped, delayed or missing index work", async () => {
     expect(readySnapshot(ready)).toBe(true);
@@ -86,6 +97,138 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     finish(); await budget.settle(10);
     expect(budget.pending.size).toBe(0);
   });
+  it.each(["deadline", "global abort"])("bounds an embedding body pending after headers: %s", async (mode) => {
+    const { budget } = await setup();
+    budget.plan.perCall.embeddingTimeoutMs = mode === "deadline" ? 10 : 1000;
+    let rejectBody;
+    const body = new Promise((_, reject) => { rejectBody = reject; });
+    const headers = vi.fn(async () => ({ json: () => body }));
+    const embeddings = meteredEmbeddings({ id: "fixture", embed: async () => (await headers()).json() }, { budget, tag: {} });
+    const pending = embeddings.embed(["fictional"]);
+    const rejected = expect(pending).rejects.toThrow("embedding_timeout_or_cancelled");
+    if (mode === "global abort") budget.controller.abort();
+    await rejected;
+    expect(headers).toHaveBeenCalledOnce();
+    expect(budget.events[0].status).toBe("embedding_timeout_or_cancelled");
+    expect(budget.pending.size).toBe(1);
+    await expect(embeddings.embed(["not admitted"])).rejects.toThrow("provider_admission_stopped");
+    await expect(budget.settle(5)).rejects.toThrow("provider_settlement_unknown");
+    rejectBody(new Error("late private failure"));
+    await budget.settle(100);
+  });
+  it("bounds a non-cooperative reader and retains its original promise", async () => {
+    const { budget } = await setup(); budget.plan.perCall.callTimeoutMs = 10;
+    let finish;
+    const raw = new Promise((resolve) => { finish = resolve; });
+    await expect(meteredRuntime({ run: () => raw }, { budget, stage: "reader", tag: {} }).run("s", { messages: [] })).rejects.toThrow("provider_timeout_or_cancelled");
+    expect(budget.pending.has(raw)).toBe(true);
+    expect(budget.controller.signal.aborted).toBe(true);
+    finish({ text: "late answer" }); await budget.settle(100);
+  });
+  it("settlement follows promises created by a capture continuation", async () => {
+    const { budget } = await setup(); let finishCapture, finishEmbedding;
+    const capture = budget.track(new Promise((resolve) => { finishCapture = resolve; }));
+    capture.then(() => budget.track(new Promise((resolve) => { finishEmbedding = resolve; })));
+    const settlement = budget.settle(10);
+    const rejected = expect(settlement).rejects.toThrow("provider_settlement_unknown");
+    finishCapture(); await rejected;
+    expect(budget.pending.size).toBe(1);
+    finishEmbedding(); await budget.settle(100);
+  });
+  it.each([{ timedOut: true, discarded: 0 }, { timedOut: false, discarded: 1 }])("rejects resolved store close with abandoned drain %j", async (shutdown) => {
+    const { budget } = await setup(); const close = vi.fn(async () => {});
+    await expect(cleanupTrial({ budget, store: { close, queueSnapshot: () => ({ shutdown }) } }, 100)).rejects.toThrow("store_shutdown_unsettled");
+    expect(close).toHaveBeenCalledOnce();
+    expect(budget.admissionStopped).toBe(true);
+  });
+  it("quiesces producers before the final stable settlement check", async () => {
+    const { budget } = await setup(); let finish;
+    const order = [];
+    const store = { queueSnapshot: () => ready, close: async () => {
+      order.push("store");
+      budget.track(new Promise((resolve) => { finish = resolve; }));
+    } };
+    const result = cleanupTrial({ budget, reader: { dispose: async () => { order.push("reader"); } }, store, providers: { close: async () => { order.push("providers"); } } }, 20);
+    await expect(result).rejects.toThrow(/cleanup_timeout|provider_settlement_unknown/u);
+    expect(order).toEqual(["reader", "store", "providers"]);
+    expect(budget.pending.size).toBe(1);
+    finish(); await budget.settle(100);
+  });
+  it("bounds harness/provider disposal under one cleanup deadline", async () => {
+    for (const resource of ["reader", "providers"]) {
+      const { budget } = await setup(); let fail;
+      const raw = new Promise((_, reject) => { fail = reject; });
+      await expect(cleanupTrial({ budget, [resource]: { dispose: () => raw, close: () => raw } }, 10)).rejects.toThrow("cleanup_timeout");
+      expect(budget.admissionStopped).toBe(true);
+      fail(new Error("late failure")); await budget.settle(100);
+    }
+  });
+  it("necessarily removes stale dist and rebuilds the source-pinned closure before attesting outputs", async () => {
+    const directory = await mkdtemp(join(await ownedParent(root), "build-test-")); dirs.push(directory);
+    const path = join(directory, "packages/agent-app"); await mkdir(join(path, "dist"), { recursive: true });
+    await writeFile(join(path, "dist/stale.js"), "stale source");
+    const calls = [];
+    const exec = (command, args) => {
+      calls.push([command, args]);
+      if (command === "git") return args.includes("rev-parse") ? "HEAD_A" : "";
+      if (args.includes("list")) return JSON.stringify([{ path }]);
+      // The synchronous production build is replaced only by a local synthetic writer.
+      expect(args).toEqual(["--filter", "@mono-agent/agent-app...", "run", "build"]);
+      return "";
+    };
+    // No output from a purported successful build must fail, not certify stale bytes.
+    await expect(prepareRealBuild(directory, "HEAD_A", { exec })).rejects.toThrow();
+    await expect(readFile(join(path, "dist/stale.js"))).rejects.toThrow();
+    expect(calls.some(([command, args]) => command === "pnpm" && args.includes("build"))).toBe(true);
+    expect(BUILD_POLICY).toBe("fresh-clean-head-agent-app-closure-v1");
+  });
+  it("records fresh output/source identity after a successful synthetic closure build", async () => {
+    const directory = await mkdtemp(join(await ownedParent(root), "build-good-")); dirs.push(directory);
+    const path = join(directory, "packages/agent-app"); await mkdir(path, { recursive: true });
+    const exec = (command, args) => {
+      if (command === "git") return args.includes("rev-parse") ? "HEAD_A" : "";
+      if (args.includes("list")) return JSON.stringify([{ path }]);
+      mkdirSync(join(path, "dist")); writeFileSync(join(path, "dist/index.js"), "fresh output"); return "";
+    };
+    const build = await prepareRealBuild(directory, "HEAD_A", { exec });
+    expect(build).toMatchObject({ policy: BUILD_POLICY, sourceHead: "HEAD_A", packages: ["packages/agent-app"] });
+    expect(build.outputSha256).toMatch(/^[0-9a-f]{64}$/u);
+    expect((await setup()).plan.realBuildPolicy).toBe(BUILD_POLICY);
+    await verifyRealBuild(directory, build, { exec });
+    await writeFile(join(path, "dist/index.js"), "changed after build");
+    await expect(verifyRealBuild(directory, build, { exec })).rejects.toThrow("build_output_changed");
+    await expect(verifyRealBuild(directory, build, { exec: (_command, args) => args.includes("rev-parse") ? "HEAD_B" : "" })).rejects.toThrow("build_source_changed_or_dirty");
+  });
+  it("handles the source-JavaScript runtime's generated declarations without requiring dist", async () => {
+    const directory = await mkdtemp(join(await ownedParent(root), "build-runtime-")); dirs.push(directory);
+    const app = join(directory, "packages/agent-app"); const runtime = join(directory, "packages/agent-runtime");
+    await mkdir(app, { recursive: true }); await mkdir(join(runtime, "src"), { recursive: true });
+    await mkdir(join(runtime, "types")); await writeFile(join(runtime, "types/stale.d.ts"), "stale");
+    await writeFile(join(runtime, "src/index.js"), "tracked source");
+    const exec = (command, args) => {
+      if (command === "git") return args.includes("rev-parse") ? "HEAD_A" : "";
+      if (args.includes("list")) return JSON.stringify([{ path: app }, { path: runtime }]);
+      mkdirSync(join(app, "dist")); writeFileSync(join(app, "dist/index.js"), "fresh output");
+      mkdirSync(join(runtime, "types")); writeFileSync(join(runtime, "types/index.d.ts"), "fresh types"); return "";
+    };
+    const build = await prepareRealBuild(directory, "HEAD_A", { exec });
+    expect(build.outputRoots).toEqual(["packages/agent-app/dist", "packages/agent-runtime/types"]);
+    await expect(readFile(join(runtime, "types/stale.d.ts"))).rejects.toThrow();
+    expect(await readFile(join(runtime, "src/index.js"), "utf8")).toBe("tracked source");
+    await verifyRealBuild(directory, build, { exec });
+  });
+  it.each(["head", "dirt"])("rejects source %s drift during build before provider admission", async (mode) => {
+    const directory = await mkdtemp(join(await ownedParent(root), "build-drift-")); dirs.push(directory);
+    const path = join(directory, "packages/agent-app"); await mkdir(path, { recursive: true });
+    let built = false;
+    const exec = (command, args) => {
+      if (command === "git") return args.includes("rev-parse") ? (built && mode === "head" ? "HEAD_B" : "HEAD_A") : (built && mode === "dirt" ? " M source" : "");
+      if (args.includes("list")) return JSON.stringify([{ path }]);
+      built = true; return "";
+    };
+    await expect(prepareRealBuild(directory, "HEAD_A", { exec })).rejects.toThrow("build_source_changed_or_dirty");
+    expect(built).toBe(true);
+  });
   it("preserves capture prompt and no-tool provider shape, rejects provider failures", async () => {
     const { budget } = await setup(); const run = vi.fn(async () => ({ text: "{}" }));
     const llm = captureLlm({ run }, { model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag: {} });
@@ -105,8 +248,8 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(lexicalDiagnostic("amber or violet", gold, "real").value).toBe(false);
   });
   it("redacts path/credential/endpoint canaries without treating unknown values as zero", () => {
-    const safe = JSON.stringify(safeArtifact({ prompt: "/Users/private/memory sk-123456789012 https://host/?token=secret", headers: { Authorization: "Bearer canary" }, cost: null, answer: "Fictional cobalt." }));
-    expect(safe).not.toMatch(/private|123456789012|Bearer|host\//u);
+    const safe = JSON.stringify(safeArtifact({ prompt: "/Users/example/memory sk-123456789012 https://host/?token=secret", headers: { Authorization: "Bearer canary" }, cost: null, answer: "Fictional cobalt." }));
+    expect(safe).not.toMatch(/example|123456789012|Bearer|host\//u);
     expect(JSON.parse(safe)).toMatchObject({ cost: null, answer: "Fictional cobalt." });
   });
   it("refuses symlinked output ancestors", async () => {

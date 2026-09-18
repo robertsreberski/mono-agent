@@ -166,6 +166,60 @@ describe("fictional E2E production-path contract, not model quality", () => {
     } finally { budget.close(); await extension.cleanup(); service.releaseAllTurns(); await memory.close(); }
   }, 30000);
 
+  it.each(["deadline", "global abort"])("bounds the production embedding response body after headers: %s", async (mode) => {
+    const input = await fixture();
+    input.plan.perCall.embeddingTimeoutMs = mode === "deadline" ? 10 : 1000;
+    let rejectBody!: (error: Error) => void;
+    const body = new Promise((_, reject) => { rejectBody = reject; });
+    let bodyStarted!: () => void;
+    const started = new Promise<void>((resolve) => { bodyStarted = resolve; });
+    const text = vi.fn(() => { bodyStarted(); return body; });
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, text } as unknown as Response);
+    const budget = new input.providers.Budget(input.plan);
+    try {
+      const raw = search.createEmbeddingProvider({ provider: "ollama", model: "fixture", timeoutMs: 5 });
+      const embeddings = input.providers.meteredEmbeddings(raw, { budget, tag: {} });
+      const pending = embeddings.embed(["fictional body"]);
+      const rejected = expect(pending).rejects.toThrow("embedding_timeout_or_cancelled");
+      await started;
+      expect(text).toHaveBeenCalledOnce();
+      if (mode === "global abort") budget.controller.abort();
+      await rejected;
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(budget.pending.size).toBe(1);
+      await expect(budget.settle(5)).rejects.toThrow("provider_settlement_unknown");
+      rejectBody(new Error("late synthetic failure")); await budget.settle(100);
+    } finally { budget.close(); }
+  });
+
+  it("reports a non-cooperative reader boundedly, retains owned state, and stops trials", async () => {
+    const input = await fixture(); input.plan.perCall.callTimeoutMs = 10; input.plan.perCall.cleanupTimeoutMs = 30;
+    let rejectRun!: (error: Error) => void;
+    const raw = new Promise((_, reject) => { rejectRun = reject; });
+    const factory = vi.fn((args: any) => ({ ...input.providers.scriptedProviders(args), reader: { run: () => raw } }));
+    const report = await input.runner.runBenchmark({ ...input, providerFactory: factory });
+    expect(factory).toHaveBeenCalledOnce(); expect(report.trials).toHaveLength(1);
+    expect(report.trials[0]).toMatchObject({ status: "cleanup_failed", primaryStatus: "provider_timeout_or_cancelled", cleanup: "retained_unsettled_owned_store" });
+    expect(report.manifest).toMatchObject({ admissionStopped: true, trialsNotStarted: 9 });
+    expect((await readdir(input.directory)).filter((name) => name.startsWith("work-"))).toHaveLength(1);
+    rejectRun(new Error("late synthetic failure")); await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  it.each([{ timedOut: true, discarded: 0 }, { timedOut: false, discarded: 1 }])("retains owned store on resolved but abandoned shutdown %j", async (shutdown) => {
+    const input = await fixture();
+    const factory = vi.fn(input.providerFactory);
+    const report = await input.runner.runBenchmark({ ...input, providerFactory: factory, hooks: {
+      store: (memory: bujo.BujoMemoryStore) => {
+        const close = memory.close.bind(memory); const snapshot = memory.queueSnapshot.bind(memory);
+        memory.close = async () => { await close(); memory.queueSnapshot = () => ({ ...snapshot(), shutdown: { ...snapshot().shutdown, ...shutdown } }); };
+      },
+    } });
+    expect(factory).toHaveBeenCalledTimes(3); expect(report.trials).toHaveLength(3);
+    expect(report.trials[2]).toMatchObject({ arm: "lite", status: "cleanup_failed", cleanup: "retained_unsettled_owned_store" });
+    expect(report.events.at(-1)).toMatchObject({ stage: "cleanup", status: "store_shutdown_unsettled" });
+    expect((await readdir(input.directory)).filter((name) => name.startsWith("work-"))).toHaveLength(1);
+  });
+
   it("fails real/scripted mode mismatch without constructing a substitute provider", async () => {
     const input = await fixture();
     const report = await input.runner.runBenchmark({ ...input, kind: "real" });

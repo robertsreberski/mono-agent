@@ -14,11 +14,13 @@ export class Budget {
     this.used = { chatSteps: 0, embeddingCalls: 0, estimatedInputTokens: 0, outputTokens: 0 };
     this.events = [];
     this.pending = new Set();
+    this.admissionStopped = false;
+    this.generation = 0;
     this.controller = new AbortController();
     this.timer = setTimeout(() => this.controller.abort(), plan.limits.runtimeMs - 10000);
-    this.timer.unref?.();
   }
   reserve(cost) {
+    if (this.admissionStopped) throw new BenchmarkError("provider_admission_stopped");
     if (this.controller.signal.aborted || performance.now() - this.started >= this.plan.limits.runtimeMs - 10000) throw new BenchmarkError("runtime_budget_exhausted");
     for (const [key, amount] of Object.entries(cost)) {
       if (!Number.isFinite(amount) || amount < 0 || this.used[key] + amount > this.plan.limits[key]) throw new BenchmarkError("budget_exhausted");
@@ -26,17 +28,49 @@ export class Budget {
     for (const [key, amount] of Object.entries(cost)) this.used[key] += amount;
   }
   track(promise) {
+    promise = Promise.resolve(promise);
+    this.generation += 1;
     this.pending.add(promise);
     promise.then(() => this.pending.delete(promise), () => this.pending.delete(promise));
     return promise;
   }
+  stopAdmission() { this.admissionStopped = true; }
+  /** Track the original operation, never the raced wrapper: abort is not settlement. */
+  wait(promise, { timeoutMs, signal = this.controller.signal, code = "runtime_budget_exhausted" } = {}) {
+    return bounded(this.track(promise), { timeoutMs, signal, code: () => this.controller.signal.reason instanceof BenchmarkError ? this.controller.signal.reason.code : code, onCancel: () => {
+      this.stopAdmission();
+      this.controller.abort(new BenchmarkError(code));
+    } });
+  }
+  // Call after producers have quiesced. Drain new generations as well as the initial
+  // snapshot; a capture continuation can enqueue an embedding while we are waiting.
   async settle(timeoutMs = 10000) {
-    let timer;
-    try {
-      await Promise.race([Promise.allSettled([...this.pending]), new Promise((_, reject) => { timer = setTimeout(() => reject(new BenchmarkError("provider_settlement_unknown")), timeoutMs); })]);
-    } finally { clearTimeout(timer); }
+    const deadline = performance.now() + timeoutMs;
+    do {
+      const generation = this.generation;
+      await bounded(Promise.allSettled([...this.pending]), {
+        timeoutMs: Math.max(0, deadline - performance.now()), code: "provider_settlement_unknown",
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      if (this.pending.size === 0 && this.generation === generation) return;
+      if (performance.now() >= deadline) throw new BenchmarkError("provider_settlement_unknown");
+    } while (true);
   }
   close() { clearTimeout(this.timer); }
+}
+
+/** Full-promise deadline, including bodies/tool continuations; consumes late rejection. */
+export function bounded(promise, { timeoutMs, signal, code, onCancel } = {}) {
+  return new Promise((resolve, reject) => {
+    let timer;
+    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", cancel); };
+    const cancel = () => { cleanup(); onCancel?.(); reject(new BenchmarkError(typeof code === "function" ? code() : code)); };
+    // Install handlers even when already cancelled so late failures are never unhandled.
+    Promise.resolve(promise).then((value) => { cleanup(); resolve(value); }, (error) => { cleanup(); reject(error); });
+    if (signal?.aborted) { cancel(); return; }
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (timeoutMs !== undefined) timer = setTimeout(cancel, timeoutMs);
+  });
 }
 
 /** Version-coupled existing Pi check cap; never pass an ignored generic maxTokens option. */
@@ -71,19 +105,20 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
       budget.reserve({ chatSteps: cap.maxTurns, outputTokens: cap.providerCheckMaxTokens * cap.maxTurns, estimatedInputTokens: estimated * cap.maxTurns });
       const started = clock();
       const timeout = AbortSignal.timeout(budget.plan.perCall.callTimeoutMs);
-      const signal = AbortSignal.any([options.abortSignal, budget.controller.signal, timeout]);
+      const signal = AbortSignal.any([options.abortSignal, budget.controller.signal, timeout].filter(Boolean));
       const event = { ...tag, stage, status: "started", configuredStepsReserved: cap.maxTurns, estimatedInputTokensReserved: estimated * cap.maxTurns, outputTokensReserved: cap.providerCheckMaxTokens * cap.maxTurns, transportAttempts: null, usage: usageOf(null), costUsd: null, requestedModel: options.model?.reference ?? null, executedModel: null, observedContext: [], durationMs: null };
       budget.events.push(event);
       let compacted = false;
       try {
-        const result = await budget.track(runtime.run(system, {
+        if (signal.aborted) throw new BenchmarkError("provider_timeout_or_cancelled");
+        const result = await budget.wait(runtime.run(system, {
           ...options, ...cap, abortSignal: signal,
           onEvent: (value) => {
             if (/compact/iu.test(String(value?.type ?? ""))) compacted = true;
             if (value?.type === "context_usage") event.observedContext.push({ ...usageOf(value.tokens), contextWindow: finite(value.contextWindow), totalContextTokens: finite(value.tokens?.total), providerCostUsd: finite(value.providerCostUsd) });
             options.onEvent?.(value);
           },
-        }));
+        }), { signal, timeoutMs: budget.plan.perCall.callTimeoutMs, code: "provider_timeout_or_cancelled" });
         event.usage = usageOf(result.usage);
         event.runtimeReportedCostUsd = finite(typeof result.cost === "number" ? result.cost : result.cost?.totalCost);
         // Runtime cost may be estimated. Only explicitly provider-labelled costs enter this field.
@@ -130,8 +165,17 @@ export function meteredEmbeddings(provider, { budget, tag }) {
       const event = { ...tag, stage: "embedding", textCount: texts.length, status: "started", usage: usageOf(null), costUsd: null, transportAttempts: null, durationMs: null };
       budget.events.push(event);
       const start = performance.now();
-      try { const result = await budget.track(provider.embed(texts, options)); event.status = "completed"; return result; }
-      catch { event.status = "embedding_failed"; throw new BenchmarkError("embedding_failed"); }
+      const signal = AbortSignal.any([options?.abortSignal, budget.controller.signal, AbortSignal.timeout(budget.plan.perCall.embeddingTimeoutMs)].filter(Boolean));
+      try {
+        if (signal.aborted) throw new BenchmarkError("embedding_timeout_or_cancelled");
+        const result = await budget.wait(provider.embed(texts, { ...options, abortSignal: signal }), {
+          signal, timeoutMs: budget.plan.perCall.embeddingTimeoutMs, code: "embedding_timeout_or_cancelled",
+        });
+        event.status = "completed"; return result;
+      } catch (error) {
+        event.status = signal.aborted ? "embedding_timeout_or_cancelled" : error instanceof BenchmarkError ? error.code : "embedding_failed";
+        throw new BenchmarkError(event.status);
+      }
       finally { event.durationMs = performance.now() - start; }
     },
   };

@@ -2,10 +2,6 @@
 
 ## Unreleased
 
-- Add an isolated, opt-in conversational memory benchmark with production
-  completed-turn capture, readiness checks, recall tools, and five baseline
-  arms. Keep offline contract results separate from unmeasured model quality.
-
 - Make supported Anthropic prompt-cache retention one hour by default, including
   child routes. Set `providers.piNative.cacheRetention` to `"short"` to opt out
   of the higher cache-write price; resolved settings override Pi ambient env.
@@ -17,6 +13,12 @@
 - Fix conversation render crashes when switching between cached transcripts of
   different shapes. Add local technical details and copyable diagnostics to the
   conversation recovery panel, without uploading error reports.
+
+- Add an isolated, opt-in conversational memory benchmark with production
+  completed-turn capture, readiness checks, recall tools, and five baseline
+  arms. Keep offline contract results separate from unmeasured model quality.
+  Bound provider waits and cleanup, retain uncertain stores, and rebuild a
+  source-pinned dependency closure before real-provider admission.
 
 - Let `AgentSend` accept and ignore an optional `description` when stopping a
   subagent, and explain invalid stop requests with specific codes and messages.
