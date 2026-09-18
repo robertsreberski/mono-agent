@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add an isolated, opt-in conversational memory benchmark with production
+  completed-turn capture, readiness checks, recall tools, and five baseline
+  arms. Keep offline contract results separate from unmeasured model quality.
+
 - Make supported Anthropic prompt-cache retention one hour by default, including
   child routes. Set `providers.piNative.cacheRetention` to `"short"` to opt out
   of the higher cache-write price; resolved settings override Pi ambient env.

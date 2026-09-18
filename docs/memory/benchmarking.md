@@ -63,3 +63,223 @@ The optional adapters target the upstream [LongMemEval](https://github.com/xiaow
 LongMemEval abstention is recognized only from a `question_id` ending in `_abs`; answer-session ids that cannot map to the supplied haystack are rejected. LoCoMo rows with ordinary missing evidence are left unevaluated, while numeric category `5` is deliberately treated as the adversarial/unanswerable class for the retrieval abstention metric. That category-5 treatment differs from standard LoCoMo QA reporting, which commonly excludes those rows. The adapters never download data or contact a provider unless the operator supplies the dataset/provider flags.
 
 Do not point this benchmark at an agent's configured memory path. It intentionally owns and removes only the temporary store it creates.
+
+## Conversational end-to-end benchmark
+
+The separate `memory-e2e-benchmark` measures the **pipeline**, not just preinserted
+retrieval. It replays frozen fictional user/assistant turns through the real
+harness's `persistCompletedTurn` boundary, waits for strict capture/indexing,
+then asks a fresh reader to answer using production automatic recall and the
+actual `MemoryRecall` and `MemoryJournal` MCP tools. It does not change the
+production memory algorithm or the fast gate above.
+
+```bash
+# Provider-free manifest: no build, provider construction, credentials or downloads
+pnpm run benchmark:memory:e2e:dry-run
+
+# Build the dependency closure and run the scripted offline contract smoke
+pnpm run benchmark:memory:e2e
+
+# Once built, the direct entrypoint also defaults to the offline contract
+node scripts/memory-e2e-benchmark.mjs
+node scripts/memory-e2e-benchmark.mjs --split evaluation
+```
+
+**Offline results are not model quality.** Historical assistant messages are
+frozen source data; offline extraction, embeddings and final responses are
+additionally scripted. The contract smoke exercises real disposable SQLite,
+strict capture parsing, durable intake, shared retrieval and loopback MCP. It
+never reports scripted correctness as a real quality score. The default
+historical replay avoids reader calls and automatic recall during ingestion;
+it is not a live-channel or whole configured-app lifecycle benchmark.
+
+### Corpus and arms
+
+`fictional-v1` has two development and six frozen evaluation histories. Each has
+four completed turns across three dated sessions and one later question. The
+six evaluation categories are named-speaker direct recall, correction/current
+truth, historical/relative time, missing-attribute abstention, contextual dietary
+preference, and multi-session entity binding. The corpus is wholly fictional;
+the evaluation split is checked in and therefore is **not a secret holdout**.
+Source and evaluator objects are separated before provider calls. Expected
+answers, categories, evidence labels and rubrics never enter capture or reader
+prompts. Every report pins the fixture SHA-256 and code revision.
+
+All five arms use the same reader, question, identity, output budget and
+controlled-text context estimate:
+
+| Arm | Context and memory |
+| --- | --- |
+| `recent-only` | No durable memory/tools; last completed pair (at most 2 KiB) |
+| `full-history` | All historical pairs; explicitly not applicable if too large |
+| `lite` | Same recent pair; production compact summaries and lexical recall |
+| `journal` | Same recent pair; compact summaries and real embeddings in real mode |
+| `bujo` | Same recent pair; real strict model capture/reconciliation in real mode |
+
+No gold-selected history, forced real-reader tool invocation, or silent
+full-history truncation is allowed. Automatic recall retains its production
+five-hit/8 KB policy and shared 50-hit lookup. Explicit recall retains its
+schema/defaults and graph expansion; Journal retains its UTC chronological read.
+There are no Remember, filesystem, web, shell, execution-history or delegation
+tools. Answer turns never write back into memory. Each group/arm has a fresh
+store, history and provider-session root. The first protocol uses one repeat
+and fixed listed arm order: provider warmth/order effects are uncontrolled.
+
+The source clock sets admission/journal timestamps and the question date;
+monotonic wall clocks measure latency. Speaker labels traverse the real harness.
+Production limitations remain visible: Lite/Journal host summaries truncate each
+speaker's text to 240 characters, and source timestamps stamp stored records but
+are not automatically inserted into the extractor prompt. Fictional relative-date
+dialogue explicitly states its reference date. This benchmark does not repair
+those limitations or future-validity filtering.
+
+Admission is not readiness. After `flush`, the runner checks pending, dead,
+retrying and transitioning intake; index queues/backlog, failures and dropped
+work; and strict health/vector/canonical/outbox state. Empty valid extraction can
+be ready without capturing a useful fact. Delayed retries and malformed output
+are `capture_not_ready`, never successful empty memory. Fresh semantic stores
+initialize an **empty** managed generation before replay so strict health can
+verify them; captured data is never rebuilt to conceal capture/index loss.
+
+### Explicit real-provider execution
+
+Real runs require a clean checkout, an explicit profile, and confirmation of the
+same dry-run digest. No real mode is part of CI or the default command. This PR
+establishes the runner and offline contracts; **real-provider quality is
+unmeasured** until a separately selected workload is run and graded.
+
+```bash
+# Substitute already authorized exact model references; this command makes no calls.
+node scripts/memory-e2e-benchmark.mjs --dry-run --split development \
+  --reader openai:YOUR_READER --extractor openai:YOUR_EXTRACTOR \
+  --embedding-provider ollama --embedding-model YOUR_EMBEDDING --dimension 768
+
+# Only after checking the printed workload and provider/data authorization:
+node scripts/memory-e2e-benchmark.mjs --real --split development \
+  --reader openai:YOUR_READER --extractor openai:YOUR_EXTRACTOR \
+  --embedding-provider ollama --embedding-model YOUR_EMBEDDING --dimension 768 \
+  --confirm-plan DIGEST_FROM_DRY_RUN
+```
+
+The reader and extractor use separate fallback-free `MonoRuntimeLike` runtimes;
+`LlmComplete` forwards the strict production prompt unchanged, with the existing
+maintenance system prompt, no tools and one model step. The built-in embedding
+factory supports Ollama, LM Studio and OpenAI at their default endpoints. OpenAI
+embeddings use the existing `OPENAI_API_KEY` environment convention; runtime
+providers use existing supported authentication. No credentials/config file is
+copied, printed or created by the benchmark. There is no custom endpoint,
+consumer memory path, external dataset or arbitrary provider-module flag.
+
+Compaction is explicitly disabled for **both** models, Pi retries are disabled,
+and no fallback route is installed. Unexpected compaction fails the trial. The
+output limit reuses the repository-internal `providerCheckMaxTokens` Pi option,
+not an invented generic `maxTokens` setting. A faux-provider contract test drives
+the real Pi harness and checks the capped dispatched model on both initial and
+post-tool requests. This is version-coupled integration evidence, not a real
+provider's billing/termination guarantee. Actual transport attempts and native
+usage stay unknown unless observable.
+
+### Pilot limits and accounting
+
+There is no automatic escalation from development to evaluation, stochastic
+repeats or external suites. Concurrency is one. The initial workload ceilings are:
+
+| Limit | Development | Evaluation |
+| --- | ---: | ---: |
+| Histories / answer trials | 2 / 10 | 6 / 30 |
+| Configured model steps reserved | 46 | 138 |
+| Embedding facade calls | 100 | 300 |
+| Estimated cumulative input-token reservations | 250,000 | 750,000 |
+| Output-token reservations | 50,000 | 150,000 |
+| Runtime including cleanup reserve | 15 min | 40 min |
+
+Each reader reserves at most three model steps with a 512-token output limit;
+each extraction/reconciliation step reserves 2,048 output tokens. Model calls
+have a 60-second abort deadline, embeddings a 10-second provider timeout, each
+readiness barrier 120 seconds, and cleanup a 10-second settlement reserve.
+Budget exhaustion or cancellation is visible and does not become abstention.
+Reservations are charged before dispatch and are not released as zero when
+usage is missing. Configured model-step and embedding-call bounds do **not**
+pretend to count unobservable provider HTTP attempts. A non-cooperative provider
+can outlive an abort; unsettled resources prevent deletion and further admission,
+and the report must not imply that upstream billing stopped.
+
+Reader input admission uses an estimated 16,384-token ceiling (extractor 8,192):
+UTF-8 controlled-text bytes divided by three plus a fixed 4,096-token
+framing/tool-schema allowance. These are **estimates, not exact native payload
+caps**. Dynamic tool results, schemas, tokenizer differences and provider framing
+can change actual context. The provider's own context limit remains authoritative;
+reported usage/context events are separate from estimates. A selected profile
+must be checked for its actual model/context capabilities before a real pilot.
+
+Reports separate admission, replay, capture extraction/reconciliation, embeddings,
+readiness, automatic/backend recall, explicit tools, answer latency, setup,
+audit and cleanup. Nested durations overlap and must not be summed as wall time.
+Each latency distribution includes nearest-rank p50/p95, sample size and failures;
+N<20 is marked exploratory (with six samples p95 is the maximum). No p99 or
+statistical superiority claim is supported by this pilot.
+
+Usage, cost and model attribution are allowlisted from actual results when
+available. Missing input/output/cache/reasoning tokens, prices or transport counts
+are `null`, never zero. No price table or local-compute cost is invented. An empty
+quality denominator is not 100%. Failures remain in scheduled/completion counts.
+Scripted counters are contract workload observations, not production economics.
+
+### Grading and reproducibility
+
+Real answers receive only a clearly labelled **lexical diagnostic** initially:
+expected aliases with conservative negation/forbidden-value checks. This is not
+semantic QA accuracy. Semantic correctness, claim support, capture proposition
+precision/recall, stale-fact rate, temporal correctness, preference usefulness,
+irrelevant intrusion and abstention require source-supported annotation and stay
+unknown/pending until performed. Failed/no-response trials are not abstentions.
+
+The review bundle contains source evidence, required/forbidden claims and rubrics.
+A small stratified sample spanning categories and arms suffices for an initial
+pilot; all-answer/double review is optional. Identify reviewer type and coverage;
+AI or maintainer review is not automatically human annotation. No LLM judge is
+called by this runner. Later judge calls require their own pinned model/prompt,
+separate accounting and explicit budget. Three fresh capture+answer repeats and
+paired group-level analysis are a later, separately budgeted workload, not a
+claim from this single run.
+
+Artifacts live only under an owned `.worklab-tmp/memory-e2e/run-*` directory:
+`manifest.json`, `events.jsonl`, `trials.jsonl`, `capture.jsonl`, `review.json`,
+`summary.json`, and `checksums.json`. They retain fictional model text and indexed
+snapshots for diagnosis, not raw runtime/config/error objects. Known credential,
+endpoint and personal-path patterns are redacted; reports contain only relative
+output paths. Inspect artifacts before public sharing. Do not substitute private
+history for the checked-in fixture. Stores are removed only after cleanup and
+provider settlement; unsuccessful cleanup retains the owned store and is visible.
+
+The script deliberately composes the public harness/store APIs with the app's
+unchanged shared retrieval, Journal and `composeRuntimeOptionExtensions` modules.
+It does not instantiate the configured app (which would acquire account-wide
+ownership state). Those repository-relative app imports and the private output
+cap are benchmark-only version coupling, not new public APIs.
+
+### External protocol follow-up
+
+The E2E runner currently accepts only `fictional-v1`. The older external adapters
+above remain retrieval-only. `scripts/fixtures/memory-e2e/sources.json` pins the
+follow-up sources; it does not download or implement them:
+
+- [Cleaned LongMemEval data](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/tree/98d7416c24c778c2fee6e6f3006e7a073259d48f)
+  at `98d7416c24c778c2fee6e6f3006e7a073259d48f`, paired with
+  [upstream evaluator code](https://github.com/xiaowu0162/LongMemEval/tree/9e0b455f4ef0e2ab8f2e582289761153549043fc).
+  Official QA consumes `{question_id,hypothesis}` and task-specific model judging;
+  lexical diagnostics are not that protocol. Temporal off-by-one tolerance and
+  acceptance of old information alongside a correct update differ from stricter
+  groundedness/staleness annotations.
+- [LoCoMo code/data](https://github.com/snap-research/locomo/tree/3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376)
+  at `3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376`. Its pinned scorer has category-specific
+  stemmed F1 and an adversarial category-5 phrase check; report 1–4 and 5 separately
+  and state the selected convention rather than claiming a universal QA protocol.
+
+A follow-up must preserve original session dates, roles, speakers and source IDs,
+strip `has_answer`/evidence/generated summaries from model inputs, and split by
+independent histories/conversations. LoCoMo's two human speakers must not be
+misrepresented as user versus assistant; an observed-dialogue replay needs an
+explicitly labelled adaptation. Public data still requires license/data-handling
+review. Do not silently select oracle evidence sessions, fetch image URLs or
+launch all 500 LongMemEval examples.
