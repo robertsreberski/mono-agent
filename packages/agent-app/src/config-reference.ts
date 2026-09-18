@@ -1761,7 +1761,7 @@ function descriptionFor(id: string): string {
     return "WebSearch backend: auto uses explicitly configured Ollama, configured local SearXNG, ChatGPT-subscription Codex search, then keyless fallbacks. searxng, ollama, codex, and keyless are strict.";
   }
   if (id === "tools.web.search.maxRequestsPerRun") {
-    return "Hard ceiling from 1 to 20 on actual provider search requests in one logical runtime run; cache hits, coalesced followers, cooldown skips, and quota skips consume no request. Default 4.";
+    return "Hard ceiling from 1 to 20 on answered provider searches in one logical runtime run, including empty answers; failures are refunded. Cache hits, coalesced followers, cooldown skips, and quota skips consume no request. A separate dispatch ceiling is four times this limit. Default 4.";
   }
   if (id === "tools.web.search.searxng.endpoint") {
     return "Optional unauthenticated loopback HTTP SearXNG base URL. Remote HTTPS, credentials, query strings, and fragments are rejected.";

@@ -11,6 +11,8 @@ import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { renderBoundedWebSearchBody } from "./web-search-output.js";
 import {
   claimWebSearchRequest,
+  countWebSearchDispatch,
+  refundWebSearchRequests,
   createWebSearchRunState,
   deferWebSearchProvider,
   deferredWebSearchProvider,
@@ -46,6 +48,9 @@ const KEYLESS_DEFAULT_THROTTLE = {
 // snippets, but it is also the one that bans, which is precisely why Startpage
 // behind it has to actually work.
 const KEYLESS_BACKENDS = ["duckduckgo", "startpage"];
+// Only bounded, sanitized attempt metadata survives between calls in a run.
+// Weak ownership avoids retaining finished run states or their query text.
+const runProviderFailures = new WeakMap();
 // Markers that identify an interstitial/bot-gate body served with a 2xx status.
 // The last two are Anubis, the proof-of-work gate Startpage now fronts its
 // results with. It says none of the classic things — no captcha, no anomaly,
@@ -260,6 +265,7 @@ async function performSearch(
     }
     if (providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
   }
+  rememberRunProviderFailures(searchState, providerFailures);
   if (signal?.aborted) {
     return searchFailure("Error: WebSearch was aborted or exceeded its deadline.", signal.reason?.code === "deadline_exceeded" ? "deadline_exceeded" : "aborted", startedAt, searchState, callClaims.requests, {
       attempts,
@@ -271,7 +277,7 @@ async function performSearch(
     return searchFailure("Error: Web request coordination is unavailable; no uncoordinated fallback was attempted.", "coordination_unavailable", startedAt, searchState, callClaims.requests, { attempts });
   }
   if (providerFailures.some((entry) => entry.code === "search_budget_exhausted")) {
-    return searchFailure("Error: WebSearch request budget exhausted for this run.", "search_budget_exhausted", startedAt, searchState, callClaims.requests, {
+    return searchFailure(searchBudgetExhaustionMessage(searchState, providerFailures), "search_budget_exhausted", startedAt, searchState, callClaims.requests, {
       attempts,
       backend: config.backend,
       attemptedBackends: [...attemptedBackends],
@@ -388,13 +394,13 @@ async function searchOneQuery(query, options) {
   if (config.backend === "searxng") {
     const deferred = deferredResult(options.searchState, "searxng");
     if (deferred) return { ...deferred, failures };
-    const result = await searchWithRequestCount(options.callClaims, () => guardedSearch("searxng", options.config.endpoint, options, () => searchSearxng(query, options)));
+    const result = await searchWithRequestCount(options, () => guardedSearch("searxng", options.config.endpoint, options, () => searchSearxng(query, options)));
     return { ...rememberProviderDeferral(result, options.searchState), failures };
   }
   if (config.backend === "ollama") {
     const deferred = deferredResult(options.searchState, "ollama");
     if (deferred) return { ...deferred, failures };
-    const result = await searchWithRequestCount(options.callClaims, () => guardedSearch("ollama", config.ollama.baseUrl, options, () => searchOllama(query, options)));
+    const result = await searchWithRequestCount(options, () => guardedSearch("ollama", config.ollama.baseUrl, options, () => searchOllama(query, options)));
     return { ...rememberProviderDeferral(result, options.searchState), failures };
   }
   if (config.backend === "codex") {
@@ -409,7 +415,7 @@ async function searchOneQuery(query, options) {
         failures,
       };
     }
-    const result = await searchWithRequestCount(options.callClaims, () => guardedSearch("codex", "codex", options, () => options.codexSearch(query, {
+    const result = await searchWithRequestCount(options, () => guardedSearch("codex", "codex", options, () => options.codexSearch(query, {
       model: config.codex.model, signal: options.signal, coordinator: options.coordinator,
       language: options.language, timeRange: options.timeRange,
       claimRequest: () => claimWebSearchRequest(options.searchState, "codex", options.callClaims),
@@ -436,7 +442,7 @@ async function searchOneQuery(query, options) {
         });
         continue;
       }
-      const result = await searchWithRequestCount(options.callClaims, () => guardedSearch(backend, backend, options, () => KEYLESS_RUNNERS[backend](query, options)));
+      const result = await searchWithRequestCount(options, () => guardedSearch(backend, backend, options, () => KEYLESS_RUNNERS[backend](query, options)));
       rememberProviderDeferral(result, options.searchState);
       if (result.ok) {
         if (result.results.length > 0) {
@@ -450,7 +456,7 @@ async function searchOneQuery(query, options) {
       }
       // The cooldown is already open — rateLimited() sets it at detection.
       failures.push(result);
-      if (result.code === "coordination_unavailable") return { ...result, failures };
+      if (["coordination_unavailable", "search_budget_exhausted"].includes(result.code)) return { ...result, failures };
     }
   }
   if (emptySuccess) return { ...emptySuccess, failures };
@@ -492,10 +498,22 @@ function rememberProviderDeferral(result, searchState) {
   return result;
 }
 
-async function searchWithRequestCount(callClaims, execute) {
+async function searchWithRequestCount({ searchState, callClaims }, execute) {
+  // Provider attempts within a call are sequential; concurrent calls each have
+  // their own counter. Never derive a refund from the shared run-state delta.
   const before = callClaims.requests;
   const result = await execute();
-  return { ...result, requestsConsumed: callClaims.requests - before };
+  if (result.ok !== true) {
+    refundWebSearchRequests(searchState, callClaims.requests - before, callClaims);
+  }
+  return {
+    ...result,
+    requestsConsumed: callClaims.requests - before,
+    // Codex and coordinator failures may preserve only the error code. Recover
+    // the marker from the monotonic counter without changing those contracts.
+    ...(result.code === "search_budget_exhausted" && searchState.dispatchesUsed >= searchState.maxRequests * 4
+      ? { reason: "dispatch_ceiling" } : {}),
+  };
 }
 
 function abortedSearch(backend, failures = []) {
@@ -668,7 +686,8 @@ async function searchOllama(query, options) {
       return { ok: false, backend: "ollama", message: "Network access denied by sandbox policy.", retryable: false };
     }
     try {
-      claimWebSearchRequest(options.searchState, "ollama", options.callClaims);
+      if (index === 0) claimWebSearchRequest(options.searchState, "ollama", options.callClaims);
+      else countWebSearchDispatch(options.searchState, "ollama");
       const response = await options.fetchImpl(url, {
         method: "POST",
         headers: {
@@ -1168,7 +1187,7 @@ function sanitizeFailureMetadata(failures) {
   const metadata = [];
   for (const failureEntry of failures) {
     const backend = collapseWhitespace(failureEntry?.backend).slice(0, 40) || "unknown";
-    const code = ["quota_reserved", "quota_unavailable", "coordination_unavailable", "search_budget_exhausted", "auth_failed", "invalid_response", "timeout", "provider_unavailable", "access_challenge"].includes(failureEntry?.code) ? failureEntry.code : failureEntry?.relevance
+    const code = ["quota_reserved", "quota_unavailable", "coordination_unavailable", "search_budget_exhausted", "auth_failed", "invalid_response", "endpoint_not_supported", "timeout", "provider_unavailable", "access_challenge"].includes(failureEntry?.code) ? failureEntry.code : failureEntry?.relevance
       ? "no_relevant_results"
       : failureEntry?.rateLimited ? "rate_limited"
         : failureEntry?.cooldown ? "cooldown"
@@ -1202,6 +1221,44 @@ function providerAttemptMetadata(failures) {
       ...(retryAtMs === undefined ? {} : { retryAt: new Date(retryAtMs).toISOString() }),
     };
   });
+}
+
+function rememberRunProviderFailures(state, failures) {
+  const history = runProviderFailures.get(state) ?? [];
+  for (const entry of providerAttemptMetadata(failures)) {
+    if (entry.code === "search_budget_exhausted") continue;
+    if (history.some((prior) => prior.backend === entry.backend && prior.code === entry.code)) continue;
+    if (history.length >= 12) break;
+    history.push(entry);
+  }
+  runProviderFailures.set(state, history);
+}
+
+function searchBudgetExhaustionMessage(state, failures) {
+  const dispatchCeiling = failures.some((entry) => entry.reason === "dispatch_ceiling");
+  const prefix = dispatchCeiling
+    ? `Error: WebSearch request budget exhausted: this run spent its dispatches on failing providers (${state.dispatchesUsed}/${state.maxRequests * 4} dispatches).`
+    : "Error: WebSearch request budget exhausted for this run.";
+  const history = runProviderFailures.get(state) ?? [];
+  if (history.length === 0) return prefix;
+  const attempts = [...history, ...providerAttemptMetadata(failures).filter((entry) => entry.code === "search_budget_exhausted")];
+  const seen = new Set();
+  const summary = [];
+  for (const entry of attempts) {
+    // Never render provider-controlled strings (URLs, bodies, or credentials).
+    const backend = ["ollama", "searxng", "codex", ...KEYLESS_BACKENDS].includes(entry.backend) ? entry.backend : "unknown";
+    const key = `${backend}:${entry.code}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const retryMs = entry.retryAt ? Math.max(0, Date.parse(entry.retryAt) - Date.now()) : entry.retryAfterMs;
+    const retry = Number.isFinite(retryMs) && retryMs > 0
+      ? ` (retry in ${Math.ceil(retryMs / 1000)}s)` : "";
+    summary.push(entry.code === "search_budget_exhausted"
+      ? `${backend} next dispatch refused`
+      : `${backend} ${entry.code}${retry}`);
+    if (summary.length >= 8) break;
+  }
+  return `${prefix} Provider failures this run: ${summary.join("; ")}.`.slice(0, 1000);
 }
 
 function earliestRetryAt(failures) {
@@ -1321,6 +1378,7 @@ function fetchFailure(backend, error, label = backend) {
     message: `${label} request failed: ${detail}`,
     retryable,
     ...(code === undefined ? {} : { code }),
+    ...(error?.reason === "dispatch_ceiling" ? { reason: "dispatch_ceiling" } : {}),
   };
 }
 

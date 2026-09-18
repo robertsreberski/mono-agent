@@ -443,7 +443,7 @@ export interface MonoAgentConfig {
       readonly coordination?: "process" | "host";
       readonly search: {
         readonly backend: WebSearchBackend;
-        /** Hard ceiling on actual provider search requests in one logical runtime run. */
+        /** Hard ceiling on answered provider searches per logical run; failed dispatches are refunded. */
         readonly maxRequestsPerRun: number;
         /** @deprecated Use searxng.endpoint. Accepted for programmatic embedders. */
         readonly endpoint?: string;
