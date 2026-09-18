@@ -1691,11 +1691,12 @@
               "default": false
             },
             "cacheRetention": {
-              "description": "Optional Anthropic Messages cache retention (short or long). Unset preserves Pi defaults/environment. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.",
+              "description": "Anthropic Messages cache retention (short or long; default long). Short opts out. MONO_AGENT env > JSON > long; resolved values override ambient PI_CACHE_RETENTION. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.",
               "examples": [
                 "long"
               ],
               "type": "string",
+              "default": "long",
               "enum": [
                 "short",
                 "long"

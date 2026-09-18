@@ -382,16 +382,16 @@ describe("loadMonoAgentConfig", () => {
 
   it.each(["true", "false"])("loads prompt cache diagnostics %s without changing unset defaults", (value) => {
     const unset = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
-    expect(unset.providers?.piNative).toBeUndefined();
+    expect(unset.providers?.piNative).toEqual({ cacheRetention: "long" });
     const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: value } });
-    expect(config.providers?.piNative).toEqual({ promptCacheDiagnostics: value === "true" });
+    expect(config.providers?.piNative).toEqual({ cacheRetention: "long", promptCacheDiagnostics: value === "true" });
     expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "invalid" } })).toThrow();
   });
 
   it("loads prompt cache diagnostics from the provider JSON envelope", () => {
     const env = { ...baseEnv, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { promptCacheDiagnostics: true } }) };
-    expect(loadMonoAgentConfig({ cwd: "/repo", env }).providers?.piNative).toEqual({ promptCacheDiagnostics: true });
-    expect(loadMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "false" } }).providers?.piNative).toEqual({ promptCacheDiagnostics: false });
+    expect(loadMonoAgentConfig({ cwd: "/repo", env }).providers?.piNative).toEqual({ cacheRetention: "long", promptCacheDiagnostics: true });
+    expect(loadMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "false" } }).providers?.piNative).toEqual({ cacheRetention: "long", promptCacheDiagnostics: false });
     expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { promptCacheDiagnostics: "true" } }) } })).toThrow("boolean");
   });
 
@@ -407,6 +407,7 @@ describe("loadMonoAgentConfig", () => {
       },
     });
     expect(config.providers?.piNative).toEqual({
+      cacheRetention: "long",
       transport: "sse",
       piMaxRetries: 4,
       maxRetryDelayMs: 30_000,
@@ -414,9 +415,9 @@ describe("loadMonoAgentConfig", () => {
     });
   });
 
-  it("omits pi-native provider knobs when the env is unset", () => {
+  it("defaults only cache retention when pi-native provider env is unset", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
-    expect(config.providers?.piNative).toBeUndefined();
+    expect(config.providers?.piNative).toEqual({ cacheRetention: "long" });
   });
 
   it("rejects an out-of-range pi max retries value", () => {
@@ -1005,6 +1006,7 @@ describe("loadMonoAgentConfig", () => {
     });
     const redacted = redactMonoAgentConfig(config);
     expect(redacted.providers?.piNative).toEqual({
+      cacheRetention: "long",
       transport: "websocket-cached",
       piMaxRetries: 4,
       maxRetryDelayMs: 30_000,
@@ -2984,12 +2986,14 @@ describe("echoed model references are bounded and cannot forge diagnostic lines"
 });
 
 
-it("resolves cache retention env over provider JSON, with no default and strict values", () => {
+it("resolves cache retention env over provider JSON, with a long default and strict values", () => {
   const env = { ...baseEnv, MONO_AGENT_MODEL: "anthropic:claude-sonnet-4-6" };
-  expect(loadMonoAgentConfig({ cwd: "/repo", env }).providers?.piNative?.cacheRetention).toBeUndefined();
+  expect(loadMonoAgentConfig({ cwd: "/repo", env }).providers?.piNative?.cacheRetention).toBe("long");
   const json = { ...env, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { cacheRetention: "long" } }) };
   expect(loadMonoAgentConfig({ cwd: "/repo", env: json }).providers?.piNative?.cacheRetention).toBe("long");
   expect(loadMonoAgentConfig({ cwd: "/repo", env: { ...json, MONO_AGENT_PI_CACHE_RETENTION: "short" } }).providers?.piNative?.cacheRetention).toBe("short");
+  expect(loadMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { cacheRetention: "short" } }) } }).providers?.piNative?.cacheRetention).toBe("short");
+  expect(loadMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PI_CACHE_RETENTION: "  ", PI_CACHE_RETENTION: "short" } }).providers?.piNative?.cacheRetention).toBe("long");
   for (const value of ["none", "1h", "invalid", true]) {
     expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PI_CACHE_RETENTION: String(value) } })).toThrow();
     expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { cacheRetention: value } }) } })).toThrow();

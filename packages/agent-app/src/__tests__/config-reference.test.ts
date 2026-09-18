@@ -637,3 +637,13 @@ it("continues to accept AskParent in global and profile deny policy", () => {
   expect(config.tools.disallowedTools).toContain("AskParent");
   expect(config.subagents?.definitions?.[0]?.disallowedTools).toContain("AskParent");
 });
+
+it("keeps the Anthropic retention schema default aligned with config normalization", () => {
+  const config = loadMonoAgentConfig({ cwd: process.cwd(), env: {
+    MONO_AGENT_MODEL: "anthropic:claude-sonnet-4-6", MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
+  } });
+  const node = schemaNode(buildMonoAgentConfigSchema() as SchemaNode, "providers", "piNative", "cacheRetention");
+  expect(node.default).toBe("long");
+  expect(node.default).toBe(config.providers?.piNative?.cacheRetention);
+  expect(node.enum).toEqual(["short", "long"]);
+});

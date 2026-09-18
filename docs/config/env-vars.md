@@ -98,7 +98,7 @@ MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS=4
 | `MONO_AGENT_PI_AUTH_PATH` | `providers.piAuthPath` | Pi credential file; a non-empty value wins over JSON and loses only to `auth login --pi-auth-path`. Default `~/.pi/agent/auth.json`; `~` expands to home and relative paths resolve from the agent/invocation working directory. |
 | `MONO_AGENT_PI_TRANSPORT` | `providers.piNative.transport` | Preferred Pi transport: `auto` (default), `sse`, `websocket`, or `websocket-cached`; unsupported providers ignore it. |
 | `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS` | `providers.piNative.promptCacheDiagnostics` | Metadata-only prompt-cache request fingerprints in run artifacts; default false. Never prompt text, tool arguments, cache keys, endpoints or credentials. |
-| `MONO_AGENT_PI_CACHE_RETENTION` | `providers.piNative.cacheRetention` | Optional short/long Anthropic retention; env wins over JSON, unset preserves Pi default/ambient env. Model support required; long writes 2× input, reads 0.1×; short writes 1.25×. No guaranteed hit. |
+| `MONO_AGENT_PI_CACHE_RETENTION` | `providers.piNative.cacheRetention` | Short/long Anthropic retention (default long); env wins over JSON, then long. Short opts out; both default and explicit values override ambient PI_CACHE_RETENTION. Model support required; long writes 2× input, reads 0.1×; short writes 1.25×. No guaranteed hit. |
 | `MONO_AGENT_PI_MAX_RETRIES` | `providers.piNative.piMaxRetries` | Pi-native transport retries, 0-8, default 2. |
 | `MONO_AGENT_MAX_RETRY_DELAY_MS` | `providers.piNative.maxRetryDelayMs` | Default 60000. |
 | `MONO_AGENT_PI_SESSIONS_ROOT` | `providers.piNative.piSessionsRoot` | Durable JSONL session storage (e.g. `.mono-agent/sessions`); unset = in-memory. |

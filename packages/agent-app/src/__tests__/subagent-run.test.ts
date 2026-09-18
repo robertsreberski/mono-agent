@@ -9,7 +9,7 @@ import { createAgentSendTool } from "../../../agent-runtime/src/agent/tools/agen
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 import { describe, expect, it, vi } from "vitest";
 
-import type { MonoAgentConfig } from "@mono-agent/config";
+import { loadMonoAgentConfig, type MonoAgentConfig } from "@mono-agent/config";
 // Exercise the private tool-to-app seam without adding a public runtime export.
 // @ts-expect-error -- package-private JavaScript has no public declaration.
 import { createAgentTool } from "../../../agent-runtime/src/agent/tools/agent-tool.js";
@@ -725,10 +725,12 @@ describe("AskParent child policy and durable controller", () => {
 });
 
 
-it.each(["short", "long"] as const)("forwards configured %s retention to parent and child routes", async (cacheRetention) => {
-  const config = { ...monoConfig({ enabled: true, definitions: [RESEARCHER] }), providers: { piNative: { cacheRetention, promptCacheDiagnostics: true } } } as MonoAgentConfig;
+it.each([undefined, "short", "long"] as const)("forwards resolved %s retention to parent and child routes", async (cacheRetention) => {
+  const providers = loadMonoAgentConfig({ cwd: "/repo", env: { MONO_AGENT_IDENTITY_PATH: "IDENTITY.md", MONO_AGENT_MODEL: "anthropic:claude-sonnet-4-6", MONO_AGENT_PI_CACHE_RETENTION: cacheRetention, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "true" } }).providers;
+  const config = { ...monoConfig({ enabled: true, definitions: [RESEARCHER] }), providers } as MonoAgentConfig;
+  const expectedRetention = cacheRetention ?? "long";
   const { runtime, subagents } = await buildSubagents(config);
-  expect(harnessMock.mock.calls[0]?.[0].runtimeOptions).toMatchObject({ cacheRetention });
+  expect(harnessMock.mock.calls[0]?.[0].runtimeOptions).toMatchObject({ cacheRetention: expectedRetention });
   await (subagents?.run as (request: unknown) => Promise<unknown>)({ systemPrompt: "You research.", prompt: "find X", definition: { name: "researcher", allowedTools: ["Read"] }, maxTurns: 1, depth: 1, abortSignal: new AbortController().signal, onEvent: () => {} });
-  expect(runtime.run.mock.calls[0]?.[1]).toMatchObject({ cacheRetention, promptCacheDiagnostics: true });
+  expect(runtime.run.mock.calls[0]?.[1]).toMatchObject({ cacheRetention: expectedRetention, promptCacheDiagnostics: true });
 });
