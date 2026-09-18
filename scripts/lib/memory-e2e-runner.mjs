@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { ARMS, sourceOnly, contextFor } from "./memory-e2e-dataset.mjs";
-import { Budget, BenchmarkError, bounded, codeOf, captureLlm, meteredEmbeddings, meteredRuntime } from "./memory-e2e-providers.mjs";
+import { Budget, BenchmarkError, bounded, codeOf, failureKindOf, captureLlm, meteredEmbeddings, meteredRuntime } from "./memory-e2e-providers.mjs";
 import { lexicalDiagnostic, summarize } from "./memory-e2e-report.mjs";
 
 /** Repository-local built imports: deliberately not a new public app API. */
@@ -36,6 +36,16 @@ export async function awaitReady(store, timeoutMs, budget) {
     if (!readySnapshot(snapshot)) throw new BenchmarkError("capture_not_ready");
     return snapshot;
   } finally { clearTimeout(timer); }
+}
+/**
+ * Latest structured capture (extraction/reconciliation) failure category for a
+ * trial tag, or null. Readiness status stays primary; this preserves the second
+ * fact instead of replacing it.
+ */
+export function captureFailureKindFor(events, tag) {
+  const found = events.findLast((entry) => entry.groupId === tag.groupId && entry.arm === tag.arm
+    && (entry.stage === "extraction" || entry.stage === "reconciliation") && typeof entry.failureKind === "string");
+  return found?.failureKind ?? null;
 }
 /** One overall cleanup deadline; no deletion unless producers and raw work settle. */
 export async function cleanupTrial({ reader, ingest, service, store, providers, budget }, timeoutMs = 10000) {
@@ -93,9 +103,14 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
   };
   try {
     trialsLoop: for (const group of groups) for (const arm of ARMS) {
+      // Terminal provider stop (fatal auth/quota): no further provider
+      // factory, store, model or embedding work. Remaining trials stay
+      // unpushed so trialsNotStarted counts them as unstarted, never as
+      // successes or attempted failures.
+      if (budget.providerStop !== null) break trialsLoop;
       const source = sourceOnly(group);
       const tag = { groupId: group.id, arm };
-      const trial = { ...tag, category: group.evaluation.category, status: "started", answer: null, automatic: [], tools: [], warnings: [], readiness: [], inventory: [], semanticGrade: null, humanGrade: null };
+      const trial = { ...tag, category: group.evaluation.category, status: "started", answer: null, automatic: [], tools: [], warnings: [], readiness: [], inventory: [], semanticGrade: null, humanGrade: null, runtimeFailureKind: null, captureFailureKind: null };
       trials.push(trial);
       const work = await mkdtemp(join(directory, "work-"));
       let providers, store, ingest, reader, service;
@@ -207,7 +222,7 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
                 return await options.toolLifecycleSink?.(value);
               } };
               try { return await metered.run(system, wrapped); }
-              catch (error) { trial.runtimeFailure = codeOf(error); throw error; }
+              catch (error) { trial.runtimeFailure = codeOf(error); trial.runtimeFailureKind = failureKindOf(error); throw error; }
             },
           },
         });
@@ -222,6 +237,10 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
         trial.status = "completed";
       } catch (error) {
         trial.status = codeOf(error);
+        // A capture failure behind a readiness status is a second fact, not a
+        // replacement: keep both, never call the failed capture healthy.
+        const captureFailureKind = captureFailureKindFor(budget.events, tag);
+        if (captureFailureKind !== null) trial.captureFailureKind = captureFailureKind;
         if (store) trial.failureReadiness = store.queueSnapshot();
         if (arm === "full-history" && trial.status === "context_budget_exceeded") {
           trial.status = "not_applicable"; trial.reason = "full_history_does_not_fit";
@@ -240,10 +259,10 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
         if (cleanupOk) await rm(work, { recursive: true, force: true });
         trial.cleanup = cleanupOk ? "removed_owned_store" : "retained_unsettled_owned_store";
       }
-      if (!cleanupOk || budget.controller.signal.aborted) break trialsLoop;
+      if (!cleanupOk || budget.controller.signal.aborted || budget.providerStop !== null) break trialsLoop;
     }
     return {
-      manifest: { ...plan, executionKind: kind, reservations: budget.used, actualTransportAttempts: null, inputAccounting: "estimated-controlled-text-plus-allowance", providerQuality: "unmeasured", trialsNotStarted: plan.workload.trials - trials.length, admissionStopped: budget.admissionStopped || budget.controller.signal.aborted },
+      manifest: { ...plan, executionKind: kind, reservations: budget.used, actualTransportAttempts: null, inputAccounting: "estimated-controlled-text-plus-allowance", providerQuality: "unmeasured", trialsNotStarted: plan.workload.trials - trials.length, admissionStopped: budget.admissionStopped || budget.controller.signal.aborted, providerStop: budget.providerStop },
       trials, capture, events: budget.events, summary: summarize(trials, budget.events, kind),
       review: { status: "pending", reviewerKind: null, rubric: "Judge source-supported correctness, stale claims, abstention, preference usefulness and capture propositions. A small stratified sample suffices; AI review is not human annotation.", groups: groups.map((group) => ({ groupId: group.id, source: sourceOnly(group), evaluation: group.evaluation })) },
     };

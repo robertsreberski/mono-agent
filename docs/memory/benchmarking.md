@@ -225,6 +225,17 @@ pretend to count unobservable provider HTTP attempts. A non-cooperative provider
 can outlive an abort; unsettled resources prevent deletion and further admission,
 and the report must not imply that upstream billing stopped.
 
+Structured provider-failure categories use a fixed vocabulary (`provider_auth`,
+`usage_limit`, `provider_unavailable`, …) on meter events, trials and summary
+failures. Unknown values stay generic; raw error text, error details, paths and
+credentials are never written to artifacts. A fatal `provider_auth` or
+`usage_limit` stops further provider admission for the rest of the invocation:
+remaining trials report as unstarted (`trialsNotStarted`), never as successes
+or attempted failures, while owned stores still complete cleanup and settlement.
+Other provider errors stay visible per trial without stopping the run. A retained
+category is routing evidence for a later bounded diagnostic, not proof of
+invalid credentials, exhausted quota, or zero billable work.
+
 Reader input admission uses an estimated 16,384-token ceiling (extractor 8,192):
 UTF-8 controlled-text bytes divided by three plus a fixed 4,096-token
 framing/tool-schema allowance. These are **estimates, not exact native payload

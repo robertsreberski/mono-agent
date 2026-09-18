@@ -20,6 +20,11 @@
   Bound provider waits and cleanup, retain uncertain stores, and rebuild a
   source-pinned dependency closure before real-provider admission.
 
+- Record structured benchmark provider-failure categories on meter events,
+  trials and summaries without storing raw errors, and stop further provider
+  admission after a fatal auth/quota failure while still cleaning up owned
+  stores. Remaining trials report as unstarted, never as quality results.
+
 - Let `AgentSend` accept and ignore an optional `description` when stopping a
   subagent, and explain invalid stop requests with specific codes and messages.
 

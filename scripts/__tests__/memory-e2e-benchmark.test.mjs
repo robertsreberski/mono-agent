@@ -4,9 +4,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, loadCorpus, makePlan, sourceOnly, contextFor, validateCorpus } from "../lib/memory-e2e-dataset.mjs";
-import { Budget, captureLlm, meteredEmbeddings, meteredRuntime, scriptedProviders, usageOf } from "../lib/memory-e2e-providers.mjs";
-import { percentiles, ratio, lexicalDiagnostic, safeArtifact, ownedParent } from "../lib/memory-e2e-report.mjs";
-import { awaitReady, cleanupTrial, readySnapshot } from "../lib/memory-e2e-runner.mjs";
+import { Budget, canonicalFailureKind, captureLlm, failureKindOf, isFatalFailureKind, meteredEmbeddings, meteredRuntime, scriptedProviders, usageOf } from "../lib/memory-e2e-providers.mjs";
+import { percentiles, ratio, lexicalDiagnostic, safeArtifact, ownedParent, summarize } from "../lib/memory-e2e-report.mjs";
+import { awaitReady, captureFailureKindFor, cleanupTrial, readySnapshot } from "../lib/memory-e2e-runner.mjs";
 import { prepareRealBuild, verifyRealBuild, BUILD_POLICY } from "../lib/memory-e2e-build.mjs";
 import { main, parseArguments, profileFrom } from "../memory-e2e-benchmark.mjs";
 
@@ -237,6 +237,107 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     const production = await readFile(new URL("../../packages/agent-app/src/configured-agent.ts", import.meta.url), "utf8");
     for (const phrase of run.mock.calls[0][0].split(/(?<=\.) /u)) expect(production).toContain(phrase);
     await expect(meteredRuntime({ run: async () => ({ error: "secret error", text: "" }) }, { budget, stage: "reader", tag: {} }).run("s", { messages: [], abortSignal: new AbortController().signal })).rejects.toThrow("provider_failed");
+  });
+  it("retains a non-fatal returned failure kind without stopping admission", async () => {
+    const { budget } = await setup();
+    const run = vi.fn(async () => ({ failureKind: "provider_unavailable", error: "route down", text: "" }));
+    const failure = await meteredRuntime({ run }, { budget, stage: "reader", tag: {} }).run("s", { messages: [], abortSignal: new AbortController().signal }).catch((error) => error);
+    expect(failure.message).toBe("provider_failed");
+    expect(failureKindOf(failure)).toBe("provider_unavailable");
+    expect(budget.events[0]).toMatchObject({ status: "provider_failed", failureKind: "provider_unavailable" });
+    expect(budget.providerStop).toBeNull();
+    expect(budget.admissionStopped).toBe(false);
+  });
+  it.each(["provider_auth", "usage_limit"])("stops provider admission after fatal reader failure: %s", async (failureKind) => {
+    const { budget } = await setup();
+    const run = vi.fn(async () => ({ failureKind, error: "route dead", text: "" }));
+    const options = () => ({ messages: [], abortSignal: new AbortController().signal });
+    await expect(meteredRuntime({ run }, { budget, stage: "reader", tag: {} }).run("s", options())).rejects.toThrow("provider_failed");
+    expect(budget.events[0]).toMatchObject({ status: "provider_failed", failureKind });
+    expect(budget.providerStop).toMatchObject({ code: "provider_failed", failureKind });
+    // Factory, model and embedding admissions share one reserve gate: the next
+    // setup refuses before any of them run, and nothing dispatches again.
+    const factory = vi.fn();
+    expect(() => { budget.reserve({}); factory(); }).toThrow("provider_admission_stopped");
+    expect(factory).not.toHaveBeenCalled();
+    await expect(meteredRuntime({ run }, { budget, stage: "reader", tag: {} }).run("s", options())).rejects.toThrow("provider_admission_stopped");
+    await expect(meteredEmbeddings({ id: "fixture", embed: async () => [] }, { budget, tag: {} }).embed(["fictional"])).rejects.toThrow("provider_admission_stopped");
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(budget.events).toHaveLength(1);
+  });
+  it("keeps untrusted failure kinds and raw errors out of events", async () => {
+    const { budget } = await setup();
+    const run = vi.fn(async () => ({ failureKind: "EVIL sk-123456789012", error: "boom Bearer canary https://host/x /Users/example", text: "" }));
+    await expect(meteredRuntime({ run }, { budget, stage: "reader", tag: {} }).run("s", { messages: [], abortSignal: new AbortController().signal })).rejects.toThrow("provider_failed");
+    expect(budget.events[0].failureKind).toBeNull();
+    expect(JSON.stringify(budget.events[0])).not.toMatch(/EVIL|123456789012|Bearer|host\/|example/u);
+    expect(budget.providerStop).toBeNull();
+    expect(canonicalFailureKind("EVIL sk-123456789012")).toBeNull();
+    expect(canonicalFailureKind("provider_auth")).toBe("provider_auth");
+    expect(isFatalFailureKind("usage_limit")).toBe(true);
+    expect(isFatalFailureKind("provider_unavailable")).toBe(false);
+  });
+  it("recognizes structured thrown failures and ignores hostile thrown values", async () => {
+    const options = () => ({ messages: [], abortSignal: new AbortController().signal });
+    const { budget } = await setup();
+    const structured = Object.assign(new Error("private boom"), { failureKind: "usage_limit" });
+    const fatal = await meteredRuntime({ run: async () => { throw structured; } }, { budget, stage: "extraction", tag: {} }).run("s", options()).catch((error) => error);
+    expect(fatal.message).toBe("provider_failed");
+    expect(failureKindOf(fatal)).toBe("usage_limit");
+    expect(budget.events[0]).toMatchObject({ stage: "extraction", status: "provider_failed", failureKind: "usage_limit" });
+    expect(budget.providerStop).toMatchObject({ failureKind: "usage_limit" });
+    const hostileSetup = await setup();
+    const hostile = Object.assign(new Error("boom"), { failureKind: { nested: "sk-123456789012" } });
+    await expect(meteredRuntime({ run: async () => { throw hostile; } }, { budget: hostileSetup.budget, stage: "reader", tag: {} }).run("s", options())).rejects.toThrow("provider_failed");
+    expect(hostileSetup.budget.events[0].failureKind).toBeNull();
+    expect(hostileSetup.budget.providerStop).toBeNull();
+    const rawSetup = await setup();
+    await expect(meteredRuntime({ run: async () => { throw "raw boom"; } }, { budget: rawSetup.budget, stage: "reader", tag: {} }).run("s", options())).rejects.toThrow("provider_failed");
+    expect(rawSetup.budget.events[0].failureKind).toBeNull();
+    expect(rawSetup.budget.providerStop).toBeNull();
+  });
+  it("carries fatal extraction and reconciliation categories through capture", async () => {
+    const tag = { groupId: "g", arm: "bujo" };
+    const { budget } = await setup();
+    const run = vi.fn(async () => ({ failureKind: "provider_auth", error: "dead", text: "" }));
+    const llm = captureLlm({ run }, { model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag });
+    await expect(llm.complete("TURN:\nUser: hi\nAssistant: ho", {})).rejects.toThrow("provider_failed");
+    expect(budget.events[0]).toMatchObject({ stage: "extraction", failureKind: "provider_auth" });
+    expect(budget.providerStop).toMatchObject({ failureKind: "provider_auth" });
+    expect(captureFailureKindFor(budget.events, tag)).toBe("provider_auth");
+    expect(captureFailureKindFor(budget.events, { groupId: "other", arm: "bujo" })).toBeNull();
+    const reconciled = await setup();
+    const reconcile = captureLlm({ run }, { model: { reference: "fixture:model" }, workspace: "w", sessionsRoot: "s", budget: reconciled.budget, tag });
+    await expect(reconcile.complete("batch", { label: "capture:reconcile-batch" })).rejects.toThrow("provider_failed");
+    expect(reconciled.budget.events[0]).toMatchObject({ stage: "reconciliation", failureKind: "provider_auth" });
+    expect(captureFailureKindFor(reconciled.budget.events, tag)).toBe("provider_auth");
+  });
+  it("keeps a terminal provider stop sticky through successful cleanup", async () => {
+    const { budget } = await setup();
+    budget.stopProviders("provider_failed", "provider_auth");
+    const store = { queueSnapshot: () => ready, close: vi.fn(async () => {}) };
+    await cleanupTrial({ budget, store, providers: { close: async () => {} } }, 100);
+    expect(store.close).toHaveBeenCalledOnce();
+    expect(budget.providerStop).toMatchObject({ code: "provider_failed", failureKind: "provider_auth" });
+    // Cleanup reopens its temporary gating, but the terminal stop still refuses.
+    expect(budget.admissionStopped).toBe(false);
+    expect(() => budget.reserve({})).toThrow("provider_admission_stopped");
+    // First fatal evidence wins; later evidence neither clears nor overwrites it.
+    budget.stopProviders("other", "usage_limit");
+    expect(budget.providerStop).toMatchObject({ code: "provider_failed", failureKind: "provider_auth" });
+  });
+  it("reports structured failure categories on summary failures", async () => {
+    const trials = [
+      { groupId: "g1", arm: "recent-only", status: "provider_failed", runtimeFailureKind: "provider_auth", captureFailureKind: null },
+      { groupId: "g2", arm: "bujo", status: "capture_not_ready", runtimeFailureKind: null, captureFailureKind: "usage_limit" },
+      { groupId: "g3", arm: "bujo", status: "provider_failed", runtimeFailureKind: null, captureFailureKind: null },
+    ];
+    const summary = summarize(trials, [], "real");
+    expect(summary.arms["recent-only"].failures).toEqual([{ groupId: "g1", status: "provider_failed", failureKind: "provider_auth" }]);
+    expect(summary.arms.bujo.failures).toEqual([
+      { groupId: "g2", status: "capture_not_ready", failureKind: "usage_limit" },
+      { groupId: "g3", status: "provider_failed", failureKind: null },
+    ]);
   });
   it("labels unknown/empty populations, tiny-sample latency, and lexical diagnostics honestly", () => {
     expect(percentiles([])).toMatchObject({ n: 0, p50: null, p95: null });

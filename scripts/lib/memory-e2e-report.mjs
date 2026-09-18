@@ -30,7 +30,7 @@ export function summarize(trials, events, kind) {
       const stages = [...new Set(events.filter((event) => event.arm === arm).map((event) => event.stage))];
       return [arm, {
         scheduled: rows.length, completion: ratio(rows.filter((row) => row.status === "completed").length, rows.filter((row) => row.status !== "not_applicable").length),
-        failures: rows.filter((row) => !["completed", "not_applicable"].includes(row.status)).map(({ groupId, status }) => ({ groupId, status })),
+        failures: rows.filter((row) => !["completed", "not_applicable"].includes(row.status)).map((row) => ({ groupId: row.groupId, status: row.status, failureKind: row.runtimeFailureKind ?? row.captureFailureKind ?? null })),
         notApplicable: rows.filter((row) => row.status === "not_applicable").length,
         stages: Object.fromEntries(stages.map((stage) => [stage, {
           attempted: events.filter((e) => e.arm === arm && e.stage === stage).length,

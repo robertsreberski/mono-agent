@@ -1,10 +1,49 @@
 import { performance } from "node:perf_hooks";
 
 export const MEMORY_SYSTEM = "You are the private memory maintenance LLM for mono-agent. Return only the requested JSON or plain text. Do not use tools, inspect files, or perform external actions.";
+
+/**
+ * Canonical runtime failure vocabulary the benchmark may retain, mirroring the
+ * core taxonomy in packages/agent-runtime/src/ai/failure.js (FAILURE_KINDS).
+ * Membership in this fixed list is the ONLY runtime failure detail that ever
+ * enters meter events, trials or reports. Raw error text, errorDetails
+ * objects, paths, endpoints and credentials are never serialized.
+ */
+export const RUNTIME_FAILURE_KINDS = Object.freeze([
+  "spawn", "timeout", "stall", "context_limit", "usage_limit", "invalid_result",
+  "invalid_delegation", "tool_failure", "provider_unavailable",
+  "provider_unavailable_exhausted", "provider_auth", "provider_protocol",
+  "skipped_capability_mismatch", "child_failed", "budget_exceeded",
+  "cancelled", "cancelled_user", "cancelled_stale", "cancelled_shutdown",
+  "cancelled_signal", "abandoned", "delegation_agent_not_in_team",
+  "delegation_team_roster_empty", "session_not_found", "session_busy",
+]);
+/**
+ * Fatal route categories: a dead credential or an exhausted quota will not heal
+ * inside this invocation, so observing one stops further provider admission.
+ * Anything else stays visible per trial without stopping the run.
+ */
+export const FATAL_RUNTIME_FAILURE_KINDS = Object.freeze(["provider_auth", "usage_limit"]);
+/** Allow-listed canonical kind, or null for unknown/untrusted values. */
+export function canonicalFailureKind(value) {
+  return typeof value === "string" && RUNTIME_FAILURE_KINDS.includes(value) ? value : null;
+}
+export function isFatalFailureKind(value) {
+  return FATAL_RUNTIME_FAILURE_KINDS.includes(canonicalFailureKind(value));
+}
 export class BenchmarkError extends Error {
-  constructor(code) { super(code); this.code = code; }
+  constructor(code, options = {}) {
+    super(code);
+    this.code = code;
+    const failureKind = canonicalFailureKind(options?.failureKind);
+    if (failureKind !== null) this.failureKind = failureKind;
+  }
 }
 export function codeOf(error) { return error instanceof BenchmarkError ? error.code : "operation_failed"; }
+/** Structured category carried by a benchmark error, or null when generic. */
+export function failureKindOf(error) {
+  return error instanceof BenchmarkError ? canonicalFailureKind(error.failureKind) : null;
+}
 
 /** Reservations bound configured model steps/output, not unobservable HTTP retries or exact input. */
 export class Budget {
@@ -15,12 +54,16 @@ export class Budget {
     this.events = [];
     this.pending = new Set();
     this.admissionStopped = false;
+    // Terminal provider stop ({ code, failureKind } or null). Set only by
+    // stopProviders on fatal auth/quota evidence; unlike admissionStopped it is
+    // never cleared by cleanup gating, so cleanup cannot reopen a dead route.
+    this.providerStop = null;
     this.generation = 0;
     this.controller = new AbortController();
     this.timer = setTimeout(() => this.controller.abort(), plan.limits.runtimeMs - 10000);
   }
   reserve(cost) {
-    if (this.admissionStopped) throw new BenchmarkError("provider_admission_stopped");
+    if (this.providerStop !== null || this.admissionStopped) throw new BenchmarkError("provider_admission_stopped");
     if (this.controller.signal.aborted || performance.now() - this.started >= this.plan.limits.runtimeMs - 10000) throw new BenchmarkError("runtime_budget_exhausted");
     for (const [key, amount] of Object.entries(cost)) {
       if (!Number.isFinite(amount) || amount < 0 || this.used[key] + amount > this.plan.limits[key]) throw new BenchmarkError("budget_exhausted");
@@ -35,6 +78,16 @@ export class Budget {
     return promise;
   }
   stopAdmission() { this.admissionStopped = true; }
+  /**
+   * Terminal stop after fatal provider evidence. Bounded fixed-vocabulary
+   * record only; sticky across successful cleanup. Disposal and settlement
+   * still run — this only refuses NEW admissions via reserve().
+   */
+  stopProviders(code, failureKind) {
+    if (this.providerStop !== null) return;
+    this.providerStop = { code: typeof code === "string" ? code : "provider_failed", failureKind: canonicalFailureKind(failureKind) };
+    this.stopAdmission();
+  }
   /** Track the original operation, never the raced wrapper: abort is not settlement. */
   wait(promise, { timeoutMs, signal = this.controller.signal, code = "runtime_budget_exhausted" } = {}) {
     return bounded(this.track(promise), { timeoutMs, signal, code: () => this.controller.signal.reason instanceof BenchmarkError ? this.controller.signal.reason.code : code, onCancel: () => {
@@ -106,7 +159,7 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
       const started = clock();
       const timeout = AbortSignal.timeout(budget.plan.perCall.callTimeoutMs);
       const signal = AbortSignal.any([options.abortSignal, budget.controller.signal, timeout].filter(Boolean));
-      const event = { ...tag, stage, status: "started", configuredStepsReserved: cap.maxTurns, estimatedInputTokensReserved: estimated * cap.maxTurns, outputTokensReserved: cap.providerCheckMaxTokens * cap.maxTurns, transportAttempts: null, usage: usageOf(null), costUsd: null, requestedModel: options.model?.reference ?? null, executedModel: null, observedContext: [], durationMs: null };
+      const event = { ...tag, stage, status: "started", configuredStepsReserved: cap.maxTurns, estimatedInputTokensReserved: estimated * cap.maxTurns, outputTokensReserved: cap.providerCheckMaxTokens * cap.maxTurns, transportAttempts: null, usage: usageOf(null), costUsd: null, requestedModel: options.model?.reference ?? null, executedModel: null, observedContext: [], durationMs: null, failureKind: null };
       budget.events.push(event);
       let compacted = false;
       try {
@@ -127,16 +180,27 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
         event.executedModel = typeof result.model === "string" ? result.model : null;
         event.sdk = typeof result.sdk === "string" ? result.sdk : null;
         event.observedModelTurns = finite(result.numTurns);
-        if (compacted) throw new BenchmarkError("unexpected_compaction");
-        if (["length", "max_tokens"].includes(result.diagnostics?.pi_stop_reason)) throw new BenchmarkError("output_limit_reached");
+        // Structured category only: allow-listed kind enters the event, raw
+        // error/errorDetails text never does (see RUNTIME_FAILURE_KINDS).
+        const resultFailureKind = canonicalFailureKind(result.failureKind);
+        if (resultFailureKind !== null) event.failureKind = resultFailureKind;
+        if (compacted) throw new BenchmarkError("unexpected_compaction", { failureKind: event.failureKind });
+        if (["length", "max_tokens"].includes(result.diagnostics?.pi_stop_reason)) throw new BenchmarkError("output_limit_reached", { failureKind: event.failureKind });
         if (signal.aborted) throw new BenchmarkError("provider_timeout_or_cancelled");
-        if (result.failureKind || result.error || result.cancelled || typeof result.text !== "string" || !result.text.trim()) throw new BenchmarkError("provider_failed");
+        if (result.failureKind || result.error || result.cancelled || typeof result.text !== "string" || !result.text.trim()) throw new BenchmarkError("provider_failed", { failureKind: event.failureKind });
         event.status = "completed";
         return result;
       } catch (error) {
         const code = signal.aborted ? "provider_timeout_or_cancelled" : error instanceof BenchmarkError ? error.code : "provider_failed";
+        // Prefer a structured kind carried by the thrown failure; otherwise keep
+        // the result-derived kind. Anything untrusted stays generic.
+        const failureKind = canonicalFailureKind(error?.failureKind) ?? event.failureKind;
+        if (failureKind !== null) {
+          event.failureKind = failureKind;
+          if (isFatalFailureKind(failureKind)) budget.stopProviders(code, failureKind);
+        }
         event.status = code;
-        throw new BenchmarkError(code);
+        throw failureKind !== null ? new BenchmarkError(code, { failureKind }) : new BenchmarkError(code);
       } finally { event.durationMs = clock() - started; }
     },
   };
