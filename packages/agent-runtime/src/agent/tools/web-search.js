@@ -1,5 +1,6 @@
 // @ts-check
 
+import { parallelSessionId } from "./parallel-mcp.js";
 import { withWebDeadline } from "./web-request.js";
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { searchCodexSubscription } from "./codex-subscription-search.js";
@@ -135,6 +136,8 @@ async function performSearch(
         searchState,
         callClaims,
         maxResults: max,
+        queries: webSearchProviders.get(backend)?.batchesQueries ? initialQueries : undefined,
+        sessionId: parallelSessionId(resolvedCtx, searchState),
       },
     );
   };
@@ -184,7 +187,7 @@ async function performSearch(
     for (const backend of eligibleBackends) {
       if (signal?.aborted || disabledForCall.has(backend)) continue;
       // Subscription search remains exactly one turn per WebSearch call.
-      if (webSearchProviders.get(backend)?.primaryOnly && queryIndex > 0) continue;
+      if ((webSearchProviders.get(backend)?.primaryOnly || webSearchProviders.get(backend)?.batchesQueries) && queryIndex > 0) continue;
       const run = (stageSignal) => runQuery(candidate, backend, stageSignal);
       const result = webSearchProviders.get(backend)?.chainDeadlineMs && eligibleBackends.length > 1
         ? await withWebDeadline(signal, webSearchProviders.get(backend).chainDeadlineMs, run)
@@ -672,6 +675,10 @@ async function searchOneQuery(query, options) {
     const deferred = deferredResult(options.searchState, name);
     if (deferred) {
       failures.push(deferred);
+      continue;
+    }
+    if (!provider.eligibility(options.config)) {
+      failures.push({ ok: false, backend: name, code: "backend_unavailable", message: `${name} requirements are not satisfied.`, retryable: false });
       continue;
     }
     const admission = provider.admission(options.config);

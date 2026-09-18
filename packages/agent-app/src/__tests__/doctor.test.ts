@@ -4076,6 +4076,29 @@ describe("validateMonoAgentFolder — web tools", () => {
     });
   }
 
+  it("probes strict Parallel with tools/list only and reports anonymous access", async () => {
+    const methods: string[] = [];
+    const fetchSpy = vi.fn(async (_url: unknown, init: RequestInit) => {
+      if (init.method === "GET") return new Response(null, { status: 405 });
+      const message = JSON.parse(String(init.body)) as { method: string; id?: number };
+      methods.push(message.method);
+      if (message.method === "notifications/initialized") return new Response(null, { status: 202 });
+      const result = message.method === "initialize"
+        ? { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } }
+        : { tools: ["web_search", "web_fetch"].map((name) => ({ name, inputSchema: { type: "object" } })) };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }), { headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({ search: { backend: "parallel" } });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
+    const section = sectionById(report, "web-tools");
+    expect(section.status).toBe("ok");
+    expect(section.details).toContain("Parallel search: anonymous access.");
+    expect(methods).toContain("tools/list");
+    expect(methods).not.toContain("tools/call");
+    expect(fetchSpy.mock.calls.every(([, init]) => init.redirect === "error")).toBe(true);
+  });
+
   it("reports the static defaults without running a liveness probe", async () => {
     const fetchSpy = vi.fn();
     const execSpy = vi.fn();

@@ -8,8 +8,12 @@
 - Replace WebSearch `auto` routing with explicit provider names or ordered
   chains, defaulting to Parallel then local Ollama; keep keyless engines opt-in.
   Report the previous explicit chain when migrating an `auto` configuration.
-- Add local or Parallel WebFetch provider selection, keeping local extraction
-  as the default and rejecting incompatible Parallel-only browser settings.
+- Add anonymous Parallel MCP search and extraction with bounded, sandbox-gated
+  transport, batched search alternates, run-scoped sessions, and optional
+  credential environment variables. Keep local WebFetch as the default and
+  reject incompatible Parallel-only raw, header, and browser options.
+- Make WebSearch providers source-registerable without chain-body changes,
+  preserving request budgets, relevance gates, and provider cooldowns.
 
 - Fix `WebSearch` budgets to charge answered searches, refund failed providers,
   and count Ollama endpoint probes once. Bound network dispatches separately

@@ -1,4 +1,5 @@
 import { persistentSubagentsEnabled, subagentInstancesRoot } from "./subagent-instances.js";
+import { inspectParallelWeb } from "@mono-agent/agent-runtime/agent/tools/index.js";
 import { inspectWebControl } from "./web-request-coordinator.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
@@ -1994,6 +1995,26 @@ async function webToolsSection(
           `[WARN] Codex subscription search is not ready (${probe.reason}). `
           + "Strict Codex mode has no fallback.",
         );
+      }
+    }
+  }
+
+  const fetchProviders = typeof fetchConfig.provider === "string" ? [fetchConfig.provider] : fetchConfig.provider ?? ["local"];
+  if (chain.includes("parallel") || fetchProviders.includes("parallel")) {
+    const parallelConfigs = [
+      ...(chain.includes("parallel") ? [{ label: "search", settings: search.parallel, strict: !chained }] : []),
+      ...(fetchProviders.includes("parallel") ? [{ label: "fetch", settings: fetchConfig.parallel, strict: fetchProviders.length === 1 }] : []),
+    ];
+    for (const entry of parallelConfigs) {
+      details.push(`Parallel ${entry.label}: ${entry.settings?.apiKeyEnv ? "apiKeyEnv configured" : "anonymous access"}.`);
+      if (!liveness || !entry.strict) {
+        details.push(`Parallel ${entry.label} tools/list was not probed; readiness is checked on use.`);
+      } else {
+        const probe = await inspectParallelWeb({ config: entry.settings,
+          sandbox: { networkAllowsUrl: networkPolicyAllowsUrl }, policy: config.sandbox });
+        if (!probe.ok) status = "waiting";
+        details.push(probe.ok ? "Parallel tools/list advertises web_search and web_fetch (extraction not exercised)."
+          : `[WARN] Parallel tools/list unavailable (${probe.reason}).`);
       }
     }
   }

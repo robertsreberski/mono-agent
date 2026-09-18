@@ -2658,8 +2658,8 @@ function readWebProviderSelection<T extends string>(
 }
 
 function readParallelWebConfig(env: Record<string, string | undefined>, source: string): { readonly apiKeyEnv: string } | undefined {
-  const name = normalizeOptionalString(env[source]);
-  if (name === undefined) return undefined;
+  if (env[source] === undefined) return undefined;
+  const name = env[source]?.trim() ?? "";
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
     throw new MonoAgentConfigError("invalid_env", `${source} must name an environment variable.`, { env: source });
   }

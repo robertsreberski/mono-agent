@@ -372,6 +372,13 @@ export function ollamaFetchFailure(error, signal) {
 
 export async function guardedSearch(kind, key, options, execute) {
   try {
+    // Preserve the keyless pre-admission fast skip: a process cooldown must not
+    // reserve a spacing slot or wait for either local or host admission.
+    if (options.admission?.processPolicy === "keyless" && backendInCooldown(kind, key)) {
+      const retryAfterMs = processCooldownRemaining(kind, key);
+      return { ok: false, backend: kind, message: `${kind} skipped: cooling down after rate limiting.`,
+        retryable: true, cooldown: true, retryAfterMs, retryAtMs: Date.now() + retryAfterMs };
+    }
     if (options.coordinator || options.admission?.processPolicy !== "endpoint") {
       return await coordinatedWebRequest(options.coordinator, kind, key, options.signal, execute);
     }

@@ -46,7 +46,7 @@ describe("explicit web provider selection", () => {
   });
   it("retains only a credential name, requiring a valid present variable", () => {
     expect(() => load({ search: { parallel: { apiKeyEnv: "MISSING_PARALLEL_KEY" } } })).toThrow(/missing or empty/);
-    expect(() => load({ fetch: { parallel: { apiKeyEnv: "not a name" } } })).toThrow(/name an environment/);
+    for (const apiKeyEnv of ["not a name", "", " "]) expect(() => load({ fetch: { parallel: { apiKeyEnv } } })).toThrow(/name an environment/);
     const config = load({ search: { parallel: { apiKeyEnv: "TEST_PARALLEL_KEY" } }, fetch: { parallel: { apiKeyEnv: "TEST_PARALLEL_KEY" } } }, { TEST_PARALLEL_KEY: "sentinel-secret" });
     expect(config?.search.parallel).toEqual({ apiKeyEnv: "TEST_PARALLEL_KEY" });
     expect(JSON.stringify(config)).not.toContain("sentinel-secret");

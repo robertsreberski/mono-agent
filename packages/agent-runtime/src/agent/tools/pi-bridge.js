@@ -723,7 +723,7 @@ export function getPiBuiltinTools(allowedTools, {
         outcome: { status: "error", code: "controller_unavailable", retryable: false, attempts: 0 },
         error: true,
       }), toolContext),
-    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Discover public sources through the configured backend. Auto uses explicitly configured Ollama, configured SearXNG, Codex subscription search, then keyless providers; named backends are strict. Start with one broad, high-yield query covering the decision's main constraints, then use WebFetch on returned URLs. Treat snippets as leads, not final evidence. Refine only for a material evidence gap. Never sleep, retry, or delegate to bypass a request budget, cooldown, quota limit, or access gate; continue honestly from available evidence.", objectSchema({
+    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Discover public sources through the configured backend. Use the configured provider or explicit ordered chain (default: Parallel then local Ollama); a single provider name is strict. Start with one broad, high-yield query covering the decision's main constraints, then use WebFetch on returned URLs. Treat snippets as leads, not final evidence. Refine only for a material evidence gap. Never sleep, retry, or delegate to bypass a request budget, cooldown, quota limit, or access gate; continue honestly from available evidence.", objectSchema({
       query: { type: "string" },
       limit: { type: "integer" },
       alternate_queries: { type: "array", items: { type: "string" }, maxItems: 3 },
