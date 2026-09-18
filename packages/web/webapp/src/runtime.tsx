@@ -885,6 +885,8 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,
+    // Travels with the messages, including unlisted cron/deep-link threads.
+    extras: { selectedThreadId: store.selectedThreadId },
     convertMessage,
     isLoading: store.selectionLoading || store.detailLoading,
     isRunning,
