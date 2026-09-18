@@ -75,7 +75,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     // Pi-native bridge tuning (all optional).
     "piNative": {
       "transport": "auto",                // auto | sse | websocket | websocket-cached
-      // "cacheRetention": "long",       // opt-in Anthropic 1h; supported model, 2× input write / 0.1× read, no guaranteed hit
+      // "cacheRetention": "short",      // opt out of default Anthropic 1h; long writes 2× / short 1.25×, reads 0.1×
       "promptCacheDiagnostics": false,     // metadata-only request fingerprints in run artifacts
       "piMaxRetries": 2,                   // 0-8; transient provider-transport retries
       "maxRetryDelayMs": 60000,            // backoff cap between retries (ms)
@@ -482,10 +482,17 @@ const app = await startMonoAgentApp({
 
 For a bare responder without channels, use `@mono-agent/config` + `@mono-agent/agent-app` (`createConfiguredAgentResponder` — also takes `memory`, `historyStore`, `runtimeOptions`, `runtimeOptionsForRequest`). For multi-agent orchestration, add `@mono-agent/agent-orchestrator` (`createCollaboratorToolRuntimeExtension`) — see `references/package-map.md`. Channel message texts and stream tuning (welcome/help/error texts, edit debounce) are channel-driver overrides, not config keys.
 
-Anthropic cache retention is optional (`providers.piNative.cacheRetention`:
-short/long). `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON; either explicit value
-overrides Pi's ambient `PI_CACHE_RETENTION`. Unset forwards nothing. Default-off
-assumes no ambient Pi long retention. One-hour writes cost 2× normal input,
-reads 0.1×; short writes 1.25×. Model support is required, with no guaranteed hit.
+Anthropic cache retention defaults to long (`providers.piNative.cacheRetention`:
+short/long); short is the opt-out. `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON,
+then long. Both the default and explicit values override Pi's ambient
+`PI_CACHE_RETENTION`. One-hour writes cost 2× normal input, reads 0.1×; short
+writes 1.25×. Model support is required, with no guaranteed hit.
 First verify stable tool definitions and admission; separately authorize any
 retention spending experiment using the prompt-cache measurement gates.
+
+The default benefits agents whose turns arrive 5–60 minutes apart. In a measured
+maintainer-console workload, 72% of Anthropic cache writes were 5–60-minute
+re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
+This is workload-specific evidence, not a billing guarantee. Agents that only
+chain turns within five minutes pay slightly more with long retention and can
+set `"short"` instead.

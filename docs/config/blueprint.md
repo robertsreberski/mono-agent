@@ -137,7 +137,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     // Pi-native bridge tuning (all optional).
     "piNative": {
       "transport": "auto",                // auto | sse | websocket | websocket-cached
-      // "cacheRetention": "long",       // opt-in Anthropic 1h cache; model support required, 2× write / 0.1× read
+      // "cacheRetention": "short",      // opt out of default Anthropic 1h cache; long writes 2× / short 1.25×, reads 0.1×
       "promptCacheDiagnostics": false,     // metadata-only request fingerprints in run artifacts
       "piMaxRetries": 2,                   // 0-8; transient provider-transport retries
       "maxRetryDelayMs": 60000,            // backoff cap between retries (ms)

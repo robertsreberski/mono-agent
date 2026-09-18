@@ -988,6 +988,31 @@ full stored answer before either byte limit, including a sentinel on the final
 line of long narration. Agent SQLite and retained activity keep the original
 text; failures and non-suppressed output retain their existing truncation rules.
 
+### Anthropic cache retention
+
+`providers.piNative.cacheRetention` defaults to `"long"` (one hour); set `"short"`
+(five minutes) to opt out. Nonempty `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON,
+then the `"long"` default. Both the default and explicit values override Pi's
+separate ambient `PI_CACHE_RETENTION`, including explicit `"short"` when Pi's
+environment requests long retention.
+The runtime forwards retention only to Anthropic Messages, including child
+routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
+unsupported models receive no one-hour TTL.
+
+One-hour writes cost **2× normal input**, reads **0.1×**, versus **1.25×** for
+short-cache writes. Model support is required, and no cache hit is guaranteed.
+Metadata-only diagnostics record the requested setting and observed cache TTL;
+an ephemeral Anthropic cache control without an explicit TTL denotes five
+minutes. Evaluate the measurement gates before separately authorizing spending.
+
+The default benefits agents whose turns arrive 5–60 minutes apart. In a measured
+maintainer-console workload, 72% of Anthropic cache writes were 5–60-minute
+re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
+This is workload-specific evidence, not a billing guarantee. Agents that only
+chain turns within five minutes pay slightly more with long retention and can
+set `"short"` instead.
+
+
 ## Architecture
 
 The controller wraps its shared Pi-store-scoped `provider-usage.ts` service in an agent-config-scoped `provider-usage-scope.ts` operator for web/TUI and `provider-usage-tool.ts` request extensions. Activation reuses provider authentication’s effective primary/fallback, agent-host memory LLM, and enabled cron/webhook model references. Each read reloads channel references; new configs receive new scopes without changing the shared credential cache. Aggregate reads/refreshes visit only active supported providers, and explicit inactive reads return an empty snapshot before credential discovery or vendor work. Credential presence alone never activates usage. Pure mappers retain only Claude/Codex/OpenCode Go/GitHub Copilot core subscription windows. Copilot OAuth quota reads use Pi's underlying GitHub device token (`credential.refresh`), never inference `access`; inference expiry/rotation/model catalogs do not refresh or invalidate usage. Cache/retention identity follows source, GitHub token and Pi-normalized host. Missing/blank refresh or malformed/non-github.com `enterpriseUrl` omits usage without local fallback. Blank/absent host means github.com. Pi API keys are sent directly. All Copilot quota 401/403 responses get one request, no resolver/retry, and the five-minute failure fence. Only absent Pi Copilot entries allow bounded local editor apps.json/hosts.json, the active github.com token in gh hosts.yml, and shell-free noninteractive `gh auth token --hostname github.com` (2s, bounded output, token environment removed). The private `copilot-usage-credentials.ts` discovery seams are injectable; stores are never mutated. Unusable Pi entries or unreadable ownership never select a local account. Only github.com tokens qualify; no environment-token fallback, cookies or organization billing calls. Paid Credits and free Chat/Completions are percentages; unlimited/zero placeholders are omitted and explicit token billing may show only a plan. Demand-driven five-minute caching, coalescing, last-good stale data and Retry-After keep usage reads bounded. Explicit `refresh()` bypasses successful freshness and awaits shared vendor work, but honors error/backoff fences and preserves last-good fetch times. Default snapshots and tool reads retain their cached/SWR behavior. `ProviderUsage` honors normal app-tool policy and never purchases quota or changes routing. Only agent-owned Pi credential success/auth-failure outcomes feed the controller's credential-generation-fenced auth observations without additional vendor calls. Account acceptance is weaker than live inference proof; account rejection has no model and uses the existing `provider_auth` failure kind.
