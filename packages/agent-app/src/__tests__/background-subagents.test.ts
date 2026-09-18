@@ -31,6 +31,8 @@ const services: ProcessJobsServiceHandle[] = [];
 // Full-package runs overlap this file with physical crash, compiler, and app
 // fixtures. Durable publication plus wake settlement has repeatedly taken
 // 7-9s under that load, while the same path completes quickly in isolation.
+// Timeout-fence cases also wait 1500ms + 5100ms of deadline and grace before
+// delivery, so a 9s budget leaves too little headroom under contention.
 const DURABLE_DELIVERY_TIMEOUT_MS = 15_000;
 afterEach(async () => {
   vi.useRealTimers();
@@ -589,7 +591,7 @@ describe("managed detached production execution", () => {
     const { agent } = tools(f, run, { timeoutMs: 1500 });
     const receipt = await agent.execute("certificate-fault", { persist: true, background: true, id: "helper", prompt: "work" });
     await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
-    await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: 9000 });
+    await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     provider.resolve({ text: "late completion" });
     await vi.waitFor(() => expect(intercepted).toBe(true), { timeout: 3000 });
     const registryFile = resolve(subagentConversationRoot(resolve(f.root, "children"), origin.conversationId), "instances.json");
@@ -628,7 +630,7 @@ describe("managed detached production execution", () => {
     await expect(instances.publishOwned("finalize", lastPublication!)).rejects.toThrow("subagent_stale_turn");
     expect((await instances.get("helper"))?.incarnation).toBe(replacement.incarnation);
     expect(f.wake).toHaveBeenCalledOnce();
-  }, 20_000);
+  }, 40_000);
 
   it.each(["absent", "stopped"])("F3: lost certificate acknowledgement survives %s service close and registry retention", async (resolver) => {
     const f = await managedFixture(); let intercepted = false;
@@ -896,7 +898,7 @@ describe("managed detached production execution", () => {
     const { agent, send } = tools(f, run, { timeoutMs: 1500 });
     const receipt = await agent.execute("managed-late", { persist: true, background: true, id: "helper", prompt: "work" });
     await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
-    await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: 9000 });
+    await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     const beforeLate = await f.service.get(receipt.details.jobId);
     expect(beforeLate).toMatchObject({ kind: "internal" });
     expect(beforeLate?.kind === "internal" ? beforeLate.subagentProgress : undefined).not.toHaveProperty("costUsd");
@@ -911,7 +913,7 @@ describe("managed detached production execution", () => {
     expect(f.wake).toHaveBeenCalledOnce();
     await vi.waitFor(async () => expect((await f.store.get(receipt.details.jobId))?.subagentOwnership?.publication.receiptPending).toBe(false), { timeout: 3000 });
     await expect(send.execute("not-retained", { id: "helper", message: "next" })).rejects.toThrow("subagent_recovery_required");
-  }, 15_000);
+  }, 30_000);
 });
 
 describe("detached persistent subagents", () => {
