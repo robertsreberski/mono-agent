@@ -1293,36 +1293,81 @@ it("failed child preserves a pending question and bounded question wakes survive
 
 it("G10: failed close after retained acknowledgement preserves the pending question and instance", async () => {
   const f = await managedFixture(undefined, { maxRuntimeMs: 5_000 });
-  // The timeout below must fire only after the immediate provider's ok report
-  // is durable: reportManaged records timeout/unknown when no retained
-  // disposition exists yet, and timeout/retained once the ok report has landed
-  // (process-jobs-service reportManaged continuity rule). Under full-package
-  // load the admission-to-settlement chain (verify, provider start, begin,
-  // settled, intent publish, report mutate) can exceed 1500ms, so the
-  // definition budget is 3000ms — the same margin as the sibling retained
-  // inspection test — to let durable settlement win the race with headroom.
-  const timedSpec = { ...spec, definition: { ...spec.definition, timeoutMs: 3_000 } };
+  const timedSpec = { ...spec, definition: { ...spec.definition, timeoutMs: 1_500 } };
   await f.instances.create(timedSpec); await f.instances.begin("helper");
   await f.instances.markAwaiting("helper", { question: "Pending scope?", options: ["Small", "Large"] });
   await f.instances.finish("helper", { status: "awaiting_reply", question: { question: "Pending scope?", options: ["Small", "Large"] } });
   expect(await f.instances.get("helper")).toMatchObject({ status: "awaiting_reply", pendingQuestion: { question: "Pending scope?" } });
 
-  const releaseConfirmation = deferred<void>(); let delayNextSuccess = true;
+  // Ordered phases, not a timing margin. The production deadlines stay at their
+  // real values; only the clock is held still so host latency cannot expire the
+  // 1500ms deadline before the provider settles. Two source facts make the
+  // ordering deterministic (process-jobs-service reportManaged/publishManaged):
+  //  * publishManaged writes the retained ok disposition durably BEFORE it
+  //    publishes "confirm", so entering an unreleased ok confirm hook proves
+  //    settlement=settled and disposition={ok,retained} are already on disk.
+  //  * reportManaged publishes its own "intent" directly, outside the per-job
+  //    managedPublications chain, so the timeout intent — carrying the
+  //    continuity the product actually computed — is observable while the ok
+  //    confirm is still held. Only the timeout's later publishManaged run
+  //    queues behind that held confirm, which is why the release below is
+  //    required to finish the publication, and why nothing released there can
+  //    change a disposition that is already durable.
+  const releaseConfirmation = deferred<void>();
+  const confirmHeld = deferred<void>();
+  const timeoutIntent = deferred<{ status: string; continuity?: string; reason?: string }>();
+  let delayNextSuccess = true;
   f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
     verify: async (identity) => await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
     publish: async (phase, publication) => {
+      if (phase === "intent" && publication.disposition.reason === "timeout") timeoutIntent.resolve(publication.disposition);
       if (delayNextSuccess && phase === "confirm" && !publication.released && publication.disposition.status === "ok") {
-        delayNextSuccess = false; await releaseConfirmation.promise;
+        delayNextSuccess = false;
+        confirmHeld.resolve();
+        await releaseConfirmation.promise;
       }
       await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
     },
   });
+  // Fake timers freeze Date as well as setTimeout, which the service needs:
+  // admission and managedExecution compare this.now() against deadlineAt, so a
+  // Date.now-only spy would leave `new Date()` running ahead of the timers.
+  vi.useFakeTimers();
   try {
     const timeoutTools = tools(f, async () => ({ text: "This answer settled before reporting timed out" }));
     const timedOut = await timeoutTools.send.execute("retained-timeout", { id: "helper", message: "Small", background: true });
+
+    // Phase 1 — durable settlement proof, with zero clock advance. Never
+    // vi.waitFor inside this window: it auto-advances fake timers and would
+    // expire the production deadline early.
+    await confirmHeld.promise;
+    expect((await f.store.get(timedOut.details.jobId))?.subagentOwnership).toMatchObject({
+      owner: { settlement: "settled" },
+      disposition: { status: "ok", continuity: "retained" },
+    });
+
+    // Phase 2 — fire the genuine production deadlines (1500ms job timer, then
+    // the 5100ms launch grace) while the ok confirm is still held. Both are
+    // real product timers; nothing here shortens or extends them.
+    await vi.advanceTimersByTimeAsync(1_500);
+    await vi.advanceTimersByTimeAsync(5_100);
+    // Both production timers have now fired, so restoring the real clock can no
+    // longer expire anything early. Doing it before the release keeps a single
+    // stable clock across the held hook's resumption, and leaves no pending fake
+    // timer to discard on the wake path (scheduleWake runs on promises).
+    vi.useRealTimers();
+    // Deferred evidence resolved by the actual publish hook — not an assumption
+    // that advancing timers settled the I/O. This is the product's own timeout
+    // disposition, computed from the phase-1 durable ok proof and published
+    // while the confirm is still held.
+    expect(await timeoutIntent.promise).toMatchObject({ status: "timeout", reason: "timeout", continuity: "retained" });
+
+    // Phase 3 — release the held confirm so the timeout's queued publication
+    // can complete, then await the durable record under real timers.
+    releaseConfirmation.resolve();
     await vi.waitFor(async () => expect((await f.store.get(timedOut.details.jobId))?.subagentOwnership?.disposition)
       .toMatchObject({ reason: "timeout", continuity: "retained" }), { timeout: 12_000 });
-    releaseConfirmation.resolve(); expect((await done(f.service, timedOut.details.jobId)).state).toBe("timed_out");
+    expect((await done(f.service, timedOut.details.jobId)).state).toBe("timed_out");
     expect(await f.instances.get("helper")).toMatchObject({ status: "awaiting_reply", pendingQuestion: { question: "Pending scope?" } });
 
     const inspected = await f.instances.inspect("helper", { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) });
@@ -1336,8 +1381,10 @@ it("G10: failed close after retained acknowledgement preserves the pending quest
     const duplicate = await failedTools.send.execute("failed-close-duplicate", request);
     expect(duplicate.details).toMatchObject({ executed: false, recovery: { code: "subagent_recovery_already_consumed" } });
     expect(failedRun).toHaveBeenCalledOnce();
-  } finally { releaseConfirmation.resolve(); }
-}, 30_000);
+    // Restore the clock before ungating so a failure path never resumes the held
+    // hook under fake timers, and never leaves the gate closed for teardown.
+  } finally { vi.useRealTimers(); releaseConfirmation.resolve(); }
+}, 15_000);
 
 it("queue expiry releases the reservation without invoking the child", async () => {
   const f = await fixture({ maxConcurrent: 1, maxQueueAgeMs: 1500 });
