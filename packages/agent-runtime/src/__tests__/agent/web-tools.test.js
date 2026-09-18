@@ -645,36 +645,51 @@ describe("WebSearch", () => {
 
   it.each([
     ["120", 120_000, true],
-    [new Date(Date.now() + 120_000).toUTCString(), 120_000, true],
+    ["http-date:+120s", 120_000, true],
     ["1.5", 300_000, true],
     ["-1", 300_000, true],
     ["not-a-date", 300_000, true],
   ])("parses Retry-After %s without inventing malformed retry times", async (retryAfter, expected, hasAbsolute) => {
-    const result = await performWebSearch({ query: "mono agent" }, {
-      searchConfig: {
-        backend: "ollama",
-        ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
-      },
-      fetchImpl: vi.fn(async () => new Response("limited", {
-        status: 429,
-        headers: { "retry-after": retryAfter },
-      })),
-      ctx: runtimeContext(),
-    });
-
-    expect(result).toMatchObject({
-      error: true,
-      outcome: { code: "rate_limited", retryInRun: false },
-    });
-    if (expected === undefined) {
-      expect(result.outcome.retryAfterMs).toBeUndefined();
-      expect(result.outcome.retryAt).toBeUndefined();
-    } else {
-      expect(result.outcome.retryAfterMs).toBeGreaterThanOrEqual(expected - 1_500);
-      expect(result.outcome.retryAfterMs).toBeLessThanOrEqual(expected + 1_500);
-      expect(Boolean(result.outcome.retryAt)).toBe(hasAbsolute);
+    // HTTP dates resolve to whole seconds, so a header built at collection time
+    // drifts as setup/scheduling elapse before parsing (CI saw 118485ms vs the
+    // 118500ms floor). Build the date header at test start under a
+    // second-aligned frozen clock so the 120s expectation is exact.
+    let headerValue = retryAfter;
+    let nowSpy;
+    if (retryAfter === "http-date:+120s") {
+      const frozenNow = Math.ceil(Date.now() / 1000) * 1000;
+      nowSpy = vi.spyOn(Date, "now").mockReturnValue(frozenNow);
+      headerValue = new Date(frozenNow + 120_000).toUTCString();
     }
-    expect(result.text).toContain("Do not sleep or retry WebSearch");
+    try {
+      const result = await performWebSearch({ query: "mono agent" }, {
+        searchConfig: {
+          backend: "ollama",
+          ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+        },
+        fetchImpl: vi.fn(async () => new Response("limited", {
+          status: 429,
+          headers: { "retry-after": headerValue },
+        })),
+        ctx: runtimeContext(),
+      });
+
+      expect(result).toMatchObject({
+        error: true,
+        outcome: { code: "rate_limited", retryInRun: false },
+      });
+      if (expected === undefined) {
+        expect(result.outcome.retryAfterMs).toBeUndefined();
+        expect(result.outcome.retryAt).toBeUndefined();
+      } else {
+        expect(result.outcome.retryAfterMs).toBeGreaterThanOrEqual(expected - 1_500);
+        expect(result.outcome.retryAfterMs).toBeLessThanOrEqual(expected + 1_500);
+        expect(Boolean(result.outcome.retryAt)).toBe(hasAbsolute);
+      }
+      expect(result.text).toContain("Do not sleep or retry WebSearch");
+    } finally {
+      nowSpy?.mockRestore();
+    }
   });
 
   it("enforces the hard request budget across WebSearch calls in one logical run", async () => {

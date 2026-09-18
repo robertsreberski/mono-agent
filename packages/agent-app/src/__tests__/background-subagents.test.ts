@@ -1293,7 +1293,15 @@ it("failed child preserves a pending question and bounded question wakes survive
 
 it("G10: failed close after retained acknowledgement preserves the pending question and instance", async () => {
   const f = await managedFixture(undefined, { maxRuntimeMs: 5_000 });
-  const timedSpec = { ...spec, definition: { ...spec.definition, timeoutMs: 1_500 } };
+  // The timeout below must fire only after the immediate provider's ok report
+  // is durable: reportManaged records timeout/unknown when no retained
+  // disposition exists yet, and timeout/retained once the ok report has landed
+  // (process-jobs-service reportManaged continuity rule). Under full-package
+  // load the admission-to-settlement chain (verify, provider start, begin,
+  // settled, intent publish, report mutate) can exceed 1500ms, so the
+  // definition budget is 3000ms — the same margin as the sibling retained
+  // inspection test — to let durable settlement win the race with headroom.
+  const timedSpec = { ...spec, definition: { ...spec.definition, timeoutMs: 3_000 } };
   await f.instances.create(timedSpec); await f.instances.begin("helper");
   await f.instances.markAwaiting("helper", { question: "Pending scope?", options: ["Small", "Large"] });
   await f.instances.finish("helper", { status: "awaiting_reply", question: { question: "Pending scope?", options: ["Small", "Large"] } });
@@ -1313,7 +1321,7 @@ it("G10: failed close after retained acknowledgement preserves the pending quest
     const timeoutTools = tools(f, async () => ({ text: "This answer settled before reporting timed out" }));
     const timedOut = await timeoutTools.send.execute("retained-timeout", { id: "helper", message: "Small", background: true });
     await vi.waitFor(async () => expect((await f.store.get(timedOut.details.jobId))?.subagentOwnership?.disposition)
-      .toMatchObject({ reason: "timeout", continuity: "retained" }), { timeout: 8_000 });
+      .toMatchObject({ reason: "timeout", continuity: "retained" }), { timeout: 12_000 });
     releaseConfirmation.resolve(); expect((await done(f.service, timedOut.details.jobId)).state).toBe("timed_out");
     expect(await f.instances.get("helper")).toMatchObject({ status: "awaiting_reply", pendingQuestion: { question: "Pending scope?" } });
 
@@ -1329,7 +1337,7 @@ it("G10: failed close after retained acknowledgement preserves the pending quest
     expect(duplicate.details).toMatchObject({ executed: false, recovery: { code: "subagent_recovery_already_consumed" } });
     expect(failedRun).toHaveBeenCalledOnce();
   } finally { releaseConfirmation.resolve(); }
-}, 15_000);
+}, 30_000);
 
 it("queue expiry releases the reservation without invoking the child", async () => {
   const f = await fixture({ maxConcurrent: 1, maxQueueAgeMs: 1500 });
