@@ -1860,8 +1860,7 @@ describe("Cron adapter — preflight gate", () => {
       await expect.poll(() => results.length).toBe(1);
       expect(seen).toEqual(["plain"]);
       expect(records).toHaveLength(1);
-      expect(records[0]).toMatchObject({ outcome: "timeout" });
-      expect(records[0]).not.toHaveProperty("code");
+      expect(records[0]).toMatchObject({ outcome: "timeout", code: "callback_timeout" });
       // The late skip verdict must be ignored: no second record, no second run.
       settleGate?.();
       await vi.advanceTimersByTimeAsync(0);

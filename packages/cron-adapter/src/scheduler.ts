@@ -849,7 +849,7 @@ function decidePreflight(
   }
   if (settlement.kind === "timeout") {
     return {
-      record: { outcome: "timeout", ...times },
+      record: { outcome: "timeout", code: "callback_timeout", ...times },
       action: { kind: "run", outcome: "timeout" },
     };
   }

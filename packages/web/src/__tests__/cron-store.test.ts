@@ -1383,6 +1383,24 @@ describe("cron Reply operation storage", () => {
     return { stateDir, store };
   }
 
+  it("captures a gate skip as result text, never as a failure message", async () => {
+    const { store } = await replyFixture();
+    try {
+      const gateRunId = "run-gate-1";
+      store.reconcileCronRuns("agent-one", "daily:brief", [cronRun({
+        runId: gateRunId,
+        sequence: 10,
+        status: "skipped_gate",
+        error: "no new items",
+      })]);
+      const captured = store.captureCronReplySnapshot("agent-one", "daily:brief", gateRunId, "summary");
+      expect(captured.text).toBe("Skipped by preflight gate: no new items");
+      expect(captured.errorMessage).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
+
   it("reserves the exact summary before import and materializes one normal immutable conversation", async () => {
     const { store } = await replyFixture();
     try {

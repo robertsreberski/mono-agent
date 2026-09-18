@@ -1,5 +1,6 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import process from "node:process";
+import { StringDecoder } from "node:string_decoder";
 
 import type { ChannelLogger } from "@mono-agent/agent-contracts";
 import {
@@ -86,6 +87,10 @@ export function runCronPreflight(input: CronPreflightRunInput): Promise<CronPref
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     let child: CronPreflightChild | undefined;
+    // One decoder per stream: a multi-byte UTF-8 sequence may be split across
+    // chunks, so each chunk must not be decoded on its own.
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
     let stdout = "";
     let stderr = "";
 
@@ -159,7 +164,8 @@ export function runCronPreflight(input: CronPreflightRunInput): Promise<CronPref
 
     const onData = (stream: "stdout" | "stderr") => (chunk: string | Uint8Array): void => {
       if (settled) return;
-      const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+      const decoder = stream === "stderr" ? stderrDecoder : stdoutDecoder;
+      const text = typeof chunk === "string" ? chunk : decoder.write(Buffer.from(chunk));
       if (stream === "stderr") {
         // Diagnostic only: keep the newest bytes bounded so a chatty gate
         // cannot grow this runner's memory or the warn line without limit.
@@ -176,7 +182,9 @@ export function runCronPreflight(input: CronPreflightRunInput): Promise<CronPref
     child.stderr?.on("data", onData("stderr"));
 
     child.on("error", (error) => {
-      if (killTimer !== undefined) clearTimeout(killTimer);
+      // Only `close` proves the process is gone; an error after a timeout must
+      // not cancel the pending SIGKILL escalation.
+      if (settled) return;
       warnFailure("spawn_failed", errorMessage(error));
       fail("spawn_failed", "preflight gate could not be started");
     });
@@ -184,6 +192,7 @@ export function runCronPreflight(input: CronPreflightRunInput): Promise<CronPref
       // The gate is gone, so the SIGKILL escalation has nothing left to kill.
       if (killTimer !== undefined) clearTimeout(killTimer);
       if (settled) return;
+      stdout += stdoutDecoder.end();
       if (code === 0) {
         settle(verdictFromStdout(stdout));
         return;

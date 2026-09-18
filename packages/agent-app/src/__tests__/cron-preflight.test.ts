@@ -58,6 +58,10 @@ class FakeGateChild implements CronPreflightChild {
 
   unref(): void {}
 
+  emitStdoutBytes(bytes: Uint8Array): void {
+    for (const listener of this.stdoutData) listener(bytes);
+  }
+
   emitStdout(text: string): void {
     for (const listener of this.stdoutData) listener(text);
   }
@@ -138,6 +142,36 @@ describe("cron preflight runner", () => {
     child.emitClose(0);
 
     await expect(pending).resolves.toEqual({ outcome: "skip" });
+  });
+
+  it("reassembles a multi-byte UTF-8 input split across stdout chunks", async () => {
+    const { child, spawn } = harness();
+    const pending = run({ spawn });
+    const bytes = Buffer.from("{\"run\":true,\"input\":\"caf\u00e9 \u2713\"}", "utf8");
+    // Split inside the two-byte "é" and again inside the three-byte "✓".
+    const cut1 = bytes.indexOf(Buffer.from("\u00e9", "utf8")) + 1;
+    const cut2 = bytes.indexOf(Buffer.from("\u2713", "utf8")) + 2;
+    child.emitStdoutBytes(bytes.subarray(0, cut1));
+    child.emitStdoutBytes(bytes.subarray(cut1, cut2));
+    child.emitStdoutBytes(bytes.subarray(cut2));
+    child.emitClose(0);
+
+    await expect(pending).resolves.toEqual({ outcome: "run", input: "caf\u00e9 \u2713" });
+  });
+
+  it("keeps the SIGKILL escalation when the child errors after the timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const { child, spawn } = harness();
+      const pending = run({ spawn, timeoutMs: 1_000 });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(pending).resolves.toMatchObject({ outcome: "error", code: "timeout" });
+      child.emitError(new Error("late error"));
+      await vi.advanceTimersByTimeAsync(CRON_PREFLIGHT_KILL_GRACE_MS);
+      expect(child.kills).toEqual(["SIGTERM", "SIGKILL"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the gate input and reason on a run verdict", async () => {

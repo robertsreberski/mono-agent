@@ -1693,9 +1693,13 @@ export class WebStore {
         snapshotKind,
         capturedAt: this.now(),
         run,
-        text: run.text ?? "",
+        // A gate skip is not a failure: its bounded reason rides in `error` on
+        // the wire, so surface it as result text rather than a failure message.
+        text: run.status === "skipped_gate"
+          ? `Skipped by preflight gate${run.error === undefined ? "" : `: ${run.error}`}`
+          : run.text ?? "",
         ...(run.failureKind === undefined ? {} : { errorCode: run.failureKind }),
-        ...(run.error === undefined ? {} : { errorMessage: run.error }),
+        ...(run.error === undefined || run.status === "skipped_gate" ? {} : { errorMessage: run.error }),
         sourceFieldsTruncated: run.fieldsTruncated ?? [],
         sourceTruncationKnown: true,
       };
