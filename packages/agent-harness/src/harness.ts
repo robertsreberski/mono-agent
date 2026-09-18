@@ -95,10 +95,13 @@ export { AgentHarnessError };
 export { requestOverridesModel, runSourceFromRequest };
 
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
-// Log-only threshold for the turn-continuity slow-wait diagnostic. The barrier
-// wait itself is unbounded (abortable); this only bounds when one warning is
-// emitted per waiter. It is not a failure timeout and never changes the outcome.
+// Warn before failing the waiter closed; the publication itself keeps ownership.
 const TURN_CONTINUITY_PUBLICATION_SLOW_WARNING_MS = 5_000;
+const TURN_CONTINUITY_PUBLICATION_WAIT_TIMEOUT_MS = 30_000;
+
+// Distinguish an in-flight publication from a rejected one: reset may discard
+// the latter, but must never race the former's eventual history mutation.
+class TurnContinuityPublicationTimeoutError extends AgentHarnessError {}
 const SHUTDOWN_DRAIN_WARNING =
   "Agent shutdown timed out while draining active runs; provider sessions and tool-history persistence were forcibly released.";
 
@@ -207,7 +210,8 @@ export class MonoAgentHarness implements AgentHarness {
     const normalized = conversationId.trim();
     try {
       await this.waitForTurnContinuityPublication(normalized);
-    } catch {
+    } catch (error) {
+      if (error instanceof TurnContinuityPublicationTimeoutError) throw error;
       // A rejected publication (including a failed republish attempt) does not
       // block a reset: the reset below discards the unpublished account. The
       // barrier is cleared only after the reset itself succeeds, so a failing
@@ -1668,54 +1672,48 @@ export class MonoAgentHarness implements AgentHarness {
     return attempt;
   }
 
-  private turnContinuityUnavailableError(outcome: TurnContinuityOutcome, cause: unknown): AgentHarnessError {
+  private turnContinuityUnavailableError(outcome: TurnContinuityOutcome, cause: unknown, timedOut = false): AgentHarnessError {
     // Redaction-safe cause: only the error name/message cross into the
     // response, never raw credentials or full store payloads.
     const details = { cause: errorToDetails(cause) };
+    const ContinuityError = timedOut ? TurnContinuityPublicationTimeoutError : AgentHarnessError;
     if (outcome === "cancelled") {
-      return new AgentHarnessError(
+      return new ContinuityError(
         "cancellation_continuity_unavailable",
         "The previous cancelled turn still could not be published. Send the next message to retry, or start a new session to recover the conversation.",
         details,
       );
     }
-    return new AgentHarnessError(
+    return new ContinuityError(
       "failure_continuity_unavailable",
       "The previous failed turn still could not be published. Send the next message to retry, or start a new session to recover the conversation.",
       details,
     );
   }
 
-  private async awaitAbortablePublication(publication: Promise<void>, abortSignal?: AbortSignal): Promise<void> {
-    if (abortSignal === undefined) return await publication;
-    if (abortSignal.aborted) return;
-    return await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const onAbort = (): void => {
-        if (settled) return;
-        settled = true;
-        abortSignal.removeEventListener("abort", onAbort);
-        // Resolve (do not throw) so the caller takes its standard cancelled
-        // path. The barrier stays installed for the next waiter.
-        resolve();
-      };
-      publication.then(
-        () => {
-          if (settled) return;
-          settled = true;
-          abortSignal.removeEventListener("abort", onAbort);
-          resolve();
-        },
-        (error) => {
-          if (settled) return;
-          settled = true;
-          abortSignal.removeEventListener("abort", onAbort);
-          reject(error);
-        },
-      );
-      abortSignal.addEventListener("abort", onAbort, { once: true });
-      if (abortSignal.aborted) onAbort();
-    });
+  private async awaitAbortablePublication(
+    publication: Promise<void>,
+    deadline: number,
+    timeoutError: AgentHarnessError,
+    abortSignal?: AbortSignal,
+  ): Promise<void> {
+    if (abortSignal?.aborted) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    try {
+      return await new Promise<void>((resolve, reject) => {
+        // Resolve on abort so the caller takes its standard cancelled path.
+        // Neither abort nor timeout settles/removes the publication barrier.
+        onAbort = resolve;
+        timer = setTimeout(() => reject(timeoutError), Math.max(0, deadline - Date.now()));
+        publication.then(resolve, reject);
+        abortSignal?.addEventListener("abort", onAbort, { once: true });
+        if (abortSignal?.aborted) onAbort();
+      });
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (onAbort !== undefined) abortSignal?.removeEventListener("abort", onAbort);
+    }
   }
 
   private async waitForTurnContinuityPublication(
@@ -1737,6 +1735,9 @@ export class MonoAgentHarness implements AgentHarness {
     // outcome. It carries the conversation id, the previous turn's outcome and
     // the elapsed milliseconds so production slowness is attributable.
     const startedAt = Date.now();
+    const deadline = startedAt + TURN_CONTINUITY_PUBLICATION_WAIT_TIMEOUT_MS;
+    const timeoutError = this.turnContinuityUnavailableError(outcome,
+      new Error(`Turn continuity publication is still pending after ${TURN_CONTINUITY_PUBLICATION_WAIT_TIMEOUT_MS} ms.`), true);
     let slowWarningEmitted = false;
     const emitSlowWarning = (): void => {
       if (slowWarningEmitted) return;
@@ -1768,15 +1769,20 @@ export class MonoAgentHarness implements AgentHarness {
     const slowTimer = setTimeout(emitSlowWarning, TURN_CONTINUITY_PUBLICATION_SLOW_WARNING_MS);
     try {
       try {
-        await this.awaitAbortablePublication(entry.publication, abortSignal);
-      } catch {
+        await this.awaitAbortablePublication(entry.publication, deadline, timeoutError, abortSignal);
+      } catch (error) {
+        if (abortSignal?.aborted) return;
+        // A timed-out publication is still live. Republishing it could append
+        // twice or race its provider retirement; leave its barrier installed.
+        if (error === timeoutError) throw error;
         // The first publication attempt failed. Retry once through the shared
         // republish before failing closed; concurrent waiters share one attempt
         // and a still-failing store is retried again by the following waiter.
         try {
-          await this.awaitAbortablePublication(this.republishTurnContinuityPublication(conversationId), abortSignal);
+          await this.awaitAbortablePublication(this.republishTurnContinuityPublication(conversationId), deadline, timeoutError, abortSignal);
         } catch (error) {
           if (abortSignal?.aborted) return;
+          if (error === timeoutError) throw error;
           throw this.turnContinuityUnavailableError(outcome, error);
         }
       }

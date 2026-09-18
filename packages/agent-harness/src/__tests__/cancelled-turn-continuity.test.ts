@@ -804,6 +804,103 @@ describe("cancelled turn natural continuity", () => {
     }
   });
 
+  it.each([
+    ["cancelled", false],
+    ["failed", false],
+    ["cancelled", true],
+    ["failed", true],
+  ] as const)("bounds a pending %s publication (republish: %s) without bypassing it", async (outcome, republish) => {
+    const identityPath = await identityFixture();
+    const controller = new AbortController();
+    const stored: HistoryMessage[] = [];
+    let appendStarted!: () => void;
+    const appendEntered = new Promise<void>((resolve) => { appendStarted = resolve; });
+    let releaseAppend!: () => void;
+    // Intentionally never settles during either waiter's entire deadline.
+    const appendGate = new Promise<void>((resolve) => { releaseAppend = resolve; });
+    let appendCalls = 0;
+    let runtimeCalls = 0;
+    const reset = vi.fn(async () => { stored.length = 0; });
+    const load = vi.fn(async () => stored);
+    const harness = createAgentHarness({
+      identityPath,
+      model,
+      historyStore: {
+        load,
+        reset,
+        async append(_conversationId: string, messages: readonly HistoryMessage[]) {
+          appendCalls += 1;
+          if (republish && appendCalls === 1) throw new Error("initial publication rejected");
+          appendStarted();
+          await appendGate;
+          stored.push(...messages);
+        },
+      },
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          runtimeCalls += 1;
+          if (runtimeCalls === 1) {
+            if (outcome === "cancelled") controller.abort(createChannelUserCancelReason("Web"));
+            else throw new Error("provider failed");
+          }
+          return { text: "answer" };
+        },
+      },
+    });
+    const request = { conversationId: "pending-publication", userMessage: "first request", abortSignal: controller.signal };
+    const first = harness.run(request);
+    if (republish) await first;
+    else await appendEntered;
+    const loadsBeforeWait = load.mock.calls.length;
+    const expectedKind = outcome === "cancelled" ? "cancellation_continuity_unavailable" : "failure_continuity_unavailable";
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      let response: Awaited<ReturnType<typeof harness.run>> | undefined;
+      const second = harness.run({ ...request, userMessage: "follow-up", abortSignal: new AbortController().signal })
+        .then((result) => { response = result; });
+      await vi.advanceTimersByTimeAsync(0);
+      await appendEntered;
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(response).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(response?.failure).toMatchObject({ kind: expectedKind, message: expect.stringContaining("retry") });
+      await second;
+      expect(runtimeCalls).toBe(1);
+      expect(load).toHaveBeenCalledTimes(loadsBeforeWait);
+      expect(appendCalls).toBe(republish ? 2 : 1);
+      expect(stored).toHaveLength(0);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Reset must not discard a still-live barrier: its late append could
+      // otherwise land on top of the reset conversation and a successor turn.
+      const resetting = harness.resetConversation!(request.conversationId);
+      const resetResult = expect(resetting).rejects.toMatchObject({ failureKind: expectedKind });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await resetResult;
+      expect(reset).not.toHaveBeenCalled();
+      const retry = harness.run({ ...request, abortSignal: new AbortController().signal });
+      const retryResult = expect(retry).resolves.toMatchObject({ failure: { kind: expectedKind } });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await retryResult;
+      expect(runtimeCalls).toBe(1);
+      expect(appendCalls).toBe(republish ? 2 : 1);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // A genuinely late publication can still unblock the conversation, once.
+      vi.useRealTimers();
+      releaseAppend();
+      await first;
+      await expect(harness.run({ ...request, userMessage: "continue", abortSignal: new AbortController().signal }))
+        .resolves.toMatchObject({ text: "answer" });
+      expect(runtimeCalls).toBe(2);
+      expect(stored.filter((message) => message.content === "first request")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      releaseAppend();
+      await first;
+    }
+  });
+
   it("does not let recorder finalization delay the next turn", async () => {
     const identityPath = await identityFixture();
     const controller = new AbortController();

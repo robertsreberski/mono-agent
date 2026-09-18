@@ -394,7 +394,11 @@ the caller and mailbox close immediately. The next same-conversation turn waits
 until the previous terminal account is published (cancellable; recorder/exporter
 finalization never delays it) and republishes a rejected account once before
 reporting the retryable continuity error; a wait past 5,000 ms emits one
-`turn_continuity_publication_slow` warning. Hosts may override the window through
+`turn_continuity_publication_slow` warning. After 30,000 ms total (including any
+republish attempt), the waiter fails with the retryable continuity error. The
+pending publication remains the owner: no later turn can resume or append, and
+reset also fails closed until it settles. A late successful publication allows
+the next retry to proceed. Hosts may override the provider-settlement window through
 `session.terminalRecoverySettlementMs` (a positive safe integer); the two-process
 smoke uses a longer window to tolerate loaded runners. Unsafe or unsettled tails retire and
 reseed. A process-local budget allows one failed-turn recovery per epoch; user

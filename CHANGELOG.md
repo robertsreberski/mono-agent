@@ -6,6 +6,9 @@
   child routes. Set `providers.piNative.cacheRetention` to `"short"` to opt out
   of the higher cache-write price; resolved settings override Pi ambient env.
 
+- Fix turns waiting forever behind cancelled or failed continuity publication:
+  return a retryable error after 30 seconds without bypassing pending history.
+
 - Fix `WebSearch` budgets to charge answered searches, refund failed providers,
   and count Ollama endpoint probes once. Bound network dispatches separately
   and include provider failures in budget-exhaustion messages.
