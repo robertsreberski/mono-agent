@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix conversation render crashes when switching between cached transcripts of
+  different shapes. Add local technical details and copyable diagnostics to the
+  conversation recovery panel, without uploading error reports.
+
 - Let `AgentSend` accept and ignore an optional `description` when stopping a
   subagent, and explain invalid stop requests with specific codes and messages.
 

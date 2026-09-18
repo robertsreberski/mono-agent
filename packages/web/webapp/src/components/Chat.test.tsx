@@ -322,7 +322,7 @@ describe("Chat conversation viewport", () => {
       .toHaveAttribute("aria-pressed", "false");
   });
 
-  it("isolates same-id job state while retaining history preference through the keyed viewport", () => {
+  it("isolates same-id job state while retaining history preference through the keyed viewport", async () => {
     const first = thread("thread-a", "agent");
     const second = thread("thread-b", "agent");
     const terminal = processJob({ jobId: "same-job" });
@@ -368,8 +368,8 @@ describe("Chat conversation viewport", () => {
       }])],
     });
     view.rerender(chatTree());
-    expect(screen.getByRole("button", { name: "Background job history" }))
-      .toHaveAttribute("aria-pressed", "false");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "false"));
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
 
     storeMock.current = chatStore(first, {
@@ -377,8 +377,8 @@ describe("Chat conversation viewport", () => {
       messages: [messageWith(first, [running, old])],
     });
     view.rerender(chatTree());
-    expect(screen.getByRole("button", { name: "Background job history" }))
-      .toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "true"));
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
     expect(screen.getByRole("group", { name: "Exec background job succeeded" })).toHaveClass("is-complete");
   });
@@ -397,6 +397,12 @@ describe("Chat conversation viewport", () => {
       ([first]) => first === "[mono-agent] conversation render failed",
     )).toHaveLength(1);
 
+    const report = consoleError.mock.calls.find(([label]) => label === "[mono-agent] conversation render failed")?.[1];
+    expect(report).toMatchObject({
+      context: { selectedThreadId: selected.id, detailThreadId: selected.id, runtimeThreadId: selected.id,
+        runtimeRemoteId: selected.id, detail: { messageCount: 2 }, runtime: { messageCount: 2 } },
+    });
+    expect(report.contextError).toBeUndefined();
     messageRenderMock.throwAssistant = false;
     fireEvent.click(screen.getByRole("button", { name: "Reload conversation" }));
     expect(screen.getAllByTestId("thread-message")).toHaveLength(2);
@@ -488,9 +494,11 @@ describe("Chat conversation viewport", () => {
     storeMock.current = chatStore(firstThread, null, true, secondThread.id);
     rerender(chatTree());
 
+    // The viewport now changes with the adapter commit, not the earlier
+    // console selection. Wait for that subscription to publish its snapshot.
+    await waitFor(() => expect(container.querySelector(".thread-viewport")).not.toBe(firstViewport));
     const secondViewport = container.querySelector<HTMLElement>(".thread-viewport");
     expect(secondViewport).not.toBeNull();
-    expect(secondViewport).not.toBe(firstViewport);
     expect(secondViewport!.scrollTop).toBe(0);
 
     storeMock.current = chatStore(secondThread, chatDetail(secondThread, 4));
