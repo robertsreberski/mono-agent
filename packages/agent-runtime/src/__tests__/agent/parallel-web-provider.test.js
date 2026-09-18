@@ -7,7 +7,7 @@ import { performWebSearch, __resetWebSearchThrottleForTests } from "../../agent/
 import { performWebFetch } from "../../agent/tools/web-fetch.js";
 import { createWebToolController, __resetSharedSearchCacheForTests } from "../../agent/tools/web-controller.js";
 import { createWebSearchRunState } from "../../agent/tools/web-search-state.js";
-import { callParallelMcp, inspectParallelWeb, parallelSessionId, PARALLEL_MCP_URL } from "../../agent/tools/parallel-mcp.js";
+import { callParallelMcp, inspectParallelWeb, parallelFailure, parallelSessionId, PARALLEL_MCP_URL } from "../../agent/tools/parallel-mcp.js";
 import { parseParallelSearch } from "../../agent/tools/web-search-providers/parallel.js";
 const search = JSON.parse(readFileSync(new URL("./fixtures/parallel-search.json", import.meta.url)));
 const extract = JSON.parse(readFileSync(new URL("./fixtures/parallel-fetch.json", import.meta.url)));
@@ -77,21 +77,31 @@ describe("Parallel Search MCP", () => {
   it.each([
     ["malformed", { structuredContent: { results: null } }, "backend_unavailable"],
     ["MCP error", { isError: true, content: [{ type: "text", text: "private response sentinel" }] }, "backend_unavailable"],
+    ["MCP HTTP 429", { isError: true, content: [{ type: "text", text: "HTTP 429 sentinel" }] }, "rate_limited"],
+    ["MCP non-status 1429", { isError: true, content: [{ type: "text", text: "HTTP 1429 sentinel" }] }, "backend_unavailable"],
     ["MCP rate limit", { isError: true, content: [{ type: "text", text: "Rate limit exceeded sentinel" }] }, "rate_limited"],
   ])("refunds %s without leaking response material", async (_label, response, code) => {
     const { fetchImpl } = transport(response);
     const result = await performWebSearch({ query: "Search MCP" }, searchOptions(fetchImpl));
     expect(result.outcome).toMatchObject({ status: "error", code, requestsThisCall: 0, dispatchesUsed: 1 });
     expect(result.text).not.toContain("sentinel");
+    expect(JSON.stringify(result.outcome)).not.toContain("sentinel");
   });
-  it("maps HTTP 429 to cooldown and refunds without reconnecting on a later call", async () => {
-    const { fetchImpl } = transport(undefined, () => new Response("sentinel", { status: 429, headers: { "retry-after": "120" } }));
+  it.each([true, false])("maps HTTP 429 to cooldown and refunds without reconnecting on a later call (transport=%s)", async (http) => {
+    const { fetchImpl } = http
+      ? transport(undefined, () => new Response("sentinel", { status: 429, headers: { "retry-after": "120" } }))
+      : transport({ isError: true, content: [{ type: "text", text: "HTTP 429" }] });
     const state = createWebSearchRunState({});
     const options = searchOptions(fetchImpl, { searchState: state });
-    expect((await performWebSearch({ query: "Search MCP" }, options)).outcome).toMatchObject({ code: "rate_limited", requestsThisCall: 0, retryAfterMs: 120000 });
+    expect((await performWebSearch({ query: "Search MCP" }, options)).outcome).toMatchObject({ code: "rate_limited", requestsThisCall: 0, retryAfterMs: http ? 120000 : 60000 });
     const count = fetchImpl.mock.calls.length;
     expect((await performWebSearch({ query: "Search MCP again" }, options)).outcome.code).toBe("rate_limited");
     expect(fetchImpl).toHaveBeenCalledTimes(count);
+  });
+  it.each([["HTTP 429", "rate_limited"], ["status (429)", "rate_limited"], ["HTTP 1429", "backend_unavailable"], ["HTTP 4290", "backend_unavailable"]])("classifies bounded status tokens without exposing %s", (message, code) => {
+    const result = parallelFailure(new Error(`${message} private sentinel`));
+    expect(result.code).toBe(code);
+    expect(JSON.stringify(result)).not.toContain("sentinel");
   });
   it("gates the endpoint before connecting, and claims no budget on sandbox denial", async () => {
     const fetchImpl = vi.fn();
@@ -122,6 +132,29 @@ describe("Parallel Search MCP", () => {
   it.each([405, 404, 400, 403])("tolerates optional auxiliary GET HTTP %s while POST succeeds", async (status) => {
     const { fetchImpl } = transport(undefined, undefined, status);
     expect((await performWebSearch({ query: "Search MCP" }, searchOptions(fetchImpl))).outcome.code).toBe("ok");
+  });
+  it("keeps the POST alive when an open auxiliary GET stream errors mid-read", async () => {
+    const postStarted = Promise.withResolvers();
+    const getFailed = Promise.withResolvers();
+    const originalConnect = Client.prototype.connect;
+    vi.spyOn(Client.prototype, "connect").mockImplementation(function (...args) {
+      this.onerror = (error) => { if (error.message.includes("auxiliary read sentinel")) getFailed.resolve(); };
+      return originalConnect.apply(this, args);
+    });
+    const remote = transport(undefined, async (_message, init) => {
+      postStarted.resolve();
+      await getFailed.promise;
+      init.signal.throwIfAborted();
+    });
+    const fetchImpl = vi.fn((url, init) => init.method !== "GET" ? remote.fetchImpl(url, init)
+      : Promise.resolve(new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode(": keepalive\n\n")); },
+        async pull(controller) { await postStarted.promise; controller.error(new Error("auxiliary read sentinel")); },
+      }), { headers: { "content-type": "text/event-stream" } })));
+    const result = await performWebSearch({ query: "Search MCP" }, searchOptions(fetchImpl));
+    expect(result.outcome).toMatchObject({ code: "ok", backend: "parallel", requestsThisCall: 1 });
+    expect(remote.calls).toHaveLength(1);
+    expect(fetchImpl.mock.calls.filter(([, init]) => init.method === "GET")).toHaveLength(1);
   });
   it("accepts bounded SSE tool responses through the real SDK parser", async () => {
     const { fetchImpl } = transport(undefined, (message) => new Response(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [], structuredContent: search } })}\n\n`, { headers: { "content-type": "text/event-stream" } }));

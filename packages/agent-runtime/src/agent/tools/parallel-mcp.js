@@ -84,11 +84,15 @@ export async function callParallelMcp(tool, args, options) {
         } catch (error) {
           if (finished) return;
           finished = true;
-          transportError = error;
+          // An optional GET can fail mid-read without invalidating the POST.
+          // Only connection-wide limits or caller cancellation abort both.
+          if (error?.code === "response_too_large" || options.signal?.aborted) {
+            transportError = error;
+            abort.abort(error);
+          }
           combined.removeEventListener("abort", cancel);
           await reader.cancel().catch(() => {});
           controller.error(error);
-          abort.abort(error);
         }
       },
       async cancel() { finished = true; combined.removeEventListener("abort", cancel); await reader.cancel().catch(() => {}); },
@@ -120,7 +124,7 @@ export async function callParallelMcp(tool, args, options) {
 
 export function parallelFailure(error, signal) {
   const aborted = signal?.aborted;
-  const rateLimited = !aborted && (error?.code === "rate_limited" || error?.code === 429 || /rate.?limit|too many requests|quota exceeded/iu.test(error?.message ?? ""));
+  const rateLimited = !aborted && (error?.code === "rate_limited" || error?.code === 429 || /rate.?limit|too many requests|quota exceeded|\b429\b/iu.test(error?.message ?? ""));
   const code = aborted ? (signal.reason?.code === "deadline_exceeded" ? "deadline_exceeded" : "aborted")
     : rateLimited ? "rate_limited"
       : ["network_denied", "invalid_parallel_config", "search_budget_exhausted", "response_too_large", "coordination_unavailable", "deadline_exceeded", "aborted", "access_challenge", "authentication_required"].includes(error?.code) ? error.code : "backend_unavailable";
@@ -136,7 +140,7 @@ export function parallelFailure(error, signal) {
 export function parallelStructuredContent(response) {
   if (response?.isError) {
     const text = response.content?.filter((entry) => entry.type === "text").map((entry) => entry.text).join(" ") ?? "";
-    throw Object.assign(new Error(/rate.?limit|too many requests|quota exceeded/iu.test(text) ? "rate limited" : "Parallel tool failed."), { code: "backend_unavailable" });
+    throw Object.assign(new Error(/rate.?limit|too many requests|quota exceeded|\b429\b/iu.test(text) ? "rate limited" : "Parallel tool failed."), { code: "backend_unavailable" });
   }
   let value = response?.structuredContent;
   if (value === undefined) {
