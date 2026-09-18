@@ -97,6 +97,8 @@ export { requestOverridesModel, runSourceFromRequest };
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 // Warn before failing the waiter closed; the publication itself keeps ownership.
 const TURN_CONTINUITY_PUBLICATION_SLOW_WARNING_MS = 5_000;
+const TURN_CONTINUITY_PUBLICATION_WARNING_INTERVAL_MS = 15_000;
+const TURN_CONTINUITY_PUBLICATION_MAX_WARNINGS = 12;
 const TURN_CONTINUITY_PUBLICATION_WAIT_TIMEOUT_MS = 30_000;
 
 // Distinguish an in-flight publication from a rejected one: reset may discard
@@ -1731,17 +1733,17 @@ export class MonoAgentHarness implements AgentHarness {
     // standard cancelled response without waiting.
     if (abortSignal?.aborted) return;
     const outcome = entry.outcome;
-    // Slow-wait diagnostic: one bounded warning per wait, never affecting the
-    // outcome. It carries the conversation id, the previous turn's outcome and
-    // the elapsed milliseconds so production slowness is attributable.
+    // Rate- and count-bounded diagnostics keep a long configured wait visible
+    // without creating an unbounded stream or changing publication ownership.
     const startedAt = Date.now();
-    const deadline = startedAt + TURN_CONTINUITY_PUBLICATION_WAIT_TIMEOUT_MS;
+    const waitMs = this.options.session?.turnContinuityPublicationWaitMs ?? TURN_CONTINUITY_PUBLICATION_WAIT_TIMEOUT_MS;
+    const deadline = startedAt + waitMs;
     const timeoutError = this.turnContinuityUnavailableError(outcome,
-      new Error(`Turn continuity publication is still pending after ${TURN_CONTINUITY_PUBLICATION_WAIT_TIMEOUT_MS} ms.`), true);
-    let slowWarningEmitted = false;
+      new Error(`Turn continuity publication is still pending after ${waitMs} ms.`), true);
+    let warningCount = 0;
+    let slowTimer: ReturnType<typeof setTimeout>;
     const emitSlowWarning = (): void => {
-      if (slowWarningEmitted) return;
-      slowWarningEmitted = true;
+      warningCount += 1;
       const elapsedMs = Date.now() - startedAt;
       const warning: RuntimeEventLike = {
         type: "runtime_warning",
@@ -1765,8 +1767,11 @@ export class MonoAgentHarness implements AgentHarness {
           // Slow-wait diagnostics are best-effort and must never change the wait.
         }
       }
+      if (warningCount < TURN_CONTINUITY_PUBLICATION_MAX_WARNINGS) {
+        slowTimer = setTimeout(emitSlowWarning, TURN_CONTINUITY_PUBLICATION_WARNING_INTERVAL_MS);
+      }
     };
-    const slowTimer = setTimeout(emitSlowWarning, TURN_CONTINUITY_PUBLICATION_SLOW_WARNING_MS);
+    slowTimer = setTimeout(emitSlowWarning, TURN_CONTINUITY_PUBLICATION_SLOW_WARNING_MS);
     try {
       try {
         await this.awaitAbortablePublication(entry.publication, deadline, timeoutError, abortSignal);

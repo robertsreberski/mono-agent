@@ -741,7 +741,7 @@ describe("cancelled turn natural continuity", () => {
     expect(JSON.stringify(calls[1]!.messages)).toContain("first request");
   });
 
-  it("emits one slow-publication warning without changing the waiting turn", async () => {
+  it("caps repeated slow-publication warnings during a longer configured wait", async () => {
     const identityPath = await identityFixture();
     const controller = new AbortController();
     const stored: HistoryMessage[] = [];
@@ -754,6 +754,7 @@ describe("cancelled turn natural continuity", () => {
     const harness = createAgentHarness({
       identityPath,
       model,
+      session: { mode: "per-message", idleTimeoutMs: 60_000, turnContinuityPublicationWaitMs: 240_000 },
       historyStore: {
         async load() { return stored; },
         async append(_conversationId: string, messages: readonly HistoryMessage[]) {
@@ -793,10 +794,20 @@ describe("cancelled turn natural continuity", () => {
       expect(slow).toHaveLength(1);
       expect(slow[0]).toMatchObject({ conversationId: "slow-warn", outcome: "cancelled" });
       expect((slow[0] as { elapsedMs?: unknown }).elapsedMs).toBeGreaterThanOrEqual(5_000);
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(warned).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(warned[1]).toMatchObject({ elapsedMs: 20_000 });
+      await vi.advanceTimersByTimeAsync(150_000);
+      expect(warned).toHaveLength(12);
+      expect(warned[11]).toMatchObject({ elapsedMs: 170_000 });
+      await vi.advanceTimersByTimeAsync(50_000);
+      expect(warned).toHaveLength(12);
+      expect(calls).toHaveLength(1);
       vi.useRealTimers();
       releaseAppend();
       await expect(second).resolves.toMatchObject({ text: "second answer" });
-      expect(warned.filter((event) => (event as { warning_kind?: string }).warning_kind === "turn_continuity_publication_slow")).toHaveLength(1);
+      expect(warned.filter((event) => (event as { warning_kind?: string }).warning_kind === "turn_continuity_publication_slow")).toHaveLength(12);
       await expect(first).resolves.toMatchObject({ failure: { kind: "cancelled" } });
     } finally {
       vi.useRealTimers();
@@ -805,11 +816,14 @@ describe("cancelled turn natural continuity", () => {
   });
 
   it.each([
-    ["cancelled", false],
-    ["failed", false],
-    ["cancelled", true],
-    ["failed", true],
-  ] as const)("bounds a pending %s publication (republish: %s) without bypassing it", async (outcome, republish) => {
+    ["cancelled", false, undefined],
+    ["failed", false, undefined],
+    ["cancelled", true, undefined],
+    ["failed", true, undefined],
+    ["cancelled", false, 180_000],
+    ["failed", true, 1_000],
+  ] as const)("bounds a pending %s publication (republish: %s, budget: %s) without bypassing it", async (outcome, republish, configuredWaitMs) => {
+    const waitMs = configuredWaitMs ?? 30_000;
     const identityPath = await identityFixture();
     const controller = new AbortController();
     const stored: HistoryMessage[] = [];
@@ -825,6 +839,9 @@ describe("cancelled turn natural continuity", () => {
     const harness = createAgentHarness({
       identityPath,
       model,
+      ...(configuredWaitMs === undefined ? {} : {
+        session: { mode: "per-message" as const, idleTimeoutMs: 60_000, turnContinuityPublicationWaitMs: configuredWaitMs },
+      }),
       historyStore: {
         load,
         reset,
@@ -860,7 +877,7 @@ describe("cancelled turn natural continuity", () => {
         .then((result) => { response = result; });
       await vi.advanceTimersByTimeAsync(0);
       await appendEntered;
-      await vi.advanceTimersByTimeAsync(29_999);
+      await vi.advanceTimersByTimeAsync(waitMs - 1);
       expect(response).toBeUndefined();
       await vi.advanceTimersByTimeAsync(1);
       expect(response?.failure).toMatchObject({ kind: expectedKind, message: expect.stringContaining("retry") });
@@ -875,12 +892,12 @@ describe("cancelled turn natural continuity", () => {
       // otherwise land on top of the reset conversation and a successor turn.
       const resetting = harness.resetConversation!(request.conversationId);
       const resetResult = expect(resetting).rejects.toMatchObject({ failureKind: expectedKind });
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(waitMs);
       await resetResult;
       expect(reset).not.toHaveBeenCalled();
       const retry = harness.run({ ...request, abortSignal: new AbortController().signal });
       const retryResult = expect(retry).resolves.toMatchObject({ failure: { kind: expectedKind } });
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(waitMs);
       await retryResult;
       expect(runtimeCalls).toBe(1);
       expect(appendCalls).toBe(republish ? 2 : 1);
@@ -899,6 +916,15 @@ describe("cancelled turn natural continuity", () => {
       releaseAppend();
       await first;
     }
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity, 2_147_483_648])("rejects invalid continuity wait budget: %s", (turnContinuityPublicationWaitMs) => {
+    expect(() => createAgentHarness({
+      identityPath: "IDENTITY.md",
+      model,
+      runtime: { async run() { return { text: "unused" }; } },
+      session: { mode: "per-message", idleTimeoutMs: 60_000, turnContinuityPublicationWaitMs },
+    })).toThrow("turnContinuityPublicationWaitMs must be an integer between 1 and 2147483647.");
   });
 
   it("does not let recorder finalization delay the next turn", async () => {
