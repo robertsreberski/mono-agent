@@ -152,14 +152,26 @@ unmeasured** until a separately selected workload is run and graded.
 # Substitute already authorized exact model references; this command makes no calls.
 node scripts/memory-e2e-benchmark.mjs --dry-run --split development \
   --reader openai:YOUR_READER --extractor openai:YOUR_EXTRACTOR \
-  --embedding-provider ollama --embedding-model YOUR_EMBEDDING --dimension 768
+  --embedding-provider ollama --embedding-model YOUR_EMBEDDING --dimension 768 \
+  --pi-auth-path /PATH/TO/SELECTED/pi-auth.json
 
 # Only after checking the printed workload and provider/data authorization:
 node scripts/memory-e2e-benchmark.mjs --real --split development \
   --reader openai:YOUR_READER --extractor openai:YOUR_EXTRACTOR \
   --embedding-provider ollama --embedding-model YOUR_EMBEDDING --dimension 768 \
+  --pi-auth-path /PATH/TO/SELECTED/pi-auth.json \
   --confirm-plan DIGEST_FROM_DRY_RUN
 ```
+
+OAuth chat routes need the explicit `--pi-auth-path` file selection: the
+benchmark wires it into the framework's existing Pi credential resolver for
+both the reader and the extractor, and reads nothing until after real-run
+confirmation. The standard Pi auth file is one possible value; consumers may
+keep credentials at different paths, so no default file is assumed. Without
+the flag the runtimes keep ambient environment auth. The dry-run confirmation
+binds only a fingerprint of the selected path, never the path itself; changing
+the selection invalidates the confirmation. Reports never contain the raw path,
+credential bytes or file metadata.
 
 The direct `--real` command requires a clean, unchanged HEAD and always removes
 and rebuilds only the app dependency closure's generated `dist`/`types` directories

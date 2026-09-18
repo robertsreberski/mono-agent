@@ -291,9 +291,19 @@ export function scriptedProviders({ source } = {}) {
 
 /** Called only after CLI confirmation. No configured-app root leases or consumer configuration. */
 export async function realProviders(profile, { workspace, modules }) {
-  const { createMonoRuntime, parseMonoRuntimeModelReference } = modules.runtime;
-  const reader = createMonoRuntime({ workspace });
-  const extractor = createMonoRuntime({ workspace });
+  const { createMonoRuntime, parseMonoRuntimeModelReference, createPiOAuthApiKeyResolver } = modules.runtime;
+  // Explicit OAuth credential file only: one shared framework resolver for both
+  // runtimes (it reads/refreshes lazily per request — construction opens no
+  // credential file and copies no tokens). Without a selected path the bare
+  // ambient environment-auth behavior is preserved; consumer config is never
+  // discovered or read here.
+  const resolvePiApiKey = profile.piAuthPath === undefined ? undefined : (() => {
+    if (typeof createPiOAuthApiKeyResolver !== "function") throw new Error("pi_auth_resolver_unavailable");
+    return createPiOAuthApiKeyResolver({ path: profile.piAuthPath });
+  })();
+  const hostOptions = resolvePiApiKey === undefined ? { workspace } : { workspace, resolvePiApiKey };
+  const reader = createMonoRuntime(hostOptions);
+  const extractor = createMonoRuntime(hostOptions);
   const raw = modules.search.createEmbeddingProvider({
     provider: profile.embeddingProvider, model: profile.embeddingModel, timeoutMs: 10000,
     ...(profile.embeddingProvider === "openai" ? { apiKey: process.env.OPENAI_API_KEY } : {}),

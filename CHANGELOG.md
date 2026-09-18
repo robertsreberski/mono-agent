@@ -25,6 +25,11 @@
   admission after a fatal auth/quota failure while still cleaning up owned
   stores. Remaining trials report as unstarted, never as quality results.
 
+- Let the opt-in memory benchmark select an explicit Pi auth file with
+  `--pi-auth-path` for real runs, wired into both model runtimes through the
+  existing credential resolver. Plans bind only its fingerprint, never the
+  path or credential bytes.
+
 - Let `AgentSend` accept and ignore an optional `description` when stopping a
   subagent, and explain invalid stop requests with specific codes and messages.
 

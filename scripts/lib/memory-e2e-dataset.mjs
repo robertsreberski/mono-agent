@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { BUILD_POLICY } from "./memory-e2e-build.mjs";
 
 export const ARMS = Object.freeze(["recent-only", "full-history", "lite", "journal", "bujo"]);
@@ -40,6 +41,20 @@ export function validateCorpus(corpus) {
   }
 }
 
+/**
+ * Plan-safe profile projection. The raw execution-only Pi auth path never
+ * enters the manifest: it is replaced by a deterministic SHA-256 fingerprint
+ * of its lexically resolved form, so changing the auth selection invalidates
+ * the dry-run confirmation digest without recording the path, credential
+ * bytes, content or mtime. No filesystem or credential access happens here.
+ */
+export function serializableProfile(profile) {
+  if (profile === null || profile === undefined) return profile;
+  const { piAuthPath, ...rest } = profile;
+  if (piAuthPath === undefined) return { ...rest };
+  return { ...rest, piAuthFingerprint: digest(resolve(piAuthPath)) };
+}
+
 /** Closed projection: never forward annotations, unknown fields, or original group objects. */
 export function sourceOnly(group) {
   return {
@@ -67,7 +82,7 @@ export function makePlan({ corpus, sha256, split = "development", profile = null
   const manifest = {
     protocol: PROTOCOL, realBuildPolicy: BUILD_POLICY, corpus: corpus.name, corpusSha256: sha256, split, codeRevision,
     groupIds: groups.map((group) => group.id), arms: ARMS, repeats: 1, order: "fixed-listed-order",
-    profile, limits: LIMITS[split],
+    profile: serializableProfile(profile), limits: LIMITS[split],
     workload: { questions: groups.length, trials: groups.length * ARMS.length, historicalTurnsPerMemoryArm: turns, captureStepsMaximum: turns * 2, readerStepsMaximum: groups.length * ARMS.length * 3 },
     perCall: { readerOutputTokens: 512, extractorOutputTokens: 2048, readerEstimatedInputTokens: 16384, extractorEstimatedInputTokens: 8192, framingAndToolAllowance: 4096, callTimeoutMs: 60000, embeddingTimeoutMs: 10000, readinessTimeoutMs: 120000, cleanupTimeoutMs: 10000 },
     limitations: ["controlled-text input estimates, not native payload limits", "transport attempt count unknown unless provider reports it", "fixed arm order; cache warmth uncontrolled", "one repeat; quality/human grading unmeasured"],

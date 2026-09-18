@@ -3,8 +3,8 @@ import { readFile, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promis
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ARMS, loadCorpus, makePlan, sourceOnly, contextFor, validateCorpus } from "../lib/memory-e2e-dataset.mjs";
-import { Budget, canonicalFailureKind, captureLlm, failureKindOf, isFatalFailureKind, meteredEmbeddings, meteredRuntime, scriptedProviders, usageOf } from "../lib/memory-e2e-providers.mjs";
+import { ARMS, loadCorpus, makePlan, serializableProfile, sourceOnly, contextFor, validateCorpus } from "../lib/memory-e2e-dataset.mjs";
+import { Budget, canonicalFailureKind, captureLlm, failureKindOf, isFatalFailureKind, meteredEmbeddings, meteredRuntime, realProviders, scriptedProviders, usageOf } from "../lib/memory-e2e-providers.mjs";
 import { percentiles, ratio, lexicalDiagnostic, safeArtifact, ownedParent, summarize } from "../lib/memory-e2e-report.mjs";
 import { awaitReady, captureFailureKindFor, cleanupTrial, readySnapshot } from "../lib/memory-e2e-runner.mjs";
 import { prepareRealBuild, verifyRealBuild, BUILD_POLICY } from "../lib/memory-e2e-build.mjs";
@@ -338,6 +338,70 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
       { groupId: "g2", status: "capture_not_ready", failureKind: "usage_limit" },
       { groupId: "g3", status: "provider_failed", failureKind: null },
     ]);
+  });
+  it("parses the explicit Pi auth path consistently with other profile flags", () => {
+    const full = { reader: "openai-codex:model", extractor: "openai-codex:model", "embedding-provider": "ollama", "embedding-model": "m", dimension: "8" };
+    expect(profileFrom({ ...full, "pi-auth-path": " /tmp/fixture-auth.json " })).toMatchObject({ piAuthPath: "/tmp/fixture-auth.json" });
+    expect(profileFrom(full).piAuthPath).toBeUndefined();
+    expect(() => profileFrom({ "pi-auth-path": "/tmp/fixture-auth.json" })).toThrow("incomplete_profile");
+    expect(() => profileFrom({ ...full, "pi-auth-path": "   " })).toThrow("invalid_pi_auth_path");
+    expect(() => profileFrom({ ...full, "pi-auth-path": "/tmp/fixture\nauth.json" })).toThrow("invalid_pi_auth_path");
+    expect(() => parseArguments(["--pi-auth-path", "a", "--pi-auth-path", "b"])).toThrow();
+    expect(() => parseArguments(["--real", "--pi-auth-path"])).toThrow();
+  });
+  it("binds only the auth fingerprint into the confirmed plan, never the raw path", async () => {
+    const { corpus, sha256 } = await setup();
+    const base = { reader: "fixture:reader", extractor: "fixture:extractor", embeddingProvider: "ollama", embeddingModel: "m", dimension: 8 };
+    const withAuth = { ...base, piAuthPath: "/tmp/fixture-auth.json" };
+    const a = makePlan({ corpus, sha256, profile: withAuth });
+    expect(a.profile.piAuthFingerprint).toMatch(/^[0-9a-f]{64}$/u);
+    expect(a.profile.piAuthPath).toBeUndefined();
+    expect(JSON.stringify(a)).not.toContain("fixture-auth");
+    const again = makePlan({ corpus, sha256, profile: { ...withAuth } });
+    expect(again.profile.piAuthFingerprint).toBe(a.profile.piAuthFingerprint);
+    expect(again.confirmation).toBe(a.confirmation);
+    const changed = makePlan({ corpus, sha256, profile: { ...withAuth, piAuthPath: "/tmp/other-auth.json" } });
+    expect(changed.profile.piAuthFingerprint).not.toBe(a.profile.piAuthFingerprint);
+    expect(changed.confirmation).not.toBe(a.confirmation);
+    const ambient = makePlan({ corpus, sha256, profile: base });
+    expect(ambient.profile).toEqual(base);
+    expect(ambient.profile.piAuthFingerprint).toBeUndefined();
+    expect(serializableProfile(null)).toBeNull();
+  });
+  it("wires one shared Pi auth resolver into both real runtimes, preserving ambient auth when omitted", async () => {
+    const resolver = async () => "fixture-key";
+    const modules = {
+      runtime: { createMonoRuntime: vi.fn(() => ({})), parseMonoRuntimeModelReference: (value) => ({ reference: value }), createPiOAuthApiKeyResolver: vi.fn(() => resolver) },
+      search: { createEmbeddingProvider: vi.fn(() => ({})), createCircuitBreakerEmbeddingProvider: vi.fn((raw) => raw) },
+    };
+    const profile = { reader: "fixture:reader", extractor: "fixture:extractor", embeddingProvider: "ollama", embeddingModel: "m", dimension: 8, piAuthPath: "/tmp/fixture-auth.json" };
+    const provided = await realProviders(profile, { workspace: "workspace", modules });
+    expect(provided.kind).toBe("real");
+    expect(modules.runtime.createPiOAuthApiKeyResolver).toHaveBeenCalledOnce();
+    expect(modules.runtime.createPiOAuthApiKeyResolver).toHaveBeenCalledWith({ path: "/tmp/fixture-auth.json" });
+    expect(modules.runtime.createMonoRuntime).toHaveBeenCalledTimes(2);
+    expect(modules.runtime.createMonoRuntime.mock.calls[0][0]).toMatchObject({ workspace: "workspace" });
+    expect(modules.runtime.createMonoRuntime.mock.calls[0][0].resolvePiApiKey).toBe(resolver);
+    expect(modules.runtime.createMonoRuntime.mock.calls[1][0].resolvePiApiKey).toBe(resolver);
+    const ambientModules = { runtime: { createMonoRuntime: vi.fn(() => ({})), parseMonoRuntimeModelReference: (value) => ({ reference: value }) }, search: modules.search };
+    await realProviders({ ...profile, piAuthPath: undefined }, { workspace: "workspace", modules: ambientModules });
+    expect(ambientModules.runtime.createMonoRuntime.mock.calls[0][0]).toEqual({ workspace: "workspace" });
+    expect(ambientModules.runtime.createMonoRuntime.mock.calls[1][0]).toEqual({ workspace: "workspace" });
+    await expect(realProviders(profile, { workspace: "workspace", modules: ambientModules })).rejects.toThrow("pi_auth_resolver_unavailable");
+  });
+  it("dry-run binds the auth fingerprint without touching credentials or network", async () => {
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
+    const profile = ["--reader", "fixture:reader", "--extractor", "fixture:extractor", "--embedding-provider", "ollama", "--embedding-model", "m", "--dimension", "8"];
+    const output = [];
+    expect(await main(["--dry-run", ...profile, "--pi-auth-path", "/tmp/fixture-auth.json"], { stdout: (text) => output.push(JSON.parse(text)) })).toBe(0);
+    expect(output[0].profile.piAuthFingerprint).toMatch(/^[0-9a-f]{64}$/u);
+    expect(JSON.stringify(output[0])).not.toContain("fixture-auth");
+    expect(network).not.toHaveBeenCalled();
+    // A confirmation taken without the auth selection does not authorize a run with it.
+    const plain = [];
+    await main(["--dry-run", ...profile], { stdout: (text) => plain.push(JSON.parse(text)) });
+    await expect(main(["--real", ...profile, "--pi-auth-path", "/tmp/fixture-auth.json", "--confirm-plan", plain[0].confirmation])).rejects.toThrow("real_execution_requires_confirmed_profile");
+    expect(network).not.toHaveBeenCalled();
   });
   it("labels unknown/empty populations, tiny-sample latency, and lexical diagnostics honestly", () => {
     expect(percentiles([])).toMatchObject({ n: 0, p50: null, p95: null });
