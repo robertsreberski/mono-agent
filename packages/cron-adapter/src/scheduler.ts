@@ -12,6 +12,35 @@ import {
 } from "@mono-agent/agent-contracts";
 
 import { validateCronExpression } from "./cron-expression.js";
+import { CronAdapterError, type CronAdapterErrorCode, type CronAdapterErrorDetails } from "./errors.js";
+import {
+  DEFAULT_CRON_PREFLIGHT_TIMEOUT_MS,
+  MAX_CRON_PREFLIGHT_INPUT_BYTES,
+  boundCronPreflightReason,
+  boundCronPreflightText,
+  normalizeCronPreflightArgv,
+  normalizeCronPreflightTimeoutMs,
+  type CronPreflightErrorCode,
+  type CronPreflightOutcome,
+  type CronPreflightRecord,
+  type CronPreflightRecordOutcome,
+} from "./preflight.js";
+
+export type { CronAdapterErrorCode, CronAdapterErrorDetails } from "./errors.js";
+export { CronAdapterError } from "./errors.js";
+export {
+  DEFAULT_CRON_PREFLIGHT_TIMEOUT_MS,
+  MAX_CRON_PREFLIGHT_INPUT_BYTES,
+  MAX_CRON_PREFLIGHT_REASON_BYTES,
+  MAX_CRON_PREFLIGHT_TIMEOUT_MS,
+  boundCronPreflightText,
+} from "./preflight.js";
+export type {
+  CronPreflightErrorCode,
+  CronPreflightOutcome,
+  CronPreflightRecord,
+  CronPreflightRecordOutcome,
+} from "./preflight.js";
 
 export interface CronRequestMetadata {
   readonly jobId: string;
@@ -32,6 +61,15 @@ export interface CronRequestMetadata {
   readonly model?: string;
   /** Per-job reasoning effort override (raw string; validated by the app). */
   readonly effort?: string;
+  /**
+   * Present when the job declared a preflight gate. `outcome` is what actually
+   * happened to the gate (`run`, `overridden`, `error`, or `timeout`);
+   * `inputBytes` is the size of the appended `<preflight-input>` payload.
+   */
+  readonly preflight?: {
+    readonly outcome: CronPreflightRecordOutcome;
+    readonly inputBytes?: number;
+  };
 }
 
 export interface CronJob {
@@ -58,6 +96,19 @@ export interface CronJob {
   readonly model?: string;
   /** Per-job reasoning effort override (raw string; validated by the app). */
   readonly effort?: string;
+  /**
+   * Deterministic argv gate evaluated before the responder. Absent means no
+   * gate at all: the firing goes straight to the responder. The argv is never
+   * split from a string and never interpreted as a shell command line.
+   */
+  readonly preflight?: readonly string[];
+  /**
+   * How long the host's preflight callback may take before the adapter fails
+   * open and runs the job with its plain prompt. Falls back to
+   * {@link CronAdapterOptions.preflightTimeoutMs}, then to
+   * {@link DEFAULT_CRON_PREFLIGHT_TIMEOUT_MS}.
+   */
+  readonly preflightTimeoutMs?: number;
 }
 
 /**
@@ -105,8 +156,23 @@ export type CronJobResult =
       readonly replyPartOutcomes?: readonly AgentReplyPartDeliveryOutcome[];
     })
   | (CronResultIdentity & {
-      readonly kind: "failed" | "cancelled";
+      readonly kind: "failed";
       readonly startedAt: string;
+      readonly completedAt: string;
+      readonly error: string;
+      readonly failureKind?: string;
+      /** Harness artifact id, when a recorder was created before failure. */
+      readonly runId?: string;
+      /** Present when a responder resolved with parts after this run was cancelled. */
+      readonly replyPartOutcomes?: readonly AgentReplyPartDeliveryOutcome[];
+    })
+  | (CronResultIdentity & {
+      readonly kind: "cancelled";
+      /**
+       * Absent when the firing was cancelled before the responder ever started
+       * (a gate cancelled during preflight, or a stop/replace that landed first).
+       */
+      readonly startedAt?: string;
       readonly completedAt: string;
       readonly error: string;
       readonly failureKind?: string;
@@ -120,6 +186,14 @@ export type CronJobResult =
       readonly reason: "overlap";
       readonly blockedByRunId: string;
       readonly blockedByTrigger: CronRunTrigger;
+    })
+  | (CronResultIdentity & {
+      readonly kind: "skipped";
+      /** The job's preflight gate declined this firing: no responder turn ran. */
+      readonly reason: "gate";
+      readonly completedAt: string;
+      /** Bounded gate-supplied reason; never raw gate stdout or stderr. */
+      readonly gateReason?: string;
     })
   | (CronResultIdentity & {
       readonly kind: "queued";
@@ -158,6 +232,24 @@ export interface CronAdapterOptions {
   }) => CronFiringIdentity;
   /** Observe the exact transition into responder execution. */
   readonly onRunStarted?: (firing: CronFiringIdentity, startedAt: string) => void | Promise<void>;
+  /**
+   * Host-owned executor for a job's `preflight` argv. It receives the firing
+   * and the run's abort signal; the adapter races it against the preflight
+   * timeout. Every failure is fail-open: the job still runs with its plain
+   * prompt. A job without `preflight` never calls it.
+   */
+  readonly preflight?: (
+    firing: CronFiringIdentity,
+    abortSignal: AbortSignal,
+  ) => CronPreflightOutcome | Promise<CronPreflightOutcome>;
+  /**
+   * Observe exactly one bounded record per attempted gate — subprocess
+   * verdicts, adapter timeouts, aborts, and manual overrides alike — before the
+   * skip result is emitted or the run starts. Raw gate output never appears here.
+   */
+  readonly onPreflight?: (firing: CronFiringIdentity, record: CronPreflightRecord) => void | Promise<void>;
+  /** Adapter-level preflight race timeout. Default {@link DEFAULT_CRON_PREFLIGHT_TIMEOUT_MS}. */
+  readonly preflightTimeoutMs?: number;
   /** Persist/render canonical runtime events without inventing cron-only cards. */
   readonly onEvent?: (firing: CronFiringIdentity, event: AgentStreamEvent) => void | Promise<void>;
   /** Resolve the harness artifact id correlated by the host recorder hook. */
@@ -202,31 +294,16 @@ export interface CronJobSnapshot {
   readonly activeRunId?: string;
 }
 
-export type CronAdapterErrorCode = "invalid_config" | "stream_closed";
-
-export interface CronAdapterErrorDetails {
-  readonly code?: CronAdapterErrorCode;
-  readonly reason?: string;
-  readonly [key: string]: unknown;
-}
-
-export class CronAdapterError extends Error {
-  readonly code: CronAdapterErrorCode;
-  readonly details: CronAdapterErrorDetails;
-
-  constructor(code: CronAdapterErrorCode, message: string, details: CronAdapterErrorDetails = {}) {
-    super(message);
-    this.name = "CronAdapterError";
-    this.code = code;
-    this.details = { ...details, code };
-  }
-}
-
 interface PendingFiring extends CronFiringIdentity {}
 
 interface ActiveFiring {
   readonly controller: AbortController;
   readonly firing: CronFiringIdentity;
+  /**
+   * A firing holds its job's overlap slot through both phases. The gate phase
+   * never consumes the run watchdog; the watchdog is armed in `startRun`.
+   */
+  phase: "preflight" | "run";
 }
 
 interface JobRuntimeState {
@@ -243,6 +320,8 @@ interface ScheduledJob {
 
 const DEFAULT_TIMEZONE = "UTC";
 const MAX_TIMEOUT_MS = 2_147_483_647;
+/** Diagnostic text (a failed host callback) is logged truncated, never recorded verbatim. */
+const MAX_CRON_PREFLIGHT_LOG_BYTES = 1024;
 
 export function startCronAdapter(options: CronAdapterOptions): CronAdapterStartResult {
   validateOptions(options);
@@ -511,9 +590,10 @@ export function handleTick(
   const state = ensureState(jobStates, job.id);
 
   // No run in flight for this job: start immediately. Distinct jobs always run
-  // in parallel because each has its own state.
+  // in parallel because each has its own state. A declared preflight gate runs
+  // first, still holding this slot (see beginFiring).
   if (state.active === undefined) {
-    startRun(job, firing, options, jobStates, state);
+    beginFiring(job, firing, options, jobStates, state);
     return firing;
   }
 
@@ -596,15 +676,348 @@ export function handleTick(
   return firing;
 }
 
-function startRun(
+/** Adapter-owned settlement of one attempted preflight gate. */
+type CronPreflightSettlement =
+  | { readonly kind: "verdict"; readonly outcome: unknown }
+  | { readonly kind: "callback_failed" }
+  | { readonly kind: "timeout" }
+  | { readonly kind: "cancelled" };
+
+/** One attempted gate resolved into its durable record plus what happens next. */
+interface CronPreflightDecision {
+  readonly record: CronPreflightRecord;
+  readonly action:
+    | { readonly kind: "run"; readonly outcome: CronPreflightRecordOutcome; readonly input?: string }
+    | { readonly kind: "skip"; readonly gateReason?: string }
+    | { readonly kind: "cancelled" };
+}
+
+/**
+ * What the gate phase hands to `startRun` so the slot and the abort wiring stay
+ * identical across the phase boundary.
+ */
+interface CronPreflightHandoff {
+  readonly controller?: AbortController;
+  /** What actually happened to the gate (`run`, `overridden`, `error`, `timeout`). */
+  readonly record?: CronPreflightRecordOutcome;
+  /** Gate input appended to the prompt as one `<preflight-input>` block. */
+  readonly input?: string;
+}
+
+/**
+ * Dispatch one admitted firing. Without a declared gate (or without a host
+ * executor) this is `startRun` unchanged. With a gate, the firing holds its
+ * overlap slot through the gate phase, exactly one bounded record is observed,
+ * and only then either the responder starts or the firing ends as `skipped_gate`.
+ * Every gate failure is fail-open: the job runs with its plain prompt.
+ */
+function beginFiring(
   job: CronJob,
   firing: CronFiringIdentity,
   options: CronAdapterOptions,
   jobStates: Map<string, JobRuntimeState>,
   state: JobRuntimeState,
 ): void {
+  const preflight = options.preflight;
+  if (job.preflight === undefined || preflight === undefined) {
+    if (job.preflight !== undefined) {
+      // Fail-open, but never silently: this host cannot evaluate a declared gate.
+      options.logger?.warn?.(
+        "Cron job declares a preflight but the host has no preflight executor; running with the plain prompt.",
+        { jobId: job.id, runId: firing.runId },
+      );
+    }
+    startRun(job, firing, options, jobStates, state);
+    return;
+  }
+
   const controller = new AbortController();
-  state.active = { controller, firing };
+  state.active = { controller, firing, phase: "preflight" };
+  const gateStartedAt = (options.now?.() ?? new Date()).toISOString();
+  const timeoutMs = job.preflightTimeoutMs ?? options.preflightTimeoutMs ?? DEFAULT_CRON_PREFLIGHT_TIMEOUT_MS;
+  const releaseSlot = (): void => {
+    state.active = undefined;
+    drainNext(job, options, jobStates, state);
+  };
+
+  // Single-settle fence for the gate phase. A verdict, the adapter timeout, or
+  // an abort wins exactly once; a late verdict from an uncooperative callback
+  // is a no-op. The slot is released here for skip/cancel and handed to
+  // `startRun` unchanged for run/override/fail-open.
+  let settled = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let resolveSettlement: ((settlement: CronPreflightSettlement) => void) | undefined;
+  const onAbort = (): void => {
+    settle({ kind: "cancelled" });
+  };
+  function settle(value: CronPreflightSettlement): void {
+    if (settled) return;
+    settled = true;
+    if (timeout !== undefined) clearTimeout(timeout);
+    controller.signal.removeEventListener("abort", onAbort);
+    resolveSettlement?.(value);
+  }
+  const settlement = new Promise<CronPreflightSettlement>((resolve) => {
+    resolveSettlement = resolve;
+  });
+
+  timeout = setTimeout(() => {
+    settle({ kind: "timeout" });
+  }, timeoutMs);
+  (timeout as { unref?: () => void }).unref?.();
+  controller.signal.addEventListener("abort", onAbort, { once: true });
+  if (controller.signal.aborted) onAbort();
+
+  void Promise.resolve()
+    // Promise.resolve(x) cannot catch a synchronous throw while evaluating x,
+    // so the callback invocation is deferred into the chain.
+    .then(async () => await preflight(firing, controller.signal))
+    .then(
+      (outcome) => {
+        settle({ kind: "verdict", outcome });
+      },
+      (error: unknown) => {
+        // A rejected host callback is a gate failure, not a job failure: the
+        // job still runs. The message is logged bounded and never recorded.
+        options.logger?.warn?.("Cron preflight callback failed; running with the plain prompt.", {
+          jobId: job.id,
+          runId: firing.runId,
+          error: boundCronPreflightText(errorToMessage(error), MAX_CRON_PREFLIGHT_LOG_BYTES),
+        });
+        settle({ kind: "callback_failed" });
+      },
+    );
+
+  void settlement
+    .then(async (value) => {
+      const completedAt = (options.now?.() ?? new Date()).toISOString();
+      const decision = decidePreflight(firing, value, { startedAt: gateStartedAt, completedAt });
+      await emitPreflight(options, firing, decision.record);
+      if (decision.action.kind === "skip") {
+        options.logger?.info?.("Cron firing skipped by its preflight gate.", {
+          jobId: job.id,
+          runId: firing.runId,
+          ...(decision.action.gateReason === undefined ? {} : { reason: decision.action.gateReason }),
+        });
+        await emitResult(options, {
+          ...resultIdentity(firing),
+          kind: "skipped",
+          reason: "gate",
+          completedAt,
+          ...(decision.action.gateReason === undefined ? {} : { gateReason: decision.action.gateReason }),
+        });
+        releaseSlot();
+        return;
+      }
+      if (decision.action.kind === "cancelled") {
+        await emitResult(options, {
+          ...resultIdentity(firing),
+          kind: "cancelled",
+          completedAt,
+          error: "Cron firing was cancelled during preflight before the responder started.",
+        });
+        releaseSlot();
+        return;
+      }
+      startRun(job, firing, options, jobStates, state, {
+        controller,
+        record: decision.action.outcome,
+        ...(decision.action.input === undefined ? {} : { input: decision.action.input }),
+      });
+    })
+    .catch((error: unknown) => {
+      // The gate phase must never wedge the job's overlap slot.
+      reportDegraded(options, "Cron preflight handoff failed.", error, {
+        jobId: job.id,
+        runId: firing.runId,
+      });
+      releaseSlot();
+    });
+}
+
+/** Resolve one gate settlement into its bounded record and the resulting action. */
+function decidePreflight(
+  firing: CronFiringIdentity,
+  settlement: CronPreflightSettlement,
+  times: { readonly startedAt: string; readonly completedAt: string },
+): CronPreflightDecision {
+  if (settlement.kind === "cancelled") {
+    return {
+      record: { outcome: "cancelled", ...times },
+      action: { kind: "cancelled" },
+    };
+  }
+  if (settlement.kind === "timeout") {
+    return {
+      record: { outcome: "timeout", ...times },
+      action: { kind: "run", outcome: "timeout" },
+    };
+  }
+  if (settlement.kind === "callback_failed") {
+    return {
+      record: { outcome: "error", reason: "preflight callback failed", ...times },
+      action: { kind: "run", outcome: "error" },
+    };
+  }
+  const verdict = normalizePreflightOutcome(settlement.outcome);
+  if (verdict.outcome === "error") {
+    return {
+      record: {
+        outcome: "error",
+        code: verdict.code,
+        ...(verdict.reason === undefined ? {} : { reason: verdict.reason }),
+        ...times,
+      },
+      action: { kind: "run", outcome: "error" },
+    };
+  }
+  const inputBytes = verdict.input === undefined ? undefined : Buffer.byteLength(verdict.input, "utf8");
+  const reason = verdict.reason;
+  if (verdict.outcome === "skip" && firing.trigger !== "manual") {
+    return {
+      record: {
+        outcome: "skip",
+        ...(reason === undefined ? {} : { reason }),
+        ...(inputBytes === undefined ? {} : { inputBytes }),
+        ...times,
+      },
+      action: { kind: "skip", ...(reason === undefined ? {} : { gateReason: reason }) },
+    };
+  }
+  // A `run` verdict and a manual firing that overrides `skip` both start the
+  // responder, and both keep the gate's input.
+  const outcome: CronPreflightRecordOutcome = verdict.outcome === "skip" ? "overridden" : "run";
+  return {
+    record: {
+      outcome,
+      ...(reason === undefined ? {} : { reason }),
+      ...(inputBytes === undefined ? {} : { inputBytes }),
+      ...times,
+    },
+    action: {
+      kind: "run",
+      outcome,
+      ...(verdict.input === undefined ? {} : { input: verdict.input }),
+    },
+  };
+}
+
+const INVALID_PREFLIGHT_VALUE: unique symbol = Symbol("invalid-preflight-value");
+type InvalidPreflightValue = typeof INVALID_PREFLIGHT_VALUE;
+
+const PREFLIGHT_ERROR_CODES: ReadonlySet<string> = new Set<CronPreflightErrorCode>([
+  "exit_nonzero",
+  "signal",
+  "spawn_failed",
+  "timeout",
+  "invalid_json",
+  "invalid_verdict",
+  "output_overflow",
+  "callback_timeout",
+]);
+
+/**
+ * Defensive normalization of a host callback return. Typed hosts always pass a
+ * valid verdict; an untyped or buggy host fails open with `invalid_verdict`
+ * instead of corrupting the prompt or the record.
+ */
+function normalizePreflightOutcome(value: unknown): CronPreflightOutcome {
+  if (!isRecord(value)) {
+    return invalidPreflightVerdict("preflight callback returned a non-object verdict.");
+  }
+  const reason = normalizePreflightText(value.reason, true);
+  if (reason === INVALID_PREFLIGHT_VALUE) {
+    return invalidPreflightVerdict("preflight callback returned a non-string reason.");
+  }
+  const outcome = value.outcome;
+  if (outcome === "error") {
+    const code = value.code;
+    if (typeof code !== "string" || !PREFLIGHT_ERROR_CODES.has(code)) {
+      return invalidPreflightVerdict("preflight callback returned an unknown error code.");
+    }
+    return {
+      outcome: "error",
+      code: code as CronPreflightErrorCode,
+      ...(reason === undefined ? {} : { reason }),
+    };
+  }
+  if (outcome !== "run" && outcome !== "skip") {
+    return invalidPreflightVerdict("preflight callback returned an unknown verdict.");
+  }
+  const input = normalizePreflightText(value.input, false);
+  if (input === INVALID_PREFLIGHT_VALUE) {
+    return invalidPreflightVerdict("preflight callback returned a non-string input.");
+  }
+  if (input !== undefined && Buffer.byteLength(input, "utf8") > MAX_CRON_PREFLIGHT_INPUT_BYTES) {
+    return {
+      outcome: "error",
+      code: "output_overflow",
+      reason: "preflight input exceeded the configured byte cap",
+    };
+  }
+  return {
+    outcome,
+    ...(input === undefined ? {} : { input }),
+    ...(reason === undefined ? {} : { reason }),
+  };
+}
+
+function invalidPreflightVerdict(reason: string): CronPreflightOutcome {
+  return { outcome: "error", code: "invalid_verdict", reason };
+}
+
+/**
+ * `undefined` means absent, {@link INVALID_PREFLIGHT_VALUE} means the wrong
+ * type. Reasons are bounded; the gate input is only byte-counted.
+ */
+function normalizePreflightText(
+  value: unknown,
+  bound: boolean,
+): string | undefined | InvalidPreflightValue {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return typeof value === "string" ? undefined : INVALID_PREFLIGHT_VALUE;
+  }
+  return bound ? boundCronPreflightReason(value) : value;
+}
+
+/** Observe the gate record without letting a host callback failure wedge the job. */
+async function emitPreflight(
+  options: CronAdapterOptions,
+  firing: CronFiringIdentity,
+  record: CronPreflightRecord,
+): Promise<void> {
+  try {
+    await options.onPreflight?.(firing, record);
+  } catch (error) {
+    reportDegraded(options, "Cron preflight record persistence failed.", error, {
+      jobId: firing.jobId,
+      runId: firing.runId,
+      outcome: record.outcome,
+    });
+  }
+}
+
+/**
+ * Append the gate's input to the job prompt as one documented block. The block
+ * is operator-owned data: nothing in the runtime interprets it, and the job
+ * prompt itself is responsible for saying what to do when it is absent
+ * (a fail-open run).
+ */
+function preflightPromptText(prompt: string, input: string | undefined): string {
+  return input === undefined ? prompt : `${prompt}\n\n<preflight-input>\n${input}\n</preflight-input>`;
+}
+
+function startRun(
+  job: CronJob,
+  firing: CronFiringIdentity,
+  options: CronAdapterOptions,
+  jobStates: Map<string, JobRuntimeState>,
+  state: JobRuntimeState,
+  handoff: CronPreflightHandoff = {},
+): void {
+  const controller = handoff.controller ?? new AbortController();
+  state.active = { controller, firing, phase: "run" };
   const startedAt = (options.now?.() ?? new Date()).toISOString();
   const stream = new CronMessageStream(firing, options);
 
@@ -675,7 +1088,7 @@ function startRun(
       }
       const request: AgentRequestBase = {
         conversationId: job.conversationId ?? `cron:${job.id}`,
-        text: job.prompt,
+        text: preflightPromptText(job.prompt, handoff.input),
         abortSignal: controller.signal,
         ...(job.notify === true ? toReplyTarget(notifyConversationId) : {}),
         metadata: {
@@ -699,6 +1112,16 @@ function startRun(
               : {}),
             ...(job.model === undefined ? {} : { model: job.model }),
             ...(job.effort === undefined ? {} : { effort: job.effort }),
+            ...(handoff.record === undefined
+              ? {}
+              : {
+                  preflight: {
+                    outcome: handoff.record,
+                    ...(handoff.input === undefined
+                      ? {}
+                      : { inputBytes: Buffer.byteLength(handoff.input, "utf8") }),
+                  },
+                }),
           } satisfies CronRequestMetadata,
         },
       };
@@ -867,7 +1290,8 @@ function drainNext(
 ): void {
   const next = state.pending.shift();
   if (next !== undefined) {
-    startRun(job, next, options, jobStates, state);
+    // Queued and replacement firings are gated exactly like scheduled ones.
+    beginFiring(job, next, options, jobStates, state);
     return;
   }
   if (state.active === undefined && state.pending.length === 0) {
@@ -942,6 +1366,7 @@ function validateOptions(options: CronAdapterOptions): void {
   if (options.overflow !== undefined && !VALID_OVERFLOW_POLICIES.has(options.overflow)) {
     throw new CronAdapterError("invalid_config", "Cron overflow policy is invalid.", { overflow: options.overflow });
   }
+  normalizeCronPreflightTimeoutMs(options.preflightTimeoutMs, "Cron adapter preflightTimeoutMs");
   const seen = new Set<string>();
   for (const job of options.jobs) {
     if (normalizeOptionalString(job.id) === undefined) {
@@ -960,6 +1385,8 @@ function validateOptions(options: CronAdapterOptions): void {
         maxRunMs: job.maxRunMs,
       });
     }
+    normalizeCronPreflightArgv(job.preflight, "Cron job preflight", { jobId: job.id });
+    normalizeCronPreflightTimeoutMs(job.preflightTimeoutMs, "Cron job preflightTimeoutMs", { jobId: job.id });
     nextDateFor(job, options.now?.() ?? new Date());
   }
 }

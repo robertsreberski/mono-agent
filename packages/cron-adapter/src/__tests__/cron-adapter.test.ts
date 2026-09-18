@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { MAX_AGENT_REPLY_PARTS, type AgentReplyPart, type AgentResponder } from "@mono-agent/agent-contracts";
 
-import type { CronJobResult } from "../index.js";
+import type {
+  CronAdapterOptions,
+  CronFiringIdentity,
+  CronJob,
+  CronJobResult,
+  CronPreflightRecord,
+} from "../index.js";
 import { CronAdapterError, startCronAdapter, toCronJobs } from "../index.js";
 // handleTick is an internal export (not re-exported from the package index) so
 // the overlap defense-in-depth fallback can be tested directly, bypassing the
@@ -1224,6 +1230,33 @@ describe("Cron adapter", () => {
     })).toThrow(/overflow/u);
   });
 
+  it("rejects an invalid preflight declaration at startup", () => {
+    const responder: AgentResponder = {
+      async respond() {
+        return {};
+      },
+    };
+    const base = { responder, now: () => new Date(0) };
+
+    expect(() => startCronAdapter({
+      ...base,
+      jobs: [{ id: "bad", expression: "* * * * *", prompt: "p", preflight: [] }],
+    })).toThrow(/preflight/u);
+    expect(() => startCronAdapter({
+      ...base,
+      jobs: [{ id: "bad", expression: "* * * * *", prompt: "p", preflight: ["ok", ""] }],
+    })).toThrow(/non-empty argument strings/u);
+    expect(() => startCronAdapter({
+      ...base,
+      jobs: [{ id: "bad", expression: "* * * * *", prompt: "p", preflight: ["gate"], preflightTimeoutMs: 60_001 }],
+    })).toThrow(/no greater than 60000/u);
+    expect(() => startCronAdapter({
+      ...base,
+      preflightTimeoutMs: 0,
+      jobs: [{ id: "bad", expression: "* * * * *", prompt: "p" }],
+    })).toThrow(/preflightTimeoutMs/u);
+  });
+
   it("drops the oldest queued firing past maxQueueDepth with overflow:'drop-oldest'", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -1628,5 +1661,565 @@ describe("Cron adapter", () => {
       scheduler.stop();
       vi.useRealTimers();
     }
+  });
+});
+
+describe("Cron adapter — preflight gate", () => {
+  it("skips the firing without a responder turn when the gate answers run:false", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const events: string[] = [];
+    const results: CronJobResult[] = [];
+    const responder = { respond: vi.fn(async () => ({ text: "must not run" })) } satisfies AgentResponder;
+    const onRunStarted = vi.fn();
+    const onPreflight = vi.fn((firing: { runId: string }, record: { outcome: string }) => {
+      events.push(`preflight:${record.outcome}`);
+    });
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "gated", expression: "* * * * *", prompt: "p", preflight: ["gate"] }],
+      now: () => new Date(Date.now()),
+      preflight: async () => ({ outcome: "skip", reason: "nothing new" }),
+      onPreflight,
+      onRunStarted,
+      onResult: (result) => {
+        events.push(`result:${result.kind}`);
+        results.push(result);
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect.poll(() => results.length).toBe(1);
+      expect(results[0]).toMatchObject({
+        kind: "skipped",
+        reason: "gate",
+        jobId: "gated",
+        completedAt: "1970-01-01T00:01:00.000Z",
+        gateReason: "nothing new",
+      });
+      expect(responder.respond).not.toHaveBeenCalled();
+      expect(onRunStarted).not.toHaveBeenCalled();
+      expect(onPreflight).toHaveBeenCalledOnce();
+      expect(onPreflight.mock.calls[0]?.[1]).toEqual({
+        outcome: "skip",
+        reason: "nothing new",
+        startedAt: "1970-01-01T00:01:00.000Z",
+        completedAt: "1970-01-01T00:01:00.000Z",
+      });
+      // The record is observed before the skip result is emitted.
+      expect(events).toEqual(["preflight:skip", "result:skipped"]);
+      // The slot was released, so the next minute fires again and is gated again.
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect.poll(() => results.length).toBe(2);
+      expect(onPreflight).toHaveBeenCalledTimes(2);
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("runs with the composed prompt and metadata when the gate answers run:true with input", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const seen: Array<{ text: string; preflight: unknown }> = [];
+    const results: CronJobResult[] = [];
+    const responder: AgentResponder = {
+      async respond(request) {
+        seen.push({
+          text: request.text,
+          preflight: (request.metadata as { cron?: { preflight?: unknown } }).cron?.preflight,
+        });
+        return { text: "done" };
+      },
+    };
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "gated", expression: "* * * * *", prompt: "Summarize.", preflight: ["gate"] }],
+      now: () => new Date(Date.now()),
+      preflight: async () => ({ outcome: "run", input: "3 new items" }),
+      onResult: (result) => {
+        results.push(result);
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect.poll(() => results.length).toBe(1);
+      expect(seen).toEqual([{
+        text: "Summarize.\n\n<preflight-input>\n3 new items\n</preflight-input>",
+        preflight: { outcome: "run", inputBytes: 11 },
+      }]);
+      expect(results[0]).toMatchObject({ kind: "succeeded" });
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves an ungated firing byte-for-byte unchanged", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const requests: Array<{ text: string; cron: Record<string, unknown> }> = [];
+    const responder: AgentResponder = {
+      async respond(request) {
+        requests.push({ text: request.text, cron: (request.metadata as { cron: Record<string, unknown> }).cron });
+        return {};
+      },
+    };
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "plain", expression: "* * * * *", prompt: "exact prompt text" }],
+      now: () => new Date(Date.now()),
+      preflight: async () => ({ outcome: "run", input: "never used" }),
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect.poll(() => requests.length).toBe(1);
+      expect(requests[0]?.text).toBe("exact prompt text");
+      expect(requests[0]?.cron).not.toHaveProperty("preflight");
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not consume maxRunMs while the gate is evaluating", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const results: CronJobResult[] = [];
+    const responder = { respond: vi.fn(async () => ({ text: "ok" })) } satisfies AgentResponder;
+    let settleGate: (() => void) | undefined;
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "slow-gate", expression: "* * * * *", prompt: "p", preflight: ["gate"] }],
+      now: () => new Date(Date.now()),
+      maxRunMs: 5_000,
+      preflight: async () => {
+        await new Promise<void>((resolve) => {
+          settleGate = resolve;
+        });
+        return { outcome: "run" };
+      },
+      onResult: (result) => {
+        results.push(result);
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(responder.respond).not.toHaveBeenCalled();
+      // 4s of gate time must not arm the run watchdog.
+      await vi.advanceTimersByTimeAsync(4_000);
+      settleGate?.();
+      await expect.poll(() => results.length).toBe(1);
+      expect(results[0]).toMatchObject({ kind: "succeeded" });
+      // The run itself is still watchdogged from its own start.
+      expect(responder.respond).toHaveBeenCalledOnce();
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails open with the plain prompt when the gate exceeds the adapter timeout, once", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const records: Array<Record<string, unknown>> = [];
+    const seen: string[] = [];
+    const results: CronJobResult[] = [];
+    let settleGate: (() => void) | undefined;
+    const responder: AgentResponder = {
+      async respond(request) {
+        seen.push(request.text);
+        return {};
+      },
+    };
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "hung-gate", expression: "* * * * *", prompt: "plain", preflight: ["gate"], preflightTimeoutMs: 1_000 }],
+      now: () => new Date(Date.now()),
+      preflight: async () => {
+        await new Promise<void>((resolve) => {
+          settleGate = resolve;
+        });
+        return { outcome: "skip" };
+      },
+      onPreflight: (_firing, record) => {
+        records.push({ ...record });
+      },
+      onResult: (result) => {
+        results.push(result);
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(1_000); // adapter race timeout wins
+      await expect.poll(() => results.length).toBe(1);
+      expect(seen).toEqual(["plain"]);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ outcome: "timeout" });
+      expect(records[0]).not.toHaveProperty("code");
+      // The late skip verdict must be ignored: no second record, no second run.
+      settleGate?.();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(records).toHaveLength(1);
+      expect(seen).toEqual(["plain"]);
+      expect(results.filter((result) => result.kind === "skipped")).toHaveLength(0);
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("records an error verdict and runs with the plain prompt", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const records: Array<Record<string, unknown>> = [];
+    const seen: string[] = [];
+    const responder: AgentResponder = {
+      async respond(request) {
+        seen.push(request.text);
+        return {};
+      },
+    };
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "err-gate", expression: "* * * * *", prompt: "plain", preflight: ["gate"] }],
+      now: () => new Date(Date.now()),
+      preflight: async () => ({ outcome: "error", code: "exit_nonzero", reason: "gate exited with code 3" }),
+      onPreflight: (_firing, record) => {
+        records.push({ ...record });
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect.poll(() => seen.length).toBe(1);
+      expect(seen).toEqual(["plain"]);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ outcome: "error", code: "exit_nonzero", reason: "gate exited with code 3" });
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails open when the host callback rejects or returns an invalid verdict", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const records: Array<Record<string, unknown>> = [];
+    const seen: string[] = [];
+    const responder: AgentResponder = {
+      async respond(request) {
+        seen.push(request.text);
+        return {};
+      },
+    };
+    const scheduler = startCronAdapter({
+      responder,
+      // A deliberately off-contract host callback (untyped JS caller).
+      preflight: (async () => ({ outcome: "maybe", input: 42 })) as unknown as () => Promise<{ outcome: "run" }>,
+      jobs: [{ id: "bad-gate", expression: "* * * * *", prompt: "plain", preflight: ["gate"] }],
+      now: () => new Date(Date.now()),
+      onPreflight: (_firing, record) => {
+        records.push({ ...record });
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect.poll(() => seen.length).toBe(1);
+      expect(seen).toEqual(["plain"]);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ outcome: "error", code: "invalid_verdict" });
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("still runs when a job declares a preflight but the host wires no executor", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const warn = vi.fn();
+    const seen: string[] = [];
+    const responder: AgentResponder = {
+      async respond(request) {
+        seen.push(request.text);
+        return {};
+      },
+    };
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "no-executor", expression: "* * * * *", prompt: "plain", preflight: ["gate"] }],
+      now: () => new Date(Date.now()),
+      logger: { warn },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect.poll(() => seen.length).toBe(1);
+      expect(seen).toEqual(["plain"]);
+      expect(warn).toHaveBeenCalledWith(
+        "Cron job declares a preflight but the host has no preflight executor; running with the plain prompt.",
+        { jobId: "no-executor", runId: "cron:no-executor:1970-01-01T00:01:00.000Z" },
+      );
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets a manual firing override run:false and keeps the gate input", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const records: Array<Record<string, unknown>> = [];
+    const seen: string[] = [];
+    const results: CronJobResult[] = [];
+    const responder: AgentResponder = {
+      async respond(request) {
+        seen.push(request.text);
+        return {};
+      },
+    };
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "manual-gate", expression: "0 0 1 1 *", prompt: "p", preflight: ["gate"] }],
+      now: () => new Date(Date.now()),
+      preflight: async () => ({ outcome: "skip", input: "override me", reason: "nothing new" }),
+      onPreflight: (_firing, record) => {
+        records.push({ ...record });
+      },
+      onResult: (result) => {
+        results.push(result);
+      },
+    });
+
+    try {
+      scheduler.runNow("manual-gate");
+      await expect.poll(() => seen.length).toBe(1);
+      expect(seen).toEqual(["p\n\n<preflight-input>\noverride me\n</preflight-input>"]);
+      await expect.poll(() => results.length).toBe(1);
+      expect(results[0]).toMatchObject({ kind: "succeeded", trigger: "manual" });
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ outcome: "overridden", reason: "nothing new", inputBytes: 11 });
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("blocks a firing that arrives during the gate as an overlap skip by the gating firing", async () => {
+    // Driven through handleTick so a second firing can land strictly inside the
+    // gate phase: the gating firing holds the job's overlap slot throughout.
+    const job: CronJob = {
+      id: "held",
+      expression: "* * * * *",
+      prompt: "p",
+      preflight: ["gate"],
+      preflightTimeoutMs: 60_000,
+    };
+    const jobStates = new Map();
+    const results: CronJobResult[] = [];
+    const gates: string[] = [];
+    let settleGate: (() => void) | undefined;
+    const options: CronAdapterOptions = {
+      responder: { async respond() { return {}; } },
+      jobs: [job],
+      now: () => new Date(Date.now()),
+      preflight: async (firing) => {
+        gates.push(firing.runId);
+        await new Promise<void>((resolve) => {
+          settleGate = resolve;
+        });
+        return { outcome: "skip" };
+      },
+      onResult: (result) => {
+        results.push(result);
+      },
+    };
+
+    handleTick(job, new Date(60_000), options, jobStates);
+    await expect.poll(() => gates.length).toBe(1);
+    handleTick(job, new Date(120_000), options, jobStates);
+    await expect.poll(() => results.length).toBe(1);
+    expect(results[0]).toMatchObject({
+      kind: "skipped",
+      reason: "overlap",
+      cronRunId: "cron:held:1970-01-01T00:02:00.000Z",
+      blockedByRunId: gates[0],
+      blockedByTrigger: "scheduled",
+    });
+    // The gating firing was never displaced: it still owns the slot and ends
+    // with its own gate verdict.
+    settleGate?.();
+    await expect.poll(() => results.length).toBe(2);
+    expect(results[1]).toMatchObject({ kind: "skipped", reason: "gate" });
+    expect(gates).toEqual(["cron:held:1970-01-01T00:01:00.000Z"]);
+  });
+
+  it("cancels a firing stopped during the gate without a startedAt and never launches it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const results: CronJobResult[] = [];
+    const records: Array<Record<string, unknown>> = [];
+    let settleGate: (() => void) | undefined;
+    const responder = { respond: vi.fn(async () => ({})) } satisfies AgentResponder;
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "stopped", expression: "* * * * *", prompt: "p", preflight: ["gate"] }],
+      now: () => new Date(Date.now()),
+      preflight: async () => {
+        await new Promise<void>((resolve) => {
+          settleGate = resolve;
+        });
+        return { outcome: "run", input: "late" };
+      },
+      onPreflight: (_firing, record) => {
+        records.push({ ...record });
+      },
+      onResult: (result) => {
+        results.push(result);
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      scheduler.stop();
+      await expect.poll(() => results.length).toBe(1);
+      expect(results[0]).toMatchObject({
+        kind: "cancelled",
+        completedAt: "1970-01-01T00:01:00.000Z",
+      });
+      expect(results[0]).not.toHaveProperty("startedAt");
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ outcome: "cancelled" });
+      settleGate?.();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(responder.respond).not.toHaveBeenCalled();
+      expect(records).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gates every queued firing drained after the gating run", async () => {
+    const job: CronJob = {
+      id: "queued",
+      expression: "* * * * *",
+      prompt: "p",
+      preflight: ["gate"],
+      preflightTimeoutMs: 60_000,
+    };
+    const jobStates = new Map();
+    const results: CronJobResult[] = [];
+    const gates: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const options: CronAdapterOptions = {
+      responder: { async respond() { return {}; } },
+      jobs: [job],
+      overlap: "queue",
+      now: () => new Date(Date.now()),
+      preflight: async (firing) => {
+        gates.push(firing.runId);
+        if (gates.length === 1) {
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+        }
+        return { outcome: "skip" };
+      },
+      onResult: (result) => {
+        results.push(result);
+      },
+    };
+
+    handleTick(job, new Date(60_000), options, jobStates);
+    await expect.poll(() => gates.length).toBe(1);
+    handleTick(job, new Date(120_000), options, jobStates);
+    handleTick(job, new Date(180_000), options, jobStates);
+    await expect.poll(() => results.length).toBe(2);
+    expect(results).toEqual([
+      expect.objectContaining({ kind: "queued", cronRunId: "cron:queued:1970-01-01T00:02:00.000Z", queueDepth: 1 }),
+      expect.objectContaining({ kind: "queued", cronRunId: "cron:queued:1970-01-01T00:03:00.000Z", queueDepth: 2 }),
+    ]);
+
+    releaseFirst?.();
+    await expect.poll(() => gates.length).toBe(3);
+    expect(gates).toEqual([
+      "cron:queued:1970-01-01T00:01:00.000Z",
+      "cron:queued:1970-01-01T00:02:00.000Z",
+      "cron:queued:1970-01-01T00:03:00.000Z",
+    ]);
+    await expect.poll(() => results.filter((result) => result.kind === "skipped").length).toBe(3);
+    expect(results.filter((result) => result.kind === "skipped").map((result) => result.cronRunId)).toEqual([
+      "cron:queued:1970-01-01T00:01:00.000Z",
+      "cron:queued:1970-01-01T00:02:00.000Z",
+      "cron:queued:1970-01-01T00:03:00.000Z",
+    ]);
+  });
+
+  it("cancels the gate on overlap replace and gates the replacement firing", async () => {
+    const job: CronJob = {
+      id: "replaced",
+      expression: "* * * * *",
+      prompt: "p",
+      preflight: ["gate"],
+      preflightTimeoutMs: 60_000,
+    };
+    const jobStates = new Map();
+    const records: Array<{ runId: string; outcome: string }> = [];
+    const gates: string[] = [];
+    const seenTexts: string[] = [];
+    const optionJobs = [job];
+    let releaseFirst: (() => void) | undefined;
+    const responder: AgentResponder = {
+      async respond(request) {
+        seenTexts.push(request.text);
+        return {};
+      },
+    };
+    const options: CronAdapterOptions = {
+      responder,
+      jobs: optionJobs,
+      overlap: "replace",
+      now: () => new Date(Date.now()),
+      preflight: async (firing) => {
+        gates.push(firing.runId);
+        if (gates.length === 1) {
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+        }
+        return { outcome: "run", input: `input-for-${firing.runId}` };
+      },
+      onPreflight: (firing: CronFiringIdentity, record: CronPreflightRecord) => {
+        records.push({ runId: firing.runId, outcome: record.outcome });
+      },
+    };
+
+    handleTick(job, new Date(60_000), options, jobStates);
+    await expect.poll(() => gates.length).toBe(1);
+    handleTick(job, new Date(120_000), options, jobStates);
+    await expect.poll(() => gates.length).toBe(2);
+    expect(gates).toEqual([
+      "cron:replaced:1970-01-01T00:01:00.000Z",
+      "cron:replaced:1970-01-01T00:02:00.000Z",
+    ]);
+    expect(records).toContainEqual({ runId: "cron:replaced:1970-01-01T00:01:00.000Z", outcome: "cancelled" });
+    await expect.poll(() => seenTexts.length).toBe(1);
+    // Only the replacement firing reaches the responder, with its own gate input.
+    expect(seenTexts).toEqual([
+      "p\n\n<preflight-input>\ninput-for-cron:replaced:1970-01-01T00:02:00.000Z\n</preflight-input>",
+    ]);
+    // A late verdict from the cancelled gate must be ignored.
+    releaseFirst?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(seenTexts).toHaveLength(1);
+    expect(records.filter((record) => record.runId === "cron:replaced:1970-01-01T00:01:00.000Z")).toHaveLength(1);
   });
 });

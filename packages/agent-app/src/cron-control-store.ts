@@ -1254,12 +1254,25 @@ function resultFields(result: CronJobResult): {
   if (result.kind === "failed" || result.kind === "cancelled") {
     return {
       status: result.kind,
-      startedAt: result.startedAt,
+      // A cancelled firing may never have started (a gate cancelled during
+      // preflight), so `startedAt` is genuinely absent rather than invented.
+      ...(result.startedAt === undefined ? {} : { startedAt: result.startedAt }),
       completedAt: result.completedAt,
       ...(result.runId === undefined ? {} : { artifactRunId: result.runId }),
       error: result.error,
       ...(result.failureKind === undefined ? {} : { failureKind: result.failureKind }),
       replyPartOutcomesJson: serializeStoredReplyPartOutcomes(result.replyPartOutcomes),
+    };
+  }
+  if (result.kind === "skipped" && result.reason === "gate") {
+    return {
+      status: "skipped_gate",
+      completedAt: result.completedAt,
+      // The gate reason is bounded diagnostic text, not a failure: it rides in
+      // the run's error column so the console can render it without inventing a
+      // second field on the operator wire contract.
+      ...(result.gateReason === undefined ? {} : { error: result.gateReason }),
+      replyPartOutcomesJson: null,
     };
   }
   if (result.kind === "skipped") {
@@ -1376,7 +1389,8 @@ function parseRunNowReceipt(serialized: string): CronOperatorRunSummary | string
     || typeof run.orderedAt !== "string"
     || !Number.isSafeInteger(run.sequence)
     || (run.trigger !== "scheduled" && run.trigger !== "manual")
-    || !["admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "dropped"]
+    || !["admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "skipped_gate",
+      "dropped"]
       .includes(String(run.status))
     || !Number.isSafeInteger(run.eventCount)
     || Number(run.eventCount) < 0
