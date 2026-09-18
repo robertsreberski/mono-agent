@@ -25,7 +25,7 @@ import {
   type AgentReplyPartDeliveryOutcome,
   type AgentStreamEvent,
 } from "@mono-agent/agent-contracts";
-import type { CronFiringIdentity, CronJobResult, CronRunTrigger } from "@mono-agent/cron-adapter";
+import type { CronFiringIdentity, CronJobResult, CronPreflightRecord, CronRunTrigger } from "@mono-agent/cron-adapter";
 import type {
   CronOperatorRun,
   CronOperatorRunBase,
@@ -158,6 +158,13 @@ export interface CronControlStore {
     readonly requestHash: string;
   }): { readonly enabled: boolean; readonly replayed: boolean };
   markStarted(firing: CronFiringIdentity, startedAt: string): void;
+  /**
+   * Persist one bounded preflight audit record for a firing whose gate was
+   * attempted. Called before the run's terminal result, so the record survives
+   * `recordResult`; the payload is codes and bounded text only, never raw gate
+   * output, argv, or environment values.
+   */
+  recordPreflight(firing: CronFiringIdentity, record: CronPreflightRecord): void;
   appendEvent(firing: CronFiringIdentity, event: AgentStreamEvent): void;
   recordResult(result: CronJobResult): void;
   getRun(runId: string): CronOperatorRunDetail | undefined;
@@ -464,6 +471,14 @@ export async function openCronControlStore(
         UPDATE cron_runs SET status = 'running', started_at = COALESCE(started_at, ?)
         WHERE run_id = ? AND status IN ('admitted', 'queued')
       `).run(startedAt, firing.runId);
+    },
+    recordPreflight(firing, record) {
+      requireOpen();
+      // Only in-flight rows accept the record; a firing that already settled
+      // (or was reconciled after a restart) keeps its terminal projection.
+      database.prepare(`
+        UPDATE cron_runs SET preflight_json = ? WHERE run_id = ? AND status IN ('admitted', 'running', 'queued')
+      `).run(serializePreflightRecord(record), firing.runId);
     },
     appendEvent(firing, event) {
       withTransaction(() => {
@@ -915,6 +930,7 @@ function createSchema(database: DatabaseSync): void {
       error TEXT,
       failure_kind TEXT,
       reply_part_outcomes_json TEXT,
+      preflight_json TEXT,
       blocked_by_run_id TEXT,
       blocked_by_trigger TEXT,
       queue_depth INTEGER,
@@ -985,6 +1001,11 @@ function ensureControlSchemaColumns(database: DatabaseSync): void {
     // the absent column is upgraded under the exclusive store lease and every
     // legacy row receives NULL (the backwards-compatible no-outcomes state).
     database.exec("ALTER TABLE cron_runs ADD COLUMN reply_part_outcomes_json TEXT");
+  }
+  if (!runColumns.some((column) => column.name === "preflight_json")) {
+    // Same additive repair for the preflight audit record: stores created
+    // before the gate keep working, and their existing rows read as "no gate".
+    database.exec("ALTER TABLE cron_runs ADD COLUMN preflight_json TEXT");
   }
 }
 
@@ -1286,6 +1307,18 @@ function resultFields(result: CronJobResult): {
   }
   if (result.kind === "queued") return { status: "queued", queueDepth: result.queueDepth, replyPartOutcomesJson: null };
   return { status: "dropped", completedAt: result.orderedAt, replyPartOutcomesJson: null };
+}
+
+/** Serialize the gate audit record: codes and bounded text only. */
+function serializePreflightRecord(record: CronPreflightRecord): string {
+  return JSON.stringify({
+    outcome: record.outcome,
+    ...(record.code === undefined ? {} : { code: record.code }),
+    ...(record.reason === undefined ? {} : { reason: record.reason }),
+    ...(record.inputBytes === undefined ? {} : { inputBytes: record.inputBytes }),
+    startedAt: record.startedAt,
+    completedAt: record.completedAt,
+  });
 }
 
 function serializeStoredReplyPartOutcomes(value: unknown): string | null {

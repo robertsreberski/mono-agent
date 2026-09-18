@@ -317,6 +317,26 @@ describe("config reference", () => {
     expect(schemaNode(schema, "interaction", "askUser", "timeoutMs").type).toEqual(["integer", "null"]);
     expect(schemaNode(schema, "memory", "embeddings", "circuitBreaker", "failureThreshold").type).toBe("integer");
     expect(schemaNode(schema, "cron", "jobs").items?.required).toEqual(["id", "expression", "prompt"]);
+    expect(schemaNode(schema, "cron", "jobs").items?.properties?.preflight).toMatchObject({
+      type: "array",
+      minItems: 1,
+      items: { type: "string", minLength: 1 },
+    });
+    expect(schemaNode(schema, "cron", "jobs").items?.properties?.preflightTimeoutMs).toMatchObject({
+      type: "integer",
+      minimum: 1,
+      maximum: 60_000,
+    });
+    expect(schemaNode(schema, "cron", "preflight")).toMatchObject({
+      type: "array",
+      minItems: 1,
+      items: { type: "string", minLength: 1 },
+    });
+    expect(schemaNode(schema, "cron", "preflightTimeoutMs")).toMatchObject({
+      type: "integer",
+      minimum: 1,
+      maximum: 60_000,
+    });
     expect(schemaNode(schema, "webhook", "endpoints").items?.required).toEqual(["path"]);
     expect(schemaNode(schema, "webhook", "endpoints").items?.properties?.maxRunMs).toMatchObject({
       type: "integer",

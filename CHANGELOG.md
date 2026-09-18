@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Let a cron job declare a deterministic `preflight` argv evaluated before the
+  model responder. `{"run":false}` ends the firing as `skipped_gate` with no
+  model turn or notification; `{"run":true,"input":"…"}` runs the job with the
+  input appended in one `<preflight-input>` block. Every gate failure — non-zero
+  exit, signal, spawn failure, timeout, malformed verdict, or output over the
+  caps — fails open with the plain prompt and records a bounded code-only audit
+  record per firing. Bound it with `preflightTimeoutMs` (default 5000, cap
+  60000), separate from `maxRunMs`; a manual run always runs and keeps the input.
+
 - Make supported Anthropic prompt-cache retention one hour by default, including
   child routes. Set `providers.piNative.cacheRetention` to `"short"` to opt out
   of the higher cache-write price; resolved settings override Pi ambient env.
