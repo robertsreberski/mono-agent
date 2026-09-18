@@ -1173,7 +1173,7 @@ function buildProvidersSection(input: BuildMonoAgentConfigViewInput): ConfigView
       toField(env, {
         id: "providers.piNative.cacheRetention",
         label: "Anthropic cache retention",
-        value: providers?.piNative?.cacheRetention ?? "default",
+        value: providers?.piNative?.cacheRetention ?? PLACEHOLDER,
         jsonPresent: json.providers?.piNative?.cacheRetention !== undefined,
       }),
 

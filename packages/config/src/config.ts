@@ -2446,18 +2446,7 @@ function readConcurrencyConfig(env: Record<string, string | undefined>): MonoAge
 function readPiNativeProviderConfig(
   env: Record<string, string | undefined>,
   cwd: string,
-): PiNativeProviderConfig | undefined {
-  const hasAny = [
-    env.MONO_AGENT_PI_TRANSPORT,
-    env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS,
-    env.MONO_AGENT_PI_CACHE_RETENTION,
-    env.MONO_AGENT_PI_MAX_RETRIES,
-    env.MONO_AGENT_MAX_RETRY_DELAY_MS,
-    env.MONO_AGENT_PI_SESSIONS_ROOT,
-  ].some((value) => normalizeOptionalString(value) !== undefined);
-  if (!hasAny) {
-    return undefined;
-  }
+): PiNativeProviderConfig {
   const transport = normalizeOptionalString(env.MONO_AGENT_PI_TRANSPORT) === undefined
     ? undefined
     : readChoice<PiTransport>(
@@ -2470,15 +2459,16 @@ function readPiNativeProviderConfig(
   const promptCacheDiagnostics = normalizeOptionalString(env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS) === undefined
     ? undefined
     : readBoolean(env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS, "MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS", false, invalidEnv);
-  const cacheRetention = normalizeOptionalString(env.MONO_AGENT_PI_CACHE_RETENTION) === undefined ? undefined
-    : readChoice<"short" | "long">(env.MONO_AGENT_PI_CACHE_RETENTION, "MONO_AGENT_PI_CACHE_RETENTION", ["short", "long"], "short", invalidEnv);
+  const cacheRetention = readChoice<"short" | "long">(
+    env.MONO_AGENT_PI_CACHE_RETENTION, "MONO_AGENT_PI_CACHE_RETENTION", ["short", "long"], "long", invalidEnv,
+  );
   const piMaxRetries = readOptionalInteger(env.MONO_AGENT_PI_MAX_RETRIES, "MONO_AGENT_PI_MAX_RETRIES", { min: 0, max: 8 });
   const maxRetryDelayMs = readOptionalInteger(env.MONO_AGENT_MAX_RETRY_DELAY_MS, "MONO_AGENT_MAX_RETRY_DELAY_MS", { min: 100, max: 3_600_000 });
   const piSessionsRoot = readOptionalPath(env.MONO_AGENT_PI_SESSIONS_ROOT, cwd);
   return {
     ...(transport === undefined ? {} : { transport }),
     ...(promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics }),
-    ...(cacheRetention === undefined ? {} : { cacheRetention }),
+    cacheRetention,
     ...(piMaxRetries === undefined ? {} : { piMaxRetries }),
     ...(maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs }),
     ...(piSessionsRoot === undefined ? {} : { piSessionsRoot }),

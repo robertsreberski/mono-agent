@@ -1512,6 +1512,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "traceability.staleAfterMs": 30_000,
     "traceability.globalDiscovery": true,
     "providers.piNative.promptCacheDiagnostics": false,
+    "providers.piNative.cacheRetention": "long",
     "providers.piNative.piMaxRetries": 2,
     "providers.piNative.maxRetryDelayMs": 60_000,
     "providers.piNative.transport": "auto",
@@ -1646,7 +1647,7 @@ function exampleFor(id: string): SettingsJsonValue {
 }
 
 function descriptionFor(id: string): string {
-  if (id === "providers.piNative.cacheRetention") return "Optional Anthropic Messages cache retention (short or long). Unset preserves Pi defaults/environment. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.";
+  if (id === "providers.piNative.cacheRetention") return "Anthropic Messages cache retention (short or long; default long). Short opts out. MONO_AGENT env > JSON > long; resolved values override ambient PI_CACHE_RETENTION. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.";
   if (id === "providers.piNative.promptCacheDiagnostics") return "Emit metadata-only prompt-cache request fingerprints into run artifacts; never prompt text, tool arguments, cache keys, endpoints or credentials.";
   const section = id.split(".")[0] ?? "config";
   const name = id.split(".").slice(1).join(".");
