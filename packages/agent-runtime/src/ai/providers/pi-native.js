@@ -457,14 +457,14 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     }
     emitCaptured(events, options.onEvent, event);
   };
-  // Exec and Monitor both run a command a host configured Bash's risk tier for.
-  // Leaving either unmapped would let the same shell command take a lower
+  // Exec runs a command a host configured Bash's risk tier for.
+  // Leaving it unmapped would let the same shell command take a lower
   // approval tier simply by being started through a different tool.
   const bashRiskTier = options.toolRiskTiers?.Bash;
   const approvalRiskTiers = {
     ...(options.toolRiskTiers || {}),
     ...(bashRiskTier !== undefined
-      ? Object.fromEntries(["Exec", "Monitor"]
+      ? Object.fromEntries(["Exec"]
         .filter((name) => options.toolRiskTiers?.[name] === undefined)
         .map((name) => [name, bashRiskTier]))
       : {}),

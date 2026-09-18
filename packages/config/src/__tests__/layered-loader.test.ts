@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MonoAgentConfigError } from "../config.js";
 import { loadMonoAgentConfigWithSources, layerJsonOntoEnv } from "../layered-loader.js";
@@ -3045,4 +3045,21 @@ it("layers cache retention JSON below nonempty environment", () => {
   expect(layerJsonOntoEnv(json, {}).MONO_AGENT_PI_CACHE_RETENTION).toBe("long");
   expect(layerJsonOntoEnv(json, { MONO_AGENT_PI_CACHE_RETENTION: "short" }).MONO_AGENT_PI_CACHE_RETENTION).toBe("short");
   expect(layerJsonOntoEnv({}, {}).MONO_AGENT_PI_CACHE_RETENTION).toBeUndefined();
+});
+
+
+describe("retired settings compatibility", () => {
+  it("loads and ignores a legacy monitors block with one deprecation warning", async () => {
+    const jsonPath = join(dir, "mono-agent.config.json");
+    const config = { runtime: { model: "pi:openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" } };
+    await writeFile(jsonPath, JSON.stringify(config));
+    const baseline = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await writeFile(jsonPath, JSON.stringify({ ...config, monitors: { enabled: true, maxActive: 999 } }));
+      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath })).toEqual(baseline);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Ignoring deprecated monitors config"));
+    } finally { warn.mockRestore(); }
+  });
 });

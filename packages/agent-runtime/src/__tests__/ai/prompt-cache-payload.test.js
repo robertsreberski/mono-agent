@@ -164,26 +164,24 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps actual %s tool arrays
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const model = { ...fauxProvider({ provider: 'wire-fixture', models: [{ id: 'fixture' }] }).getModel(), api, baseUrl: 'https://fixture.invalid/v1' };
   const processJobs = { start: async () => { throw new Error('must not start'); }, limits: { maxRuntimeMs: 10000 } };
-  const monitors = { start: async () => { throw new Error('must not start'); }, stop: async () => {}, limits: { maxRuntimeMs: 10000, persistentMaxRuntimeMs: 20000, maxActivePerConversation: 2, maxWakeIntervalMs: 1000 } };
   const instances = { reserve: () => {}, releaseReservation: () => {}, inspect: () => {}, checkAcknowledgement: () => {} };
   const parent = { run: async () => { throw new Error('must not run'); }, instances };
   for (const profile of ['parent', 'persistent-child']) {
-    const exposure = { monitors: profile === 'parent', persistentSubagents: profile === 'parent', askParent: profile === 'persistent-child' };
+    const exposure = { persistentSubagents: profile === 'parent', askParent: profile === 'persistent-child' };
     let baseline;
     const envelopes = new Set();
-    for (const [index, kind] of ['user', 'job-wake', 'monitor-wake', 'cron', 'child-continuation', 'exhausted-lineage', 'absent-controller'].entries()) {
+    for (const [index, kind] of ['user', 'job-wake', 'cron', 'child-continuation', 'exhausted-lineage', 'absent-controller'].entries()) {
       const admitted = index < 3;
       const subagents = profile === 'parent' ? { ...parent, ...(admitted ? { backgroundSubagentController: {} } : {}), ...(index === 6 ? { instances: undefined } : {}) } : { depth: 1 };
       const options = {
         toolExposure: exposure, subagents,
         processJobs: admitted ? processJobs : undefined,
-        monitors: admitted ? monitors : undefined,
         askParentController: profile === 'persistent-child' && admitted ? { submit: async () => {} } : undefined,
         toolLimits: { bashTimeoutMs: 120000 - index * 1000 },
         processJobsAvailability: { chainDepth: index, maxChainDepth: 4, remainingStarts: Math.max(0, 4 - index), ...(index >= 4 ? { unavailableReason: 'chain_depth_exhausted' } : {}) },
       };
-      const tools = getPiBuiltinTools(['Bash', 'Exec', 'Monitor', 'MonitorStop', 'Agent', 'AgentSend', 'AskParent'], {
-        ...options, processJobsController: options.processJobs, monitorsController: options.monitors,
+      const tools = getPiBuiltinTools(['Bash', 'Exec', 'Agent', 'AgentSend', 'AskParent'], {
+        ...options, processJobsController: options.processJobs,
       });
       if (profile === 'persistent-child') expect(tools.map((tool) => tool.name)).toEqual(['AskParent', 'Bash', 'Exec']);
       const envelope = composeHostTurnEnvelope(formatHostCapabilities(options), kind);
@@ -201,7 +199,7 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps actual %s tool arrays
       baseline ??= bytes;
       expect(bytes, `${profile}/${kind}`).toBe(baseline);
     }
-    expect(envelopes.size).toBe(7);
+    expect(envelopes.size).toBe(6);
   }
 });
 
@@ -264,10 +262,10 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MC
   const model = { ...fauxProvider({ provider: 'app-wire-fixture', models: [{ id: 'fixture' }] }).getModel(), api, baseUrl: 'https://fixture.invalid/v1' };
   const mutations = vi.fn(); const bridgeFetch = vi.fn();
   let baseline; const envelopes = new Set();
-  for (const [index, kind] of ['user', 'job-wake', 'monitor-wake', 'cron', 'exhausted-lineage', 'absent-controller'].entries()) {
+  for (const [index, kind] of ['user', 'job-wake', 'cron', 'exhausted-lineage', 'absent-controller'].entries()) {
     const interactive = ['user', 'exhausted-lineage'].includes(kind);
     const web = { threadId: 'thread', turnId: `turn-${index}`, conversationTitle: { schema: 1, writable: true }, consoleProjects: { schema: 1 },
-      ...(['job-wake', 'monitor-wake'].includes(kind) ? { trigger: kind } : {}) };
+      ...(['job-wake'].includes(kind) ? { trigger: kind } : {}) };
     const metadata = kind === 'cron' ? { source: 'cron' } : kind === 'absent-controller' ? { source: 'web' } : { source: 'web', web };
     const input = { request: { conversationId: 'web:thread', userMessage: kind, abortSignal: new AbortController().signal, metadata }, runId: `run-${index}`, context: {} };
     const store = { supportsRemember: () => interactive, remember: mutations };
@@ -288,7 +286,7 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MC
     const bound = await extension(input);
     const runOptions = { ...bound.runtimeOptions, toolLimits: { bashTimeoutMs: 120000 - index * 1000 },
       processJobsAvailability: { chainDepth: index, maxChainDepth: 4, remainingStarts: Math.max(0, 4 - index), ...(index >= 4 ? { unavailableReason: 'chain_depth_exhausted' } : {}) } };
-    const builtins = getPiBuiltinTools(['Bash', 'Exec', 'Read', 'Monitor', 'MonitorStop'], { toolLimits: runOptions.toolLimits });
+    const builtins = getPiBuiltinTools(['Bash', 'Exec', 'Read'], { toolLimits: runOptions.toolLimits });
     const mcp = await initPiMcpTools(runOptions.mcpServers, new Set(builtins.map((tool) => tool.name)));
     try {
       expect(mcp.warnings).toEqual([]);
@@ -317,5 +315,5 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MC
       expect(bytes).toContain('SetConversationTitle'); expect(bytes).toContain('Remember'); expect(bytes).toContain('AskUser'); expect(bytes).toContain('CreateProject');
     } finally { await closePiMcpClients(mcp.clients); await bound.cleanup?.(); await adapterClient.close(); await adapterServer.close(); }
   }
-  expect(envelopes.size).toBe(6); expect(mutations).not.toHaveBeenCalled(); expect(bridgeFetch).not.toHaveBeenCalled();
+  expect(envelopes.size).toBe(5); expect(mutations).not.toHaveBeenCalled(); expect(bridgeFetch).not.toHaveBeenCalled();
 });

@@ -236,7 +236,6 @@ describe("reply artifact responder composition", () => {
         settings: { stateDir: processJobsStateDir, maxChainDepth: 4 },
         controller: vi.fn(),
       } as never,
-      monitorsService: undefined,
       processJobsStateDir,
       agentRootOwnership: security.ownership,
       processJobsRegistry: security.registry,
@@ -568,7 +567,6 @@ async function createRouteGuardFixture(
           controller: vi.fn(),
         } as never
       : undefined,
-    monitorsService: undefined,
     processJobsStateDir: processJobsMode === "none" ? undefined : processJobsStateDir,
     agentRootOwnership: security.ownership,
     processJobsRegistry: security.registry,

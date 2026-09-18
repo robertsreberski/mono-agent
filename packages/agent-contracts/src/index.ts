@@ -32,29 +32,6 @@ export type {
   ProcessJobSubagentRoute,
   ProcessJobWakeState,
 } from "./process-jobs.js";
-export {
-  MAX_MONITOR_OUTSTANDING_LIFECYCLES,
-  MONITOR_ERROR_CODES,
-  MONITOR_PUBLIC_ERROR_MESSAGES,
-  MONITOR_STATES,
-  isMonitorErrorCode,
-  isMonitorState,
-  isTerminalMonitorState,
-  monitorPublicError,
-  parseMonitorProjection,
-  parseMonitorProjections,
-} from "./monitors.js";
-export type {
-  MonitorErrorCode,
-  MonitorOperator,
-  MonitorProjection,
-  MonitorProjectionCounters,
-  MonitorProjectionError,
-  MonitorProjectionLimits,
-  MonitorProjectionOrigin,
-  MonitorProjectionTimestamps,
-  MonitorState,
-} from "./monitors.js";
 export type {
   MemoryBlock,
   MemoryCompletedTurn,
@@ -1168,8 +1145,6 @@ export type {
   NotifyDestination,
   HostWakeDeliveryResult,
   HostWakeDisposition,
-  MonitorWakeDeliveryInput,
-  RunningMonitorChannel,
   ProcessJobWakeDeliveryInput,
   ProcessJobWakeDeliveryResult,
   ProcessJobWakeDisposition,

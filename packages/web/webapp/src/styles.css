@@ -820,13 +820,11 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .header-notifications.is-enabled { color: var(--accent); background: var(--accent-soft); }
 .header-notifications.is-degraded { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
 
-.monitor-activity-facts, .process-job-facts { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12px; color: var(--muted); }
-.monitor-activity-facts { margin: 8px 0 0; }
+.process-job-facts { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12px; color: var(--muted); }
 .process-job-facts { margin: 0 0 4px; }
-.monitor-activity-facts div, .process-job-facts div { display: flex; gap: 5px; }
-.monitor-activity-facts dt, .process-job-facts dt { font-weight: 600; }
-.monitor-activity-facts dd, .process-job-facts dd { margin: 0; }
-.monitor-activity-legacy { margin: 8px 14px; color: var(--muted); font-size: 12px; }
+.process-job-facts div { display: flex; gap: 5px; }
+.process-job-facts dt { font-weight: 600; }
+.process-job-facts dd { margin: 0; }
 .connection-banner { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 7px 16px; color: var(--warning); background: color-mix(in srgb, var(--warning) 9%, var(--panel)); border-bottom: 1px solid color-mix(in srgb, var(--warning) 25%, var(--line)); font-size: 11px; text-align: center; z-index: 4; }
 .connection-pulse { width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; animation: pulse 1.5s ease infinite; }
 .thread-root { position: relative; min-height: 0; display: flex; flex: 1 1 0; flex-direction: column; overflow: hidden; }

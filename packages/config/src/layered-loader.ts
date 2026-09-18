@@ -37,6 +37,9 @@ export async function loadMonoAgentConfigWithSources(
   const jsonLayer = input.jsonPath === undefined
     ? {}
     : (await readMonoAgentConfigJson(input.jsonPath)).json;
+  if (Object.hasOwn(jsonLayer, "monitors")) {
+    console.warn("[mono-agent] Ignoring deprecated monitors config: monitors were removed. Use background process jobs for finite work.");
+  }
   // Validate raw JSON before flattening it into the string-only env surface.
   // String(...) coercion is intentional for valid numeric/boolean settings,
   // but must never make arrays or other malformed nested values look valid.

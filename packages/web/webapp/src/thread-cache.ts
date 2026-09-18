@@ -526,8 +526,6 @@ const isMessagePart = (value: unknown): value is MessagePart => {
         && (part.disposition === "steered" || part.disposition === "follow_up");
     case "steer":
       return isSteerPart(part);
-    case "monitor-activity":
-      return Array.isArray(part.monitors);
     case "cron-reply-context":
       return part.schema === "mono-agent.web.cron-reply-context.v1"
         && part.untrusted === true

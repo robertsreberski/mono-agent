@@ -79,8 +79,6 @@ import {
   resolveProcessJobsProtectionPosture,
   type ProcessJobsProtectionPosture,
 } from "./process-jobs-protection.js";
-import { bindMonitorWakeContextToResponder } from "./monitors-context.js";
-import type { MonitorsServiceHandle } from "./monitors-service.js";
 import type { ProviderAuthObservationTracker } from "./provider-auth-observations.js";
 import { bindProcessJobWakeContextToResponder } from "./process-jobs-context.js";
 
@@ -97,7 +95,6 @@ export interface ResponderControllerPort {
   readonly interactionBridge: InteractionBridgeHandle | undefined;
   readonly continuationService: ContinuationServiceHandle | undefined;
   readonly processJobsService: ProcessJobsServiceHandle | undefined;
-  readonly monitorsService: MonitorsServiceHandle | undefined;
   readonly processJobsStateDir: string | undefined;
   readonly agentRootOwnership: AgentRootOwnership;
   readonly processJobsRegistry: ProcessJobsRootRegistrySnapshot | undefined;
@@ -408,14 +405,6 @@ export async function buildResponder(
       protectionPosture: processJobsProtectionPosture,
       routesOnlyPiNative: requestModelOverride.targetsProcessJobsPiNative,
     },
-    monitors: {
-      service: controller.monitorsService,
-      channelId,
-      ...(processJobConversationScheme === undefined
-        ? {}
-        : { conversationScheme: processJobConversationScheme }),
-      routesOnlyPiNative: requestModelOverride.targetsProcessJobsPiNative,
-    },
     // Only the responder's own bucketing changes. RunHistory above keeps the
     // CONFIGURED policy on purpose: it strips `#YYYY-MM-DD` only under `daily`,
     // and dropping that here would hide every run this console thread already
@@ -436,13 +425,7 @@ export async function buildResponder(
   const richReplyResponder = postedReplyHistory.wrapResponder(
     mcpApps === undefined ? replyResponder : mcpApps.wrapResponder(replyResponder),
   );
-  // Monitor binding wraps the process-job binding: a monitor wake turn must be
-  // able to suppress its own reply, and that decision belongs outside the job
-  // seam it shares a delivery-key carrier with.
-  return bindMonitorWakeContextToResponder(
-    bindProcessJobWakeContextToResponder(richReplyResponder),
-    ...(controller.logger === undefined ? [] : [{ logger: controller.logger }]),
-  );
+  return bindProcessJobWakeContextToResponder(richReplyResponder);
 }
 
 export function requestModelOverrideRuntimeOptions(

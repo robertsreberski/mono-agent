@@ -194,7 +194,7 @@
 
 /**
  * @typedef {Object} RuntimeRunOptions
- * @property {{monitors?: boolean, persistentSubagents?: boolean, askParent?: boolean}} [toolExposure] Stable profile exposure, not execution authority.
+ * @property {{persistentSubagents?: boolean, askParent?: boolean}} [toolExposure] Stable profile exposure, not execution authority.
  * @property {Record<string, {available: boolean, reason?: string, limits?: Record<string, number|null>}>} [hostCapabilities] Current non-authorizing host facts.
  * @property {{submit(question: {question: string, options?: string[]}): Promise<void>}} [askParentController]
  * The options object a host passes to `createRuntime(host).run(systemPrompt, options)`.
@@ -247,7 +247,6 @@
  * @property {import('../agent/tools/shared/owned-foreground-process.js').OwnedForegroundProcesses} [ownedForegroundProcesses] Host-bound awaited command ownership; no child background capability.
  * @property {import('../agent/tools/shared/process-jobs.js').ProcessJobsController} [processJobs] Pi-native-only structural process-job controller. When absent, Exec/Bash schemas and foreground behavior are unchanged.
  * @property {{chainDepth: number, maxChainDepth: number, remainingStarts: number, unavailableReason?: string}} [processJobsAvailability] Host-owned request lineage diagnostics, including when the controller is unavailable.
- * @property {import('../agent/tools/shared/monitors.js').MonitorsController} [monitors] Pi-native-only structural monitor controller. When absent, the Monitor and MonitorStop tools are not registered at all.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when
  *   failing over mid-chain; a host-level coordinator may relay it forward (see agent/transcript.js), not read by any
  *   bridge in this package today.

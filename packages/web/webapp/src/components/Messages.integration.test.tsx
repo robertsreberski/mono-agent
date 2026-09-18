@@ -14,9 +14,9 @@ import {
   ProcessJobPresentationProvider,
   projectProcessJobPresentation,
 } from "../process-job-presentation";
-import { coalesceMonitorWakeMessages, convertWebMessage } from "../runtime";
+import { convertWebMessage } from "../runtime";
 import type { WebMessage } from "../types";
-import { monitor, processJob } from "../test/fixtures";
+import { processJob } from "../test/fixtures";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
 import { ProcessJobStack } from "./ProcessJobStack";
 import { ToolCallRepairProvider } from "./tool-call-repair";
@@ -57,7 +57,7 @@ function MessagesHarness({
   readonly onRuntime?: (runtime: AssistantRuntime) => void;
 }) {
   const presentation = projectProcessJobPresentation(
-    coalesceMonitorWakeMessages(messages),
+    messages,
     { threadId: messages[0]?.threadId ?? null },
   );
   const convertMessage = useCallback(
@@ -154,19 +154,7 @@ const assistantMessage = (
   ],
 });
 
-const monitorWakeMessage = (
-  id: string,
-  projection = monitor(),
-  status: WebMessage["status"] = "complete",
-): WebMessage => ({
-  ...assistantMessage(status),
-  id,
-  turnId: `turn-${id}`,
-  parts: [{
-    type: "monitor-activity",
-    monitors: [{ projection, deliveryKeys: [`monitor:${projection.monitorId}:${String(projection.counters.seq)}`] }],
-  }],
-});
+
 
 const userMessage: WebMessage = {
   id: "user-message",
@@ -588,118 +576,7 @@ describe("AssistantMessage grouped parts", () => {
     }
   });
 
-  it("renders one compact secret-free activity row for a run's Monitor wakes", () => {
-    const first = monitor();
-    const second = monitor({
-      monitorId: "33333333-3333-4333-8333-333333333333",
-      description: "Watch the indexer",
-      state: "exited",
-      timestamps: {
-        ...first.timestamps,
-        completedAt: "2026-07-17T10:00:05.000Z",
-      },
-      counters: {
-        ...first.counters,
-        seq: 1,
-        batchesDelivered: 1,
-        linesObserved: 3,
-        linesDelivered: 2,
-        droppedLines: 1,
-      },
-      exitCode: 0,
-    });
-    render(<MessageHarness message={{
-      ...assistantMessage("complete"),
-      parts: [
-        {
-          type: "monitor-activity",
-          monitors: [
-            { projection: first, deliveryKeys: ["monitor:secret-delivery-one", "monitor:secret-delivery-two"] },
-            { projection: second, deliveryKeys: ["monitor:secret-delivery-three"] },
-          ],
-        },
-        { type: "text", text: "Both watches were handled." },
-      ],
-    }} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    expect(screen.getByText("Monitor updates ×3")).toBeVisible();
-    expect(screen.getByText("2 monitors")).toBeVisible();
-    expect(screen.queryByText(/secret-delivery/u)).toBeNull();
-    expect(screen.queryByText(first.monitorId)).toBeNull();
-
-    fireEvent.click(screen.getByText("Monitor updates ×3").closest("summary")!);
-    expect(screen.getByText("Watch the worker queue")).toBeVisible();
-    expect(screen.getByText("Watch the indexer")).toBeVisible();
-    expect(screen.getByText("2 updates · running")).toBeVisible();
-    expect(screen.getByText("1 update · exited")).toBeVisible();
-    expect(screen.getAllByText("Observed")).toHaveLength(2);
-    expect(screen.getAllByText("Suppressed lines")).toHaveLength(2);
-    expect(screen.getAllByText("Suppressed batches")).toHaveLength(2);
-    expect(screen.getAllByText("Follow-up wakes")).toHaveLength(2);
-    expect(screen.getAllByText("Steered wakes")).toHaveLength(2);
-    expect(screen.getAllByText("Unknown disposition wakes")).toHaveLength(2);
-    expect(screen.getByText("Both watches were handled.")).toBeVisible();
-  });
-
-  it("renders streamed same-Monitor wake turns as one gap-free block through terminal state", async () => {
-    const first = monitor({
-      description: "First batch",
-      counters: { ...monitor().counters, seq: 1, batchesDelivered: 1 },
-    });
-    const second = monitor({
-      description: "Second batch",
-      counters: { ...monitor().counters, seq: 2, batchesDelivered: 2 },
-    });
-    const streaming = monitor({
-      description: "Streaming batch",
-      counters: { ...monitor().counters, seq: 3, batchesDelivered: 3 },
-    });
-    const terminal = monitor({
-      description: "Terminal batch",
-      state: "exited",
-      timestamps: { ...monitor().timestamps, completedAt: "2026-07-17T10:00:20.000Z" },
-      counters: { ...monitor().counters, seq: 3, batchesDelivered: 3 },
-      exitCode: 0,
-    });
-    const firstMessage = monitorWakeMessage("monitor-first", first);
-    const secondMessage = monitorWakeMessage("monitor-second", second);
-    const runningMessage = monitorWakeMessage("monitor-current", streaming, "running");
-    const rendered = render(
-      <MessagesHarness messages={[firstMessage, secondMessage, runningMessage]} />,
-    );
-
-    expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(1);
-    expect(rendered.container.querySelectorAll(".activity-root")).toHaveLength(1);
-    expect(rendered.container.querySelectorAll(".message-actions")).toHaveLength(1);
-    // #744 deliberately keeps the generic affordance for a Monitor wake while
-    // its model turn is still running; only process jobs convey that progress.
-    expect(rendered.container.querySelectorAll(".thinking-indicator")).toHaveLength(1);
-    expect(Array.from(rendered.container.querySelectorAll(".activity-row-summary"))
-      .map((row) => row.textContent)).toEqual(["First batch", "Second batch", "Streaming batch"]);
-
-    rendered.rerender(
-      <MessagesHarness messages={[
-        firstMessage,
-        secondMessage,
-        monitorWakeMessage("monitor-current", terminal),
-      ]} />,
-    );
-    // The external-store adapter publishes prop replacements on its next tick.
-    await act(async () => { await Promise.resolve(); });
-
-    expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(1);
-    expect(rendered.container.querySelectorAll(".activity-root")).toHaveLength(1);
-    expect(rendered.container.querySelectorAll(".message-actions")).toHaveLength(1);
-    expect(rendered.container.querySelectorAll(".thinking-indicator")).toHaveLength(0);
-    expect(rendered.container.querySelectorAll(".markdown")).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    expect(Array.from(rendered.container.querySelectorAll(".activity-row-summary"))
-      .map((row) => row.textContent)).toEqual(["First batch", "Second batch", "Terminal batch"]);
-    expect(screen.getAllByText("1 update · exited")).toHaveLength(1);
-  });
-
-  it("keeps jobs as Monitor boundaries while presenting them once after transcript messages", () => {
+  it("presents jobs once after transcript messages", () => {
     const jobMessage: WebMessage = {
       ...assistantMessage("complete"),
       id: "process-job-message",
@@ -707,9 +584,9 @@ describe("AssistantMessage grouped parts", () => {
       parts: [{ type: "process-job", job: processJob() }],
     };
     const rendered = render(<MessagesHarness messages={[
-      monitorWakeMessage("monitor-before", monitor({ description: "Before job" })),
+      { ...assistantMessage("complete"), id: "before-job", parts: [{ type: "reasoning", text: "Before job" }, { type: "text", text: "Started" }] },
       jobMessage,
-      monitorWakeMessage("monitor-after", monitor({ description: "After job" })),
+      { ...assistantMessage("complete"), id: "after-job", parts: [{ type: "reasoning", text: "After job" }, { type: "text", text: "Done" }] },
     ]} />);
 
     expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(2);
@@ -720,48 +597,6 @@ describe("AssistantMessage grouped parts", () => {
     const lastMessage = rendered.container.querySelectorAll(".message-assistant").item(1);
     expect(lastMessage.compareDocumentPosition(stack) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(stack.querySelector(".message-actions")).toBeNull();
-  });
-
-  it("keeps a meaningful Monitor reply as a boundary while preserving final answer text", () => {
-    const intermediateBase = monitorWakeMessage("monitor-intermediate", monitor({
-      description: "Attention batch",
-      counters: { ...monitor().counters, seq: 2, batchesDelivered: 2 },
-    }));
-    const intermediate: WebMessage = {
-      ...intermediateBase,
-      parts: [...intermediateBase.parts, { type: "text", text: "The queue needs attention." }],
-    };
-    const terminalBase = monitorWakeMessage("monitor-terminal", monitor({
-      description: "Finished batch",
-      state: "exited",
-      timestamps: { ...monitor().timestamps, completedAt: "2026-07-17T10:00:20.000Z" },
-      counters: { ...monitor().counters, seq: 4, batchesDelivered: 4 },
-      exitCode: 0,
-    }));
-    const terminal: WebMessage = {
-      ...terminalBase,
-      parts: [...terminalBase.parts, { type: "text", text: "The watch finished normally." }],
-    };
-
-    const rendered = render(<MessagesHarness messages={[
-      monitorWakeMessage("monitor-first", monitor({
-        description: "First batch",
-        counters: { ...monitor().counters, seq: 1, batchesDelivered: 1 },
-      })),
-      intermediate,
-      monitorWakeMessage("monitor-later", monitor({
-        description: "Later batch",
-        counters: { ...monitor().counters, seq: 3, batchesDelivered: 3 },
-      })),
-      terminal,
-    ]} />);
-
-    expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(2);
-    expect(rendered.container.querySelectorAll(".activity-root")).toHaveLength(2);
-    expect(screen.getByText("The queue needs attention.")).toBeVisible();
-    expect(screen.getByText("The watch finished normally.")).toBeVisible();
-    expect(screen.getByText("The queue needs attention.").closest(".activity-root")).toBeNull();
-    expect(screen.getByText("The watch finished normally.").closest(".activity-root")).toBeNull();
   });
 
   it("uses the canonical terminal state but keeps deferred persistence bookkeeping out of the transcript", () => {
@@ -1912,14 +1747,7 @@ describe("message actions", () => {
     expect(tool.container.querySelectorAll(".thinking-indicator")).toHaveLength(1);
     tool.unmount();
 
-    const monitorActivity = render(<MessageHarness message={{
-      ...assistantMessage("running"),
-      parts: [{
-        type: "monitor-activity",
-        monitors: [{ projection: monitor(), deliveryKeys: ["monitor:one"] }],
-      }],
-    }} />);
-    expect(monitorActivity.container.querySelectorAll(".thinking-indicator")).toHaveLength(1);
+
   });
 
   it.each(["succeeded", "failed", "cancelled"] as const)(

@@ -24,8 +24,6 @@ export function formatHostCapabilities(options: Partial<RuntimeRunOptions>): str
   const background = Boolean(instances?.reserve && instances?.releaseReservation && subagents?.backgroundSubagentController);
   const facts = {
     "Bash/Exec.background": fact(Boolean(options.processJobs), options.processJobsAvailability?.unavailableReason),
-    Monitor: fact(Boolean(options.monitors)),
-    MonitorStop: fact(Boolean(options.monitors)),
     "Agent.persist": fact(Boolean(instances)),
     "Agent.background": fact(background),
     AgentSend: fact(Boolean(instances)),
@@ -40,6 +38,5 @@ export function formatHostCapabilities(options: Partial<RuntimeRunOptions>): str
     operations: Object.fromEntries(Object.entries(facts).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)),
     command: { foregroundTimeoutMs: options.toolLimits?.bashTimeoutMs ?? 120_000, backgroundMaxRuntimeMs: options.processJobs?.limits?.maxRuntimeMs ?? null },
     processLineage: options.processJobsAvailability ?? null,
-    monitorLimits: options.monitors?.limits ?? null,
   });
 }

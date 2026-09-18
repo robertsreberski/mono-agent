@@ -488,12 +488,6 @@ describe("cancelled turn natural continuity", () => {
           text: "Use the blue deployment window",
           receivedAt: "2026-09-06T12:01:00.000Z",
         },
-        {
-          id: "monitor-applied",
-          text: "internal monitor wake",
-          receivedAt: "2026-09-06T12:01:01.000Z",
-          deliveryKey: "monitor:one:1",
-        },
       ],
       reason: cancelledTurnReason(undefined, "cancelled"),
       outcome: "cancelled",
@@ -505,7 +499,6 @@ describe("cancelled turn natural continuity", () => {
       text: "Use the blue deployment window",
       receivedAt: "2026-09-06T12:01:00.000Z",
     }]);
-    expect(messages[1]!.content).not.toContain("internal monitor wake");
   });
 
   it("omits oversized completed pairs as whole units with an explicit count", async () => {

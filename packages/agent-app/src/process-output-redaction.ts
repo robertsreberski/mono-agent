@@ -1,13 +1,6 @@
 import { isSensitiveEnvironmentName } from "./redact-secrets.js";
 
-/**
- * Redaction shared by every host surface that retains or forwards the output of
- * a model-authored command: background process jobs and monitors.
- *
- * Keeping one implementation is the point. A monitor forwards command output to
- * the model on a schedule, so a second, subtly weaker redactor here would be a
- * standing way to exfiltrate what the process-job path already refuses to show.
- */
+/** Shared output boundary for model-authored background process jobs. */
 export function redactProcessOutput(
   text: string,
   secrets: readonly string[],
@@ -28,9 +21,7 @@ export function redactProcessOutput(
   // rule then simply sees an already-redacted value and skips it.
   let redacted = replaceSecretLiterals(text, orderedSecrets, literalMarker);
   redacted = redacted
-    // Consume a whole PEM block when the caller has the whole output. The
-    // monitor line path additionally keeps explicit block state because it
-    // cannot assume the header and footer arrive in one event.
+    // Consume a whole PEM block when the caller has the whole output.
     .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/gu,
       "[REDACTED]")
     // Every common HTTP auth scheme, not just Bearer: matching only the scheme

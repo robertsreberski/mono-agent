@@ -121,8 +121,6 @@ export interface OperatorConnection {
   readonly apiKey?: string;
   /** Independent owner-only bearer for process-job routes. */
   readonly processJobsBearer?: string;
-  /** Independent owner-only bearer for Monitor wake callbacks. */
-  readonly monitorsBearer?: string;
 }
 
 export interface OperatorInfo {
@@ -203,7 +201,6 @@ export class OperatorClient {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly processJobsBearer: string | undefined;
-  private readonly monitorsBearer: string | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly turnFetchImpl: typeof fetch;
 
@@ -214,7 +211,6 @@ export class OperatorClient {
     this.baseUrl = options.baseUrl.replace(/\/+$/u, "");
     this.apiKey = options.apiKey;
     this.processJobsBearer = options.processJobsBearer;
-    this.monitorsBearer = options.monitorsBearer;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.turnFetchImpl = options.fetchImpl ?? fetchLongLivedTurn;
   }
@@ -392,7 +388,7 @@ export class OperatorClient {
       `${this.baseUrl}/v1/turns`,
       {
         method: "POST",
-        headers: { ...this.headers(true), ...this.monitorWakeHeaders(input.processJobWakeDeliveryKey) },
+        headers: this.headers(true),
         signal: input.signal,
         body: JSON.stringify({
           conversationId: input.conversationId,
@@ -460,7 +456,7 @@ export class OperatorClient {
       `${this.baseUrl}/v1/conversations/${encodeURIComponent(input.conversationId)}/live-input`,
       {
         method: "POST",
-        headers: { ...this.headers(true), ...this.monitorWakeHeaders(input.deliveryKey) },
+        headers: this.headers(true),
         ...(input.signal === undefined ? {} : { signal: input.signal }),
         body: JSON.stringify({
           id: input.id,
@@ -885,14 +881,6 @@ export class OperatorClient {
     }
     const parsed = JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_cron_too_large")) as unknown;
     return parseCronMutation(parsed);
-  }
-
-  private monitorWakeHeaders(deliveryKey: string | undefined): Record<string, string> {
-    if (deliveryKey?.trim().startsWith("monitor:") !== true) return {};
-    if (this.monitorsBearer === undefined) {
-      throw new WebConsoleError("monitors_unavailable", "Owner Monitor credentials are unavailable for this agent.", 409);
-    }
-    return { "x-mono-agent-monitor-wake-authorization": `Bearer ${this.monitorsBearer}` };
   }
 
   private processJobHeaders(): Record<string, string> {

@@ -1,8 +1,8 @@
 import { classifyNotifySuppression } from "@mono-agent/agent-contracts";
 import type { WebMessagePart } from "./contracts.js";
 
-/** Call only after the store verifies a host-owned Monitor delivery association. */
-export function normalizeMonitorTerminalReply(parts: readonly WebMessagePart[], exactOnly = false): {
+/** Call only after the store verifies a host-owned wake delivery association. */
+export function normalizeWakeTerminalReply(parts: readonly WebMessagePart[], exactOnly = false): {
   parts: WebMessagePart[];
   changed: boolean;
 } {
@@ -38,13 +38,13 @@ export function normalizeMonitorTerminalReply(parts: readonly WebMessagePart[], 
   };
 }
 
-export function hasMonitorReplyContent(parts: readonly WebMessagePart[]): boolean {
+export function hasWakeReplyContent(parts: readonly WebMessagePart[]): boolean {
   return parts.some((part) => part.type === "text" ? part.text.trim().length > 0
     : part.type === "attachment" || part.type === "mcp_app" || part.type === "failure");
 }
 
 /** Match the settled console's answer selection, excluding earlier commentary. */
-export function monitorReplyText(parts: readonly WebMessagePart[]): string {
+export function wakeReplyText(parts: readonly WebMessagePart[]): string {
   for (let index = parts.length - 1; index >= 0; index -= 1) {
     const part = parts[index];
     if (part?.type === "text") return part.text;

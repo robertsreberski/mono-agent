@@ -107,8 +107,6 @@ import {
   resolveProcessJobsProtectionPosture,
   type ProcessJobsProtectionPosture,
 } from "./process-jobs-protection.js";
-import { createMonitorsRuntimeExtension, monitorsAvailableForRequest } from "./monitors-runtime.js";
-import type { MonitorsServiceHandle } from "./monitors-service.js";
 import {
   createProcessJobsRuntimeExtension,
   processJobsAvailableForRequest,
@@ -278,13 +276,6 @@ interface ConfiguredAgentInternalHooks {
   readonly bootstrapProcessJobs?: {
     readonly settings: ProcessJobsSettings;
     readonly stateDir?: string;
-  };
-  /** Live monitor-controller injection for this channel. */
-  readonly monitors?: {
-    readonly service: MonitorsServiceHandle | undefined;
-    readonly channelId: ChannelId | undefined;
-    readonly conversationScheme?: string | undefined;
-    readonly routesOnlyPiNative?: (metadata: Record<string, unknown> | undefined) => boolean;
   };
 }
 
@@ -863,7 +854,7 @@ export function buildSubagentsOptions(
       ? Math.max(1, Math.min(Math.floor(request.deadlineAt! - Date.now()), subagents.commandTimeoutMs ?? 1_800_000))
       : undefined;
     const childCapabilityOptions = {
-      toolExposure: { askParent: askParentExposed, persistentSubagents: false, monitors: false },
+      toolExposure: { askParent: askParentExposed, persistentSubagents: false, },
       ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
       ...(askParentController === undefined ? {} : { askParentController }),
     };
@@ -1312,20 +1303,9 @@ async function createConfiguredAgentHarnessInternal(
     routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
       ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
   });
-  const monitoredRuntimeOptionsForRequest = createMonitorsRuntimeExtension({
-    next: processJobsRuntimeOptionsForRequest,
-    service: internalHooks.monitors?.service,
-    coreConfig: config,
-    channelId: internalHooks.monitors?.channelId ?? internalHooks.processJobs?.channelId,
-    conversationScheme: internalHooks.monitors?.conversationScheme
-      ?? internalHooks.processJobs?.conversationScheme,
-    routesOnlyPiNative: internalHooks.monitors?.routesOnlyPiNative
-      ?? internalHooks.processJobs?.routesOnlyPiNative
-      ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
-  });
   const toolOutputArtifactRoot = resolvePath(config.artifacts.dir, "tool-output");
   const runtimeOptionsForRequest = createToolOutputArtifactsRuntimeExtension(
-    monitoredRuntimeOptionsForRequest,
+    processJobsRuntimeOptionsForRequest,
     toolOutputArtifactRoot,
   );
   const subagents = buildSubagentsOptions(config, {
@@ -1462,17 +1442,6 @@ async function createConfiguredAgentHarnessInternal(
       channelId: internalHooks.processJobs?.channelId,
       conversationScheme: internalHooks.processJobs?.conversationScheme,
       routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
-        ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
-    }),
-    // Same predicate the monitors extension uses, for the same reason.
-    monitorsAvailable: (input) => monitorsAvailableForRequest(input, {
-      service: internalHooks.monitors?.service,
-      coreConfig: config,
-      channelId: internalHooks.monitors?.channelId ?? internalHooks.processJobs?.channelId,
-      conversationScheme: internalHooks.monitors?.conversationScheme
-        ?? internalHooks.processJobs?.conversationScheme,
-      routesOnlyPiNative: internalHooks.monitors?.routesOnlyPiNative
-        ?? internalHooks.processJobs?.routesOnlyPiNative
         ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
     }),
     ...(config.tools.mcpRequestContextServers === undefined

@@ -169,6 +169,15 @@ function repoRoot(): string {
 }
 
 describe("config reference", () => {
+  it("accepts the retired monitors block only as deprecated inert configuration", () => {
+    const schema = buildMonoAgentConfigSchema();
+    expect((schema.properties as Record<string, unknown>).monitors).toEqual({
+      type: "object",
+      deprecated: true,
+      description: "Deprecated and ignored. Monitors were removed; use background process jobs for finite work.",
+    });
+    expect(findUnknownAppConfigPaths({ monitors: { enabled: true, legacySetting: "ignored" } })).toEqual([]);
+  });
   it("describes string and strict named subagent model choices", () => {
     const schema = buildMonoAgentConfigSchema();
     expect((schema.properties as Record<string, unknown>).subagents).toMatchObject({
@@ -180,17 +189,6 @@ describe("config reference", () => {
         } },
       ] } } },
     });
-  });
-
-  it("publishes the Monitor wake ceiling and expanded chain cap", () => {
-    const schema = buildMonoAgentConfigSchema();
-    expect((schema.properties as Record<string, unknown>).monitors).toMatchObject({
-      properties: {
-        maxWakeIntervalMs: { type: "integer", minimum: 1, maximum: 300000, default: 300000 },
-        maxChainDepth: { type: "integer", minimum: 1, maximum: 64, default: 4 },
-      },
-    });
-    expect(buildGeneratedConfigReferenceMarkdown()).toContain("monitors.maxWakeIntervalMs");
   });
 
   it("rejects unknown top-level and nested keys from the generated schema", () => {

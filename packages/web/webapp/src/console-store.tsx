@@ -3790,7 +3790,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * the gap lost, so NOTHING it is keeping can say it is current -- and there
    * is no cheaper evidence available. A listing summary cannot stand in for it:
    * `writeMessageParts` moves a transcript without touching the conversation
-   * row at all (a Monitor wake, every mid-turn flush), so a page that reports
+   * row at all (every mid-turn flush), so a page that reports
    * an unchanged summary is silent about writes the console actually missed.
    *
    * So: everything held is suspect, and each conversation pays when it is
@@ -3856,7 +3856,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * The answer to every gap: a delta whose base is not the version held, a
    * `message.changed` naming a message this tab already has, a replay these
    * parts cannot mean. Four assistant-row write paths -- notification
-   * reconciliation, cron-run reconciliation, the process-job card, Monitor
+   * reconciliation, cron-run reconciliation, the process-job card,
    * activity -- bump a message's version with NO delta and arrive as a hint, so
    * the mismatch is the ordinary, intended signal rather than an error.
    *

@@ -6,6 +6,12 @@
   child routes. Set `providers.piNative.cacheRetention` to `"short"` to opt out
   of the higher cache-write price; resolved settings override Pi ambient env.
 
+- Remove `Monitor` / `MonitorStop`, their CLI and console surfaces (breaking).
+  Use background process jobs for finite work. Legacy `monitors` config is
+  accepted with a deprecation warning but has no effect; historical storage
+  remains dormant. Old conversations containing monitor activity stay readable,
+  but that activity no longer renders.
+
 - Fix `WebSearch` budgets to charge answered searches, refund failed providers,
   and count Ollama endpoint probes once. Bound network dispatches separately
   and include provider failures in budget-exhaustion messages.

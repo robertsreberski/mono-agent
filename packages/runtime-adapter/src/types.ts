@@ -5,7 +5,6 @@ import type {
   AgentToolEnvironment,
 } from "@mono-agent/agent-contracts";
 import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "./sandbox.js";
-import type { MonitorsController } from "./monitors.js";
 import type { ProcessJobsController } from "./process-jobs.js";
 
 export interface MonoRuntimeSandboxEngine {
@@ -456,7 +455,7 @@ export interface RuntimeMcpAppHost {
 
 export interface RuntimeRunOptions {
   /** Stable configured profile, never executable authority or retained controllers. */
-  readonly toolExposure?: { readonly monitors?: boolean; readonly persistentSubagents?: boolean; readonly askParent?: boolean };
+  readonly toolExposure?: { readonly persistentSubagents?: boolean; readonly askParent?: boolean };
   /** Current host facts only; tools must independently enforce admission. */
   readonly hostCapabilities?: Readonly<Record<string, { readonly available: boolean; readonly reason?: string; readonly limits?: Readonly<Record<string, number | null>> }>>;
 
@@ -492,8 +491,6 @@ export interface RuntimeRunOptions {
     readonly remainingStarts: number;
     readonly unavailableReason?: "chain_depth_exhausted" | "origin_unavailable" | "wake_context_unavailable" | "tool_unavailable";
   };
-  /** Host-only Pi-native monitor controller; never model/provider visible. */
-  readonly monitors?: MonitorsController;
   readonly onEvent?: (event: RuntimeEventLike) => void;
   /** Emit metadata-only prompt-cache request fingerprints; disabled by default. */
   readonly promptCacheDiagnostics?: boolean;

@@ -431,7 +431,7 @@ export class UncommittedTurnCollector {
     const inFlightAll = [...this.calls.values()]
       .filter((call) => call.invocation !== undefined && call.result === undefined)
       .map((call) => inFlightTool(call, input.outcome));
-    const humanLiveInputs = input.liveInputs.filter((liveInput) => !liveInput.deliveryKey?.startsWith("monitor:"));
+    const humanLiveInputs = input.liveInputs;
     const retainedInFlight = inFlightAll.slice(-MAX_IN_FLIGHT_DETAILS);
     const retainedLiveInputs = humanLiveInputs.slice(-MAX_IN_FLIGHT_DETAILS).map(liveInput);
     let envelope: TurnContinuityEnvelope = input.outcome === "cancelled"

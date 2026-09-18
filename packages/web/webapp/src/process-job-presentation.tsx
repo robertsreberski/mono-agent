@@ -186,7 +186,6 @@ const partHasTranscriptPresentation = (part: MessagePart): boolean => {
       return true;
     case "tool-call":
     case "subagent":
-    case "monitor-activity":
     case "error":
     case "attachment":
     case "mcp_app":
@@ -283,8 +282,7 @@ export const orderLiveInputsAfterTheirTurn = (
 
 /**
  * Split the currently loaded conversation into assistant-ui messages and one
- * stable chronological set of background jobs. Monitor shaping deliberately
- * runs before this function so a job remains a boundary between Monitor wakes.
+ * stable chronological set of background jobs.
  */
 export const projectProcessJobPresentation = (
   messages: readonly WebMessage[],

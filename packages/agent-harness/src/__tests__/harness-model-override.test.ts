@@ -442,13 +442,6 @@ describe("AgentHarness per-request override session binding", () => {
         false,
       ),
     })],
-    ["enumerable Slack Monitor wake", () => ({
-      metadata: hostWakeMetadata(
-        { slack: { model: claudeModel.reference } },
-        "monitor:one:1",
-        true,
-      ),
-    })],
     ["enumerable Telegram ProcessJob wake", () => ({
       metadata: hostWakeMetadata(
         { telegram: { model: claudeModel.reference } },
