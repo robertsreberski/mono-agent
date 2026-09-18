@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve local lexical memory matches during recognized embedding-provider
+  outages, while clearly marking automatic and explicit recall as degraded and
+  leaving strict recall, Lite mode, and external backends unchanged.
+
 - Make supported Anthropic prompt-cache retention one hour by default, including
   child routes. Set `providers.piNative.cacheRetention` to `"short"` to opt out
   of the higher cache-write price; resolved settings override Pi ambient env.

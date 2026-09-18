@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
+import { MemorySearchError } from "../../search/index.js";
 import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 import { writeCaptureIntent } from "../capture-outbox.js";
@@ -47,6 +48,37 @@ describe("BujoMemoryStore — tier derivation", () => {
     expect(await store.capture("s1", "some text")).toBeUndefined();
 
     await store.close();
+  });
+
+  it("read-only local recall preserves lexical hits and status during an eligible embedding outage", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-recall-fallback-"));
+    const healthy = fakeEmbeddings(64);
+    let failure: Error | undefined;
+    let calls = 0;
+    const embeddings = {
+      id: healthy.id,
+      async embed(texts: readonly string[]) {
+        calls += 1;
+        if (failure !== undefined) throw failure;
+        return await healthy.embed(texts);
+      },
+    };
+    const writable = createBujoMemoryStore({ root, embeddings, dim: 64 });
+    await writable.appendHostSummary("s1", "Morgan selected cobalt as the launch color.");
+    await writable.close();
+
+    const readOnly = createBujoMemoryStore({ root, embeddings, dim: 64, readOnly: true });
+    failure = new MemorySearchError("embedding_request_failed", "private provider detail");
+    calls = 0;
+    const outcome = await readOnly.recallWithOutcome("launch color cobalt");
+
+    expect(outcome).toMatchObject({
+      retrievalMode: "lexical_only",
+      degradation: { code: "embedding_unavailable" },
+      hits: [expect.objectContaining({ record: expect.objectContaining({ text: expect.stringContaining("cobalt") }) })],
+    });
+    expect(calls).toBe(1);
+    await readOnly.close();
   });
 
   it("bujo tier: embeddings + llm → tier() === 'bujo'; capture() returns {actions, entities}", async () => {

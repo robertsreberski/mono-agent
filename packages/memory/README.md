@@ -115,6 +115,22 @@ The normal write and read paths are:
 Run config-aware maintenance through `mono-agent memory <subcommand>` from the
 agent folder. The retired `memory-bujo` executable is no longer packaged.
 
+### Status-bearing local recall
+
+`MemoryDb.recall()` remains the strict compatibility API: any embedding failure
+rejects. Local callers that can surface degraded service may opt into
+`recallWithOutcome()`, which returns hits plus `retrievalMode` and a closed
+`embedding_unavailable` degradation code. Only provider request failures, an
+open embedding circuit, or an invalid provider response qualify. Caller aborts,
+dimension mismatches, SQLite/native/integrity failures, and arbitrary exceptions
+still reject.
+
+When fallback qualifies, recall reuses the lexical candidates computed before
+the provider call and scores them as one real retriever; it does not retry the
+provider or invent semantic scores. A Lite store with no embedding provider is
+normally `lexical_only` and is not degraded. Callers must keep the degradation
+visible even when no lexical hit survives their own selection policy.
+
 ### Explicit remember writes
 
 `BujoMemoryStore.remember(conversationId, text)` durably stores one explicitly
@@ -368,6 +384,7 @@ supersede or merge records, rewrite canonical memories, or call a chat model.
 | `@mono-agent/memory/search` | `createEmbeddingProvider` | Construct one Ollama, LM Studio, or OpenAI embedding provider. |
 | `@mono-agent/memory/search` | `MemorySearchError` | Handle stable embedding-search error codes without string matching. |
 | `@mono-agent/memory/store` | `openMemoryDb` | Open the low-level SQLite/FTS/vector store when the BuJo engine is not the desired abstraction. |
+| `@mono-agent/memory/store` | `RecallOutcome`, `RecallRetrievalMode`, `RecallDegradationCode` | Consume the opt-in, status-bearing result from local `recallWithOutcome()` calls. |
 
 The complete generated inventory follows. The package has no `.` entrypoint;
 each heading is an independently supported export subpath.
@@ -602,8 +619,11 @@ MemoryStoreStats
 MemoryStoreStatsOptions
 MemoryType
 MemoryWriteResult
+RecallDegradationCode
 RecallHit
 RecallOptions
+RecallOutcome
+RecallRetrievalMode
 RecallWeights
 SimilarHit
 isCanonicalDailySourcePath

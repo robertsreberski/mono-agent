@@ -25,6 +25,7 @@ import {
 import {
   createMemoryRecallServer,
   MEMORY_RECALL_MCP_SERVER_NAME,
+  type MemoryRecallOutcome,
   type MemoryRecallRuntimeExtension,
   type RecallCapableStore,
 } from "./memory-recall.js";
@@ -69,8 +70,8 @@ export interface SharedMemoryRecallRuntimeExtensionOptions {
 }
 
 interface TurnCache {
-  readonly queries: Map<string, Promise<readonly SharedRecallHit[]>>;
-  readonly expansions: Map<string, Promise<readonly SharedRecallHit[]>>;
+  readonly queries: Map<string, Promise<MemoryRecallOutcome>>;
+  readonly expansions: Map<string, Promise<MemoryRecallOutcome>>;
   readonly accessedIds: Set<string>;
 }
 
@@ -103,7 +104,7 @@ export class MemoryRetrievalService implements MemoryStore {
     private readonly store: SharedRecallStore,
     options: MemoryRetrievalServiceOptions = {},
   ) {
-    this.maxBytes = Math.min(options.maxBytes ?? AUTO_RECALL_MAX_BYTES, AUTO_RECALL_MAX_BYTES);
+    this.maxBytes = Math.max(1, Math.min(options.maxBytes ?? AUTO_RECALL_MAX_BYTES, AUTO_RECALL_MAX_BYTES));
     this.source = options.source ?? "memory";
     const persistCompletedTurn = store.persistCompletedTurn;
     if (persistCompletedTurn !== undefined) {
@@ -127,13 +128,19 @@ export class MemoryRetrievalService implements MemoryStore {
     const ephemeral = options.turnId === undefined;
     const turnId = options.turnId ?? `uncached:${randomUUID()}`;
     try {
-      const hits = selectAutomaticRecallHits(await this.recallForTurn(turnId, evidenceQuery, {
+      const outcome = await this.recallOutcomeForTurn(turnId, evidenceQuery, {
         topK: AUTO_RECALL_BACKEND_HITS,
         trackAccess: false,
-      }), { query: evidenceQuery });
-      if (hits.length === 0) return undefined;
+      });
+      const hits = selectAutomaticRecallHits(outcome.hits, { query: evidenceQuery });
+      if (hits.length === 0) {
+        if (outcome.degradation?.code === "embedding_unavailable") {
+          throw new Error("Semantic memory retrieval is unavailable; lexical-only recall found no eligible automatic evidence.");
+        }
+        return undefined;
+      }
       this.recordServed(turnId, hits);
-      return formatRecallBlock(hits, this.source, this.maxBytes);
+      return formatRecallBlock(hits, this.source, this.maxBytes, outcome.degradation);
     } finally {
       if (ephemeral) this.releaseTurn(turnId);
     }
@@ -144,36 +151,60 @@ export class MemoryRetrievalService implements MemoryStore {
     query: string,
     options: { readonly topK?: number; readonly trackAccess?: boolean; readonly expandHops?: 0 | 1 } = {},
   ): Promise<readonly SharedRecallHit[]> {
+    return (await this.recallOutcomeForTurn(turnId, query, options)).hits;
+  }
+
+  async recallOutcomeForTurn(
+    turnId: string,
+    query: string,
+    options: { readonly topK?: number; readonly trackAccess?: boolean; readonly expandHops?: 0 | 1 } = {},
+  ): Promise<MemoryRecallOutcome> {
     const evidenceQuery = normalizeEvidenceQuery(query);
     const backendQuery = normalizeQuery(evidenceQuery);
-    if (backendQuery.length === 0) return [];
+    if (backendQuery.length === 0) return { hits: [], retrievalMode: "lexical_only" };
     const turn = this.turnCache(turnId);
     // Raw backend lookup remains normalized/shared, while graph expansion has
     // its own evidence-preserving key below. Capitalization is a precision
     // signal for query-local entity references and must reach graph policy.
     let lookup = turn.queries.get(backendQuery);
     if (lookup === undefined) {
-      lookup = Promise.resolve(
-        this.store.recall(backendQuery, { topK: AUTO_RECALL_BACKEND_HITS, trackAccess: false }),
-      ) as Promise<readonly SharedRecallHit[]>;
+      lookup = this.store.recallWithOutcome === undefined
+        ? Promise.resolve(
+            this.store.recall(backendQuery, { topK: AUTO_RECALL_BACKEND_HITS, trackAccess: false }),
+          ).then((hits) => ({ hits, retrievalMode: "hybrid" as const }))
+        : Promise.resolve(
+            this.store.recallWithOutcome(backendQuery, {
+              topK: AUTO_RECALL_BACKEND_HITS,
+              trackAccess: false,
+            }),
+          );
       turn.queries.set(backendQuery, lookup);
     }
     const limit = clampLimit(options.topK, 8);
     const direct = await lookup;
-    let hits: readonly SharedRecallHit[];
+    let outcome: MemoryRecallOutcome;
     if (options.expandHops === 1 && this.supportsGraphExpansion() && this.store.expandGraph !== undefined) {
       const expansionKey = `${evidenceQuery}\0${limit}`;
       let expanded = turn.expansions.get(expansionKey);
       if (expanded === undefined) {
-        expanded = Promise.resolve(this.store.expandGraph(evidenceQuery, direct, { topK: limit }));
+        expanded = Promise.resolve(this.store.expandGraph(evidenceQuery, direct.hits, { topK: limit }))
+          .then((hits) => ({
+            hits,
+            retrievalMode: direct.retrievalMode,
+            ...(direct.degradation === undefined ? {} : { degradation: direct.degradation }),
+          }));
         turn.expansions.set(expansionKey, expanded);
       }
-      hits = await expanded;
+      outcome = await expanded;
     } else {
-      hits = direct.slice(0, limit);
+      outcome = {
+        hits: direct.hits.slice(0, limit),
+        retrievalMode: direct.retrievalMode,
+        ...(direct.degradation === undefined ? {} : { degradation: direct.degradation }),
+      };
     }
-    if (options.trackAccess !== false) this.recordServed(turnId, hits);
-    return hits;
+    if (options.trackAccess !== false) this.recordServed(turnId, outcome.hits);
+    return outcome;
   }
 
   releaseTurn(turnId: string): void {
@@ -291,6 +322,7 @@ export function createSharedMemoryRecallRuntimeExtension(
     const graphEnabled = service.supportsGraphExpansion();
     const boundStore: RecallCapableStore = {
       recall: (query, options) => service.recallForTurn(runId, query, options),
+      recallWithOutcome: (query, options) => service.recallOutcomeForTurn(runId, query, options),
       ...(graphEnabled ? {
         supportsGraphExpansion: () => true,
         expandGraph: (query: string, _directHits: readonly SharedRecallHit[], graphOptions?: { readonly topK?: number }) => service.recallForTurn(runId, query, {
@@ -418,8 +450,18 @@ function formatRecallBlock(
   hits: readonly SharedRecallHit[],
   source: string,
   maxBytes: number,
+  degradation?: MemoryRecallOutcome["degradation"],
 ): MemoryBlock {
-  const full = ["## Memory (recalled)", "", ...hits.map((hit) => `- ${formatRecallRecord(hit.record)}`)].join("\n");
+  const degradedHeading = "## Memory (recalled; lexical-only — semantic retrieval unavailable)";
+  const compactDegradedHeading = "## Memory degraded: lexical-only";
+  const heading = degradation?.code === "embedding_unavailable"
+    ? Buffer.byteLength(degradedHeading, "utf8") <= maxBytes
+      ? degradedHeading
+      : Buffer.byteLength(compactDegradedHeading, "utf8") <= maxBytes
+        ? compactDegradedHeading
+        : "!"
+    : "## Memory (recalled)";
+  const full = [heading, "", ...hits.map((hit) => `- ${formatRecallRecord(hit.record)}`)].join("\n");
   if (Buffer.byteLength(full, "utf8") <= maxBytes) {
     return { kind: "markdown", content: full, source, truncated: false };
   }

@@ -246,6 +246,93 @@ describe("MemoryRetrievalService", () => {
 });
 
 describe("shared MemoryRecall MCP", () => {
+  it("shares one degraded lookup across automatic and explicit recall while preserving status through graph expansion", async () => {
+    const store = fakeStore();
+    let outcomeCalls = 0;
+    let expansionCalls = 0;
+    store.recallWithOutcome = async (query) => {
+      outcomeCalls += 1;
+      store.queries.push(query);
+      return {
+        hits: [{ score: 1.005, record: { id: "answer", text: "Morgan selected cobalt as the launch color." } }],
+        retrievalMode: "lexical_only",
+        degradation: { code: "embedding_unavailable" },
+      };
+    };
+    store.expandGraph = (_query, direct) => {
+      expansionCalls += 1;
+      return direct;
+    };
+    const service = new MemoryRetrievalService(store, { maxBytes: 120 });
+    const query = "What launch color did Morgan select?";
+    const block = await service.load("conversation", query, { turnId: "turn-degraded" });
+    expect(block?.content).toContain("## Memory (recalled; lexical-only — semantic retrieval unavailable)");
+    expect(block?.content).toContain("Morgan selected cobalt");
+    expect(Buffer.byteLength(block?.content ?? "", "utf8")).toBeLessThanOrEqual(120);
+
+    const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-degraded" });
+    const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+    const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const result = await client.callTool({ name: "MemoryRecall", arguments: { query, limit: 5 } });
+      expect(result.structuredContent).toMatchObject({
+        degraded: true,
+        retrievalMode: "lexical_only",
+        degradation: { code: "embedding_unavailable" },
+        hits: [expect.objectContaining({ id: "answer" })],
+      });
+      expect(result.content).toEqual(expect.arrayContaining([
+        expect.objectContaining({ text: expect.stringContaining("showing lexical-only matches") }),
+      ]));
+      expect(outcomeCalls).toBe(1);
+      expect(expansionCalls).toBe(1);
+      expect(store.accesses).toEqual([["answer"]]);
+    } finally {
+      await client.close().catch(() => undefined);
+      await extension.cleanup();
+    }
+  });
+
+  it("keeps zero-hit degradation visible and reuses the failed lookup without leaking provider detail", async () => {
+    const store = fakeStore();
+    let outcomeCalls = 0;
+    store.recallWithOutcome = async (query) => {
+      outcomeCalls += 1;
+      store.queries.push(query);
+      return {
+        hits: [],
+        retrievalMode: "lexical_only",
+        degradation: { code: "embedding_unavailable" },
+      };
+    };
+    const service = new MemoryRetrievalService(store);
+    const query = "What launch color did Morgan select?";
+    await expect(service.load("conversation", query, { turnId: "turn-degraded-empty" })).rejects.toThrow(
+      "Semantic memory retrieval is unavailable; lexical-only recall found no eligible automatic evidence.",
+    );
+
+    const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-degraded-empty" });
+    const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+    const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const result = await client.callTool({ name: "MemoryRecall", arguments: { query } });
+      expect(result.structuredContent).toMatchObject({
+        hits: [],
+        degraded: true,
+        retrievalMode: "lexical_only",
+        degradation: { code: "embedding_unavailable" },
+      });
+      expect(JSON.stringify(result)).not.toContain("private provider detail");
+      expect(outcomeCalls).toBe(1);
+      expect(store.accesses).toEqual([]);
+    } finally {
+      await client.close().catch(() => undefined);
+      await extension.cleanup();
+    }
+  });
+
   it("does not query the configured backend for the exact Telegram last-message question", async () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);
@@ -427,6 +514,54 @@ describe("shared MemoryRecall MCP", () => {
       expect(response.failure).toBeUndefined();
       expect(seenMcpServers).toEqual([{}]);
       expect(warnings).toHaveLength(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("continues the provider turn and emits a harness warning for degraded recall with no eligible hits", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-memory-retrieval-degraded-"));
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const store = fakeStore();
+    store.recallWithOutcome = async (query) => {
+      store.queries.push(query);
+      return {
+        hits: [],
+        retrievalMode: "lexical_only",
+        degradation: { code: "embedding_unavailable" },
+      };
+    };
+    const events: Array<Record<string, unknown>> = [];
+    try {
+      const service = new MemoryRetrievalService(store);
+      const harness = createAgentHarness({
+        identityPath,
+        model: {
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          reference: "openai-codex:gpt-5.5",
+        },
+        runtime: {
+          async run() { return { text: "provider still ran" }; },
+        },
+        memory: service,
+      });
+
+      const response = await harness.run({
+        conversationId: "turn-degraded-empty",
+        userMessage: "What launch color did Morgan select?",
+        abortSignal: new AbortController().signal,
+        onEvent: (event) => events.push(event as Record<string, unknown>),
+      });
+
+      expect(response.text).toBe("provider still ran");
+      expect(response.failure).toBeUndefined();
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "runtime_warning",
+        warning_kind: "memory_degraded",
+      }));
+      expect(store.accesses).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -715,6 +715,17 @@ or decision, `MemoryJournal` for a broad retrospective over explicit local
 calendar dates, and `RunHistory`/`SessionHistory` for exact execution evidence.
 Unhinted interrupted-work recovery still begins with `RunHistory {}`.
 
+For built-in local memory, a narrowly recognized embedding request, circuit, or
+response failure preserves already-computed lexical hits instead of silently
+returning no memory. The automatic block is headed
+`Memory (recalled; lexical-only — semantic retrieval unavailable)`, and the
+explicit tool returns the same closed `embedding_unavailable` status, including
+when lexical search has no matches. One status-bearing lookup is shared across
+the automatic and explicit paths for the turn; graph expansion cannot erase the
+status, and only final served IDs update access telemetry. Lite mode remains
+normal lexical service. External and legacy array-only backends keep their
+existing behavior.
+
 `MemoryJournal` is request-scoped and read-only. It is offered only for a local
 Lite, Journal, or BuJo store when `memory.recallTool.enabled` is on and normal
 tool policy allows it. Supermemory has search but no chronological capability.
