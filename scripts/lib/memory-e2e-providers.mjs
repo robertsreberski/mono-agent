@@ -50,7 +50,7 @@ export class Budget {
   constructor(plan) {
     this.plan = plan;
     this.started = performance.now();
-    this.used = { chatSteps: 0, embeddingCalls: 0, estimatedInputTokens: 0, outputTokens: 0 };
+    this.used = { chatSteps: 0, embeddingCalls: 0, estimatedInputTokens: 0, embeddingInputTokens: 0, outputTokens: 0 };
     this.events = [];
     this.pending = new Set();
     this.admissionStopped = false;
@@ -187,6 +187,7 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
         if (compacted) throw new BenchmarkError("unexpected_compaction", { failureKind: event.failureKind });
         if (["length", "max_tokens"].includes(result.diagnostics?.pi_stop_reason)) throw new BenchmarkError("output_limit_reached", { failureKind: event.failureKind });
         if (signal.aborted) throw new BenchmarkError("provider_timeout_or_cancelled");
+        if (resultFailureKind === "context_limit") throw new BenchmarkError("native_context_limit", { failureKind: resultFailureKind });
         if (result.failureKind || result.error || result.cancelled || typeof result.text !== "string" || !result.text.trim()) throw new BenchmarkError("provider_failed", { failureKind: event.failureKind });
         event.status = "completed";
         return result;
@@ -225,8 +226,13 @@ export function meteredEmbeddings(provider, { budget, tag }) {
   return {
     id: provider.id,
     async embed(texts, options) {
-      budget.reserve({ embeddingCalls: 1, estimatedInputTokens: Math.ceil(texts.reduce((n, text) => n + Buffer.byteLength(text), 0) / 3) });
-      const event = { ...tag, stage: "embedding", textCount: texts.length, status: "started", usage: usageOf(null), costUsd: null, transportAttempts: null, durationMs: null };
+      const embeddingInputTokens = Math.ceil(texts.reduce((n, text) => n + Buffer.byteLength(text), 0) / 3);
+      budget.reserve({
+        embeddingCalls: 1,
+        estimatedInputTokens: embeddingInputTokens,
+        ...(Number.isFinite(budget.plan.limits.embeddingInputTokens) ? { embeddingInputTokens } : {}),
+      });
+      const event = { ...tag, stage: "embedding", textCount: texts.length, embeddingInputTokensReserved: embeddingInputTokens, status: "started", usage: usageOf(null), costUsd: null, transportAttempts: null, durationMs: null };
       budget.events.push(event);
       const start = performance.now();
       const signal = AbortSignal.any([options?.abortSignal, budget.controller.signal, AbortSignal.timeout(budget.plan.perCall.embeddingTimeoutMs)].filter(Boolean));
@@ -292,7 +298,7 @@ export function scriptedProviders({ source } = {}) {
 
 /** Called only after CLI confirmation. No configured-app root leases or consumer configuration. */
 export async function realProviders(profile, { workspace, modules }) {
-  const { createMonoRuntime, parseMonoRuntimeModelReference, createPiOAuthApiKeyResolver } = modules.runtime;
+  const { createMonoRuntime, parseMonoRuntimeModelReference, createPiOAuthApiKeyResolver, runtimeOptionsForLocalProvider } = modules.runtime;
   // Explicit OAuth credential file only: one shared framework resolver for both
   // runtimes (it reads/refreshes lazily per request — construction opens no
   // credential file and copies no tokens). Without a selected path the bare
@@ -302,16 +308,35 @@ export async function realProviders(profile, { workspace, modules }) {
     if (typeof createPiOAuthApiKeyResolver !== "function") throw new Error("pi_auth_resolver_unavailable");
     return createPiOAuthApiKeyResolver({ path: profile.piAuthPath });
   })();
-  const hostOptions = resolvePiApiKey === undefined ? { workspace } : { workspace, resolvePiApiKey };
+  const readerModel = parseMonoRuntimeModelReference(profile.reader);
+  const extractorModel = parseMonoRuntimeModelReference(profile.extractor);
+  const baseHostOptions = resolvePiApiKey === undefined ? { workspace } : { workspace, resolvePiApiKey };
+  let hostOptions = baseHostOptions;
+  if (profile.ollamaEndpoint !== undefined) {
+    if (profile.ollamaEndpoint !== "http://127.0.0.1:11434" || !Number.isSafeInteger(profile.clientContextWindow) || profile.clientContextWindow < 1) {
+      throw new BenchmarkError("invalid_local_ollama_profile");
+    }
+    if (typeof runtimeOptionsForLocalProvider !== "function") throw new BenchmarkError("local_provider_runtime_options_unavailable");
+    const models = [...new Set([readerModel.model, extractorModel.model])].map((name) => ({
+      name,
+      capabilities: { context_window: profile.clientContextWindow, max_tokens: 2048 },
+    }));
+    const localProviders = [{ id: "ollama", type: "ollama", baseUrl: profile.ollamaEndpoint, enabled: true, trustPublicUrl: false, models }];
+    hostOptions = {
+      ...baseHostOptions,
+      resolveAttempt: ({ model }) => ({ options: runtimeOptionsForLocalProvider(model, localProviders) }),
+    };
+  }
   const reader = createMonoRuntime(hostOptions);
   const extractor = createMonoRuntime(hostOptions);
   const raw = modules.search.createEmbeddingProvider({
     provider: profile.embeddingProvider, model: profile.embeddingModel, timeoutMs: 10000,
     ...(profile.embeddingProvider === "openai" ? { apiKey: process.env.OPENAI_API_KEY } : {}),
+    ...(profile.embeddingEndpoint === undefined ? {} : { endpoint: profile.embeddingEndpoint }),
   });
   return {
     kind: "real", reader, extractor,
-    readerModel: parseMonoRuntimeModelReference(profile.reader), extractorModel: parseMonoRuntimeModelReference(profile.extractor), dim: profile.dimension,
+    readerModel, extractorModel, dim: profile.dimension,
     embeddings: modules.search.createCircuitBreakerEmbeddingProvider(raw),
     async close() { await reader.disposeAllSessions?.(); await extractor.disposeAllSessions?.(); },
   };

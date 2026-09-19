@@ -17,6 +17,19 @@ export const LOCOMO = Object.freeze({
 
 const CATEGORY_NAMES = Object.freeze({ 1: "multi-hop", 2: "temporal", 3: "open-domain", 4: "single-hop", 5: "adversarial" });
 const MONTHS = Object.freeze({ january: 0, february: 1, march: 2, april: 3, may: 4, june: 5, july: 6, august: 7, september: 8, october: 9, november: 10, december: 11 });
+const MAX_CAPTURE_MEMORIES = 8;
+const MAX_CAPTURE_MEMORY_CODE_POINTS = 160;
+const MAX_RECONCILED_MEMORY_CODE_POINTS = 280;
+const MAX_RECALL_QUERY_CODE_POINTS = 4_000;
+const UTF8_BYTES_PER_CODE_POINT = 4;
+const INPUT_ESTIMATE_DIVISOR = 3;
+
+export const LOCOMO_EVALUATOR = Object.freeze({
+  revision: LOCOMO.revision,
+  path: "task_eval/evaluation.py",
+  gitBlob: "8f597dd687e66832da1f6f04a169e05622049576",
+  category5Rule: "output contains 'no information available' or 'not mentioned'",
+});
 
 function nonempty(value) { return typeof value === "string" && value.trim().length > 0; }
 function sha(value) { return createHash("sha256").update(value).digest("hex"); }
@@ -84,15 +97,17 @@ function selectedQuestions(sample, dialogueToSession, finalTimestamp) {
     if (!evidenceDialogIds.every(nonempty)) throw new Error("locomo_invalid_evidence");
     const evidence = evidenceDialogIds.map((id) => dialogueToSession.get(id));
     if (evidence.some((value) => value === undefined)) throw new Error("locomo_unknown_evidence");
-    const visualOnly = evidenceDialogIds.length > 0 && evidenceDialogIds.every((id) => dialogueToSession.get(id).hasImage);
-    const reference = nonempty(entry.answer) ? entry.answer : entry.adversarial_answer;
-    if (!nonempty(reference)) throw new Error("locomo_missing_reference");
+    const imageAssociatedEvidenceCount = evidenceDialogIds.filter((id) => dialogueToSession.get(id).hasImage).length;
+    // Upstream category 5 is graded only by an explicit abstention phrase. Its
+    // adversarial_answer is a plausible false answer, never a truth reference.
+    const reference = category === 5 ? null : entry.answer;
+    if (category !== 5 && !nonempty(reference)) throw new Error("locomo_missing_reference");
     selected.push({
       id: `qa-${originalQaIndex}`,
       source: { text: entry.question, timestamp: finalTimestamp },
       evaluation: {
         answerable: category !== 5,
-        accepted: [reference],
+        accepted: reference === null ? [] : [reference],
         forbidden: [],
         evidenceTurnIds: [...new Set(evidence.map((value) => value.sessionId))],
         category: CATEGORY_NAMES[category],
@@ -100,7 +115,11 @@ function selectedQuestions(sample, dialogueToSession, finalTimestamp) {
         originalQaIndex,
         selectionHash,
         evidenceDialogIds,
-        visualOnly,
+        imageAssociation: {
+          evidenceCount: evidenceDialogIds.length,
+          imageAssociatedEvidenceCount,
+          dependency: imageAssociatedEvidenceCount === 0 ? "none_observed" : "unknown",
+        },
       },
     });
   }
@@ -197,19 +216,29 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
   const groups = corpus.groups.filter((group) => group.split === split);
   if (groups.length !== 1) throw new Error("locomo_invalid_split");
   const sessions = groups.reduce((sum, group) => sum + group.source.turns.length, 0);
-  const runnable = groups.reduce((sum, group) => sum + group.questions.filter((question) => !question.evaluation.visualOnly).length, 0);
+  const questions = groups.reduce((sum, group) => sum + group.questions.length, 0);
   const captureModelSteps = sessions * 2;
-  const readerInvocations = runnable * corpus.arms.length;
+  const readerInvocations = questions * corpus.arms.length;
   const readerModelSteps = readerInvocations * 3;
   const runtimeMs = split === "development" ? 18 * 60_000 : 12 * 60_000;
+  const chatInputTokensReserved = captureModelSteps * 8192 + readerModelSteps * 49152;
+  // Metering estimates UTF-8 bytes / 3. Capture embeds one batch of at most
+  // eight 160-code-point candidates for similarity and one batch of at most
+  // eight 280-code-point reconciled writes per session. Each question allows
+  // three independently metered recall queries clamped to 4,000 code points.
+  const captureSearchEmbeddingInput = Math.ceil(MAX_CAPTURE_MEMORIES * MAX_CAPTURE_MEMORY_CODE_POINTS * UTF8_BYTES_PER_CODE_POINT / INPUT_ESTIMATE_DIVISOR);
+  const captureWriteEmbeddingInput = Math.ceil(MAX_CAPTURE_MEMORIES * MAX_RECONCILED_MEMORY_CODE_POINTS * UTF8_BYTES_PER_CODE_POINT / INPUT_ESTIMATE_DIVISOR);
+  const queryEmbeddingInput = Math.ceil(MAX_RECALL_QUERY_CODE_POINTS * UTF8_BYTES_PER_CODE_POINT / INPUT_ESTIMATE_DIVISOR);
+  const embeddingInputTokens = sessions * (captureSearchEmbeddingInput + captureWriteEmbeddingInput) + questions * 3 * queryEmbeddingInput;
   const limits = {
     chatSteps: captureModelSteps + readerModelSteps,
-    embeddingCalls: captureModelSteps + runnable * 3,
-    estimatedInputTokens: captureModelSteps * 8192 + readerModelSteps * 49152,
+    embeddingCalls: captureModelSteps + questions * 3,
+    estimatedInputTokens: chatInputTokensReserved + embeddingInputTokens,
+    embeddingInputTokens,
     outputTokens: captureModelSteps * 2048 + readerModelSteps * 512,
     runtimeMs,
   };
-  const plan = makePlan({ corpus, sha256, split, profile, codeRevision, limits, perCall: { readerEstimatedInputTokens: 49152 } });
+  const plan = makePlan({ corpus, sha256, split, profile, codeRevision, limits, perCall: { readerEstimatedInputTokens: 49152, readerHistoryHeadroomMessages: 8 } });
   const locomo = {
     revision: LOCOMO.revision,
     path: LOCOMO.path,
@@ -228,10 +257,39 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
         category: question.evaluation.locomoCategory,
         originalQaIndex: question.evaluation.originalQaIndex,
         selectionHash: question.evaluation.selectionHash,
-        visualOnly: question.evaluation.visualOnly,
+        imageAssociation: question.evaluation.imageAssociation,
       })),
     })),
-    ceilings: { captureAdmissions: sessions, captureModelSteps, readerInvocations, readerModelSteps, semanticJudgeInvocations: 0, rerankerCalls: 0, imageFetches: 0 },
+    evaluator: LOCOMO_EVALUATOR,
+    ceilings: {
+      captureAdmissions: sessions,
+      captureModelSteps,
+      readerInvocations,
+      readerModelSteps,
+      chatInputTokensReserved,
+      embeddingInputTokensReserved: embeddingInputTokens,
+      combinedInputTokensReserved: chatInputTokensReserved + embeddingInputTokens,
+      semanticJudgeInvocations: 0,
+      rerankerCalls: 0,
+      imageFetches: 0,
+    },
+    evaluationCaveats: {
+      imageAssociatedQuestionsRemainInTextOnlyDenominator: true,
+      visualDependency: "unknown",
+      category5ExactF1: "not_applicable",
+      category5Diagnostic: "deterministic_upstream_abstention_phrase_only",
+    },
+    executionGate: {
+      status: "blocked_pending_synthetic_native_context_probe",
+      explicitLoopbackEndpoint: true,
+      clientContextWindow: profile?.clientContextWindow ?? null,
+      readerInputReservation: plan.perCall.readerEstimatedInputTokens,
+      readerOutputReservation: plan.perCall.readerOutputTokens,
+      nativeNumCtxConfigured: false,
+      redirectsRejectedByExistingAdapter: false,
+      silentNativeTruncationDetectable: false,
+      modelMetadataIsNotExecutionProof: true,
+    },
   };
   const { confirmation: _confirmation, ...base } = plan;
   return { ...base, locomo, confirmation: digest({ ...base, locomo }) };
@@ -242,6 +300,12 @@ function normalizeAnswer(value) {
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\b(?:a|an|the)\b/gu, " ")
     .replace(/\s+/gu, " ").trim();
+}
+
+/** Exact upstream category-5 phrase rule, kept separate from truth-reference metrics. */
+export function locomoCategory5Abstains(prediction) {
+  const output = prediction.toLowerCase();
+  return output.includes("no information available") || output.includes("not mentioned");
 }
 
 /** Deterministic local lexical diagnostic; references must never enter provider inputs. */

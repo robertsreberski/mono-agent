@@ -248,8 +248,9 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
         const captureFailureKind = captureFailureKindFor(budget.events, tag);
         if (captureFailureKind !== null) trial.captureFailureKind = captureFailureKind;
         if (store) trial.failureReadiness = store.queueSnapshot();
-        if (arm === "full-history" && trial.status === "context_budget_exceeded") {
-          trial.status = "not_applicable"; trial.reason = "full_history_does_not_fit";
+        if (arm === "full-history" && ["context_budget_exceeded", "native_context_limit"].includes(trial.status)) {
+          trial.status = "not_applicable";
+          trial.reason = trial.runtimeFailureKind === "context_limit" ? "native_context_limit" : "full_history_does_not_fit";
         }
       } finally {
         const cleanupEvent = { ...tag, stage: "cleanup", status: "started", durationMs: null };
@@ -268,7 +269,7 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
       if (!cleanupOk || budget.controller.signal.aborted || budget.providerStop !== null) break trialsLoop;
     }
     return {
-      manifest: { ...plan, executionKind: kind, reservations: budget.used, actualTransportAttempts: null, inputAccounting: "estimated-controlled-text-plus-allowance", providerQuality: "unmeasured", trialsNotStarted: plan.workload.trials - trials.length, admissionStopped: budget.providerStop !== null || budget.admissionStopped || budget.controller.signal.aborted, providerStop: budget.providerStop },
+      manifest: { ...plan, executionKind: kind, reservations: budget.used, actualTransportAttempts: null, inputAccounting: "conservative-reservations-chat-framing-and-bounded-embedding-text-not-actual-spend", providerQuality: "unmeasured", trialsNotStarted: plan.workload.trials - trials.length + trials.filter((trial) => trial.status === "unstarted").length, admissionStopped: budget.providerStop !== null || budget.admissionStopped || budget.controller.signal.aborted, providerStop: budget.providerStop },
       trials, capture, events: budget.events, summary: summarize(trials, budget.events, kind),
       review: { status: "pending", reviewerKind: null, rubric: "Judge source-supported correctness, stale claims, abstention, preference usefulness and capture propositions. A small stratified sample suffices; AI review is not human annotation.", groups: groups.map((group) => ({ groupId: group.id, source: sourceOnly(group), evaluation: group.evaluation })) },
     };
@@ -300,14 +301,10 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
       const source = sourceOnly(group);
       const providerSource = { id: source.id, turns: source.turns, ...(source.contextPolicy === undefined ? {} : { contextPolicy: source.contextPolicy }) };
       const questions = questionsFor(group);
-      const runnable = questions.filter((question) => question.evaluation.visualOnly !== true);
-      for (const question of questions.filter((value) => value.evaluation.visualOnly === true)) {
-        trials.push({ groupId: group.id, questionId: question.id, arm, category: question.evaluation.category, status: "not_applicable", reason: "visual_evidence_unavailable", answer: null, automatic: [], tools: [], warnings: [], readiness: [], inventory: [], semanticGrade: null, humanGrade: null, runtimeFailureKind: null, captureFailureKind: null, cleanup: "not_started" });
-      }
-      if (runnable.length === 0) continue;
-      const armTrials = runnable.map((question) => ({
+      if (questions.length === 0) continue;
+      const armTrials = questions.map((question) => ({
         groupId: group.id, questionId: question.id, arm, category: question.evaluation.category,
-        status: "started", answer: null, automatic: [], tools: [], warnings: [], readiness: [], inventory: [],
+        status: "unstarted", reason: null, answer: null, automatic: [], tools: [], warnings: [], readiness: [], inventory: [],
         semanticGrade: null, humanGrade: null, runtimeFailureKind: null, captureFailureKind: null,
       }));
       trials.push(...armTrials);
@@ -387,13 +384,17 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
           store.recall = async (...args) => await event(baseTag, "backend_retrieval", () => recall(...args));
           service = new modules.retrieval.MemoryRetrievalService(store);
         }
-        for (const [index, question] of runnable.entries()) {
+        for (const [index, question] of questions.entries()) {
           const trial = armTrials[index];
           const tag = { groupId: group.id, questionId: question.id, arm };
           let reader;
+          trial.status = "started";
           try {
             now = new Date(question.source.timestamp);
-            const history = modules.harness.createInMemoryHistoryStore({ maxMessages: 100 });
+            const projectedMessages = source.turns.length * 2;
+            const history = modules.harness.createInMemoryHistoryStore({
+              maxMessages: projectedMessages + plan.perCall.readerHistoryHeadroomMessages,
+            });
             await history.append(`question-${question.id}`, contextFor(source, arm));
             const extension = arm === "bujo" ? modules.extensions.composeRuntimeOptionExtensions([
               modules.retrieval.createSharedMemoryRecallRuntimeExtension(service, { onUnavailable: () => trial.warnings.push("recall_unavailable") }),
@@ -429,9 +430,16 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
             trial.status = "completed";
           } catch (error) {
             trial.status = codeOf(error);
-            if (arm === "full-history" && trial.status === "context_budget_exceeded") { trial.status = "not_applicable"; trial.reason = "full_history_does_not_fit"; }
+            if (arm === "full-history" && ["context_budget_exceeded", "native_context_limit"].includes(trial.status)) {
+              trial.status = "not_applicable";
+              trial.reason = trial.runtimeFailureKind === "context_limit" ? "native_context_limit" : "full_history_does_not_fit";
+            }
           }
           if (budget.controller.signal.aborted || budget.providerStop !== null) break;
+        }
+        const stopReason = budget.providerStop?.code ?? (budget.controller.signal.aborted ? "runtime_budget_exhausted" : null);
+        if (stopReason !== null) for (const trial of armTrials.filter((value) => value.status === "unstarted")) {
+          trial.reason = `batch_stopped_before_start:${stopReason}`;
         }
         for (const trial of armTrials) {
           trial.warnings.push(...sharedWarnings);
@@ -443,10 +451,14 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
       } catch (error) {
         const status = codeOf(error);
         const captureFailureKind = captureFailureKindFor(budget.events, baseTag);
-        for (const trial of armTrials.filter((value) => value.status === "started")) {
-          trial.status = status;
-          if (captureFailureKind !== null) trial.captureFailureKind = captureFailureKind;
-          if (store) trial.failureReadiness = store.queueSnapshot();
+        for (const trial of armTrials) {
+          if (trial.status === "started") {
+            trial.status = status;
+            if (captureFailureKind !== null) trial.captureFailureKind = captureFailureKind;
+            if (store) trial.failureReadiness = store.queueSnapshot();
+          } else if (trial.status === "unstarted") {
+            trial.reason = `batch_failed_before_start:${status}`;
+          }
         }
       } finally {
         const cleanupEvent = { ...baseTag, stage: "cleanup", status: "started", durationMs: null };
@@ -460,7 +472,10 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
           cleanupEvent.status = "completed";
         } catch (error) {
           cleanupEvent.status = codeOf(error); cleanupOk = false;
-          for (const trial of armTrials) { trial.primaryStatus = trial.status; trial.status = "cleanup_failed"; }
+          for (const trial of armTrials) {
+            if (trial.status === "unstarted") trial.reason = `${trial.reason ?? "batch_stopped_before_start"};cleanup_failed`;
+            else { trial.primaryStatus = trial.status; trial.status = "cleanup_failed"; }
+          }
         } finally { cleanupEvent.durationMs = performance.now() - cleanupStarted; }
         if (cleanupOk) await rm(work, { recursive: true, force: true });
         for (const trial of armTrials) trial.cleanup = cleanupOk ? "removed_owned_store" : "retained_unsettled_owned_store";
@@ -468,7 +483,7 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
       if (!cleanupOk || budget.controller.signal.aborted || budget.providerStop !== null) stop = true;
     }
     return {
-      manifest: { ...plan, executionKind: kind, reservations: budget.used, actualTransportAttempts: null, inputAccounting: "estimated-controlled-text-plus-allowance", providerQuality: "unmeasured", trialsNotStarted: plan.workload.trials - trials.length, admissionStopped: budget.providerStop !== null || budget.admissionStopped || budget.controller.signal.aborted, providerStop: budget.providerStop },
+      manifest: { ...plan, executionKind: kind, reservations: budget.used, actualTransportAttempts: null, inputAccounting: "conservative-reservations-chat-framing-and-bounded-embedding-text-not-actual-spend", providerQuality: "unmeasured", trialsNotStarted: plan.workload.trials - trials.length + trials.filter((trial) => trial.status === "unstarted").length, admissionStopped: budget.providerStop !== null || budget.admissionStopped || budget.controller.signal.aborted, providerStop: budget.providerStop },
       trials, capture, events: budget.events, summary: summarize(trials, budget.events, kind),
       review: { status: "pending", reviewerKind: null, rubric: "Judge source-supported correctness, stale claims, abstention, preference usefulness and capture propositions. AI review is not human annotation.", groups: groups.map((group) => ({ groupId: group.id, source: sourceOnly(group), questions: questionsFor(group).map((question) => ({ id: question.id, evaluation: question.evaluation })) })) },
     };

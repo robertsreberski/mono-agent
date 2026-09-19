@@ -30,7 +30,10 @@
   zero-trial run.
 - Add an opt-in, noncommercial-only pinned LoCoMo adapter to the memory E2E
   benchmark, with conversation-disjoint selection, capture-once question
-  batches, image/reference leakage barriers, and deterministic local scoring.
+  batches, image/reference leakage barriers, full 64-session history retention,
+  bounded embedding-input accounting, category-5 abstention diagnostics, and
+  explicit unstarted rows after fatal batched failures. Local execution is
+  loopback-pinned but remains gated on a native Ollama context/truncation probe.
 
 - Return managed `WebSearch` and `WebFetch` results as a compact JSON envelope
   with `status`, host-written summary, untrusted content or results, source and

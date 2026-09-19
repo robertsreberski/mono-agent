@@ -1,7 +1,7 @@
 import { mkdir, writeFile, lstat, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { digest, ARMS } from "./memory-e2e-dataset.mjs";
-import { lexicalAnswerScore } from "./memory-e2e-locomo.mjs";
+import { lexicalAnswerScore, locomoCategory5Abstains } from "./memory-e2e-locomo.mjs";
 
 export function percentiles(values) {
   const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
@@ -13,6 +13,12 @@ export function ratio(numerator, denominator) { return { value: denominator ? nu
 /** This is a lexical diagnostic, deliberately NOT semantic correctness or abstention grading. */
 export function lexicalDiagnostic(answer, evaluation, kind) {
   if (kind !== "real") return { status: "not_applicable_scripted", value: null };
+  if (evaluation.locomoCategory === 5) return {
+    status: "locomo_adversarial_abstention_only",
+    exact: null,
+    f1: null,
+    abstained: locomoCategory5Abstains(answer),
+  };
   if (!evaluation.accepted.length) return { status: "requires_semantic_annotation", value: null };
   if (Number.isSafeInteger(evaluation.locomoCategory)) return { status: "normalized_exact_f1", ...lexicalAnswerScore(answer, evaluation.accepted) };
   const text = answer.toLowerCase();
@@ -31,8 +37,11 @@ export function summarize(trials, events, kind) {
       const rows = trials.filter((trial) => trial.arm === arm);
       const stages = [...new Set(events.filter((event) => event.arm === arm).map((event) => event.stage))];
       return [arm, {
-        scheduled: rows.length, completion: ratio(rows.filter((row) => row.status === "completed").length, rows.filter((row) => row.status !== "not_applicable").length),
-        failures: rows.filter((row) => !["completed", "not_applicable"].includes(row.status)).map((row) => ({ groupId: row.groupId, ...(row.questionId === undefined ? {} : { questionId: row.questionId }), status: row.status, failureKind: row.runtimeFailureKind ?? row.captureFailureKind ?? null })),
+        scheduled: rows.length,
+        started: rows.filter((row) => row.status !== "unstarted").length,
+        completion: ratio(rows.filter((row) => row.status === "completed").length, rows.filter((row) => !["unstarted", "not_applicable"].includes(row.status)).length),
+        failures: rows.filter((row) => !["completed", "not_applicable", "unstarted"].includes(row.status)).map((row) => ({ groupId: row.groupId, ...(row.questionId === undefined ? {} : { questionId: row.questionId }), status: row.status, failureKind: row.runtimeFailureKind ?? row.captureFailureKind ?? null })),
+        unstarted: rows.filter((row) => row.status === "unstarted").length,
         notApplicable: rows.filter((row) => row.status === "not_applicable").length,
         stages: Object.fromEntries(stages.map((stage) => [stage, {
           attempted: events.filter((e) => e.arm === arm && e.stage === stage).length,

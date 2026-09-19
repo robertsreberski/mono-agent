@@ -150,18 +150,47 @@ The adapter hashes all ten unique conversations into conversation-disjoint
 partitions and selects at most one QA row per integer category by original-index
 hash before outcomes are available. It runs only the lowest-hash development
 conversation and lowest-hash held-out conversation, with separate confirmed
-plans. Missing categories and selected image-only evidence remain explicit
-not-applicable denominators; it never fetches images or forwards image URLs,
-captions, summaries, observations, references, categories, or evidence labels.
-Each chronological session is one completed-turn capture episode. Both humans
+plans. Missing categories remain explicit. Image-associated evidence is only a
+diagnostic: the adapter does not infer that a question is visually dependent,
+does not backfill another question, and keeps every selected question in the
+text-only denominator with visual dependency labelled unknown. It never fetches
+images or forwards image URLs, captions, summaries, observations, references,
+categories, or evidence labels. Each chronological session is one completed-turn
+capture episode. Both humans
 remain explicitly attributed reports in the user payload; neither is recast as
 the host assistant. BuJo captures the conversation once and answers selected
 questions with independent histories over the same store. Full history receives
 every projected session and fails not-applicable rather than truncating.
 Reference answers stay in the local evaluator projection, where normalized
-exact match and token F1 are deterministic diagnostics, not model or human
-judgments. Confirmed LoCoMo profiles are restricted to local `ollama:` reader
-and extractor routes plus Ollama embeddings; the adapter refuses hosted routes.
+exact match and token F1 are deterministic diagnostics for categories 1–4, not
+model or human judgments. Category 5 has no truth-reference exact/F1: the
+pinned upstream evaluator checks only whether output contains `no information
+available` or `not mentioned`, and `adversarial_answer` is never accepted as
+truth. Confirmed LoCoMo profiles are restricted to local `ollama:` reader and
+extractor routes plus Ollama embeddings, with both service roots pinned to
+`http://127.0.0.1:11434`. The preferred installed embedding profile is `bge-m3`
+at 1,024 dimensions because its reported 8,192-token context exceeds the
+installed `nomic-embed-text:v1.5` model's native 2,048-token context; catalog
+name alone is not a selection criterion.
+
+The existing Pi OpenAI-compatible Ollama path can bind an explicit loopback
+base URL and client-side context metadata, and the benchmark disables compaction
+and maps a structured `context_limit` failure to full-history not-applicable.
+It cannot currently prove that redirects are rejected, send/verify native
+Ollama `num_ctx`, or detect silent server-side truncation. Therefore the frozen
+LoCoMo plans are preparation artifacts only: before any pilot, an explicitly
+authorized synthetic capability probe must prove the effective context plus
+reserved output without raw LoCoMo text. Do not treat `/api/show` model metadata
+or the client-side context window as that proof, and do not implement a second
+provider stack merely to bypass this checkpoint.
+
+LoCoMo limits reserve chat controlled-text/framing separately from bounded
+embedding text (one 8×160-code-point candidate batch plus one 8×280-code-point
+reconciled-write batch per session, and three 4,000-code-point recall queries per
+question). Both flow through the combined
+hard estimated-input budget. These roughly three-million chat-token reservations
+are conservative admission ceilings—not native tokenization, observed usage,
+or spend—and reports expose embedding reservations separately.
 
 All five arms use the same reader, question, identity, output budget and
 controlled-text context estimate:

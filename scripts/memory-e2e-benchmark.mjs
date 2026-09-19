@@ -59,12 +59,21 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   if (locomo && profile && (!profile.reader.startsWith("ollama:") || !profile.extractor.startsWith("ollama:") || profile.embeddingProvider !== "ollama")) {
     throw new Error("locomo_requires_local_ollama_profile");
   }
+  // The external adapter has no endpoint flags: LoCoMo is pinned to the numeric
+  // loopback service root and a client-side context reservation. A future real
+  // run still requires the separately documented native num_ctx/truncation probe.
+  const executionProfile = locomo && profile ? {
+    ...profile,
+    ollamaEndpoint: "http://127.0.0.1:11434",
+    embeddingEndpoint: "http://127.0.0.1:11434",
+    clientContextWindow: 65_536,
+  } : profile;
   const loaded = locomo
     ? await import("./lib/memory-e2e-locomo.mjs").then(({ loadLocomo }) => loadLocomo(flags.dataset))
     : await loadCorpus(corpusName);
   const plan = locomo
-    ? await import("./lib/memory-e2e-locomo.mjs").then(({ makeLocomoPlan }) => makeLocomoPlan({ ...loaded, split, profile, codeRevision: head }))
-    : makePlan({ ...loaded, split, profile, codeRevision: head });
+    ? await import("./lib/memory-e2e-locomo.mjs").then(({ makeLocomoPlan }) => makeLocomoPlan({ ...loaded, split, profile: executionProfile, codeRevision: head }))
+    : makePlan({ ...loaded, split, profile: executionProfile, codeRevision: head });
   if (flags["dry-run"]) { stdout(JSON.stringify(plan, null, 2)); return 0; }
   if (flags.real && (!profile || flags["confirm-plan"] !== plan.confirmation)) throw new Error("real_execution_requires_confirmed_profile");
   if (!flags.real && (profile || flags["confirm-plan"])) throw new Error("profile_requires_explicit_real_mode");
@@ -82,7 +91,7 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   const bundle = await runBenchmark({ ...loaded, plan, directory, modules, kind,
     providerFactory: flags.real ? async (input) => {
       await verifyRealBuild(ROOT, build);
-      return realProviders(profile, input);
+      return realProviders(executionProfile, input);
     } : scriptedProviders,
   });
   bundle.manifest.code = { head, dirty, node: process.version, build };

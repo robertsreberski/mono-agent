@@ -109,6 +109,67 @@ describe("fictional E2E production-path contract, not model quality", () => {
     }
   }, 30000);
 
+  it("preserves the first and last projected messages across a 64-session full-history question", async () => {
+    const input = await fixture();
+    const dataset = await script("memory-e2e-dataset");
+    const original = input.corpus.groups[0];
+    const turns = Array.from({ length: 64 }, (_, index) => ({
+      id: `session-${index + 1}`,
+      sessionId: `session-${index + 1}`,
+      timestamp: new Date(Date.UTC(2025, 0, 1, 0, index)).toISOString(),
+      speaker: "Synthetic",
+      user: index === 0 ? "FIRST_HISTORY_SENTINEL" : index === 63 ? "LAST_HISTORY_SENTINEL" : `middle-${index}`,
+      assistant: `recorded-${index}`,
+    }));
+    const group = {
+      id: "conv-64",
+      split: "development",
+      source: { turns, contextPolicy: "memory-only" },
+      questions: [{ id: "q", source: { text: "Bounded history question?", timestamp: new Date(Date.UTC(2025, 0, 1, 2)).toISOString() }, evaluation: { ...original.evaluation, evidenceTurnIds: ["session-1"] } }],
+    };
+    const corpus = { schemaVersion: 1, name: "locomo-v1", turnsPerGroup: { min: 1, max: 64 }, arms: ["full-history"], groups: [group] };
+    dataset.validateCorpus(corpus);
+    const plan = dataset.makePlan({ corpus, sha256: "synthetic-64" });
+    const readerInputs: any[] = [];
+    const report = await input.runner.runBenchmark({ ...input, corpus, plan, hooks: {
+      readerInput: (_system: string, options: any) => readerInputs.push(options.messages),
+    } });
+    expect(report.trials).toMatchObject([{ status: "completed" }]);
+    expect(readerInputs).toHaveLength(1);
+    expect(JSON.stringify(readerInputs[0])).toContain("FIRST_HISTORY_SENTINEL");
+    expect(JSON.stringify(readerInputs[0])).toContain("LAST_HISTORY_SENTINEL");
+  }, 30000);
+
+  it("leaves later batched questions unstarted after a fatal first reader failure and still cleans up", async () => {
+    const input = await fixture();
+    const dataset = await script("memory-e2e-dataset");
+    const original = input.corpus.groups[0];
+    const group = {
+      id: original.id,
+      split: "development",
+      source: { turns: original.source.turns, contextPolicy: "memory-only" },
+      questions: [
+        { id: "fatal-first", source: { text: "First?", timestamp: original.source.question.timestamp }, evaluation: original.evaluation },
+        { id: "must-not-start", source: { text: "Second?", timestamp: original.source.question.timestamp }, evaluation: original.evaluation },
+      ],
+    };
+    const corpus = { schemaVersion: 1, name: "fictional-v1", arms: ["full-history"], groups: [group] };
+    dataset.validateCorpus(corpus);
+    const plan = dataset.makePlan({ corpus, sha256: "synthetic-fatal-batch" });
+    const close = vi.fn(async () => {});
+    const failing = vi.fn(async () => ({ failureKind: "provider_auth", error: "private", text: "" }));
+    const providerFactory = (args: any) => ({ ...input.providers.scriptedProviders(args), reader: { run: failing }, close });
+    const report = await input.runner.runBenchmark({ ...input, corpus, plan, providerFactory });
+    expect(failing).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(report.trials[0]).toMatchObject({ questionId: "fatal-first", status: "provider_failed", cleanup: "removed_owned_store" });
+    expect(report.trials[1]).toMatchObject({ questionId: "must-not-start", status: "unstarted", reason: "batch_stopped_before_start:provider_failed", cleanup: "removed_owned_store" });
+    expect(report.manifest.trialsNotStarted).toBe(1);
+    expect(report.summary.arms["full-history"]).toMatchObject({ scheduled: 2, started: 1, unstarted: 1 });
+    expect(report.summary.arms["full-history"].failures).toHaveLength(1);
+    expect((await readdir(input.directory)).filter((name) => name.startsWith("work-"))).toEqual([]);
+  }, 30000);
+
   it("malformed strict extraction leaves a visible not-ready trial despite successful flush", async () => {
     const input = await fixture();
     const report = await input.runner.runBenchmark({ ...input, providerFactory: (args: any) => {
@@ -158,6 +219,27 @@ describe("fictional E2E production-path contract, not model quality", () => {
       expect(trial.status).toBe("completed"); expect(trial.health.counts.memories).toBe(0);
     }
     expect(report.summary.capturePrecisionRecall.recall).toBeNull();
+  }, 30000);
+
+  it("reports a structured native context limit as full-history not-applicable", async () => {
+    const input = await fixture();
+    const dataset = await script("memory-e2e-dataset");
+    const original = input.corpus.groups[0];
+    const group = {
+      id: original.id,
+      split: "development",
+      source: { turns: original.source.turns, contextPolicy: "memory-only" },
+      questions: [{ id: "q-context", source: original.source.question, evaluation: original.evaluation }],
+    };
+    const corpus = { schemaVersion: 1, name: "fictional-v1", arms: ["full-history"], groups: [group] };
+    dataset.validateCorpus(corpus);
+    const plan = dataset.makePlan({ corpus, sha256: "synthetic-native-context" });
+    const providerFactory = (args: any) => ({
+      ...input.providers.scriptedProviders(args),
+      reader: { run: async () => ({ failureKind: "context_limit", error: "private", text: "" }) },
+    });
+    const report = await input.runner.runBenchmark({ ...input, corpus, plan, providerFactory });
+    expect(report.trials).toMatchObject([{ status: "not_applicable", reason: "native_context_limit", runtimeFailureKind: "context_limit" }]);
   }, 30000);
 
   it("does not truncate full history to pass an overflowing context budget", async () => {

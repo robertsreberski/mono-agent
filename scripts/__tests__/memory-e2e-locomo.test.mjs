@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { contextFor, sourceOnly } from "../lib/memory-e2e-dataset.mjs";
-import { lexicalAnswerScore, makeLocomoPlan, parseLocomoTimestamp, projectLocomo, projectLocomoSession } from "../lib/memory-e2e-locomo.mjs";
+import { lexicalAnswerScore, locomoCategory5Abstains, makeLocomoPlan, parseLocomoTimestamp, projectLocomo, projectLocomoSession } from "../lib/memory-e2e-locomo.mjs";
+import { lexicalDiagnostic } from "../lib/memory-e2e-report.mjs";
 
 function sample(id, { missing = [] } = {}) {
   const conversation = {
@@ -62,7 +63,11 @@ describe("LoCoMo pinned-data adapter (synthetic schema only)", () => {
       expect(JSON.stringify(source.questions)).not.toMatch(/GOLD_ANSWER|ADVERSARIAL_GOLD|LEAK_SENTINEL|evidence|"category":/u);
       expect(contextFor(source, "bujo")).toEqual([]);
       expect(contextFor(source, "full-history")).toHaveLength(2);
-      expect(group.questions.find((question) => question.evaluation.locomoCategory === 2).evaluation.visualOnly).toBe(true);
+      expect(group.questions.find((question) => question.evaluation.locomoCategory === 2).evaluation.imageAssociation).toEqual({
+        evidenceCount: 1,
+        imageAssociatedEvidenceCount: 1,
+        dependency: "unknown",
+      });
     }
   });
 
@@ -75,11 +80,28 @@ describe("LoCoMo pinned-data adapter (synthetic schema only)", () => {
     expect(selected.evaluation.originalQaIndex).toBeTypeOf("number");
     expect(selected.evaluation.selectionHash).toMatch(/^[0-9a-f]{64}$/u);
     const plan = makeLocomoPlan({ corpus, sha256: "fixture", split: "development", codeRevision: "HEAD" });
-    // One session; four runnable questions because the synthetic temporal case is visual-only.
-    expect(plan.workload).toMatchObject({ questions: 5, trials: 10, captureStepsMaximum: 2, readerStepsMaximum: 24 });
-    expect(plan.limits).toMatchObject({ chatSteps: 26, embeddingCalls: 14, outputTokens: 16384 });
-    expect(plan.locomo.ceilings).toMatchObject({ captureAdmissions: 1, captureModelSteps: 2, readerInvocations: 8, readerModelSteps: 24, semanticJudgeInvocations: 0 });
+    // Image association is diagnostic only: all five selected questions run in both arms.
+    expect(plan.workload).toMatchObject({ questions: 5, trials: 10, captureStepsMaximum: 2, readerStepsMaximum: 30 });
+    expect(plan.limits).toMatchObject({ chatSteps: 32, embeddingCalls: 17, estimatedInputTokens: 1_575_648, embeddingInputTokens: 84_704, outputTokens: 19_456 });
+    expect(plan.locomo.ceilings).toMatchObject({ captureAdmissions: 1, captureModelSteps: 2, readerInvocations: 10, readerModelSteps: 30, chatInputTokensReserved: 1_490_944, embeddingInputTokensReserved: 84_704, semanticJudgeInvocations: 0 });
+    expect(plan.locomo.executionGate).toMatchObject({ status: "blocked_pending_synthetic_native_context_probe", nativeNumCtxConfigured: false, redirectsRejectedByExistingAdapter: false, silentNativeTruncationDetectable: false });
     expect(JSON.stringify(plan)).not.toMatch(/QUESTION_SENTINEL|GOLD_ANSWER|SOURCE_SENTINEL/u);
+  });
+
+  it("never treats category-5 answer fields as truth and applies only the pinned abstention rule", () => {
+    const corpus = projectLocomo(dataset());
+    const question = corpus.groups[0].questions.find((value) => value.evaluation.locomoCategory === 5);
+    expect(question.evaluation.accepted).toEqual([]);
+    expect(question.evaluation.forbidden).toEqual([]);
+    expect(locomoCategory5Abstains("There is no information available in the conversation.")).toBe(true);
+    expect(locomoCategory5Abstains("That was not mentioned.")).toBe(true);
+    expect(locomoCategory5Abstains("ADVERSARIAL_GOLD_5")).toBe(false);
+    expect(lexicalDiagnostic("ADVERSARIAL_GOLD_5", question.evaluation, "real")).toEqual({
+      status: "locomo_adversarial_abstention_only",
+      exact: null,
+      f1: null,
+      abstained: false,
+    });
   });
 
   it("implements deterministic normalized exact/F1 without model grading", () => {

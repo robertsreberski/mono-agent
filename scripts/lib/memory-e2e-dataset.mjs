@@ -136,15 +136,14 @@ export function makePlan({ corpus, sha256, split = "development", profile = null
   if (groups.length === 0) throw new Error("empty_corpus_split");
   const turns = groups.reduce((sum, group) => sum + group.source.turns.length, 0);
   const questions = groups.flatMap(questionsFor);
-  const runnableQuestions = questions.filter((question) => question.evaluation?.visualOnly !== true);
   const arms = armsFor(corpus);
   const manifest = {
     protocol: PROTOCOL, realBuildPolicy: BUILD_POLICY, corpus: corpus.name, corpusSha256: sha256, split, codeRevision,
     groupIds: groups.map((group) => group.id), arms, repeats: 1, order: "fixed-listed-order",
     profile: serializableProfile(profile), limits,
-    workload: { questions: questions.length, trials: questions.length * arms.length, historicalTurnsPerMemoryArm: turns, captureStepsMaximum: turns * 2, readerStepsMaximum: runnableQuestions.length * arms.length * 3 },
-    perCall: { readerOutputTokens: 512, extractorOutputTokens: 2048, readerEstimatedInputTokens: 16384, extractorEstimatedInputTokens: 8192, framingAndToolAllowance: 4096, callTimeoutMs: 60000, embeddingTimeoutMs: 10000, readinessTimeoutMs: 120000, cleanupTimeoutMs: 10000, ...perCall },
-    limitations: ["controlled-text input estimates, not native payload limits", "transport attempt count unknown unless provider reports it", "fixed arm order; cache warmth uncontrolled", "one repeat; quality/human grading unmeasured"],
+    workload: { questions: questions.length, trials: questions.length * arms.length, historicalTurnsPerMemoryArm: turns, captureStepsMaximum: turns * 2, readerStepsMaximum: questions.length * arms.length * 3 },
+    perCall: { readerOutputTokens: 512, extractorOutputTokens: 2048, readerEstimatedInputTokens: 16384, extractorEstimatedInputTokens: 8192, readerHistoryHeadroomMessages: 8, framingAndToolAllowance: 4096, callTimeoutMs: 60000, embeddingTimeoutMs: 10000, readinessTimeoutMs: 120000, cleanupTimeoutMs: 10000, ...perCall },
+    limitations: ["controlled-text token reservations are conservative ceilings, not actual provider spend", "native payload/context limits require an explicit capability probe", "transport attempt count unknown unless provider reports it", "fixed arm order; cache warmth uncontrolled", "one repeat; quality/human grading unmeasured"],
   };
   return { ...manifest, confirmation: digest(manifest) };
 }

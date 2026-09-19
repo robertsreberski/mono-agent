@@ -250,6 +250,15 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     for (const phrase of run.mock.calls[0][0].split(/(?<=\.) /u)) expect(production).toContain(phrase);
     await expect(meteredRuntime({ run: async () => ({ error: "secret error", text: "" }) }, { budget, stage: "reader", tag: {} }).run("s", { messages: [], abortSignal: new AbortController().signal })).rejects.toThrow("provider_failed");
   });
+  it("meters bounded embedding text into both the combined and embedding-specific hard budgets", async () => {
+    const { plan } = await setup();
+    const budget = new Budget({ ...plan, limits: { ...plan.limits, embeddingInputTokens: 1 } });
+    const embed = vi.fn(async () => [[1]]);
+    await expect(meteredEmbeddings({ id: "fixture", embed }, { budget, tag: {} }).embed(["twelve bytes"])).rejects.toThrow("budget_exhausted");
+    expect(embed).not.toHaveBeenCalled();
+    expect(budget.used.embeddingInputTokens).toBe(0);
+    budget.close();
+  });
   it("retains a non-fatal returned failure kind without stopping admission", async () => {
     const { budget } = await setup();
     const run = vi.fn(async () => ({ failureKind: "provider_unavailable", error: "route down", text: "" }));
@@ -259,6 +268,14 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(budget.events[0]).toMatchObject({ status: "provider_failed", failureKind: "provider_unavailable" });
     expect(budget.providerStop).toBeNull();
     expect(budget.admissionStopped).toBe(false);
+  });
+  it("maps a structured native context failure to a typed benchmark error", async () => {
+    const { budget } = await setup();
+    const failure = await meteredRuntime({ run: async () => ({ failureKind: "context_limit", error: "private", text: "" }) }, { budget, stage: "reader", tag: {} })
+      .run("s", { messages: [], abortSignal: new AbortController().signal }).catch((error) => error);
+    expect(failure.message).toBe("native_context_limit");
+    expect(failureKindOf(failure)).toBe("context_limit");
+    expect(budget.events[0]).toMatchObject({ status: "native_context_limit", failureKind: "context_limit" });
   });
   it.each(["provider_auth", "usage_limit"])("stops provider admission after fatal reader failure: %s", async (failureKind) => {
     const { budget } = await setup();
@@ -400,6 +417,30 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(ambientModules.runtime.createMonoRuntime.mock.calls[0][0]).toEqual({ workspace: "workspace" });
     expect(ambientModules.runtime.createMonoRuntime.mock.calls[1][0]).toEqual({ workspace: "workspace" });
     await expect(realProviders(profile, { workspace: "workspace", modules: ambientModules })).rejects.toThrow("pi_auth_resolver_unavailable");
+  });
+  it("pins LoCoMo provider construction to explicit loopback endpoints and client context metadata", async () => {
+    const optionsForLocal = vi.fn((model, providers) => ({ customProvider: providers[0], customModel: { model }, modelCapabilities: { context_window: 65_536 }, isPrivateProvider: true }));
+    const modules = {
+      runtime: {
+        createMonoRuntime: vi.fn((options) => ({ options })),
+        parseMonoRuntimeModelReference: (value) => { const [provider, ...name] = value.split(":"); return { provider, model: name.join(":"), reference: value }; },
+        runtimeOptionsForLocalProvider: optionsForLocal,
+      },
+      search: { createEmbeddingProvider: vi.fn(() => ({})), createCircuitBreakerEmbeddingProvider: vi.fn((raw) => raw) },
+    };
+    const profile = {
+      reader: "ollama:gemma4:31b", extractor: "ollama:gemma4:31b",
+      embeddingProvider: "ollama", embeddingModel: "bge-m3:latest", dimension: 1024,
+      ollamaEndpoint: "http://127.0.0.1:11434", embeddingEndpoint: "http://127.0.0.1:11434", clientContextWindow: 65_536,
+    };
+    await realProviders(profile, { workspace: "workspace", modules });
+    const runtimeOptions = modules.runtime.createMonoRuntime.mock.calls[0][0];
+    expect(runtimeOptions).toMatchObject({ workspace: "workspace", resolveAttempt: expect.any(Function) });
+    runtimeOptions.resolveAttempt({ model: { provider: "ollama", model: "gemma4:31b", reference: "ollama:gemma4:31b" } });
+    expect(optionsForLocal.mock.calls[0][1][0]).toMatchObject({ id: "ollama", type: "ollama", baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false });
+    expect(optionsForLocal.mock.calls[0][1][0].models[0].capabilities).toMatchObject({ context_window: 65_536, max_tokens: 2048 });
+    expect(modules.search.createEmbeddingProvider).toHaveBeenCalledWith(expect.objectContaining({ endpoint: "http://127.0.0.1:11434", model: "bge-m3:latest" }));
+    await expect(realProviders({ ...profile, ollamaEndpoint: "http://localhost:11434" }, { workspace: "workspace", modules })).rejects.toThrow("invalid_local_ollama_profile");
   });
   it("dry-run binds the auth fingerprint without touching credentials or network", async () => {
     const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
