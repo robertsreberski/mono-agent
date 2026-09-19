@@ -19,8 +19,8 @@ import {
 } from "../../agent/tools/web-search.js";
 import { claimWebSearchRequest, countWebSearchDispatch, createWebSearchRunState, refundWebSearchRequests, webSearchBudgetSnapshot } from "../../agent/tools/web-search-state.js";
 import {
+  boundWebSearchEntries,
   boundWebSearchSnippet,
-  renderBoundedWebSearchBody,
   sliceUtf8,
   WEB_SEARCH_BODY_MAX_BYTES,
   WEB_SEARCH_SNIPPET_MAX_CHARS,
@@ -242,18 +242,76 @@ describe("WebSearch output bounds", () => {
     expect(sliceUtf8(`x\ud800🙂y`, 8)).not.toMatch(/[\ud800-\udfff]/u);
   });
 
-  it("omits a pathological trailing result as a whole instead of cutting its Markdown link", () => {
-    const rendered = renderBoundedWebSearchBody([
+  it("omits a pathological trailing result as a whole instead of cutting its URL", () => {
+    const bounded = boundWebSearchEntries([
       { title: "usable", url: "https://example.com/usable", snippet: "evidence" },
       { title: "too large", url: `https://example.com/${"x".repeat(600)}`, snippet: "evidence" },
     ], { maxBytes: 160 });
 
-    expect(rendered.renderedResultCount).toBe(1);
-    expect(rendered.truncated).toBe(true);
-    expect(rendered.body).toContain("1. [usable](https://example.com/usable)");
-    expect(rendered.body).toContain("[additional search results omitted by WebSearch output bound] (1)");
-    expect(rendered.body).not.toContain("too large");
-    expect(Buffer.byteLength(rendered.body, "utf8")).toBeLessThanOrEqual(160);
+    expect(bounded.resultCount).toBe(1);
+    expect(bounded.truncated).toBe(true);
+    expect(bounded.omittedCount).toBe(1);
+    expect(bounded.entries).toHaveLength(1);
+    expect(bounded.entries[0]).toMatchObject({
+      title: "usable",
+      url: "https://example.com/usable",
+      snippet: "evidence",
+    });
+    expect(JSON.stringify(bounded.entries)).not.toContain("too large");
+    expect(Buffer.byteLength(JSON.stringify(bounded.entries), "utf8")).toBeLessThanOrEqual(160);
+  });
+
+  it("truncates a single oversized snippet to the JSON budget without cutting its URL", () => {
+    const url = "https://example.com/single-oversized";
+    const bounded = boundWebSearchEntries([
+      { title: "single", url, snippet: `lead ${"🙂".repeat(500)} tail` },
+    ], { maxBytes: 512 });
+
+    expect(bounded.resultCount).toBe(1);
+    expect(bounded.omittedCount).toBe(0);
+    expect(bounded.truncated).toBe(true);
+    expect(bounded.entries).toHaveLength(1);
+    expect(bounded.entries[0].url).toBe(url);
+    expect(bounded.entries[0].snippet.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER)).toBe(true);
+    expect(bounded.entries[0].snippet).not.toMatch(/[\ud800-\udfff]/u);
+    expect(Buffer.byteLength(JSON.stringify(bounded.entries), "utf8")).toBeLessThanOrEqual(512);
+  });
+
+  it("budgets JSON escapes and multibyte sequences truthfully while preserving order", () => {
+    const bounded = boundWebSearchEntries([
+      { title: 'first "quoted" \\ title', url: "https://example.com/first", snippet: 'lead "quote" \\ and 🙂 emoji' },
+      { title: "second", url: "https://example.com/second", snippet: `second ${"x".repeat(400)}` },
+      { title: "third", url: "https://example.com/third", snippet: "third evidence" },
+    ], { maxBytes: 420 });
+
+    expect(bounded.entries.length).toBeGreaterThan(0);
+    expect(bounded.entries[0].url).toBe("https://example.com/first");
+    expect(bounded.entries[0].title).toBe('first "quoted" \\ title');
+    expect(Buffer.byteLength(JSON.stringify(bounded.entries), "utf8")).toBeLessThanOrEqual(420);
+    if (bounded.omittedCount > 0 || bounded.entries.some((entry) => entry.snippet.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER))) {
+      expect(bounded.truncated).toBe(true);
+    }
+    for (const entry of bounded.entries) {
+      expect(entry.snippet).not.toMatch(/[\ud800-\udfff]/u);
+    }
+  });
+
+  it("keeps the truncation marker for highly escapable content at a tight JSON budget", () => {
+    for (const snippet of [`"`.repeat(1000), `\\`.repeat(1000), `🙂`.repeat(1000)]) {
+      const bounded = boundWebSearchEntries([
+        { title: "x", url: "https://example.com", snippet },
+      ], { maxBytes: 512 });
+
+      expect(bounded.resultCount).toBe(1);
+      expect(bounded.omittedCount).toBe(0);
+      expect(bounded.truncated).toBe(true);
+      expect(bounded.entries).toHaveLength(1);
+      expect(bounded.entries[0].url).toBe("https://example.com");
+      expect(bounded.entries[0].snippet.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER)).toBe(true);
+      expect(bounded.entries[0].snippet.length).toBeGreaterThan(0);
+      expect(Buffer.byteLength(JSON.stringify(bounded.entries), "utf8")).toBeLessThanOrEqual(512);
+      expect(bounded.entries[0].snippet).not.toMatch(/[\ud800-\udfff]/u);
+    }
   });
 });
 
@@ -429,7 +487,7 @@ describe("WebSearch", () => {
     const payload = JSON.parse(result.text);
     const body = JSON.stringify(payload.results);
 
-    expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(WEB_SEARCH_BODY_MAX_BYTES + 1_024);
+    expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(WEB_SEARCH_BODY_MAX_BYTES);
     expect(Buffer.byteLength(result.text, "utf8")).toBeLessThan(MAX_TOOL_RESULT_BYTES);
     expect(payload).toMatchObject({ tool: "WebSearch" });
     expect(payload.coverage.requestedFilters).toMatchObject({

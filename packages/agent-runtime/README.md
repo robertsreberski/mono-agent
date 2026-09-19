@@ -918,8 +918,9 @@ to the model; children and later runs receive fresh budgets.
 
 Each normalized WebSearch result caps its title at 500 characters and its
 snippet at 4,000 characters, including a visible truncation marker directing
-the model to `WebFetch`. The ranked result body is capped at 64 KiB UTF-8;
-lower-ranked snippets shrink before whole results are omitted. Both tools
+the model to `WebFetch`. The ranked structured results are capped at 64 KiB
+UTF-8 of entries JSON; lower-ranked snippets shrink before whole results are
+omitted. Both tools
 return a compact JSON envelope with `status` (`ok`/`partial`/`blocked`/`error`),
 a host-written `summary`, untrusted `content` or `results`, source and `coverage`
 metadata, and typed `next_actions` with schema-valid tool arguments.
