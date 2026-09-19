@@ -114,6 +114,7 @@ export function contextFor(source, arm) {
 export function makePlan({ corpus, sha256, split = "development", profile = null, codeRevision = null }) {
   if (!Object.hasOwn(LIMITS, split)) throw new Error("invalid_split");
   const groups = corpus.groups.filter((group) => group.split === split);
+  if (groups.length === 0) throw new Error("empty_corpus_split");
   const turns = groups.reduce((sum, group) => sum + group.source.turns.length, 0);
   const arms = armsFor(corpus);
   const manifest = {

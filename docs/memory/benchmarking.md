@@ -109,6 +109,10 @@ Select a corpus with `--corpus` (default `fictional-v1`). A corpus may declare
 its own per-group turn bounds and a narrower arm list; both are validated
 against the same closed arm set, recorded in the plan, and bound into the
 confirmation digest, so a plan confirmed for one corpus cannot execute another.
+`bujo-learning-v1` and `capture-fidelity-v1` contain evaluation groups only, so
+select either with `--split evaluation`. Omitting the split keeps the
+`development` default and fails with `empty_corpus_split` before provider setup,
+build, or benchmark execution.
 
 `bujo-learning-v1` is a second fictional corpus for baseline diagnosis of
 working-style preferences and agent lessons. It runs eight one-question
@@ -120,6 +124,12 @@ and the `bujo` arm must recover it from memory. Quoted material inside a user
 message is quoted text, not real tool output and not a real assistant turn, and
 no scenario asserts a host-verified check. Like `fictional-v1`, it is checked in
 and is **not a secret holdout**.
+
+`capture-fidelity-v1` is a six-scenario diagnostic corpus for speaker
+attribution, corrections versus renames, scoped preferences, and separating
+observed outcomes from causal claims. It uses the same `bujo` and `full-history`
+arms. Its controls are checked in and author-visible, not a blind holdout or a
+general memory-quality score.
 
 All five arms use the same reader, question, identity, output budget and
 controlled-text context estimate:
@@ -321,9 +331,10 @@ cap are benchmark-only version coupling, not new public APIs.
 ### External protocol follow-up
 
 The E2E runner accepts only the checked-in fictional corpora
-(`fictional-v1`, `bujo-learning-v1`). The older external adapters
-above remain retrieval-only. `scripts/fixtures/memory-e2e/sources.json` pins the
-follow-up sources; it does not download or implement them:
+(`fictional-v1`, `bujo-learning-v1`, `capture-fidelity-v1`). The older external
+adapters above remain retrieval-only.
+`scripts/fixtures/memory-e2e/sources.json` pins the follow-up sources; it does not
+download or implement them:
 
 - [Cleaned LongMemEval data](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/tree/98d7416c24c778c2fee6e6f3006e7a073259d48f)
   at `98d7416c24c778c2fee6e6f3006e7a073259d48f`, paired with
