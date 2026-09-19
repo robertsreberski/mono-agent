@@ -428,6 +428,24 @@ describe("buildMonoAgentConfigView", () => {
       source: "env",
     });
   });
+
+  it("shows hound endpoints as unconfigured by default and from env or JSON", () => {
+    const defaults = buildView(baseEnv);
+    expect(field(defaults, "tools.web.search.hound.endpoint")).toMatchObject({ value: "not configured", source: "default" });
+    expect(field(defaults, "tools.web.fetch.hound.endpoint")).toMatchObject({ value: "not configured", source: "default" });
+    const configured = buildView(
+      { ...baseEnv, MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT: "http://127.0.0.1:8765/mcp" },
+      { tools: { web: { fetch: { hound: { endpoint: "http://localhost:8765/mcp" } } } } },
+    );
+    expect(field(configured, "tools.web.search.hound.endpoint")).toMatchObject({
+      value: "http://127.0.0.1:8765/mcp",
+      source: "env",
+    });
+    expect(field(configured, "tools.web.fetch.hound.endpoint")).toMatchObject({
+      value: "http://localhost:8765/mcp",
+      source: "json",
+    });
+  });
 });
 
 describe("findJsonSecretConfigWarnings", () => {

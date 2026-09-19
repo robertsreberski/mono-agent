@@ -548,7 +548,7 @@ export interface RuntimeRunOptions {
   /** Host-owned shared web admission; never model-configurable. */
   readonly webRequestCoordinator?: {
     readonly scope: string;
-    acquire(request: { kind: "searxng" | "ollama" | "duckduckgo" | "startpage" | "codex" | "fetch" | "parallel" | (string & {}); key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
+    acquire(request: { kind: "searxng" | "ollama" | "duckduckgo" | "startpage" | "codex" | "fetch" | "parallel" | "hound" | (string & {}); key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
       readonly waitMs: number;
       complete(outcome: { status: "ok" | "rate_limited" | "unavailable" | "cancelled"; retryAfterMs?: number; retryAtMs?: number }): Promise<void | { retryAfterMs: number; retryAtMs: number }>;
     }>;
@@ -569,12 +569,16 @@ export interface RuntimeRunOptions {
       readonly trustPublicUrl?: boolean;
     };
     readonly parallel?: { readonly apiKeyEnv?: string };
+    /** User-managed Hound MCP endpoint, required when the search chain selects hound. */
+    readonly hound?: { readonly endpoint?: string };
     readonly codex?: { readonly model?: string };
   };
   /** Static WebFetch extraction and optional isolated browser-render policy. */
   readonly webFetchConfig?: {
-    readonly provider?: "local" | "parallel" | readonly ("local" | "parallel")[];
+    readonly provider?: "local" | "parallel" | "hound" | readonly ("local" | "parallel" | "hound")[];
     readonly parallel?: { readonly apiKeyEnv?: string };
+    /** User-managed Hound MCP endpoint, required when the fetch chain selects hound. */
+    readonly hound?: { readonly endpoint?: string };
     readonly render?: "never" | "auto";
     readonly browserCommand?: string;
   };
@@ -690,4 +694,4 @@ export interface MonoRuntimeHostOptions extends RuntimeToolOptions {
 }
 
 /** Source-level built-in web search provider names; arrays are ordered fallback chains. */
-type WebSearchProviderName = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel";
+type WebSearchProviderName = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel" | "hound";

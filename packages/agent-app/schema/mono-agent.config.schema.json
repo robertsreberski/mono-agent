@@ -1214,7 +1214,8 @@
                         "keyless",
                         "duckduckgo",
                         "startpage",
-                        "parallel"
+                        "parallel",
+                        "hound"
                       ]
                     },
                     {
@@ -1230,7 +1231,8 @@
                           "keyless",
                           "duckduckgo",
                           "startpage",
-                          "parallel"
+                          "parallel",
+                          "hound"
                         ]
                       }
                     }
@@ -1261,6 +1263,19 @@
                       "description": "Optional unauthenticated loopback HTTP SearXNG base URL. Remote HTTPS, credentials, query strings, and fragments are rejected.",
                       "examples": [
                         "http://127.0.0.1:8088"
+                      ],
+                      "type": "string"
+                    }
+                  }
+                },
+                "hound": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "endpoint": {
+                      "description": "User-managed Hound MCP endpoint: unauthenticated loopback HTTP URL with an explicit /mcp path (for example http://127.0.0.1:8765/mcp). Required when the corresponding chain selects hound. The endpoint is trusted: per-call arguments request behavior and responses are validated, but the remote server's internal redirects, retries, proxies, and keys are not governed.",
+                      "examples": [
+                        "http://127.0.0.1:8765/mcp"
                       ],
                       "type": "string"
                     }
@@ -1328,6 +1343,19 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
+                "hound": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "endpoint": {
+                      "description": "User-managed Hound MCP endpoint: unauthenticated loopback HTTP URL with an explicit /mcp path (for example http://127.0.0.1:8765/mcp). Required when the corresponding chain selects hound. The endpoint is trusted: per-call arguments request behavior and responses are validated, but the remote server's internal redirects, retries, proxies, and keys are not governed.",
+                      "examples": [
+                        "http://127.0.0.1:8765/mcp"
+                      ],
+                      "type": "string"
+                    }
+                  }
+                },
                 "parallel": {
                   "type": "object",
                   "additionalProperties": false,
@@ -1342,7 +1370,7 @@
                   }
                 },
                 "provider": {
-                  "description": "WebFetch provider name or ordered chain: local (default), parallel. Parallel cannot serve raw format, custom headers, or browser rendering.",
+                  "description": "WebFetch provider name or ordered chain: local (default), parallel, hound. Parallel cannot serve raw format, custom headers, or browser rendering. Hound serves HTTP-only remote extraction from a user-managed endpoint and additionally rejects raw format, custom headers, and local rendering.",
                   "examples": [
                     "local"
                   ],
@@ -1356,7 +1384,8 @@
                       "type": "string",
                       "enum": [
                         "local",
-                        "parallel"
+                        "parallel",
+                        "hound"
                       ]
                     },
                     {
@@ -1367,7 +1396,8 @@
                         "type": "string",
                         "enum": [
                           "local",
-                          "parallel"
+                          "parallel",
+                          "hound"
                         ]
                       }
                     }
