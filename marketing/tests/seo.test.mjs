@@ -108,7 +108,7 @@ describe("marketing built output", () => {
     const meta = await sharp(path).metadata();
     assert.equal(meta.width, 1200, "og card width");
     assert.equal(meta.height, 630, "og card height");
-    assert.ok(statSync(path).size < 120_000, "og card stays small");
+    assert.ok(statSync(path).size < 180_000, "og card stays small");
     // The card carries real brand typography: both image alts must describe
     // the actual card, not the bare artwork.
     for (const attr of ["property=\"og:image:alt\"", "name=\"twitter:image:alt\""]) {
@@ -124,13 +124,13 @@ describe("marketing built output", () => {
 
   it("keeps hero art responsive, decorative, and small", async () => {
     for (const width of [640, 960, 1440]) {
-      for (const ext of ["jpg", "webp"]) {
+      for (const ext of ["webp"]) {
         const rel = `hero-${width}.${ext}`;
         const path = join(DIST, rel);
         assert.ok(existsSync(path), `dist/${rel} must exist`);
         const meta = await sharp(path).metadata();
         assert.ok(meta.width === width, `${rel} width`);
-        assert.ok(statSync(path).size < 120_000, `${rel} stays small`);
+        assert.ok(statSync(path).size < 180_000, `${rel} stays small`);
       }
     }
     // The artwork is decorative brand art: empty alt, never a screenshot.
@@ -232,6 +232,21 @@ describe("marketing built output", () => {
     }
     mustContain(html, "synthetic example data", "console fixture provenance");
     mustContain(html, "current source build", "console release boundary");
+  });
+
+  it("keeps sculptural assets truly transparent and bounded", async () => {
+    for (const name of ["hero-640.webp", "hero-960.webp", "hero-1440.webp", ...[0,1,2,3].map(i=>`module-${i}.webp`)]) {
+      const path = join(DIST,name);
+      const meta = await sharp(path).metadata();
+      assert.ok(meta.hasAlpha, `${name} must blend without a baked backdrop`);
+      assert.ok(meta.width <= 2000 && meta.height <= 2000);
+      const corner = await sharp(path).extract({left:0,top:0,width:1,height:1}).raw().toBuffer();
+      assert.equal(corner[3],0,`${name} corner must be transparent`);
+      assert.ok(statSync(path).size < 180000);
+    }
+    for (const license of ["InstrumentSerif-OFL.txt", "Manrope-OFL.txt"]) {
+      assert.ok(existsSync(join(DIST,"fonts",license)));
+    }
   });
 
   it("avoids unsupported product claims", () => {

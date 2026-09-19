@@ -91,34 +91,31 @@ if (menu && navigation) {
   document.addEventListener('click', event => { if (!event.target.closest('.site-header')) closeMenu(); });
   compact.addEventListener('change', () => closeMenu());
 }
-// A single drawn connection through the blueprint. Never a scroll-jacked scene.
-const configuration = document.querySelector('#configuration');
-if (configuration && 'IntersectionObserver' in window) {
-  const observer = new IntersectionObserver(entries => {
-    if (entries.some(entry => entry.isIntersecting)) {
-      configuration.dataset.entered = 'true';
-      observer.disconnect();
-    }
-  }, { threshold: .15 });
-  observer.observe(configuration);
-}
-
 // A short scroll-led composition: reversible, no wheel interception, no loop.
 const story = document.querySelector('[data-block-story]');
 if (story) {
   const reduce = matchMedia('(prefers-reduced-motion: reduce)');
   const toggle = story.querySelector('.blocks-motion');
+  const caption = story.querySelector('.block-caption');
+  const chapters = [...story.querySelectorAll('.block-chapter')];
+  const labels = ['01 / Foundation', '02 / Connections', '03 / Execution', '04 / Continuity'];
   let paused = false;
   let frame = 0;
   const update = () => {
     frame = 0;
     const rect = story.getBoundingClientRect();
     const progress = Math.max(0, Math.min(1, (innerHeight * .35 - rect.top) / Math.max(1, rect.height - innerHeight * .55)));
-    story.style.setProperty('--block-progress', String(progress));
-    story.dataset.phase = String(Math.min(3, Math.floor(progress * 4)));
+    const readingLine = compact.matches ? story.querySelector('.block-visual').getBoundingClientRect().bottom + 24 : innerHeight * .35;
+    let active = 0;
+    chapters.forEach((chapter, i) => { if (chapter.getBoundingClientRect().top <= readingLine) active = i; });
+    caption.textContent = labels[active];
+    if (!paused) {
+      story.style.setProperty('--block-progress', String(progress));
+      story.dataset.phase = String(active);
+    }
   };
   const requestUpdate = () => {
-    if (reduce.matches || paused || frame) return;
+    if (reduce.matches || frame) return;
     const rect = story.getBoundingClientRect();
     if (rect.bottom < 0 || rect.top > innerHeight) return;
     frame = requestAnimationFrame(update);
@@ -129,7 +126,8 @@ if (story) {
     story.dataset.motion = String(!reduce.matches);
     story.dataset.paused = String(paused);
     toggle.hidden = reduce.matches;
-    if (!reduce.matches && !paused) update();
+    if (!reduce.matches) update();
+    else caption.textContent = 'Four layers. One agent.';
   };
   toggle.addEventListener('click', () => {
     paused = !paused;

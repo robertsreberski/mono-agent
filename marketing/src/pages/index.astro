@@ -76,8 +76,10 @@ const jsonLd = {
     <title>{TITLE}</title>
     <meta name="description" content={DESCRIPTION} />
     <link rel="canonical" href={`${SITE_URL}/`} />
-    <meta name="theme-color" content="#101311" />
+    <meta name="theme-color" content="#101211" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preload" href="/fonts/manrope.ttf" as="font" type="font/ttf" crossorigin />
+    <link rel="preload" href="/fonts/instrument-serif-italic.ttf" as="font" type="font/ttf" crossorigin />
     <link rel="stylesheet" href="/styles.css" />
     <script is:inline type="module" src="/interactions.js"></script>
 
@@ -91,7 +93,7 @@ const jsonLd = {
     <meta property="og:image:height" content="630" />
     <meta
       property="og:image:alt"
-      content="mono-agent social card: the brand name and “Local-first AI workspace for coding and research” beside the stacked-slab artwork."
+      content="mono-agent social card: the brand name and “Local-first AI workspace for coding and research” beside the sculptural graphite-and-chrome artwork."
     />
 
     <meta name="twitter:card" content="summary_large_image" />
@@ -100,7 +102,7 @@ const jsonLd = {
     <meta name="twitter:image" content={OG_IMAGE} />
     <meta
       name="twitter:image:alt"
-      content="mono-agent social card: the brand name and “Local-first AI workspace for coding and research” beside the stacked-slab artwork."
+      content="mono-agent social card: the brand name and “Local-first AI workspace for coding and research” beside the sculptural graphite-and-chrome artwork."
     />
 
     <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
@@ -151,11 +153,11 @@ const jsonLd = {
           <figure class="hero-art" aria-hidden="true">
             <div class="hero-halo"></div>
             <picture>
-              <source type="image/webp" srcset="/hero-640.webp 640w, /hero-960.webp 960w, /hero-1440.webp 1440w" sizes="(max-width: 959px) 100vw, (max-width: 1250px) 80vw, 1000px" />
+              <source type="image/webp" srcset="/hero-640.webp 640w, /hero-960.webp 960w, /hero-1440.webp 1440w" sizes="(max-width: 640px) 100vw, 60vw" />
               <img
-                src="/hero-1440.jpg"
-                srcset="/hero-640.jpg 640w, /hero-960.jpg 960w, /hero-1440.jpg 1440w"
-                sizes="(max-width: 959px) 100vw, (max-width: 1250px) 80vw, 1000px"
+                src="/hero-1440.webp"
+                srcset="/hero-640.webp 640w, /hero-960.webp 960w, /hero-1440.webp 1440w"
+                sizes="(max-width: 640px) 100vw, 60vw"
                 width="1536"
                 height="1024"
                 alt=""
@@ -220,11 +222,11 @@ const jsonLd = {
           <div class="blocks-heading"><div><span class="section-label">Choose your building blocks</span><h3 id="blocks-heading">A system that<br /><em>works together.</em></h3></div><p>Start with a model and a point of view. Add only what your work needs.</p></div>
           <div class="block-story" data-block-story>
             <figure class="block-visual"><div class="block-art" aria-hidden="true">
-              <div class="block-layer" style="--layer:3"><span>04 / CONTINUITY</span><strong>Keep the loop.</strong><small>Channels · schedules · evidence</small></div>
-              <div class="block-layer" style="--layer:2"><span>03 / EXECUTION</span><strong>Share the work.</strong><small>Subagents · jobs · policy</small></div>
-              <div class="block-layer" style="--layer:1"><span>02 / CONNECTIONS</span><strong>Bring the context.</strong><small>Tools · memory · packages</small></div>
-              <div class="block-layer" style="--layer:0"><span>01 / FOUNDATION</span><strong>Make it yours.</strong><small>Identity · models · skills</small></div>
-            </div><figcaption>One agent. Your composition.<button class="blocks-motion" type="button" aria-pressed="false" hidden>Pause motion</button></figcaption></figure>
+              <div class="block-layer" style="--layer:3"><img src="/module-3.webp" width="640" height="427" loading="lazy" alt="" /></div>
+              <div class="block-layer" style="--layer:2"><img src="/module-2.webp" width="640" height="427" loading="lazy" alt="" /></div>
+              <div class="block-layer" style="--layer:1"><img src="/module-1.webp" width="640" height="427" loading="lazy" alt="" /></div>
+              <div class="block-layer" style="--layer:0"><img src="/module-0.webp" width="640" height="427" loading="lazy" alt="" /></div>
+            </div><figcaption><span class="block-caption">Four layers. One agent.</span><button class="blocks-motion" type="button" aria-pressed="false" hidden>Pause motion</button></figcaption></figure>
             <ol class="block-chapters"><li class="block-chapter"><span class="config-key">01 / COMPOSE</span><h4>Give it a point of view.</h4><p>The stable foundation you should not have to paste into every conversation.</p><dl><div><dt><a href={`${DOCS_URL}context/`}>Identity & context <span aria-hidden="true">↗</span></a></dt><dd>Your role, instructions, and workspace.</dd></div><div><dt><a href={`${DOCS_URL}runtime/`}>Models & routing <span aria-hidden="true">↗</span></a></dt><dd>Choose supported local or hosted models and explicit fallbacks.</dd></div><div><dt><a href={`${DOCS_URL}context/skills/`}>Skills <span aria-hidden="true">↗</span></a></dt><dd>Version the instructions for recurring kinds of work.</dd></div></dl></li><li class="block-chapter"><span class="config-key">02 / COMPOSE</span><h4>Connect it to your work.</h4><p>Compose access and context around the task—not the other way around.</p><dl><div><dt><a href={`${DOCS_URL}tools/mcp/`}>Tools & MCP <span aria-hidden="true">↗</span></a></dt><dd>Read files, research the web, or connect your own services.</dd></div><div><dt><a href={`${DOCS_URL}memory/`}>Memory <span aria-hidden="true">↗</span></a></dt><dd>Choose none, Lite, Journal, or BuJo for continuity across conversations.</dd></div><div><dt><a href={`${DOCS_URL}programmatic/composition/`}>Packages & adapters <span aria-hidden="true">↗</span></a></dt><dd>Use the workspace or embed its responder in your product.</dd></div></dl></li><li class="block-chapter"><span class="config-key">03 / COMPOSE</span><h4>Let the work branch out.</h4><p>One conversation can coordinate specialists and long-running commands.</p><dl><div><dt><a href={`${DOCS_URL}config/blueprint/`}>Subagents <span aria-hidden="true">↗</span></a></dt><dd>Delegate a focused question; bring the result back to the parent.</dd></div><div><dt><a href={`${DOCS_URL}tools/background-process-jobs/`}>Background jobs <span aria-hidden="true">↗</span></a></dt><dd>Keep long-running commands off-turn and receive their completion.</dd></div><div><dt><a href={`${DOCS_URL}tools/sandbox/`}>Sandbox & policy <span aria-hidden="true">↗</span></a></dt><dd>Choose tool access and execution boundaries for that work.</dd></div></dl></li><li class="block-chapter"><span class="config-key">04 / COMPOSE</span><h4>Close the loop.</h4><p>Arrange where work starts, where results arrive, and what you can inspect.</p><dl><div><dt><a href={`${DOCS_URL}channels/`}>Channels <span aria-hidden="true">↗</span></a></dt><dd>Talk through the browser, messaging, webhooks, or an API.</dd></div><div><dt><a href={`${DOCS_URL}channels/cron/`}>Schedules <span aria-hidden="true">↗</span></a></dt><dd>Start recurring work through configured cron jobs.</dd></div><div><dt><a href={`${DOCS_URL}observability/`}>Run evidence <span aria-hidden="true">↗</span></a></dt><dd>Inspect local events, summaries, and optional traces.</dd></div></dl></li></ol></div><p class="blocks-note">Compose what you need; not every capability is on by default. Persistent/background subagents and console projects/tags require the current source build. <a href={RELEASE_STATUS_URL}>Check release availability ↗</a></p></section>
       </section>
 
@@ -261,7 +263,7 @@ const jsonLd = {
                 </div>
                 <figure class="workflow-art">
                   <span class="scene-label">FIELD NOTES / 01</span>
-                  <svg viewBox="0 0 520 400" fill="none" aria-hidden="true"><path class="scene-wire" d="M80 180H160Q190 180 190 220V250H310Q340 250 340 210V170H450"/><rect class="scene-sheet" x="55" y="95" width="160" height="140" rx="12" transform="rotate(-8 135 165)"/><path class="scene-accent" d="M105 140L82 163L105 186M161 140L184 163L161 186M145 135L122 190"/><rect class="scene-sheet" x="300" y="165" width="165" height="145" rx="12" transform="rotate(8 380 235)"/><path class="scene-accent" d="M330 223L346 239L376 205"/><path class="scene-line" d="M393 216H431M393 233H419M329 263H426"/><circle class="scene-core" cx="260" cy="165" r="36"/><path class="scene-accent" d="M245 165H275M260 150V180"/></svg>
+                  <img src="/module-0.webp" width="640" height="427" loading="lazy" alt="" /><svg viewBox="0 0 520 400" fill="none" aria-hidden="true"><path class="scene-wire" d="M80 180H160Q190 180 190 220V250H310Q340 250 340 210V170H450"/><rect class="scene-sheet" x="55" y="95" width="160" height="140" rx="12" transform="rotate(-8 135 165)"/><path class="scene-accent" d="M105 140L82 163L105 186M161 140L184 163L161 186M145 135L122 190"/><rect class="scene-sheet" x="300" y="165" width="165" height="145" rx="12" transform="rotate(8 380 235)"/><path class="scene-accent" d="M330 223L346 239L376 205"/><path class="scene-line" d="M393 216H431M393 233H419M329 263H426"/><circle class="scene-core" cx="260" cy="165" r="36"/><path class="scene-accent" d="M245 165H275M260 150V180"/></svg>
                   <figcaption>Codebase → investigate → proposed change<small>Illustrative workflow — not a live agent run</small></figcaption>
                 </figure>
               </article>
@@ -272,7 +274,7 @@ const jsonLd = {
                 </div>
                 <figure class="workflow-art">
                   <span class="scene-label">FIELD NOTES / 02</span>
-                  <svg viewBox="0 0 520 400" fill="none" aria-hidden="true"><path class="scene-wire" d="M100 210C180 210 180 125 260 125S335 260 420 260"/><rect class="scene-sheet" x="80" y="90" width="155" height="190" rx="9" transform="rotate(-12 155 185)"/><path class="scene-line" d="M105 130H196M105 155H180M105 180H196M105 205H158"/><rect class="scene-sheet" x="278" y="116" width="155" height="190" rx="9" transform="rotate(9 355 215)"/><path class="scene-line" d="M305 156H403M305 184H380M305 212H397M305 240H370"/><circle class="scene-core" cx="258" cy="195" r="49"/><path class="scene-accent" d="M236 192L251 207L280 178"/><path class="scene-accent" d="M111 232H180M307 269H387"/></svg>
+                  <img src="/module-1.webp" width="640" height="427" loading="lazy" alt="" /><svg viewBox="0 0 520 400" fill="none" aria-hidden="true"><path class="scene-wire" d="M100 210C180 210 180 125 260 125S335 260 420 260"/><rect class="scene-sheet" x="80" y="90" width="155" height="190" rx="9" transform="rotate(-12 155 185)"/><path class="scene-line" d="M105 130H196M105 155H180M105 180H196M105 205H158"/><rect class="scene-sheet" x="278" y="116" width="155" height="190" rx="9" transform="rotate(9 355 215)"/><path class="scene-line" d="M305 156H403M305 184H380M305 212H397M305 240H370"/><circle class="scene-core" cx="258" cy="195" r="49"/><path class="scene-accent" d="M236 192L251 207L280 178"/><path class="scene-accent" d="M111 232H180M307 269H387"/></svg>
                   <figcaption>Source material → compare → working draft<small>Illustrative workflow — not a live agent run</small></figcaption>
                 </figure>
               </article>
@@ -283,7 +285,7 @@ const jsonLd = {
                 </div>
                 <figure class="workflow-art">
                   <span class="scene-label">FIELD NOTES / 03</span>
-                  <svg viewBox="0 0 520 400" fill="none" aria-hidden="true"><circle class="scene-orbit" cx="260" cy="200" r="126"/><circle class="scene-orbit" cx="260" cy="200" r="85"/><path class="scene-wire" d="M134 200H386M260 74V326"/><rect class="scene-sheet" x="217" y="155" width="86" height="90" rx="20"/><path class="scene-accent" d="M265 171L245 202H272L252 230"/><circle class="scene-core" cx="260" cy="74" r="25"/><path class="scene-accent" d="M249 74L257 82L271 66"/><circle class="scene-core" cx="386" cy="200" r="25"/><path class="scene-accent" d="M375 200H397M386 189V211"/><circle class="scene-core" cx="134" cy="200" r="25"/><path class="scene-accent" d="M123 195H145M123 205H139"/><circle class="scene-core" cx="260" cy="326" r="25"/><path class="scene-accent" d="M260 312V326L270 332"/></svg>
+                  <img src="/module-3.webp" width="640" height="427" loading="lazy" alt="" /><svg viewBox="0 0 520 400" fill="none" aria-hidden="true"><circle class="scene-orbit" cx="260" cy="200" r="126"/><circle class="scene-orbit" cx="260" cy="200" r="85"/><path class="scene-wire" d="M134 200H386M260 74V326"/><rect class="scene-sheet" x="217" y="155" width="86" height="90" rx="20"/><path class="scene-accent" d="M265 171L245 202H272L252 230"/><circle class="scene-core" cx="260" cy="74" r="25"/><path class="scene-accent" d="M249 74L257 82L271 66"/><circle class="scene-core" cx="386" cy="200" r="25"/><path class="scene-accent" d="M375 200H397M386 189V211"/><circle class="scene-core" cx="134" cy="200" r="25"/><path class="scene-accent" d="M123 195H145M123 205H139"/><circle class="scene-core" cx="260" cy="326" r="25"/><path class="scene-accent" d="M260 312V326L270 332"/></svg>
                   <figcaption>Schedule → configured agent → digest<small>Illustrative workflow — not a live agent run</small></figcaption>
                 </figure>
               </article>

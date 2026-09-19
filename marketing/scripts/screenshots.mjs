@@ -23,6 +23,7 @@ const PORT = 4331;
 const URL = `http://127.0.0.1:${PORT}/`;
 
 const SHOTS = [
+  {name:"hero-tablet-768x1000.png",width:768,height:1000},
   {name:"blocks-expanded-desktop-1440x1000.png",width:1440,height:1000,story:.8},
   {name:"blocks-expanded-mobile-390x844.png",width:390,height:844,story:.7},
   {name:"blocks-desktop-1440x1000.png",width:1440,height:1000,scrollTo:".building-blocks"},

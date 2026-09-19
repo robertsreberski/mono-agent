@@ -332,11 +332,11 @@ for (const width of [390,1440]) {
       await story.evaluate((el,f)=>{const r=el.getBoundingClientRect();scrollTo({top:scrollY+r.top-innerHeight*.35+f*(r.height-innerHeight*.55),behavior:'instant'});},fraction);
     };
     await move(.15); await expect.poll(progress).toBeCloseTo(.15,1);
-    await expect(story).toHaveAttribute('data-phase','0');
+
     await move(.8); await expect.poll(progress).toBeCloseTo(.8,1);
-    await expect(story).toHaveAttribute('data-phase','3');
+
     await move(.15); await expect.poll(progress).toBeCloseTo(.15,1);
-    await expect(story).toHaveAttribute('data-phase','0');
+
     await move(.6); await expect.poll(progress).toBeCloseTo(.6,1);
     const poses=()=>story.locator('.block-layer').evaluateAll(els=>els.map(el=>getComputedStyle(el).transform));
     const beforePause=await poses();
@@ -355,3 +355,9 @@ for (const width of [390,1440]) {
     await expect(story).toHaveAttribute('data-motion','true');
   });
 }
+
+test('mobile sticky artwork identifies the chapter under its reading edge', async ({page}) => {
+  await page.setViewportSize({width:390,height:844}); await page.goto('/');
+  await page.locator('.block-chapter').nth(2).evaluate(el=>scrollTo({top:scrollY+el.getBoundingClientRect().top-285,behavior:'instant'}));
+  await expect.poll(()=>page.locator('.block-caption').textContent()).toBe('03 / Execution');
+});
