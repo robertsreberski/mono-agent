@@ -18,6 +18,9 @@ import { startpageProvider } from "./startpage.js";
  * search claims immediately before dispatch, via web-search-state; setup and
  * failed responses are refunded by the chain. batchesQueries providers receive
  * options.queries in primary-first order; others receive sequential queries.
+ * An optional preflight may refuse the attempt before admission is constructed
+ * or the coordinator is touched (no quota claimed, no dispatch); it returns a
+ * failure object or nullish to proceed.
  *
  * @typedef {Object} SearchProvider
  * @property {string} name
@@ -29,6 +32,7 @@ import { startpageProvider } from "./startpage.js";
  * @property {boolean} batchesQueries
  * @property {boolean} [primaryOnly]
  * @property {number} [chainDeadlineMs]
+ * @property {((options: any) => {code: string, message: string, retryable: boolean} | null | undefined)} [preflight]
  * @property {(query: string, options: any) => any} search
  */
 

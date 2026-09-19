@@ -262,7 +262,8 @@ describe("Hound WebFetch", () => {
     expect(result.text).not.toContain("narrower focus");
   });
   it.each([
-    ["stealth tier", { ...fetchDoc, fetcher_used: "stealthy", escalation_path: "http→stealthy" }, "unsupported_fetch_tier"],
+    ["stealth escalation path", { ...fetchDoc, fetcher_used: "stealthy", escalation_path: "http→stealthy" }, "unexpected_escalation"],
+    ["stealth tier on the direct path", { ...fetchDoc, fetcher_used: "stealthy" }, "unsupported_fetch_tier"],
     ["archive snapshot", { ...fetchDoc, source: "archive.org", archived_at: "2026-01-01" }, "non_live_source"],
     ["missing provenance", { ...fetchDoc, source: undefined }, "non_live_source"],
   ])("fails closed on %s instead of presenting the evidence", async (_label, data, code) => {
@@ -278,6 +279,17 @@ describe("Hound WebFetch", () => {
     const result = await performWebFetch({ url: target }, { ctx, fetchImpl: routed, fetchConfig: { provider: ["hound", "local"], hound: { endpoint: ENDPOINT } }, retryDelaysMs: [] });
     expect(result.outcome).toMatchObject({ code: "robots_denied", backend: "hound", attemptedProviders: ["hound"] });
     expect(seen).not.toContain(target);
+  });
+  it.each([
+    ["served cache entry", { ...fetchDoc, cached: true }, "cached_response"],
+    ["missing cache flag", { ...fetchDoc, cached: undefined }, "cached_response"],
+    ["missing escalation path", { ...fetchDoc, escalation_path: undefined }, "unexpected_escalation"],
+    ["nondirect escalation path", { ...fetchDoc, escalation_path: "http\u2192stealthy" }, "unexpected_escalation"],
+  ])("fails closed on %s instead of presenting the evidence", async (_label, data, code) => {
+    const { fetchImpl } = transport(ENDPOINT, { structuredContent: data });
+    const result = await performWebFetch({ url: target }, { ctx, fetchImpl, fetchConfig: { provider: ["hound", "local"], hound: { endpoint: ENDPOINT } }, retryDelaysMs: [] });
+    expect(result.outcome).toMatchObject({ code, backend: "hound", attemptedProviders: ["hound"] });
+    expect(fetchImpl.mock.calls.some(([url]) => String(url) === target)).toBe(false);
   });
   it("advances from unusable remote content to local in an explicit chain", async () => {
     const remote = transport(ENDPOINT, { structuredContent: { ...fetchDoc, content_ok: false } });
@@ -309,6 +321,19 @@ describe("Hound WebFetch", () => {
     const result = await performWebFetch({ url: target, include_links: true }, { ctx, fetchImpl, fetchConfig: { provider: ["parallel", "hound"], hound: { endpoint: ENDPOINT } } });
     expect(result.outcome).toMatchObject({ status: "ok", backend: "hound", attemptedProviders: ["hound"] });
     expect(calls[0].arguments.options).toMatchObject({ respect_robots: true, include_links: true });
+  });
+  it("discards over-long link URLs under the shared bound and reports the omission", async () => {
+    const atBound = `https://example.com/${"x".repeat(2000 - "https://example.com/".length)}`;
+    const overBound = `https://example.com/${"x".repeat(2001 - "https://example.com/".length)}`;
+    expect(atBound).toHaveLength(2000);
+    expect(overBound).toHaveLength(2001);
+    const data = { ...fetchDoc, links: { citations: [{ url: overBound, text: "too long" }, { url: atBound, text: "at bound" }], navigation: [], external: [] } };
+    const { fetchImpl } = transport(ENDPOINT, { structuredContent: data });
+    const result = await performWebFetch({ url: target, include_links: true }, fetchOptions(fetchImpl));
+    expect(result.document.links).toHaveLength(1);
+    expect(result.document.links[0].url).toBe(atBound);
+    expect(result.document.links.every((link) => link.url.length <= 2000)).toBe(true);
+    expect(result.text).toContain("1 of 2 page links omitted");
   });
   it("shares the controller across search and fetch without Hound sessions", async () => {
     const { fetchImpl, calls } = transport(ENDPOINT, (params) => ({ structuredContent: params.name === "mcp_smart_search" ? search : fetchDoc }));
@@ -490,6 +515,48 @@ describe("Hound restricted host policies", () => {
       expect(houndRemoteAllowedByPolicy(policy)).toBe(false);
     }
   });
+  it("refuses before coordinator admission: acquire/complete/MCP untouched, quota zero", async () => {
+    const acquire = vi.fn(async () => { throw new Error("must not acquire under denial"); });
+    const complete = vi.fn();
+    const { fetchImpl, seen } = recordingTransport();
+    const state = createWebSearchRunState({});
+    const result = await performWebSearch({ query: "Hound MCP" }, {
+      ...searchOptions(fetchImpl),
+      ctx: nativeCtx({ mode: "localhost", allowlist: [] }),
+      coordinator: { acquire, complete },
+      searchState: state,
+    });
+    expect(result.outcome).toMatchObject({ code: "network_denied", requestsThisCall: 0, dispatchesUsed: 0 });
+    expect(acquire).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(seen).toHaveLength(0);
+    expect(state.requestsUsed).toBe(0);
+  });
+  it("refuses under an unknown policy shape without touching admission", async () => {
+    const acquire = vi.fn(async () => { throw new Error("must not acquire"); });
+    const complete = vi.fn();
+    const missing = vi.fn();
+    // The permissive stub passes the URL gate; the unknown shape must still fail closed at preflight.
+    // (A native mode without a network sub-field is ambiguous, never "all".)
+    const result = await performWebSearch({ query: "Hound MCP" }, {
+      ...searchOptions(missing),
+      sandboxPolicy: { mode: "native" },
+      coordinator: { acquire, complete },
+    });
+    expect(result.outcome).toMatchObject({ code: "network_denied", requestsThisCall: 0 });
+    expect(acquire).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(missing).not.toHaveBeenCalled();
+  });
+  it("admits normally under an unrestricted policy with a coordinator", async () => {
+    const complete = vi.fn(async () => undefined);
+    const acquire = vi.fn(async () => ({ waitMs: 0, complete }));
+    const { fetchImpl } = recordingTransport();
+    const result = await performWebSearch({ query: "Hound MCP" }, { ...searchOptions(fetchImpl), coordinator: { acquire, complete } });
+    expect(result.outcome).toMatchObject({ status: "ok", backend: "hound" });
+    expect(acquire).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("Hound endpoint strictness", () => {
@@ -555,6 +622,15 @@ describe("Hound controller acquisition and views", () => {
     const result = await controller.fetch({ url: target, focus: "nomatchstring" });
     expect(JSON.parse(result.text)).toMatchObject({ tool: "WebFetch", status: "partial", code: "focus_no_match" });
     expect(result.text).toContain("Remote source truncated after 5000 extracted characters");
+    await controller.close();
+  });
+  it("keeps controller links bounded on oversized provider URLs", async () => {
+    const big = `https://example.com/${"y".repeat(5000)}`;
+    const { controller } = houndController(undefined, () => ({ structuredContent: { ...fetchDoc, links: { citations: [{ url: big, text: "big" }], navigation: [], external: [] } } }));
+    const result = await controller.fetch({ url: target, include_links: true });
+    const payload = JSON.parse(result.text);
+    expect(payload.summary).toContain("Page links are unavailable (remote extraction did not return page links).");
+    expect(result.text).toContain("1 of 1 page links omitted");
     await controller.close();
   });
 });

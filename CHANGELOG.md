@@ -11,8 +11,8 @@
   freshness, language, and domain filters; fetch is HTTP-only with
   `respect_robots` requested (upstream handling is fail-open, not a
   strict-enforcement guarantee), fresh extraction, bounded remote links, and
-  terminal failures for non-HTTP tiers, non-live sources, and known robots
-  refusals. The endpoint is
+  terminal failures for cached, unexpectedly escalated, or non-HTTP-tier
+  responses, non-live sources, and known robots refusals. The endpoint is
   trusted: arguments request behavior and responses are validated, but remote
   redirects, retries, and keys are not governed. Doctor liveness uses only
   `tools/list`.

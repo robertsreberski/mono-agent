@@ -22,6 +22,13 @@ export const houndProvider = {
   eligibility: (config) => Boolean(config.hound?.endpoint),
   admission: (config) => ({ kind: "hound", key: config.hound.endpoint, processPolicy: "endpoint" }),
   networkTargets: (config) => [config.hound.endpoint],
+  // Pre-admission refusal for restricted host policies: the loopback endpoint
+  // gate cannot see the server-side fanout, so this runs before admission is
+  // constructed, before quota is claimed, and before any MCP dispatch. The
+  // in-search check below stays as defense in depth for direct callers.
+  preflight: (options) => houndRemoteAllowedByPolicy(options.policy)
+    ? null
+    : { code: "network_denied", message: "Network access denied by sandbox policy.", retryable: false },
   async search(query, options) {
     // The loopback endpoint gate in searchOneQuery is not sufficient: Hound
     // fans out server-side to arbitrary public engines. A restricted host

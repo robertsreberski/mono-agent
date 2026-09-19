@@ -2,7 +2,7 @@
 import { callHoundMcp, houndFailure, houndRemoteAllowedByPolicy, houndStructuredContent, validateHoundEndpoint, HOUND_FETCH_CONTENT_CHARS, HOUND_FETCH_TOOL } from "./hound-mcp.js";
 import { guardedSearch, collapseWhitespace } from "./web-search-providers/shared.js";
 import { assertNoWebAccessInterstitial } from "./web-access-interstitial.js";
-import { markdownToText, MAX_WEB_FETCH_LINKS, MAX_WEB_FETCH_LINK_TEXT_CHARS } from "./web-document-extractor.js";
+import { markdownToText, MAX_WEB_FETCH_LINKS, MAX_WEB_FETCH_LINK_TEXT_CHARS, MAX_WEB_FETCH_LINK_URL_CHARS } from "./web-document-extractor.js";
 
 export const HOUND_FETCH_TIMEOUT_MS = 25_000;
 
@@ -99,6 +99,19 @@ function normalizeHoundFetchResponse(response, url, params, options, started) {
   // incompatible or missing. This refuses to present the evidence; it cannot
   // undo server work that already happened, and is never described as
   // preventing it.
+  // Pinned-source provenance (hound-mcp 12.4.1): a forced HTTP fetch always
+  // answers fresh (`cached: false`, the cache read is skipped for
+  // `cache_ttl: 0` and a `ttl: 0` row can never read fresh) with
+  // `escalation_path: "direct:http"` set by the forced-tier path. Anything
+  // else — a served cache entry, another escalation path, or fields the pinned
+  // shape always emits going missing — is a terminal denial, never a local
+  // fallback: the evidence does not attest the requested HTTP-only extraction.
+  if (data.cached !== false) {
+    return { ok: false, backend: "hound", code: "cached_response", message: "Hound served a cached response instead of a fresh HTTP-only extraction.", retryable: false };
+  }
+  if (data.escalation_path !== "direct:http") {
+    return { ok: false, backend: "hound", code: "unexpected_escalation", message: "Hound did not take the direct HTTP-only path.", retryable: false };
+  }
   if (data.fetcher_used !== "http") {
     return { ok: false, backend: "hound", code: "unsupported_fetch_tier", message: "Hound did not use the HTTP-only tier.", retryable: false };
   }
@@ -137,8 +150,11 @@ function normalizeHoundFetchResponse(response, url, params, options, started) {
   const totalExtracted = Number.isSafeInteger(data.total_extracted_chars) ? data.total_extracted_chars : markdown.length;
   // Links are always acquired bounded and normalized; formatWebFetchDocument
   // decides whether the caller's view includes them.
-  const links = normalizeHoundLinks(data.links, finalUrl);
+  const { links, omittedLinks, linkCandidates } = normalizeHoundLinks(data.links, finalUrl);
   const metadataParts = ["Hound remote HTTP-only extraction; provider-supplied content."];
+  if (omittedLinks > 0) {
+    metadataParts.push(`${omittedLinks} of ${linkCandidates} page links omitted (invalid, oversized, duplicate, or beyond budget).`);
+  }
   if (remoteTruncated) {
     // Truthful cut marker with no recovery promise: content past the remote
     // cut was never acquired, so focus filters and continuations operate on
@@ -166,10 +182,14 @@ function normalizeHoundFetchResponse(response, url, params, options, started) {
  * Flatten Hound's classified link envelope to the local {url, text,
  * provenance} shape as untrusted evidence: citations first, then external,
  * then navigation, deduplicated and capped at the local link budget. Only
- * http(s) URLs without credentials survive.
+ * http(s) URLs without credentials survive, and over-long URLs are discarded,
+ * never truncated, under the same per-URL bound as local extraction — a long
+ * provider URL must not leak past the content cap through the links channel.
+ * Returns the emitted links plus a truthful count of candidates and omissions
+ * (invalid, oversized, duplicate, or beyond budget).
  */
 function normalizeHoundLinks(links, finalUrl) {
-  if (!links || typeof links !== "object") return undefined;
+  if (!links || typeof links !== "object") return { links: undefined, omittedLinks: 0, linkCandidates: 0 };
   const groups = [
     ...(Array.isArray(links.citations) ? links.citations.map((entry) => ({ entry, provenance: "main-content" })) : []),
     ...(Array.isArray(links.external) ? links.external.map((entry) => ({ entry, provenance: "page" })) : []),
@@ -177,18 +197,32 @@ function normalizeHoundLinks(links, finalUrl) {
   ];
   const seen = new Set();
   const normalized = [];
+  let omittedLinks = 0;
   for (const { entry, provenance } of groups) {
-    if (normalized.length >= MAX_WEB_FETCH_LINKS) break;
-    if (!entry || typeof entry !== "object" || typeof entry.url !== "string") continue;
+    if (normalized.length >= MAX_WEB_FETCH_LINKS) {
+      omittedLinks += 1;
+      continue;
+    }
+    if (!entry || typeof entry !== "object" || typeof entry.url !== "string") {
+      omittedLinks += 1;
+      continue;
+    }
     let href;
     try {
       const parsed = new URL(entry.url, finalUrl);
-      if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) continue;
+      if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+        omittedLinks += 1;
+        continue;
+      }
       href = parsed.href;
     } catch {
+      omittedLinks += 1;
       continue;
     }
-    if (seen.has(href)) continue;
+    if (href.length > MAX_WEB_FETCH_LINK_URL_CHARS || seen.has(href)) {
+      omittedLinks += 1;
+      continue;
+    }
     seen.add(href);
     normalized.push({
       url: href,
@@ -196,5 +230,5 @@ function normalizeHoundLinks(links, finalUrl) {
       provenance,
     });
   }
-  return normalized;
+  return { links: normalized.length > 0 ? normalized : undefined, omittedLinks, linkCandidates: groups.length };
 }

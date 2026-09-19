@@ -199,8 +199,9 @@ fresh extraction (`cache_ttl: 0`), no actions, headers, cookies, or proxies,
 with a finite content limit. Upstream robots handling is fail-open
 (unreachable robots files allow), so the flag requests compliance without
 guaranteeing it; do not use Hound where strict robots enforcement is required.
-Responses whose tier is not HTTP-only, whose source is not live, whose
-provenance is missing, or that carry the known robots-denied marker are
+Responses that arrive cached or via another escalation path, whose tier is
+not HTTP-only, whose source is not live, whose provenance is missing, or that
+carry the known robots-denied marker are
 rejected before presentation with terminal codes — an explicit refusal of
 known cases, never a fail-closed guarantee. Remote truncation is marked
 in document metadata and never auto-paginated; remote page links are
