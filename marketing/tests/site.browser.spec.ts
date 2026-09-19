@@ -255,3 +255,66 @@ test("enabling reduced motion clears active parallax", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await expect.poll(() => page.locator(".hero-art").evaluate(el => el.style.getPropertyValue("--art-x"))).toBe("");
 });
+
+async function scrubStory(page: import('@playwright/test').Page, progress: number) {
+  await page.evaluate(p => {
+    const box = document.querySelector('.story-layout')!.getBoundingClientRect();
+    window.scrollTo({ top: scrollY + box.top + (box.height - innerHeight) * p, behavior: 'instant' });
+  }, progress);
+  await expect(page.locator('[data-scroll-story]')).toHaveAttribute('data-chapter', String(Math.round(progress * 3)));
+}
+
+for (const width of [390, 768, 1440]) {
+  test(`scroll composes the agent, reverses, and releases the pin at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/', { waitUntil: 'networkidle' });
+    await expect(page.locator('html')).toHaveAttribute('data-motion', 'on');
+    await scrubStory(page, 0);
+    const firstPose = await page.locator('[data-layer="3"]').getAttribute('style');
+    await scrubStory(page, 1/3);
+    expect(await page.locator('[data-layer="3"]').getAttribute('style')).not.toBe(firstPose);
+    const stage = await page.locator('.story-stage').boundingBox();
+    expect(stage!.y).toBeCloseTo(0, 0);
+    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+    expect(results.violations, JSON.stringify(results.violations)).toEqual([]);
+    await scrubStory(page, 1);
+    expect(await page.locator('[data-scroll-story]').evaluate(el => el.style.getPropertyValue('--core-opacity'))).toBe('1');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await scrubStory(page, 0);
+    expect(await page.locator('[data-layer="3"]').getAttribute('style')).toBe(firstPose);
+    await page.locator('#use-cases').evaluate(el => el.scrollIntoView({ behavior: 'instant' }));
+    await expect(page.locator('#use-cases')).toBeInViewport();
+    expect((await page.locator('.story-stage').boundingBox())!.y).toBeLessThan(0);
+  });
+}
+
+test('pause motion restores the static narrative and can resume', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Pause motion' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'off');
+  expect(await page.locator('.story-stage').evaluate(el => getComputedStyle(el).position)).not.toBe('sticky');
+  expect(await page.locator('[data-layer="0"]').getAttribute('style')).toBe('');
+  await expect(page.locator('.story-chapter')).toHaveCount(4);
+  await page.getByRole('button', { name: 'Resume motion' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'on');
+});
+
+test('reduced-motion and no-JS visitors get a static complete composition', async ({ browser }) => {
+  for (const options of [{ reducedMotion: 'reduce' as const }, { javaScriptEnabled: false }]) {
+    const context = await browser.newContext({ ...options, viewport: { width: 390, height: 844 } });
+    const page = await context.newPage();
+    await page.goto('/');
+    expect(await page.locator('.story-stage').evaluate(el => getComputedStyle(el).position)).not.toBe('sticky');
+    for (const chapter of await page.locator('.story-chapter').all()) await expect(chapter).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    if ('reducedMotion' in options) await expect(page.getByRole('button', { name: 'Reduced motion on' })).toBeDisabled();
+    await context.close();
+  }
+});
+
+test('deep links remain in view after the scroll story initializes', async ({ page }) => {
+  await page.goto('/#workflow-research', { waitUntil: 'networkidle' });
+  await expect(page.locator('#workflow-research')).toBeInViewport();
+  await page.goto('/#faq', { waitUntil: 'networkidle' });
+  await expect(page.locator('#faq')).toBeInViewport();
+});

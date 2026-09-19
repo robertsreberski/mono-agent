@@ -3,7 +3,7 @@
 The prospective marketing site at **<https://mono-agent.dev/>** (not yet
 deployed — see [Prospective deployment](#prospective-deployment)). A standalone
 [Astro](https://astro.build/) static app: one crawlable HTML page, one
-stylesheet, and a small local progressive-enhancement module. GitHub is the primary call to action; the
+stylesheet, and two small local progressive-enhancement modules. GitHub is the primary call to action; the
 existing docs site is secondary.
 
 ## Architecture
@@ -43,6 +43,25 @@ No model calls, analytics, third-party scripts or storage are used. Clipboard te
 stub success and refusal; they prove UI handling, not operating-system permission.
 Motion is finite or pointer-driven, disabled for reduced-motion users, and never
 hijacks scrolling. Readable text does not fade through low-contrast states.
+
+## Scroll composition
+
+`public/scroll-story.js` maps native scroll position to four reversible poses of a
+CSS 3D sculpture: a stack, an exploded set of components, connected capabilities,
+and a composed agent. A sticky stage accompanies real, server-rendered chapter text;
+a kinetic type strip and hero depth respond to the same scroll. All graphics are
+explicitly conceptual, not a screenshot or a real agent run.
+
+There is no scroll interception, animation dependency, permanent frame loop, or
+content hidden pending JavaScript. Passive scroll/resize events schedule one frame;
+geometry interpolation is pure and unit-tested. Mobile uses a shorter stage and
+compressed poses. **Pause motion**, the OS reduced-motion preference, or no JavaScript
+produces a static complete composition instead. Preference changes clear transforms.
+
+`pnpm run screenshots -- --video-only` records an automated real-browser scroll
+through the story into `output/scroll-story-desktop.webm`; add `--video` to capture
+both screenshots and the recording. The recording drives ordinary browser scrolling,
+not a generated product simulation. Every frame stays at 1440×1000.
 
 ## Local development
 

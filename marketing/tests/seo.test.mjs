@@ -127,7 +127,7 @@ describe("marketing built output", () => {
   it("keeps one H1 with the exact headline and resolves every anchor", () => {
     const h1s = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/g) ?? [];
     assert.equal(h1s.length, 1, "exactly one H1");
-    assert.ok(h1s[0].includes("Your agents. Your models. Your workspace."),
+    assert.ok(h1s[0].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").includes("Your agents. Your models. Your workspace."),
       "exact hero headline");
     const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
     const anchors = [...html.matchAll(/href="#([^"]*)"/g)].map((m) => m[1]);
@@ -149,7 +149,8 @@ describe("marketing built output", () => {
     assert.equal(scripts.length, 1);
     assert.ok(scripts[0].includes('src="/interactions.js"'));
     assert.ok(scripts[0].includes('type="module"'));
-    assert.ok(statSync(join(DIST, "interactions.js")).size < 6000);
+    assert.ok(statSync(join(DIST, "interactions.js")).size < 6500);
+    assert.ok(statSync(join(DIST, "scroll-story.js")).size < 8000);
     for (const id of ["workflow-build", "workflow-research", "workflow-automate"]) {
       mustContain(html, `id="${id}"`, "server-rendered workflow");
     }

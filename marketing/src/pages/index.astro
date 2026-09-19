@@ -86,6 +86,7 @@ const jsonLd = {
         </a>
         <nav class="site-nav" aria-label="Sections">
           <ul>
+            <li><a href="#anatomy">The anatomy</a></li>
             <li><a href="#use-cases">Use cases</a></li>
             <li><a href="#why">Why mono-agent</a></li>
             <li><a href="#start">Get started</a></li>
@@ -104,7 +105,7 @@ const jsonLd = {
         <div class="wrap hero-grid">
           <div class="hero-copy">
             <span class="eyebrow"><span class="status-dot" aria-hidden="true"></span> A local-first AI workspace</span>
-            <h1 id="hero-heading">Your agents. Your models. Your workspace.</h1>
+            <h1 id="hero-heading">Your agents. <br />Your models. <br /><em>Your workspace.</em></h1>
             <p class="lede">
               A folder becomes an agent. A conversation becomes work.
               Code, research, and automate with the models you choose —
@@ -117,10 +118,7 @@ const jsonLd = {
             <p class="hero-meta">Open source. Bring your own models. Make it yours.</p>
           </div>
           <figure class="hero-art" aria-hidden="true">
-            <div class="orbital-ring ring-one"></div><div class="orbital-ring ring-two"></div>
-            <span class="art-coordinate coordinate-top">01 — MODELS</span>
-            <span class="art-coordinate coordinate-middle">02 — CONTEXT</span>
-            <span class="art-coordinate coordinate-bottom">03 — POSSIBILITIES</span>
+            <div class="hero-halo"></div>
             <picture>
               <source type="image/webp" srcset="/hero-640.webp 640w, /hero-960.webp 960w, /hero-1440.webp 1440w" sizes="(max-width: 959px) 100vw, (max-width: 1250px) 80vw, 1000px" />
               <img
@@ -136,12 +134,47 @@ const jsonLd = {
             <figcaption class="visually-hidden">Decorative brand illustration, not a product screenshot.</figcaption>
           </figure>
         </div>
-        <div class="wrap hero-footnote"><span>01 / YOUR WORK, YOUR WAY</span><a href="#use-cases">Explore the possibilities <span aria-hidden="true">↓</span></a></div>
+        <div class="wrap hero-footnote"><span>01 / YOUR WORK, YOUR WAY</span><a href="#anatomy">Scroll to compose an agent <span aria-hidden="true">↓</span></a></div>
       </section>
 
       <section class="capability-strip" aria-label="Core capabilities">
         <div class="wrap"><span>Built around your choices</span><ul><li>Local &amp; cloud models</li><li>Persistent conversations</li><li>Skills &amp; MCP</li><li>Optional memory</li></ul></div>
       </section>
+
+      <section class="anatomy" id="anatomy" aria-labelledby="anatomy-heading" data-scroll-story>
+        <div class="wrap anatomy-intro">
+          <span class="section-label">Not a chatbot. A composition.</span>
+          <h2 id="anatomy-heading">Intelligence is a starting point.<br /><em>What you build around it is yours.</em></h2>
+          <div class="anatomy-intro-bottom"><p>A model is one ingredient. Give it a point of view, the right context, and the ability to act.</p><button class="motion-toggle" type="button" aria-pressed="false" hidden>Pause motion</button></div>
+        </div>
+        <div class="story-layout wrap">
+          <div class="story-stage">
+            <div class="stage-topline" aria-hidden="true"><span>MONO / COMPOSITION STUDY</span><span data-scene-number>01 — 04</span></div>
+            <div class="composition" aria-hidden="true">
+              <div class="composition-grid"></div>
+              <div class="composition-orbit orbit-a"></div><div class="composition-orbit orbit-b"></div>
+              <div class="composition-axis axis-x"></div><div class="composition-axis axis-y"></div>
+              <div class="agent-sculpture">
+                <div class="agent-layer layer-memory" data-layer="0"><span class="layer-index">04 / CONTINUITY</span><strong>Memory</strong><span class="layer-detail">Optional. Deliberate. Yours.</span><i class="layer-glyph glyph-memory"></i></div>
+                <div class="agent-layer layer-tools" data-layer="1"><span class="layer-index">03 / CAPABILITY</span><strong>Tools</strong><span class="layer-detail">Skills · MCP · Policy</span><i class="layer-glyph glyph-tools"></i></div>
+                <div class="agent-layer layer-model" data-layer="2"><span class="layer-index">02 / INTELLIGENCE</span><strong>Models</strong><span class="layer-detail">Your choice of provider</span><i class="layer-glyph glyph-model"></i></div>
+                <div class="agent-layer layer-identity" data-layer="3"><span class="layer-index">01 / POINT OF VIEW</span><strong>Identity</strong><span class="layer-detail">A role. A workspace. A purpose.</span><i class="layer-glyph glyph-identity"></i></div>
+              </div>
+              <div class="composition-center"><span class="center-mark">m<span>·</span></span><span>mono-agent</span></div>
+              <span class="composition-coordinate coordinate-left">YOUR CONTEXT</span><span class="composition-coordinate coordinate-right">YOUR CONTROL</span>
+            </div>
+            <div class="stage-bottomline"><span data-scene-caption>One folder. A world of possibility.</span><span class="scene-progress" aria-hidden="true"><i></i></span></div>
+            <p class="scene-disclaimer">A visual metaphor for your configuration. Not a product interface.</p>
+          </div>
+          <div class="story-rail">
+            <article class="story-chapter" data-chapter="0"><span class="chapter-number">01 / THE FOUNDATION</span><h3>Start with<br /><em>your world.</em></h3><p>A codebase. A research folder. A set of questions nobody else is asking. Your workspace becomes the context for an agent with a purpose.</p><span class="chapter-detail">A folder → an agent workspace</span></article>
+            <article class="story-chapter" data-chapter="1"><span class="chapter-number">02 / THE POINT OF VIEW</span><h3>Give it<br /><em>character.</em></h3><p>Define a role and instructions. Choose the models behind the conversation. Make a researcher, a reviewer, or something entirely your own.</p><span class="chapter-detail">Your identity + your model routes</span></article>
+            <article class="story-chapter" data-chapter="2"><span class="chapter-number">03 / THE REACH</span><h3>Let it do<br /><em>more.</em></h3><p>Connect tools through skills and MCP. Add optional memory. Reach your agent through the browser, channels, or a schedule. You define the boundaries.</p><span class="chapter-detail">Tools + context + configured access</span></article>
+            <article class="story-chapter" data-chapter="3"><span class="chapter-number">04 / THE COMPOSITION</span><h3>Many parts.<br /><em>One agent.</em></h3><p>Not a pile of host code to hold together. A readable configuration that composes the pieces into a persistent workspace for real work.</p><a class="chapter-detail" href="#use-cases">Now, put it to work <span aria-hidden="true">↗</span></a></article>
+          </div>
+        </div>
+      </section>
+      <div class="kinetic-band" aria-hidden="true"><div data-kinetic-text>YOUR MODELS. <em>YOUR METHODS.</em> YOUR WORLD.</div></div>
 
       <section class="section" id="use-cases" aria-labelledby="use-cases-heading">
         <div class="wrap">

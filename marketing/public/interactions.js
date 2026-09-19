@@ -1,3 +1,5 @@
+import { initScrollStory } from "./scroll-story.js";
+
 // Progressive enhancement only: no model requests, tracking, or persistence.
 const explorer = document.querySelector('[data-workflow-explorer]');
 if (explorer) {
@@ -86,7 +88,7 @@ if (hero && art) {
     art.style.removeProperty('--art-y');
   };
   hero.addEventListener('pointermove', (event) => {
-    if (motion.matches || !finePointer.matches || event.pointerType !== 'mouse') return;
+    if (motion.matches || document.documentElement.dataset.motion === "off" || !finePointer.matches || event.pointerType !== 'mouse') return;
     cancelAnimationFrame(frame);
     frame = requestAnimationFrame(() => {
       const box = hero.getBoundingClientRect();
@@ -96,5 +98,8 @@ if (hero && art) {
   });
   hero.addEventListener('pointerleave', reset);
   motion.addEventListener('change', reset);
+  document.documentElement.addEventListener('motionpreferencechange', reset);
   finePointer.addEventListener('change', reset);
 }
+
+initScrollStory();
