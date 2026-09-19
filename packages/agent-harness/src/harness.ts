@@ -888,11 +888,10 @@ export class MonoAgentHarness implements AgentHarness {
         && contextImportSupport !== undefined
       ) {
         exclusiveHistoryRequired = true;
-        // The new non-provider owner holds only logical/exact claims during the
-        // model call. Its physical SQLite shard transaction is acquired later,
-        // for the short version-check + staged-commit boundary. The existing
-        // durable-provider path above intentionally retains its older long-held
-        // shard transaction behavior.
+        // Like durable provider turns, non-provider turns hold exact-key
+        // logical/exact claims, not a shared physical shard transaction, across
+        // the model call. Root transactions cover only history maintenance and
+        // publication, never provider execution.
         const beginMutation = (async () => {
           const acquired = await contextImportSupport.beginExclusiveTurn(request.conversationId);
           try {
