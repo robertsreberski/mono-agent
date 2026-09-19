@@ -21,6 +21,10 @@
   scope; distinguish corrected reports from actual state changes and avoid
   turning observed outcomes into causal proof, without extra model calls or a
   storage-schema change.
+- Let automatic direct-fact recall use finite first-party reported properties,
+  choices, and work/live locations while rendering their attribution unchanged;
+  keep unsafe, ambiguous, corrected, and conflicting reports out of automatic
+  context.
 - Reject memory E2E corpus/split selections with no groups before provider
   setup, build, or benchmark execution instead of reporting a successful
   zero-trial run.
