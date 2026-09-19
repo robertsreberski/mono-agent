@@ -92,7 +92,10 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "tools.mcpCallTimeoutMs": "integer",
   "tools.mcpCallMaxTotalTimeoutMs": "integer",
   "tools.web.coordination": "string",
-  "tools.web.search.backend": "string",
+  "tools.web.search.backend": "string | string[]",
+  "tools.web.fetch.provider": "string | string[]",
+  "tools.web.search.parallel.apiKeyEnv": "string",
+  "tools.web.fetch.parallel.apiKeyEnv": "string",
   "tools.web.search.maxRequestsPerRun": "integer",
   "tools.web.search.codex.model": "string",
   "tools.web.search.endpoint": "string",
@@ -303,7 +306,7 @@ describe("config reference", () => {
       expect(field, `missing config reference field for ${id}`).toBeDefined();
       const expectedType = EXPECTED_CORE_FIELD_TYPES[id];
       expect(field?.type, `${id} inferred ConfigReferenceType`).toBe(expectedType);
-      expect(schemaForField(field!).type, `${id} generated JSON-Schema type`).toBe(
+      expect(schemaForField(field!).type, `${id} generated JSON-Schema type`).toEqual(
         jsonSchemaTypeFor(expectedType),
       );
     }
@@ -594,7 +597,8 @@ function schemaNode(schema: SchemaNode, ...path: readonly string[]): SchemaNode 
   return current;
 }
 
-function jsonSchemaTypeFor(type: ConfigReferenceType): Exclude<ConfigReferenceType, "string[]"> {
+function jsonSchemaTypeFor(type: ConfigReferenceType): string | string[] {
+  if (type === "string | string[]") return ["string", "array"];
   return type === "string[]" ? "array" : type;
 }
 

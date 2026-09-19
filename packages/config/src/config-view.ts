@@ -143,6 +143,9 @@ export const CONFIG_ENV_KEYS = {
   "tools.web.search.ollama.apiKeyEnv": "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV",
   "tools.web.search.ollama.trustPublicUrl": "MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL",
   "tools.web.search.codex.model": "MONO_AGENT_WEB_SEARCH_CODEX_MODEL",
+  "tools.web.search.parallel.apiKeyEnv": "MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV",
+  "tools.web.fetch.parallel.apiKeyEnv": "MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV",
+  "tools.web.fetch.provider": "MONO_AGENT_WEB_FETCH_PROVIDER",
   "tools.web.fetch.render": "MONO_AGENT_WEB_FETCH_RENDER",
   "tools.web.fetch.browserCommand": "MONO_AGENT_WEB_BROWSER_COMMAND",
   "sandbox.mode": "MONO_AGENT_SANDBOX_MODE",
@@ -825,10 +828,10 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
       toField(env, {
         id: "tools.web.search.backend",
         label: "Web search backend",
-        value: tools.web?.search.backend ?? "auto",
+        value: typeof tools.web?.search.backend === "string" ? tools.web.search.backend : JSON.stringify(tools.web?.search.backend ?? ["parallel", "ollama"]),
         jsonPresent: json.tools?.web?.search?.backend !== undefined,
         jsonValue: json.tools?.web?.search?.backend,
-        defaultValue: "auto",
+        defaultValue: ["parallel", "ollama"],
       }),
       toField(env, {
         id: "tools.web.search.maxRequestsPerRun",
@@ -890,6 +893,18 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
         jsonPresent: json.tools?.web?.search?.codex?.model !== undefined,
         jsonValue: json.tools?.web?.search?.codex?.model,
         defaultValue: "gpt-5.6-luna",
+      }),
+      toField(env, {
+        id: "tools.web.search.parallel.apiKeyEnv", label: "Parallel search API key env", value: tools.web?.search.parallel?.apiKeyEnv ?? PLACEHOLDER,
+        jsonPresent: json.tools?.web?.search?.parallel?.apiKeyEnv !== undefined,
+      }),
+      toField(env, {
+        id: "tools.web.fetch.parallel.apiKeyEnv", label: "Parallel fetch API key env", value: tools.web?.fetch.parallel?.apiKeyEnv ?? PLACEHOLDER,
+        jsonPresent: json.tools?.web?.fetch?.parallel?.apiKeyEnv !== undefined,
+      }),
+      toField(env, {
+        id: "tools.web.fetch.provider", label: "Web fetch provider", value: typeof tools.web?.fetch.provider === "string" ? tools.web.fetch.provider : JSON.stringify(tools.web?.fetch.provider ?? "local"),
+        jsonPresent: json.tools?.web?.fetch?.provider !== undefined,
       }),
       toField(env, {
         id: "tools.web.fetch.render",

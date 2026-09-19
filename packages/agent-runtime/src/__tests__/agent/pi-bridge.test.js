@@ -1278,7 +1278,8 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
     const fetch = tools.find((tool) => tool.name === "WebFetch");
     const search = tools.find((tool) => tool.name === "WebSearch");
 
-    expect(search.description).toContain("configured Ollama");
+    expect(search.description).toContain("Parallel then local Ollama");
+    expect(search.description).toContain("explicit ordered chain");
     expect(search.description).toContain("one broad, high-yield query");
     expect(search.description).toContain("Never sleep");
     expect(search.description).toContain("snippets as leads");

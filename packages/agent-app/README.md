@@ -131,7 +131,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   provider-free strict health and payload-free intake inspect/retry/resolve).
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.
-- Resolve local-first WebSearch/WebFetch settings into every runtime run and
+- Resolve explicit WebSearch/WebFetch provider chains (Parallel then local Ollama
+  search; local fetch by default) into every runtime run and
   report the four-request default WebSearch budget plus separate bounded
   readiness for explicit Ollama or loopback
   SearXNG plus the optional `agent-browser` renderer; the app never owns any

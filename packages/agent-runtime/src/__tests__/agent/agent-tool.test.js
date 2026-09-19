@@ -632,7 +632,7 @@ describe("Agent tool confinement", () => {
 
   it("offers web configuration and host coordination to every child request", async () => {
     const run = okRun();
-    const webSearchConfig = { backend: "auto", maxRequestsPerRun: 4 };
+    const webSearchConfig = { backend: ["parallel", "ollama"], maxRequestsPerRun: 4 };
     const webFetchConfig = { render: "never", browserCommand: "agent-browser" };
     const webRequestCoordinator = { scope: "host:test" };
     const tool = createAgentTool(subagentOptions({ run }), {

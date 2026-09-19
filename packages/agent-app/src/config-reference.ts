@@ -419,7 +419,7 @@ export interface ConfigReferenceField {
   readonly nullable?: boolean;
 }
 
-export type ConfigReferenceType = "string" | "number" | "integer" | "boolean" | "string[]" | "object" | "array";
+export type ConfigReferenceType = "string" | "number" | "integer" | "boolean" | "string[]" | "string | string[]" | "object" | "array";
 
 interface JsonSchema {
   readonly [key: string]: unknown;
@@ -1068,6 +1068,9 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     case "boolean":
       schema.type = "boolean";
       break;
+    case "string | string[]":
+      schema.type = ["string", "array"];
+      break;
     case "string[]":
       schema.type = "array";
       schema.items = { type: "string" };
@@ -1178,8 +1181,10 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.enum = PI_TRANSPORTS;
   } else if (field.jsonPath === "tools.web.coordination") {
     schema.enum = ["process", "host"];
-  } else if (field.jsonPath === "tools.web.search.backend") {
-    schema.enum = ["auto", "searxng", "ollama", "codex", "keyless"];
+  } else if (field.jsonPath === "tools.web.search.backend" || field.jsonPath === "tools.web.fetch.provider") {
+    const names = field.jsonPath === "tools.web.search.backend"
+      ? ["searxng", "ollama", "codex", "keyless", "duckduckgo", "startpage", "parallel"] : ["local", "parallel"];
+    schema.anyOf = [{ type: "string", enum: names }, { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", enum: names } }];
   } else if (field.jsonPath === "tools.web.fetch.render") {
     schema.enum = ["never", "auto"];
   } else if (field.jsonPath === "telegram.groupMode") {
@@ -1282,6 +1287,7 @@ function typeFromKind(kind: JsonEnvFieldSpec["kind"], id: string): ConfigReferen
 }
 
 function inferType(id: string): ConfigReferenceType {
+  if (id === "tools.web.search.backend" || id === "tools.web.fetch.provider") return "string | string[]";
   if (id === "runtime.fallbacks") {
     return "array";
   }
@@ -1396,7 +1402,8 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "tools.mcpCallTimeoutMs": 120_000,
     "tools.mcpCallMaxTotalTimeoutMs": 2_700_000,
     "tools.web.coordination": "process",
-    "tools.web.search.backend": "auto",
+    "tools.web.search.backend": ["parallel", "ollama"],
+    "tools.web.fetch.provider": "local",
     "tools.web.search.maxRequestsPerRun": 4,
     "tools.web.search.ollama.baseUrl": "http://127.0.0.1:11434",
     "tools.web.search.ollama.trustPublicUrl": false,
@@ -1665,7 +1672,7 @@ function descriptionFor(id: string): string {
   }
   if (id === "tools.web.coordination") return "Host mode shares web request budgets and cooldowns across participating local mono-agent processes; process preserves isolated coordination.";
   if (id === "tools.web.search.backend") {
-    return "WebSearch backend: auto uses explicitly configured Ollama, configured local SearXNG, ChatGPT-subscription Codex search, then keyless fallbacks. searxng, ollama, codex, and keyless are strict.";
+    return "WebSearch provider name (strict) or non-empty ordered chain. Default [parallel, ollama] uses anonymous Parallel then local Ollama. Keyless engines are opt-in. auto was removed; the config error prints the previous explicit order.";
   }
   if (id === "tools.web.search.maxRequestsPerRun") {
     return "Hard ceiling from 1 to 20 on answered provider searches in one logical runtime run, including empty answers; failures are refunded. Cache hits, coalesced followers, cooldown skips, and quota skips consume no request. A separate dispatch ceiling is four times this limit. Default 4.";
@@ -1674,7 +1681,7 @@ function descriptionFor(id: string): string {
     return "Optional unauthenticated loopback HTTP SearXNG base URL. Remote HTTPS, credentials, query strings, and fragments are rejected.";
   }
   if (id === "tools.web.search.ollama.baseUrl") {
-    return "Ollama origin. Defaults to local http://127.0.0.1:11434 in strict Ollama mode. Hosted search is exactly https://ollama.com; custom public origins require HTTPS and trustPublicUrl=true.";
+    return "Ollama origin. Defaults to local http://127.0.0.1:11434 when Ollama is selected, including in a chain. Hosted search is exactly https://ollama.com; custom public origins require HTTPS and trustPublicUrl=true.";
   }
   if (id === "tools.web.search.ollama.trustPublicUrl") {
     return "Explicit acknowledgement for an HTTPS custom public Ollama origin. It never permits sending hosted credentials to that origin.";
@@ -1685,6 +1692,8 @@ function descriptionFor(id: string): string {
   if (id === "tools.web.search.codex.model") {
     return "Codex app-server model used for ChatGPT-subscription web search. The signed-in account must expose both this model and web search; default gpt-5.6-luna.";
   }
+  if (id === "tools.web.fetch.provider") return "WebFetch provider name or ordered chain: local (default), parallel. Parallel cannot serve raw format, custom headers, or browser rendering.";
+  if (id === "tools.web.search.parallel.apiKeyEnv" || id === "tools.web.fetch.parallel.apiKeyEnv") return "Optional credential environment-variable name for Parallel MCP. Omit for anonymous access; the value is read at call time and never stored in config.";
   if (id === "tools.web.fetch.render") {
     return "Browser-render capability for sparse JavaScript pages. never forces every call to static extraction; auto permits an isolated agent-browser session when needed.";
   }

@@ -415,6 +415,7 @@ execToolRun
 globToolImpl
 grepToolImpl
 inspectCodexSubscriptionSearch
+inspectParallelWeb
 isPathAllowed
 isWorkdirAllowed
 normalizeBackgroundBashTimeoutMs
@@ -784,7 +785,7 @@ Per-call options (a non-exhaustive selection):
 | `skills` / `skillsRoot` | `{name, description}[]` / `string` | Skills disclosed to the run and the directory holding `<name>/SKILL.md`. |
 | `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http). |
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
-| `webSearchConfig` | `{ backend?, maxRequestsPerRun?, searxng?: { endpoint? }, ollama?: { baseUrl?, apiKey?, apiKeyEnv?, trustPublicUrl? }, codex?: { model? } }` | Run-scoped ordered WebSearch selection and a 1–20 answered-search budget (default 4), including empty answers. Failed attempts are refunded; network dispatches are capped at four times the budget. `auto` uses explicitly configured Ollama, configured SearXNG, Codex, then keyless; named modes are strict. The deprecated top-level `endpoint` remains a SearXNG compatibility alias. |
+| `webSearchConfig` | `{ backend?, maxRequestsPerRun?, searxng?: { endpoint? }, ollama?: { baseUrl?, apiKey?, apiKeyEnv?, trustPublicUrl? }, codex?: { model? } }` | Run-scoped ordered WebSearch selection and a 1–20 answered-search budget (default 4), including empty answers. Failed attempts are refunded; network dispatches are capped at four times the budget. The default chain is Parallel then local Ollama; names are strict and arrays are ordered fallback chains. Keyless is opt-in; `auto` is rejected. The deprecated top-level `endpoint` remains a SearXNG compatibility alias. |
 | `webFetchConfig` | `{ render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. |
 | `piToolExecutionMode` | `"safe-parallel" \| "sequential"` | Pi built-in scheduling. Safe parallelism is the default; read-only tools may overlap only when the offered tool set contains no stateful/mutating or MCP tool. Otherwise Pi 0.85 serializes the whole batch. |
 | `maxTurns` | `number` | Hard cap on agent turns. |
@@ -889,14 +890,17 @@ contract package for this boundary.
 
 `NodeRepl` uses Node's default `node:repl` evaluator, so variables, `_`, `_error`, and loaded modules persist across calls in the same run. It supports multiline input and top-level `await`, resolves workspace-installed packages, and is closed with the run. Its child is prepared through the same sandbox seam as `Exec`/`Bash` and communicates through token-authenticated, length-prefixed JSON frames on ordinary stdin/stdout; abort, the fixed 120-second timeout, child exit, or hard output overflow resets the session. It deliberately has no session ids, persistent history, terminal commands, or package-install surface.
 
-`WebSearch` uses explicit Ollama Web Search, a configured loopback SearXNG
+`WebSearch` uses Parallel MCP, explicit Ollama Web Search, a configured loopback SearXNG
 endpoint, and deterministic public fallbacks. Strict backends do not fall
-through, and `auto` tries explicitly configured Ollama → configured SearXNG →
-Codex → keyless. Hosted Ollama bearer credentials are accepted only for the
+through; ordered arrays provide fallback. The default is Parallel → local Ollama.
+Keyless is opt-in, and `auto` was removed. Hosted Ollama bearer credentials are accepted only for the
 exact official origin. Search canonicalizes and deduplicates results, trying
 supplied alternate queries only if the primary has no relevant results. Codex
 subscription search preserves a 10% allowance reserve. An optional host-injected
-coordinator shares admission and cooldowns across processes. `WebFetch`
+coordinator shares admission and cooldowns across processes. Parallel batches
+primary/alternate queries once and supports optional remote WebFetch extraction.
+`fetch.provider` defaults to local; Parallel cannot serve raw/header/browser
+options. See the web-research guide for privacy and chain behavior. `WebFetch`
 deterministically decodes and extracts HTML, JSON, feeds, PDFs, and text locally
 with bounded redirects, bodies, headers, retries, and structured parser
 failures. Config can opt into isolated `agent-browser` rendering for sparse

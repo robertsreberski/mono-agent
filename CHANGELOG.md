@@ -5,6 +5,19 @@
 - Make supported Anthropic prompt-cache retention one hour by default, including
   child routes. Set `providers.piNative.cacheRetention` to `"short"` to opt out
   of the higher cache-write price; resolved settings override Pi ambient env.
+- Replace WebSearch `auto` routing with explicit provider names or ordered
+  chains, defaulting to Parallel then local Ollama; keep keyless engines opt-in.
+  Report the previous explicit chain when migrating an `auto` configuration.
+- Add anonymous Parallel MCP search and extraction with bounded, sandbox-gated
+  transport, batched search alternates, run-scoped sessions, and optional
+  credential environment variables. Keep local WebFetch as the default and
+  reject incompatible Parallel-only raw, header, and browser options.
+- Make WebSearch providers source-registerable without chain-body changes,
+  preserving request budgets, relevance gates, and provider cooldowns.
+
+- Fix turns waiting forever behind cancelled or failed continuity publication:
+  return a retryable error after 30 seconds by default without bypassing pending
+  history, with a host-overridable wait budget and bounded progress warnings.
 
 - Remove `Monitor` / `MonitorStop`, their CLI and console surfaces (breaking).
   Use background process jobs for finite work. Legacy `monitors` config is

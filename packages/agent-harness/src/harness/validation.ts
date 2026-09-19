@@ -16,6 +16,12 @@ export function validateOptions(options: AgentHarnessOptions): void {
   if (settlementMs !== undefined && (!Number.isSafeInteger(settlementMs) || settlementMs <= 0)) {
     throw new TypeError("terminalRecoverySettlementMs must be a positive safe integer.");
   }
+  const publicationWaitMs = options.session?.turnContinuityPublicationWaitMs;
+  if (publicationWaitMs !== undefined
+    && (!Number.isSafeInteger(publicationWaitMs) || publicationWaitMs <= 0 || publicationWaitMs > 2_147_483_647)) {
+    // Node timers clamp larger delays to 1 ms instead of the requested budget.
+    throw new TypeError("turnContinuityPublicationWaitMs must be an integer between 1 and 2147483647.");
+  }
   if (options.mcpRequestContext !== undefined) {
     if (!Array.isArray(options.mcpRequestContext.serverNames)
       || options.mcpRequestContext.serverNames.some((name) => typeof name !== "string" || name.trim().length === 0)) {

@@ -237,9 +237,9 @@
  * @property {RuntimeCompactionPolicy} [compaction] Typed per-run compaction policy (supported replacement for the deprecated `settings` compaction keys).
  * @property {RuntimePromptOverrides} [prompts] Per-run prompt-fragment overrides (run wins over the host default).
  * @property {any} [webRequestCoordinator] Host-owned shared web admission and quota state.
- * @property {{backend?: "auto"|"searxng"|"ollama"|"codex"|"keyless", maxRequestsPerRun?: number, endpoint?: string, searxng?: {endpoint?: string}, ollama?: {baseUrl?: string, apiKey?: string, apiKeyEnv?: string, trustPublicUrl?: boolean}, codex?: {model?: string}}} [webSearchConfig] Run-scoped WebSearch backend configuration.
+ * @property {{backend?: string|readonly string[], maxRequestsPerRun?: number, endpoint?: string, searxng?: {endpoint?: string}, ollama?: {baseUrl?: string, apiKey?: string, apiKeyEnv?: string, trustPublicUrl?: boolean}, codex?: {model?: string}, parallel?: {apiKeyEnv?: string}}} [webSearchConfig] Run-scoped WebSearch backend configuration.
  * @property {any} [webSearchState] Private request budget and provider deferral state for one logical run.
- * @property {{render?: "never"|"auto", browserCommand?: string}} [webFetchConfig] Run-scoped WebFetch extraction/render configuration.
+ * @property {{provider?: "local"|"parallel"|readonly ("local"|"parallel")[], parallel?: {apiKeyEnv?: string}, render?: "never"|"auto", browserCommand?: string}} [webFetchConfig] Run-scoped WebFetch extraction/render configuration.
  * @property {"sequential"|"safe-parallel"} [piToolExecutionMode] Pi built-in tool scheduling mode. Safe parallelism is the default.
  * @property {"one-at-a-time"|"all"} [piToolParallelismMode] DEPRECATED. Compatibility alias mapped to piToolExecutionMode.
  * @property {Object} [settings] DEPRECATED. Legacy flat settings bag; consumed only as a per-group FALLBACK when the corresponding typed object (`toolLimits` / `compaction`) is absent. Consuming any key emits one `deprecated_settings_option` runtime_warning per run. Migrate via resolveRuntimePolicies (@mono-agent/runtime-adapter).

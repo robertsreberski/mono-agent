@@ -187,7 +187,7 @@ The resolved `tools.web` block configures the managed Pi `WebSearch` and
   "tools": {
     "web": {
       "search": {
-        "backend": "auto",
+        "backend": ["parallel", "ollama"],
         "maxRequestsPerRun": 4,
         "searxng": { "endpoint": "http://127.0.0.1:8088" },
         "ollama": { "baseUrl": "http://127.0.0.1:11434" },
@@ -202,16 +202,20 @@ The resolved `tools.web` block configures the managed Pi `WebSearch` and
 }
 ```
 
-Search backend values are `auto`, strict `searxng`, strict `ollama`, strict
-`codex`, and `keyless`. Auto tries explicitly configured Ollama, configured
-local SearXNG, ChatGPT-subscription Codex search, then the keyless chain. Without
-an Ollama block, existing SearXNG/Codex/keyless behavior is unchanged. SearXNG
+Search selects one strict provider or a non-empty ordered array. The default is
+`["parallel", "ollama"]`; local Ollama requires no block. `searxng`, `codex`,
+`keyless`, `duckduckgo`, and `startpage` are opt-in. Removed `auto` configurations
+fail with their previous explicit order. SearXNG
 endpoints are deliberately limited to unauthenticated loopback HTTP URLs. The
 legacy `search.endpoint` spelling remains a compatibility alias for
 `search.searxng.endpoint`. Ollama defaults to the loopback host; the exact
 official `https://ollama.com` origin requires an API key named by `apiKeyEnv`,
 while other public origins require HTTPS plus `trustPublicUrl` and cannot
 receive that credential.
+`fetch.provider` is `"local"` by default; `"parallel"` or an ordered array opts
+into remote extraction. Parallel cannot serve raw bodies, custom headers, or
+browser rendering. Optional search/fetch `parallel.apiKeyEnv` fields name a
+credential variable; omit them for anonymous Parallel access.
 Fetch rendering config is `never` by default (browser capability disabled) or
 `auto` to authorize isolated `agent-browser` use. With config `auto`, an
 individual WebFetch call may use `render: "always"` for a strict browser-first

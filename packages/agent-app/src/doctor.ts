@@ -1,4 +1,5 @@
 import { persistentSubagentsEnabled, subagentInstancesRoot } from "./subagent-instances.js";
+import { inspectParallelWeb } from "@mono-agent/agent-runtime/agent/tools/index.js";
 import { inspectWebControl } from "./web-request-coordinator.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
@@ -1902,11 +1903,6 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
 
 const MIN_AGENT_BROWSER_VERSION = [0, 33, 1] as const;
 
-function formatSearchBackendChain(backends: string[]): string {
-  if (backends.length <= 1) return backends[0] ?? "none";
-  return `${backends.slice(0, -1).join(", ")}, then ${backends.at(-1)}`;
-}
-
 async function webToolsSection(
   config: MonoAgentConfig,
   input: ValidateMonoAgentFolderOptions,
@@ -1914,7 +1910,7 @@ async function webToolsSection(
 ): Promise<ValidationSection> {
   const web = config.tools.web;
   const search: NonNullable<MonoAgentConfig["tools"]["web"]>["search"] = web?.search ?? {
-    backend: "auto" as const,
+    backend: ["parallel", "ollama"] as const,
     maxRequestsPerRun: 4,
     codex: { model: "gpt-5.6-luna" },
   };
@@ -1936,23 +1932,12 @@ async function webToolsSection(
   }
 
   const searxngEndpoint = search.searxng?.endpoint ?? search.endpoint;
-  const autoEligibleBackends = [
-    ...(search.ollama === undefined ? [] : ["configured Ollama"]),
-    ...(searxngEndpoint === undefined ? [] : ["configured SearXNG"]),
-    "Codex",
-    "keyless",
-  ];
-  const autoAfterOllama = formatSearchBackendChain(autoEligibleBackends.slice(1));
+  const chain = typeof search.backend === "string" ? [search.backend] : search.backend;
+  const chained = typeof search.backend !== "string";
+  const fallback = chained ? `Ordered chain: ${chain.join(" → ")}. Unavailable providers advance to the next entry.` : "Strict provider selection has no fallback.";
+  details.push(fallback);
   if (searxngEndpoint === undefined) {
-    details.push(search.backend === "keyless"
-      ? "SearXNG is not configured; keyless search is enabled."
-      : search.backend === "codex"
-        ? "SearXNG is not configured; strict Codex subscription search is enabled."
-        : search.backend === "searxng"
-          ? "SearXNG is not configured."
-          : search.ollama === undefined
-            ? "SearXNG is not configured; auto mode starts with Codex subscription search, then keyless search."
-            : "SearXNG is not configured; auto mode uses configured Ollama, then Codex subscription search, then keyless search.");
+    details.push("SearXNG is not configured.");
   } else {
     details.push(`SearXNG endpoint: ${searxngEndpoint}.`);
     if (!liveness) {
@@ -1965,44 +1950,37 @@ async function webToolsSection(
         status = "waiting";
         details.push(
           `[WARN] SearXNG JSON search probe failed (${probe.reason}). ` +
-          (search.backend === "auto"
-            ? "Start the local companion or fix tools.web.search.searxng.endpoint; auto mode can still fall back to Codex subscription search, then keyless search."
+          (chained
+            ? `Start the local companion or fix tools.web.search.searxng.endpoint. ${fallback}`
             : "Start the local companion or fix tools.web.search.searxng.endpoint; strict SearXNG mode has no fallback."),
         );
       }
     }
   }
 
-  if (search.backend === "ollama" || (search.backend === "auto" && search.ollama !== undefined)) {
+  if (chain.includes("ollama")) {
     const ollama = search.ollama;
     if (ollama === undefined) {
       status = "waiting";
       details.push("[WARN] Ollama Web Search is selected but its resolved configuration is missing.");
-    } else if (!liveness) {
-      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : `Auto mode advances to ${autoAfterOllama} when Ollama is unavailable.`}`);
-      details.push("Ollama Web Search liveness was not probed.");
+    } else if (!liveness || chained) {
+      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : fallback}`);
+      details.push(chained ? "Ollama Web Search readiness is checked lazily when the chain reaches it." : "Ollama Web Search liveness was not probed.");
     } else {
-      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : `Auto mode advances to ${autoAfterOllama} when Ollama is unavailable.`}`);
+      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : fallback}`);
       const probe = await probeOllamaWebSearch(ollama);
       if (probe.ok) details.push("Ollama Web Search JSON probe succeeded.");
       else {
         status = "waiting";
-        details.push(`[WARN] Ollama Web Search probe failed (${probe.reason}). ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : `Auto mode can still advance to ${autoAfterOllama}.`}`);
+        details.push(`[WARN] Ollama Web Search probe failed (${probe.reason}). ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : fallback}`);
       }
     }
   } else if (search.ollama !== undefined) {
     details.push(`Ollama Web Search is configured but inactive because backend ${search.backend} is strict.`);
   }
 
-  if (search.backend === "auto") {
-    const codexModel = search.codex?.model ?? "gpt-5.6-luna";
-    const beforeCodex = autoEligibleBackends.slice(0, autoEligibleBackends.indexOf("Codex"));
-    const codexPosition = beforeCodex.length === 0
-      ? "as the first eligible backend"
-      : `after ${formatSearchBackendChain(beforeCodex)}`;
-    details.push(
-      `Codex subscription fallback model: ${codexModel}; readiness is checked lazily when auto mode reaches it ${codexPosition}.`,
-    );
+  if (chained && chain.includes("codex")) {
+    details.push(`Codex subscription fallback model: ${search.codex?.model ?? "gpt-5.6-luna"}; readiness is checked lazily when the chain reaches it.`);
   } else if (search.backend === "codex") {
     const codexModel = search.codex?.model ?? "gpt-5.6-luna";
     details.push(`Codex subscription search model: ${codexModel}.`);
@@ -2022,6 +2000,27 @@ async function webToolsSection(
     }
   }
 
+  const fetchProviders = typeof fetchConfig.provider === "string" ? [fetchConfig.provider] : fetchConfig.provider ?? ["local"];
+  if (chain.includes("parallel") || fetchProviders.includes("parallel")) {
+    const parallelConfigs = [
+      ...(chain.includes("parallel") ? [{ label: "search", settings: search.parallel, strict: !chained }] : []),
+      ...(fetchProviders.includes("parallel") ? [{ label: "fetch", settings: fetchConfig.parallel, strict: fetchProviders.length === 1 }] : []),
+    ];
+    for (const entry of parallelConfigs) {
+      details.push(`Parallel ${entry.label}: ${entry.settings?.apiKeyEnv ? "apiKeyEnv configured" : "anonymous access"}.`);
+      if (!liveness || !entry.strict) {
+        details.push(`Parallel ${entry.label} tools/list was not probed; readiness is checked on use.`);
+      } else {
+        const probe = await inspectParallelWeb({ config: entry.settings,
+          sandbox: { networkAllowsUrl: networkPolicyAllowsUrl }, policy: config.sandbox });
+        if (!probe.ok) status = "waiting";
+        details.push(probe.ok ? "Parallel tools/list advertises web_search and web_fetch (extraction not exercised)."
+          : `[WARN] Parallel tools/list unavailable (${probe.reason}).`);
+      }
+    }
+  }
+
+  details.push(`WebFetch provider: ${JSON.stringify(fetchConfig.provider ?? "local")}.`);
   details.push(`WebFetch browser rendering: ${fetchConfig.render}.`);
   if (fetchConfig.render === "never") {
     details.push("Static Defuddle/Readability extraction is active; agent-browser is not required.");

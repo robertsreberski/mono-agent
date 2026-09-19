@@ -289,6 +289,8 @@ export interface AgentHarnessSessionOptions {
   readonly idleTimeoutMs: number;
   /** Provider settlement window after cancellation or failure. Defaults to 1,000 ms. */
   readonly terminalRecoverySettlementMs?: number;
+  /** Total continuity wait budget, including republish. Defaults to 30,000 ms; integer 1–2,147,483,647. */
+  readonly turnContinuityPublicationWaitMs?: number;
   /**
    * Overrides backend capability detection (monoRuntimeSupportsSessionResume)
    * — primarily for tests and custom runtimes.
