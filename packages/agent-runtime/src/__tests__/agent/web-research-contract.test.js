@@ -17,6 +17,7 @@ import {
 import {
   applyFocusFilter,
   buildWebNextAction,
+  filterEnvelopeNextActions,
   formatActionableEnvelope,
   isBlockedWebCode,
   normalizeWebResearchOptions,
@@ -307,8 +308,11 @@ describe("managed web-research contract", () => {
       ctx: runtimeContext(),
     });
     const payload = JSON.parse(result.text);
-    expect(payload).toMatchObject({ tool: "WebFetch", status: "ok", code: "ok" });
-    expect(payload.coverage).toMatchObject({ startLine: 1, endLine: 5, totalLines: 12, nextLine: 6 });
+    // Any incomplete returned view is partial, even when the requested slice
+    // itself was satisfied; coverage carries the line coordinates.
+    expect(payload).toMatchObject({ tool: "WebFetch", status: "partial", code: "ok" });
+    expect(payload.coverage).toMatchObject({ startLine: 1, endLine: 5, totalLines: 12, nextLine: 6, truncated: true });
+    expect(payload.summary).toContain("More lines remain");
     expect(payload.content).toContain("Line 1 of the contract fixture body.");
     assertValidNextActions(payload.next_actions);
     expect(payload.next_actions).toHaveLength(1);
@@ -316,6 +320,20 @@ describe("managed web-research contract", () => {
       url: "https://example.com/paged", start_line: 6, max_lines: 5, format: "text",
     });
     expect(result.outcome.next_actions).toEqual(payload.next_actions);
+    expect(result.outcome.status).toBe("partial");
+  });
+
+  it("marks lossy character-budget capping as partial with coverage", async () => {
+    const lines = Array.from({ length: 30 }, (_, index) => `Line ${index + 1} of the capped contract fixture body.`);
+    const result = await performWebFetch({ url: "https://example.com/capped", format: "text", max_output_chars: 120 }, {
+      fetchImpl: async () => new Response(lines.join("\n"), { headers: { "content-type": "text/plain" } }),
+      ctx: runtimeContext(),
+    });
+    const payload = JSON.parse(result.text);
+    expect(payload).toMatchObject({ tool: "WebFetch", status: "partial", code: "ok" });
+    expect(payload.coverage.truncated).toBe(true);
+    expect(payload.summary).toContain("character budget");
+    assertValidNextActions(payload.next_actions);
   });
 
   it("applies focus post-extraction and keeps the focused continuation consistent", async () => {
@@ -395,6 +413,107 @@ describe("managed web-research contract", () => {
     expect(jsonPayload).not.toHaveProperty("links");
     expect(jsonPayload.coverage.links).toMatchObject({ available: false });
     expect(jsonPayload.summary).toContain("unavailable");
+  });
+
+  it("classifies local HTTP 429 as blocked with a stable code", async () => {
+    expect(webStatusForCode("http_429")).toBe("blocked");
+    expect(isBlockedWebCode("http_429")).toBe(true);
+    expect(webStatusForCode("http_500")).toBe("error");
+    const result = await performWebFetch({ url: "https://example.com/limited" }, {
+      fetchImpl: async () => new Response("limited", { status: 429, headers: { "content-type": "text/plain" } }),
+      retryDelaysMs: [],
+      ctx: runtimeContext(),
+    });
+    expect(result).toMatchObject({ error: true, outcome: { status: "blocked", code: "http_429" } });
+    const payload = JSON.parse(result.text);
+    expect(payload).toMatchObject({ tool: "WebFetch", status: "blocked", code: "http_429" });
+    expect(payload).not.toHaveProperty("next_actions");
+  });
+
+  it("reports raw HTML links as unavailable per the capability contract", async () => {
+    const result = await performWebFetch({ url: "https://example.com/page", format: "raw", render: "never", include_links: true }, {
+      fetchImpl: async () => new Response(ARTICLE_HTML, { headers: { "content-type": "text/html" } }),
+      ctx: runtimeContext(),
+    });
+    expect(result.error).toBe(false);
+    const payload = JSON.parse(result.text);
+    expect(payload).not.toHaveProperty("links");
+    expect(payload.coverage.links).toMatchObject({ available: false });
+    expect(payload.coverage.links.reason).toContain("raw");
+    expect(payload.summary).toContain("unavailable");
+  });
+
+  it("never suggests fetching a result URL the network policy denies", async () => {
+    const result = await performWebSearch({ query: "contract evidence" }, {
+      searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+      fetchImpl: searxngSuccess([{
+        title: "Contract evidence",
+        url: "https://example.com/contract",
+        content: "Contract evidence body with enough terms to pass the relevance gate.",
+      }]),
+      // The loopback search endpoint stays allowed; the public result URL is denied.
+      ctx: runtimeContext(tempWorkspace(), {
+        ...passthroughSandbox,
+        networkAllowsUrl: (_policy, url) => String(url).includes("127.0.0.1"),
+      }),
+    });
+    expect(result.error).toBe(false);
+    const payload = JSON.parse(result.text);
+    expect(payload.results).toHaveLength(1);
+    expect(payload).not.toHaveProperty("next_actions");
+    expect(result.outcome).not.toHaveProperty("next_actions");
+  });
+
+  it("re-filters shared-cache hits when network behavior changes", async () => {
+    const sandbox = { ...passthroughSandbox, networkAllowsUrl: () => true };
+    const ctx = runtimeContext();
+    ctx.sandbox = sandbox;
+    const options = {
+      searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+      fetchImpl: searxngSuccess([{
+        title: "Cached evidence",
+        url: "https://example.com/cached",
+        content: "Cached evidence body with enough terms to pass the relevance gate.",
+      }]),
+      ctx,
+    };
+    const producer = createWebToolController(options);
+    const first = await producer.search({ query: "cached filter evidence" });
+    expect(JSON.parse(first.text).next_actions?.length).toBeGreaterThan(0);
+    await producer.close();
+    sandbox.networkAllowsUrl = () => false;
+    const consumer = createWebToolController(options);
+    const denied = await consumer.search({ query: "cached filter evidence" });
+    // Same cache identity, so this is a hit whose stale suggestion is stripped.
+    expect(denied.outcome.cacheHit).toBe(true);
+    expect(JSON.parse(denied.text)).not.toHaveProperty("next_actions");
+    expect(denied.outcome).not.toHaveProperty("next_actions");
+    await consumer.close();
+  });
+
+  it("strips disallowed suggestions while keeping text and outcome in agreement", () => {
+    const text = formatActionableEnvelope({
+      tool: "WebSearch", status: "ok", code: "ok", summary: "s", coverage: {},
+      next_actions: [
+        { tool: "WebFetch", args: { url: "https://example.com/kept" } },
+        { tool: "WebFetch", args: { url: "https://denied.example/gone" } },
+      ],
+    });
+    const outcome = {
+      status: "ok", code: "ok",
+      next_actions: JSON.parse(text).next_actions,
+      bytes: Buffer.byteLength(text, "utf8"),
+    };
+    const filtered = filterEnvelopeNextActions(text, outcome,
+      (action) => action.args.url.includes("example.com/kept"));
+    expect(filtered).not.toBeNull();
+    const payload = JSON.parse(filtered.text);
+    expect(payload.next_actions).toHaveLength(1);
+    expect(payload.next_actions[0].args.url).toBe("https://example.com/kept");
+    expect(filtered.outcome.next_actions).toEqual(payload.next_actions);
+    expect(filtered.outcome.bytes).toBe(Buffer.byteLength(filtered.text, "utf8"));
+    expect(filterEnvelopeNextActions(text, outcome, () => true)).toBeNull();
+    expect(filterEnvelopeNextActions("not json", outcome, () => false)).toBeNull();
   });
 
   it("keeps attacker prose inside untrusted results and out of next actions", async () => {

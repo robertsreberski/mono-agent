@@ -1545,3 +1545,59 @@ it("sorts servers and source tools before collision naming regardless of randomi
     }
   } finally { connect.mockRestore(); close.mockRestore(); list.mockRestore(); }
 });
+
+describe("web delivery guards", () => {
+  function searchEnvelopeWithAction(url = "https://example.com/evidence") {
+    const next_actions = [{ tool: "WebFetch", args: { url }, reason: "Fetch for evidence." }];
+    const text = JSON.stringify({
+      tool: "WebSearch", status: "ok", code: "ok", summary: "Found 1 result.",
+      results: [{ title: "Evidence", url, snippet: "lead" }],
+      coverage: {}, untrusted_fields: ["results"], next_actions,
+    });
+    return {
+      text,
+      outcome: { status: "ok", code: "ok", next_actions, bytes: Buffer.byteLength(text, "utf8") },
+      error: false,
+    };
+  }
+
+  it("returns a JSON envelope when the web controller is unavailable", async () => {
+    const fetch = getPiBuiltinTools(["WebFetch"], {}).find((tool) => tool.name === "WebFetch");
+    const fetchResult = await fetch.execute("WebFetch:1", { url: "https://example.com" });
+    expect(JSON.parse(fetchResult.content[0].text)).toMatchObject({
+      tool: "WebFetch", status: "error", code: "controller_unavailable",
+    });
+
+    const search = getPiBuiltinTools(["WebSearch"], {}).find((tool) => tool.name === "WebSearch");
+    const searchResult = await search.execute("WebSearch:1", { query: "evidence" });
+    expect(JSON.parse(searchResult.content[0].text)).toMatchObject({
+      tool: "WebSearch", status: "error", code: "controller_unavailable",
+    });
+  });
+
+  it("strips WebFetch suggestions when WebFetch is not exposed", async () => {
+    const webController = { search: async () => searchEnvelopeWithAction(), fetch: async () => ({}) };
+
+    const searchOnly = getPiBuiltinTools(["WebSearch"], { webController })
+      .find((tool) => tool.name === "WebSearch");
+    const stripped = await searchOnly.execute("WebSearch:1", { query: "evidence" });
+    expect(JSON.parse(stripped.content[0].text)).not.toHaveProperty("next_actions");
+
+    const both = getPiBuiltinTools(["WebSearch", "WebFetch"], { webController })
+      .find((tool) => tool.name === "WebSearch");
+    const kept = await both.execute("WebSearch:1", { query: "evidence" });
+    const payload = JSON.parse(kept.content[0].text);
+    expect(payload.next_actions).toHaveLength(1);
+    expect(payload.next_actions[0].args.url).toBe("https://example.com/evidence");
+  });
+
+  it("strips suggestions denied by the resolved network policy", async () => {
+    const webController = { search: async () => searchEnvelopeWithAction(), fetch: async () => ({}) };
+    const search = getPiBuiltinTools(["WebSearch", "WebFetch"], {
+      webController,
+      sandboxPolicy: { mode: "native", network: { mode: "none" } },
+    }).find((tool) => tool.name === "WebSearch");
+    const result = await search.execute("WebSearch:1", { query: "evidence" });
+    expect(JSON.parse(result.content[0].text)).not.toHaveProperty("next_actions");
+  });
+});

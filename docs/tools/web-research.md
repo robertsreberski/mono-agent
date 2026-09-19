@@ -204,7 +204,11 @@ lossy truncation is reported as `partial`. Result entries carry the source
 citations (`title`/`url`/`published`); snippets are untrusted discovery leads.
 Use `WebFetch` on a result URL when the marker says the snippet is incomplete.
 Successful searches offer up to three typed `WebFetch` next actions for the
-strongest returned URLs. No next action is offered for genuine no-results,
+strongest returned URLs. Suggestions are filtered against the resolved network
+policy at creation and again at delivery (including shared-cache hits), and
+`WebFetch` suggestions are only delivered when `WebFetch` is exposed to the
+run. A denied URL stays visible as a discovery lead but never becomes an
+action. No next action is offered for genuine no-results,
 rate limits, budgets, or other terminal failures, and next actions never
 repeat page prose or suggest bypasses, cooldown waits, or provider changes to
 evade access gates.
@@ -450,7 +454,10 @@ Omitting both preserves the normal capped document output. `max_output_chars`
 still bounds the selected text. The result reports `startLine`, `endLine`,
 `totalLines` and `nextLine` in `coverage`, plus a typed `WebFetch`
 continuation next action that preserves the call's format, focus, and link
-options. A line too large for the
+options. Any returned view that omits lines or truncates to the character
+budget is `partial`, even when the requested slice itself was satisfied;
+`coverage` (`truncated`, line coordinates, focus block counts, link
+availability) distinguishes the cause. A line too large for the
 budget requires a larger character cap or reading the saved output artifact;
 it is never silently skipped.
 
@@ -542,7 +549,8 @@ untrusted through `untrusted_fields`. WebSearch output includes bounded
 backend/query/provenance coverage so fallback behavior is inspectable, while
 sanitized failures expose only a backend and stable category. Fetch failures
 carry a stable code and a `blocked` (`network_denied`, `access_challenge`,
-`authentication_required`, rate limits, exhausted search budget, unavailable
+`authentication_required`, rate limits including local `http_429`, exhausted
+search budget, unavailable
 coordination) versus `error` (execution/provider failure) status. Timing events retain only bounded operational
 fields such as status, error code, backend, attempt count, request budget and
 remaining count, absolute retry time, next action, byte count,

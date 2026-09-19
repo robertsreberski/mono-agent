@@ -441,7 +441,7 @@ async function performFetch(
   // HTML only: no extra request, same cache identity as the document. Rendered,
   // remote, raw, and non-HTML documents report the capability as unavailable
   // at format time instead of faking empty success.
-  const links = responseKind === "html" && backend === "http" && decoding
+  const links = responseKind === "html" && backend === "http" && decoding && outputFormat !== "raw"
     ? extractHtmlLinks(decoding.text, finalUrl)
     : undefined;
   const document = { body, finalUrl,
@@ -736,12 +736,20 @@ export function formatWebFetchDocument(document, params, ctx) {
   const continuation = end < lines.length ? Math.max(start, end + 1) : null;
   const stalled = continuation !== null && continuation <= start && capped !== selected;
   const baseOutcome = document.outcome || {};
-  // Usable but incomplete views classify as partial: excerpts-only remote
-  // content, a static fallback after render failure, or a focus-filtered
-  // subset. A focus with no matching blocks never pretends full success.
+  // Any incomplete returned view classifies as partial, even when the
+  // requested slice itself was satisfied: excerpts-only remote content, a
+  // static fallback after render failure, a focus-filtered subset, lossy
+  // character-budget capping, or remaining lines beyond this page. A focus
+  // with no matching blocks never pretends full success. Coverage (line
+  // coordinates, truncation flag, focus block counts, link availability)
+  // distinguishes the cause.
+  const cappedTruncated = capped !== selected;
+  const hasMoreLines = continuation !== null;
   const partialView = baseOutcome.excerptsOnly === true
     || baseOutcome.code === "ok_static_render_failed"
-    || (focusResult !== null && focusResult.matchedBlocks < focusResult.totalBlocks);
+    || (focusResult !== null && focusResult.matchedBlocks < focusResult.totalBlocks)
+    || cappedTruncated
+    || hasMoreLines;
   const status = partialView ? "partial" : (baseOutcome.status || "ok");
   const code = focusNoMatch ? "focus_no_match" : (baseOutcome.code || "ok");
   const summaryParts = [`Fetched ${finalUrl} (lines ${totalLines === 0 ? 0 : start}-${end} of ${totalLines}).`];
@@ -755,6 +763,12 @@ export function formatWebFetchDocument(document, params, ctx) {
   }
   if (stalled) {
     summaryParts.push("The next line exceeds the output budget. Increase max_output_chars or read the saved output artifact; repeating this range with the same budget cannot advance.");
+  }
+  if (cappedTruncated && !stalled) {
+    summaryParts.push("Output truncated to the character budget; increase max_output_chars or read the saved output artifact for the full slice.");
+  }
+  if (continuation !== null && continuation > start) {
+    summaryParts.push(`More lines remain after line ${end}; continue with start_line ${continuation}.`);
   }
   // Bounded citation/main-content links reuse the static HTML extraction.
   // Any other source reports the missing capability explicitly.

@@ -2,11 +2,12 @@
 
 import { parallelCacheIdentity, parallelSessionId } from "./parallel-mcp.js";
 import { createHash, randomUUID } from "node:crypto";
+import { passthroughSandbox } from "../sandbox-seam.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { performWebFetch, formatWebFetchDocument } from "./web-fetch.js";
 import { performWebSearch } from "./web-search.js";
-import { normalizeWebResearchOptions, refreshCachedSearchEnvelope, webFailureEnvelope } from "./web-actionable.js";
+import { filterEnvelopeNextActions, normalizeWebResearchOptions, refreshCachedSearchEnvelope, webFailureEnvelope } from "./web-actionable.js";
 import { createWebSearchRunState, webSearchBudgetSnapshot } from "./web-search-state.js";
 
 const MAX_CACHE_ENTRIES = 64;
@@ -143,7 +144,7 @@ export function createWebToolController({
       const resolvedCtx = ctx ?? readToolRuntime();
       const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
       const key = stableKey({ params, searchConfig: safeSearchCacheIdentity(searchConfig), policy, coordination: coordinator?.scope });
-      return cachedSearch(key, params.query, async () => performWebSearch(params, {
+      const result = await cachedSearch(key, params.query, async () => performWebSearch(params, {
         coordinator,
         searchConfig,
         sandboxPolicy: policy,
@@ -153,6 +154,11 @@ export function createWebToolController({
         searchState,
         signal: execution.signal,
       }));
+      // Cached envelopes carry the producing call's next actions. Re-filter
+      // for the consuming call's resolved policy so a shared-cache hit can
+      // never deliver a stale permission-sensitive suggestion. Fresh results
+      // were already filtered at creation, so this is a no-op for them.
+      return filterResultActionsForPolicy(result, resolvedCtx, policy);
     },
 
     async fetch(params, execution = {}) {
@@ -180,7 +186,8 @@ export function createWebToolController({
       }));
       if (result.error || !result.document) return result;
       const sliced = formatWebFetchDocument({ ...result.document, outcome: result.outcome }, params, resolvedCtx);
-      return { ...sliced, document: undefined, outcome: { ...sliced.outcome, cacheHit: result.outcome.cacheHit } };
+      const merged = { ...sliced, document: undefined, outcome: { ...sliced.outcome, cacheHit: result.outcome.cacheHit } };
+      return filterResultActionsForPolicy(merged, resolvedCtx, policy) ?? merged;
     },
 
     async close() {
@@ -320,4 +327,30 @@ function withSearchCacheHit(result, searchState, requestedQuery) {
 
 function closedResult(tool) {
   return webFailureEnvelope(tool === "WebFetch" ? "WebFetch" : "WebSearch", "controller_closed", "Error: Web tool controller has already closed.");
+}
+
+/**
+ * Re-filter a delivery-time result's next actions against the consuming
+ * call's resolved network policy. Fresh results were filtered at creation;
+ * shared-cache hits reuse the producer's envelope, so this strips any
+ * suggestion the current policy denies. Returns the original result when
+ * nothing was removed (filterEnvelopeNextActions returns null then).
+ */
+function filterResultActionsForPolicy(result, resolvedCtx, policy) {
+  if (!result || result.error || typeof result.text !== "string" || !result.outcome) return result;
+  const sandbox = resolvedCtx?.sandbox ?? passthroughSandbox;
+  const filtered = filterEnvelopeNextActions(result.text, result.outcome, (action) => {
+    if (action?.tool === "WebFetch") {
+      const url = action?.args?.url;
+      if (typeof url !== "string") return false;
+      try {
+        return sandbox.networkAllowsUrl(policy, url);
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  });
+  if (!filtered) return result;
+  return { ...result, text: filtered.text, outcome: filtered.outcome };
 }

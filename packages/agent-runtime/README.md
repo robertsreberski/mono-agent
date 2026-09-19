@@ -925,7 +925,8 @@ a host-written `summary`, untrusted `content` or `results`, source and `coverage
 metadata, and typed `next_actions` with schema-valid tool arguments.
 `partial` means usable but incomplete output, `blocked` means
 policy/access/budget prevents progress, and `error` means execution failure.
-Search snippets stay discovery leads; `WebFetch` provides evidence. `WebFetch`
+Paginated or character-truncated fetch views are `partial` even when the
+requested slice was satisfied. Search snippets stay discovery leads; `WebFetch` provides evidence. `WebFetch`
 accepts an optional deterministic `focus` block filter and `include_links` for
 bounded static-HTML links; focus and link selection are post-extraction views
 that reuse the cached extraction without added requests.

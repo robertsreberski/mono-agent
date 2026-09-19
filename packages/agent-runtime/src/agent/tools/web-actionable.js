@@ -41,7 +41,10 @@ export const WEB_RESEARCH_STATUS_DOC = Object.freeze({
 /**
  * Terminal failure codes that classify as `blocked` (policy/access/budget
  * prevents progress). Every other failure code classifies as `error`.
- * Success and partial-success codes (`ok`, `no_results`, `ok_static_render_failed`,
+ * `http_429` is the local fetch encoding of a rate limit: the server refused
+ * the request for budget reasons, so it is blocked rather than a generic
+ * execution error. Other `http_*` codes stay errors. Success and
+ * partial-success codes (`ok`, `no_results`, `ok_static_render_failed`,
  * `ok_excerpts_only`, `focus_no_match`, `focus_applied`) are assigned by the
  * caller, never through this mapping.
  * @type {ReadonlySet<string>}
@@ -54,6 +57,7 @@ export const BLOCKED_WEB_CODES = Object.freeze(new Set([
   "search_budget_exhausted",
   "coordination_unavailable",
   "rate_limited",
+  "http_429",
   "quota_unavailable",
   "quota_reserved",
 ]));
@@ -250,6 +254,50 @@ export function webFailureEnvelope(tool, code, summary, telemetry = {}) {
     },
     error: true,
   };
+}
+
+/**
+ * Strip disallowed next actions from a model-facing envelope and its outcome.
+ * The predicate receives each action and returns true to keep it; a throwing
+ * predicate conservatively drops that action. Returns null when the text is
+ * not an envelope, carries no next_actions, or nothing was removed — callers
+ * keep their originals in that case. When actions are removed the envelope is
+ * re-serialized without an empty next_actions key, outcome.next_actions is
+ * updated or deleted to agree, and outcome.bytes is refreshed. Hints confer
+ * no authority: only policy- and capability-allowed actions are emitted.
+ *
+ * @param {unknown} text
+ * @param {any} outcome
+ * @param {(action: any) => boolean} predicate
+ * @returns {{text: string, outcome: any}|null}
+ */
+export function filterEnvelopeNextActions(text, outcome, predicate) {
+  const parsed = parseActionableEnvelope(text);
+  if (!parsed || !Array.isArray(parsed.next_actions)) return null;
+  let kept;
+  try {
+    kept = parsed.next_actions.filter((action) => {
+      try {
+        return predicate(action) === true;
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return null;
+  }
+  if (kept.length === parsed.next_actions.length) return null;
+  const next = { ...parsed };
+  if (kept.length > 0) next.next_actions = kept;
+  else delete next.next_actions;
+  const filteredText = formatActionableEnvelope(next);
+  const nextOutcome = outcome && typeof outcome === "object" && !Array.isArray(outcome)
+    ? { ...outcome }
+    : {};
+  if (kept.length > 0) nextOutcome.next_actions = kept;
+  else delete nextOutcome.next_actions;
+  nextOutcome.bytes = Buffer.byteLength(filteredText, "utf8");
+  return { text: filteredText, outcome: nextOutcome };
 }
 
 function comparableText(value) {

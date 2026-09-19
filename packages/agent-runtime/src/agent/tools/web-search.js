@@ -317,6 +317,19 @@ async function performSearch(
     for (const entry of fittedEntries) {
       if (next_actions.length >= 3) break;
       if (typeof entry?.url !== "string" || entry.url.length === 0 || entry.url.length > 2000) continue;
+      // Only suggest fetching URLs the resolved network policy actually
+      // allows. A denied URL stays visible as a discovery lead in results,
+      // but never becomes a next action; hints confer no authority. Tool
+      // exposure (whether WebFetch is enabled for the run) is enforced at
+      // the delivery boundaries that know it (controller cache reads and the
+      // Pi bridge), which re-filter these candidates.
+      let policyAllows = false;
+      try {
+        policyAllows = sandbox.networkAllowsUrl(policy, entry.url);
+      } catch {
+        policyAllows = false;
+      }
+      if (!policyAllows) continue;
       const action = buildWebNextAction("WebFetch", { url: entry.url },
         "Fetch the strongest returned URL for evidence; snippets are leads only.");
       if (action) next_actions.push(action);
