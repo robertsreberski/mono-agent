@@ -1006,7 +1006,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .cron-run-link:hover { text-decoration: underline; }
 .cron-run-state { color: var(--text-soft); text-transform: capitalize; }
 .cron-run-row.is-failed .cron-run-state, .cron-run-row.is-dropped .cron-run-state, .cron-reply-context-header.is-failed .cron-run-state, .cron-reply-context-header.is-dropped .cron-run-state { color: var(--danger); }
-.cron-run-row.is-skipped_overlap .cron-run-state, .cron-run-row.is-cancelled .cron-run-state, .cron-reply-context-header.is-skipped_overlap .cron-run-state, .cron-reply-context-header.is-cancelled .cron-run-state { color: var(--warning); }
+.cron-run-row.is-skipped_overlap .cron-run-state, .cron-run-row.is-skipped_gate .cron-run-state, .cron-run-row.is-cancelled .cron-run-state, .cron-reply-context-header.is-skipped_overlap .cron-run-state, .cron-reply-context-header.is-skipped_gate .cron-run-state, .cron-reply-context-header.is-cancelled .cron-run-state { color: var(--warning); }
 .cron-run-row time { font-variant-numeric: tabular-nums; }
 .cron-activity-button { padding: 2px 7px; border-radius: 999px; font-size: 9px; }
 .cron-reply-button { padding: 3px 9px; color: var(--accent); background: var(--accent-soft); border-radius: 999px; font-size: 9.5px; font-weight: 700; }

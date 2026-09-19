@@ -244,3 +244,65 @@ describe("loadCronAdapterConfig with a cron folder", () => {
     });
   });
 });
+
+describe("cron folder preflight frontmatter", () => {
+  it("parses a single-line JSON argv and timeout from frontmatter", () => {
+    const job = parseCronJobMarkdown(
+      "gated.md",
+      [
+        "---",
+        "expression: 0 8 * * *",
+        'preflight: ["node", "gate.mjs", "--strict"]',
+        "preflightTimeoutMs: 12000",
+        "---",
+        "",
+        "Summarize the queue.",
+        "",
+      ].join("\n"),
+    );
+
+    expect(job).toMatchObject({
+      id: "gated",
+      preflight: ["node", "gate.mjs", "--strict"],
+      preflightTimeoutMs: 12_000,
+    });
+  });
+
+  it("never splits a shell-looking preflight string, and rejects malformed values", () => {
+    const base = (frontmatter: readonly string[]): string =>
+      ["---", "expression: 0 8 * * *", ...frontmatter, "---", "", "Body.", ""].join("\n");
+
+    expect(() => parseCronJobMarkdown("split.md", base(["preflight: node gate.mjs --strict"])))
+      .toThrowError(/single-line JSON array/u);
+    expect(() => parseCronJobMarkdown("empty.md", base(["preflight: []"])))
+      .toThrowError(/non-empty array/u);
+    expect(() => parseCronJobMarkdown("type.md", base(['preflight: ["ok", 7]'])))
+      .toThrowError(/non-empty argument strings/u);
+    expect(() => parseCronJobMarkdown("nul.md", base(['preflight: ["ok\\u0000bad"]'])))
+      .toThrowError(/without NUL/u);
+    expect(() => parseCronJobMarkdown("timeout.md", base(["preflightTimeoutMs: 90000"])))
+      .toThrowError(/no greater than 60000/u);
+    expect(() => parseCronJobMarkdown("timeout-unit.md", base(["preflightTimeoutMs: 5s"])))
+      .toThrowError(/positive integer/u);
+  });
+
+  it("loads a folder job with a gate through toCronJobs", async () => {
+    await mkdir(join(dir, "cron"), { recursive: true });
+    await writeFile(
+      join(dir, "cron", "gated.md"),
+      [
+        "---",
+        "expression: 0 8 * * *",
+        'preflight: ["./check.sh"]',
+        "---",
+        "",
+        "Body.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const config = await loadCronAdapterConfig({ env: {}, cwd: dir });
+    expect(toCronJobs(config)[0]).toMatchObject({ id: "gated", preflight: ["./check.sh"] });
+  });
+});

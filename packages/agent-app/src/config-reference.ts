@@ -770,6 +770,8 @@ function cronJobSchema(): JsonSchema {
       notifyFailureCooldownHours: { type: "integer", minimum: 1 },
       model: { type: "string", minLength: 1 },
       effort: { type: "string", minLength: 1 },
+      preflight: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+      preflightTimeoutMs: { type: "integer", minimum: 1, maximum: 60_000 },
     },
   };
 }
@@ -1297,12 +1299,18 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     "runtime.retry.primaryAttempts": { minimum: 1, maximum: 10 },
     "runtime.retry.backoffMs": { minimum: 0, maximum: 60_000 },
     "runtime.retry.maxBackoffMs": { minimum: 0, maximum: 300_000 },
+    "cron.preflightTimeoutMs": { minimum: 1, maximum: 60_000 },
     "tools.web.search.maxRequestsPerRun": { minimum: 1, maximum: 20 },
   };
   const bounds = numericBounds[field.jsonPath];
   if (bounds !== undefined) {
     schema.minimum = bounds.minimum;
     schema.maximum = bounds.maximum;
+  }
+  if (field.jsonPath === "cron.preflight") {
+    schema.type = "array";
+    schema.minItems = 1;
+    schema.items = { type: "string", minLength: 1 };
   }
   if (field.jsonPath === "tools.mcpRequestContextServers") {
     schema.uniqueItems = true;
@@ -1342,6 +1350,8 @@ function arrayItemSchemaForField(field: ConfigReferenceField): JsonSchema {
         notifyFailureCooldownHours: { type: "integer" },
         model: { type: "string" },
         effort: { type: "string" },
+        preflight: { type: "array", items: { type: "string" } },
+        preflightTimeoutMs: { type: "integer" },
       },
     };
   }
@@ -1410,6 +1420,7 @@ function inferType(id: string): ConfigReferenceType {
     return "boolean";
   }
   if (id === "tools.web.search.maxRequestsPerRun") return "integer";
+  if (id === "cron.preflight") return "string[]";
   if (id.endsWith("Models") || id.endsWith("Tools") || id.endsWith("Servers") || id.endsWith("Roots") || id.endsWith("allowlist") || id.endsWith("denyWrite") || id.endsWith("selectedSkills") || id.endsWith("Ids") || id.endsWith("Aliases")) {
     return "string[]";
   }
@@ -1544,6 +1555,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "cron.timezone": "UTC",
     "cron.notify": false,
     "cron.notifyFailureCooldownHours": 6,
+    "cron.preflightTimeoutMs": 5_000,
     "openaiApi.enabled": false,
     "openaiApi.host": "127.0.0.1",
     "openaiApi.port": 0,
@@ -1630,6 +1642,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "slack.threadContext.includeBotMessages": true,
     "webhook.apiKey": "set-via-MONO_AGENT_WEBHOOK_API_KEY",
     "openaiApi.apiKey": "env:MONO_AGENT_OPENAI_API_KEY",
+    "cron.preflight": ["node", "scripts/check-queue.mjs"],
     "tui.requestToolEnvironment.allowedKeys": ["MULTICA_TOKEN", "MULTICA_TASK_ID"],
   };
   if (examples[id] !== undefined) {
@@ -1675,6 +1688,12 @@ function descriptionFor(id: string): string {
   }
   if (id === "cron.operatorActions.enabled") {
     return "Allows API-key-authenticated, explicitly confirmed run-now and runtime enable/disable actions. Defaults off and never rewrites cron config sources.";
+  }
+  if (id === "cron.preflight") {
+    return "Explicit argv evaluated before the model responder. `{\"run\":false}` ends the firing as skipped_gate with no model turn; `{\"run\":true,\"input\":\"…\"}` runs the job with the input appended to its prompt. Any failure (non-zero exit, signal, timeout, malformed verdict) fails open with the plain prompt. Never a shell line.";
+  }
+  if (id === "cron.preflightTimeoutMs") {
+    return "Wall-clock bound for one preflight evaluation before it is killed and fails open. Positive integer milliseconds, default 5000, capped at 60000; separate from maxRunMs.";
   }
   if (id === "slack.stripMentionText") {
     return "When unset, preserves one readable authenticated self-mention marker; `true` restores legacy full stripping and `false` keeps raw mention forms.";

@@ -2427,6 +2427,19 @@
               "effort": {
                 "type": "string",
                 "minLength": 1
+              },
+              "preflight": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "preflightTimeoutMs": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60000
               }
             }
           }
@@ -2526,6 +2539,31 @@
             "example"
           ],
           "type": "string"
+        },
+        "preflight": {
+          "description": "Explicit argv evaluated before the model responder. `{\"run\":false}` ends the firing as skipped_gate with no model turn; `{\"run\":true,\"input\":\"…\"}` runs the job with the input appended to its prompt. Any failure (non-zero exit, signal, timeout, malformed verdict) fails open with the plain prompt. Never a shell line.",
+          "examples": [
+            [
+              "node",
+              "scripts/check-queue.mjs"
+            ]
+          ],
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "preflightTimeoutMs": {
+          "description": "Wall-clock bound for one preflight evaluation before it is killed and fails open. Positive integer milliseconds, default 5000, capped at 60000; separate from maxRunMs.",
+          "examples": [
+            5000
+          ],
+          "type": "integer",
+          "default": 5000,
+          "minimum": 1,
+          "maximum": 60000
         }
       }
     },

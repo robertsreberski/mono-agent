@@ -96,6 +96,8 @@ process.once("SIGINT", () => cron.stop());
 
 Only future ticks after startup are scheduled. Direct programmatic `startCronAdapter` callers can choose `overlap: "skip" | "queue" | "replace"` (default `"skip"`). In queue mode, `maxQueueDepth` is a soft overflow threshold: the default `overflow: "preserve"` warns but keeps every firing and can grow past it. Select `overflow: "coalesce"` or `"drop-oldest"` to bound pending memory.
 
+A job can declare `preflight: ["<exe>", "…"]` — an explicit argv, never a shell line — and a host supplies the executor as `options.preflight`. The gate runs before the responder while the firing still holds its overlap slot (a tick during the gate is skipped as an overlap). It answers `{"run": false}` (the firing ends as `{kind: "skipped", reason: "gate"}` with no responder turn), `{"run": true, "input": "…"}` (the input is appended to the prompt inside a `<preflight-input>` block and `metadata.cron.preflight = { outcome, inputBytes }` is set), or anything else, which fails open: the job runs with its plain prompt. Every gate failure — non-zero exit, signal, spawn failure, timeout, malformed verdict, or output over the caps — fails open and is reported once through `options.onPreflight` as a bounded `CronPreflightRecord` (stable error code, bounded reason, never raw output, argv, or env). The scheduler races the executor against `preflightTimeoutMs` (job value, then `options.preflightTimeoutMs`, default `DEFAULT_CRON_PREFLIGHT_TIMEOUT_MS`, hard cap `MAX_CRON_PREFLIGHT_TIMEOUT_MS`); an uncooperative executor is recorded as `timeout` and the job still runs. A `stop()` or overlap replacement during the gate cancels the firing (`kind: "cancelled"` without `startedAt`) and records `cancelled`. A manual firing always runs and keeps the gate's input, but a `run: false` verdict cannot suppress it; that case is recorded as `overridden`. The adapter never spawns anything itself — it only calls the host's `preflight` executor.
+
 `overlap`, `maxQueueDepth`, and `overflow` are programmatic-only adapter options. The config-first `@mono-agent/agent-app` product does not expose them as cron config keys and pins `overlap: "skip"`, so jobs loaded from `mono-agent.config.json`, `MONO_AGENT_CRON_*`, or the cron folder skip overlapping ticks.
 
 Programmatic hosts composing native notification can set a job's explicit `notifyConversationId`, pass a pre-resolved `notifyFallbackConversationId`, or provide `resolveNotifyFallbackConversationId` on the adapter options. The resolver runs once per firing; the selected route is used for request `replyTo` and returned on the succeeded `CronJobResult`, so a host can deliver the final text on the exact same route without resolving it again after the run. The resolver receives the run's optional `AbortSignal`, and the adapter also races its promise against that signal so replace/stop can reclaim the firing even when resolver code does not cooperate.
@@ -168,7 +170,10 @@ The request lifecycle is:
    disjoint spaces.
 4. The scheduler applies the same overlap guard and watchdog to timer and
    `runNow()` admission, creates an abortable `AgentRequestBase`, and invokes
-   the host-owned responder. Caller-controlled cron ids never widen that shared
+   the host-owned responder. A declared `preflight` gate is evaluated first,
+   still holding the job's slot; a skip verdict ends the firing before any
+   responder turn, and a run verdict (or any gate failure) starts the responder
+   with the gate's bounded input appended. Caller-controlled cron ids never widen that shared
    request contract; an artifact harness id is reported separately.
 5. The scheduler emits typed events/results; the host decides whether to log,
    persist, audit, or deliver them. Synchronous and asynchronous host-state
@@ -185,6 +190,7 @@ The request lifecycle is:
 | [`config.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/cron-adapter/src/config.ts) | Config/env layering, directory merge, redaction, and enabled-job projection. |
 | [`jobs-dir.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/cron-adapter/src/jobs-dir.ts) | Markdown frontmatter parsing and deterministic folder loading. |
 | [`cron-expression.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/cron-adapter/src/cron-expression.ts) | Shared expression and timezone validation. |
+| [`preflight.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/cron-adapter/src/preflight.ts) | Preflight argv/verdict contract, byte bounds, and config validation. |
 | [`scheduler.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/cron-adapter/src/scheduler.ts) | Timers, overlap/overflow policy, cancellation, watchdogs, and results. |
 | [`index.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/cron-adapter/src/index.ts) | Supported public package surface. |
 
@@ -226,15 +232,24 @@ CronJobResult
 CronJobSnapshot
 CronOverflowPolicy
 CronOverlapMode
+CronPreflightErrorCode
+CronPreflightOutcome
+CronPreflightRecord
+CronPreflightRecordOutcome
 CronRequestMetadata
 CronRunTrigger
+DEFAULT_CRON_PREFLIGHT_TIMEOUT_MS
 LoadCronAdapterConfigInput
 MAX_CRON_CONVERSATION_ID_BYTES
 MAX_CRON_EXPRESSION_BYTES
 MAX_CRON_JOBS
 MAX_CRON_JOB_ID_BYTES
+MAX_CRON_PREFLIGHT_INPUT_BYTES
+MAX_CRON_PREFLIGHT_REASON_BYTES
+MAX_CRON_PREFLIGHT_TIMEOUT_MS
 MAX_CRON_TIMEZONE_BYTES
 RedactedCronAdapterConfig
+boundCronPreflightText
 loadCronAdapterConfig
 loadCronJobsFromDirectory
 parseCronJobMarkdown

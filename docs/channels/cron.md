@@ -170,6 +170,29 @@ The config schema intentionally has no `overlap`, `maxQueueDepth`, or `overflow`
 Pick an `expression` whose interval comfortably exceeds the job's typical runtime. The web channel records an overlapping firing as `skipped_overlap`; it never pretends that the firing ran.
 :::
 
+## Preflight gates: skip work, not ticks
+
+A job may declare a deterministic `preflight` argv that is evaluated before the model responder. The gate answers whether this firing has work:
+
+```json
+{"run": false, "reason": "no new items"}
+{"run": true, "input": "3 new PRs: #951 #952 #953", "reason": "optional"}
+```
+
+- `{"run": false}` ends the firing as `skipped_gate`: no model turn, no conversation turn, no notification, and no failure-notice cooldown movement. The job slot is released immediately, so the next tick fires normally.
+- `{"run": true}` runs the job as usual. When `input` is present it is appended to the job prompt inside one `<preflight-input>` block, and the request metadata records `cron.preflight = { outcome, inputBytes }`. The block is operator-owned data — nothing in the runtime interprets it — so a prompt that depends on it should say what to do when the block is absent.
+- Unknown keys are ignored; `run` must be a boolean, and `input`/`reason` must be strings when present.
+
+The gate is an explicit argv and is never split from a shell string. Folder jobs declare it as one single-line JSON array in frontmatter (`preflight: ["node", "scripts/check-queue.mjs"]`); inline jobs use `cron.jobs[].preflight`, and the single-job environment form is `MONO_AGENT_CRON_PREFLIGHT_JSON`. `preflightTimeoutMs` (or `MONO_AGENT_CRON_PREFLIGHT_TIMEOUT_MS`) bounds one evaluation: a positive integer in milliseconds, default `5000`, capped at `60000`. Malformed declarations are startup config errors, so a typo can never silently disable a gate.
+
+The gate runs in the agent root with the inherited environment plus `MONO_AGENT_CRON_JOB_ID`, `MONO_AGENT_CRON_RUN_ID`, `MONO_AGENT_CRON_SCHEDULED_AT`, and `MONO_AGENT_CRON_TRIGGER`, so it can dedupe or read external state. It must be side-effect-free with respect to the job: it reports what it sees, and never advances the job's own state.
+
+**Fail-open is absolute.** A non-zero exit, a signal, a missing executable, a timeout, stdout over its cap, or a malformed verdict runs the job with its plain prompt and records a stable error code (`exit_nonzero`, `signal`, `spawn_failed`, `timeout`, `invalid_json`, `invalid_verdict`, `output_overflow`; `callback_timeout` when the adapter's own race timer wins) — never a silent stop. Stderr is diagnostic only: it is kept truncated to its cap and never changes the verdict. The durable record carries codes and a bounded reason only: raw gate stdout, stderr, argv, and environment values are never persisted, and a failed gate's stderr may appear once in the log, truncated to 1 KiB at `warn`.
+
+The gate holds the job's overlap slot while it evaluates, so a tick that lands during the gate is an ordinary `skipped_overlap` blocked by the gating firing. The run watchdog (`maxRunMs`) starts only when the responder starts, so a slow gate never consumes the run budget. A `run: false` verdict cannot suppress a manual **Run now**: the gate still runs, its `input` is still used, and the firing is recorded as `overridden`. Stopping the app or replacing the firing during the gate cancels the firing without inventing a start time.
+
+Every attempted gate is recorded per firing — verdicts, timeouts, cancellations, and manual overrides alike — in the owner-private control store. The console shows a gate skip as `skipped_gate` with the gate's bounded reason, never as a failure.
+
 ## Web console and operator APIs
 
 The web console has a dedicated **Automations** navigation destination populated from the agent-scoped overview, independently of the loaded Chats page. It lists configured jobs before their first run and shows each overview job once with its id, human-language cadence/timezone, enabled state, last or active run, and agent-authored next run. The list sorts by most recent invocation, newest first (completion, then start, then admission stamp, with a deterministic job-id fallback); jobs that never ran trail the invoked ones. Selecting a row opens the existing stable `/agents/<sourceId>/cron/<jobId>` read-only history route, and opening that route directly selects Automations navigation. Loading, unsupported, unavailable, saved-snapshot, empty, and truncated states remain distinct. A saved overview and cached history remain readable while the agent is offline or lacks current cron capability, but stale schedule state is labelled, not actionable, and never presented as a live next-run prediction. Chats requests use a server-side scope that excludes cron channels before search, limits, and cursors are applied; webhook conversations remain Chats, and unscoped API callers retain the backward-compatible mixed listing.

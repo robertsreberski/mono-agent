@@ -984,7 +984,7 @@ export interface MessagePage {
 
 export type CronRunStatus =
   | "admitted" | "running" | "queued" | "succeeded" | "failed" | "cancelled"
-  | "skipped_overlap" | "dropped";
+  | "skipped_overlap" | "skipped_gate" | "dropped";
 export type CronHealth = "healthy" | "warning" | "unhealthy" | "disabled" | "unknown";
 
 export interface CronRun {
