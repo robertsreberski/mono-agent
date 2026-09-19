@@ -5,7 +5,7 @@ import { withWebDeadline, coordinatedWebRequest, webRequestFailure } from "./web
 
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "./shared/constants.js";
-import { capChars, writeToolArtifact } from "./shared/output-truncation.js";
+import { writeToolArtifact } from "./shared/output-truncation.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { renderWithAgentBrowser } from "./web-browser-render.js";
@@ -731,41 +731,27 @@ export function formatWebFetchDocument(document, params, ctx) {
   const explicitBudget = Number.isFinite(requestedBudget) && requestedBudget > 0
     ? Math.floor(requestedBudget)
     : null;
-  const maxChars = explicitBudget ?? DEFAULT_MAX_TOOL_OUTPUT_CHARS;
-  // Content carries only actual page characters. An explicit caller budget is
-  // enforced exactly on the content; envelope framing (summary, coverage, next
-  // actions) always sits outside it, with the truncation notice and any
-  // saved-artifact path in the summary instead of a marker inside content.
-  // Without an explicit budget the shared capChars path applies unchanged.
-  // The artifact is written at most once: only the explicit path writes here,
-  // and it never calls capChars.
+  // Effective budget is always a plain JS character (UTF-16 code unit) count
+  // on page content: the explicit caller cap, or the default tool-output cap.
+  // Content carries only actual page characters; the truncation notice and any
+  // saved-artifact path live in the summary, never as a marker in content.
+  // The artifact is written at most once per call.
+  const effectiveBudget = explicitBudget ?? DEFAULT_MAX_TOOL_OUTPUT_CHARS;
   let content;
   let truncationArtifact = null;
   if (focusNoMatch) {
     content = "";
-  } else if (explicitBudget !== null) {
-    if (selected.length <= explicitBudget) {
-      content = selected;
-    } else {
-      content = selected.slice(0, explicitBudget);
-      truncationArtifact = writeToolArtifact("WebFetch", selected, ctx);
-    }
+  } else if (selected.length <= effectiveBudget) {
+    content = selected;
   } else {
-    content = capChars(selected, { label: "WebFetch", maxChars, ctx });
+    content = selected.slice(0, effectiveBudget);
+    truncationArtifact = writeToolArtifact("WebFetch", selected, ctx);
   }
   const contentTruncated = content !== selected;
   // Line coordinates derive from the actual shown page prefix: only complete
   // lines count, so a line cut mid-budget is resumed (not skipped) by the
   // continuation and never claimed as fully shown.
-  let shownLines;
-  if (focusNoMatch) {
-    shownLines = 0;
-  } else if (explicitBudget !== null || content === selected) {
-    shownLines = countCompleteLines(content, selected);
-  } else {
-    // Shared-helper path only, where the marker suffix is part of content.
-    shownLines = Math.max(0, content.slice(0, content.lastIndexOf("[truncated WebFetch output:")).split("\n").length - 1);
-  }
+  const shownLines = focusNoMatch ? 0 : countCompleteLines(content, selected);
   const end = Math.min(lines.length, start - 1 + shownLines);
   const continuation = end < lines.length ? Math.max(start, end + 1) : null;
   const stalled = continuation !== null && continuation <= start && contentTruncated;
@@ -781,7 +767,7 @@ export function formatWebFetchDocument(document, params, ctx) {
   const hasMoreLines = continuation !== null;
   const omittedPreceding = !focusNoMatch && ranged && start > 1 && totalLines > 0;
   const beyondEnd = !focusNoMatch && totalLines > 0 && start > totalLines;
-  const truncatedView = selected.length > maxChars || end < lines.length || omittedPreceding;
+  const truncatedView = selected.length > effectiveBudget || end < lines.length || omittedPreceding;
   const partialView = baseOutcome.excerptsOnly === true
     || baseOutcome.code === "ok_static_render_failed"
     || (focusResult !== null && focusResult.matchedBlocks < focusResult.totalBlocks)
@@ -812,7 +798,7 @@ export function formatWebFetchDocument(document, params, ctx) {
   if (continuation !== null && continuation > start) {
     summaryParts.push(`More lines remain after line ${end}; continue with start_line ${continuation}.`);
   }
-  if (!focusNoMatch && explicitBudget !== null && contentTruncated
+  if (!focusNoMatch && contentTruncated
     && continuation !== null && continuation > start
     && content.length < selected.length && selected[content.length] !== "\n") {
     summaryParts.push(`Line ${continuation} is only partially shown; continue with start_line ${continuation} to reread it from its start.`);

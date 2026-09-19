@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
+import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "../../agent/tools/shared/constants.js";
 import {
   __resetSharedSearchCacheForTests,
   createWebToolController,
@@ -377,6 +378,41 @@ describe("managed web-research contract", () => {
     expect(payload).toMatchObject({ tool: "WebFetch", status: "ok", code: "ok" });
     expect(payload.content).toBe(doc);
     expect(payload.coverage.truncated).toBe(false);
+  });
+
+  it("bounds default-budget content at the exact page prefix with no marker", async () => {
+    const doc = "d".repeat(DEFAULT_MAX_TOOL_OUTPUT_CHARS + 1000);
+    const result = await performWebFetch({ url: "https://example.com/oversized", format: "text" }, {
+      fetchImpl: async () => new Response(doc, { headers: { "content-type": "text/plain" } }),
+      ctx: runtimeContext(),
+    });
+    const payload = JSON.parse(result.text);
+    expect(payload).toMatchObject({ tool: "WebFetch", status: "partial", code: "ok" });
+    expect(payload.content).toBe(doc.slice(0, DEFAULT_MAX_TOOL_OUTPUT_CHARS));
+    expect(payload.content).not.toContain("[truncated");
+    expect(payload.coverage).toMatchObject({ totalLines: 1, truncated: true });
+    // One line exceeds the whole default budget, so the view stalls honestly:
+    // no dead repeat action, and the summary names the remedy.
+    expect(payload.summary).toContain("exceeds the output budget");
+    expect(payload).not.toHaveProperty("next_actions");
+    expect(result.outcome).toMatchObject({ status: "partial", truncated: true });
+    expect(result.outcome.status).toBe(payload.status);
+
+    // Multi-line oversized doc under the same default budget: exact prefix,
+    // reported counts, and a correct continuation into the cut line.
+    const manyLines = Array.from({ length: 400 }, (_, index) => `Default line ${index + 1} with padding characters abcdefghij.`);
+    const joined = manyLines.join("\n");
+    const paged = await performWebFetch({ url: "https://example.com/oversized-lines", format: "text" }, {
+      fetchImpl: async () => new Response(joined, { headers: { "content-type": "text/plain" } }),
+      ctx: runtimeContext(),
+    });
+    const pagedPayload = JSON.parse(paged.text);
+    expect(pagedPayload).toMatchObject({ tool: "WebFetch", status: "partial", code: "ok" });
+    expect(pagedPayload.content).toBe(joined.slice(0, DEFAULT_MAX_TOOL_OUTPUT_CHARS));
+    expect(pagedPayload.content).not.toContain("[truncated");
+    expect(pagedPayload.coverage.truncated).toBe(true);
+    expect(pagedPayload.summary).toContain(`showing ${DEFAULT_MAX_TOOL_OUTPUT_CHARS} of ${joined.length} characters`);
+    expect(pagedPayload.coverage.nextLine).toBe(pagedPayload.next_actions[0].args.start_line);
   });
 
   it("marks the final page partial when earlier lines are omitted", async () => {
