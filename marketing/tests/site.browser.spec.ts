@@ -128,3 +128,14 @@ test("disables entrance motion when reduced motion is requested", async ({
   expect(animation === "none" || animation === "").toBe(true);
   await context.close();
 });
+
+for (const width of [320, 768, 1024]) {
+  test(`editorial layout stays within ${width}px viewport`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/", { waitUntil: "networkidle" });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await expect(page.getByRole("figure").filter({ hasText: "Minimal example" })).toBeVisible();
+    const examples = page.locator(".example-prompt");
+    await expect(examples).toHaveCount(3);
+  });
+}

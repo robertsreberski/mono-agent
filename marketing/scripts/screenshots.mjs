@@ -37,6 +37,8 @@ const SHOTS = [
     height: 844,
     scrollTo: "#use-cases",
   },
+  { name: "config-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: ".config-story" },
+  { name: "config-mobile-390x844.png", width: 390, height: 844, scrollTo: ".config-story" },
   {
     name: "start-desktop-1440x1000.png",
     width: 1440,
@@ -80,6 +82,8 @@ async function main() {
           viewport: { width: shot.width, height: shot.height },
         });
         await page.goto(URL, { waitUntil: "networkidle" });
+        await page.evaluate(() => document.fonts.ready);
+        await page.waitForFunction(() => document.getAnimations().every(a => a.playState !== "running"));
         if (shot.scrollTo) {
           // Instant jump: the site enables smooth scroll-behavior, which
           // would otherwise leave the capture mid-flight.

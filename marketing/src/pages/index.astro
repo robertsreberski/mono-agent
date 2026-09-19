@@ -102,27 +102,26 @@ const jsonLd = {
       <section class="hero" id="top" aria-labelledby="hero-heading">
         <div class="wrap hero-grid">
           <div class="hero-copy">
-            <span class="eyebrow">Open source · GPL-3.0 · Local-first</span>
+            <span class="eyebrow"><span class="status-dot" aria-hidden="true"></span> A local-first AI workspace</span>
             <h1 id="hero-heading">Your agents. Your models. Your workspace.</h1>
             <p class="lede">
-              mono-agent turns a folder into an AI agent you work with in a
-              persistent web workspace — for coding, research, and automation.
-              One <code>mono-agent.config.json</code> defines the whole agent:
-              models, tools, skills, memory, and channels.
+              A folder becomes an agent. A conversation becomes work.
+              Code, research, and automate with the models you choose —
+              in a workspace you control.
             </p>
             <div class="hero-actions">
               <a class="btn btn-primary" href={GITHUB_URL}>Get the code on GitHub</a>
               <a class="btn btn-secondary" href={DOCS_URL}>Read the docs</a>
             </div>
-            <p class="hero-meta">Needs Node.js 24.15 or newer · Bring your own models, including local ones</p>
+            <p class="hero-meta">Open source. Bring your own models. Make it yours.</p>
           </div>
           <figure class="hero-art" aria-hidden="true">
             <picture>
-              <source type="image/webp" srcset="/hero-640.webp 640w, /hero-960.webp 960w, /hero-1440.webp 1440w" sizes="(max-width: 959px) 100vw, 520px" />
+              <source type="image/webp" srcset="/hero-640.webp 640w, /hero-960.webp 960w, /hero-1440.webp 1440w" sizes="(max-width: 959px) 100vw, (max-width: 1250px) 80vw, 1000px" />
               <img
                 src="/hero-1440.jpg"
                 srcset="/hero-640.jpg 640w, /hero-960.jpg 960w, /hero-1440.jpg 1440w"
-                sizes="(max-width: 959px) 100vw, 520px"
+                sizes="(max-width: 959px) 100vw, (max-width: 1250px) 80vw, 1000px"
                 width="1536"
                 height="1024"
                 alt=""
@@ -132,41 +131,43 @@ const jsonLd = {
             <figcaption class="visually-hidden">Decorative brand illustration, not a product screenshot.</figcaption>
           </figure>
         </div>
+        <div class="wrap hero-footnote"><span>01 / YOUR WORK, YOUR WAY</span><span>One config. Many possibilities. <span aria-hidden="true">↘</span></span></div>
+      </section>
+
+      <section class="capability-strip" aria-label="Core capabilities">
+        <div class="wrap"><span>Built around your choices</span><ul><li>Local &amp; cloud models</li><li>Persistent conversations</li><li>Skills &amp; MCP</li><li>Optional memory</li></ul></div>
       </section>
 
       <section class="section" id="use-cases" aria-labelledby="use-cases-heading">
         <div class="wrap">
           <span class="section-label">Use cases</span>
-          <h2 id="use-cases-heading">One agent, three kinds of work</h2>
-          <p class="section-intro">
-            The same config-first agent adapts to the folder you give it — a
-            codebase, a research pile, or a routine worth automating.
-          </p>
+          <h2 id="use-cases-heading">Less switching.<br />More doing.</h2>
+          <p class="section-intro">For the code you need to ship, the question you need to answer,
+            and the routine you would rather not repeat.</p>
           <ol class="use-cases">
             <li>
-              <h3>Build</h3>
-              <p>
-                Open a project folder as the agent workspace and ask it to fix a
-                failing test, review a diff, trace a bug, or run commands and
-                explain what failed. The conversation persists, so closing the
-                tab never loses the thread.
-              </p>
+              <span class="case-index">01 / BUILD</span>
+              <h3>From stuck<br />to shipped.</h3>
+              <p>Give your agent a codebase. Trace bugs, review changes, and run tests
+                without losing the conversation when you close the tab.</p>
+              <div class="example-prompt"><span>Try asking</span><p>“Find why this test fails. Explain the cause, then propose a fix.”</p></div>
+              <a href={`${DOCS_URL}getting-started/quickstart/`}>Start with a project <span aria-hidden="true">↗</span></a>
             </li>
             <li>
-              <h3>Research</h3>
-              <p>
-                Point it at a research folder and have it plan, draft, compare,
-                and summarize from your source material. Optional memory tiers
-                carry what it learns into later conversations.
-              </p>
+              <span class="case-index">02 / RESEARCH</span>
+              <h3>From scattered<br />to understood.</h3>
+              <p>Bring your notes, documents, and questions. Compare source material,
+                develop an argument, and turn a research folder into a useful draft.</p>
+              <div class="example-prompt"><span>Try asking</span><p>“Compare these reports. Where do they disagree, and what is missing?”</p></div>
+              <a href={`${DOCS_URL}memory/`}>Explore optional memory <span aria-hidden="true">↗</span></a>
             </li>
             <li>
-              <h3>Automate</h3>
-              <p>
-                Schedule a recurring digest, accept requests on a webhook,
-                publish an OpenAI-compatible endpoint, or talk to the agent from
-                Telegram and Slack — all from that same one config file.
-              </p>
+              <span class="case-index">03 / AUTOMATE</span>
+              <h3>From repetitive<br />to routine.</h3>
+              <p>Schedule a digest, handle a webhook, or reach your agent through
+                Telegram and Slack. Configure the routine once, then let it run.</p>
+              <div class="example-prompt"><span>Example workflow</span><p>A scheduled morning digest from the sources and tools you configure.</p></div>
+              <a href={`${DOCS_URL}channels/cron/`}>Explore scheduled work <span aria-hidden="true">↗</span></a>
             </li>
           </ol>
         </div>
@@ -175,11 +176,23 @@ const jsonLd = {
       <section class="section" id="why" aria-labelledby="why-heading">
         <div class="wrap">
           <span class="section-label">Why mono-agent</span>
-          <h2 id="why-heading">Configured, not glued together</h2>
+          <h2 id="why-heading">Your setup.<br />Not someone else’s box.</h2>
           <p class="section-intro">
             What you set up is something you can read, review, version, and
             move — not host code you maintain.
           </p>
+          <div class="config-story">
+            <div class="config-copy"><span class="section-label">Small file. Big possibility.</span><h3>The agent starts<br />with your choices.</h3><p>Choose a model. Give it a workspace. Add the capabilities you need. Your configuration stays readable, reviewable, and yours.</p><a href={`${DOCS_URL}runtime/`}>Explore model configuration <span aria-hidden="true">↗</span></a></div>
+            <figure class="config-example"><figcaption><span aria-hidden="true">&#123; &#125;</span> mono-agent.config.json <span class="example-label">Minimal example</span></figcaption><pre><code>{`{
+  "runtime": {
+    "model": "openai-codex:gpt-5.6-terra",
+    "workspace": "."
+  },
+  "context": {
+    "identityPath": "./IDENTITY.md"
+  }
+}`}</code></pre><p>A starting point, not the whole setup. Add your identity file and configure provider access.</p></figure>
+          </div>
           <ul class="points">
             <li>
               <h3>One file defines the agent</h3>
@@ -233,10 +246,9 @@ const jsonLd = {
           <span class="section-label">Get started</span>
           <h2 id="start-heading">From empty folder to working agent</h2>
           <p class="section-intro">
-            Guided setup is genuine, not instant: it signs you in to the
-            provider you choose and proves every selected route with a real
-            model call, which can take several minutes and counts as usage on
-            your account.
+            A real workspace, not another hosted account. You’ll need Node.js 24.15+
+            and access to a model. Guided setup is not instant: it checks your routes
+            with real model calls, which can take several minutes and count as usage.
           </p>
           <ol class="steps">
             <li>
@@ -286,8 +298,7 @@ mono-agent web run --loopback</code></pre>
               <dt>What does “local-first” actually mean here?</dt>
               <dd>
                 Your agent files and run artifacts are stored on your machine
-                by default — nothing extra is uploaded just to operate the
-                agent. The models, tools, and channels you configure may still
+                by default. The models, tools, and channels you configure may
                 send the context they need to their own services, so read what
                 each one transmits before you enable it. Preferring a model on
                 your own hardware keeps even inference local.
@@ -296,7 +307,7 @@ mono-agent web run --loopback</code></pre>
             <div>
               <dt>Which models can I use?</dt>
               <dd>
-                Any <code>&lt;provider&gt;:&lt;model&gt;</code> route, including
+                Supported <code>&lt;provider&gt;:&lt;model&gt;</code> routes include
                 subscription and API providers such as OpenAI Codex and
                 Anthropic, plus fully local providers like Ollama or LM Studio.
                 Ordered fallbacks keep a turn alive when the primary route fails.
@@ -315,8 +326,8 @@ mono-agent web run --loopback</code></pre>
               <dt>What does it cost?</dt>
               <dd>
                 mono-agent itself is free, open-source software under GPL-3.0.
-                You pay your model provider for the calls your agent makes —
-                including the proof calls guided setup runs.
+                Cloud usage follows your provider’s subscription or API pricing,
+                including setup calls. Local models use your own hardware.
               </dd>
             </div>
             <div>
@@ -334,11 +345,10 @@ mono-agent web run --loopback</code></pre>
       <section class="closing" aria-labelledby="closing-heading">
         <div class="wrap">
           <span class="section-label">Get the code</span>
-          <h2 id="closing-heading">Start with a folder.</h2>
+          <h2 id="closing-heading">Make room for<br /><span>your kind of agent.</span></h2>
           <p>
-            Clone the repository, define one config file, and work with an
-            agent that keeps its state where you can see it. GPL-3.0, no
-            account, no backend to sign up for.
+            Start with a folder. Choose your models. Build a workspace
+            around the way you think and work. No mono-agent account required.
           </p>
           <div class="hero-actions">
             <a class="btn btn-primary" href={GITHUB_URL}>Get the code on GitHub</a>
