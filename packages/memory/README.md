@@ -131,6 +131,17 @@ provider or invent semantic scores. A Lite store with no embedding provider is
 normally `lexical_only` and is not degraded. Callers must keep the degradation
 visible even when no lexical hit survives their own selection policy.
 
+### Automatic direct-fact evidence
+
+The provider-free automatic selector accepts only finite direct-fact query and
+record grammars. An exact first-party report may wrap an otherwise supported
+property, choice, or work/live location when its textual reporter matches the
+query subject. The selector returns and renders the attributed record unchanged;
+it does not authenticate a user, resolve real identity from the name, or verify
+the proposition. Assistant, third-party, quoted, uncertain, corrected,
+coordinated, causal, conditional, negated, and conflicting evidence still
+abstains and remains available to deliberate recall.
+
 ### Explicit remember writes
 
 `BujoMemoryStore.remember(conversationId, text)` durably stores one explicitly
