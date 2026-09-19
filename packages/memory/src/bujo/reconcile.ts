@@ -2,6 +2,7 @@ import { relative } from "node:path";
 
 import type { MemoryDb, MemoryRecord, SimilarHit } from "../store/index.js";
 
+import { isRememberedMemoryId } from "./canonical-lookup.js";
 import {
   replayCaptureIntent,
   writeCaptureIntent,
@@ -343,6 +344,21 @@ function planBatchAction(
     case "noop":
       return planNoop(decision, deps);
     case "update":
+      // An explicitly remembered bullet is content-addressed: its id is
+      // `RM-<sha256(text)>` and `isRememberedMemoryId` treats that pairing as a
+      // self-verifying provenance claim. Merging new wording into it in place
+      // would leave the id asserting a hash of text it no longer holds, and a
+      // later `remember()` of the ORIGINAL fact would then match that id and
+      // report a false duplicate — silently discarding the user's fact.
+      //
+      // An update is a refinement, not a contradiction, so this must not invent
+      // a supersession either: that would mark the remembered fact invalidated
+      // and hide it from recall. Keep the remembered evidence exactly as it is
+      // and record the refinement as its own memory (threaded to its
+      // neighbour by the shared ADD path).
+      if (isRememberedUpdateTarget(decision, deps)) {
+        return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+      }
       return planUpdate(candidate, decision, deps);
     case "supersede":
       return planSupersede(candidate, decision, deps);
@@ -413,6 +429,15 @@ function planNoop(
   };
 }
 
+/**
+ * True when an UPDATE decision points at a bullet whose id is the content hash
+ * of its own current text — the self-verifying identity minted by `remember()`.
+ */
+function isRememberedUpdateTarget(decision: Classification, deps: ReconcileDeps): boolean {
+  const target = deps.db.get(decision.targetId ?? "");
+  return target !== undefined && isRememberedMemoryId(target.id, target.text);
+}
+
 function planUpdate(
   candidate: CandidateMemory,
   decision: Classification,
@@ -422,6 +447,15 @@ function planUpdate(
   const target = deps.db.get(targetId);
   if (target === undefined || target.source.file === undefined) {
     throw new Error(`memory-reconcile: update target "${targetId}" is unavailable.`);
+  }
+  // Defence in depth: the dispatcher already routes remembered targets to ADD.
+  // Any future caller that reaches an in-place rewrite of a content-addressed
+  // bullet must fail loudly here rather than silently break its identity.
+  if (isRememberedMemoryId(target.id, target.text)) {
+    throw new Error(
+      `memory-reconcile: refusing to rewrite remembered memory "${targetId}" in place; `
+      + "its id is the content hash of its own text.",
+    );
   }
   const before = requireCanonicalTarget(deps.root, target.source.file, targetId);
   const mergedText = decision.text ?? candidate.text;
