@@ -11,6 +11,15 @@ Mono-agent's Pi runtime exposes two complementary public-web tools:
 - `WebFetch` retrieves one URL and converts its content into compact,
   model-readable text.
 
+Both tools return a compact JSON envelope with `status`
+(`ok`/`partial`/`blocked`/`error`), a host-written `summary`, untrusted
+`content` or `results`, source and `coverage` metadata, and typed
+`next_actions` with schema-valid tool arguments. `partial` means usable but
+incomplete output, `blocked` means policy/access/budget prevents progress, and
+`error` means execution failure. Untrusted provider and page text is listed in
+`untrusted_fields`; host-written summaries, coverage, and next actions never
+quote page bodies, headers, or credentials.
+
 Both tools run inside one ephemeral controller per model run. Identical calls
 share in-flight work and a bounded in-memory cache; the controller and any
 browser namespace close at the end of the run. Successful searches also share
@@ -188,11 +197,21 @@ alternates once; Codex receives only the primary query.
 Every backend shares the same model-facing output bounds. A result title is at
 most 500 characters and its snippet is at most 4,000 characters, including the
 visible marker `[snippet truncated; use WebFetch for full source]`. The ranked
-result body is at most 64 KiB of UTF-8. Under pressure, lower-ranked snippets
-are shortened before a whole result is omitted. The search-control line,
-metadata and filters, plus `[BEGIN UNTRUSTED WEB SEARCH RESULTS]` and its
-matching closing marker are outside that body allocation and always survive.
+result entries reuse the 64 KiB UTF-8 body allocation; envelope framing
+(summary, coverage, and next actions) stays outside it. Under pressure,
+lower-ranked snippets are shortened before a whole result is omitted, and
+lossy truncation is reported as `partial`. Result entries carry the source
+citations (`title`/`url`/`published`); snippets are untrusted discovery leads.
 Use `WebFetch` on a result URL when the marker says the snippet is incomplete.
+Successful searches offer up to three typed `WebFetch` next actions for the
+strongest returned URLs. Suggestions are filtered against the resolved network
+policy at creation and again at delivery (including shared-cache hits), and
+`WebFetch` suggestions are only delivered when `WebFetch` is exposed to the
+run. A denied URL stays visible as a discovery lead but never becomes an
+action. No next action is offered for genuine no-results,
+rate limits, budgets, or other terminal failures, and next actions never
+repeat page prose or suggest bypasses, cooldown waits, or provider changes to
+evade access gates.
 
 Start research with one broad, high-yield query that covers the decision's main
 constraints. Treat snippets as leads and use `WebFetch` on the strongest
@@ -416,8 +435,8 @@ Static extraction is local and content-aware:
 4. Parse HTML with Defuddle, then Readability plus Turndown, then a cleaned-body Turndown fallback. Relative links become safe absolute HTTP(S) links.
 5. Strictly parse declared JSON/XML, extract RSS/Atom entries and PDF text, or decode
    ordinary text.
-6. Apply the normal tool-output cap and wrap the result in explicit untrusted
-   content boundaries.
+6. Apply the normal tool-output cap and return the result inside the JSON
+   envelope's untrusted `content` field.
 
 Request headers are limited to `Accept`, `Accept-Language`, `Range`, and
 `User-Agent`. Cookie, authorization, proxy, forwarding, and arbitrary custom
@@ -432,14 +451,44 @@ structured tool failures; browser rendering never runs for those responses.
 
 Use `start_line` (one-based) and `max_lines` (1–10000, default 200 when slicing).
 Omitting both preserves the normal capped document output. `max_output_chars`
-still bounds the selected text. The result reports `startLine`, `endLine`,
-`totalLines` and `nextLine`, plus a continuation hint. A line too large for the
+bounds the returned page content to exactly that many page characters; the
+truncation notice and any saved-artifact path appear in the summary, never
+inside the content. Envelope framing (summary, coverage,
+and next actions) always sits outside that budget and is never cut to fit it.
+A view that starts after line 1 omits earlier lines and is `partial`, even the
+final page; a `start_line` beyond the total reports no content as `partial`
+rather than success. The result reports `startLine`, `endLine`,
+`totalLines` and `nextLine` in `coverage`, plus a typed `WebFetch`
+continuation next action that preserves the call's format, focus, and link
+options. Any returned view that omits lines or truncates to the character
+budget is `partial`, even when the requested slice itself was satisfied;
+`coverage` (`truncated`, line coordinates, focus block counts, link
+availability) distinguishes the cause. A line too large for the
 budget requires a larger character cap or reading the saved output artifact;
 it is never silently skipped.
 
 ```json
 { "url": "https://example.com/guide", "start_line": 201, "max_lines": 100 }
 ```
+
+### Focused views and page links
+
+`WebFetch` accepts an optional `focus` string (at most 500 characters) and an
+optional `include_links` boolean. Both are deterministic post-extraction views
+over the cached document: they never change transport or cache identity and
+add no requests.
+
+- `focus` keeps the blank-line-separated blocks relevant to the focus terms,
+  preserving document order and provenance. Filtering happens before
+  pagination, so continuations stay in focused coordinates while the focus
+  string is preserved. A focused subset is reported as `partial`; a focus with
+  no matching blocks reports `focus_no_match` with no content rather than
+  pretending full success.
+- `include_links` lists up to 20 deduplicated absolute HTTP(S) links from the
+  already-downloaded static HTML, labeled `main-content` or `page`. Rendered,
+  remote, raw, and non-HTML documents report the capability as unavailable
+  with an explicit reason instead of empty success. Parallel remote extraction
+  rejects `include_links` as `unsupported_parameter` before any connection.
 
 The run caches at most 64 extracted documents and 32 MiB of document text.
 Changing the slice reuses extraction without refetching or rerendering. Cache
@@ -502,9 +551,13 @@ without changing structural validation.
 ## Security and observability
 
 Search snippets, the actual search query, and fetched pages are always labelled
-untrusted. WebSearch output includes bounded backend/query/provenance metadata
-so fallback behavior is inspectable, while sanitized failures expose only a
-backend and stable category. Timing events retain only bounded operational
+untrusted through `untrusted_fields`. WebSearch output includes bounded
+backend/query/provenance coverage so fallback behavior is inspectable, while
+sanitized failures expose only a backend and stable category. Fetch failures
+carry a stable code and a `blocked` (`network_denied`, `access_challenge`,
+`authentication_required`, rate limits including local `http_429`, exhausted
+search budget, unavailable
+coordination) versus `error` (execution/provider failure) status. Timing events retain only bounded operational
 fields such as status, error code, backend, attempt count, request budget and
 remaining count, absolute retry time, next action, byte count,
 HTTP/exit status, timeout, rendered, cache-hit, truncation flags, queue wait,

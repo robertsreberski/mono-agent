@@ -65,8 +65,10 @@ describe("Parallel Search MCP", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].arguments.search_queries).toEqual(['"Search MCP"', "parallel MCP", "site:docs.parallel.ai MCP"]);
     expect(calls[0].arguments.session_id).toBe(`mono-${createHash("sha256").update(ctx.runId).digest("hex")}`);
-    expect(result.text).toContain("[BEGIN UNTRUSTED WEB SEARCH RESULTS]");
-    expect(result.text).toContain("published 2025-07-14");
+    const searchPayload = JSON.parse(result.text);
+    expect(searchPayload).toMatchObject({ tool: "WebSearch", status: "ok" });
+    expect(searchPayload.results.length).toBeGreaterThan(0);
+    expect(searchPayload.results.some((entry) => entry.published === "2025-07-14")).toBe(true);
   });
   it("counts a genuine empty answer once and never replays the batch for alternates", async () => {
     const { fetchImpl, calls } = transport({ structuredContent: { ...search, results: [] } });
@@ -83,7 +85,12 @@ describe("Parallel Search MCP", () => {
   ])("refunds %s without leaking response material", async (_label, response, code) => {
     const { fetchImpl } = transport(response);
     const result = await performWebSearch({ query: "Search MCP" }, searchOptions(fetchImpl));
-    expect(result.outcome).toMatchObject({ status: "error", code, requestsThisCall: 0, dispatchesUsed: 1 });
+    expect(result.outcome).toMatchObject({
+      status: code === "rate_limited" ? "blocked" : "error",
+      code,
+      requestsThisCall: 0,
+      dispatchesUsed: 1,
+    });
     expect(result.text).not.toContain("sentinel");
     expect(JSON.stringify(result.outcome)).not.toContain("sentinel");
   });
@@ -191,12 +198,19 @@ describe("Parallel WebFetch", () => {
     const data = { ...extract, results: [{ ...extract.results[0], full_content: full ? "# Complete\nFull content evidence" : null }] };
     const { fetchImpl, calls } = transport({ structuredContent: data });
     const result = await performWebFetch({ url: target, format: "text" }, { ctx, fetchImpl, fetchConfig: { provider: "parallel" } });
-    expect(result.outcome).toMatchObject({ status: "ok", backend: "parallel", excerptsOnly: !full });
-    expect(result.text).toContain("[BEGIN UNTRUSTED WEB CONTENT");
+    expect(result.outcome).toMatchObject({
+      status: full ? "ok" : "partial",
+      backend: "parallel",
+      excerptsOnly: !full,
+    });
+    const fetchPayload = JSON.parse(result.text);
+    expect(fetchPayload).toMatchObject({ tool: "WebFetch", status: full ? "ok" : "partial" });
+    expect(fetchPayload.content).toContain(full ? "Full content evidence" : "Search MCP");
+    if (!full) expect(fetchPayload.summary).toContain("excerpts only");
     expect(result.text.includes("[excerpts only]")).toBe(!full);
     expect(calls[0].arguments).toMatchObject({ urls: [target], full_content: true });
   });
-  it.each([{ format: "raw" }, { headers: { Accept: "text/plain" } }, { render: "auto" }, { render: "always" }])("rejects unsupported options before network: %j", async (params) => {
+  it.each([{ format: "raw" }, { headers: { Accept: "text/plain" } }, { render: "auto" }, { render: "always" }, { include_links: true }])("rejects unsupported options before network: %j", async (params) => {
     const fetchImpl = vi.fn();
     const result = await performWebFetch({ url: target, ...params }, { ctx, fetchImpl, fetchConfig: { provider: "parallel" } });
     expect(result.outcome.code).toBe("unsupported_parameter"); expect(result.text).toContain(Object.keys(params)[0]);
@@ -218,7 +232,10 @@ describe("Parallel WebFetch", () => {
     const local = code === "unusable_content" ? '<html><body><div id="root">Loading</div><script src="/one.js"></script><script src="/two.js"></script><script>window.__NEXT_DATA__={}</script></body></html>' : code === "access_challenge" ? '<html><head><title>Just a moment...</title></head><body><h1>Performing security verification</h1><p>Enable JavaScript and cookies to continue</p></body></html>' : "unavailable";
     const fetchImpl = vi.fn((url, init) => String(url) === PARALLEL_MCP_URL ? remote.fetchImpl(url, init) : Promise.resolve(new Response(local, { status: code === "http_503" ? 503 : 200, headers: { "content-type": "text/html" } })));
     const result = await performWebFetch({ url: target }, { ctx, fetchImpl, retryDelaysMs: [], fetchConfig: { provider: ["local", "parallel"] } });
-    expect(result.outcome).toMatchObject({ status: "ok", backend: "parallel", attemptedProviders: ["local", "parallel"], fallbackUsed: true });
+    // The shared fetch fixture carries excerpts only, so the rescued chain is
+    // honestly partial rather than full success.
+    expect(result.outcome).toMatchObject({ status: "partial", backend: "parallel", attemptedProviders: ["local", "parallel"], fallbackUsed: true });
+    expect(JSON.parse(result.text)).toMatchObject({ tool: "WebFetch", status: "partial" });
   });
   it.each(["authentication_required", "network_denied", "aborted"])("never falls through terminal local %s", async (code) => {
     const signal = new AbortController();

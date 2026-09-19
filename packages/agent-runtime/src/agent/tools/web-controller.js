@@ -2,10 +2,12 @@
 
 import { parallelCacheIdentity, parallelSessionId } from "./parallel-mcp.js";
 import { createHash, randomUUID } from "node:crypto";
+import { passthroughSandbox } from "../sandbox-seam.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { performWebFetch, formatWebFetchDocument } from "./web-fetch.js";
 import { performWebSearch } from "./web-search.js";
+import { filterEnvelopeNextActions, normalizeWebResearchOptions, refreshCachedSearchEnvelope, webFailureEnvelope } from "./web-actionable.js";
 import { createWebSearchRunState, webSearchBudgetSnapshot } from "./web-search-state.js";
 
 const MAX_CACHE_ENTRIES = 64;
@@ -68,7 +70,7 @@ export function createWebToolController({
    * @param {() => Promise<any>} execute
    */
   async function cachedRun(cache, inFlight, key, execute) {
-    if (closed) return closedResult();
+    if (closed) return closedResult("WebFetch");
     const cached = cache.get(key);
     if (cached) return withCacheHit(cached);
     const active = inFlight.get(key);
@@ -94,7 +96,7 @@ export function createWebToolController({
    * @param {() => Promise<any>} execute
    */
   async function cachedSearch(key, query, execute) {
-    if (closed) return closedResult();
+    if (closed) return closedResult("WebSearch");
     const cached = readSharedSearch(key);
     if (cached) return withSearchCacheHit(cached, searchState, query);
     const active = searchInFlight.get(key);
@@ -119,7 +121,7 @@ export function createWebToolController({
     namespace,
 
     async search(params, execution = {}) {
-      if (execution.signal?.aborted) return { text: "Error: WebSearch was aborted.", error: true, outcome: { status: "error", code: "aborted" } };
+      if (execution.signal?.aborted) return webFailureEnvelope("WebSearch", "aborted", "Error: WebSearch was aborted.");
       // The key must pin the backend, the endpoint AND the network policy the
       // search actually ran under. A params-only key was safe while the cache
       // lived and died with one run; process-wide it would let controllers with
@@ -142,7 +144,7 @@ export function createWebToolController({
       const resolvedCtx = ctx ?? readToolRuntime();
       const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
       const key = stableKey({ params, searchConfig: safeSearchCacheIdentity(searchConfig), policy, coordination: coordinator?.scope });
-      return cachedSearch(key, params.query, async () => performWebSearch(params, {
+      const result = await cachedSearch(key, params.query, async () => performWebSearch(params, {
         coordinator,
         searchConfig,
         sandboxPolicy: policy,
@@ -152,16 +154,29 @@ export function createWebToolController({
         searchState,
         signal: execution.signal,
       }));
+      // Cached envelopes carry the producing call's next actions. Re-filter
+      // for the consuming call's resolved policy so a shared-cache hit can
+      // never deliver a stale permission-sensitive suggestion. Fresh results
+      // were already filtered at creation, so this is a no-op for them.
+      return filterResultActionsForPolicy(result, resolvedCtx, policy);
     },
 
     async fetch(params, execution = {}) {
-      if (execution.signal?.aborted) return { text: "Error: WebFetch was aborted.", error: true, outcome: { status: "error", code: "aborted" } };
+      if (execution.signal?.aborted) return webFailureEnvelope("WebFetch", "aborted", "Error: WebFetch was aborted.");
       const resolvedCtx = ctx ?? readToolRuntime();
       const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
-      const { start_line, max_lines, max_output_chars, ...request } = params;
+      // Focus and link selection are deterministic post-extraction views over
+      // the cached document: validated up front, excluded from the transport
+      // cache key, and applied per call during formatting. Slicing stays
+      // outside the key for the same reason.
+      const { start_line, max_lines, max_output_chars, focus, include_links, ...request } = params;
       if ((start_line !== undefined && (!Number.isSafeInteger(start_line) || start_line < 1))
         || (max_lines !== undefined && (!Number.isSafeInteger(max_lines) || max_lines < 1 || max_lines > 10000))) {
-        return { text: "Error: Invalid WebFetch line range.", error: true, outcome: { status: "error", code: "invalid_range" } };
+        return webFailureEnvelope("WebFetch", "invalid_range", "Error: Invalid WebFetch line range.");
+      }
+      const researchOptions = normalizeWebResearchOptions({ focus, include_links });
+      if (researchOptions.error) {
+        return webFailureEnvelope("WebFetch", researchOptions.error.code, researchOptions.error.message);
       }
       const key = stableKey({ request, fetchConfig: { ...fetchConfig, parallel: parallelCacheIdentity(fetchConfig?.parallel) }, policy, coordination: coordinator?.scope });
       const result = await cachedRun(fetchCache, fetchInFlight, key, async () => performWebFetch(request, {
@@ -171,7 +186,8 @@ export function createWebToolController({
       }));
       if (result.error || !result.document) return result;
       const sliced = formatWebFetchDocument({ ...result.document, outcome: result.outcome }, params, resolvedCtx);
-      return { ...sliced, document: undefined, outcome: { ...sliced.outcome, cacheHit: result.outcome.cacheHit } };
+      const merged = { ...sliced, document: undefined, outcome: { ...sliced.outcome, cacheHit: result.outcome.cacheHit } };
+      return filterResultActionsForPolicy(merged, resolvedCtx, policy) ?? merged;
     },
 
     async close() {
@@ -276,24 +292,12 @@ function withCacheHit(result) {
 function withSearchCacheHit(result, searchState, requestedQuery) {
   const cloned = withCacheHit(result);
   const budget = webSearchBudgetSnapshot(searchState, 0);
+  const refreshed = refreshCachedSearchEnvelope(cloned.text, budget, requestedQuery);
+  const text = refreshed ?? cloned.text;
   const resultCount = Number.isSafeInteger(cloned.outcome?.resultCount) ? cloned.outcome.resultCount : 0;
   const nextAction = resultCount > 0
     ? "fetch_existing_sources"
     : budget.requestsRemaining > 0 ? "refine_query" : "use_available_evidence";
-  const action = nextAction === "fetch_existing_sources"
-    ? "Use WebFetch on the strongest returned URLs before searching again."
-    : nextAction === "refine_query"
-      ? "Refine the query only for a material evidence gap."
-      : "Do not retry WebSearch in this run; use available evidence and state the limitation.";
-  const control = `[Search control: requests=${budget.requestsUsed}/${budget.maxRequestsPerRun}; remaining=${budget.requestsRemaining}; ${action}]`;
-  const query = collapseWhitespace(requestedQuery).slice(0, 500);
-  const metadata = `[Search metadata: backend=${cloned.outcome?.backend || "unknown"}; attempted=none; actual_query=${JSON.stringify(query)}; fallback=none]`;
-  const textWithControl = typeof cloned.text === "string" && cloned.text.startsWith("[Search control:")
-    ? cloned.text.replace(/^\[Search control:[^\n]*\]/u, control)
-    : `${control}\n${cloned.text}`;
-  const text = textWithControl.includes("[Search metadata:")
-    ? textWithControl.replace(/^\[Search metadata:[^\n]*\]/mu, metadata)
-    : textWithControl.replace("[BEGIN UNTRUSTED WEB SEARCH RESULTS]", `[BEGIN UNTRUSTED WEB SEARCH RESULTS]\n${metadata}`);
   const {
     retryAfterMs: _retryAfterMs,
     retryAt: _retryAt,
@@ -321,25 +325,32 @@ function withSearchCacheHit(result, searchState, requestedQuery) {
   };
 }
 
-function collapseWhitespace(value) {
-  return typeof value === "string" ? value.replace(/\s+/gu, " ").trim() : "";
+function closedResult(tool) {
+  return webFailureEnvelope(tool === "WebFetch" ? "WebFetch" : "WebSearch", "controller_closed", "Error: Web tool controller has already closed.");
 }
 
-function closedResult() {
-  const text = "Error: Web tool controller has already closed.";
-  return {
-    text,
-    outcome: {
-      status: "error",
-      code: "controller_closed",
-      retryable: false,
-      attempts: 0,
-      backend: "none",
-      cacheHit: false,
-      durationMs: 0,
-      bytes: Buffer.byteLength(text, "utf8"),
-      truncated: false,
-    },
-    error: true,
-  };
+/**
+ * Re-filter a delivery-time result's next actions against the consuming
+ * call's resolved network policy. Fresh results were filtered at creation;
+ * shared-cache hits reuse the producer's envelope, so this strips any
+ * suggestion the current policy denies. Returns the original result when
+ * nothing was removed (filterEnvelopeNextActions returns null then).
+ */
+function filterResultActionsForPolicy(result, resolvedCtx, policy) {
+  if (!result || result.error || typeof result.text !== "string" || !result.outcome) return result;
+  const sandbox = resolvedCtx?.sandbox ?? passthroughSandbox;
+  const filtered = filterEnvelopeNextActions(result.text, result.outcome, (action) => {
+    if (action?.tool === "WebFetch") {
+      const url = action?.args?.url;
+      if (typeof url !== "string") return false;
+      try {
+        return sandbox.networkAllowsUrl(policy, url);
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  });
+  if (!filtered) return result;
+  return { ...result, text: filtered.text, outcome: filtered.outcome };
 }

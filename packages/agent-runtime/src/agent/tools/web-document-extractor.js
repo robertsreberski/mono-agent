@@ -198,6 +198,63 @@ function turndown() {
   return service;
 }
 
+export const MAX_WEB_FETCH_LINKS = 20;
+export const MAX_WEB_FETCH_LINK_URL_CHARS = 2000;
+export const MAX_WEB_FETCH_LINK_TEXT_CHARS = 200;
+
+/**
+ * Bounded citation/main-content links from locally parsed HTML. Deterministic,
+ * order-preserving, deduplicated by resolved URL. Only safe absolute http(s)
+ * targets survive; page prose never influences the result beyond anchor text.
+ * This performs no fetch — it reuses already-downloaded markup.
+ *
+ * @param {unknown} html
+ * @param {unknown} baseUrl
+ * @param {{limit?: number}} [options]
+ * @returns {Array<{url: string, text: string, provenance: string}>}
+ */
+export function extractHtmlLinks(html, baseUrl, { limit = MAX_WEB_FETCH_LINKS } = {}) {
+  const cap = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, MAX_WEB_FETCH_LINKS) : MAX_WEB_FETCH_LINKS;
+  let document;
+  try {
+    ({ document } = parseHTML(String(html || "")));
+  } catch {
+    return [];
+  }
+  if (!document) return [];
+  const seen = new Set();
+  const links = [];
+  let anchors = [];
+  try {
+    anchors = [...document.querySelectorAll("a[href]")];
+  } catch {
+    return [];
+  }
+  for (const anchor of anchors) {
+    if (links.length >= cap) break;
+    let url;
+    try {
+      url = safeUrl(anchor.getAttribute("href"), baseUrl);
+    } catch {
+      continue;
+    }
+    if (!url || url.length > MAX_WEB_FETCH_LINK_URL_CHARS || seen.has(url)) continue;
+    seen.add(url);
+    let provenance = "page";
+    try {
+      provenance = typeof anchor.closest === "function" && anchor.closest("article,main,[role=main]") ? "main-content" : "page";
+    } catch {
+      provenance = "page";
+    }
+    links.push({
+      url,
+      text: collapseWhitespace(anchor.textContent).slice(0, MAX_WEB_FETCH_LINK_TEXT_CHARS),
+      provenance,
+    });
+  }
+  return links;
+}
+
 function sanitizeDocumentLinks(document, baseUrl) {
   for (const node of document.querySelectorAll("a[href],img[src]")) {
     const attribute = node.tagName?.toLowerCase() === "a" ? "href" : "src";
