@@ -31,6 +31,10 @@ function fakeStore(options: { readonly fail?: boolean; readonly disputed?: boole
       if (query.includes("unrelated")) {
         return [{ score: 0.05, record: { id: "low", text: "low confidence neighbour" } }];
       }
+      if (query.includes("a-team")) {
+        // Scope "-team" only matches "A-team" if the leading article is wrongly stripped.
+        return [{ score: 1.005, record: { id: "prefix", text: "Mira selected cobalt as the color for -team." } }];
+      }
       if (query.includes("velin")) {
         const hits = [
           { score: 1.005, record: { id: "scoped", text: "Mira selected cobalt as the color for the Velin launch." } },
@@ -198,6 +202,19 @@ describe("MemoryRetrievalService", () => {
     expect(block?.content).not.toContain("Amsterdam");
     expect(hits).toHaveLength(2);
     expect(store.queries).toEqual(["what color did mira select for the velin launch?"]);
+  });
+
+  it("abstains when the stored scope only shares an article-like prefix with the asked one", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+
+    // The record's scope is "-team", not the asked "A-team".
+    await expect(service.load(
+      "conversation",
+      "What color did Mira select for A-team?",
+      { turnId: "turn-a-team" },
+    )).resolves.toBeUndefined();
+    expect(store.accesses.flat()).toEqual([]);
   });
 
   it("abstains from automatic injection when a disputed scoped choice is in reach, leaving the tool usable", async () => {

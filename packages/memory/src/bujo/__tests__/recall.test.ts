@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { openMemoryDb } from "../../store/index.js";
 import { fakeEmbeddings } from "./helpers.js";
 import { composeRecallBlock, selectAutomaticRecallHits } from "../recall.js";
-import { automaticRecallEvidenceProfile, hasAutomaticRecallEvidence } from "../recall-evidence.js";
+import { automaticRecallEvidenceProfile, hasAutomaticRecallEvidence, selectAnswerBearingRecallHits } from "../recall-evidence.js";
 
 describe("selectAutomaticRecallHits", () => {
   it("keeps a strong multi-hit answer cluster while dropping high-similarity adjacent noise", () => {
@@ -204,8 +204,26 @@ describe("hasAutomaticRecallEvidence", () => {
       ["Project A", "Mira selected cobalt as the color for Project B."],
       ["launch 1", "Mira selected cobalt as the color for launch 2."],
       ["Bora Bora", "Mira selected cobalt as the color for Bora."],
+      // An article only leads the scope when it is a standalone word; these
+      // prefixes are part of the identifier and must not be stripped.
+      ["A-team", "Mira selected cobalt as the color for -team."],
+      ["an-1", "Mira selected cobalt as the color for -1."],
+      ["A\u2019s launch", "Mira selected cobalt as the color for \u2019s launch."],
+      ["the Velin launch", "Mira selected cobalt as the color for Velin."],
     ])("does not treat a distinct scope as the asked one: %s", (scope, text) => {
       expect(hasAutomaticRecallEvidence(`What color did Mira select for ${scope}?`, [{ record: { text } }])).toBe(false);
+    });
+
+    it.each([
+      ["A-team", "Mira selected cobalt as the color for A-team."],
+      ["an-1", "Mira selected cobalt as the color for an-1."],
+      ["A\u2019s launch", "Mira selected cobalt as the color for A\u2019s launch."],
+      // Ordinary leading articles still normalize on both sides.
+      ["the Velin launch", "Mira selected cobalt as the color for Velin launch."],
+      ["Velin launch", "Mira selected cobalt as the color for the Velin launch."],
+      ["an Orion rebrand", "Mira selected cobalt as the color for Orion rebrand."],
+    ])("matches a scope whose punctuation and identifying prefix are identical: %s", (scope, text) => {
+      expect(hasAutomaticRecallEvidence(`What color did Mira select for ${scope}?`, [{ record: { text } }])).toBe(true);
     });
 
     it("abstains when the candidates disagree about the same scoped choice", () => {
@@ -215,11 +233,22 @@ describe("hasAutomaticRecallEvidence", () => {
       ])).toBe(false);
     });
 
-    it("keeps records that agree on the value, ignoring case and spacing", () => {
-      expect(hasAutomaticRecallEvidence("What color did Mira select for the Velin launch?", [
+    it("keeps every agreeing record across verb, property-alias, spacing and scope-case variance", () => {
+      const hits = [
         { record: { text: "Mira selected cobalt as the color for the Velin launch." } },
+        { record: { text: "Mira chose  cobalt  as the shade for the VELIN LAUNCH." } },
+      ];
+      // Both records must survive: a boolean would pass on the first one alone.
+      expect(selectAnswerBearingRecallHits("What color did Mira select for the Velin launch?", hits))
+        .toEqual(hits);
+    });
+
+    it("still applies the inherited capitalized proper-name guard to the answer value", () => {
+      // Documented limit: the guard is a capitalization heuristic, so the
+      // capitalized value is dropped while the lowercase one is kept.
+      expect(selectAnswerBearingRecallHits("What color did Mira select for the Velin launch?", [
         { record: { text: "Mira selected Cobalt as the color for the Velin launch." } },
-      ])).toBe(true);
+      ])).toEqual([]);
     });
   });
 

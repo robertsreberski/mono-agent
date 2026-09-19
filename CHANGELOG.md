@@ -14,7 +14,8 @@
 - Recognize scope-qualified choice questions in automatic memory recall, so
   `What color did Mira select for the Velin launch?` can be answered by a
   record that names both the property and the scope. A scope is not a property,
-  scopes are compared conservatively so distinct projects/numbers stay distinct,
+  scopes are compared conservatively so distinct projects, numbers and
+  identifying prefixes such as `A-team` stay distinct,
   and contradictory values for the same subject/property/scope abstain instead
   of injecting either. Unscoped behaviour, score thresholds, caching and the
   `MemoryRecall` tool are unchanged, and no extra retrieval or model call added.
