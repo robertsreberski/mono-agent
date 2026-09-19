@@ -36,6 +36,23 @@
   different shapes. Add local technical details and copyable diagnostics to the
   conversation recovery panel, without uploading error reports.
 
+- Add an isolated, opt-in conversational memory benchmark with production
+  completed-turn capture, readiness checks, recall tools, and five baseline
+  arms. Keep offline contract results separate from unmeasured model quality.
+  Bound provider waits and cleanup, retain uncertain stores, and rebuild a
+  source-pinned dependency closure before real-provider admission.
+
+- Record structured benchmark provider-failure categories on meter events,
+  trials and summaries without storing raw errors, and stop further provider
+  admission after a fatal auth/quota failure while still cleaning up owned
+  stores. Remaining trials report as unstarted, never as quality results.
+
+- Let the opt-in memory benchmark select an explicit Pi auth file with
+  `--pi-auth-path` for real runs, wired into both model runtimes through the
+  existing credential resolver. Plans bind only its fingerprint, never the
+  path or credential bytes. Finish the standalone command after its report is
+  durable even when successful provider transports retain process handles.
+
 - Let `AgentSend` accept and ignore an optional `description` when stopping a
   subagent, and explain invalid stop requests with specific codes and messages.
 
