@@ -393,8 +393,15 @@ cancelled user input. Cancellation permits 1,000 ms by default for provider sett
 the caller and mailbox close immediately. The next same-conversation turn waits
 until the previous terminal account is published (cancellable; recorder/exporter
 finalization never delays it) and republishes a rejected account once before
-reporting the retryable continuity error; a wait past 5,000 ms emits one
-`turn_continuity_publication_slow` warning. Hosts may override the window through
+reporting the retryable continuity error. A wait past 5,000 ms emits a
+`turn_continuity_publication_slow` warning with elapsed time, repeated every
+15,000 ms up to 12 warnings per wait. After 30,000 ms total by default (including
+any republish attempt), the waiter fails with the retryable continuity error.
+Hosts expecting slow storage can increase `session.turnContinuityPublicationWaitMs`
+(an integer from 1 through 2,147,483,647 milliseconds), for example to 180,000 ms. The
+pending publication remains the owner: no later turn can resume or append, and
+reset also fails closed until it settles. A late successful publication allows
+the next retry to proceed. Hosts may override the provider-settlement window through
 `session.terminalRecoverySettlementMs` (a positive safe integer); the two-process
 smoke uses a longer window to tolerate loaded runners. Unsafe or unsettled tails retire and
 reseed. A process-local budget allows one failed-turn recovery per epoch; user
