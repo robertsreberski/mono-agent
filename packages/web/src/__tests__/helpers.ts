@@ -3,8 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type {
-  MonitorProjection,
-  MonitorState,
   ProcessJobProjection,
   ProcessJobState,
 } from "@mono-agent/agent-contracts";
@@ -35,7 +33,6 @@ export function fakeDiscoveredAgent(overrides: Partial<DiscoveredOperatorAgent> 
       warnings: [],
     },
     baseUrl: "http://127.0.0.1:45123/gui",
-    monitorsBearer: "test-owner-monitor-key",
     ...overrides,
   };
 }
@@ -90,55 +87,6 @@ export function fakeProcessJob(options: {
     durationMs: terminal ? 2_000 : null,
     cancelRequested: state === "cancelled",
     lastError: state === "failed" ? { code: "process_job_failed", message: "Exited with code 1." } : null,
-  };
-}
-
-export function fakeMonitor(options: {
-  readonly state?: MonitorState;
-  readonly conversationId?: string;
-  readonly monitorId?: string;
-  readonly seq?: number;
-} = {}): MonitorProjection {
-  const state = options.state ?? "running";
-  const terminal = state !== "starting" && state !== "running";
-  const seq = options.seq ?? 1;
-  return {
-    schema: "mono-agent.monitor-projection.v2",
-    monitorId: options.monitorId ?? "22222222-2222-4222-8222-222222222222",
-    state,
-    description: "Watching a local process",
-    persistent: false,
-    origin: {
-      conversationId: options.conversationId ?? "web:thread-one",
-      channel: "web",
-      runId: "run-one",
-      bucket: null,
-    },
-    timestamps: {
-      startedAt: "2026-09-04T09:00:00.000Z",
-      runtimeDeadlineAt: "2026-09-04T09:30:00.000Z",
-      lastEventAt: "2026-09-04T09:00:01.000Z",
-      completedAt: terminal ? "2026-09-04T09:00:02.000Z" : null,
-    },
-    limits: { wakeOn: "batch", dedupe: "none", minWakeIntervalMs: 0,
-      maxRuntimeMs: 1_800_000,
-      coalesceMs: 200,
-      maxBatchLines: 200,
-      maxBatchBytes: 65_536,
-      chainDepth: 0,
-    },
-    counters: { batchesSuppressed: 0, linesSuppressed: 0, followUpWakes: 0, steeredWakes: 0, unknownDispositionWakes: 0,
-      seq,
-      batchesDelivered: Math.max(0, seq - 1),
-      linesObserved: 1,
-      linesDelivered: 0,
-      droppedLines: 0,
-      pendingLines: 0,
-    },
-    exitCode: state === "exited" ? 0 : null,
-    signal: null,
-    cancelRequested: state === "cancelled",
-    lastError: null,
   };
 }
 

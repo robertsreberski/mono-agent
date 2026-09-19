@@ -467,7 +467,7 @@ Writable web turns can use `ListProjects`, `GetProject`,
 require no new config.
 Each tool honors its bare name, `mcp__mono-agent-console-projects__<name>`,
 `mcp__mono-agent-console-projects__*`, and `*` in allow/deny policy; deny wins.
-Typed turns and background host wakes (process-job and monitor completions) on an
+Typed turns and background host wakes (process-job completions) on an
 ordinary conversation both carry the capability, so an agent may file or move the
 conversation while reacting to finished background work.
 They are scoped to the originating agent and unavailable to cron, archived

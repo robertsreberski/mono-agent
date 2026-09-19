@@ -18,13 +18,17 @@ import { assertKnownAppConfigKeys } from "./config-reference.js";
 // preserves the historical app-side name.
 export type MonoAgentAppConfigInput = ChannelConfigInput;
 
-export async function loadAppCoreConfig(input: MonoAgentAppConfigInput): Promise<MonoAgentConfig> {
+export async function loadAppCoreConfig(
+  input: MonoAgentAppConfigInput,
+  options: { readonly warnOnDeprecatedConfig?: boolean } = {},
+): Promise<MonoAgentConfig> {
   const { json } = await readMonoAgentConfigJson(input.configPath);
   assertKnownAppConfigKeys(json);
   return await loadMonoAgentConfigWithSources({
     env: input.env,
     cwd: input.cwd,
     jsonPath: input.configPath,
+    ...options,
   });
 }
 

@@ -13,7 +13,7 @@ import { basename, dirname, resolve } from "node:path";
  * and no unexpected sibling entries. A corrupted record therefore cannot turn
  * recovery into an arbitrary-file delete.
  *
- * Shared by process jobs and monitors so both fail closed identically.
+ * Process-job cleanup fails closed on unsafe settings roots.
  */
 export async function cleanupPersistedSandboxSettings(path: string | null): Promise<boolean> {
   if (path === null) return true;

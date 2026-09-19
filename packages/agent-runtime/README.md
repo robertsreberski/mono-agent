@@ -116,12 +116,6 @@ set `"short"` instead.
 
 `createPiOAuthApiKeyResolver` accepts optional `{ rejectedAccessToken, signal }` for a bounded usage read: only the still-current rejected token is forced through the existing OAuth refresh inside the serialized auth-file lane. Already-replaced tokens retain normal expiry behavior. Failed or cancelled refresh writes nothing; ordinary one-argument callers are unchanged.
 
-The injected Pi-native `Monitor` tool supports `wake_on: "batch" | "exit"`,
-`dedupe: "none" | "batch"`, and `min_wake_interval_ms` (defaults batch/none/0).
-The start receipt reports the host's effective policy, including interval
-clamping. Terminal delivery bypasses batch suppression and timing. A cancelled
-watch is intentionally stopped and must not be automatically recreated.
-
 The package uses a fixed registry of bridge descriptors and loads provider code
 only after a run selects a matching model reference and execution mode:
 
@@ -220,11 +214,11 @@ owns current-policy inspection, continuity eligibility and durable consumption.
 ### Tool exposure versus admission
 
 Tool definitions follow the configured authority profile, not the current turn's
-controllers. User, process-job wake, monitor wake and cron turns keep the same
+controllers. User, process-job wake and cron turns keep the same
 provider-visible definitions within an unchanged profile; persistent children
 have their own profile and retain structural recursion/MCP exclusions.
 Unavailable operations remain visible but refuse before execution. Current
-availability/reasons, lineage budgets, command ceilings, monitor limits and
+availability/reasons, lineage budgets, command ceilings and
 persistent-child/recovery capabilities appear only in the latest non-authorizing
 `host_turn_context`, never in tool schemas or canonical history. Children use
 the same envelope formatter. No previous controller or tool snapshot is retained.
@@ -412,8 +406,6 @@ inferSkillsRoot
 
 ```text
 DEFAULT_CODEX_SEARCH_MODEL
-DEFAULT_MONITOR_TIMEOUT_MS
-MIN_MONITOR_TIMEOUT_MS
 bashToolImpl
 bashToolRun
 createWebToolController
@@ -426,12 +418,9 @@ inspectCodexSubscriptionSearch
 inspectParallelWeb
 isPathAllowed
 isWorkdirAllowed
-monitorStopToolRun
-monitorToolRun
 normalizeBackgroundBashTimeoutMs
 normalizeBackgroundTimeoutMs
 normalizeBashTimeoutMs
-normalizeMonitorTimeoutMs
 normalizeProcessTimeoutMs
 performWebFetch
 performWebSearch

@@ -30,7 +30,7 @@ describe("owned foreground process adapter bridge", () => {
   it("rejects malformed identities/budgets before host execution and cleans rejected preparation", async () => {
     const run = vi.fn(); const cleanup = vi.fn(async () => {});
     const controller = bridgeOwnedForegroundProcesses({ forAttempt: () => ({ run }) }).forAttempt();
-    for (const patch of [{ callId: "" }, { callId: "é".repeat(129) }, { timeoutMs: 0 }, { tool: "Monitor" }]) {
+    for (const patch of [{ callId: "" }, { callId: "é".repeat(129) }, { timeoutMs: 0 }, { tool: "Read" }]) {
       await expect(controller.run({ tool: "Exec", callId: "call", timeoutMs: 1,
         prepared: { command: "unused", args: [], cwd: "/tmp", sandboxed: false, cleanup }, launch: vi.fn(),
         ...patch } as OwnedForegroundProcessRequest)).rejects.toThrow(/invalid/);

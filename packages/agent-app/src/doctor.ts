@@ -236,7 +236,8 @@ export async function validateMonoAgentFolder(
 
   let coreConfig: MonoAgentConfig | undefined;
   try {
-    coreConfig = await loadAppCoreConfig(options);
+    // Validation returns structured diagnostics; do not emit loader prose.
+    coreConfig = await loadAppCoreConfig(options, { warnOnDeprecatedConfig: false });
     sections.push({ id: "core", label: "Core config", status: "ok", details: [`Loaded ${options.configPath}.`] });
   } catch (error) {
     if (!isAppCoreConfigError(error)) {

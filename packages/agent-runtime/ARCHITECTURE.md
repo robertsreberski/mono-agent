@@ -137,11 +137,11 @@ id cannot collide with or delete the primary's transcript.
 ### Tool exposure versus admission
 
 Tool definitions follow the configured authority profile, not the current turn's
-controllers. User, process-job wake, monitor wake and cron turns keep the same
+controllers. User, process-job wake and cron turns keep the same
 provider-visible definitions within an unchanged profile; persistent children
 have their own profile and retain structural recursion/MCP exclusions.
 Unavailable operations remain visible but refuse before execution. Current
-availability/reasons, lineage budgets, command ceilings, monitor limits and
+availability/reasons, lineage budgets, command ceilings and
 persistent-child/recovery capabilities appear only in the latest non-authorizing
 `host_turn_context`, never in tool schemas or canonical history. Children use
 the same envelope formatter. No previous controller or tool snapshot is retained.

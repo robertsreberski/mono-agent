@@ -6,7 +6,6 @@ import {
 } from "@mono-agent/agent-runtime";
 import { parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
 import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
-import { bridgeMonitorsController } from "./monitors.js";
 import { bridgeProcessJobsController } from "./process-jobs.js";
 import { monoSandboxImpl } from "./sandbox-impl.js";
 
@@ -249,8 +248,6 @@ export interface MonoRuntimeAttemptResolution {
     /** Attempt plugins cannot replace the host's durable process-job owner. */
     readonly processJobs?: never;
     readonly ownedForegroundProcesses?: never;
-    /** Attempt plugins cannot replace the host's durable monitor owner. */
-    readonly monitors?: never;
     /** Attempt plugins cannot replace the host's run-bound artifact sink. */
     readonly persistArtifact?: never;
   };
@@ -331,9 +328,6 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
         ...(runOptions.ownedForegroundProcesses === undefined
           ? {}
           : { ownedForegroundProcesses: bridgeOwnedForegroundProcesses(runOptions.ownedForegroundProcesses) }),
-        ...(runOptions.monitors === undefined
-          ? {}
-          : { monitors: bridgeMonitorsController(runOptions.monitors) }),
       } as unknown as KernelRunOptions);
       return result as RuntimeResult;
     },
@@ -413,12 +407,11 @@ function protectAttemptResolver(
 
 function withoutProtectedAttemptOptions<T extends Readonly<Record<string, unknown>>>(
   input: T,
-): Omit<T, "sandbox" | "processJobs" | "ownedForegroundProcesses" | "monitors" | "persistArtifact"> {
+): Omit<T, "sandbox" | "processJobs" | "ownedForegroundProcesses" | "persistArtifact"> {
   const {
     sandbox: _callerSandbox,
     processJobs: _processJobs,
     ownedForegroundProcesses: _ownedForegroundProcesses,
-    monitors: _monitors,
     persistArtifact: _persistArtifact,
     ...rest
   } = input;

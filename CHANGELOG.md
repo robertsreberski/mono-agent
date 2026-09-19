@@ -28,6 +28,13 @@
   return a retryable error after 30 seconds by default without bypassing pending
   history, with a host-overridable wait budget and bounded progress warnings.
 
+- Remove `Monitor` / `MonitorStop`, their CLI and console surfaces (breaking).
+  Use background process jobs for finite work. Legacy `monitors` config is
+  accepted with a deprecation warning but has no effect; historical storage
+  remains dormant. Old conversations containing monitor activity stay readable,
+  but that activity no longer renders and is discarded if ordinary recovery
+  rewrites its message.
+
 - Fix `WebSearch` budgets to charge answered searches, refund failed providers,
   and count Ollama endpoint probes once. Bound network dispatches separately
   and include provider failures in budget-exhaustion messages.

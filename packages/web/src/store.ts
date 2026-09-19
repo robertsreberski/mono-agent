@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 
-import { normalizeMonitorTerminalReply, hasMonitorReplyContent, monitorReplyText } from "./monitor-reply.js";
+import { normalizeWakeTerminalReply, hasWakeReplyContent, wakeReplyText } from "./wake-reply.js";
 
 import {
   AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE,
@@ -16,11 +16,9 @@ import {
   classifyNotifySuppression,
   NOTHING_TO_REPORT_SENTINEL,
   type AgentReplyPart,
-  parseMonitorProjection,
   parseProcessJobProjection,
   type AgentStreamEvent,
   type AgentStreamWireFrame,
-  type MonitorProjection,
   type ProcessJobProjection,
   type ProcessJobState,
 } from "@mono-agent/agent-contracts";
@@ -358,8 +356,6 @@ interface PriorOutcomeRow {
   /** `turns.rowid`, so the candidate read can break a shared start stamp. */
   ordinal: number;
   has_user: number;
-  /** Whether a completed host-owned Monitor delivery claims this turn. */
-  claimed: number;
 }
 
 interface TurnRow {
@@ -532,9 +528,7 @@ export interface ClaimedWebPushDelivery {
 /**
  * The searchable text of one message row, derived in SQL so the index cannot
  * drift from `parts_json`: every write path in this store goes through the
- * triggers below rather than remembering to maintain a second copy. Legacy
- * Monitor history gets an association-verified projection repair at open; its
- * canonical parts remain untouched.
+ * triggers below rather than remembering to maintain a second copy.
  *
  * Only `text` parts are indexed. Reasoning is the agent's working-out and tool
  * payloads are machine JSON; both would drown a search of what was actually
@@ -731,11 +725,6 @@ export type ProcessJobWakeReservation =
   | { readonly kind: "completed"; readonly disposition: "steered" | "follow_up" }
   | { readonly kind: "uncertain" };
 
-export type MonitorWakeReservation =
-  | { readonly kind: "new" }
-  | { readonly kind: "completed"; readonly disposition: "steered" | "follow_up" }
-  | { readonly kind: "uncertain" };
-
 export interface StoredLiveInput {
   readonly id: string;
   readonly threadId: string;
@@ -927,7 +916,6 @@ export class WebStore {
       // After recovery, so anything the recovery settled is already indexed by
       // its own trigger and this only sweeps what genuinely stayed running.
       store.reindexUnsettledMessages();
-      store.reindexLegacyMonitorMessages();
       return store;
     } catch (error) {
       store.close();
@@ -2364,9 +2352,9 @@ export class WebStore {
       const turn = this.requireTurn(input.turnId);
       if (turn.status === "complete" && this.hasProcessJobTurnAssociation(input.turnId)) {
         const message = this.requireMessage(turn.assistant_message_id);
-        const normalized = normalizeMonitorTerminalReply(message.parts, true);
+        const normalized = normalizeWakeTerminalReply(message.parts, true);
         if (normalized.changed) this.writeMessageParts(message.id, normalized.parts, this.now());
-        this.repairMonitorResponsePush(input.turnId, normalized.parts);
+        this.repairWakeResponsePush(input.turnId, normalized.parts);
         return normalized.changed ? this.requireMessage(message.id) : undefined;
       }
     }
@@ -2417,162 +2405,11 @@ export class WebStore {
     return result.changes === 1;
   }
 
-  /** Durably claim one Monitor wake before touching the operator. */
-  reserveMonitorWake(input: {
-    readonly sourceId: string;
-    readonly threadId: string;
-    readonly monitorId: string;
-    readonly deliveryKey: string;
-    readonly payloadSha256: string;
-    readonly monitor: MonitorProjection;
-  }): MonitorWakeReservation {
-    const monitor = parseMonitorProjection(input.monitor);
-    if (monitor.monitorId !== input.monitorId) {
-      throw new WebConsoleError("invalid_notification", "The Monitor projection does not match its delivery identity.", 409);
-    }
-    const thread = this.database.prepare("SELECT source_id, archived_at, trigger_kind FROM threads WHERE id = ?")
-      .get(input.threadId) as unknown as {
-        source_id: string;
-        archived_at: string | null;
-        trigger_kind: string | null;
-      } | undefined;
-    if (thread === undefined || thread.source_id !== input.sourceId) {
-      throw new WebConsoleError("invalid_notification", "The Monitor wake does not match its web thread.", 409);
-    }
-    if (thread.archived_at !== null || thread.trigger_kind !== null) {
-      throw new WebConsoleError("thread_archived", "The Monitor wake destination is not an active web conversation.", 409);
-    }
-    const existing = this.database.prepare(`
-      SELECT monitor_id, thread_id, payload_sha256, state, disposition
-      FROM monitor_wake_deliveries WHERE source_id = ? AND delivery_key = ?
-    `).get(input.sourceId, input.deliveryKey) as unknown as {
-      monitor_id: string;
-      thread_id: string | null;
-      payload_sha256: string;
-      state: "accepted" | "completed";
-      disposition: "steered" | "follow_up" | null;
-    } | undefined;
-    if (existing !== undefined) {
-      if (existing.monitor_id !== input.monitorId
-        || existing.thread_id !== input.threadId
-        || existing.payload_sha256 !== input.payloadSha256) {
-        throw new WebConsoleError(
-          "notification_idempotency_conflict",
-          "The Monitor delivery key was already used for a different wake.",
-          409,
-        );
-      }
-      if (existing.state === "completed"
-        && (existing.disposition === "steered" || existing.disposition === "follow_up")) {
-        return { kind: "completed", disposition: existing.disposition };
-      }
-      return { kind: "uncertain" };
-    }
-    this.database.prepare(`
-      INSERT INTO monitor_wake_deliveries (
-        source_id, monitor_id, delivery_key, thread_id, payload_sha256, projection_json,
-        state, disposition, turn_id, created_at, completed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'accepted', NULL, NULL, ?, NULL)
-    `).run(
-      input.sourceId,
-      input.monitorId,
-      input.deliveryKey,
-      input.threadId,
-      input.payloadSha256,
-      JSON.stringify(monitor),
-      this.now(),
-    );
-    return { kind: "new" };
-  }
-
-  /** Hold terminal pushes while this exact turn's steering receipt is unresolved. */
-  setMonitorWakeSteeringTurn(sourceId: string, deliveryKey: string, turnId: string, pending: boolean): void {
-    const turn = this.requireTurn(turnId);
-    const changed = this.database.prepare(`
-      UPDATE monitor_wake_deliveries SET turn_id = ?
-      WHERE source_id = ? AND delivery_key = ? AND thread_id = ? AND state = 'accepted'
-    `).run(pending ? turnId : null, sourceId, deliveryKey, turn.thread_id);
-    if (changed.changes !== 1) {
-      throw new WebConsoleError("notification_reservation_lost", "The Monitor steering reservation was lost.", 409);
-    }
-  }
-
-  completeMonitorWake(input: {
-    readonly sourceId: string;
-    readonly monitorId: string;
-    readonly deliveryKey: string;
-    readonly disposition: "steered" | "follow_up";
-    readonly turnId?: string;
-  }): WebMessage | undefined {
-    let messageId: string | undefined;
-    this.transaction(() => {
-      const result = this.database.prepare(`
-        UPDATE monitor_wake_deliveries
-        SET state = 'completed', disposition = ?, turn_id = ?, completed_at = ?
-        WHERE source_id = ? AND monitor_id = ? AND delivery_key = ? AND state = 'accepted'
-      `).run(
-        input.disposition,
-        input.turnId ?? null,
-        this.now(),
-        input.sourceId,
-        input.monitorId,
-        input.deliveryKey,
-      );
-      if (result.changes !== 1) {
-        throw new WebConsoleError("notification_reservation_lost", "The Monitor wake reservation was lost.", 409);
-      }
-      if (input.turnId === undefined) return;
-      const turn = this.requireTurn(input.turnId);
-      const reservation = this.database.prepare(`
-        SELECT thread_id, projection_json FROM monitor_wake_deliveries
-        WHERE source_id = ? AND monitor_id = ? AND delivery_key = ?
-      `).get(input.sourceId, input.monitorId, input.deliveryKey) as unknown as {
-        thread_id: string | null;
-        projection_json: string | null;
-      } | undefined;
-      if (reservation?.thread_id !== turn.thread_id) {
-        throw new WebConsoleError("monitor_origin_mismatch", "The Monitor activity does not belong to this turn.", 409);
-      }
-      if (reservation.projection_json === null) return;
-      let projection: MonitorProjection;
-      try {
-        projection = parseMonitorProjection(JSON.parse(reservation.projection_json) as unknown);
-        if (projection.monitorId !== input.monitorId) throw new TypeError("Monitor identity mismatch.");
-      } catch {
-        throw new WebConsoleError("storage_corrupt", "A retained Monitor wake projection is invalid.", 500);
-      }
-      const message = this.requireMessage(turn.assistant_message_id);
-      const raw = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?")
-        .get(message.id) as unknown as { parts_json: string };
-      const original = parseParts(raw.parts_json);
-      const normalized = turn.status === "complete" ? normalizeMonitorTerminalReply(original) : { parts: original, changed: false };
-      const parts = normalized.parts;
-      const activityChanged = upsertMonitorActivity(parts, projection, input.deliveryKey);
-      if (turn.status === "complete") this.repairMonitorResponsePush(input.turnId, parts);
-      if (!activityChanged && !normalized.changed) return;
-      this.writeMessageParts(message.id, parts, this.now());
-      messageId = message.id;
-    });
-    return messageId === undefined ? undefined : this.requireMessage(messageId);
-  }
-
-  private hasMonitorTurnAssociation(turnId: string, deliveryKey?: string): boolean {
-    const rows = this.database.prepare(`
-      SELECT deliveries.delivery_key FROM monitor_wake_deliveries AS deliveries
-      JOIN turns ON turns.id = ? AND turns.thread_id = deliveries.thread_id
-      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = deliveries.source_id
-      WHERE (deliveries.state = 'completed' AND deliveries.turn_id = turns.id
-        AND deliveries.disposition IN ('steered', 'follow_up'))
-        OR (deliveries.state = 'accepted' AND deliveries.delivery_key = ?)
-    `).all(turnId, deliveryKey ?? null);
-    return rows.length > 0;
-  }
-
-  private repairMonitorResponsePush(turnId: string, parts: readonly WebMessagePart[]): void {
+  private repairWakeResponsePush(turnId: string, parts: readonly WebMessagePart[]): void {
     const key = `turn:${turnId}:terminal`;
-    if (hasMonitorReplyContent(parts)) {
+    if (hasWakeReplyContent(parts)) {
       this.database.prepare("UPDATE push_events SET body = ? WHERE logical_key = ? AND kind = 'response.ready'")
-        .run(webPushPreview(monitorReplyText(parts)), key);
+        .run(webPushPreview(wakeReplyText(parts)), key);
     } else {
       const now = this.now();
       this.database.prepare(`
@@ -2581,28 +2418,6 @@ export class WebStore {
           SELECT id FROM push_events WHERE logical_key = ? AND kind = 'response.ready'
         )
       `).run(now, now, key);
-    }
-  }
-
-  /** Resolve only an exact Monitor live-input receipt belonging to this turn. */
-  private monitorWakeProjection(turnId: string, deliveryKey: string): MonitorProjection | undefined {
-    const row = this.database.prepare(`
-      SELECT deliveries.monitor_id, deliveries.projection_json
-      FROM monitor_wake_deliveries AS deliveries
-      JOIN turns ON turns.id = ? AND turns.thread_id = deliveries.thread_id
-      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = deliveries.source_id
-      WHERE deliveries.delivery_key = ?
-    `).get(turnId, deliveryKey) as unknown as {
-      monitor_id: string;
-      projection_json: string | null;
-    } | undefined;
-    if (row === undefined || row.projection_json === null) return undefined;
-    try {
-      const projection = parseMonitorProjection(JSON.parse(row.projection_json) as unknown);
-      if (projection.monitorId !== row.monitor_id) throw new TypeError("Monitor identity mismatch.");
-      return projection;
-    } catch {
-      throw new WebConsoleError("storage_corrupt", "A retained Monitor wake projection is invalid.", 500);
     }
   }
 
@@ -2664,18 +2479,6 @@ export class WebStore {
     ).get(legacy.message_id) as unknown as { parts_json: string; created_at: string } | undefined;
     if (row === undefined) return undefined;
     return steerMarkerFromUserParts(inputId, legacy.message_id, parseParts(row.parts_json), legacy.created_at);
-  }
-
-  /** Release a Monitor reservation only before any operator delivery begins. */
-  abandonMonitorWake(input: {
-    readonly sourceId: string;
-    readonly monitorId: string;
-    readonly deliveryKey: string;
-  }): void {
-    this.database.prepare(`
-      DELETE FROM monitor_wake_deliveries
-      WHERE source_id = ? AND monitor_id = ? AND delivery_key = ? AND state = 'accepted'
-    `).run(input.sourceId, input.monitorId, input.deliveryKey);
   }
 
   /**
@@ -3783,11 +3586,10 @@ export class WebStore {
           UNION ALL SELECT 1 FROM web_submissions WHERE thread_id = ?
           UNION ALL SELECT 1 FROM cron_reply_operations WHERE thread_id = ? AND state = 'completed'
           UNION ALL SELECT 1 FROM process_job_wake_deliveries WHERE thread_id = ?
-          UNION ALL SELECT 1 FROM monitor_wake_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM notification_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM push_events WHERE thread_id = ?
           LIMIT 1
-        `).get(id, id, id, id, id, id, id, id, id, id) !== undefined;
+        `).get(id, id, id, id, id, id, id, id, id) !== undefined;
         if (hasContent) {
           throw new WebConsoleError(
             "thread_not_empty",
@@ -4119,7 +3921,7 @@ export class WebStore {
   beginAssistantTurn(input: {
     readonly threadId: string;
     readonly prompt: string;
-    /** Monitor output stays memory-only; callers may retain only a non-secret marker. */
+    /** Host wake prompts stay memory-only; callers may retain only a non-secret marker. */
     readonly storedPrompt?: string;
     readonly model?: string;
     readonly effort?: string;
@@ -4539,7 +4341,6 @@ export class WebStore {
           applyEvent(
             parts,
             frame.event,
-            (deliveryKey) => this.monitorWakeProjection(turnId, deliveryKey),
             (deliveryKey) => this.processJobWakeForTurn(turnId, deliveryKey),
             (inputId) => this.steerForTurn(turnId, inputId),
           );
@@ -4652,7 +4453,7 @@ export class WebStore {
     finalText?: string,
     metadata?: Readonly<Record<string, unknown>>,
     replyParts?: readonly AgentReplyPart[],
-    options: { readonly suppressResponsePush?: boolean; readonly monitorWakeDeliveryKey?: string } = {},
+    options: { readonly suppressResponsePush?: boolean; readonly hostWakeDeliveryKey?: string } = {},
   ): StoredTurnFinish {
     const runtime = runtimeMetadata(metadata);
     return this.finishTurn(
@@ -4664,7 +4465,7 @@ export class WebStore {
       runtime,
       replyParts,
       options.suppressResponsePush === true,
-      options.monitorWakeDeliveryKey,
+      options.hostWakeDeliveryKey,
     );
   }
 
@@ -4962,11 +4763,6 @@ export class WebStore {
         JOIN push_events e ON e.id = d.event_id
         JOIN push_subscriptions s ON s.id = d.subscription_id
         WHERE d.status = 'pending' AND d.next_attempt_at <= ? AND e.expires_at > ? AND s.state = 'active'
-          AND NOT EXISTS (
-            SELECT 1 FROM monitor_wake_deliveries m
-            WHERE e.kind = 'response.ready' AND m.state = 'accepted' AND m.turn_id IS NOT NULL
-              AND e.logical_key = 'turn:' || m.turn_id || ':terminal'
-          )
           AND NOT EXISTS (
             SELECT 1 FROM process_job_wake_deliveries j
             WHERE e.kind = 'response.ready' AND j.state = 'accepted' AND j.turn_id IS NOT NULL
@@ -5801,19 +5597,6 @@ export class WebStore {
         throw new WebConsoleError("storage_corrupt", `Message ${message.id} contains invalid persisted parts.`, 500);
       }
     }
-    const monitorProjections = this.database.prepare(`
-      SELECT monitor_id, projection_json
-      FROM monitor_wake_deliveries
-      WHERE projection_json IS NOT NULL
-    `).all() as unknown as Array<{ monitor_id: string; projection_json: string }>;
-    for (const row of monitorProjections) {
-      try {
-        const projection = parseMonitorProjection(JSON.parse(row.projection_json) as unknown);
-        if (projection.monitorId !== row.monitor_id) throw new TypeError("Monitor identity mismatch.");
-      } catch {
-        throw new WebConsoleError("storage_corrupt", "A retained Monitor wake projection is invalid.", 500);
-      }
-    }
   }
 
   /**
@@ -5825,45 +5608,6 @@ export class WebStore {
     this.transaction(() => {
       this.database.exec(MESSAGE_SEARCH_UNSETTLED_SQL);
     });
-  }
-
-  /** Repair only the derived search projection of verified legacy Monitor replies.
-   * New completions already normalize before the ordinary indexing triggers run.
-   * Page by rowid so opening a large retained history does not materialize it all.
-   */
-  private reindexLegacyMonitorMessages(): void {
-    const select = this.database.prepare(`
-      SELECT m.rowid AS row_id, m.parts_json FROM messages m
-      JOIN turns ON turns.id = m.turn_id AND turns.thread_id = m.thread_id
-      JOIN threads ON threads.id = m.thread_id
-      WHERE m.rowid > ? AND m.role = 'assistant' AND m.status = 'complete'
-        AND EXISTS (
-          SELECT 1 FROM monitor_wake_deliveries d
-          WHERE d.turn_id = turns.id AND d.thread_id = turns.thread_id
-            AND d.source_id = threads.source_id AND d.state = 'completed'
-            AND d.disposition IN ('steered', 'follow_up')
-        )
-      ORDER BY m.rowid LIMIT 100
-    `);
-    const remove = this.database.prepare("DELETE FROM message_search WHERE rowid = ?");
-    const insert = this.database.prepare(`
-      INSERT INTO message_search(rowid, body)
-      SELECT ?, (${messageSearchBody("m")}) FROM (SELECT ? AS parts_json) m
-    `);
-    let after = 0;
-    while (true) {
-      const rows = select.all(after) as unknown as Array<{ row_id: number; parts_json: string }>;
-      if (rows.length === 0) return;
-      this.transaction(() => {
-        for (const row of rows) {
-          const normalized = normalizeMonitorTerminalReply(parseParts(row.parts_json));
-          if (!normalized.changed) continue;
-          remove.run(row.row_id);
-          insert.run(row.row_id, serializeParts(normalized.parts));
-        }
-      });
-      after = rows[rows.length - 1]!.row_id;
-    }
   }
 
   private recoverInterruptedTurns(): void {
@@ -5953,7 +5697,7 @@ export class WebStore {
     runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string },
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
-    monitorWakeDeliveryKey?: string,
+    hostWakeDeliveryKey?: string,
   ): StoredTurnFinish {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") {
@@ -5968,7 +5712,7 @@ export class WebStore {
       runtime,
       replyParts,
       suppressResponsePush,
-      monitorWakeDeliveryKey,
+      hostWakeDeliveryKey,
     ));
     return {
       ...this.requireThreadDetail(turn.thread_id),
@@ -5985,7 +5729,7 @@ export class WebStore {
     runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string },
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
-    monitorWakeDeliveryKey?: string,
+    hostWakeDeliveryKey?: string,
   ): StoredMessageWrite | undefined {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") return undefined;
@@ -5996,18 +5740,10 @@ export class WebStore {
     if (errorMessage !== undefined) {
       parts.push({ type: "error", ...(errorCode === undefined ? {} : { code: errorCode }), message: errorMessage });
     }
-    const monitorAssociated = status === "complete" && this.hasMonitorTurnAssociation(turnId, monitorWakeDeliveryKey);
-    const processJobAssociated = status === "complete" && this.hasProcessJobTurnAssociation(turnId, monitorWakeDeliveryKey);
+    const processJobAssociated = status === "complete" && this.hasProcessJobTurnAssociation(turnId, hostWakeDeliveryKey);
     if (processJobAssociated) {
-      parts = normalizeMonitorTerminalReply(parts, true).parts;
-      suppressResponsePush = !hasMonitorReplyContent(parts);
-    }
-    if (monitorAssociated) {
-      const normalized = normalizeMonitorTerminalReply(parts);
-      parts = normalized.parts;
-      // A suppressed callback may still have streamed the sentinel. Preserve a
-      // preceding answer and rich output even when its terminal reply was empty.
-      suppressResponsePush = !hasMonitorReplyContent(parts);
+      parts = normalizeWakeTerminalReply(parts, true).parts;
+      suppressResponsePush = !hasWakeReplyContent(parts);
     }
     const now = this.now();
     const thread = this.requireThread(turn.thread_id);
@@ -6053,7 +5789,7 @@ export class WebStore {
             : "run.failed";
       const label = agent?.label ?? "mono-agent";
       const body = status === "complete"
-        ? monitorAssociated ? monitorReplyText(parts) : parts.filter((part): part is Extract<WebMessagePart, { type: "text" }> => part.type === "text")
+        ? parts.filter((part): part is Extract<WebMessagePart, { type: "text" }> => part.type === "text")
           .map((part) => part.text)
           .join(" ")
         : status === "cancelled"
@@ -6173,7 +5909,7 @@ export class WebStore {
    * Only the two paths a console watches live -- streaming frames and the write
    * that settles a turn -- go on to build a {@link WebMessageDelta} from this.
    * Every other caller (a live-input transition, restart recovery, and the
-   * notification, cron-run, process-job and Monitor reconciliations) bumps the
+   * notification, cron-run, process-job reconciliations) bumps the
    * version without describing the change: those writes reach the browser as an
    * invalidation it answers by re-reading the message, and the new `seq` is what
    * tells it the re-read is newer than the delta stream it was applying.
@@ -6270,10 +6006,7 @@ export class WebStore {
     const attachments = this.database
       .prepare("SELECT * FROM attachments WHERE message_id = ? AND origin = 'upload' ORDER BY created_at, id")
       .all(row.id) as unknown as AttachmentRow[];
-    const rawParts = parseParts(row.parts_json);
-    const storedParts = row.role === "assistant" && row.status === "complete" && row.turn_id !== null
-      && this.hasMonitorTurnAssociation(row.turn_id)
-      ? normalizeMonitorTerminalReply(rawParts).parts : rawParts;
+    const storedParts = parseParts(row.parts_json);
     const quote = quoteFromParts(storedParts);
     const liveInputStatus = liveInputStatusFromParts(storedParts);
     const role = normalizeRole(row.role);
@@ -6362,98 +6095,26 @@ export class WebStore {
     return states;
   }
 
-  /**
-   * The prior meaningful outcome of each settled conversation, by thread id.
-   *
-   * Successful assistant-only turns without visible reply content are host
-   * no-ops, not a new conversation outcome. Keep their real run state while
-   * projecting the prior meaningful outcome for status priority. Derive this
-   * from retained provenance/normalized parts so old stores need no migration.
-   * Match hasMonitorReplyContent without loading transcript bodies into lists.
-   *
-   * Two statements, whatever the listing holds and however deep its silence
-   * runs. Only a turn a completed Monitor delivery claims can be a no-op, and
-   * the candidate read knows which those are: it returns, for every thread at
-   * once, each candidate down to and including the first one nothing can
-   * silence. A second statement reads the parts of the claimed ones. Legacy
-   * rows keep their raw sentinel bytes and normalize only on read, so that
-   * read is the one place a silent turn is told apart from an answer.
-   */
+  /** Prior meaningful outcomes, excluding silent assistant-only turns in SQL. */
   private priorOutcomes(latest: readonly TurnRow[]): Map<string, PriorOutcomeRow> {
     const threadIds = [...new Set(latest.map((row) => row.thread_id))];
     if (threadIds.length === 0) return new Map();
     const candidates = this.priorOutcomeCandidates(threadIds);
-    const noOps = this.monitorNoOpTurnIds(candidates);
     const outcomes = new Map<string, PriorOutcomeRow>();
     for (const candidate of candidates) {
-      if (!outcomes.has(candidate.thread_id) && !noOps.has(candidate.id)) {
+      if (!outcomes.has(candidate.thread_id)) {
         outcomes.set(candidate.thread_id, candidate);
       }
     }
     return outcomes;
   }
 
-  /**
-   * Every candidate of these threads that could still be the outcome, newest
-   * first within each thread.
-   *
-   * A candidate with a user message, an unsuccessful one, or one no Monitor
-   * delivery claims settles its thread on the spot; the read stops at it and
-   * carries only the claimed assistant-only completions above it, which are the
-   * only rows whose parts have to be asked.
-   */
+  /** Settled candidates ordered newest first within each thread. */
   private priorOutcomeCandidates(threadIds: readonly string[]): PriorOutcomeRow[] {
     return this.database.prepare(`
-      SELECT thread_id, id, status, finished_at, assistant_message_id, started_at, ordinal, has_user, claimed
-      FROM (
-        SELECT r.*, MIN(CASE WHEN r.settles THEN r.rn END) OVER (PARTITION BY r.thread_id) AS settled_rn
-        FROM (
-          SELECT c.*,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY c.thread_id ORDER BY c.started_at DESC, c.ordinal DESC
-                 ) AS rn,
-                 (c.status <> 'complete' OR c.has_user = 1 OR c.claimed = 0) AS settles
-          FROM (${priorOutcomeCandidateSql()}) c
-        ) r
-      ) WHERE settled_rn IS NULL OR rn <= settled_rn
-      ORDER BY thread_id, rn
+      SELECT * FROM (${priorOutcomeCandidateSql()})
+      ORDER BY thread_id, started_at DESC, ordinal DESC
     `).all(JSON.stringify(threadIds), OUTCOME_TEXT_TRIM) as unknown as PriorOutcomeRow[];
-  }
-
-  /**
-   * Which of these candidates are Monitor no-ops, in one statement.
-   *
-   * Legacy Monitor rows retain raw sentinel bytes and normalize only on read, so
-   * the answer needs their parts -- but only for the candidates a host-owned
-   * delivery actually claims, which is a small fraction of any listing. Nothing
-   * here materializes a transcript or rewrites history to derive sidebar status.
-   */
-  private monitorNoOpTurnIds(candidates: readonly PriorOutcomeRow[]): Set<string> {
-    const claimed = candidates.filter((row) => row.status === "complete" && row.has_user === 0 && row.claimed === 1);
-    const parts = this.messageParts(claimed.map((row) => row.assistant_message_id));
-    return new Set(claimed.flatMap((row) => hasMonitorReplyContent(
-      normalizeMonitorTerminalReply(parts.get(row.assistant_message_id) ?? []).parts,
-    ) ? [] : [row.id]));
-  }
-
-  /**
-   * Which of these turns a host-owned Monitor delivery claims, in one statement.
-   *
-   * The batched readers never resolve an in-flight receipt by delivery key --
-   * that is {@link WebStore.hasMonitorTurnAssociation}'s single-turn question --
-   * so this asks only about deliveries that completed by steering or following
-   * up.
-   */
-  private monitorAssociatedTurnIds(turnIds: readonly string[]): Set<string> {
-    if (turnIds.length === 0) return new Set();
-    const rows = this.database.prepare(`
-      SELECT DISTINCT turns.id AS id FROM monitor_wake_deliveries AS deliveries
-      JOIN turns ON turns.id IN (SELECT value FROM json_each(?)) AND turns.thread_id = deliveries.thread_id
-      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = deliveries.source_id
-      WHERE deliveries.state = 'completed' AND deliveries.turn_id = turns.id
-        AND deliveries.disposition IN ('steered', 'follow_up')
-    `).all(JSON.stringify(turnIds)) as unknown as Array<{ id: string }>;
-    return new Set(rows.map((row) => row.id));
   }
 
   /** The stored parts of these messages, by message id, in one statement. */
@@ -6485,9 +6146,7 @@ export class WebStore {
    *
    * Only the prose is wanted, so this reads the rows themselves rather than
    * mapping whole messages: a preview never needed a listing to fetch every
-   * conversation's attachments, turn row and finish stamp. The one thing a raw
-   * row does not already say is whether a settled assistant reply was a Monitor
-   * no-op, and that is asked about all of them at once.
+   * conversation's attachments, turn row and finish stamp.
    */
   private lastMessagePreviews(threadIds: readonly string[]): Map<string, string> {
     const rows = this.database.prepare(`
@@ -6499,13 +6158,9 @@ export class WebStore {
         WHERE m.thread_id IN (SELECT value FROM json_each(?)) AND ${visibleMessageSql("m")} AND NOT (${markerMessageSql("m")})
       ) WHERE rn = 1
     `).all(JSON.stringify(threadIds)) as unknown as MessageRow[];
-    const monitor = this.monitorAssociatedTurnIds(rows.flatMap((row) =>
-      row.role === "assistant" && row.status === "complete" && row.turn_id !== null ? [row.turn_id] : []));
     const previews = new Map<string, string>();
     for (const row of rows) {
-      const stored = parseParts(row.parts_json);
-      const parts = row.turn_id !== null && monitor.has(row.turn_id)
-        ? normalizeMonitorTerminalReply(stored).parts : stored;
+      const parts = parseParts(row.parts_json);
       const text = parts
         .flatMap((part) => part.type === "text" ? [part.text]
           : part.type === "process-job" && part.responseText !== undefined ? [part.responseText] : [])
@@ -7005,20 +6660,13 @@ function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
  *
  * The predicate is the cheap half of the question: it excludes a successful
  * assistant-only turn with no visible reply content without reading any
- * transcript. Whether the visible content it did find is a Monitor sentinel is
- * the expensive half, and only the rows this returns are ever asked.
+ * transcript.
  */
 function priorOutcomeCandidateSql(): string {
   return `
     SELECT t.thread_id, t.id, t.status, t.finished_at, t.assistant_message_id,
            t.started_at, t.rowid AS ordinal,
-           EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user') AS has_user,
-           EXISTS (
-             SELECT 1 FROM monitor_wake_deliveries d
-             JOIN threads th ON th.id = t.thread_id AND th.source_id = d.source_id
-             WHERE d.thread_id = t.thread_id AND d.turn_id = t.id AND d.state = 'completed'
-               AND d.disposition IN ('steered', 'follow_up')
-           ) AS claimed
+           EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user') AS has_user
     FROM turns t
     WHERE t.thread_id IN (SELECT value FROM json_each(?)) AND t.status <> 'running' AND (
       t.status <> 'complete'
@@ -7182,7 +6830,7 @@ function hasMeaningfulCronContent(parts: readonly WebMessagePart[]): boolean {
     ? !isSyntheticCronStateText(part.text) && classifyNotifySuppression(part.text) === "none"
     : part.type === "attachment" || part.type === "error" || part.type === "mcp_app"
       || part.type === "failure" || part.type === "process-job" || part.type === "process-job-wake"
-      || part.type === "monitor-activity");
+      );
 }
 
 function cronRunParts(
@@ -7226,7 +6874,7 @@ function cronRunParts(
     ? [...retained]
     : retained.filter((part) => part.type === "text" || part.type === "error" || part.type === "attachment"
       || part.type === "mcp_app" || part.type === "failure" || part.type === "process-job"
-      || part.type === "process-job-wake" || part.type === "monitor-activity");
+      || part.type === "process-job-wake");
   for (const event of run.projection === "detail" ? run.events : []) applyEvent(parts, event);
   const preserveLoadedText = run.projection === "summary"
     && run.fieldsTruncated?.includes("text") === true
@@ -7569,8 +7217,6 @@ export function toWebAttachment(attachment: StoredAttachment): WebAttachment {
     ...(attachment.uploaded ? { contentUrl: `/api/v1/uploads/${encodeURIComponent(attachment.id)}/content` } : {}),
   };
 }
-
-type MonitorWakeProjectionResolver = (deliveryKey: string) => MonitorProjection | undefined;
 type ProcessJobWakeResolver = (deliveryKey: string) => {
   readonly jobId: string;
   readonly deliveryKey: string;
@@ -7584,26 +7230,9 @@ type SteerMarker = {
 };
 type SteerResolver = (inputId: string) => SteerMarker | undefined;
 
-function appliedMonitorWake(
-  event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
-  resolveMonitorWake: MonitorWakeProjectionResolver | undefined,
-): { readonly deliveryKey: string; readonly projection: MonitorProjection } | undefined {
-  if (resolveMonitorWake === undefined
-    || event.metadata?.liveInput !== true
-    || event.metadata?.synthetic !== true
-    || typeof event.metadata.inputId !== "string") {
-    return undefined;
-  }
-  const projection = resolveMonitorWake(event.metadata.inputId);
-  return projection === undefined
-    ? undefined
-    : { deliveryKey: event.metadata.inputId, projection };
-}
-
 function applyEvent(
   parts: WebMessagePart[],
   event: AgentStreamEvent,
-  resolveMonitorWake?: MonitorWakeProjectionResolver,
   resolveProcessJobWake?: ProcessJobWakeResolver,
   resolveSteer?: SteerResolver,
 ): void {
@@ -7612,7 +7241,6 @@ function applyEvent(
     return;
   }
   if (event.type === "tool_call_started") {
-    if (appliedMonitorWake(event, resolveMonitorWake) !== undefined) return;
     if (appliedProcessJobWake(event, resolveProcessJobWake) !== undefined) return;
     if (appliedSteer(event, resolveSteer) !== undefined) return;
     const historyUpdate = canonicalEventHistoryUpdate(event.history);
@@ -7659,11 +7287,6 @@ function applyEvent(
     return;
   }
   if (event.type === "tool_call_completed") {
-    const monitorWake = appliedMonitorWake(event, resolveMonitorWake);
-    if (monitorWake !== undefined) {
-      upsertMonitorActivity(parts, monitorWake.projection, monitorWake.deliveryKey);
-      return;
-    }
     const processJobWake = appliedProcessJobWake(event, resolveProcessJobWake);
     if (processJobWake !== undefined) {
       if (!parts.some((part) => part.type === "process-job-wake"
@@ -7758,7 +7381,7 @@ function appliedProcessJobWake(
 /**
  * A human steer the run consumed: like the wake interceptors above, but the
  * marker carries the operator's own full text instead of compact activity.
- * Runs last so Monitor and process-job wakes keep their purpose-built rows.
+ * Runs last so process-job wakes keep their purpose-built rows.
  */
 function appliedSteer(
   event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
@@ -7784,38 +7407,6 @@ function validSteerReceivedAt(value: unknown): string | undefined {
     && !/[\u0000-\u001f\u007f]/u.test(value)
     ? value
     : undefined;
-}
-
-type MonitorActivityPart = Extract<WebMessagePart, { readonly type: "monitor-activity" }>;
-
-function upsertMonitorActivity(
-  parts: WebMessagePart[],
-  projection: MonitorProjection,
-  deliveryKey: string,
-): boolean {
-  const index = parts.findIndex((part) => part.type === "monitor-activity");
-  const previous = index < 0 ? undefined : parts[index] as MonitorActivityPart;
-  const monitors = previous?.monitors ?? [];
-  const monitorIndex = monitors.findIndex((entry) => entry.projection.monitorId === projection.monitorId);
-  const prior = monitorIndex < 0 ? undefined : monitors[monitorIndex];
-  // The stream receipt and the durable delivery settlement can race. Once an
-  // exact key is present, settlement is bookkeeping only: replacing its newer
-  // projection with the reservation's older snapshot would make the activity
-  // row move backwards and emit a duplicate invalidation.
-  if (prior?.deliveryKeys.includes(deliveryKey) === true) return false;
-  const deliveryKeys = prior === undefined ? [deliveryKey] : [...prior.deliveryKeys, deliveryKey];
-  const entry = { projection, deliveryKeys };
-  const nextMonitors = monitorIndex < 0
-    ? [...monitors, entry]
-    : monitors.map((value, at) => at === monitorIndex ? entry : value);
-  const next: MonitorActivityPart = { type: "monitor-activity", monitors: nextMonitors };
-  if (index < 0) {
-    parts.push(next);
-    return true;
-  }
-  if (isDeepStrictEqual(previous, next)) return false;
-  parts[index] = next;
-  return true;
 }
 
 function contextCompactionOperationId(value: unknown): string | undefined {
@@ -8049,10 +7640,6 @@ function separatesStreamedText(part: WebMessagePart, appending: "text" | "reason
   // so distinct thoughts cannot merge into one reasoning part and lose their
   // chronology.
   if (appending === "text" && part.type === "reasoning") return false;
-  // A Monitor acknowledgement may arrive while the provider is still flushing
-  // the preceding message's final text delta. Its compact activity row must not
-  // split that word; the explicit message boundary below separates responses.
-  if (part.type === "monitor-activity") return false;
   if (part.type !== "telemetry") return true;
   const event = part.data;
   if (event === null || typeof event !== "object" || Array.isArray(event)) return false;
@@ -8598,14 +8185,17 @@ function parseParts(value: string): WebMessagePart[] {
   } catch {
     throw new WebConsoleError("storage_corrupt", "Persisted message parts are not valid JSON.", 500);
   }
+  // monitor-activity parts were written by versions before monitors were removed;
+  // they are dropped on read so retained conversations stay loadable.
+  // If ordinary recovery later rewrites the message, they are also dropped from
+  // storage. This is accepted because retired activity can no longer render.
   const parts = Array.isArray(parsed)
-    ? parsed.map(canonicalizePersistedPartHistory)
+    ? parsed.filter((part: unknown) => !(typeof part === "object" && part !== null
+      && !Array.isArray(part) && (part as Record<string, unknown>).type === "monitor-activity"))
+      .map(canonicalizePersistedPartHistory)
     : parsed;
   if (!Array.isArray(parts) || !parts.every(isWebMessagePart)) {
     throw new WebConsoleError("storage_corrupt", "Persisted message parts have an invalid shape.", 500);
-  }
-  if (parts.filter((part) => part.type === "monitor-activity").length > 1) {
-    throw new WebConsoleError("storage_corrupt", "Persisted Monitor activity is duplicated.", 500);
   }
   const wakeKeys = parts.flatMap((part) => part.type === "process-job-wake" ? [part.deliveryKey] : []);
   if (new Set(wakeKeys).size !== wakeKeys.length) {
@@ -8976,48 +8566,6 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && (record.text as string).trim().length > 0
       && typeof record.messageId === "string"
       && validRichId(record.messageId);
-  }
-  if (part.type === "monitor-activity") {
-    if (!hasOnlyKeys(part, new Set(["type", "monitors"]))
-      || !Array.isArray(part.monitors)
-      || part.monitors.length === 0
-      || part.monitors.length > AGENT_LIVE_INPUT_MAX_MESSAGES) {
-      return false;
-    }
-    const monitorIds = new Set<string>();
-    let deliveryCount = 0;
-    for (const raw of part.monitors) {
-      if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
-      const entry = raw as Record<string, unknown>;
-      if (!hasOnlyKeys(entry, new Set(["projection", "deliveryKeys"])) || !Array.isArray(entry.deliveryKeys)) {
-        return false;
-      }
-      let projection: MonitorProjection;
-      try {
-        projection = parseMonitorProjection(entry.projection);
-      } catch {
-        return false;
-      }
-      if (monitorIds.has(projection.monitorId)
-        || entry.deliveryKeys.length === 0
-        || entry.deliveryKeys.length > AGENT_LIVE_INPUT_MAX_MESSAGES) {
-        return false;
-      }
-      monitorIds.add(projection.monitorId);
-      const keys = new Set<string>();
-      for (const key of entry.deliveryKeys) {
-        if (typeof key !== "string"
-          || key.length === 0
-          || key.length > 1_024
-          || /[\u0000-\u001f\u007f]/u.test(key)
-          || keys.has(key)) {
-          return false;
-        }
-        keys.add(key);
-      }
-      deliveryCount += entry.deliveryKeys.length;
-    }
-    return deliveryCount <= AGENT_LIVE_INPUT_MAX_MESSAGES;
   }
   if (part.type === "telemetry") return typeof part.event === "string";
   if (part.type === "error") return typeof part.message === "string" && (part.code === undefined || typeof part.code === "string");

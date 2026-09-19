@@ -988,7 +988,7 @@ describe("AgentHarness", () => {
     },
   );
 
-  it("excludes a Monitor wake while preserving a ProcessJob wake in history and memory", async () => {
+  it("preserves a ProcessJob wake in history and memory", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
@@ -1014,10 +1014,7 @@ describe("AgentHarness", () => {
     const fake = createFakeRuntime(async (_prompt, options) => {
       runtimeStarted();
       const iterator = options.liveInput?.[Symbol.asyncIterator]();
-      if (iterator === undefined) throw new Error("Monitor wake mailbox was not available.");
-      const monitorWake = await iterator.next();
-      if (monitorWake.done !== false) throw new Error("Monitor wake was not delivered.");
-      monitorWake.value.acknowledge?.();
+      if (iterator === undefined) throw new Error("Host wake mailbox was not available.");
       const processJobWake = await iterator.next();
       if (processJobWake.done !== false) throw new Error("ProcessJob wake was not delivered.");
       processJobWake.value.acknowledge?.();
@@ -1039,14 +1036,6 @@ describe("AgentHarness", () => {
       abortSignal: new AbortController().signal,
     });
     await started;
-    const offered = harness.offerLiveInput?.({
-      conversationId: "web:thread",
-      id: "monitor:one:1",
-      text: "A monitor you started says credential-shaped output",
-      receivedAt: "2026-09-04T09:00:00.000Z",
-      deliveryKey: "monitor:one:1",
-    });
-    expect(offered?.status).toBe("accepted");
     const processJob = harness.offerLiveInput?.({
       conversationId: "web:thread",
       id: "process-job:one:1",
@@ -1064,9 +1053,7 @@ describe("AgentHarness", () => {
     expect(memoryTurns).toHaveLength(1);
     expect(memoryTurns[0]?.summary).toContain("User: Initial request");
     expect(memoryTurns[0]?.summary).toContain("A ProcessJob finished successfully");
-    expect(memoryTurns[0]?.summary).not.toContain("monitor you started");
     expect(memoryTurns[0]?.captureText).toContain("A ProcessJob finished successfully");
-    expect(memoryTurns[0]?.captureText).not.toContain("monitor you started");
   });
 
   it("preserves an explicit request runtime live-input source", async () => {

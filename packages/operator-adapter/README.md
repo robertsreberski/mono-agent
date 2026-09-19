@@ -107,10 +107,7 @@ Keep bearer values out of source config when possible. Set
   shared TUI override lane before the responder runs. The response is chunked
   `application/x-ndjson` with frames
   (`status | append | replace | event | finish | error`). Closing the socket
-  aborts the in-flight turn. Host Monitor wake keys in turn submissions or live
-  input additionally require the independent Monitor owner bearer in
-  `x-mono-agent-monitor-wake-authorization`; an ordinary operator API key cannot
-  authorize a Monitor flight.
+  aborts the in-flight turn.
 - `GET {basePath}/v1/conversations/:id/ask` - the current pending `AskUser`
   snapshot, or `{ ask: null }`.
 - `GET {basePath}/v1/interactions/:interactionId` - an exact pending or bounded
@@ -195,9 +192,8 @@ An app-owned `ProviderUsageOperator` enables bearer-protected `GET ${basePath}/v
    while that turn is active; disconnecting the turn stream aborts the request.
 
 Web host wakes carry `deliveryKey` on live-input requests and the legacy-named
-`processJobWakeDeliveryKey` on reserved fallback turns. That additive field now
-carries either a ProcessJobs key or a namespaced `monitor:<id>:<seq>` key. The
-server validates both, forwards the exact-run target to the responder, and moves
+`processJobWakeDeliveryKey` on reserved fallback turns. That field carries a ProcessJobs key. The
+server validates it, forwards the exact-run target to the responder, and moves
 the fallback identity onto a non-enumerable host-only metadata symbol so it
 cannot become prompt, history, or JSON wire content.
 
