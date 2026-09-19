@@ -1,12 +1,28 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ISOLATED_DEPENDENCY_GRAPHS,
   parseNpmLockProductionGraph,
   resolveNpmLockNodePath,
   runIsolatedDependencyVulnerabilityChecks,
 } from "../check-isolated-dependency-vulnerabilities.mjs";
 
 describe("isolated dependency vulnerability gate", () => {
+  it("audits every isolated workspace, including the marketing site", () => {
+    // pnpm 11 `list --json` reconstructs each graph from its lockfile alone,
+    // so the root gate audits isolated workspaces without installing them.
+    // Every isolated workspace root must stay registered here.
+    const byCwd = new Map(
+      ISOLATED_DEPENDENCY_GRAPHS.map((graph) => [graph.cwd, graph]),
+    );
+    for (const [cwd, rootPackageNames] of [
+      ["packages/web/webapp", ["mono-agent-web-console"]],
+      ["website", ["mono-agent-docs"]],
+      ["marketing", ["mono-agent-marketing"]],
+    ]) {
+      expect(byCwd.get(cwd)?.rootPackageNames).toEqual(rootPackageNames);
+    }
+  });
   it("parses hoisted and nested production paths from an npm v3 lockfile", () => {
     const graph = parseNpmLockProductionGraph(JSON.stringify({
       lockfileVersion: 3,
