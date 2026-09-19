@@ -6,7 +6,9 @@
   `mono-agent.dev` domain. The isolated `marketing/` Astro app renders one
   crawlable page — hero, Build/Research/Automate use cases, honest setup
   steps, FAQ, and GitHub/docs calls to action — with tested SEO metadata, a
-  social card, sitemap/robots, and a dedicated CI lane. Source only; the site
+  social card, sitemap/robots, and a dedicated CI lane. The illustrated workflow
+  explorer supports keyboard tabs, with no-JavaScript content, reduced-motion
+  artwork, native FAQ disclosures, and install-command copying. Source only; the site
   is not deployed yet.
 
 - Add an opt-in Hound backend for `WebSearch` and `WebFetch` alongside

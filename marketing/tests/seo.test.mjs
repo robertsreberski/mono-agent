@@ -144,9 +144,16 @@ describe("marketing built output", () => {
     assert.ok(html.includes(`href="${DOCS_URL}"`), "docs links present");
   });
 
-  it("ships no client JavaScript besides structured data", () => {
-    const scripts = [...html.matchAll(/<script(?![^>]*ld\+json)[^>]*>/g)];
-    assert.equal(scripts.length, 0, "no executable client scripts");
+  it("loads only its small local progressive-enhancement module", () => {
+    const scripts = [...html.matchAll(/<script(?![^>]*ld\+json)[^>]*>/g)].map(m => m[0]);
+    assert.equal(scripts.length, 1);
+    assert.ok(scripts[0].includes('src="/interactions.js"'));
+    assert.ok(scripts[0].includes('type="module"'));
+    assert.ok(statSync(join(DIST, "interactions.js")).size < 6000);
+    for (const id of ["workflow-build", "workflow-research", "workflow-automate"]) {
+      mustContain(html, `id="${id}"`, "server-rendered workflow");
+    }
+    mustContain(html, "Illustrative workflow", "honest illustrative label");
   });
 
   it("avoids unsupported product claims", () => {

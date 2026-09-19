@@ -49,6 +49,7 @@ const jsonLd = {
     <meta name="theme-color" content="#101311" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/styles.css" />
+    <script is:inline type="module" src="/interactions.js"></script>
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="mono-agent" />
@@ -116,6 +117,10 @@ const jsonLd = {
             <p class="hero-meta">Open source. Bring your own models. Make it yours.</p>
           </div>
           <figure class="hero-art" aria-hidden="true">
+            <div class="orbital-ring ring-one"></div><div class="orbital-ring ring-two"></div>
+            <span class="art-coordinate coordinate-top">01 — MODELS</span>
+            <span class="art-coordinate coordinate-middle">02 — CONTEXT</span>
+            <span class="art-coordinate coordinate-bottom">03 — POSSIBILITIES</span>
             <picture>
               <source type="image/webp" srcset="/hero-640.webp 640w, /hero-960.webp 960w, /hero-1440.webp 1440w" sizes="(max-width: 959px) 100vw, (max-width: 1250px) 80vw, 1000px" />
               <img
@@ -131,7 +136,7 @@ const jsonLd = {
             <figcaption class="visually-hidden">Decorative brand illustration, not a product screenshot.</figcaption>
           </figure>
         </div>
-        <div class="wrap hero-footnote"><span>01 / YOUR WORK, YOUR WAY</span><span>One config. Many possibilities. <span aria-hidden="true">↘</span></span></div>
+        <div class="wrap hero-footnote"><span>01 / YOUR WORK, YOUR WAY</span><a href="#use-cases">Explore the possibilities <span aria-hidden="true">↓</span></a></div>
       </section>
 
       <section class="capability-strip" aria-label="Core capabilities">
@@ -141,35 +146,51 @@ const jsonLd = {
       <section class="section" id="use-cases" aria-labelledby="use-cases-heading">
         <div class="wrap">
           <span class="section-label">Use cases</span>
-          <h2 id="use-cases-heading">Less switching.<br />More doing.</h2>
+          <h2 id="use-cases-heading">Less switching.<br /><em>More doing.</em></h2>
           <p class="section-intro">For the code you need to ship, the question you need to answer,
             and the routine you would rather not repeat.</p>
-          <ol class="use-cases">
-            <li>
-              <span class="case-index">01 / BUILD</span>
-              <h3>From stuck<br />to shipped.</h3>
-              <p>Give your agent a codebase. Trace bugs, review changes, and run tests
-                without losing the conversation when you close the tab.</p>
-              <div class="example-prompt"><span>Try asking</span><p>“Find why this test fails. Explain the cause, then propose a fix.”</p></div>
-              <a href={`${DOCS_URL}getting-started/quickstart/`}>Start with a project <span aria-hidden="true">↗</span></a>
-            </li>
-            <li>
-              <span class="case-index">02 / RESEARCH</span>
-              <h3>From scattered<br />to understood.</h3>
-              <p>Bring your notes, documents, and questions. Compare source material,
-                develop an argument, and turn a research folder into a useful draft.</p>
-              <div class="example-prompt"><span>Try asking</span><p>“Compare these reports. Where do they disagree, and what is missing?”</p></div>
-              <a href={`${DOCS_URL}memory/`}>Explore optional memory <span aria-hidden="true">↗</span></a>
-            </li>
-            <li>
-              <span class="case-index">03 / AUTOMATE</span>
-              <h3>From repetitive<br />to routine.</h3>
-              <p>Schedule a digest, handle a webhook, or reach your agent through
-                Telegram and Slack. Configure the routine once, then let it run.</p>
-              <div class="example-prompt"><span>Example workflow</span><p>A scheduled morning digest from the sources and tools you configure.</p></div>
-              <a href={`${DOCS_URL}channels/cron/`}>Explore scheduled work <span aria-hidden="true">↗</span></a>
-            </li>
-          </ol>
+          <div class="workflow-explorer" data-workflow-explorer>
+            <nav class="workflow-tabs" aria-label="Choose a workflow">
+              <a id="tab-build" href="#workflow-build" data-workflow="build"><span>01</span> Build <span class="tab-arrow" aria-hidden="true">↗</span></a>
+              <a id="tab-research" href="#workflow-research" data-workflow="research"><span>02</span> Research <span class="tab-arrow" aria-hidden="true">↗</span></a>
+              <a id="tab-automate" href="#workflow-automate" data-workflow="automate"><span>03</span> Automate <span class="tab-arrow" aria-hidden="true">↗</span></a>
+            </nav>
+            <div class="workflow-panels">
+              <article class="workflow-panel" id="workflow-build" data-panel="build">
+                <div class="workflow-content"><span class="section-label">Your codebase. A second perspective.</span><h3>From stuck to shipped.</h3><p>Trace a bug, review a change, or work through a failing test. Keep the context in one persistent conversation.</p>
+                  <div class="example-prompt"><span>Try asking</span><p>“Find why this test fails. Explain the cause, then propose a fix.”</p></div>
+                  <a class="workflow-link" href={`${DOCS_URL}getting-started/quickstart/`}>Start with a project <span aria-hidden="true">↗</span></a>
+                </div>
+                <figure class="workflow-art">
+                  <span class="scene-label">FIELD NOTES / 01</span>
+                  <svg viewBox="0 0 520 400" fill="none" aria-hidden="true"><path class="scene-wire" d="M80 180H160Q190 180 190 220V250H310Q340 250 340 210V170H450"/><rect class="scene-sheet" x="55" y="95" width="160" height="140" rx="12" transform="rotate(-8 135 165)"/><path class="scene-accent" d="M105 140L82 163L105 186M161 140L184 163L161 186M145 135L122 190"/><rect class="scene-sheet" x="300" y="165" width="165" height="145" rx="12" transform="rotate(8 380 235)"/><path class="scene-accent" d="M330 223L346 239L376 205"/><path class="scene-line" d="M393 216H431M393 233H419M329 263H426"/><circle class="scene-core" cx="260" cy="165" r="36"/><path class="scene-accent" d="M245 165H275M260 150V180"/></svg>
+                  <figcaption>Codebase → investigate → proposed change<small>Illustrative workflow — not a live agent run</small></figcaption>
+                </figure>
+              </article>
+              <article class="workflow-panel" id="workflow-research" data-panel="research">
+                <div class="workflow-content"><span class="section-label">Your sources. A clearer picture.</span><h3>Connect the dots.</h3><p>Bring the documents, notes, and questions. Compare ideas, spot disagreements, and shape the material into a useful draft.</p>
+                  <div class="example-prompt"><span>Try asking</span><p>“Compare these reports. Where do they disagree, and what is missing?”</p></div>
+                  <a class="workflow-link" href={`${DOCS_URL}memory/`}>Explore optional memory <span aria-hidden="true">↗</span></a>
+                </div>
+                <figure class="workflow-art">
+                  <span class="scene-label">FIELD NOTES / 02</span>
+                  <svg viewBox="0 0 520 400" fill="none" aria-hidden="true"><path class="scene-wire" d="M100 210C180 210 180 125 260 125S335 260 420 260"/><rect class="scene-sheet" x="80" y="90" width="155" height="190" rx="9" transform="rotate(-12 155 185)"/><path class="scene-line" d="M105 130H196M105 155H180M105 180H196M105 205H158"/><rect class="scene-sheet" x="278" y="116" width="155" height="190" rx="9" transform="rotate(9 355 215)"/><path class="scene-line" d="M305 156H403M305 184H380M305 212H397M305 240H370"/><circle class="scene-core" cx="258" cy="195" r="49"/><path class="scene-accent" d="M236 192L251 207L280 178"/><path class="scene-accent" d="M111 232H180M307 269H387"/></svg>
+                  <figcaption>Source material → compare → working draft<small>Illustrative workflow — not a live agent run</small></figcaption>
+                </figure>
+              </article>
+              <article class="workflow-panel" id="workflow-automate" data-panel="automate">
+                <div class="workflow-content"><span class="section-label">Your routine. Less repetition.</span><h3>Find your rhythm.</h3><p>Connect a schedule, a channel, and the tools you choose. Make room for the work that needs your attention.</p>
+                  <div class="example-prompt"><span>Example workflow</span><p>A scheduled morning digest from the sources and tools you configure.</p></div>
+                  <a class="workflow-link" href={`${DOCS_URL}channels/cron/`}>Explore scheduled work <span aria-hidden="true">↗</span></a>
+                </div>
+                <figure class="workflow-art">
+                  <span class="scene-label">FIELD NOTES / 03</span>
+                  <svg viewBox="0 0 520 400" fill="none" aria-hidden="true"><circle class="scene-orbit" cx="260" cy="200" r="126"/><circle class="scene-orbit" cx="260" cy="200" r="85"/><path class="scene-wire" d="M134 200H386M260 74V326"/><rect class="scene-sheet" x="217" y="155" width="86" height="90" rx="20"/><path class="scene-accent" d="M265 171L245 202H272L252 230"/><circle class="scene-core" cx="260" cy="74" r="25"/><path class="scene-accent" d="M249 74L257 82L271 66"/><circle class="scene-core" cx="386" cy="200" r="25"/><path class="scene-accent" d="M375 200H397M386 189V211"/><circle class="scene-core" cx="134" cy="200" r="25"/><path class="scene-accent" d="M123 195H145M123 205H139"/><circle class="scene-core" cx="260" cy="326" r="25"/><path class="scene-accent" d="M260 312V326L270 332"/></svg>
+                  <figcaption>Schedule → configured agent → digest<small>Illustrative workflow — not a live agent run</small></figcaption>
+                </figure>
+              </article>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -254,7 +275,8 @@ const jsonLd = {
             <li>
               <h3>Install the CLI</h3>
               <p>Requires Node.js 24.15.0 or newer. No pnpm needed.</p>
-              <pre><code>npm i -g create-mono-agent</code></pre>
+              <pre><code id="install-command">npm i -g create-mono-agent</code></pre>
+              <button class="copy-command" type="button" hidden>Copy install command <span aria-hidden="true">↗</span></button><p class="copy-status" role="status" aria-live="polite"></p>
             </li>
             <li>
               <h3>Create the agent folder</h3>
@@ -293,52 +315,52 @@ mono-agent web run --loopback</code></pre>
         <div class="wrap">
           <span class="section-label">FAQ</span>
           <h2 id="faq-heading">Short answers, honestly</h2>
-          <dl class="faq">
-            <div>
-              <dt>What does “local-first” actually mean here?</dt>
-              <dd>
+          <div class="faq">
+            <details>
+              <summary>What does “local-first” actually mean here?</summary>
+              <div class="faq-answer">
                 Your agent files and run artifacts are stored on your machine
                 by default. The models, tools, and channels you configure may
                 send the context they need to their own services, so read what
                 each one transmits before you enable it. Preferring a model on
                 your own hardware keeps even inference local.
-              </dd>
-            </div>
-            <div>
-              <dt>Which models can I use?</dt>
-              <dd>
+              </div>
+            </details>
+            <details>
+              <summary>Which models can I use?</summary>
+              <div class="faq-answer">
                 Supported <code>&lt;provider&gt;:&lt;model&gt;</code> routes include
                 subscription and API providers such as OpenAI Codex and
                 Anthropic, plus fully local providers like Ollama or LM Studio.
                 Ordered fallbacks keep a turn alive when the primary route fails.
-              </dd>
-            </div>
-            <div>
-              <dt>Is the web console safe to expose?</dt>
-              <dd>
+              </div>
+            </details>
+            <details>
+              <summary>Is the web console safe to expose?</summary>
+              <div class="faq-answer">
                 Treat it as single-owner with no application login: anyone who
                 can reach it can operate your agents. Keep it on loopback
                 unless you have a reason not to, and read the console security
                 docs first.
-              </dd>
-            </div>
-            <div>
-              <dt>What does it cost?</dt>
-              <dd>
+              </div>
+            </details>
+            <details>
+              <summary>What does it cost?</summary>
+              <div class="faq-answer">
                 mono-agent itself is free, open-source software under GPL-3.0.
                 Cloud usage follows your provider’s subscription or API pricing,
                 including setup calls. Local models use your own hardware.
-              </dd>
-            </div>
-            <div>
-              <dt>Where is the full documentation?</dt>
-              <dd>
+              </div>
+            </details>
+            <details>
+              <summary>Where is the full documentation?</summary>
+              <div class="faq-answer">
                 The complete guides, configuration reference, and security model
                 live on the documentation site — start there when the config
                 file gets ambitious.
-              </dd>
-            </div>
-          </dl>
+              </div>
+            </details>
+          </div>
         </div>
       </section>
 

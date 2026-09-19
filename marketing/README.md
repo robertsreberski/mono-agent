@@ -3,7 +3,7 @@
 The prospective marketing site at **<https://mono-agent.dev/>** (not yet
 deployed — see [Prospective deployment](#prospective-deployment)). A standalone
 [Astro](https://astro.build/) static app: one crawlable HTML page, one
-stylesheet, zero client JavaScript. GitHub is the primary call to action; the
+stylesheet, and a small local progressive-enhancement module. GitHub is the primary call to action; the
 existing docs site is secondary.
 
 ## Architecture
@@ -28,7 +28,21 @@ existing docs site is secondary.
 - **SEO is tested, not assumed.** `tests/seo.test.mjs` audits the built
   `dist/`: title/description/canonical, absolute Open Graph/Twitter URLs, the
   real 1200×630 card dimensions, sitemap/robots, honest JSON-LD, single-H1
-  structure, working anchors, zero client scripts, and claim guards.
+  structure, working anchors, the local script budget, and claim guards.
+
+## Interaction design
+
+The workflow field guide pairs three original SVG illustrations with server-rendered
+Build, Research and Automate content. `public/interactions.js` progressively adds
+ARIA tabs (arrow keys, Home/End, Enter/Space), direct workflow links, a copy-install
+button with honest success/failure feedback, and subtle pointer-responsive hero art.
+All workflow content remains readable when JavaScript is disabled; FAQ disclosures
+are native HTML. These are illustrative workflows, never live model output.
+
+No model calls, analytics, third-party scripts or storage are used. Clipboard tests
+stub success and refusal; they prove UI handling, not operating-system permission.
+Motion is finite or pointer-driven, disabled for reduced-motion users, and never
+hijacks scrolling. Readable text does not fade through low-contrast states.
 
 ## Local development
 

@@ -139,3 +139,76 @@ for (const width of [320, 768, 1024]) {
     await expect(examples).toHaveCount(3);
   });
 }
+
+for (const width of [390, 1440]) {
+  test(`workflow explorer supports pointer, keyboard and all states at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto("/");
+    const tabs = page.getByRole("tablist", { name: "Choose a workflow" });
+    await expect(tabs).toBeVisible();
+    await tabs.getByRole("tab", { name: /Research/ }).click();
+    await expect(page.getByRole("tabpanel")).toHaveCount(1);
+    await expect(page.getByRole("tabpanel")).toContainText("Connect the dots.");
+    await tabs.getByRole("tab", { name: /Research/ }).press("ArrowRight");
+    await expect(tabs.getByRole("tab", { name: /Automate/ })).toBeFocused();
+    await expect(page.getByRole("tabpanel")).toContainText("Find your rhythm.");
+    await page.keyboard.press("Home");
+    await expect(tabs.getByRole("tab", { name: /Build/ })).toHaveAttribute("aria-selected", "true");
+    await page.keyboard.press("End");
+    await expect(tabs.getByRole("tab", { name: /Automate/ })).toHaveAttribute("aria-selected", "true");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+    expect(results.violations, JSON.stringify(results.violations)).toEqual([]);
+  });
+}
+
+test("all workflow content and native FAQ work without JavaScript", async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
+  await page.goto("/");
+  for (const id of ["build", "research", "automate"]) {
+    await expect(page.locator(`#workflow-${id}`)).toBeVisible();
+  }
+  await expect(page.getByRole("button", { name: /Copy install command/ })).toHaveCount(0);
+  const question = page.locator(".faq summary").first();
+  await question.click();
+  await expect(page.locator(".faq details").first()).toHaveAttribute("open", "");
+  await context.close();
+});
+
+test("deep-linked workflow is selected on load", async ({ page }) => {
+  await page.goto("/#workflow-research");
+  await expect(page.getByRole("tab", { name: /Research/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tabpanel")).toContainText("Connect the dots.");
+});
+
+test("copy command reports success only after clipboard resolves", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", {
+    value: { writeText: async (text: string) => { (window as any).copied = text; } },
+  }));
+  await page.goto("/");
+  await page.getByRole("button", { name: /Copy install command/ }).click();
+  await expect(page.getByRole("status")).toHaveText("Install command copied.");
+  expect(await page.evaluate(() => (window as any).copied)).toBe("npm i -g create-mono-agent");
+});
+
+test("clipboard refusal leaves honest manual instructions", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", {
+    value: { writeText: async () => { throw new Error("denied"); } },
+  }));
+  await page.goto("/");
+  await page.getByRole("button", { name: /Copy install command/ }).click();
+  await expect(page.getByRole("status")).toHaveText("Copy unavailable. Select and copy the command above.");
+  await expect(page.getByRole("button", { name: /Copy install command/ })).toBeEnabled();
+});
+
+test("reduced motion disables the interactive artwork movement", async ({ browser }) => {
+  const context = await browser.newContext({ reducedMotion: "reduce" });
+  const page = await context.newPage();
+  await page.goto("/");
+  await page.mouse.move(700, 400);
+  expect(await page.locator(".hero-art").evaluate(el => el.style.getPropertyValue("--art-x"))).toBe("");
+  await page.getByRole("tab", { name: /Research/ }).click();
+  expect(await page.locator("#workflow-research svg").evaluate(el => getComputedStyle(el).animationName)).toBe("none");
+  await context.close();
+});

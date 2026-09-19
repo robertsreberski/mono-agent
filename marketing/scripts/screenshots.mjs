@@ -23,6 +23,9 @@ const PORT = 4331;
 const URL = `http://127.0.0.1:${PORT}/`;
 
 const SHOTS = [
+  { name: "research-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: ".workflow-explorer", workflow: "research" },
+  { name: "research-mobile-390x844.png", width: 390, height: 844, scrollTo: ".workflow-explorer", workflow: "research" },
+  { name: "automate-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: ".workflow-explorer", workflow: "automate" },
   { name: "hero-desktop-1440x1000.png", width: 1440, height: 1000 },
   { name: "hero-mobile-390x844.png", width: 390, height: 844 },
   {
@@ -84,6 +87,10 @@ async function main() {
         await page.goto(URL, { waitUntil: "networkidle" });
         await page.evaluate(() => document.fonts.ready);
         await page.waitForFunction(() => document.getAnimations().every(a => a.playState !== "running"));
+        if (shot.workflow) {
+          await page.locator(`[data-workflow="${shot.workflow}"]`).click();
+          await page.waitForFunction(() => document.getAnimations().every(a => a.playState !== "running"));
+        }
         if (shot.scrollTo) {
           // Instant jump: the site enables smooth scroll-behavior, which
           // would otherwise leave the capture mid-flight.
