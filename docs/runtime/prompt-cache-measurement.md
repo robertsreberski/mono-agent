@@ -95,7 +95,7 @@ first-request cost. The existing all-request and compaction outputs remain.
 
 **Gate A — stable definitions and unchanged admission.** Under unchanged
 configuration, model, skill catalog and authority profile, normal user/job-wake/
-monitor-wake/cron transitions must produce zero definition changes, including
+cron transitions must produce zero definition changes, including
 constant-count changes. Persistent children have a separate profile. Offline
 provider-wire tests compare serialized Anthropic and OpenAI Responses tool
 arrays; refusal tests prove that visibility does not grant authority. Real

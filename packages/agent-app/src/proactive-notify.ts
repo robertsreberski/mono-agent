@@ -88,7 +88,7 @@ export interface ProactiveNotifyInput {
 /**
  * Resolve the running-registry id that owns a conversation scheme.
  *
- * Mirrors `routeMonitorWake`: a driver that DECLARES the scheme owns it, under
+ * A driver that DECLARES the scheme owns it, under
  * whatever id it was registered with. Zero declarations means a built-in
  * channel whose id is the scheme itself; two or more is ambiguous and fails
  * closed rather than guessing which instance should receive the message.

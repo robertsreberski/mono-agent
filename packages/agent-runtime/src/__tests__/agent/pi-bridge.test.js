@@ -1266,7 +1266,7 @@ describe("pi MCP tool helpers", () => {
 // The always-created built-ins getPiBuiltinTools owns. NodeRepl is run-owned and
 // joins this set only when its controller is supplied. ReadSkill (legacy alias
 // read_skill) is appended separately only when skills are supplied.
-const BUILTIN_TOOL_NAMES = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec", "Monitor", "MonitorStop", "WebFetch", "WebSearch"];
+const BUILTIN_TOOL_NAMES = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec", "WebFetch", "WebSearch"];
 
 function toolNames(tools) {
   return tools.map((tool) => tool.name).sort();

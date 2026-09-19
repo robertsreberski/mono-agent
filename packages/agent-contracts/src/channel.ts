@@ -1,5 +1,4 @@
 import type { AgentResponder } from "./index.js";
-import type { MonitorProjection } from "./monitors.js";
 import type { ProcessJobProjection } from "./process-jobs.js";
 
 /**
@@ -95,29 +94,6 @@ export interface ProcessJobWakeDeliveryInput {
 export type ProcessJobWakeDeliveryResult = HostWakeDeliveryResult;
 
 /**
- * One coalesced batch of monitor events, or one monitor terminal transition,
- * routed to its exact origin conversation. `text` is the fenced, untrusted
- * envelope the host composed; the projection carries only secret-free lifecycle
- * facts so an adapter can validate the origin without seeing event content.
- */
-export interface MonitorWakeDeliveryInput {
-  readonly conversationId: string;
-  readonly text: string;
-  readonly deliveryKey: string;
-  readonly monitor: MonitorProjection;
-}
-
-/**
- * Explicit monitor surface owned by an opted-in addressable conversation
- * adapter. Routing reuses the driver's declared
- * {@link ChannelDriver.processJobs} conversation scheme: that declaration names
- * the channel's addressable scheme, not a job-specific capability.
- */
-export interface RunningMonitorChannel {
-  wake(input: MonitorWakeDeliveryInput): Promise<HostWakeDeliveryResult>;
-}
-
-/**
  * Explicit process-job surface owned by an opted-in addressable conversation
  * adapter. Lifecycle rendering and completion turns stay separate from generic
  * proactive notification delivery.
@@ -209,8 +185,6 @@ export interface RunningChannel {
   }): Promise<NotifyDeliveryResult>;
   /** Adapter-owned durable background-job lifecycle and completion delivery. */
   readonly processJobs?: RunningProcessJobChannel;
-  /** Adapter-owned monitor event/terminal wake delivery. */
-  readonly monitors?: RunningMonitorChannel;
 }
 
 export interface ChannelAskOption {

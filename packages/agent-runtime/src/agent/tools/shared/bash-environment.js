@@ -2,7 +2,7 @@
 
 /**
  * Startup-file and shell-option environment neutralization shared by every tool
- * that spawns `/bin/bash -c`. Kept in one place so a monitor's command
+ * that spawns `/bin/bash -c`. Kept in one place so a command
  * environment cannot drift away from Bash's.
  */
 const BASH_STARTUP_ENV_KEYS = new Set([

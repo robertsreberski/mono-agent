@@ -33,7 +33,6 @@ export interface DiscoveredOperatorAgent {
   readonly baseUrl?: string;
   readonly apiKey?: string;
   readonly processJobsBearer?: string;
-  readonly monitorsBearer?: string;
 }
 
 export function defaultTraceRegistryDir(env: Readonly<Record<string, string | undefined>> = process.env): string {
@@ -54,18 +53,16 @@ export async function discoverOperatorAgents(
       const baseUrl = operatorBaseUrlFromMetadata(source.metadata);
       const apiKey = baseUrl === undefined ? undefined : await resolveOperatorApiKey(source, env);
       const processJobsBearer = baseUrl === undefined ? undefined : await resolveOwnerBearer(source, "processJobs");
-      const monitorsBearer = baseUrl === undefined ? undefined : await resolveOwnerBearer(source, "monitors");
       return {
         source,
         ...(baseUrl === undefined ? {} : { baseUrl }),
         ...(apiKey === undefined ? {} : { apiKey }),
         ...(processJobsBearer === undefined ? {} : { processJobsBearer }),
-        ...(monitorsBearer === undefined ? {} : { monitorsBearer }),
       };
     }));
 }
 
-async function resolveOwnerBearer(source: TraceSourceListItem, kind: "processJobs" | "monitors"): Promise<string | undefined> {
+async function resolveOwnerBearer(source: TraceSourceListItem, kind: "processJobs"): Promise<string | undefined> {
   const channels = record(source.metadata?.channels);
   const tui = record(channels?.tui);
   const owner = record(tui?.[kind]);
@@ -96,7 +93,7 @@ async function resolveOwnerBearer(source: TraceSourceListItem, kind: "processJob
     const secret = Buffer.from(value, "base64url");
     if (secret.byteLength !== 32 || secret.toString("base64url") !== value) return undefined;
     return createHmac("sha256", secret)
-      .update(kind === "monitors" ? "mono-agent-monitor-operator-v1" : "mono-agent-process-job-operator-v1")
+      .update("mono-agent-process-job-operator-v1")
       .digest("base64url");
   } catch {
     return undefined;

@@ -7397,7 +7397,7 @@ describe("ConsoleStoreProvider integration", () => {
       // The events that would have said what changed are exactly the ones a gap
       // loses, and no listing summary can stand in for them: `writeMessageParts`
       // moves a transcript without touching the conversation row at all -- a
-      // Monitor wake, every mid-turn flush -- so a page reporting an unchanged
+      // Every mid-turn flush -- so a page reporting an unchanged
       // summary is silent about writes this console actually missed. Everything
       // held is suspect, and each conversation pays a CONDITIONAL read when it
       // is opened.

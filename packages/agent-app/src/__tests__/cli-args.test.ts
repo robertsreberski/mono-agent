@@ -779,7 +779,6 @@ describe("parseCliArgs", () => {
     const lineFor = (short: string): string => lines.find((line) => line.includes(short)) ?? "";
     expect(lineFor("runs [report|audit]")).toContain("[--json]");
     expect(lineFor("memory <subcommand>")).toContain("[--json]");
-    expect(lineFor("monitors list|get|cancel")).toContain("[--json]");
     expect(lineFor("web [start|stop|status|...]")).toContain("[--json]");
     expect(lineFor("backfill")).not.toContain("[--json]");
 

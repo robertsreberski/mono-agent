@@ -148,10 +148,8 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
       try {
         const response = await responder.respond(request, stream);
         const active = context === undefined ? [] : wakeFlightsByDeliveryKey.get(context.deliveryKey) ?? [];
-        // Monitor wraps the same lineage seam but owns its own suppression policy.
         // A stale/missing/ambiguous key, narration, or any rich part stays visible.
         if (context !== undefined
-          && !context.deliveryKey.startsWith("monitor:")
           && active.length === 1 && active[0]?.token === context.token
           && classifyNotifySuppression(response.text) === "sentinel"
           && (response.parts?.length ?? 0) === 0) {

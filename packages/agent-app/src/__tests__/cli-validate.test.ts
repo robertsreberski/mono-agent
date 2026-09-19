@@ -184,6 +184,22 @@ describe("runCli validate --consumer", () => {
     expect(result.stdout).not.toContain("Config is ready to start.");
   });
 
+  it.each(["validate", "config"])("keeps %s --json stderr clean with deprecated monitors configuration", async (command) => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
+    await writeConsumerConfig(dir, "mono-agent.config.json", {
+      runtime: { model: "openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      monitors: { enabled: true, unknownNestedKey: { ignored: true } },
+    });
+    process.chdir(dir);
+
+    const result = await captureRunCli([command, "--json"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true });
+  });
+
   it("reports Supermemory as waiting when its base URL points at a closed port", async () => {
     const baseUrl = await closedLoopbackBaseUrl();
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");

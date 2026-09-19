@@ -15,7 +15,7 @@ import {
 import { WebStore } from "../store.js";
 import { prepareWebStatePaths } from "../state-paths.js";
 import * as migrationsModule from "../store-migrations.js";
-import { fakeMonitor, temporaryRoot } from "./helpers.js";
+import { temporaryRoot } from "./helpers.js";
 import { seedLegacyStorage, seedLegacySilentCron } from "./fixtures/storage-layouts.js";
 
 const roots: string[] = [];
@@ -205,7 +205,7 @@ describe("web storage migration history", () => {
 
   it("retains an existing Monitor projection during legacy FK repair and a repeated eligible open", async () => {
     const stateDir = await seeded(13);
-    const projection = JSON.stringify(fakeMonitor({ monitorId: "fixture-monitor", conversationId: "web:fixture-thread" }));
+    const projection = JSON.stringify({ legacy: "opaque retained projection" });
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     database.exec("ALTER TABLE monitor_wake_deliveries ADD COLUMN projection_json TEXT");
     database.prepare("UPDATE monitor_wake_deliveries SET projection_json = ?").run(projection);

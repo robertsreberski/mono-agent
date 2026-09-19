@@ -6,7 +6,7 @@ import {
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { commands, page } from "@vitest/browser/context";
 import { describe, expect, it, vi } from "vitest";
-import { coalesceMonitorWakeMessages, convertWebMessage } from "../runtime";
+import { convertWebMessage } from "../runtime";
 import { ProcessJobStack } from "./ProcessJobStack";
 import { backgroundSubagentJob, backgroundSubagentMessages } from "../test/background-subagent-fixtures";
 import { api } from "../api";
@@ -491,7 +491,7 @@ const steeredTwiceResponse: WebMessage = {
 
 function SteerHarness({ width, messages }: { readonly width: number; readonly messages: readonly WebMessage[] }) {
   const presentation = projectProcessJobPresentation(
-    coalesceMonitorWakeMessages(messages),
+    messages,
     { threadId: "thread" },
   );
   const runtime = useExternalStoreRuntime<WebMessage>({

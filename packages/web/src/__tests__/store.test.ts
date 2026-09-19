@@ -30,7 +30,7 @@ import {
 } from "../store.js";
 import { WebConsoleError } from "../errors.js";
 import { WEB_STORAGE_SCHEMA_VERSION } from "../store-migrations.js";
-import { fakeMonitor, fakeProcessJob, temporaryRoot } from "./helpers.js";
+import { fakeProcessJob, temporaryRoot } from "./helpers.js";
 // The console replays these same vectors, so they live where both suites can
 // take them verbatim rather than each inventing its own reading of an op.
 import { MESSAGE_DELTA_VECTORS } from "../../webapp/src/test/message-delta-vectors.js";
@@ -111,6 +111,65 @@ function transcriptMarkers(store: WebStore, threadId: string, kind: "model" | "p
 }
 
 describe("WebStore", () => {
+  it("drops retired monitor activity on read without rewriting historical message bytes", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const stateDir = join(root, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Retained request", attachmentIds: [] });
+    store.completeTurn(turn.turnId, "Retained answer");
+    const retained = [{ type: "text", text: "Before" }, { type: "reasoning", text: "After" }];
+    const historical = JSON.stringify([retained[0], { type: "monitor-activity", monitors: [] }, retained[1]]);
+    const raw = new DatabaseSync(store.paths.database);
+    try {
+      raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?").run(historical, turn.assistantMessageId);
+      expect(store.getMessage(turn.assistantMessageId)?.parts).toEqual(retained);
+      store.close();
+      const reopened = await WebStore.open({ stateDir });
+      try { expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts).toEqual(retained); }
+      finally { reopened.close(); }
+      expect(raw.prepare("SELECT parts_json FROM messages WHERE id = ?").get(turn.assistantMessageId))
+        .toEqual({ parts_json: historical });
+    } finally { raw.close(); store.close(); }
+  });
+
+  it("discards unrenderable retired activity when recovery rewrites an interrupted historical message", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const stateDir = join(root, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Interrupted request", attachmentIds: [] });
+    const retained = [{ type: "text", text: "Before" }, { type: "reasoning", text: "After" }];
+    const historical = JSON.stringify([retained[0], { type: "monitor-activity", monitors: [] }, retained[1]]);
+    const raw = new DatabaseSync(store.paths.database);
+    try {
+      raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?").run(historical, turn.assistantMessageId);
+      store.close();
+      // Opening recovers the still-running turn. This ordinary rewrite deliberately
+      // drops retired, unrenderable activity rather than merging dead parts back in.
+      const reopened = await WebStore.open({ stateDir });
+      const expectedParts = [...retained, {
+        type: "error",
+        code: "interrupted",
+        message: "The web service restarted before this turn completed.",
+      }];
+      try {
+        expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)).toMatchObject({
+          status: "interrupted",
+          parts: expectedParts,
+        });
+        expect(reopened.getMessage(turn.assistantMessageId)?.parts).toEqual(expectedParts);
+      } finally { reopened.close(); }
+      const row = raw.prepare("SELECT parts_json FROM messages WHERE id = ?").get(turn.assistantMessageId) as { parts_json: string };
+      expect(JSON.parse(row.parts_json)).toEqual(expectedParts);
+      expect(row.parts_json).not.toContain("monitor-activity");
+    } finally { raw.close(); store.close(); }
+  });
+
   it("scopes chats before pagination and search while retaining webhook conversations", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -1070,95 +1129,6 @@ describe("WebStore", () => {
       result: "Applied to current run",
       status: "complete",
     });
-    store.close();
-  });
-
-  it("groups exact Monitor steering receipts without splitting assistant messages", async () => {
-    const base = await temporaryRoot();
-    cleanup.push(base);
-    const store = await WebStore.open({ stateDir: join(base, "state") });
-    store.replaceAgents([agent()]);
-    const thread = store.createThread("agent-one");
-    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
-    const first = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 1 });
-    const second = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 2 });
-    for (const [monitor, deliveryKey] of [
-      [first, `monitor:${first.monitorId}:1`],
-      [second, `monitor:${second.monitorId}:2`],
-    ] as const) {
-      expect(store.reserveMonitorWake({
-        sourceId: "agent-one",
-        threadId: thread.id,
-        monitorId: monitor.monitorId,
-        deliveryKey,
-        payloadSha256: deliveryKey.endsWith(":1") ? "a".repeat(64) : "b".repeat(64),
-        monitor,
-      })).toEqual({ kind: "new" });
-    }
-    const monitorEvent = (type: "tool_call_started" | "tool_call_completed", deliveryKey: string) => ({
-      kind: "event" as const,
-      event: {
-        type,
-        id: `live-input:${deliveryKey}`,
-        name: "↪️ Steered: “A monitor you started…”",
-        ...(type === "tool_call_completed" ? { content: "Applied to current run" } : {}),
-        metadata: { liveInput: true, synthetic: true, inputId: deliveryKey },
-      },
-    });
-    const firstKey = `monitor:${first.monitorId}:1`;
-    const secondKey = `monitor:${second.monitorId}:2`;
-    store.applyStreamFrames(turn.turnId, [
-      { kind: "append", delta: "Monitor started. Await" },
-      monitorEvent("tool_call_started", firstKey),
-      monitorEvent("tool_call_completed", firstKey),
-      { kind: "append", delta: "ing updates." },
-      {
-        kind: "event",
-        // Older agents emitted context_usage at message_end but not the
-        // explicit boundary. The store must preserve that rollout-safe split
-        // before replacing the legacy Steered row with compact activity.
-        event: {
-          type: "runtime_telemetry",
-          kind: "context_usage",
-          data: { tokens: { input: 10, output: 2, total: 12 } },
-        },
-      },
-      { kind: "append", delta: "Event wake one." },
-      monitorEvent("tool_call_started", secondKey),
-      monitorEvent("tool_call_completed", secondKey),
-      {
-        kind: "event",
-        event: { type: "runtime_telemetry", kind: "assistant_message_boundary", data: { messageId: "a2" } },
-      },
-      { kind: "append", delta: "Event wake two." },
-    ] as never);
-    expect(store.completeMonitorWake({
-      sourceId: "agent-one",
-      monitorId: first.monitorId,
-      deliveryKey: firstKey,
-      disposition: "steered",
-      turnId: turn.turnId,
-    })).toBeUndefined();
-    expect(store.completeMonitorWake({
-      sourceId: "agent-one",
-      monitorId: second.monitorId,
-      deliveryKey: secondKey,
-      disposition: "steered",
-      turnId: turn.turnId,
-    })).toBeUndefined();
-    const detail = store.completeTurn(turn.turnId, "Event wake two.");
-    const parts = detail.messages.at(-1)?.parts ?? [];
-    expect(parts.filter((part) => part.type === "tool-call")).toEqual([]);
-    expect(parts.filter((part) => part.type === "text")).toEqual([
-      { type: "text", text: "Monitor started. Awaiting updates." },
-      { type: "text", text: "Event wake one." },
-      { type: "text", text: "Event wake two." },
-    ]);
-    expect(parts.filter((part) => part.type === "monitor-activity")).toEqual([{
-      type: "monitor-activity",
-      monitors: [{ projection: second, deliveryKeys: [firstKey, secondKey] }],
-    }]);
-    expect(JSON.stringify(parts)).not.toContain("A monitor you started");
     store.close();
   });
 
@@ -2867,152 +2837,6 @@ describe("WebStore", () => {
     store.close();
   });
 
-  it("can keep an assistant-only Monitor prompt out of durable web state", async () => {
-    const base = await temporaryRoot();
-    cleanup.push(base);
-    const store = await WebStore.open({ stateDir: join(base, "state") });
-    store.replaceAgents([agent()]);
-    const thread = store.createThread("agent-one");
-    const secretPrompt = "monitor output contains credential-shape-value";
-
-    const started = store.beginAssistantTurn({
-      threadId: thread.id,
-      prompt: secretPrompt,
-      storedPrompt: "[Monitor wake]",
-    });
-    expect(started.text).toBe(secretPrompt);
-    const raw = new DatabaseSync(store.paths.database, { readOnly: true });
-    const row = raw.prepare("SELECT text FROM turns WHERE id = ?").get(started.turnId) as { text: string };
-    raw.close();
-    expect(row.text).toBe("[Monitor wake]");
-    expect(row.text).not.toContain("credential-shape-value");
-    store.close();
-  });
-
-  it("persists completed and ambiguous Monitor wake claims without raw event text", async () => {
-    const base = await temporaryRoot();
-    cleanup.push(base);
-    const stateDir = join(base, "state");
-    const store = await WebStore.open({ stateDir });
-    store.replaceAgents([agent(), agent("agent-two")]);
-    const thread = store.createThread("agent-one");
-    const otherThread = store.createThread("agent-two");
-    const monitor = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 3 });
-    const deliveryKey = `monitor:${monitor.monitorId}:3`;
-
-    expect(store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: thread.id,
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      payloadSha256: "a".repeat(64),
-      monitor,
-    })).toEqual({ kind: "new" });
-    store.completeMonitorWake({
-      sourceId: "agent-one",
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      disposition: "steered",
-    });
-    expect(store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: thread.id,
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      payloadSha256: "a".repeat(64),
-      monitor,
-    })).toEqual({ kind: "completed", disposition: "steered" });
-    expect(() => store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: thread.id,
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      payloadSha256: "b".repeat(64),
-      monitor,
-    })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
-    expect(() => store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: otherThread.id,
-      monitorId: "other-monitor",
-      deliveryKey: "monitor:other-monitor:1",
-      payloadSha256: "c".repeat(64),
-      monitor: fakeMonitor({ monitorId: "other-monitor", conversationId: `web:${otherThread.id}` }),
-    })).toThrowError(expect.objectContaining({ code: "invalid_notification" }));
-
-    const pendingKey = `monitor:${monitor.monitorId}:4`;
-    expect(store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: thread.id,
-      monitorId: monitor.monitorId,
-      deliveryKey: pendingKey,
-      payloadSha256: "d".repeat(64),
-      monitor,
-    })).toEqual({ kind: "new" });
-    const raw = new DatabaseSync(store.paths.database, { readOnly: true });
-    const rows = raw.prepare("SELECT * FROM monitor_wake_deliveries ORDER BY delivery_key").all();
-    raw.close();
-    expect(JSON.stringify(rows)).not.toContain("credential-shape-value");
-    store.close();
-
-    const reopened = await WebStore.open({ stateDir });
-    expect(reopened.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: thread.id,
-      monitorId: monitor.monitorId,
-      deliveryKey: pendingKey,
-      payloadSha256: "d".repeat(64),
-      monitor,
-    })).toEqual({ kind: "uncertain" });
-    reopened.close();
-  });
-
-  it("retains Monitor delivery tombstones after their conversation is deleted", async () => {
-    const base = await temporaryRoot();
-    cleanup.push(base);
-    const store = await WebStore.open({ stateDir: join(base, "state") });
-    store.replaceAgents([agent()]);
-    const thread = store.createThread("agent-one");
-    const monitor = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 7 });
-    const deliveryKey = `monitor:${monitor.monitorId}:7`;
-    const payloadSha256 = "e".repeat(64);
-
-    expect(store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: thread.id,
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      payloadSha256,
-      monitor,
-    })).toEqual({ kind: "new" });
-    store.completeMonitorWake({
-      sourceId: "agent-one",
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      disposition: "follow_up",
-    });
-    store.patchThread(thread.id, { archived: true });
-    await store.deleteArchivedThread(thread.id);
-
-    const raw = new DatabaseSync(store.paths.database, { readOnly: true });
-    const retained = raw.prepare(`
-      SELECT thread_id, state, disposition
-      FROM monitor_wake_deliveries WHERE source_id = ? AND delivery_key = ?
-    `).get("agent-one", deliveryKey);
-    raw.close();
-    expect(retained).toEqual({ thread_id: null, state: "completed", disposition: "follow_up" });
-
-    const replacement = store.createThread("agent-one");
-    expect(() => store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: replacement.id,
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      payloadSha256,
-      monitor,
-    })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
-    store.close();
-  });
-
   it("persists completed and ambiguous process-job wake claims across reopen", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -3185,112 +3009,6 @@ describe("WebStore", () => {
       "SELECT discovered FROM agents WHERE source_id = 'agent-one'",
     ).get()).toMatchObject({ discovered: 1 });
     inspected.close();
-  });
-
-  it("migrates schema v12 by creating the Monitor wake ledger", async () => {
-    const base = await temporaryRoot();
-    cleanup.push(base);
-    const stateDir = join(base, "state");
-    const initial = await WebStore.open({ stateDir });
-    const databasePath = initial.paths.database;
-    initial.close();
-
-    const legacy = new DatabaseSync(databasePath);
-    legacy.exec("DROP TABLE monitor_wake_deliveries; PRAGMA user_version = 12");
-    legacy.close();
-
-    const migrated = await WebStore.open({ stateDir });
-    migrated.close();
-    const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
-    expect(inspected.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'monitor_wake_deliveries'",
-    ).get()).toBeDefined();
-    inspected.close();
-  });
-
-  it("migrates schema v13 Monitor receipts from cascading deletion to retained tombstones", async () => {
-    const base = await temporaryRoot();
-    cleanup.push(base);
-    const stateDir = join(base, "state");
-    const seeded = await WebStore.open({ stateDir });
-    seeded.replaceAgents([agent()]);
-    const thread = seeded.createThread("agent-one");
-    const monitor = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 9 });
-    const deliveryKey = `monitor:${monitor.monitorId}:9`;
-    expect(seeded.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: thread.id,
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      payloadSha256: "f".repeat(64),
-      monitor,
-    })).toEqual({ kind: "new" });
-    seeded.completeMonitorWake({
-      sourceId: "agent-one",
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      disposition: "steered",
-    });
-    seeded.close();
-
-    const databasePath = join(stateDir, "state.sqlite");
-    const legacy = new DatabaseSync(databasePath);
-    legacy.exec(`
-      PRAGMA foreign_keys = OFF;
-      ALTER TABLE monitor_wake_deliveries RENAME TO monitor_wake_deliveries_v14_source;
-      CREATE TABLE monitor_wake_deliveries (
-        source_id TEXT NOT NULL REFERENCES agents(source_id),
-        monitor_id TEXT NOT NULL,
-        delivery_key TEXT NOT NULL,
-        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
-        payload_sha256 TEXT NOT NULL,
-        state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')),
-        disposition TEXT CHECK (disposition IN ('steered', 'follow_up')),
-        turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
-        created_at TEXT NOT NULL,
-        completed_at TEXT,
-        PRIMARY KEY (source_id, delivery_key)
-      );
-      INSERT INTO monitor_wake_deliveries (
-        source_id, monitor_id, delivery_key, thread_id, payload_sha256,
-        state, disposition, turn_id, created_at, completed_at
-      ) SELECT
-        source_id, monitor_id, delivery_key, thread_id, payload_sha256,
-        state, disposition, turn_id, created_at, completed_at
-      FROM monitor_wake_deliveries_v14_source;
-      DROP TABLE monitor_wake_deliveries_v14_source;
-      PRAGMA user_version = 13;
-    `);
-    legacy.close();
-
-    const migrated = await WebStore.open({ stateDir });
-    const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
-    const threadForeignKey = (inspected.prepare("PRAGMA foreign_key_list(monitor_wake_deliveries)").all() as Array<{
-      from: string;
-      on_delete: string;
-    }>).find((foreignKey) => foreignKey.from === "thread_id");
-    expect(threadForeignKey?.on_delete).toBe("SET NULL");
-    const monitorColumns = (inspected.prepare("PRAGMA table_info(monitor_wake_deliveries)").all() as Array<{
-      name: string;
-    }>).map((column) => column.name);
-    expect(monitorColumns).toContain("projection_json");
-    inspected.close();
-
-    migrated.patchThread(thread.id, { archived: true });
-    await migrated.deleteArchivedThread(thread.id);
-    const retained = new DatabaseSync(databasePath, { readOnly: true });
-    expect(retained.prepare(`
-      SELECT thread_id, state, disposition
-      FROM monitor_wake_deliveries WHERE source_id = ? AND delivery_key = ?
-    `).get("agent-one", deliveryKey)).toEqual({
-      thread_id: null,
-      state: "completed",
-      disposition: "steered",
-    });
-    retained.close();
-    migrated.close();
   });
 
   it("sets, merges, and clears per-thread model and effort overrides", async () => {
@@ -5270,16 +4988,6 @@ describe("WebStore message sequence and part deltas", () => {
 
   it("never edits a stored part in place, which is what makes the diff sound", async () => {
     const context = await openStreamingStore();
-    const monitor = fakeMonitor({ conversationId: `web:${context.threadId}` });
-    const deliveryKey = `monitor:${monitor.monitorId}:1`;
-    context.store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: context.threadId,
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      payloadSha256: "a".repeat(64),
-      monitor,
-    });
     // Every write path reads its previous parts through `requireMessage`, and
     // the diff calls a part that compares reference-equal unchanged. Freeze what
     // those paths read, so an in-place edit throws instead of vanishing.
@@ -5356,21 +5064,10 @@ describe("WebStore message sequence and part deltas", () => {
         },
       }]);
     }
-    // A Monitor wake receipt folds into the single activity row.
-    stream(context, [{
-      kind: "event",
-      event: {
-        type: "tool_call_completed",
-        id: "monitor-wake",
-        name: "MonitorWake",
-        metadata: { liveInput: true, synthetic: true, inputId: deliveryKey },
-      },
-    }]);
     stream(context, [{ kind: "append", delta: "One file." }]);
     stream(context, [{ kind: "replace", text: "Exactly one file." }]);
 
-    // The finish rewrites hardest of all: reconciliation, reply parts, and the
-    // Monitor terminal normalization the delivery key turns on.
+    // The finish reconciles text and rich reply parts.
     finish(context, () => context.store.completeTurn(
       context.turnId,
       "Exactly one file. Nothing else.",
@@ -5384,7 +5081,6 @@ describe("WebStore message sequence and part deltas", () => {
         sizeBytes: 5,
         integrityId: `sha256:${"c".repeat(64)}`,
       }] as const satisfies readonly AgentReplyPart[],
-      { monitorWakeDeliveryKey: deliveryKey },
     ));
 
     expect(frozen).toBeGreaterThan(0);
@@ -5393,7 +5089,6 @@ describe("WebStore message sequence and part deltas", () => {
       "tool-call",
       "subagent",
       "telemetry",
-      "monitor-activity",
       "text",
       "attachment",
     ]);
@@ -5541,7 +5236,7 @@ describe("WebStore message sequence and part deltas", () => {
     store.close();
   });
 
-  it("reads a silent legacy history in the same number of statements for one card and fifty", async () => {
+  it("reads a silent host history in the same number of statements for one card and fifty", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
@@ -5551,35 +5246,17 @@ describe("WebStore message sequence and part deltas", () => {
     });
     store.replaceAgents([agent()]);
 
-    // The one shape that used to drop this reader back to a thread at a time: a
-    // conversation active only through a retained job, whose whole
-    // prior-outcome window is historical Monitor no-ops. Old rows keep their
-    // raw sentinel bytes and normalize only on read, so nothing but a read of
-    // the parts can tell that those turns said nothing -- and the meaningful
-    // outcome the sidebar has to show sits behind all of them.
+    // Retained jobs remain bounded when their conversations contain deep
+    // histories of silent host turns.
     let cards = 0;
-    const silenced: string[] = [];
     const addSilentCard = (depth: number): void => {
       cards += 1;
       const thread = store.createThread("agent-one");
       const answered = store.beginTurn({ threadId: thread.id, text: "ask", attachmentIds: [] });
       store.completeTurn(answered.turnId, "the answer that still stands");
-      const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
       for (let index = 0; index < depth; index += 1) {
-        const deliveryKey = `monitor:${monitor.monitorId}:${String(cards)}:${String(index)}`;
         const wake = store.beginAssistantTurn({ threadId: thread.id, prompt: "Host follow-up" });
-        store.reserveMonitorWake({
-          sourceId: "agent-one", threadId: thread.id, monitorId: monitor.monitorId,
-          deliveryKey, payloadSha256: "a".repeat(64), monitor,
-        });
-        store.completeMonitorWake({
-          sourceId: "agent-one", monitorId: monitor.monitorId,
-          deliveryKey, disposition: "follow_up", turnId: wake.turnId,
-        });
-        store.completeTurn(wake.turnId, "NOTHING_TO_REPORT", undefined, undefined, {
-          monitorWakeDeliveryKey: deliveryKey,
-        });
-        silenced.push(wake.assistantMessageId);
+        store.completeTurn(wake.turnId, "");
       }
       const job = fakeProcessJob({
         state: "queued",
@@ -5591,30 +5268,13 @@ describe("WebStore message sequence and part deltas", () => {
       });
     };
 
-    // Put the sentinel bytes back the way a store written before normalization
-    // still holds them. A current write strips them, which would make these
-    // turns cheap to reject in SQL and never reach the deep path at all.
-    const restoreHistoricalBytes = (): void => {
-      const raw = new DatabaseSync(store.paths.database);
-      try {
-        const parts = JSON.stringify([{ type: "text", text: "NOTHING_TO_REPORT" }]);
-        const update = raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?");
-        for (const id of silenced) update.run(parts, id);
-      } finally {
-        raw.close();
-      }
-    };
-
     addSilentCard(9);
-    restoreHistoricalBytes();
     const one = measureStatements(store, () => store.listActiveThreads());
     // The same one card, twice as deep in silence: an eight-turn window used to
     // be asked again for every further block of no-ops.
     addSilentCard(17);
-    restoreHistoricalBytes();
     const deeper = measureStatements(store, () => store.listActiveThreads());
     for (let index = 2; index < 50; index += 1) addSilentCard(9);
-    restoreHistoricalBytes();
     const full = measureStatements(store, () => store.listActiveThreads());
 
     expect(one.value.threads).toHaveLength(1);

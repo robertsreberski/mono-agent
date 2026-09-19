@@ -135,7 +135,6 @@ export async function buildTurnTools(runState, {
       processJobsController: options.processJobs,
       ownedForegroundProcessController: options.ownedForegroundProcesses?.forAttempt(),
       processJobsAvailability: options.processJobsAvailability,
-      monitorsController: options.monitors,
       toolExecutionMode,
       subagents: options.subagents,
       askParentController: options.askParentController,

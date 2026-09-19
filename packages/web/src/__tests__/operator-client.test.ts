@@ -1044,24 +1044,6 @@ describe("OperatorClient", () => {
   }, 5_000);
 });
 
-it("sends Monitor owner authorization only on exact wake turn and steering requests", async () => {
-  const headers: Headers[] = [];
-  const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "ordinary-key", monitorsBearer: "owner-monitor-key",
-    fetchImpl: (async (url, init) => {
-      headers.push(new Headers(init?.headers));
-      return String(url).endsWith("/live-input") ? Response.json({ status: "applied", runId: "run" })
-        : new Response(JSON.stringify({ kind: "finish", finalText: "ok" }) + "\n", { headers: { "content-type": "application/x-ndjson" } });
-    }) as typeof fetch });
-  const turn = { conversationId: "web:thread", text: "Literal", metadata: {}, attachments: [], signal: new AbortController().signal, onFrame: () => undefined };
-  await client.turn(turn);
-  await client.turn({ ...turn, processJobWakeDeliveryKey: "monitor:one:1" });
-  await client.liveInput({ conversationId: turn.conversationId, id: "monitor:one:1", deliveryKey: "monitor:one:1", text: "Event", receivedAt: new Date().toISOString() });
-  expect(headers.map((header) => header.get("authorization"))).toEqual(["Bearer ordinary-key", "Bearer ordinary-key", "Bearer ordinary-key"]);
-  expect(headers.map((header) => header.get("x-mono-agent-monitor-wake-authorization"))).toEqual([null, "Bearer owner-monitor-key", "Bearer owner-monitor-key"]);
-  await expect(new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui" }).turn({ ...turn, processJobWakeDeliveryKey: "monitor:one:1" }))
-    .rejects.toMatchObject({ code: "monitors_unavailable" });
-});
-
 
 it.each([false, true])("validates usage projection at the HTTP boundary (refresh=%s)", async (refresh) => {
   const headers: Record<string, unknown>[] = [];

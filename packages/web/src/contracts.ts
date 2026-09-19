@@ -14,7 +14,6 @@ import {
   type CronOperatorRunTrigger,
   type CronOperatorRunTruncatedField,
   type SessionToolHistoryEventMetadata,
-  type MonitorProjection,
   type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 
@@ -100,7 +99,7 @@ export const WEB_MAX_PROJECT_CONTEXT_CHARACTERS = 4_000;
 
 export type WebAgentStatus = "online" | "offline" | "degraded";
 export type WebThreadNotificationTriggerKind = "cron" | "webhook";
-export type WebNotificationTriggerKind = WebThreadNotificationTriggerKind | "job" | "monitor";
+export type WebNotificationTriggerKind = WebThreadNotificationTriggerKind | "job";
 
 export type WebThreadTrigger =
   | { readonly kind: "webhook" }
@@ -671,15 +670,6 @@ export type WebMessagePart =
       readonly receivedAt?: string;
       /** The steer author's quote, when the standalone bubble carries one. */
       readonly quote?: WebQuote;
-    }
-  | {
-      readonly type: "monitor-activity";
-      /** One compact run-level row, with one latest projection per Monitor. */
-      readonly monitors: readonly {
-        readonly projection: MonitorProjection;
-        /** Exact delivered wake identities, retained only for idempotent UI aggregation. */
-        readonly deliveryKeys: readonly string[];
-      }[];
     }
   /**
    * One runtime/provider diagnostic. `data` is present only for the events the

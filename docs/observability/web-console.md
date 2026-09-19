@@ -477,7 +477,7 @@ Selecting an agent filters its conversations; each conversation is permanently b
 
 Threads use the first prompt as their initial title and can be renamed. Active threads must be archived before deletion, and archived threads can be restored. The console permits one active turn per thread while different threads and agents can run concurrently.
 
-Every turn tells the agent that it is in an interactive web console conversation and states the thread's conversation id, `web:<threadId>`, verbatim in its Session block. That id is the thread the person is already reading, not a route elsewhere, and it is disclosed so an agent can hand it to host-side tools and operator commands that bind background work to the thread — a Monitor, a process job, or a maintainer-style task record that must wake this exact conversation. Cron channels and other request-driven turns keep their existing wording and disclose nothing. See [Context assembly](/context/assembly/#session).
+Every turn tells the agent that it is in an interactive web console conversation and states the thread's conversation id, `web:<threadId>`, verbatim in its Session block. That id is the thread the person is already reading, not a route elsewhere, and it is disclosed so an agent can hand it to host-side tools and operator commands that bind background work to the thread — a process job, or a maintainer-style task record that must wake this exact conversation. Cron channels and other request-driven turns keep their existing wording and disclose nothing. See [Context assembly](/context/assembly/#session).
 
 Cron jobs and webhook endpoints can explicitly target `notifyConversationId: "web:new"` with `notify: true`. Webhook results retain one assistant-only thread per delivery. Cron results instead fold into one durable, source-qualified channel per job, with the stable route `/agents/<sourceId>/cron/<jobId>`. Opening an Automations row uses that same route and chronological feed; loading the route directly selects the Automations chip. The list shows each overview job once with its id, cadence/timezone, enabled state, last or active run, and next run. A saved overview remains readable when the agent is offline or no longer advertises cron, but is visibly a snapshot and cannot supply actionable live state; truncated overviews disclose that removed historical jobs may be omitted. The chronological feed includes scheduled/manual admission, running, queued, succeeded, failed, cancelled, overlap-skipped, gate-skipped, and dropped states, plus artifact/session links when the agent reports them. The header opens collapsed on one line — schedule, state and next run — and expands to show schedule, timezone, state, last and next run, and health. It is a native disclosure, so its expanded state is exposed to assistive technology and driven from the keyboard by the browser, and nothing about it is persisted. The disclosure belongs to one agent's one job, so every cron channel opens collapsed, including a direct switch from one cron channel to another. It retains **Run now**, **Enable/Disable**, and the redacted **View config** surface; action controls use the existing authentication, opt-in, confirmation, idempotency, and capability gates and explain when they are unavailable. Configuration remains file/config-JSON owned, and the browser never computes next-run locally or treats stale state as actionable. The cron transcript itself remains read-only, so console interaction cannot occupy the cron job's own conversation and cause a scheduled firing to overlap.
 
@@ -772,7 +772,7 @@ settings changes never rewrite existing conversations. The layer applies only
 to interactive web-console creation: Telegram, Slack, cron, webhook, API, and
 TUI requests continue to use their own configured or request-scoped values.
 
-When a process job or Monitor event must start a standalone revival turn, it
+When a process-job event must start a standalone revival turn, it
 re-reads this conversation snapshot immediately before admission. A wake that
 can be steered into the active run instead keeps that run's existing route.
 
@@ -934,7 +934,7 @@ index and the triggers that maintain it, backfilled from existing messages on
 first open. Schema 10 added an `origin` column to `attachments`, distinguishing a
 file the operator uploaded from the console's own durable copy of an image the
 agent generated. Schemas 11 through 17 carried per-conversation run overrides,
-the provider summary an agent advertises, Monitor wake delivery receipts, and
+the provider summary an agent advertises, host wake delivery receipts, and
 discovery presence. Schema 18 adds `messages.seq`, the per-message write counter
 a console compares against to tell the next delta from one it missed; existing
 rows start at 0, which is exactly what a browser that has never seen a delta

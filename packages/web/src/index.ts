@@ -23,7 +23,6 @@ export type {
   DeliverWebNotificationInput,
   DeliverWebNotificationOptions,
   DeliverWebNotificationResult,
-  DeliverWebMonitorNotificationInput,
   DeliverWebProcessJobNotificationInput,
   DeliverWebThreadNotificationInput,
 } from "./notification-client.js";

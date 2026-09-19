@@ -22,7 +22,6 @@ import {
   type ChannelAskAnswer,
   type ChannelAskSnapshot,
   type ChannelAskSubmissionResult,
-  type MonitorProjection,
   processJobPublicError,
   type ProcessJobProjection,
   type ProviderAuthSessionInput,
@@ -471,28 +470,6 @@ function assertTurnTextWithinLimit(operatorText: string): void {
   );
 }
 
-function assertMonitorWakeAddress(input: DeliverWebMonitorNotificationInput): void {
-  const originConversation = input.monitor.origin.conversationId.split("#", 1)[0];
-  const expectedDeliveryKey = `monitor:${input.monitor.monitorId}:${String(input.monitor.counters.seq)}`;
-  if (input.monitor.origin.channel !== "web"
-    || originConversation !== `web:${input.threadId}`
-    || input.deliveryKey !== expectedDeliveryKey) {
-    throw new WebConsoleError(
-      "invalid_notification",
-      "The Monitor wake origin or delivery key does not match its web destination.",
-      409,
-    );
-  }
-}
-
-function monitorWakePayloadSha256(monitor: MonitorProjection, wakePrompt: string): string {
-  return createHash("sha256")
-    .update(canonicalJson(monitor))
-    .update("\0")
-    .update(wakePrompt)
-    .digest("hex");
-}
-
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
   if (typeof value === "object" && value !== null) {
@@ -590,19 +567,9 @@ export interface DeliverWebProcessJobNotificationInput {
   readonly parts?: readonly AgentReplyPart[];
 }
 
-export interface DeliverWebMonitorNotificationInput {
-  readonly sourceId: string;
-  readonly triggerKind: "monitor";
-  readonly deliveryKey: string;
-  readonly threadId: string;
-  readonly monitor: MonitorProjection;
-  readonly wakePrompt: string;
-}
-
 export type DeliverWebNotificationInput =
   | DeliverWebThreadNotificationInput
-  | DeliverWebProcessJobNotificationInput
-  | DeliverWebMonitorNotificationInput;
+  | DeliverWebProcessJobNotificationInput;
 
 export interface DeliverWebNotificationResult {
   readonly thread?: WebThread;
@@ -1864,35 +1831,11 @@ export class WebService {
     if (this.stopped) {
       throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
     }
-    // Monitor wakes are addressed to a retained thread, so they must reach the
-    // wake-specific retry/abandon path even after discovery has removed the
-    // source from the picker. New source-scoped deliveries still refresh before
-    // the store decides whether the agent exists.
-    if (input.triggerKind !== "monitor" && this.store.getAgent(input.sourceId) === undefined) {
+    if (this.store.getAgent(input.sourceId) === undefined) {
       await this.refreshAgents();
     }
     if (this.stopped) {
       throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
-    }
-    if (input.triggerKind === "monitor") {
-      assertMonitorWakeAddress(input);
-      const thread = this.store.getThread(input.threadId);
-      if (thread === undefined || thread.sourceId !== input.sourceId) {
-        return {
-          duplicate: true,
-          tombstoned: true,
-          delivery: { delivered: false, code: "monitor_origin_mismatch", retryable: false },
-        };
-      }
-      if (thread.archivedAt !== null || thread.trigger !== undefined) {
-        return {
-          thread,
-          duplicate: false,
-          delivery: { delivered: false, code: "monitor_wake_failed", retryable: false },
-        };
-      }
-      const result = await this.deliverMonitorWake(input);
-      return { thread, duplicate: result.duplicate, delivery: result.receipt };
     }
     if (input.triggerKind === "job") {
       // Destructured off: the card's message id is how this service addresses
@@ -2385,7 +2328,7 @@ export class WebService {
         ...(started.thread.runState.model === undefined ? {} : { model: started.thread.runState.model }),
         ...(started.thread.runState.effort === undefined ? {} : { effort: started.thread.runState.effort }),
       };
-      // A host wake (process-job or monitor completion) runs an ordinary live turn
+      // A host wake (process-job completion) runs an ordinary live turn
       // on an ordinary conversation, so it carries the same turn-bound console
       // capability as a typed turn: an agent reacting to finished background work
       // is exactly when filing or moving the conversation is useful. Cron and
@@ -2419,17 +2362,13 @@ export class WebService {
         ...(onAdmitted === undefined ? {} : { onAdmitted }),
       });
       await coalescer.flush();
-      const silentMonitorWake = hostWakeDeliveryKey?.startsWith("monitor:") === true
-        && (response.finalText === undefined || response.finalText.length === 0)
-        && (response.parts === undefined || response.parts.length === 0);
       const detail = this.store.completeTurn(
         started.turnId,
         response.finalText,
         response.metadata,
         response.parts,
         {
-          suppressResponsePush: silentMonitorWake,
-          ...(hostWakeDeliveryKey === undefined ? {} : { monitorWakeDeliveryKey: hostWakeDeliveryKey }),
+          ...(hostWakeDeliveryKey === undefined ? {} : { hostWakeDeliveryKey }),
         },
       );
       this.emitMessageWrite(started.thread.id, detail.write);
@@ -2954,211 +2893,6 @@ export class WebService {
     }
   }
 
-  private async deliverMonitorWake(
-    input: DeliverWebMonitorNotificationInput,
-  ): Promise<{ readonly receipt: HostWakeReceipt; readonly duplicate: boolean }> {
-    const activeKey = `${input.sourceId}\0${input.deliveryKey}`;
-    const reservation = this.store.reserveMonitorWake({
-      sourceId: input.sourceId,
-      threadId: input.threadId,
-      monitorId: input.monitor.monitorId,
-      deliveryKey: input.deliveryKey,
-      payloadSha256: monitorWakePayloadSha256(input.monitor, input.wakePrompt),
-      monitor: input.monitor,
-    });
-    if (reservation.kind === "completed") {
-      return {
-        receipt: { delivered: true, disposition: reservation.disposition },
-        duplicate: true,
-      };
-    }
-    if (reservation.kind === "uncertain") {
-      const existing = this.activeHostWakes.get(activeKey);
-      if (existing !== undefined) return { receipt: await existing, duplicate: true };
-      return {
-        receipt: {
-          delivered: false,
-          code: "monitor_wake_ambiguous",
-          retryable: false,
-          ambiguous: true,
-        },
-        duplicate: true,
-      };
-    }
-
-    this.retainHostWakeReservation(input.threadId);
-    const previous = this.hostWakeTails.get(input.threadId) ?? Promise.resolve();
-    const delivery = previous.catch(() => undefined).then(async (): Promise<HostWakeReceipt> => {
-      const abandon = (): void => this.store.abandonMonitorWake({
-        sourceId: input.sourceId,
-        monitorId: input.monitor.monitorId,
-        deliveryKey: input.deliveryKey,
-      });
-      let connection = this.connections.get(input.sourceId);
-      if (connection === undefined) {
-        try {
-          await this.refreshAgents();
-        } catch (error) {
-          abandon();
-          this.options.logger?.debug?.("Web Monitor destination refresh failed before delivery.", {
-            threadId: input.threadId,
-            monitorId: input.monitor.monitorId,
-            error: errorMessage(error),
-          });
-          return { delivered: false, code: "destination_channel_unavailable", retryable: true };
-        }
-        connection = this.connections.get(input.sourceId);
-      }
-      if (this.stopped || connection === undefined) {
-        abandon();
-        return { delivered: false, code: "destination_channel_unavailable", retryable: true };
-      }
-      const destination = this.store.getThread(input.threadId);
-      if (destination === undefined
-        || destination.sourceId !== input.sourceId
-        || destination.archivedAt !== null
-        || destination.trigger !== undefined) {
-        abandon();
-        return { delivered: false, code: "monitor_origin_mismatch", retryable: false };
-      }
-      const active = this.activeTurns.get(input.threadId);
-      // Steered operator-facing with the member prefix, like every other
-      // dispatch. An oversized composition skips steering for the normal
-      // follow-up below; the stored `[Monitor wake]` text is untouched.
-      const steeredText = this.withProjectPrefix(input.threadId, input.wakePrompt);
-      if (active !== undefined
-        && connection.info.supportsLiveInput
-        && steeredText.length <= AGENT_LIVE_INPUT_MAX_CHARACTERS) {
-        try {
-          this.store.setMonitorWakeSteeringTurn(input.sourceId, input.deliveryKey, active.turnId, true);
-          const settlement = await active.client.liveInput({
-            conversationId: `web:${input.threadId}`,
-            id: input.deliveryKey,
-            text: steeredText,
-            receivedAt: new Date().toISOString(),
-            deliveryKey: input.deliveryKey,
-            signal: AbortSignal.timeout(10 * 60 * 1_000),
-          });
-          if (settlement.status === "applied") {
-            const message = this.store.completeMonitorWake({
-              sourceId: input.sourceId,
-              monitorId: input.monitor.monitorId,
-              deliveryKey: input.deliveryKey,
-              disposition: "steered",
-              turnId: active.turnId,
-            });
-            if (message !== undefined) {
-              this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
-            }
-            return { delivered: true, disposition: "steered" };
-          }
-          if (settlement.status !== "requeue" && settlement.status !== "unavailable") {
-            return {
-              delivered: false,
-              code: "monitor_wake_ambiguous",
-              retryable: false,
-              ambiguous: true,
-            };
-          }
-          this.store.setMonitorWakeSteeringTurn(input.sourceId, input.deliveryKey, active.turnId, false);
-        } catch (error) {
-          this.options.logger?.warn?.("Web Monitor steering outcome is unknown; automatic fallback is suppressed.", {
-            threadId: input.threadId,
-            monitorId: input.monitor.monitorId,
-            error: errorMessage(error),
-          });
-          return {
-            delivered: false,
-            code: "monitor_wake_ambiguous",
-            retryable: false,
-            ambiguous: true,
-          };
-        }
-      }
-
-      if (active !== undefined) await active.completion;
-      if (this.stopped) {
-        abandon();
-        return { delivered: false, code: "destination_channel_unavailable", retryable: true };
-      }
-      const refreshedConnection = this.connections.get(input.sourceId);
-      if (refreshedConnection === undefined) {
-        abandon();
-        return { delivered: false, code: "destination_channel_unavailable", retryable: true };
-      }
-      // Bounded before any turn exists, like the process-job follow-up: no
-      // operator call, and abandoned so a later redelivery can still proceed.
-      const followUpText = this.withProjectPrefix(input.threadId, input.wakePrompt);
-      if (followUpText.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
-        abandon();
-        return { delivered: false, code: "monitor_wake_failed", retryable: false };
-      }
-      let started;
-      try {
-        const selection = this.resolveTurnSelection(input.threadId);
-        started = this.store.beginAssistantTurn({
-          threadId: input.threadId,
-          prompt: input.wakePrompt,
-          storedPrompt: "[Monitor wake]",
-          ...(selection.model === undefined ? {} : { model: selection.model }),
-          ...(selection.effort === undefined ? {} : { effort: selection.effort }),
-          ...(selection.requestedModel === undefined ? {} : { requestedModel: selection.requestedModel }),
-          ...(selection.requestedEffort === undefined ? {} : { requestedEffort: selection.requestedEffort }),
-        });
-      } catch (error) {
-        abandon();
-        return {
-          delivered: false,
-          code: errorCode(error) ?? "monitor_wake_failed",
-          retryable: false,
-        };
-      }
-      const { completion } = this.launchTurn(
-        started,
-        refreshedConnection.client,
-        input.wakePrompt,
-        input.deliveryKey,
-      );
-      this.emit("message.changed", input.threadId, {
-        messageId: started.assistantMessageId,
-        updatedAt: started.thread.updatedAt,
-      });
-      this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
-      this.emitThread("threads.changed", { thread: started.thread });
-      this.refreshMemberProject(started.thread);
-      await completion;
-      if (this.store.turnStatus(started.turnId) !== "complete") {
-        return {
-          delivered: false,
-          code: "monitor_wake_failed",
-          retryable: false,
-          ambiguous: true,
-        };
-      }
-      const message = this.store.completeMonitorWake({
-        sourceId: input.sourceId,
-        monitorId: input.monitor.monitorId,
-        deliveryKey: input.deliveryKey,
-        disposition: "follow_up",
-        turnId: started.turnId,
-      });
-      if (message !== undefined) {
-        this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
-      }
-      return { delivered: true, disposition: "follow_up" };
-    });
-    const tail = delivery.then(() => undefined, () => undefined);
-    this.hostWakeTails.set(input.threadId, tail);
-    this.activeHostWakes.set(activeKey, delivery);
-    try {
-      return { receipt: await delivery, duplicate: false };
-    } finally {
-      if (this.hostWakeTails.get(input.threadId) === tail) this.hostWakeTails.delete(input.threadId);
-      if (this.activeHostWakes.get(activeKey) === delivery) this.activeHostWakes.delete(activeKey);
-      this.releaseHostWakeReservation(input.threadId);
-    }
-  }
-
   private retainHostWakeReservation(threadId: string): void {
     this.hostWakeReservations.set(
       threadId,
@@ -3501,7 +3235,6 @@ export class WebService {
         baseUrl: agent.baseUrl,
         ...(agent.apiKey === undefined ? {} : { apiKey: agent.apiKey }),
         ...(agent.processJobsBearer === undefined ? {} : { processJobsBearer: agent.processJobsBearer }),
-        ...(agent.monitorsBearer === undefined ? {} : { monitorsBearer: agent.monitorsBearer }),
         ...(this.options.fetchImpl === undefined ? {} : { fetchImpl: this.options.fetchImpl }),
       });
       try {
