@@ -21,6 +21,15 @@
   before. This protects new reconciliation only: records already rewritten this
   way are not detected or repaired, and a capture already queued before the
   upgrade can still apply its original in-place edit when it is replayed.
+- Report memory lifecycle state in `MemoryRecall` results. Recall returns
+  completed, scheduled, and migrated records alongside open ones, but the tool
+  previously showed only a score and the text, so a finished or deferred item
+  could read as a current fact — a distinction automatic recall already made
+  through its status-bearing bullet marker. A result whose status is not `open`
+  is now prefixed with that status, and structured results carry `type` and
+  `status` when the backend supplies them. Open records render exactly as
+  before, a backend that reports neither keeps its previous result shape, and
+  which records are retrieved, ranked, or excluded is unchanged.
 
 - Let a cron job declare a deterministic `preflight` argv evaluated before the
   model responder. `{"run":false}` ends the firing as `skipped_gate` with no
