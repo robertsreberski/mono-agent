@@ -318,3 +318,21 @@ test('deep links remain in view after the scroll story initializes', async ({ pa
   await page.goto('/#faq', { waitUntil: 'networkidle' });
   await expect(page.locator('#faq')).toBeInViewport();
 });
+
+test('motion and compact preferences can change during the story', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 900 });
+  await page.goto('/', { waitUntil: 'networkidle' });
+  await scrubStory(page, 1/3);
+  const desktopPose = await page.locator('[data-layer="0"]').getAttribute('style');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await scrubStory(page, 1/3);
+  expect(await page.locator('[data-layer="0"]').getAttribute('style')).not.toBe(desktopPose);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'off');
+  expect(await page.locator('[data-layer="0"]').getAttribute('style')).toBe('');
+  expect(await page.locator('[data-scroll-story]').getAttribute('style')).toBeNull();
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'on');
+  await scrubStory(page, 2/3);
+  expect(await page.locator('[data-layer="0"]').getAttribute('style')).toContain('transform:');
+});
