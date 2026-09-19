@@ -15,6 +15,10 @@
 - Make WebSearch providers source-registerable without chain-body changes,
   preserving request budgets, relevance gates, and provider cooldowns.
 
+- Fix turns waiting forever behind cancelled or failed continuity publication:
+  return a retryable error after 30 seconds by default without bypassing pending
+  history, with a host-overridable wait budget and bounded progress warnings.
+
 - Fix `WebSearch` budgets to charge answered searches, refund failed providers,
   and count Ollama endpoint probes once. Bound network dispatches separately
   and include provider failures in budget-exhaustion messages.

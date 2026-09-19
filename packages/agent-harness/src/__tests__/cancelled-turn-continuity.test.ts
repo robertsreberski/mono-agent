@@ -741,7 +741,7 @@ describe("cancelled turn natural continuity", () => {
     expect(JSON.stringify(calls[1]!.messages)).toContain("first request");
   });
 
-  it("emits one slow-publication warning without changing the waiting turn", async () => {
+  it("caps repeated slow-publication warnings during a longer configured wait", async () => {
     const identityPath = await identityFixture();
     const controller = new AbortController();
     const stored: HistoryMessage[] = [];
@@ -754,6 +754,7 @@ describe("cancelled turn natural continuity", () => {
     const harness = createAgentHarness({
       identityPath,
       model,
+      session: { mode: "per-message", idleTimeoutMs: 60_000, turnContinuityPublicationWaitMs: 240_000 },
       historyStore: {
         async load() { return stored; },
         async append(_conversationId: string, messages: readonly HistoryMessage[]) {
@@ -793,15 +794,137 @@ describe("cancelled turn natural continuity", () => {
       expect(slow).toHaveLength(1);
       expect(slow[0]).toMatchObject({ conversationId: "slow-warn", outcome: "cancelled" });
       expect((slow[0] as { elapsedMs?: unknown }).elapsedMs).toBeGreaterThanOrEqual(5_000);
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(warned).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(warned[1]).toMatchObject({ elapsedMs: 20_000 });
+      await vi.advanceTimersByTimeAsync(150_000);
+      expect(warned).toHaveLength(12);
+      expect(warned[11]).toMatchObject({ elapsedMs: 170_000 });
+      await vi.advanceTimersByTimeAsync(50_000);
+      expect(warned).toHaveLength(12);
+      expect(calls).toHaveLength(1);
       vi.useRealTimers();
       releaseAppend();
       await expect(second).resolves.toMatchObject({ text: "second answer" });
-      expect(warned.filter((event) => (event as { warning_kind?: string }).warning_kind === "turn_continuity_publication_slow")).toHaveLength(1);
+      expect(warned.filter((event) => (event as { warning_kind?: string }).warning_kind === "turn_continuity_publication_slow")).toHaveLength(12);
       await expect(first).resolves.toMatchObject({ failure: { kind: "cancelled" } });
     } finally {
       vi.useRealTimers();
       releaseAppend();
     }
+  });
+
+  it.each([
+    ["cancelled", false, undefined],
+    ["failed", false, undefined],
+    ["cancelled", true, undefined],
+    ["failed", true, undefined],
+    ["cancelled", false, 180_000],
+    ["failed", true, 1_000],
+  ] as const)("bounds a pending %s publication (republish: %s, budget: %s) without bypassing it", async (outcome, republish, configuredWaitMs) => {
+    const waitMs = configuredWaitMs ?? 30_000;
+    const identityPath = await identityFixture();
+    const controller = new AbortController();
+    const stored: HistoryMessage[] = [];
+    let appendStarted!: () => void;
+    const appendEntered = new Promise<void>((resolve) => { appendStarted = resolve; });
+    let releaseAppend!: () => void;
+    // Intentionally never settles during either waiter's entire deadline.
+    const appendGate = new Promise<void>((resolve) => { releaseAppend = resolve; });
+    let appendCalls = 0;
+    let runtimeCalls = 0;
+    const reset = vi.fn(async () => { stored.length = 0; });
+    const load = vi.fn(async () => stored);
+    const harness = createAgentHarness({
+      identityPath,
+      model,
+      ...(configuredWaitMs === undefined ? {} : {
+        session: { mode: "per-message" as const, idleTimeoutMs: 60_000, turnContinuityPublicationWaitMs: configuredWaitMs },
+      }),
+      historyStore: {
+        load,
+        reset,
+        async append(_conversationId: string, messages: readonly HistoryMessage[]) {
+          appendCalls += 1;
+          if (republish && appendCalls === 1) throw new Error("initial publication rejected");
+          appendStarted();
+          await appendGate;
+          stored.push(...messages);
+        },
+      },
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          runtimeCalls += 1;
+          if (runtimeCalls === 1) {
+            if (outcome === "cancelled") controller.abort(createChannelUserCancelReason("Web"));
+            else throw new Error("provider failed");
+          }
+          return { text: "answer" };
+        },
+      },
+    });
+    const request = { conversationId: "pending-publication", userMessage: "first request", abortSignal: controller.signal };
+    const first = harness.run(request);
+    if (republish) await first;
+    else await appendEntered;
+    const loadsBeforeWait = load.mock.calls.length;
+    const expectedKind = outcome === "cancelled" ? "cancellation_continuity_unavailable" : "failure_continuity_unavailable";
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      let response: Awaited<ReturnType<typeof harness.run>> | undefined;
+      const second = harness.run({ ...request, userMessage: "follow-up", abortSignal: new AbortController().signal })
+        .then((result) => { response = result; });
+      await vi.advanceTimersByTimeAsync(0);
+      await appendEntered;
+      await vi.advanceTimersByTimeAsync(waitMs - 1);
+      expect(response).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(response?.failure).toMatchObject({ kind: expectedKind, message: expect.stringContaining("retry") });
+      await second;
+      expect(runtimeCalls).toBe(1);
+      expect(load).toHaveBeenCalledTimes(loadsBeforeWait);
+      expect(appendCalls).toBe(republish ? 2 : 1);
+      expect(stored).toHaveLength(0);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Reset must not discard a still-live barrier: its late append could
+      // otherwise land on top of the reset conversation and a successor turn.
+      const resetting = harness.resetConversation!(request.conversationId);
+      const resetResult = expect(resetting).rejects.toMatchObject({ failureKind: expectedKind });
+      await vi.advanceTimersByTimeAsync(waitMs);
+      await resetResult;
+      expect(reset).not.toHaveBeenCalled();
+      const retry = harness.run({ ...request, abortSignal: new AbortController().signal });
+      const retryResult = expect(retry).resolves.toMatchObject({ failure: { kind: expectedKind } });
+      await vi.advanceTimersByTimeAsync(waitMs);
+      await retryResult;
+      expect(runtimeCalls).toBe(1);
+      expect(appendCalls).toBe(republish ? 2 : 1);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // A genuinely late publication can still unblock the conversation, once.
+      vi.useRealTimers();
+      releaseAppend();
+      await first;
+      await expect(harness.run({ ...request, userMessage: "continue", abortSignal: new AbortController().signal }))
+        .resolves.toMatchObject({ text: "answer" });
+      expect(runtimeCalls).toBe(2);
+      expect(stored.filter((message) => message.content === "first request")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      releaseAppend();
+      await first;
+    }
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity, 2_147_483_648])("rejects invalid continuity wait budget: %s", (turnContinuityPublicationWaitMs) => {
+    expect(() => createAgentHarness({
+      identityPath: "IDENTITY.md",
+      model,
+      runtime: { async run() { return { text: "unused" }; } },
+      session: { mode: "per-message", idleTimeoutMs: 60_000, turnContinuityPublicationWaitMs },
+    })).toThrow("turnContinuityPublicationWaitMs must be an integer between 1 and 2147483647.");
   });
 
   it("does not let recorder finalization delay the next turn", async () => {
