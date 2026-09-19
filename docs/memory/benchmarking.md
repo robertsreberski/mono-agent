@@ -131,6 +131,93 @@ observed outcomes from causal claims. It uses the same `bujo` and `full-history`
 arms. Its controls are checked in and author-visible, not a blind holdout or a
 general memory-quality score.
 
+The optional `locomo-v1` adapter accepts only the 2,805,274-byte
+`data/locomo10.json` from snap-research/locomo revision
+`3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376` with SHA-256
+`79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`.
+LoCoMo is licensed [CC BY-NC 4.0](https://github.com/snap-research/locomo/blob/3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376/LICENSE.txt): obtain and use it
+separately only for a confirmed noncommercial purpose, preserve attribution,
+and do not vendor it into this repository. The benchmark never downloads it.
+Keep the local copy in an owner-only ignored directory and pass its path
+explicitly:
+
+```bash
+node scripts/memory-e2e-benchmark.mjs --dry-run --corpus locomo-v1 \
+  --dataset .worklab-tmp/private/locomo10.json --split development
+
+# Hosted chat remains a dry plan until its new confirmation is reviewed.
+node scripts/memory-e2e-benchmark.mjs --dry-run --corpus locomo-v1 \
+  --dataset .worklab-tmp/private/locomo10.json --split development \
+  --reader openai-codex:gpt-5.6-luna \
+  --extractor openai-codex:gpt-5.6-luna \
+  --embedding-provider ollama --embedding-model bge-m3:latest \
+  --dimension 1024 --pi-auth-path /PATH/TO/EXISTING/pi-auth.json \
+  --allow-hosted-locomo-transfer
+```
+
+The adapter hashes all ten unique conversations into conversation-disjoint
+partitions and selects at most one QA row per integer category by original-index
+hash before outcomes are available. It runs only the lowest-hash development
+conversation and lowest-hash held-out conversation, with separate confirmed
+plans. Missing categories remain explicit. Image-associated evidence is only a
+diagnostic: the adapter does not infer that a question is visually dependent,
+does not backfill another question, and keeps every selected question in the
+text-only denominator with visual dependency labelled unknown. It never fetches
+images or forwards image URLs, captions, summaries, observations, references,
+categories, or evidence labels. Each chronological session is one completed-turn
+capture episode. Both humans
+remain explicitly attributed reports in the user payload; neither is recast as
+the host assistant. BuJo captures the conversation once and answers selected
+questions with independent histories over the same store. Full history receives
+every projected session and fails not-applicable rather than truncating.
+Reference answers stay in the local evaluator projection, where normalized
+exact match and token F1 are deterministic diagnostics for categories 1–4, not
+model or human judgments. Category 5 has no truth-reference exact/F1: the
+pinned upstream evaluator checks only whether output contains `no information
+available` or `not mentioned`, and `adversarial_answer` is never accepted as
+truth. Local LoCoMo profiles remain restricted to `ollama:` reader/extractor
+routes plus Ollama embeddings, with both service roots pinned to
+`http://127.0.0.1:11434`. The preferred installed embedding profile is
+`bge-m3:latest` at 1,024 dimensions because its reported 8,192-token context
+exceeds the installed `nomic-embed-text:v1.5` model's native 2,048-token
+context; catalog name alone is not a selection criterion.
+
+Hosted chat is fail-closed and requires the affirmative
+`--allow-hosted-locomo-transfer` flag. For this adapter the flag accepts only
+`openai-codex:gpt-5.6-luna` for both reader and extractor, local
+`bge-m3:latest` Ollama embeddings at 1,024 dimensions, and an explicit
+`--pi-auth-path`. The plan replaces that path with its fingerprint and binds a
+named dataset-transfer acknowledgement into the confirmation digest. The
+acknowledged provider projection is limited to the selected conversations'
+speaker-attributed dialogue episodes, selected question text, and
+provider-derived BuJo memory. Reference/adversarial answers, evidence
+annotations, images, summaries, observations, and unselected conversations
+remain excluded. The flag never authorizes another corpus or profile.
+
+The pinned Luna catalog row exposes a 272,000-token context window. The adapter
+keeps compaction disabled and admits at most 49,152 estimated reader-input plus
+512 output tokens (extractor: 8,192 plus 2,048), so the full controlled source
+fits that source-catalog limit without truncation. Reservations remain
+conservative estimates rather than observed provider usage. The old local chat
+profile remains blocked: the existing Pi OpenAI-compatible Ollama path cannot
+prove redirect rejection, native `num_ctx`, or silent-truncation behavior.
+Hosted Luna does not weaken or bypass that local-only checkpoint.
+
+A bounded hosted development attempt demonstrated the fail-closed path: one
+strict reconciliation replacement exceeded its declared 280-code-point limit
+by one code point. Capture was marked not ready, every paired BuJo question
+remained unstarted, and held-out evaluation was withheld without retrying or
+changing the prompt/caps. The completed full-history executions from that
+partial attempt are not an arm comparison or a LoCoMo quality result.
+
+LoCoMo limits reserve chat controlled-text/framing separately from bounded
+embedding text (one 8×160-code-point candidate batch plus one 8×280-code-point
+reconciled-write batch per session, and three 4,000-code-point recall queries per
+question). Both flow through the combined
+hard estimated-input budget. These roughly three-million chat-token reservations
+are conservative admission ceilings—not native tokenization, observed usage,
+or spend—and reports expose embedding reservations separately.
+
 All five arms use the same reader, question, identity, output budget and
 controlled-text context estimate:
 

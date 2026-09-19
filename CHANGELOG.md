@@ -28,6 +28,15 @@
 - Reject memory E2E corpus/split selections with no groups before provider
   setup, build, or benchmark execution instead of reporting a successful
   zero-trial run.
+- Add an opt-in, noncommercial-only pinned LoCoMo adapter to the memory E2E
+  benchmark, with conversation-disjoint selection, capture-once question
+  batches, image/reference leakage barriers, full 64-session history retention,
+  bounded embedding-input accounting, category-5 abstention diagnostics, and
+  explicit unstarted rows after fatal batched failures. Keep local chat
+  loopback-pinned and context-probe-gated; allow only an affirmatively
+  acknowledged hosted Luna chat profile with local `bge-m3` embeddings, binding
+  its narrow dataset-transfer scope and credential-path fingerprint into the
+  confirmed plan.
 
 - Return managed `WebSearch` and `WebFetch` results as a compact JSON envelope
   with `status`, host-written summary, untrusted content or results, source and

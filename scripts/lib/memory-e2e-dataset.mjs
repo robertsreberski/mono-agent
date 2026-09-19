@@ -23,6 +23,8 @@ export function digest(value) {
  * redaction paths — is shared unchanged.
  */
 export const CORPORA = Object.freeze(["fictional-v1", "bujo-learning-v1", "capture-fidelity-v1"]);
+const ADAPTER_CORPORA = Object.freeze(["locomo-v1"]);
+const ALL_CORPORA = Object.freeze([...CORPORA, ...ADAPTER_CORPORA]);
 
 export async function loadCorpus(name = "fictional-v1") {
   if (!CORPORA.includes(name)) throw new Error("invalid_corpus_name");
@@ -37,7 +39,8 @@ export async function loadCorpus(name = "fictional-v1") {
 function turnBounds(corpus) {
   const declared = corpus.turnsPerGroup ?? { min: 4, max: 4 };
   const { min, max } = declared;
-  if (!Number.isSafeInteger(min) || !Number.isSafeInteger(max) || min < 1 || max > 8 || min > max) {
+  const maximum = corpus.name === "locomo-v1" ? 64 : 8;
+  if (!Number.isSafeInteger(min) || !Number.isSafeInteger(max) || min < 1 || max > maximum || min > max) {
     throw new Error("invalid_turn_bounds");
   }
   return { min, max };
@@ -55,13 +58,18 @@ export function armsFor(corpus) {
 
 function text(value) { return typeof value === "string" && value.trim().length > 0; }
 function instant(value) { return text(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value; }
+export function questionsFor(group) {
+  if (Array.isArray(group.questions)) return group.questions;
+  return [{ id: group.id, source: group.source?.question, evaluation: group.evaluation }];
+}
+
 export function validateCorpus(corpus) {
-  if (corpus.schemaVersion !== 1 || !CORPORA.includes(corpus.name) || !Array.isArray(corpus.groups)) throw new Error("invalid_corpus");
+  if (corpus.schemaVersion !== 1 || !ALL_CORPORA.includes(corpus.name) || !Array.isArray(corpus.groups)) throw new Error("invalid_corpus");
   const bounds = turnBounds(corpus);
   armsFor(corpus);
   const ids = new Set();
   for (const group of corpus.groups) {
-    if (!/^[a-z-]+$/u.test(group.id) || ids.has(group.id) || !Object.hasOwn(LIMITS, group.split)) throw new Error("invalid_group");
+    if (!/^[a-z0-9-]+$/u.test(group.id) || ids.has(group.id) || !Object.hasOwn(LIMITS, group.split)) throw new Error("invalid_group");
     ids.add(group.id);
     if (!Array.isArray(group.source?.turns)
       || group.source.turns.length < bounds.min || group.source.turns.length > bounds.max) throw new Error("invalid_turns");
@@ -72,8 +80,15 @@ export function validateCorpus(corpus) {
       turns.add(turn.id);
       previous = Date.parse(turn.timestamp);
     }
-    if (!text(group.source.question?.text) || !instant(group.source.question.timestamp) || Date.parse(group.source.question.timestamp) < previous) throw new Error("invalid_question");
-    if (typeof group.evaluation?.answerable !== "boolean" || !Array.isArray(group.evaluation.accepted) || !Array.isArray(group.evaluation.forbidden) || !group.evaluation.evidenceTurnIds.every((id) => turns.has(id))) throw new Error("invalid_evaluation");
+    const questions = questionsFor(group);
+    if (questions.length === 0 || new Set(questions.map((question) => question.id)).size !== questions.length) throw new Error("invalid_questions");
+    for (const question of questions) {
+      if (!text(question.id) || !text(question.source?.text) || !instant(question.source.timestamp) || Date.parse(question.source.timestamp) < previous) throw new Error("invalid_question");
+      const evaluation = question.evaluation;
+      if (typeof evaluation?.answerable !== "boolean" || !Array.isArray(evaluation.accepted) || !evaluation.accepted.every(text)
+        || !Array.isArray(evaluation.forbidden) || !evaluation.forbidden.every(text)
+        || !Array.isArray(evaluation.evidenceTurnIds) || !evaluation.evidenceTurnIds.every((id) => turns.has(id))) throw new Error("invalid_evaluation");
+    }
   }
 }
 
@@ -93,15 +108,19 @@ export function serializableProfile(profile) {
 
 /** Closed projection: never forward annotations, unknown fields, or original group objects. */
 export function sourceOnly(group) {
-  return {
+  const source = {
     id: group.id,
     turns: group.source.turns.map(({ id, sessionId, timestamp, speaker, user, assistant }) => ({ id, sessionId, timestamp, speaker, user, assistant })),
-    question: { text: group.source.question.text, timestamp: group.source.question.timestamp },
+    ...(group.source.contextPolicy === "memory-only" ? { contextPolicy: "memory-only" } : {}),
   };
+  if (Array.isArray(group.questions)) {
+    return { ...source, questions: group.questions.map((question) => ({ id: question.id, text: question.source.text, timestamp: question.source.timestamp })) };
+  }
+  return { ...source, question: { text: group.source.question.text, timestamp: group.source.question.timestamp } };
 }
 
 export function contextFor(source, arm) {
-  const turns = arm === "full-history" ? source.turns : source.turns.slice(-1);
+  const turns = source.contextPolicy === "memory-only" && arm !== "full-history" ? [] : arm === "full-history" ? source.turns : source.turns.slice(-1);
   const messages = turns.flatMap((turn) => [
     { role: "user", name: turn.speaker, timestamp: turn.timestamp, content: turn.user },
     { role: "assistant", timestamp: turn.timestamp, content: turn.assistant },
@@ -111,19 +130,20 @@ export function contextFor(source, arm) {
   return messages;
 }
 
-export function makePlan({ corpus, sha256, split = "development", profile = null, codeRevision = null }) {
+export function makePlan({ corpus, sha256, split = "development", profile = null, codeRevision = null, limits = LIMITS[split], perCall = {} }) {
   if (!Object.hasOwn(LIMITS, split)) throw new Error("invalid_split");
   const groups = corpus.groups.filter((group) => group.split === split);
   if (groups.length === 0) throw new Error("empty_corpus_split");
   const turns = groups.reduce((sum, group) => sum + group.source.turns.length, 0);
+  const questions = groups.flatMap(questionsFor);
   const arms = armsFor(corpus);
   const manifest = {
     protocol: PROTOCOL, realBuildPolicy: BUILD_POLICY, corpus: corpus.name, corpusSha256: sha256, split, codeRevision,
     groupIds: groups.map((group) => group.id), arms, repeats: 1, order: "fixed-listed-order",
-    profile: serializableProfile(profile), limits: LIMITS[split],
-    workload: { questions: groups.length, trials: groups.length * arms.length, historicalTurnsPerMemoryArm: turns, captureStepsMaximum: turns * 2, readerStepsMaximum: groups.length * arms.length * 3 },
-    perCall: { readerOutputTokens: 512, extractorOutputTokens: 2048, readerEstimatedInputTokens: 16384, extractorEstimatedInputTokens: 8192, framingAndToolAllowance: 4096, callTimeoutMs: 60000, embeddingTimeoutMs: 10000, readinessTimeoutMs: 120000, cleanupTimeoutMs: 10000 },
-    limitations: ["controlled-text input estimates, not native payload limits", "transport attempt count unknown unless provider reports it", "fixed arm order; cache warmth uncontrolled", "one repeat; quality/human grading unmeasured"],
+    profile: serializableProfile(profile), limits,
+    workload: { questions: questions.length, trials: questions.length * arms.length, historicalTurnsPerMemoryArm: turns, captureStepsMaximum: turns * 2, readerStepsMaximum: questions.length * arms.length * 3 },
+    perCall: { readerOutputTokens: 512, extractorOutputTokens: 2048, readerEstimatedInputTokens: 16384, extractorEstimatedInputTokens: 8192, readerHistoryHeadroomMessages: 8, framingAndToolAllowance: 4096, callTimeoutMs: 60000, embeddingTimeoutMs: 10000, readinessTimeoutMs: 120000, cleanupTimeoutMs: 10000, ...perCall },
+    limitations: ["controlled-text token reservations are conservative ceilings, not actual provider spend", "native payload/context limits require an explicit capability probe", "transport attempt count unknown unless provider reports it", "fixed arm order; cache warmth uncontrolled", "one repeat; quality/human grading unmeasured"],
   };
   return { ...manifest, confirmation: digest(manifest) };
 }

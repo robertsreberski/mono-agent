@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { ARMS, sourceOnly, contextFor } from "./memory-e2e-dataset.mjs";
+import { ARMS, sourceOnly, contextFor, questionsFor } from "./memory-e2e-dataset.mjs";
 import { Budget, BenchmarkError, bounded, codeOf, failureKindOf, captureLlm, meteredEmbeddings, meteredRuntime } from "./memory-e2e-providers.mjs";
 import { lexicalDiagnostic, summarize } from "./memory-e2e-report.mjs";
 
@@ -90,6 +90,10 @@ async function directoryBytes(directory) {
 }
 
 export async function runBenchmark({ corpus, plan, directory, modules, providerFactory, kind, hooks = {} }) {
+  const selected = corpus.groups.filter((group) => plan.groupIds.includes(group.id));
+  if (selected.some((group) => Array.isArray(group.questions))) {
+    return runConversationBatchedBenchmark({ corpus, plan, directory, modules, providerFactory, kind, hooks });
+  }
   const budget = new Budget(plan);
   const trials = [], capture = [];
   const groups = corpus.groups.filter((group) => plan.groupIds.includes(group.id));
@@ -244,8 +248,9 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
         const captureFailureKind = captureFailureKindFor(budget.events, tag);
         if (captureFailureKind !== null) trial.captureFailureKind = captureFailureKind;
         if (store) trial.failureReadiness = store.queueSnapshot();
-        if (arm === "full-history" && trial.status === "context_budget_exceeded") {
-          trial.status = "not_applicable"; trial.reason = "full_history_does_not_fit";
+        if (arm === "full-history" && ["context_budget_exceeded", "native_context_limit"].includes(trial.status)) {
+          trial.status = "not_applicable";
+          trial.reason = trial.runtimeFailureKind === "context_limit" ? "native_context_limit" : "full_history_does_not_fit";
         }
       } finally {
         const cleanupEvent = { ...tag, stage: "cleanup", status: "started", durationMs: null };
@@ -264,9 +269,223 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
       if (!cleanupOk || budget.controller.signal.aborted || budget.providerStop !== null) break trialsLoop;
     }
     return {
-      manifest: { ...plan, executionKind: kind, reservations: budget.used, actualTransportAttempts: null, inputAccounting: "estimated-controlled-text-plus-allowance", providerQuality: "unmeasured", trialsNotStarted: plan.workload.trials - trials.length, admissionStopped: budget.providerStop !== null || budget.admissionStopped || budget.controller.signal.aborted, providerStop: budget.providerStop },
+      manifest: { ...plan, executionKind: kind, reservations: budget.used, actualTransportAttempts: null, inputAccounting: "conservative-reservations-chat-framing-and-bounded-embedding-text-not-actual-spend", providerQuality: "unmeasured", trialsNotStarted: plan.workload.trials - trials.length + trials.filter((trial) => trial.status === "unstarted").length, admissionStopped: budget.providerStop !== null || budget.admissionStopped || budget.controller.signal.aborted, providerStop: budget.providerStop },
       trials, capture, events: budget.events, summary: summarize(trials, budget.events, kind),
       review: { status: "pending", reviewerKind: null, rubric: "Judge source-supported correctness, stale claims, abstention, preference usefulness and capture propositions. A small stratified sample suffices; AI review is not human annotation.", groups: groups.map((group) => ({ groupId: group.id, source: sourceOnly(group), evaluation: group.evaluation })) },
+    };
+  } finally { budget.close(); }
+}
+
+/**
+ * Conversation-batched variant for external adapters: capture a conversation
+ * once per memory arm, then answer each selected question with a fresh harness
+ * history while the same disposable store remains open.
+ */
+async function runConversationBatchedBenchmark({ corpus, plan, directory, modules, providerFactory, kind, hooks = {} }) {
+  if (plan.arms.some((arm) => !["full-history", "bujo"].includes(arm))) throw new BenchmarkError("batched_arms_unsupported");
+  const budget = new Budget(plan);
+  const trials = [], capture = [];
+  const groups = corpus.groups.filter((group) => plan.groupIds.includes(group.id));
+  const event = async (tag, stage, fn) => {
+    const row = { ...tag, stage, status: "started", durationMs: null };
+    budget.events.push(row);
+    const start = performance.now();
+    try { const result = await budget.wait(Promise.resolve().then(() => { budget.reserve({}); return fn(); })); row.status = "completed"; return result; }
+    catch (error) { row.status = codeOf(error); throw error; }
+    finally { row.durationMs = performance.now() - start; }
+  };
+  let stop = false;
+  try {
+    for (const group of groups) for (const arm of plan.arms) {
+      if (stop || budget.providerStop !== null) { stop = true; break; }
+      const source = sourceOnly(group);
+      const providerSource = { id: source.id, turns: source.turns, ...(source.contextPolicy === undefined ? {} : { contextPolicy: source.contextPolicy }) };
+      const questions = questionsFor(group);
+      if (questions.length === 0) continue;
+      const armTrials = questions.map((question) => ({
+        groupId: group.id, questionId: question.id, arm, category: question.evaluation.category,
+        status: "unstarted", reason: null, answer: null, automatic: [], tools: [], warnings: [], readiness: [], inventory: [],
+        semanticGrade: null, humanGrade: null, runtimeFailureKind: null, captureFailureKind: null,
+      }));
+      trials.push(...armTrials);
+      const work = await mkdtemp(join(directory, "work-"));
+      let providers, store, ingest, service;
+      const readers = [];
+      let cleanupOk = true;
+      let now = new Date(source.turns[0].timestamp);
+      const memoryRoot = join(work, "memory");
+      const sessionsRoot = join(work, "sessions");
+      const workspace = join(work, "reader-workspace");
+      const identityPath = join(workspace, "IDENTITY.md");
+      const sharedWarnings = [];
+      const sharedReadiness = [];
+      const sharedInventory = [];
+      let sharedHealth;
+      let sharedStorageBytes;
+      const baseTag = { groupId: group.id, arm };
+      try {
+        budget.reserve({});
+        await mkdir(workspace, { mode: 0o700 });
+        await mkdir(sessionsRoot, { mode: 0o700 });
+        await writeFile(identityPath, "You are a helpful assistant. Answer the current request concisely using available evidence. Do not invent personal details.\n", { mode: 0o600 });
+        providers = await event(baseTag, "provider_setup", () => providerFactory({ workspace, sessionsRoot, tag: baseTag, source: providerSource, modules }));
+        if (providers.kind !== kind) throw new BenchmarkError("provider_mode_mismatch");
+        const base = {
+          identityPath, cwd: workspace, model: providers.readerModel, now: () => now,
+          historyStore: modules.harness.createInMemoryHistoryStore({ maxMessages: 100 }),
+          onMemoryWarning: () => sharedWarnings.push("memory_warning"),
+          createRunId: (() => { let run = 0; return () => `${group.id}-${arm}-${++run}`; })(),
+          runtimeOptions: { piSessionsRoot: sessionsRoot, compaction: { enabled: false }, piMaxRetries: 0, effort: "none" },
+          toolPolicy: modules.harness.createToolPolicy({ allowedTools: [] }),
+        };
+        if (arm === "bujo") {
+          const embeddings = meteredEmbeddings(providers.embeddings, { budget, tag: baseTag });
+          const llm = captureLlm(providers.extractor, { model: providers.extractorModel, workspace, sessionsRoot, budget, tag: baseTag, capture: (entry) => capture.push(entry) });
+          await event(baseTag, "setup", () => modules.bujo.safeRebuildMemoryIndex({ root: memoryRoot, tier: arm, embeddings, dim: providers.dim }));
+          store = modules.bujo.createBujoMemoryStore({ root: memoryRoot, tier: arm, clock: () => now, embeddings, dim: providers.dim, llm, logger: { warn: () => sharedWarnings.push("store_warning") }, backgroundDrainTimeoutMs: 10000 });
+          hooks.store?.(store, baseTag);
+          let historicalAssistant = "";
+          let admitted = 0;
+          for (const turn of source.turns) {
+            now = new Date(turn.timestamp);
+            historicalAssistant = turn.assistant;
+            let admissionStarted = 0;
+            ingest = ingest ?? modules.harness.createAgentHarness({
+              ...base, runtime: { async run() { return { text: historicalAssistant }; } },
+              memoryWriteMode: "capture",
+              memory: {
+                async load() { return undefined; },
+                async appendHostSummary() { throw new BenchmarkError("legacy_capture_used"); },
+                async persistCompletedTurn(completed) {
+                  hooks.admission?.(completed, baseTag);
+                  admissionStarted = performance.now();
+                  const result = await event(baseTag, "admission", () => store.persistCompletedTurn(completed));
+                  if (result.admissionStatus !== "duplicate") admitted += 1;
+                  return result;
+                },
+              },
+            });
+            const response = await event(baseTag, "replay", () => ingest.run({ conversationId: `${group.id}-${turn.sessionId}`, userMessage: turn.user, sender: { displayName: turn.speaker }, abortSignal: budget.controller.signal }));
+            if (response.failure || sharedWarnings.includes("memory_warning")) throw new BenchmarkError("admission_failed");
+            const snapshot = await event(baseTag, "readiness_wait", () => awaitReady(store, plan.perCall.readinessTimeoutMs, budget));
+            budget.events.push({ ...baseTag, stage: "admission_to_ready", status: "completed", durationMs: performance.now() - admissionStarted });
+            if (snapshot.intake.resolved < admitted) throw new BenchmarkError("admission_unaccounted");
+            sharedReadiness.push({ turnId: turn.id, snapshot });
+            const db = modules.store.openMemoryDb({ path: modules.bujo.resolveActiveMemoryDbPath(memoryRoot), readOnly: true, embeddings, dim: providers.dim, clock: () => now });
+            try {
+              const inventory = { ...baseTag, stage: "inventory", turnId: turn.id, records: db.allMemories().map(({ id, text, status, createdAt }) => ({ id, text, status, createdAt })) };
+              capture.push(inventory); sharedInventory.push(inventory);
+            } finally { db.close(); }
+          }
+          sharedHealth = await event(baseTag, "audit", async () => modules.bujo.auditBujoMemoryHealth({ root: memoryRoot, mode: arm, now, configuredEmbeddingModel: embeddings.id, configuredDimension: providers.dim }));
+          if (sharedHealth.status !== "healthy") throw new BenchmarkError("health_not_ready");
+          sharedStorageBytes = await directoryBytes(memoryRoot);
+          const recall = store.recall.bind(store);
+          store.recall = async (...args) => await event(baseTag, "backend_retrieval", () => recall(...args));
+          service = new modules.retrieval.MemoryRetrievalService(store);
+        }
+        for (const [index, question] of questions.entries()) {
+          const trial = armTrials[index];
+          const tag = { groupId: group.id, questionId: question.id, arm };
+          let reader;
+          trial.status = "started";
+          try {
+            now = new Date(question.source.timestamp);
+            const projectedMessages = source.turns.length * 2;
+            const history = modules.harness.createInMemoryHistoryStore({
+              maxMessages: projectedMessages + plan.perCall.readerHistoryHeadroomMessages,
+            });
+            await history.append(`question-${question.id}`, contextFor(source, arm));
+            const extension = arm === "bujo" ? modules.extensions.composeRuntimeOptionExtensions([
+              modules.retrieval.createSharedMemoryRecallRuntimeExtension(service, { onUnavailable: () => trial.warnings.push("recall_unavailable") }),
+              modules.journal.createMemoryJournalRuntimeExtension(service, { clock: () => now, env: { TZ: "UTC" }, onUnavailable: () => trial.warnings.push("journal_unavailable") }),
+            ]) : undefined;
+            const toolStarts = new Map();
+            const metered = meteredRuntime(providers.reader, { budget, stage: "reader", tag });
+            reader = modules.harness.createAgentHarness({
+              ...base, historyStore: history, memory: service, memoryWriteMode: "disabled",
+              toolPolicy: modules.harness.createToolPolicy({ allowedTools: arm === "bujo" ? ["MemoryRecall", "MemoryJournal"] : [] }),
+              runtimeOptionsForRequest: extension,
+              runtime: { async run(system, options) {
+                if (trial.warnings.some((warning) => warning.endsWith("unavailable"))) throw new BenchmarkError("tool_unavailable");
+                hooks.readerInput?.(system, options, tag);
+                const wrapped = { ...options, toolLifecycleSink: async (value) => {
+                  if (value.phase === "invocation") toolStarts.set(value.toolCallId, performance.now());
+                  else {
+                    const started = toolStarts.get(value.toolCallId);
+                    budget.events.push({ ...tag, stage: "explicit_tool", status: value.state === "success" ? "completed" : "tool_failed", durationMs: started === undefined ? null : performance.now() - started });
+                  }
+                  trial.tools.push({ phase: value.phase, toolCallId: value.toolCallId, toolName: value.toolName ?? null, ...(value.phase === "invocation" ? { arguments: value.arguments } : { state: value.state, content: value.content }) });
+                  return await options.toolLifecycleSink?.(value);
+                } };
+                try { return await metered.run(system, wrapped); }
+                catch (error) { trial.runtimeFailure = codeOf(error); trial.runtimeFailureKind = failureKindOf(error); throw error; }
+              } },
+            });
+            readers.push(reader);
+            const response = await event(tag, "question_total", () => reader.run({ conversationId: `question-${question.id}`, userMessage: question.source.text, abortSignal: budget.controller.signal }));
+            if (response.failure) throw new BenchmarkError(trial.runtimeFailure ?? "reader_failed");
+            trial.answer = response.text;
+            trial.lexicalDiagnostic = lexicalDiagnostic(response.text, question.evaluation, kind);
+            trial.status = "completed";
+          } catch (error) {
+            trial.status = codeOf(error);
+            if (arm === "full-history" && ["context_budget_exceeded", "native_context_limit"].includes(trial.status)) {
+              trial.status = "not_applicable";
+              trial.reason = trial.runtimeFailureKind === "context_limit" ? "native_context_limit" : "full_history_does_not_fit";
+            }
+          }
+          if (budget.controller.signal.aborted || budget.providerStop !== null) break;
+        }
+        const stopReason = budget.providerStop?.code ?? (budget.controller.signal.aborted ? "runtime_budget_exhausted" : null);
+        if (stopReason !== null) for (const trial of armTrials.filter((value) => value.status === "unstarted")) {
+          trial.reason = `batch_stopped_before_start:${stopReason}`;
+        }
+        for (const trial of armTrials) {
+          trial.warnings.push(...sharedWarnings);
+          trial.readiness = sharedReadiness;
+          trial.inventory = sharedInventory;
+          if (sharedHealth !== undefined) trial.health = sharedHealth;
+          if (sharedStorageBytes !== undefined) trial.storageBytes = sharedStorageBytes;
+        }
+      } catch (error) {
+        const status = codeOf(error);
+        const captureFailureKind = captureFailureKindFor(budget.events, baseTag);
+        for (const trial of armTrials) {
+          if (trial.status === "started") {
+            trial.status = status;
+            if (captureFailureKind !== null) trial.captureFailureKind = captureFailureKind;
+            if (store) trial.failureReadiness = store.queueSnapshot();
+          } else if (trial.status === "unstarted") {
+            trial.reason = `batch_failed_before_start:${status}`;
+          }
+        }
+      } finally {
+        const cleanupEvent = { ...baseTag, stage: "cleanup", status: "started", durationMs: null };
+        const cleanupStarted = performance.now(); budget.events.push(cleanupEvent);
+        const compositeReader = { dispose: async () => {
+          const results = await Promise.allSettled(readers.map((value) => value.dispose()));
+          if (results.some((result) => result.status === "rejected")) throw new BenchmarkError("cleanup_failed");
+        } };
+        try {
+          await cleanupTrial({ reader: compositeReader, ingest, service, store, providers, budget }, plan.perCall.cleanupTimeoutMs ?? 10000);
+          cleanupEvent.status = "completed";
+        } catch (error) {
+          cleanupEvent.status = codeOf(error); cleanupOk = false;
+          for (const trial of armTrials) {
+            if (trial.status === "unstarted") trial.reason = `${trial.reason ?? "batch_stopped_before_start"};cleanup_failed`;
+            else { trial.primaryStatus = trial.status; trial.status = "cleanup_failed"; }
+          }
+        } finally { cleanupEvent.durationMs = performance.now() - cleanupStarted; }
+        if (cleanupOk) await rm(work, { recursive: true, force: true });
+        for (const trial of armTrials) trial.cleanup = cleanupOk ? "removed_owned_store" : "retained_unsettled_owned_store";
+      }
+      if (!cleanupOk || budget.controller.signal.aborted || budget.providerStop !== null) stop = true;
+    }
+    return {
+      manifest: { ...plan, executionKind: kind, reservations: budget.used, actualTransportAttempts: null, inputAccounting: "conservative-reservations-chat-framing-and-bounded-embedding-text-not-actual-spend", providerQuality: "unmeasured", trialsNotStarted: plan.workload.trials - trials.length + trials.filter((trial) => trial.status === "unstarted").length, admissionStopped: budget.providerStop !== null || budget.admissionStopped || budget.controller.signal.aborted, providerStop: budget.providerStop },
+      trials, capture, events: budget.events, summary: summarize(trials, budget.events, kind),
+      review: { status: "pending", reviewerKind: null, rubric: "Judge source-supported correctness, stale claims, abstention, preference usefulness and capture propositions. AI review is not human annotation.", groups: groups.map((group) => ({ groupId: group.id, source: sourceOnly(group), questions: questionsFor(group).map((question) => ({ id: question.id, evaluation: question.evaluation })) })) },
     };
   } finally { budget.close(); }
 }
