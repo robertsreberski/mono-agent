@@ -217,6 +217,41 @@ describe("strict completed-turn reconciliation", () => {
     }
   });
 
+  it("accepts 280-code-point replacements and rejects 281 as a whole", async () => {
+    const exact = await reconcileFixture();
+    try {
+      const text = "x".repeat(280);
+      const actions = await reconcileBatch(exact.candidates, {
+        ...exact.deps,
+        strictModelOutput: true,
+        llm: {
+          id: "exact-boundary",
+          complete: async () => JSON.stringify([{ index: 0, action: "update", targetId: "TARGET", text }]),
+        },
+      });
+      expect(actions.map((action) => action?.kind)).toEqual(["update", "add"]);
+      expect(exact.db.get("TARGET")?.text).toBe(text);
+    } finally {
+      exact.db.close();
+    }
+
+    const over = await reconcileFixture();
+    try {
+      await expect(reconcileBatch(over.candidates, {
+        ...over.deps,
+        strictModelOutput: true,
+        llm: {
+          id: "over-boundary",
+          complete: async () => JSON.stringify([{ index: 0, action: "update", targetId: "TARGET", text: "x".repeat(281) }]),
+        },
+      })).rejects.toMatchObject({ name: "MemoryModelOutputError" });
+      expect(over.db.count()).toBe(1);
+      expect(over.db.get("TARGET")?.text).toBe("Morgan prefers strict durable capture");
+    } finally {
+      over.db.close();
+    }
+  });
+
   it("states the exact per-action object contract that strict reconciliation enforces", async () => {
     const fixture = await reconcileFixture();
     let reconcilePrompt = "";

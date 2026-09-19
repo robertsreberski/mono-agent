@@ -203,6 +203,13 @@ profile remains blocked: the existing Pi OpenAI-compatible Ollama path cannot
 prove redirect rejection, native `num_ctx`, or silent-truncation behavior.
 Hosted Luna does not weaken or bypass that local-only checkpoint.
 
+A bounded hosted development attempt demonstrated the fail-closed path: one
+strict reconciliation replacement exceeded its declared 280-code-point limit
+by one code point. Capture was marked not ready, every paired BuJo question
+remained unstarted, and held-out evaluation was withheld without retrying or
+changing the prompt/caps. The completed full-history executions from that
+partial attempt are not an arm comparison or a LoCoMo quality result.
+
 LoCoMo limits reserve chat controlled-text/framing separately from bounded
 embedding text (one 8×160-code-point candidate batch plus one 8×280-code-point
 reconciled-write batch per session, and three 4,000-code-point recall queries per
