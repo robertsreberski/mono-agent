@@ -23,6 +23,10 @@ const PORT = 4331;
 const URL = `http://127.0.0.1:${PORT}/`;
 
 const SHOTS = [
+  {name:"blocks-expanded-desktop-1440x1000.png",width:1440,height:1000,story:.8},
+  {name:"blocks-expanded-mobile-390x844.png",width:390,height:844,story:.7},
+  {name:"blocks-desktop-1440x1000.png",width:1440,height:1000,scrollTo:".building-blocks"},
+  {name:"blocks-mobile-390x844.png",width:390,height:844,scrollTo:".building-blocks"},
   { name: "console-desktop-1440x1000.png", width:1440,height:1000,scrollTo:"#console" },
   { name: "console-mobile-390x844.png", width:390,height:844,scrollTo:"#console" },
   { name: "menu-mobile-390x844.png", width:390,height:844,menu:true },
@@ -108,8 +112,8 @@ async function main() {
         }
         if (shot.story !== undefined) {
           await page.evaluate((progress) => {
-            const rect = document.querySelector('#console').getBoundingClientRect();
-            window.scrollTo({ top: scrollY + rect.top + (rect.height - innerHeight) * progress, behavior: 'instant' });
+            const rect = document.querySelector('[data-block-story]').getBoundingClientRect();
+            window.scrollTo({ top: scrollY + rect.top - innerHeight*.35 + (rect.height - innerHeight*.55) * progress, behavior: 'instant' });
           }, shot.story);
           await page.waitForTimeout(150);
         }
@@ -138,7 +142,7 @@ async function main() {
             requestAnimationFrame(step);
           });
           await move(0, 1200);
-          const layout = document.querySelector('#console');
+          const layout = document.querySelector('[data-block-story]');
           const start = scrollY + layout.getBoundingClientRect().top;
           await move(start, 2200);
           await move(start + layout.getBoundingClientRect().height - innerHeight, 15000);

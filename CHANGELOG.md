@@ -12,7 +12,7 @@
   illustrated workflow explorer supports keyboard tabs, with no-JavaScript
   content, reduced-motion artwork, native FAQ disclosures, and install-command
   copying. A shorter mobile-first layout adds a compact disclosure menu, a
-  refined mark and CTAs, restrained blueprint motion, and real console UI
+  refined mark and CTAs, a compact scroll-driven building-block composition, and real desktop console UI
   imagery with clearly labelled synthetic data and source-build availability.
   Source only; the site is not deployed yet.
 

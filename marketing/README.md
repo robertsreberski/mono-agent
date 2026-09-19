@@ -53,29 +53,38 @@ hijacks scrolling. Readable text does not fade through low-contrast states.
 
 ## Mobile composition and console evidence
 
-The page deliberately has no pinned scroll narrative. A finite, reduced-motion-aware
-connection reveal ties the JSON blueprint to its callouts. The mobile menu is a
-keyboard-operable disclosure; links remain visible without JavaScript. JSON stays
-server-rendered inside a native details element, initially collapsed on phones.
+The JSON configuration is always rendered visibly, including on phones without
+JavaScript. Mobile hero artwork keeps its full aspect ratio and precedes the CTAs.
+The compact four-chapter building-block story uses passive, on-demand scroll frames:
+its illustrated stack opens and highlights foundation, connections, execution and
+continuity alongside twelve linked capabilities. Pause, runtime reduced-motion and
+no-JS paths retain the complete readable content; scrolling is never intercepted.
+Workflows identify the useful components and the repeated work they help remove.
 
-Console screenshots are real React UI rendered by the existing isolated browser
-fixtures, with **synthetic example data**, not a live user's console or evidence of
-model execution. The section labels the current source build and links release status.
-Reproduce the input captures from repository root:
+The console image is the actual desktop App, Messages and Composer, captured at
+1280×900 CSS pixels with 1.5× device scale (1920×1350 pixels), encoded losslessly.
+It is never replaced with a phone screenshot or cropped on small screens; the
+full-resolution link supports closer inspection. **Conversation, API and event
+connection state are synthetic**. This proves UI rendering, not live inference,
+backend availability, or model compatibility. Current-source features link release
+availability explicitly.
+
+Reproduce it after installing webapp dependencies and Chromium:
 
 ```bash
-VITE_PROJECT_SHOTS="$PWD/marketing/output/console-capture" pnpm --dir packages/web/webapp run test:browser -- src/Project.browser.test.tsx
+node marketing/scripts/capture-console.mjs
 ```
 
-The command currently runs the whole browser suite (162 tests), including the capture
-fixture. `dashboard-projects-desktop.png` is cropped to 1280×560, removing empty lower
-space; its mobile counterpart is resized to 390px wide. Both become quality-85 WebP
-assets under `public/console-*.webp`. No production console routes or private data
-are used. The fixture represents project/conversation organization, not every control.
+The script derives a temporary browser fixture from the existing ModelMarkers suite,
+uses the genuine App/provider tree and its three assertions, and removes temporary
+files in `finally`. It refuses to overwrite existing files. Synthetic EventSource
+open events produce the deliberately configured fixture connection state without
+contacting a running console. The asset is `marketing/public/console-desktop.webp`.
+Review this recipe if the source fixture changes. No production data is used.
 
-`pnpm run screenshots` captures the marketing hero, open mobile menu, blueprint,
-console, workflows and setup at desktop1440×1000 and mobile390×844. No screenshot
-dimension exceeds2000px. Output stays gitignored.
+`pnpm run screenshots` captures desktop1440×1000 and mobile390×844 views, including
+both building-block states. Add `-- --video` for a genuine browser scroll recording.
+No screenshot dimension exceeds2000px. Output stays gitignored.
 
 ## Local development
 

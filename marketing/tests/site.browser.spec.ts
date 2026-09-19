@@ -135,7 +135,7 @@ for (const width of [320, 768, 1024]) {
     await page.goto("/", { waitUntil: "networkidle" });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await expect(page.getByRole("figure").filter({ hasText: "mono-agent.config.json" })).toBeVisible();
-    const examples = page.locator(".example-prompt");
+    const examples = page.locator(".workflow-recipe");
     await expect(examples).toHaveCount(3);
   });
 }
@@ -266,8 +266,6 @@ for (const width of [320, 390, 640]) {
     await menu.click(); await nav.getByRole('link', {name:'Console', exact:true}).click();
     await expect(nav).not.toBeVisible();
     await expect(page.locator('#console')).toBeInViewport();
-    await expect(page.locator('.blueprint-code')).not.toHaveAttribute('open');
-    await page.locator('.blueprint-code summary').click();
     await expect(page.locator('#config-blueprint-json')).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   });
@@ -279,17 +277,16 @@ test('console screenshot is real component evidence with disclosed synthetic sta
   const result = await new AxeBuilder({page}).withTags(WCAG_TAGS).analyze();
   expect(result.violations).toEqual([]);
 });
-test('mobile document is shorter and has no pinned scroll sequence', async ({page}) => {
+test('mobile document keeps a bounded reading length with visible configuration', async ({page}) => {
   await page.setViewportSize({width:390,height:844}); await page.goto('/');
   await expect(page.locator('[data-scroll-story]')).toHaveCount(0);
-  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThan(6500);
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThan(9200);
 });
 
 test('navigation and blueprint remain usable without JavaScript', async ({browser}) => {
   const context = await browser.newContext({javaScriptEnabled:false,viewport:{width:390,height:844}});
   const page = await context.newPage(); await page.goto('/');
   await expect(page.getByRole('navigation',{name:'Sections'})).toBeVisible();
-  await page.locator('.blueprint-code summary').click();
   await expect(page.locator('#config-blueprint-json')).toBeVisible();
   await context.close();
 });
@@ -301,18 +298,54 @@ test('blueprint reveal respects reduced motion and deep links stay visible', asy
   await expect(page.locator('#workflow-research')).toBeInViewport();
 });
 
-test('building blocks stay low-key until opened and disclose source availability', async ({page}) => {
+test('building blocks stay readable and disclose source availability', async ({page}) => {
   await page.goto('/');
   const blocks=page.locator('.building-blocks');
-  await expect(blocks).not.toHaveAttribute('open');
-  await blocks.locator('summary').click();
-  await expect(blocks.locator('li')).toHaveCount(12);
+  await expect(blocks.locator('dt')).toHaveCount(12);
   await expect(blocks).toContainText('Subagents');
   await expect(blocks).toContainText('Background jobs');
   await expect(blocks).toContainText('current source build');
 });
-test('console full-size link matches the displayed mobile screenshot', async ({page}) => {
+test('desktop console stays sharp and uncropped on phones', async ({page}) => {
   await page.setViewportSize({width:390,height:844}); await page.goto('/');
-  await expect(page.getByRole('link',{name:'Open full mobile console screenshot'})).toHaveAttribute('href','/console-mobile.webp');
-  await expect(page.getByRole('link',{name:'Open full desktop console screenshot'})).not.toBeVisible();
+  const image=page.locator('.console-shot img');
+  await expect(page.getByRole('link',{name:'Open full resolution desktop console screenshot'})).toHaveAttribute('href','/console-desktop.webp');
+  await image.scrollIntoViewIfNeeded();
+  await expect.poll(()=>image.evaluate((el: HTMLImageElement)=>el.naturalWidth)).toBe(1920);
+  const geometry=await image.evaluate((el: HTMLImageElement)=>({width:el.clientWidth,height:el.clientHeight,ratio:el.naturalWidth/el.naturalHeight}));
+  expect(geometry.width/geometry.height).toBeCloseTo(geometry.ratio,1);
 });
+test('mobile hero is complete and sits above the CTA', async ({page}) => {
+  await page.setViewportSize({width:390,height:844}); await page.goto('/');
+  const image=await page.locator('.hero-art img').boundingBox();
+  const cta=await page.locator('.hero-actions').boundingBox();
+  expect(image!.y+image!.height).toBeLessThanOrEqual(cta!.y+1);
+  expect(image!.width/image!.height).toBeCloseTo(1.5,1);
+  expect(await page.locator('.hero-art img').evaluate(el=>getComputedStyle(el).maskImage)).toBe('none');
+});
+for (const width of [390,1440]) {
+  test(`building block animation reverses, pauses and respects live motion changes at ${width}px`, async ({page}) => {
+    await page.setViewportSize({width,height:900}); await page.goto('/');
+    const story=page.locator('[data-block-story]');
+    const progress=()=>story.evaluate(el=>Number((el as HTMLElement).style.getPropertyValue('--block-progress')));
+    const move=async (fraction:number)=>{
+      await story.evaluate((el,f)=>{const r=el.getBoundingClientRect();scrollTo({top:scrollY+r.top-innerHeight*.35+f*(r.height-innerHeight*.55),behavior:'instant'});},fraction);
+    };
+    await move(.15); await expect.poll(progress).toBeCloseTo(.15,1);
+    await expect(story).toHaveAttribute('data-phase','0');
+    await move(.8); await expect.poll(progress).toBeCloseTo(.8,1);
+    await expect(story).toHaveAttribute('data-phase','3');
+    await move(.15); await expect.poll(progress).toBeCloseTo(.15,1);
+    await expect(story).toHaveAttribute('data-phase','0');
+    await page.getByRole('button',{name:'Pause motion'}).click();
+    await expect(story).toHaveAttribute('data-motion','false');
+    const paused=await progress(); await move(.7); expect(await progress()).toBe(paused);
+    await page.getByRole('button',{name:'Resume motion'}).click();
+    await expect(story).toHaveAttribute('data-motion','true');
+    await page.emulateMedia({reducedMotion:'reduce'});
+    await expect(story).toHaveAttribute('data-motion','false');
+    await expect(page.locator('.blocks-motion')).not.toBeVisible();
+    await page.emulateMedia({reducedMotion:'no-preference'});
+    await expect(story).toHaveAttribute('data-motion','true');
+  });
+}

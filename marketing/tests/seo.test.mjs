@@ -224,7 +224,7 @@ describe("marketing built output", () => {
   });
 
   it("ships bounded real-console captures with provenance", async () => {
-    for (const name of ["console-desktop.webp", "console-mobile.webp"]) {
+    for (const name of ["console-desktop.webp"]) {
       const image = join(DIST, name);
       const meta = await sharp(image).metadata();
       assert.ok(meta.width <= 2000 && meta.height <= 2000);

@@ -91,8 +91,6 @@ if (menu && navigation) {
   document.addEventListener('click', event => { if (!event.target.closest('.site-header')) closeMenu(); });
   compact.addEventListener('change', () => closeMenu());
 }
-const blueprint = document.querySelector('.blueprint-code');
-if (blueprint && !compact.matches) blueprint.open = true;
 // A single drawn connection through the blueprint. Never a scroll-jacked scene.
 const configuration = document.querySelector('#configuration');
 if (configuration && 'IntersectionObserver' in window) {
@@ -103,4 +101,43 @@ if (configuration && 'IntersectionObserver' in window) {
     }
   }, { threshold: .15 });
   observer.observe(configuration);
+}
+
+// A short scroll-led composition: reversible, no wheel interception, no loop.
+const story = document.querySelector('[data-block-story]');
+if (story) {
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+  const toggle = story.querySelector('.blocks-motion');
+  let paused = false;
+  let frame = 0;
+  const update = () => {
+    frame = 0;
+    const rect = story.getBoundingClientRect();
+    const progress = Math.max(0, Math.min(1, (innerHeight * .35 - rect.top) / Math.max(1, rect.height - innerHeight * .55)));
+    story.style.setProperty('--block-progress', String(progress));
+    story.dataset.phase = String(Math.min(3, Math.floor(progress * 4)));
+  };
+  const requestUpdate = () => {
+    if (reduce.matches || paused || frame) return;
+    const rect = story.getBoundingClientRect();
+    if (rect.bottom < 0 || rect.top > innerHeight) return;
+    frame = requestAnimationFrame(update);
+  };
+  const preference = () => {
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
+    story.dataset.motion = String(!reduce.matches && !paused);
+    toggle.hidden = reduce.matches;
+    if (!reduce.matches && !paused) update();
+  };
+  toggle.addEventListener('click', () => {
+    paused = !paused;
+    toggle.setAttribute('aria-pressed', String(paused));
+    toggle.textContent = paused ? 'Resume motion' : 'Pause motion';
+    preference();
+  });
+  reduce.addEventListener('change', preference);
+  addEventListener('scroll', requestUpdate, { passive:true });
+  addEventListener('resize', requestUpdate, { passive:true });
+  preference();
 }
