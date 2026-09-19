@@ -371,14 +371,24 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
           },
         };
       }
-      const hitText = hits.map((hit) => `${hit.score.toFixed(3)}  ${hit.record.text}`).join("\n");
+      const hitText = hits
+        .map((hit) => `${hit.score.toFixed(3)}  ${lifecyclePrefix(hit)}${hit.record.text}`)
+        .join("\n");
       const text = degraded
         ? `Memory recall is degraded: showing lexical-only matches because semantic retrieval is unavailable.\n${hitText}`
         : hitText;
       return {
         content: [{ type: "text", text }],
         structuredContent: {
-          hits: hits.map((hit) => ({ id: hit.record.id, score: hit.score, text: hit.record.text })),
+          hits: hits.map((hit) => ({
+            id: hit.record.id,
+            score: hit.score,
+            text: hit.record.text,
+            // Optional on the hit contract: a remote backend that supplies
+            // neither keeps exactly its previous result shape.
+            ...(hit.record.type === undefined ? {} : { type: hit.record.type }),
+            ...(hit.record.status === undefined ? {} : { status: hit.record.status }),
+          })),
           ...(degraded ? {
             degraded: true,
             retrievalMode: "lexical_only" as const,
@@ -389,6 +399,23 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     },
   );
   return server;
+}
+
+/**
+ * Concise lifecycle marker for one rendered hit.
+ *
+ * Recall surfaces `done`, `scheduled` and `migrated` records alongside open
+ * ones, so text alone lets a completed or deferred item read as a current
+ * fact — the same misrepresentation the automatic recall block avoids by
+ * rendering a status-bearing bullet marker (`memory/src/bujo/recall.ts`).
+ *
+ * Only a non-open state is labelled. An ordinary open record renders exactly as
+ * before, so the common case costs no extra tokens, and a backend that supplies
+ * no status keeps its previous output byte-for-byte.
+ */
+function lifecyclePrefix(hit: MemoryRecallHit): string {
+  const status = hit.record.status;
+  return status === undefined || status === "open" ? "" : `[${status}] `;
 }
 
 function clampLimit(limit: number | undefined, fallback: number): number {
