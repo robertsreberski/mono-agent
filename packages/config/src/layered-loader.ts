@@ -73,6 +73,9 @@ const JSON_RUNTIME_SOURCES: readonly {
   { env: "MONO_AGENT_MODEL", path: "runtime.model", read: (json) => json.runtime?.model },
   { env: "MONO_AGENT_FALLBACKS_JSON", path: "runtime.fallbacks", read: (json) => json.runtime?.fallbacks },
   { env: "MONO_AGENT_SUBAGENTS_JSON", path: "subagents", read: (json) => json.subagents },
+  { env: "MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV", path: "tools.web.search.parallel.apiKeyEnv", read: (json) => json.tools?.web?.search?.parallel?.apiKeyEnv },
+  { env: "MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV", path: "tools.web.fetch.parallel.apiKeyEnv", read: (json) => json.tools?.web?.fetch?.parallel?.apiKeyEnv },
+  { env: "MONO_AGENT_WEB_FETCH_PROVIDER", path: "tools.web.fetch.provider", read: (json) => json.tools?.web?.fetch?.provider },
   { env: "MONO_AGENT_WEB_SEARCH_BACKEND", path: "tools.web.search.backend", read: (json) => json.tools?.web?.search?.backend },
   { env: "MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN", path: "tools.web.search.maxRequestsPerRun", read: (json) => json.tools?.web?.search?.maxRequestsPerRun },
   { env: "MONO_AGENT_WEB_SEARCH_ENDPOINT", path: "tools.web.search.endpoint", read: (json) => json.tools?.web?.search?.endpoint },
@@ -1001,7 +1004,7 @@ export function layerJsonOntoEnv(
     fromJson.MONO_AGENT_WEB_COORDINATION = json.tools.web.coordination;
   }
   if (json.tools?.web?.search?.backend !== undefined) {
-    fromJson.MONO_AGENT_WEB_SEARCH_BACKEND = json.tools.web.search.backend;
+    fromJson.MONO_AGENT_WEB_SEARCH_BACKEND = typeof json.tools.web.search.backend === "string" ? json.tools.web.search.backend : JSON.stringify(json.tools.web.search.backend);
   }
   if (json.tools?.web?.search?.maxRequestsPerRun !== undefined) {
     fromJson.MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN = String(json.tools.web.search.maxRequestsPerRun);
@@ -1011,6 +1014,10 @@ export function layerJsonOntoEnv(
   }
   if (json.tools?.web?.search?.searxng?.endpoint !== undefined) {
     fromJson.MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT = json.tools.web.search.searxng.endpoint;
+  }
+  // Preserve block presence for the old-auto migration hint, including {}.
+  if (json.tools?.web?.search?.ollama !== undefined) {
+    fromJson.MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL = json.tools.web.search.ollama.baseUrl ?? "http://127.0.0.1:11434";
   }
   if (json.tools?.web?.search?.ollama?.baseUrl !== undefined) {
     fromJson.MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL = json.tools.web.search.ollama.baseUrl;
@@ -1023,6 +1030,15 @@ export function layerJsonOntoEnv(
   }
   if (json.tools?.web?.search?.codex?.model !== undefined) {
     fromJson.MONO_AGENT_WEB_SEARCH_CODEX_MODEL = json.tools.web.search.codex.model;
+  }
+  if (json.tools?.web?.search?.parallel?.apiKeyEnv !== undefined) {
+    fromJson.MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV = json.tools.web.search.parallel.apiKeyEnv;
+  }
+  if (json.tools?.web?.fetch?.parallel?.apiKeyEnv !== undefined) {
+    fromJson.MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV = json.tools.web.fetch.parallel.apiKeyEnv;
+  }
+  if (json.tools?.web?.fetch?.provider !== undefined) {
+    fromJson.MONO_AGENT_WEB_FETCH_PROVIDER = typeof json.tools.web.fetch.provider === "string" ? json.tools.web.fetch.provider : JSON.stringify(json.tools.web.fetch.provider);
   }
   if (json.tools?.web?.fetch?.render !== undefined) {
     fromJson.MONO_AGENT_WEB_FETCH_RENDER = json.tools.web.fetch.render;

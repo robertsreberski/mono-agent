@@ -4076,6 +4076,29 @@ describe("validateMonoAgentFolder — web tools", () => {
     });
   }
 
+  it("probes strict Parallel with tools/list only and reports anonymous access", async () => {
+    const methods: string[] = [];
+    const fetchSpy = vi.fn(async (_url: unknown, init: RequestInit) => {
+      if (init.method === "GET") return new Response(null, { status: 405 });
+      const message = JSON.parse(String(init.body)) as { method: string; id?: number };
+      methods.push(message.method);
+      if (message.method === "notifications/initialized") return new Response(null, { status: 202 });
+      const result = message.method === "initialize"
+        ? { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } }
+        : { tools: ["web_search", "web_fetch"].map((name) => ({ name, inputSchema: { type: "object" } })) };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }), { headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({ search: { backend: "parallel" } });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
+    const section = sectionById(report, "web-tools");
+    expect(section.status).toBe("ok");
+    expect(section.details).toContain("Parallel search: anonymous access.");
+    expect(methods).toContain("tools/list");
+    expect(methods).not.toContain("tools/call");
+    expect(fetchSpy.mock.calls.every(([, init]) => init.redirect === "error")).toBe(true);
+  });
+
   it("reports the static defaults without running a liveness probe", async () => {
     const fetchSpy = vi.fn();
     const execSpy = vi.fn();
@@ -4093,10 +4116,10 @@ describe("validateMonoAgentFolder — web tools", () => {
     expect(sectionById(report, "web-tools")).toMatchObject({
       status: "ok",
       details: expect.arrayContaining([
-        "WebSearch backend: auto.",
+        "WebSearch backend: parallel,ollama.",
         "WebSearch request budget: 4 per logical run.",
-        "SearXNG is not configured; auto mode starts with Codex subscription search, then keyless search.",
-        "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when auto mode reaches it as the first eligible backend.",
+        "SearXNG is not configured.",
+        "Ordered chain: parallel → ollama. Unavailable providers advance to the next entry.",
         "WebFetch browser rendering: never.",
         "Static Defuddle/Readability extraction is active; agent-browser is not required.",
       ]),
@@ -4180,7 +4203,7 @@ describe("validateMonoAgentFolder — web tools", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("probes explicitly configured Ollama in auto and documents the remaining chain", async () => {
+  it("reports lazy Ollama readiness in an explicit chain", async () => {
     const fetchSpy = vi.fn(async (url: string | URL) => {
       const target = String(url);
       if ([
@@ -4194,7 +4217,7 @@ describe("validateMonoAgentFolder — web tools", () => {
     vi.stubGlobal("fetch", fetchSpy);
     const configPath = await writeWebToolsConfig({
       search: {
-        backend: "auto",
+        backend: ["ollama", "searxng", "codex", "keyless"],
         maxRequestsPerRun: 6,
         ollama: { baseUrl: "http://127.0.0.1:11434" },
         searxng: { endpoint: "http://127.0.0.1:8088" },
@@ -4205,18 +4228,17 @@ describe("validateMonoAgentFolder — web tools", () => {
     const web = sectionById(report, "web-tools");
     expect(web.status).toBe("ok");
     expect(web.details).toContain("WebSearch request budget: 6 per logical run.");
-    expect(web.details).toContain("Ollama Web Search JSON probe succeeded.");
-    expect(web.details).toContain("Ollama Web Search origin: http://127.0.0.1:11434. Auto mode advances to configured SearXNG, Codex, then keyless when Ollama is unavailable.");
+    expect(web.details).toContain("Ollama Web Search readiness is checked lazily when the chain reaches it.");
+    expect(web.details).toContain("Ollama Web Search origin: http://127.0.0.1:11434. Ordered chain: ollama → searxng → codex → keyless. Unavailable providers advance to the next entry.");
     expect(fetchSpy.mock.calls.map(([url]) => String(url))).toEqual([
       "http://127.0.0.1:8088/search",
-      "http://127.0.0.1:11434/api/experimental/web_search",
     ]);
   });
 
-  it("omits absent SearXNG from the auto fallback diagnostics", async () => {
+  it("omits absent SearXNG from explicit chain diagnostics", async () => {
     const configPath = await writeWebToolsConfig({
       search: {
-        backend: "auto",
+        backend: ["ollama", "codex", "keyless"],
         ollama: { baseUrl: "http://127.0.0.1:11434" },
       },
     });
@@ -4224,10 +4246,10 @@ describe("validateMonoAgentFolder — web tools", () => {
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
     const details = sectionById(report, "web-tools").details;
     expect(details).toContain(
-      "Ollama Web Search origin: http://127.0.0.1:11434. Auto mode advances to Codex, then keyless when Ollama is unavailable.",
+      "Ollama Web Search origin: http://127.0.0.1:11434. Ordered chain: ollama → codex → keyless. Unavailable providers advance to the next entry.",
     );
     expect(details).toContain(
-      "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when auto mode reaches it after configured Ollama.",
+      "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when the chain reaches it.",
     );
     expect(details.some((detail) => detail.includes("advances to configured SearXNG"))).toBe(false);
   });

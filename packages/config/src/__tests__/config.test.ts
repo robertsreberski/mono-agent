@@ -80,8 +80,8 @@ describe("loadMonoAgentConfig", () => {
       mcpCallMaxTotalTimeoutMs: 2700000,
       web: {
         coordination: "process",
-        search: { backend: "auto", maxRequestsPerRun: 4, codex: { model: "gpt-5.6-luna" } },
-        fetch: { render: "never", browserCommand: "agent-browser" },
+        search: { backend: ["parallel", "ollama"], ollama: { baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false }, maxRequestsPerRun: 4, codex: { model: "gpt-5.6-luna" } },
+        fetch: { provider: "local", render: "never", browserCommand: "agent-browser" },
       },
     });
     expect(config.artifacts.dir).toBe("/repo/artifacts");
@@ -106,8 +106,8 @@ describe("loadMonoAgentConfig", () => {
     expect(config.artifacts.memoryRetention).toEqual({ maxAgeDays: 7, maxCount: 5000, dryRun: false });
     expect(config.tools.web).toEqual({
       coordination: "process",
-      search: { backend: "auto", maxRequestsPerRun: 4, codex: { model: "gpt-5.6-luna" } },
-      fetch: { render: "never", browserCommand: "agent-browser" },
+      search: { backend: ["parallel", "ollama"], ollama: { baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false }, maxRequestsPerRun: 4, codex: { model: "gpt-5.6-luna" } },
+      fetch: { provider: "local", render: "never", browserCommand: "agent-browser" },
     });
   });
 
@@ -134,7 +134,7 @@ describe("loadMonoAgentConfig", () => {
         searxng: { endpoint: "http://127.0.0.1:8088" },
         codex: { model: "gpt-5.6-sol" },
       },
-      fetch: { render: "auto", browserCommand: "/opt/homebrew/bin/agent-browser" },
+      fetch: { provider: "local", render: "auto", browserCommand: "/opt/homebrew/bin/agent-browser" },
     });
   });
 

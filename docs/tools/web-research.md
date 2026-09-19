@@ -1,6 +1,6 @@
 ---
 title: "Local-first web research"
-description: "Configure WebSearch with explicit Ollama or SearXNG, ChatGPT-subscription Codex search, and keyless fallbacks, plus deterministic static or browser-backed WebFetch."
+description: "Configure explicit WebSearch and WebFetch provider chains, Parallel MCP, local extraction, and isolated browser rendering."
 sidebar:
   order: 5
 ---
@@ -19,7 +19,8 @@ limits only; it creates no durable search history, cookie jar, or browser profil
 
 ## Recommended configuration
 
-The framework defaults to `auto` search and static fetch extraction. For several
+The framework defaults to `["parallel", "ollama"]` search (Parallel, then local
+Ollama) and `"local"` static fetch extraction. Keyless engines are opt-in. For several
 agents running under the same OS user, opt into host coordination:
 
 ```json
@@ -28,13 +29,12 @@ agents running under the same OS user, opt into host coordination:
     "web": {
       "coordination": "host",
       "search": {
-        "backend": "auto",
+        "backend": ["parallel", "ollama"],
         "maxRequestsPerRun": 4,
-        "ollama": { "baseUrl": "http://127.0.0.1:11434" },
-        "searxng": { "endpoint": "http://127.0.0.1:8088" },
-        "codex": { "model": "gpt-5.6-luna" }
+        "ollama": { "baseUrl": "http://127.0.0.1:11434" }
       },
       "fetch": {
+        "provider": "local",
         "render": "never",
         "browserCommand": "agent-browser"
       }
@@ -43,9 +43,10 @@ agents running under the same OS user, opt into host coordination:
 }
 ```
 
-Both provider blocks are optional in `auto` mode. Ollama joins the chain only
-when its `ollama` block is present; mono-agent does not probe a default Ollama
-endpoint for existing `auto` users. The legacy
+No provider block is required for anonymous Parallel or local Ollama, including
+when Ollama appears in a chain. To opt into SearXNG, select it explicitly, for
+example `["searxng", "parallel"]`, and configure `searxng.endpoint`.
+The legacy
 `tools.web.search.endpoint` spelling remains a migration alias. When present, it must be
 an unauthenticated loopback `http://` URL; remote endpoints, URL credentials,
 queries, and fragments are rejected during config loading. The companion
@@ -61,28 +62,85 @@ Environment equivalents:
 | Config key | Environment variable | Default |
 | --- | --- | --- |
 | `tools.web.coordination` | `MONO_AGENT_WEB_COORDINATION` | `process` |
-| `tools.web.search.backend` | `MONO_AGENT_WEB_SEARCH_BACKEND` | `auto` |
+| `tools.web.search.backend` | `MONO_AGENT_WEB_SEARCH_BACKEND` | `parallel,ollama` |
 | `tools.web.search.maxRequestsPerRun` | `MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN` | `4` |
 | `tools.web.search.searxng.endpoint` | `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` | unset |
 | legacy `tools.web.search.endpoint` | `MONO_AGENT_WEB_SEARCH_ENDPOINT` | unset |
-| `tools.web.search.ollama.baseUrl` | `MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` in strict Ollama mode |
+| `tools.web.search.ollama.baseUrl` | `MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` when Ollama is selected |
 | `tools.web.search.ollama.apiKeyEnv` | `MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV` | unset |
 | `tools.web.search.ollama.trustPublicUrl` | `MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL` | `false` |
 | `tools.web.search.codex.model` | `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | `gpt-5.6-luna` |
+| `tools.web.search.parallel.apiKeyEnv` | `MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV` | unset (anonymous) |
+| `tools.web.fetch.provider` | `MONO_AGENT_WEB_FETCH_PROVIDER` | `local` |
+| `tools.web.fetch.parallel.apiKeyEnv` | `MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV` | unset (anonymous) |
 | `tools.web.fetch.render` | `MONO_AGENT_WEB_FETCH_RENDER` | `never` |
 | `tools.web.fetch.browserCommand` | `MONO_AGENT_WEB_BROWSER_COMMAND` | `agent-browser` |
 
 ## WebSearch
 
-Search backends have explicit behavior:
+A provider name is strict; a non-empty array is an ordered fallback chain.
+Duplicate or unknown names are config errors. Providers returning failures,
+empty, irrelevant or out-of-domain results advance the chain; cooldowns and
+deferrals skip work. Budget exhaustion or unsafe host coordination stops the
+whole call. SearXNG requires an endpoint at load time; Ollama needs no block.
 
-| Backend | Behavior |
+| Provider name | Behavior |
 | --- | --- |
-| `auto` | Try explicitly configured Ollama, configured SearXNG, ChatGPT-subscription Codex search, then the keyless chain. A non-empty but irrelevant or out-of-domain result does not stop the chain. Providers without configuration are skipped; existing users without an Ollama block still start with SearXNG or Codex. |
-| `searxng` | Require the configured local endpoint and fail when it fails. No silent fallback. |
-| `ollama` | Require the configured Ollama Web Search origin and fail when it fails. No fallback. |
-| `codex` | Require a ChatGPT-authenticated `codex` CLI whose app-server exposes web search and the configured model. No SearXNG/keyless fallback. |
-| `keyless` | Skip SearXNG and try DuckDuckGo HTML, then Startpage. |
+| `parallel` | Anonymous Parallel Search MCP, with optional named API-key variable. |
+| `searxng` | Configured loopback JSON endpoint. |
+| `ollama` | Local Ollama by default; explicitly configured hosted search is also supported. |
+| `codex` | ChatGPT-authenticated `codex` app-server with the configured model and web-search capability. |
+| `keyless` | Virtual opt-in group: DuckDuckGo HTML, then Startpage. |
+| `duckduckgo`, `startpage` | Select either HTML engine individually. |
+
+### Migrating from auto
+
+Search `auto` was removed, including `MONO_AGENT_WEB_SEARCH_BACKEND=auto`.
+Config loading prints the equivalent previous chain for that configuration:
+explicit Ollama block first, then a configured SearXNG endpoint, then Codex and
+keyless. For example, an old SearXNG configuration reports:
+
+```text
+tools.web.search.backend "auto" was removed; use ["searxng","codex","keyless"] (the previous auto order for this configuration)
+```
+
+Use that array to preserve old behavior, or omit `backend` to adopt the new
+Parallel → local Ollama default. Environment arrays use comma-separated names,
+for example `MONO_AGENT_WEB_SEARCH_BACKEND=searxng,codex,keyless`.
+
+### Parallel Search MCP
+
+The fixed streamable HTTP endpoint is `https://search.parallel.ai/mcp`.
+Anonymous access has provider-controlled limits; no unlimited quota is promised.
+Queries, advisory objectives, and fetched URLs go to **parallel.ai**. A local
+fallback does not make the first Parallel request private. Select strict local
+Ollama/SearXNG instead when remote query disclosure is inappropriate.
+
+Primary and up to three alternate queries are sent unchanged in one
+`web_search` call, costing one answered-search request. Language, time range,
+and domain preferences also inform an advisory objective; local relevance and
+domain gates still apply. Published dates are shown when supplied. Excerpts use
+the normal bounded snippets, not an unbounded provider payload.
+
+Optional `search.parallel.apiKeyEnv` and `fetch.parallel.apiKeyEnv` name an
+environment variable. Omit them for anonymous access. A named missing/empty
+variable is an error, not anonymous downgrade. Credentials are read at call
+time, never logged, and only their digest affects cache identity. No OAuth or
+paid REST API integration is involved.
+
+A session id hashes the runtime run id (`mono-` plus SHA-256); without a run id,
+a random identity is memoized on the shared run state. Search and fetch share
+it only within that run. It is never persisted, logged, or added to shared
+result-cache keys. Each attempt closes its MCP client/transport, propagates
+abort, rejects redirects, and bounds streamed responses to 2 MiB for search or
+20 MiB for fetch. Both the endpoint and fetch target must pass sandbox policy.
+Remote extraction cannot attest redirects that Parallel performs internally;
+use `local` when policy requires enforcement at every source redirect hop.
+
+HTTP 429 or MCP rate-limit errors open a cooldown; malformed/protocol/auth
+responses are `backend_unavailable`, never a fabricated `No results`. Strict
+Parallel doctor/validate liveness uses only `tools/list`, without a query or
+extraction, and reports anonymous versus configured `apiKeyEnv` access.
 
 ### Ollama Web Search
 
@@ -117,14 +175,15 @@ endpoint variants receive the caller's effective 1–10 result limit as
 
 The tool accepts one `query`, up to three `alternate_queries`, a result `limit`
 from 1–10, `domains`, `exclude_domains`, `language`, and a `time_range` of
-`day`, `month`, or `year`. The primary query runs first. Supplied alternates run in order only while no
+`day`, `month`, or `year`. For sequential providers, the primary query runs first. Supplied alternates run in order only while no
 relevant result has been accepted. A transport failure, quota skip or block ends
 that stage immediately; alternate wording cannot repair it. Codex gets at most
 one exact-query turn. Quotes and `site:` operators are never
 stripped or relaxed. Results are normalized, tracking parameters are removed,
 duplicates are fused with reciprocal-rank fusion, and include/exclude domain
 filters plus a deterministic query-term/quoted-phrase relevance gate are
-enforced before a backend can end `auto` mode.
+enforced before a provider can end the chain. Parallel batches the primary and
+alternates once; Codex receives only the primary query.
 
 Every backend shares the same model-facing output bounds. A result title is at
 most 500 characters and its snippet is at most 4,000 characters, including the
@@ -164,7 +223,7 @@ ceiling was reached, it explicitly says the run spent its dispatches on failing
 providers; `requestsRemaining` may still be positive in that case.
 
 A provider that returns a rate limit is deferred for the rest of that run.
-`auto` advances immediately to the next eligible provider; named backends stay
+An ordered chain advances immediately to the next eligible provider; single names stay
 strict. The result reports `retryAfterMs` when known, an absolute `retryAt`, the
 provider disposition, and whether another search attempt in the run can help.
 Do not sleep, retry, or delegate to wait out a cooldown. Fetch URLs already
@@ -225,8 +284,7 @@ field is the only thing that separates that from a query nothing matched:
 
 The error text names every failed engine (`duckduckgo: CAPTCHA; brave: too many
 requests`), so a blocked instance is diagnosable from the tool output without
-reading container logs. In `auto` mode Codex subscription search and then the
-keyless chain still run after it.
+reading container logs. An explicitly configured chain can continue to its next provider after it.
 
 The stock SearXNG engine set may not be usable from an ordinary residential IP:
 engines can answer with a CAPTCHA or require an API key. Configure at least one
@@ -262,6 +320,8 @@ agent and subagent under the same OS user:
 | --- | --- | --- |
 | SearXNG endpoint | 1 | 2 seconds |
 | Ollama origin | 1 | 2 seconds |
+| Parallel MCP (search and fetch) | 1 | 2 seconds |
+| Other registered provider kinds | 1 | 2 seconds |
 | DuckDuckGo / Startpage, separately | 1 each | 3 seconds |
 | Codex subscription | 1 | serialized |
 | Fetch origin (HTTP and renderer admission) | 2 | 500 ms |
@@ -272,8 +332,9 @@ up to an hour. Two infrastructure failures open a one-minute cooldown. Only one
 probe is admitted when a cooldown expires. A later successful probe resets the
 failure streak. Cooldown skips make no provider request.
 
-A search has a 60-second deadline including admission, startup and I/O; automatic
-SearXNG admission and execution get a three-second stage budget before fallback.
+A search has a 60-second deadline including admission, startup and I/O. SearXNG
+admission and execution get a three-second stage budget when it is not the only
+provider in the chain.
 Strict SearXNG retains its 15-second per-request timeout within the total budget.
 Cancellation closes active Codex transport before releasing admission; process
 shutdown may add its bounded cleanup time.
@@ -312,6 +373,31 @@ working operator-selected engines and respected cooldowns. The framework does
 not rotate accounts, proxies or VPN exits.
 
 ## WebFetch
+
+`tools.web.fetch.provider` defaults to `"local"`. Select `"parallel"` for strict
+remote extraction or an ordered array such as `["local", "parallel"]` for
+explicit fallback. No remote fetch fallback is enabled by default.
+
+Parallel calls `web_fetch` for one URL with `full_content: true`, preferring
+full content. If only excerpts are returned, document metadata explicitly says
+`[excerpts only]`; continuation ranges refer only to the available extracted
+text. It supports Markdown/plain text and the usual line/output bounds.
+
+Parallel-only calls reject `format: "raw"`, any custom request headers, and
+explicit `render: "auto"` or `"always"` with `unsupported_parameter`, naming
+the option, before any connection. Config `fetch.render: "auto"` requires a
+local provider. In a chain, incompatible options skip Parallel and are handled
+by local extraction; they are never silently discarded or sent remotely.
+
+Fetch advances to the next selected provider only for `unusable_content`
+(sparse loading shell), `access_challenge`, `backend_unavailable`, HTTP errors
+other than 401/407, or retryable `request_failed`/`timeout`. Local transient
+retries complete first. Authentication, sandbox, invalid parameters, unsupported
+content, byte limits, cancellation, and unsafe coordination are terminal; a
+successful local extraction never triggers Parallel. Source failures in
+Parallel's `errors[]` preserve their HTTP status. Rendering and alternate
+providers do not grant permission to bypass site policy or access controls.
+
 
 `WebFetch` accepts `http://` and `https://` URLs and returns one of:
 
@@ -433,3 +519,27 @@ search results nor model-visible output receives account data. The tools do not
 expose browser profiles, cookies, login state, file downloads, arbitrary
 headers, or remote SearXNG credentials. Browser rendering is a retrieval mode,
 not an anti-bot or authenticated browsing feature.
+
+## Adding a provider
+
+Providers are source-level modules, not dynamically loaded config plugins:
+
+1. Add one module under
+   `packages/agent-runtime/src/agent/tools/web-search-providers/` implementing
+   the JSDoc `SearchProvider` contract in `registry.js`.
+2. Register it once in that registry. Declare its `name`, `configure`,
+   `eligibility`/requirements, `admission` kind/key/process policy,
+   `networkTargets`, `filterSupport`, `batchesQueries`, and `search` function.
+   Optional `primaryOnly` and `chainDeadlineMs` cover restricted providers.
+3. Add its name/config validation, config-view/reference, docs, and tests.
+   Do not add branches to the search chain body. Unknown coordination kinds
+   receive the generic one-request/two-second host limit.
+
+The chain owns admission, deferrals, refund settlement, local relevance/domain
+gates, reciprocal-rank fusion, and bounded untrusted output. An adapter claims
+its request immediately before dispatch using `web-search-state.js`; failed
+answers are refunded, while dispatches remain counted. Every actual network
+destination must be sandbox-gated. Never put queries, targets, credentials, or
+response bodies into timing/coordination metadata. The registry tests demonstrate
+both a fake standalone provider and `["fake-fail", "keyless"]` fallback without
+orchestrator edits.

@@ -1,3 +1,5 @@
+import { fetchParallelDocument, unsupportedParallelFetchOption } from "./parallel-web-fetch.js";
+import { parallelSessionId } from "./parallel-mcp.js";
 import { withWebDeadline, coordinatedWebRequest, webRequestFailure } from "./web-request.js";
 // @ts-check
 
@@ -43,7 +45,7 @@ class WebFetchError extends Error {
  * Compatibility wrapper for direct callers.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number}} params
- * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 export async function webFetchToolImpl(params, options = {}) {
   return (await performWebFetch(params, options)).text;
@@ -53,13 +55,13 @@ export async function webFetchToolImpl(params, options = {}) {
  * Fetch and locally extract one public URL.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number}} params
- * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 export async function performWebFetch(params, options = {}) {
   const started = Date.now();
   try {
     return await withWebDeadline(options.signal, 45_000, async (signal) => {
-      const result = await performFetch(params, { ...options, signal });
+      const result = await performFetchChain(params, { ...options, signal });
       if (signal.aborted && !result.error) return failure("Error: WebFetch was aborted or exceeded its deadline.", signal.reason?.code === "deadline_exceeded" ? "deadline_exceeded" : "aborted", started);
       return result;
     });
@@ -73,7 +75,7 @@ export async function performWebFetch(params, options = {}) {
  * Fetch and locally extract one public URL.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number}} params
- * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 async function performFetch(
   {
@@ -707,6 +709,7 @@ export function formatWebFetchDocument(document, params, ctx) {
     : `Continue with WebFetch url=${JSON.stringify(finalUrl)} start_line=${continuation} max_lines=${count}.`;
   return {
     text: [`[BEGIN UNTRUSTED WEB CONTENT source=${JSON.stringify(finalUrl)}]`,
+      ...(document.metadata ? [`[${document.metadata}]`] : []),
       ...(ranged || continuation ? [`[Lines ${start}-${end} of ${lines.length}.]`] : []),
       capped,
       ...(continuation ? [`[${continuationHint}]`] : []),
@@ -716,4 +719,67 @@ export function formatWebFetchDocument(document, params, ctx) {
     error: false,
     document,
   };
+}
+
+
+async function performFetchChain(params, options) {
+  const started = Date.now();
+  const selection = options.fetchConfig?.provider ?? "local";
+  const names = Array.isArray(selection) ? selection : [selection];
+  if (!names.length || new Set(names).size !== names.length || names.some((name) => !["local", "parallel"].includes(name))) {
+    return failure("Error: Invalid WebFetch provider selection.", "invalid_fetch_config", started);
+  }
+  const unsupported = unsupportedParallelFetchOption(params);
+  if (!names.includes("local") && unsupported) {
+    return failure(`Error: Parallel WebFetch does not support ${unsupported}.`, "unsupported_parameter", started, { backend: "parallel", option: unsupported });
+  }
+  if (!names.includes("local") && options.fetchConfig?.render === "auto") {
+    return failure('Error: fetch.render "auto" requires the local provider.', "invalid_fetch_config", started);
+  }
+  let result;
+  const attemptedProviders = [];
+  for (const name of names) {
+    if (name === "parallel" && unsupported) continue;
+    attemptedProviders.push(name);
+    result = name === "local" ? await performFetch(params, options) : await performParallelFetch(params, options);
+    if (!result.error || !fetchProviderMayAdvance(result.outcome)) break;
+  }
+  return { ...result, outcome: { ...result.outcome, attemptedProviders, fallbackUsed: attemptedProviders.length > 1 } };
+}
+
+// Never fall through validation, auth, sandbox, cancellation, coordination, or
+// size failures. Only a blocked/unusable page, HTTP error, or retryable transport
+// failure may disclose the same target to the next explicitly selected provider.
+function fetchProviderMayAdvance(outcome) {
+  return ["unusable_content", "access_challenge", "backend_unavailable"].includes(outcome.code)
+    || /^http_(?!401$|407$)\d{3}$/u.test(outcome.code)
+    || (["request_failed", "timeout"].includes(outcome.code) && outcome.retryable);
+}
+
+async function performParallelFetch(params, options) {
+  const started = Date.now();
+  if ((params.start_line !== undefined && (!Number.isSafeInteger(params.start_line) || params.start_line < 1))
+    || (params.max_lines !== undefined && (!Number.isSafeInteger(params.max_lines) || params.max_lines < 1 || params.max_lines > 10000))) {
+    return failure("Error: Invalid WebFetch line range.", "invalid_range", started);
+  }
+  let url;
+  try { url = new URL(params.url); } catch { return failure("Error: Invalid URL", "invalid_url", started); }
+  if (!["http:", "https:"].includes(url.protocol)) return failure("Error: WebFetch only supports http(s) URLs.", "unsupported_protocol", started);
+  if (url.username || url.password) return failure("Error: WebFetch URL credentials are not allowed.", "url_credentials_rejected", started);
+  if (params.format !== undefined && !["markdown", "text"].includes(params.format)) return failure("Error: Invalid WebFetch format.", "invalid_format", started);
+  if (params.render !== undefined && params.render !== "never") return failure("Error: Invalid WebFetch render mode.", "invalid_render_mode", started);
+  const ctx = options.ctx ?? readToolRuntime();
+  const sandbox = ctx.sandbox ?? passthroughSandbox;
+  const policy = resolveSandboxPolicy(ctx, options.sandboxPolicy);
+  const result = await fetchParallelDocument(url, params, { ...options, config: options.fetchConfig?.parallel,
+    ctx, sandbox, policy, sessionId: options.sessionId ?? parallelSessionId(ctx, ctx),
+  });
+  if (!result.ok) return failure(`Error: ${result.message}`, result.code, started, {
+    backend: "parallel", retryable: result.retryable, statusCode: result.statusCode,
+    retryAfterMs: result.retryAfterMs, rateLimited: result.rateLimited,
+  });
+  const document = result.document;
+  document.outcome = { ...document.outcome, queueWaitMs: result.coordinationWaitMs, backendDurationMs: result.backendDurationMs };
+  return options.documentOnly ? { text: "", error: false, document, outcome: document.outcome }
+    : formatWebFetchDocument(document, params, ctx);
 }

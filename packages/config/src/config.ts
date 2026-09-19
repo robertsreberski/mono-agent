@@ -228,12 +228,10 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     input.env.MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
     "MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS",
   );
-  const webSearchBackend = readChoice<WebSearchBackend>(
-    input.env.MONO_AGENT_WEB_SEARCH_BACKEND,
-    "MONO_AGENT_WEB_SEARCH_BACKEND",
-    ["auto", "searxng", "ollama", "codex", "keyless"],
-    "auto",
-    invalidEnv,
+  const webSearchBackend = readWebProviderSelection<WebSearchBackend>(
+    input.env.MONO_AGENT_WEB_SEARCH_BACKEND, "MONO_AGENT_WEB_SEARCH_BACKEND",
+    ["searxng", "ollama", "codex", "keyless", "duckduckgo", "startpage", "parallel"],
+    ["parallel", "ollama"], input.env,
   );
   const legacyWebSearchEndpoint = readWebSearchEndpoint(
     input.env.MONO_AGENT_WEB_SEARCH_ENDPOINT,
@@ -264,13 +262,18 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     invalidEnv,
     { min: 1, max: 20 },
   );
-  if (webSearchBackend === "searxng" && webSearchEndpoint === undefined) {
+  if (selectedWebProvider(webSearchBackend, "searxng") && webSearchEndpoint === undefined) {
     throw new MonoAgentConfigError(
       "invalid_env",
       "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT (or legacy MONO_AGENT_WEB_SEARCH_ENDPOINT) is required when MONO_AGENT_WEB_SEARCH_BACKEND=searxng.",
       { env: "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT" },
     );
   }
+  const webSearchParallel = readParallelWebConfig(input.env, "MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV");
+  const webFetchParallel = readParallelWebConfig(input.env, "MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV");
+  const webFetchProvider = readWebProviderSelection<"local" | "parallel">(
+    input.env.MONO_AGENT_WEB_FETCH_PROVIDER, "MONO_AGENT_WEB_FETCH_PROVIDER", ["local", "parallel"], "local", input.env,
+  );
   const webFetchRender = readChoice<WebFetchRenderMode>(
     input.env.MONO_AGENT_WEB_FETCH_RENDER,
     "MONO_AGENT_WEB_FETCH_RENDER",
@@ -278,6 +281,9 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     "never",
     invalidEnv,
   );
+  if (webFetchRender === "auto" && !selectedWebProvider(webFetchProvider, "local")) {
+    throw new MonoAgentConfigError("invalid_env", 'tools.web.fetch.render "auto" requires the local fetch provider.', { env: "MONO_AGENT_WEB_FETCH_PROVIDER" });
+  }
   const webBrowserCommand = readWebBrowserCommand(input.env.MONO_AGENT_WEB_BROWSER_COMMAND);
   const fileToolReadableRoots = readFileToolRoots(
     input.env.MONO_AGENT_FILE_TOOL_READABLE_ROOTS,
@@ -314,12 +320,15 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
       coordination: readChoice(input.env.MONO_AGENT_WEB_COORDINATION, "MONO_AGENT_WEB_COORDINATION", ["process", "host"] as const, "process", invalidEnv),
       search: {
         backend: webSearchBackend,
+        ...(webSearchParallel === undefined ? {} : { parallel: webSearchParallel }),
         maxRequestsPerRun: webSearchMaxRequestsPerRun,
         ...(webSearchEndpoint === undefined ? {} : { searxng: { endpoint: webSearchEndpoint } }),
         ...(webSearchOllama === undefined ? {} : { ollama: webSearchOllama }),
         codex: { model: webSearchCodexModel },
       },
       fetch: {
+        provider: webFetchProvider,
+        ...(webFetchParallel === undefined ? {} : { parallel: webFetchParallel }),
         render: webFetchRender,
         browserCommand: webBrowserCommand,
       },
@@ -494,7 +503,7 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
     ollama: configuredOllamaSearch,
     codex: configuredCodexSearch,
     ...searchWithoutSecrets
-  } = configuredSearch ?? { backend: "auto" as const, maxRequestsPerRun: 4 };
+  } = configuredSearch ?? { backend: ["parallel", "ollama"] as const, maxRequestsPerRun: 4 };
   const redacted: RedactedMonoAgentConfig = {
     ...(config.agent === undefined ? {} : { agent: { ...config.agent } }),
     runtime: { ...config.runtime },
@@ -1061,12 +1070,12 @@ const OFFICIAL_OLLAMA_ORIGIN = "https://ollama.com";
 
 function readOllamaWebSearchConfig(
   env: Record<string, string | undefined>,
-  backend: WebSearchBackend,
+  backend: WebSearchBackend | readonly WebSearchBackend[],
 ): NonNullable<NonNullable<MonoAgentConfig["tools"]["web"]>["search"]["ollama"]> | undefined {
   const baseUrlRaw = normalizeOptionalString(env.MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL);
   const apiKeyEnv = normalizeOptionalString(env.MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV);
   const trustRaw = normalizeOptionalString(env.MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL);
-  if (backend !== "ollama" && baseUrlRaw === undefined && apiKeyEnv === undefined && trustRaw === undefined) {
+  if (!selectedWebProvider(backend, "ollama") && baseUrlRaw === undefined && apiKeyEnv === undefined && trustRaw === undefined) {
     return undefined;
   }
 
@@ -2615,4 +2624,47 @@ function normalizeCwd(value: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function selectedWebProvider(selection: string | readonly string[], name: string): boolean {
+  return typeof selection === "string" ? selection === name : selection.includes(name);
+}
+
+function readWebProviderSelection<T extends string>(
+  raw: string | undefined, source: string, names: readonly T[], fallback: T | readonly T[],
+  env: Record<string, string | undefined>,
+): T | readonly T[] {
+  if (raw === undefined) return fallback;
+  const value = raw.trim();
+  if (value === "auto" && source === "MONO_AGENT_WEB_SEARCH_BACKEND") {
+    const previous = [
+      ...([env.MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL, env.MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV, env.MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL].some((v) => v !== undefined) ? ["ollama"] : []),
+      ...(env.MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT || env.MONO_AGENT_WEB_SEARCH_ENDPOINT ? ["searxng"] : []),
+      "codex", "keyless",
+    ];
+    throw new MonoAgentConfigError("invalid_env", `tools.web.search.backend "auto" was removed; use ${JSON.stringify(previous)} (the previous auto order for this configuration)`, { env: source });
+  }
+  let selection: unknown;
+  try { selection = value.startsWith("[") ? JSON.parse(value) : value.includes(",") ? value.split(",").map((name) => name.trim()) : value; }
+  catch { selection = null; }
+  const list = Array.isArray(selection) ? selection : [selection];
+  if (!list.length || list.some((name) => typeof name !== "string" || !names.includes(name as T))) {
+    throw new MonoAgentConfigError("invalid_env", `${source} must be one provider or a non-empty ordered chain of: ${names.join(", ")}.`, { env: source });
+  }
+  if (new Set(list).size !== list.length) {
+    throw new MonoAgentConfigError("invalid_env", `${source} contains duplicate provider names.`, { env: source });
+  }
+  return selection as T | readonly T[];
+}
+
+function readParallelWebConfig(env: Record<string, string | undefined>, source: string): { readonly apiKeyEnv: string } | undefined {
+  if (env[source] === undefined) return undefined;
+  const name = env[source]?.trim() ?? "";
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
+    throw new MonoAgentConfigError("invalid_env", `${source} must name an environment variable.`, { env: source });
+  }
+  if (!env[name]?.trim()) {
+    throw new MonoAgentConfigError("invalid_env", `${source} names a missing or empty credential variable.`, { env: source });
+  }
+  return { apiKeyEnv: name };
 }

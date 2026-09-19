@@ -57,7 +57,7 @@ describe("WebSearch answer budget settlement", () => {
       ? new Response('{"results":null}')
       : new Response('<div class="result"><a class="result__a" href="https://example.com/evidence">Mono Agent evidence</a></div>'));
     const codexSearch = vi.fn(async () => ({ ok: false, backend: "codex", code: "quota_unavailable", quotaSkipped: true }));
-    const options = { searchState: state, searchConfig: { ...ollamaConfig, backend: "auto" }, fetchImpl, codexSearch, ctx: runtimeContext() };
+    const options = { searchState: state, searchConfig: { ...ollamaConfig, backend: ["ollama", "codex", "keyless"] }, fetchImpl, codexSearch, ctx: runtimeContext() };
     const first = await performWebSearch({ query: "mono agent evidence" }, options);
     expect(first).toMatchObject({ error: false, outcome: {
       requestsUsed: 1, requestsThisCall: 1, requestsRemaining: 1, dispatchesUsed: 2,
@@ -119,7 +119,7 @@ describe("WebSearch answer budget settlement", () => {
     for (let i = 0; i < 4; i++) await performWebSearch({ query: "private-query" }, options);
     const codexSearch = vi.fn();
     const exhausted = await performWebSearch({ query: "private-query", alternate_queries: ["variant-1", "variant-2"] }, {
-      ...options, searchConfig: { ...ollamaConfig, backend: "auto" }, codexSearch,
+      ...options, searchConfig: { ...ollamaConfig, backend: ["ollama", "codex", "keyless"] }, codexSearch,
     });
     expect(exhausted).toMatchObject({ error: true, outcome: {
       code: "search_budget_exhausted", requestsUsed: 0, requestsThisCall: 0, requestsRemaining: 1,
@@ -162,7 +162,7 @@ describe("WebSearch answer budget settlement", () => {
       ? new Response("private-body", { status: 429, headers: { "retry-after": "204" } })
       : new Response('{"results":[]}'));
     const options = { searchState: state, fetchImpl, ctx: runtimeContext(), searchConfig: {
-      ...ollamaConfig, backend: "auto", endpoint: "http://127.0.0.1:8088",
+      ...ollamaConfig, backend: ["ollama", "searxng", "codex", "keyless"], endpoint: "http://127.0.0.1:8088",
     } };
     // Empty SearXNG answers stay charged; the following Codex reservation refuses.
     const result = await performWebSearch({ query: "private-query" }, { ...options, codexSearch: async (_query, opts) => { opts.claimRequest(); } });
@@ -457,7 +457,7 @@ describe("WebSearch", () => {
     });
     const automatic = await performWebSearch({ query: "mono agent" }, {
       searchConfig: {
-        backend: "auto",
+        backend: ["ollama", "codex", "keyless"],
         ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
       },
       codexSearch: vi.fn(async () => {
@@ -487,7 +487,7 @@ describe("WebSearch", () => {
       }] }), { headers: { "content-type": "application/json" } });
     });
     const result = await performWebSearch({ query: "mono agent" }, {
-      searchConfig: { backend: "auto", searxng: { endpoint: "http://127.0.0.1:8088" } },
+      searchConfig: { backend: ["searxng", "codex", "keyless"], searxng: { endpoint: "http://127.0.0.1:8088" } },
       fetchImpl,
       ctx: runtimeContext(),
     });
@@ -515,7 +515,7 @@ describe("WebSearch", () => {
     const codexSearch = vi.fn();
     const result = await performWebSearch({ query: "mono agent resilient search" }, {
       searchConfig: {
-        backend: "auto",
+        backend: ["ollama", "searxng", "codex", "keyless"],
         ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
         searxng: { endpoint: "http://127.0.0.1:8088" },
       },
@@ -574,7 +574,7 @@ describe("WebSearch", () => {
 
     const result = await performWebSearch({ query: "mono agent resilient search" }, {
       searchConfig: {
-        backend: "auto",
+        backend: ["ollama", "searxng", "codex", "keyless"],
         ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
         searxng: { endpoint: "http://127.0.0.1:8088" },
       },
@@ -613,7 +613,7 @@ describe("WebSearch", () => {
       }] }), { headers: { "content-type": "application/json" } });
     });
     const searchConfig = {
-      backend: "auto",
+      backend: ["ollama", "searxng", "codex", "keyless"],
       maxRequestsPerRun: 4,
       ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
       searxng: { endpoint: "http://127.0.0.1:8088" },
@@ -942,7 +942,7 @@ describe("WebSearch", () => {
       `);
     });
     const automatic = await performWebSearch({ query: "mono agent" }, {
-      searchConfig: { backend: "auto", endpoint: "http://127.0.0.1:8088" },
+      searchConfig: { backend: ["searxng", "codex", "keyless"], endpoint: "http://127.0.0.1:8088" },
       codexSearch: vi.fn(async () => ({
         ok: false, backend: "codex", message: "Codex subscription search unavailable.", retryable: false,
       })),
@@ -980,7 +980,7 @@ describe("WebSearch", () => {
     const exactQuery = 'site:anthropic.com "Claude Opus 5"';
     const result = await performWebSearch({ query: exactQuery }, {
       searchConfig: {
-        backend: "auto",
+        backend: ["searxng", "codex", "keyless"],
         endpoint: "http://127.0.0.1:8088",
         codex: { model: "gpt-5.6-luna" },
       },
@@ -1131,7 +1131,7 @@ describe("WebSearch", () => {
       : new Response('<div class="result"><a class="result__a" href="https://example.com/guide">Mono agent guide</a></div>')));
 
     const result = await performWebSearch({ query: "mono agent" }, {
-      searchConfig: { backend: "auto", endpoint: "http://127.0.0.1:8088" },
+      searchConfig: { backend: ["searxng", "codex", "keyless"], endpoint: "http://127.0.0.1:8088" },
       codexSearch: vi.fn(async () => ({
         ok: false, backend: "codex", message: "Codex subscription search unavailable.", retryable: false,
       })),
@@ -2076,7 +2076,7 @@ describe("run-scoped web controller and browser isolation", () => {
     });
     const options = {
       searchConfig: {
-        backend: "auto",
+        backend: ["ollama", "searxng", "codex", "keyless"],
         ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
         searxng: { endpoint: "http://127.0.0.1:8088" },
       },
@@ -2147,7 +2147,7 @@ describe("run-scoped web controller and browser isolation", () => {
     });
     const options = {
       searchConfig: {
-        backend: "auto",
+        backend: ["ollama", "searxng", "codex", "keyless"],
         ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
         searxng: { endpoint: "http://127.0.0.1:8088" },
       },
@@ -2599,7 +2599,7 @@ describe("web research regressions", () => {
   it("does not send traffic or fall back when the shared coordinator fails", async () => {
     const fetchImpl = vi.fn(); const codexSearch = vi.fn();
     const result = await performWebSearch({ query: "python docs" }, {
-      searchConfig: { backend: "auto", endpoint: "http://127.0.0.1:8088" }, ctx: runtimeContext(), fetchImpl, codexSearch,
+      searchConfig: { backend: ["searxng", "codex", "keyless"], endpoint: "http://127.0.0.1:8088" }, ctx: runtimeContext(), fetchImpl, codexSearch,
       coordinator: { acquire: async () => { throw Object.assign(new Error("unavailable"), { code: "coordination_unavailable" }); } },
     });
     expect(result.outcome.code).toBe("coordination_unavailable");
