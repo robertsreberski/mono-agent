@@ -8,6 +8,17 @@
   `focus` block filtering and bounded `include_links` from static HTML
   extraction; both reuse the cached extraction without added requests.
 
+- Fix an explicitly remembered fact being silently lost when capture later
+  refined it. A `Remember` write is content-addressed — its id is the SHA-256 of
+  its own text — but reconciliation could merge new wording into that bullet in
+  place, leaving the id asserting a hash of text it no longer held. Remembering
+  the original fact again then matched that id and reported a false duplicate,
+  so the fact was never stored. Reconciliation now keeps a remembered bullet
+  exactly as written and records the refinement as its own memory, threaded to
+  its neighbour. Refinement is not treated as contradiction, so the remembered
+  fact is never invalidated or superseded, and ordinary (non-remembered)
+  memories still merge in place as before.
+
 - Let a cron job declare a deterministic `preflight` argv evaluated before the
   model responder. `{"run":false}` ends the firing as `skipped_gate` with no
   model turn or notification; `{"run":true,"input":"…"}` runs the job with the
