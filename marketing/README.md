@@ -66,8 +66,8 @@ geometry interpolation is pure and unit-tested. Mobile uses a shorter stage and
 compressed poses. **Pause motion**, the OS reduced-motion preference, or no JavaScript
 produces a static complete composition instead. Preference changes clear transforms.
 
-`pnpm run screenshots` captures the hero, configuration blueprint, workflow,
-anatomy, and setup views at 1440×1000 and 390×844; generated files stay under
+`pnpm run screenshots` captures the hero, configuration overview and code detail,
+workflow, anatomy, and setup views at 1440×1000 and 390×844; generated files stay under
 `output/` and are gitignored. `pnpm run screenshots -- --video-only` records an
 automated real-browser scroll through the story into
 `output/scroll-story-desktop.webm`; add `--video` to capture both screenshots and

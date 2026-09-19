@@ -18,34 +18,29 @@ const FALLBACK_URL = `${DOCS_URL}runtime/fallback/`;
 const ARTIFACTS_URL = `${DOCS_URL}observability/artifacts-and-traces/`;
 const TOOLS_URL = `${DOCS_URL}tools/`;
 
-const CONFIG_EXAMPLE = JSON.stringify(
-  {
-    runtime: {
-      model: "openai-codex:gpt-5.6-terra",
-      fallbacks: [{ model: "anthropic:claude-sonnet-4-6" }],
-      workspace: ".",
-    },
-    context: {
-      identityPath: "./IDENTITY.md",
-      skillsRoot: "./skills",
-      selectedSkills: ["code-review"],
-    },
-    memory: {
-      mode: "lite",
-      writeMode: "append-host-summary",
-    },
-    tools: {
-      allowedTools: ["Read", "Grep", "WebSearch"],
-      mcpConfigPath: "./mcp.json",
-    },
-    telegram: {
-      enabled: true,
-      allowedChatIds: ["YOUR_CHAT_ID"],
-    },
+const CONFIG_EXAMPLE = `{
+  "runtime": {
+    "model": "openai-codex:gpt-5.6-terra",
+    "workspace": "."
   },
-  null,
-  2,
-);
+  "context": {
+    "identityPath": "./IDENTITY.md",
+    "skillsRoot": "./skills",
+    "selectedSkills": ["code-review"]
+  },
+  "memory": {
+    "mode": "lite",
+    "writeMode": "append-host-summary"
+  },
+  "tools": {
+    "allowedTools": ["Read", "Grep", "WebSearch"],
+    "mcpConfigPath": "./mcp.json"
+  },
+  "telegram": {
+    "enabled": true,
+    "allowedChatIds": ["YOUR_CHAT_ID"]
+  }
+}`;
 
 const TITLE = "mono-agent — Local-first AI workspace for coding and research";
 const DESCRIPTION =
@@ -227,7 +222,7 @@ const jsonLd = {
             <article>
               <span class="config-key">tools</span>
               <h3>Bound what can act</h3>
-              <p>Name the allowed tools and connect reusable MCP definitions through a referenced file.</p>
+              <p>Choose built-in tools with policy and reference reusable MCP definitions. External MCP tools are available when their server is declared.</p>
               <a href={TOOLS_URL}>Review the tool model <span aria-hidden="true">↗</span></a>
             </article>
             <article>
@@ -335,11 +330,11 @@ const jsonLd = {
       <section class="section" id="why" aria-labelledby="why-heading">
         <div class="wrap">
           <span class="section-label">Why mono-agent</span>
-          <h2 id="why-heading">Use the whole workspace.<br /><em>Or take the framework underneath.</em></h2>
+          <h2 id="why-heading">Own the architecture.<br /><em>Not just the conversation.</em></h2>
           <p class="section-intro">
-            Start with a cohesive agent host, then drop to the package boundary
-            your product needs. The same declared choices stay visible to the
-            people who build, operate, and review it.
+            Run a complete agent workspace with channels, memory, tools, and
+            local evidence—or compose the npm packages into your own product
+            and transport.
           </p>
           <ul class="points builder-points">
             <li>
@@ -359,7 +354,7 @@ const jsonLd = {
               <p>
                 Leave memory out, use Lite for local SQLite and keyword recall,
                 add embeddings with Journal, or configure BuJo for model-assisted
-                capture. Hosted providers receive the text sent to them.
+                capture.
               </p>
               <a class="proof-link" href={MEMORY_URL}>Compare the memory tiers <span aria-hidden="true">↗</span></a>
             </li>
@@ -367,19 +362,17 @@ const jsonLd = {
               <span class="point-index">03 / ROUTE</span>
               <h3>Authored routes. Reported outcomes.</h3>
               <p>
-                Put primary and fallback models in an explicit order. When a
-                route changes, the result and traces report it; a fallback is a
-                route to try, not a promise that every turn succeeds.
+                Choose primary and fallback models in an explicit order, then
+                see which route handled the work in results and traces.
               </p>
               <a class="proof-link" href={FALLBACK_URL}>Inspect fallback behavior <span aria-hidden="true">↗</span></a>
             </li>
             <li>
               <span class="point-index">04 / INSPECT</span>
-              <h3>Local evidence, with honest limits</h3>
+              <h3>See what happened</h3>
               <p>
-                Each run writes local JSONL events and a summary for review and
-                backfill. They are bounded, best-effort filesystem records—not a
-                transactional audit log, and they cannot recover every crash.
+                Inspect local run events, summaries, and reported model changes.
+                Keep the evidence close to the work.
               </p>
               <a class="proof-link" href={ARTIFACTS_URL}>Read the artifact contract <span aria-hidden="true">↗</span></a>
             </li>
@@ -387,9 +380,9 @@ const jsonLd = {
               <span class="point-index">05 / REUSE</span>
               <h3>Reviewable by design</h3>
               <p>
-                Version the blueprint with referenced identity, selected skills,
-                and MCP definitions. Reuse the declarations without pretending
-                that model output is deterministic or every behavior belongs in JSON.
+                Keep the blueprint, identity, and skills under version control.
+                Review changes in a pull request and reuse the setup for your
+                next agent.
               </p>
               <a class="proof-link" href={CONFIG_URL}>Review the configuration boundary <span aria-hidden="true">↗</span></a>
             </li>
@@ -466,8 +459,10 @@ mono-agent web run --loopback</code></pre>
                 The blueprint brings runtime, context references, memory, tools,
                 and channels together. Identity, skills, MCP definitions, secrets,
                 provider auth, and framework-managed state stay in their own files
-                or stores. Run <code>mono-agent validate</code> to check the shape,
-                finish any reported setup, and restart after edits.
+                or stores. You still need the referenced files, provider auth,
+                and any channel or memory services the blueprint selects. Run
+                <code>mono-agent validate</code> to check the shape, finish any
+                reported setup, and restart after edits.
               </div>
             </details>
             <details>
@@ -481,12 +476,23 @@ mono-agent web run --loopback</code></pre>
               </div>
             </details>
             <details>
+              <summary>What can I inspect after a run?</summary>
+              <div class="faq-answer">
+                Local JSONL events and a run summary record model changes, tool
+                activity, timing, and usage that reached the recorder. These are
+                bounded, best-effort filesystem records rather than a transactional
+                audit log, so a crash can lose an unsaved tail. Use them to review
+                what happened, not as proof that every in-flight event persisted.
+              </div>
+            </details>
+            <details>
               <summary>Which models can I use?</summary>
               <div class="faq-answer">
                 Supported <code>&lt;provider&gt;:&lt;model&gt;</code> routes include
                 subscription and API providers such as OpenAI Codex and
                 Anthropic, plus fully local providers like Ollama or LM Studio.
-                Ordered fallbacks keep a turn alive when the primary route fails.
+                Ordered fallbacks can try another route, and results and traces
+                report when the selected route changes.
               </div>
             </details>
             <details>

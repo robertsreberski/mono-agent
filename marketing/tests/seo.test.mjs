@@ -184,7 +184,9 @@ describe("marketing built output", () => {
 
     const code = html.match(/<code id="config-blueprint-json">([\s\S]*?)<\/code>/);
     assert.ok(code, "rendered configuration example exists");
-    const config = JSON.parse(decodeHtmlText(code[1]));
+    const renderedConfig = decodeHtmlText(code[1]);
+    assert.ok(renderedConfig.split("\n").length <= 25, "configuration stays compact");
+    const config = JSON.parse(renderedConfig);
     const schema = JSON.parse(readFileSync(
       join(REPO_ROOT, "packages/agent-app/schema/mono-agent.config.schema.json"),
       "utf8",
