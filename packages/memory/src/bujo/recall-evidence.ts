@@ -397,7 +397,14 @@ function canonicalPhrase(text: string): string {
   return [...concepts(text)].join(" ");
 }
 
-/** Case/width/whitespace folding only. Every other character is identifying. */
+/**
+ * Case, whitespace and Unicode *compatibility* folding (NFKC). NFKC is broader
+ * than width folding: it also maps superscript/circled forms onto their plain
+ * characters, so `release²` and `release2` share one identity. This matches the
+ * NFKC the app already applies to the query before the gate and the backend
+ * cache, so identities stay consistent across both. Everything NFKC preserves
+ * -- letters, digits, punctuation, order and repetition -- stays identifying.
+ */
 function identityText(raw: string): string {
   return raw.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase();
 }
@@ -407,14 +414,18 @@ function identityText(raw: string): string {
  *
  * A scope names one specific project or event, so identity-bearing tokens,
  * their order, repetition, digits and punctuation must all survive. Only case,
- * Unicode width, surrounding whitespace and a single leading article are
- * normalized. `canonicalPhrase` must NEVER be used here: it drops stop words
- * and one-character tokens, folds plurals, applies property aliases and
- * de-duplicates, which would equate `Project A`/`Project B`, `launch 1`/
- * `launch 2` and `Bora Bora`/`Bora`. An empty result is not a scope.
+ * whitespace, Unicode compatibility forms (see `identityText`) and a single
+ * standalone leading article are normalized. `canonicalPhrase` must NEVER be
+ * used here: it drops stop words and one-character tokens, folds plurals,
+ * applies property aliases and de-duplicates, which would equate `Project A`/
+ * `Project B`, `launch 1`/`launch 2` and `Bora Bora`/`Bora`. An empty result
+ * is not a scope.
  */
 function scopeIdentity(raw: string): string | undefined {
-  const identity = identityText(raw).replace(/^(?:the|a|an)\b\s*/u, "").trim();
+  // The article must be a standalone word: followed by real whitespace, or the
+  // whole scope. A word boundary alone would also match punctuation, stripping
+  // the identifying prefix of `A-team`, `an-1` or `A’s launch`.
+  const identity = identityText(raw).replace(/^(?:the|a|an)(?:\s+|$)/u, "").trim();
   return identity.length === 0 ? undefined : identity;
 }
 
