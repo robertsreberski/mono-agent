@@ -114,18 +114,18 @@ const jsonLd = {
           <img src="/favicon.svg" alt="" width="30" height="30" aria-hidden="true" />
           <span>mono-agent</span>
         </a>
-        <nav class="site-nav" aria-label="Sections">
+        <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-navigation" hidden><span>Menu</span><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3 7h14M3 13h14" /></svg></button>
+        <nav class="site-nav" id="site-navigation" aria-label="Sections">
           <ul>
-            <li><a href="#configuration">Configuration</a></li>
-            <li><a href="#anatomy">The anatomy</a></li>
-            <li><a href="#use-cases">Use cases</a></li>
-            <li><a href="#why">Why mono-agent</a></li>
-            <li><a href="#start">Get started</a></li>
-            <li><a href="#faq">FAQ</a></li>
+            <li><a href="#configuration">Blueprint</a></li>
+            <li><a href="#console">Console</a></li>
+            <li><a href="#use-cases">Workflows</a></li>
+            <li><a href={DOCS_URL}>Docs ↗</a></li>
+            <li class="mobile-github"><a href={GITHUB_URL}>Get the code ↗</a></li>
           </ul>
         </nav>
         <div class="header-cta">
-          <a class="link-docs" href={DOCS_URL}>Docs</a>
+
           <a class="btn btn-primary btn-small" href={GITHUB_URL}>GitHub</a>
         </div>
       </div>
@@ -135,7 +135,7 @@ const jsonLd = {
       <section class="hero" id="top" aria-labelledby="hero-heading">
         <div class="wrap hero-grid">
           <div class="hero-copy">
-            <span class="eyebrow"><span class="status-dot" aria-hidden="true"></span> A local-first AI workspace</span>
+            <span class="eyebrow">Independent by design / Config-first AI</span>
             <h1 id="hero-heading">Your agents. <br />Your models. <br /><em>Your workspace.</em></h1>
             <p class="lede">
               Compose models, tools, memory, and channels in
@@ -143,8 +143,8 @@ const jsonLd = {
               on the packages underneath.
             </p>
             <div class="hero-actions">
-              <a class="btn btn-primary" href={GITHUB_URL}>Get the code on GitHub</a>
-              <a class="btn btn-secondary" href="#configuration">Explore the blueprint</a>
+              <a class="btn btn-primary" href={GITHUB_URL}>Get the code on GitHub <span aria-hidden="true">↗</span></a>
+              <a class="btn btn-secondary" href="#configuration">Explore the blueprint <span aria-hidden="true">↓</span></a>
             </div>
             <p class="hero-meta">Open source. Bring your own models. Make it yours.</p>
           </div>
@@ -177,9 +177,8 @@ const jsonLd = {
           <span class="section-label">The configuration</span>
           <h2 id="configuration-heading">One JSON file.<br /><em>Your agent’s blueprint.</em></h2>
           <p>
-            The decisions that shape an agent meet in one readable declaration.
-            Review it in a pull request, reuse it in another folder, or load it
-            from your own host.
+            Models, context, memory, tools. One readable declaration.
+            Version it, review it, make it yours.
           </p>
         </div>
         <div class="wrap blueprint-layout">
@@ -189,11 +188,9 @@ const jsonLd = {
               <strong>mono-agent.config.json</strong>
               <span>Illustrative, valid JSON</span>
             </figcaption>
-            <pre><code id="config-blueprint-json">{CONFIG_EXAMPLE}</code></pre>
+            <details class="blueprint-code"><summary>Read the configuration <span aria-hidden="true">+</span></summary><pre><code id="config-blueprint-json">{CONFIG_EXAMPLE}</code></pre></details>
             <p>
-              Referenced identity, skills, and MCP definitions stay in their own
-              files. Provider and channel credentials belong in <code>.env</code>
-              or provider auth—not inline here.
+              Identity and skills stay in referenced files. Secrets stay outside the blueprint.
             </p>
           </figure>
 
@@ -218,63 +215,21 @@ const jsonLd = {
             </article>
           </div>
 
-          <div class="blueprint-callouts blueprint-callouts-right">
-            <article>
-              <span class="config-key">tools</span>
-              <h3>Bound what can act</h3>
-              <p>Choose built-in tools with policy and reference reusable MCP definitions. External MCP tools are available when their server is declared.</p>
-              <a href={TOOLS_URL}>Review the tool model <span aria-hidden="true">↗</span></a>
-            </article>
-            <article>
-              <span class="config-key">telegram</span>
-              <h3>Wire the channel</h3>
-              <p>Enable only the transports you need. This example still needs a bot token from the environment.</p>
-              <a href={`${DOCS_URL}channels/`}>Configure channels <span aria-hidden="true">↗</span></a>
-            </article>
-            <article class="config-check">
-              <span class="config-key">validate → restart</span>
-              <h3>Structure first. Readiness next.</h3>
-              <p><code>mono-agent validate</code> checks structure and reports waiting setup; it does not make a model call. Restart after edits.</p>
-              <a href={CONFIG_URL}>Open the config guide <span aria-hidden="true">↗</span></a>
-            </article>
-          </div>
         </div>
       </section>
 
-      <section class="anatomy" id="anatomy" aria-labelledby="anatomy-heading" data-scroll-story>
-        <div class="wrap anatomy-intro">
-          <span class="section-label">Not a chatbot. A composition.</span>
-          <h2 id="anatomy-heading">Intelligence is a starting point.<br /><em>What you build around it is yours.</em></h2>
-          <div class="anatomy-intro-bottom"><p>The JSON blueprint composes the model, context, tools, and memory. Referenced identity and skill files give those parts their substance.</p><button class="motion-toggle" type="button" aria-pressed="false" hidden>Pause motion</button></div>
-        </div>
-        <div class="story-layout wrap">
-          <div class="story-stage">
-            <div class="stage-topline" aria-hidden="true"><span>MONO / COMPOSITION STUDY</span><span data-scene-number>01 — 04</span></div>
-            <div class="composition" aria-hidden="true">
-              <div class="composition-grid"></div>
-              <div class="composition-orbit orbit-a"></div><div class="composition-orbit orbit-b"></div>
-              <div class="composition-axis axis-x"></div><div class="composition-axis axis-y"></div>
-              <div class="agent-sculpture">
-                <div class="agent-layer layer-memory" data-layer="0"><span class="layer-index">04 / CONTINUITY</span><strong>Memory</strong><span class="layer-detail">Optional. Deliberate. Yours.</span><i class="layer-glyph glyph-memory"></i></div>
-                <div class="agent-layer layer-tools" data-layer="1"><span class="layer-index">03 / CAPABILITY</span><strong>Tools</strong><span class="layer-detail">Skills · MCP · Policy</span><i class="layer-glyph glyph-tools"></i></div>
-                <div class="agent-layer layer-model" data-layer="2"><span class="layer-index">02 / INTELLIGENCE</span><strong>Models</strong><span class="layer-detail">Your choice of provider</span><i class="layer-glyph glyph-model"></i></div>
-                <div class="agent-layer layer-identity" data-layer="3"><span class="layer-index">01 / POINT OF VIEW</span><strong>Identity</strong><span class="layer-detail">A role. A workspace. A purpose.</span><i class="layer-glyph glyph-identity"></i></div>
-              </div>
-              <div class="composition-center"><span class="center-mark">m<span>·</span></span><span>mono-agent</span></div>
-              <span class="composition-coordinate coordinate-left">YOUR CONTEXT</span><span class="composition-coordinate coordinate-right">YOUR CONTROL</span>
-            </div>
-            <div class="stage-bottomline"><span data-scene-caption>One folder. A world of possibility.</span><span class="scene-progress" aria-hidden="true"><i></i></span></div>
-            <p class="scene-disclaimer">A visual metaphor for the blueprint in mono-agent.config.json. Referenced files remain separate. Not a product interface.</p>
+      <section class="console-section section" id="console" aria-labelledby="console-heading">
+        <div class="wrap">
+          <div class="console-intro"><div><span class="section-label">The workspace</span><h2 id="console-heading">Made for you.<br /><em>Open to your agent.</em></h2></div><p>One considered interface for conversations, context, and the models behind your work.</p></div>
+          <figure class="console-shot"><a href="/console-desktop.webp" aria-label="Open full console screenshot"><picture><source media="(max-width: 640px)" srcset="/console-mobile.webp" /><img src="/console-desktop.webp" width="1280" height="560" loading="lazy" alt="Mono Agent console with a project and two example conversations." /></picture></a><figcaption>Actual console UI · synthetic example data · current source build. <a href={RELEASE_STATUS_URL}>Release availability ↗</a></figcaption></figure>
+          <div class="console-benefits" id="why">
+            <article><span>01 / CONTINUITY</span><h3>Change models. Keep the thread.</h3><p>Choose a supported model for your next reply without starting over. Your conversation stays with you.</p></article>
+            <article><span>02 / SHARED CONTROLS</span><h3>You click. Your agent calls a tool.</h3><p>Create projects, organize tags, and find conversations through the interface—or let your agent use the corresponding tools.</p></article>
+            <article><span>03 / YOUR ARCHITECTURE</span><h3>A workspace. And a framework.</h3><p>Use the complete host or embed the configured responder in your own product. Same building blocks, your composition.</p></article>
           </div>
-          <div class="story-rail">
-            <article class="story-chapter" data-chapter="0"><span class="chapter-number">01 / THE FOUNDATION</span><h3>Start with<br /><em>your world.</em></h3><p>A codebase. A research folder. A set of questions nobody else is asking. Your workspace becomes the context for an agent with a purpose.</p><span class="chapter-detail">A folder → an agent workspace</span></article>
-            <article class="story-chapter" data-chapter="1"><span class="chapter-number">02 / THE POINT OF VIEW</span><h3>Give it<br /><em>character.</em></h3><p>Define a role and instructions. Choose the models behind the conversation. Make a researcher, a reviewer, or something entirely your own.</p><span class="chapter-detail">Your identity + your model routes</span></article>
-            <article class="story-chapter" data-chapter="2"><span class="chapter-number">03 / THE REACH</span><h3>Let it do<br /><em>more.</em></h3><p>Connect tools through skills and MCP. Add optional memory. Reach your agent through the browser, channels, or a schedule. You define the boundaries.</p><span class="chapter-detail">Tools + context + configured access</span></article>
-            <article class="story-chapter" data-chapter="3"><span class="chapter-number">04 / THE COMPOSITION</span><h3>Many parts.<br /><em>One agent.</em></h3><p><code>mono-agent.config.json</code> composes the pieces into a persistent workspace, while referenced identity, skills, MCP definitions, secrets, and runtime state keep their proper boundaries.</p><a class="chapter-detail" href="#use-cases">Now, put it to work <span aria-hidden="true">↗</span></a></article>
-          </div>
+          <a class="text-link" href={`${DOCS_URL}observability/web-console/`}>Explore the console <span aria-hidden="true">↗</span></a>
         </div>
       </section>
-      <div class="kinetic-band" aria-hidden="true"><div data-kinetic-text>YOUR MODELS. <em>YOUR METHODS.</em> YOUR WORLD.</div></div>
 
       <section class="section" id="use-cases" aria-labelledby="use-cases-heading">
         <div class="wrap">
@@ -323,78 +278,6 @@ const jsonLd = {
                 </figure>
               </article>
             </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="section" id="why" aria-labelledby="why-heading">
-        <div class="wrap">
-          <span class="section-label">Why mono-agent</span>
-          <h2 id="why-heading">Own the architecture.<br /><em>Not just the conversation.</em></h2>
-          <p class="section-intro">
-            Run a complete agent workspace with channels, memory, tools, and
-            local evidence—or compose the npm packages into your own product
-            and transport.
-          </p>
-          <ul class="points builder-points">
-            <li>
-              <span class="point-index">01 / COMPOSE</span>
-              <h3>Full host or configured responder</h3>
-              <p>
-                Run the CLI-equivalent <code>@mono-agent/agent-app</code> host
-                with configured channels, or load the same config into
-                <code>createConfiguredAgentResponder</code> for your own server,
-                queue worker, test harness, or transport.
-              </p>
-              <a class="proof-link" href={COMPOSITION_URL}>See the composition layers <span aria-hidden="true">↗</span></a>
-            </li>
-            <li>
-              <span class="point-index">02 / REMEMBER</span>
-              <h3>Choose memory complexity deliberately</h3>
-              <p>
-                Leave memory out, use Lite for local SQLite and keyword recall,
-                add embeddings with Journal, or configure BuJo for model-assisted
-                capture.
-              </p>
-              <a class="proof-link" href={MEMORY_URL}>Compare the memory tiers <span aria-hidden="true">↗</span></a>
-            </li>
-            <li>
-              <span class="point-index">03 / ROUTE</span>
-              <h3>Authored routes. Reported outcomes.</h3>
-              <p>
-                Choose primary and fallback models in an explicit order, then
-                see which route handled the work in results and traces.
-              </p>
-              <a class="proof-link" href={FALLBACK_URL}>Inspect fallback behavior <span aria-hidden="true">↗</span></a>
-            </li>
-            <li>
-              <span class="point-index">04 / INSPECT</span>
-              <h3>See what happened</h3>
-              <p>
-                Inspect local run events, summaries, and reported model changes.
-                Keep the evidence close to the work.
-              </p>
-              <a class="proof-link" href={ARTIFACTS_URL}>Read the artifact contract <span aria-hidden="true">↗</span></a>
-            </li>
-            <li>
-              <span class="point-index">05 / REUSE</span>
-              <h3>Reviewable by design</h3>
-              <p>
-                Keep the blueprint, identity, and skills under version control.
-                Review changes in a pull request and reuse the setup for your
-                next agent.
-              </p>
-              <a class="proof-link" href={CONFIG_URL}>Review the configuration boundary <span aria-hidden="true">↗</span></a>
-            </li>
-          </ul>
-          <div class="note">
-            <p>
-              <strong>Two defaults worth knowing.</strong> Tools are allow-all
-              by default and the sandbox is opt-in, so narrow
-              <code>tools.allowedTools</code> before exposing an agent. The web
-              console has no application login — run it on loopback and read
-              the safety docs before widening access.
-            </p>
           </div>
         </div>
       </section>
@@ -524,21 +407,6 @@ mono-agent web run --loopback</code></pre>
         </div>
       </section>
 
-      <section class="closing" aria-labelledby="closing-heading">
-        <div class="wrap">
-          <span class="section-label">Get the code</span>
-          <h2 id="closing-heading">Make room for<br /><span>your kind of agent.</span></h2>
-          <p>
-            Start with <code>mono-agent.config.json</code>. Run the complete
-            workspace or compose the packages into the host you already own.
-            No mono-agent account required.
-          </p>
-          <div class="hero-actions">
-            <a class="btn btn-primary" href={GITHUB_URL}>Get the code on GitHub</a>
-            <a class="btn btn-secondary" href={DOCS_URL}>Read the docs</a>
-          </div>
-        </div>
-      </section>
     </main>
 
     <footer class="site-footer">

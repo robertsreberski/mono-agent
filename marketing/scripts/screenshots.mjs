@@ -23,8 +23,9 @@ const PORT = 4331;
 const URL = `http://127.0.0.1:${PORT}/`;
 
 const SHOTS = [
-  ...[0, 0.33, 0.67, 1].map((story, i) => ({ name: `anatomy-${i + 1}-desktop-1440x1000.png`, width: 1440, height: 1000, story })),
-  ...[0.33, 0.67].map((story, i) => ({ name: `anatomy-${i + 2}-mobile-390x844.png`, width: 390, height: 844, story })),
+  { name: "console-desktop-1440x1000.png", width:1440,height:1000,scrollTo:"#console" },
+  { name: "console-mobile-390x844.png", width:390,height:844,scrollTo:"#console" },
+  { name: "menu-mobile-390x844.png", width:390,height:844,menu:true },
   { name: "research-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: ".workflow-explorer", workflow: "research" },
   { name: "research-mobile-390x844.png", width: 390, height: 844, scrollTo: ".workflow-explorer", workflow: "research" },
   { name: "automate-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: ".workflow-explorer", workflow: "automate" },
@@ -107,11 +108,12 @@ async function main() {
         }
         if (shot.story !== undefined) {
           await page.evaluate((progress) => {
-            const rect = document.querySelector('.story-layout').getBoundingClientRect();
+            const rect = document.querySelector('#console').getBoundingClientRect();
             window.scrollTo({ top: scrollY + rect.top + (rect.height - innerHeight) * progress, behavior: 'instant' });
           }, shot.story);
           await page.waitForTimeout(150);
         }
+        if (shot.menu) await page.getByRole('button', {name:'Menu'}).click();
         await page.screenshot({ path: join(outputDir, shot.name) });
         console.log(`screenshots: ${shot.name}`);
         await page.close();
@@ -136,7 +138,7 @@ async function main() {
             requestAnimationFrame(step);
           });
           await move(0, 1200);
-          const layout = document.querySelector('.story-layout');
+          const layout = document.querySelector('#console');
           const start = scrollY + layout.getBoundingClientRect().top;
           await move(start, 2200);
           await move(start + layout.getBoundingClientRect().height - innerHeight, 15000);

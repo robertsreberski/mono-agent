@@ -210,7 +210,6 @@ describe("marketing built output", () => {
     assert.ok(scripts[0].includes('src="/interactions.js"'));
     assert.ok(scripts[0].includes('type="module"'));
     assert.ok(statSync(join(DIST, "interactions.js")).size < 6500);
-    assert.ok(statSync(join(DIST, "scroll-story.js")).size < 8000);
     for (const id of ["workflow-build", "workflow-research", "workflow-automate"]) {
       mustContain(html, `id="${id}"`, "server-rendered workflow");
     }
@@ -222,6 +221,17 @@ describe("marketing built output", () => {
     for (const competitor of ["hermes", "openclaw", "open claw"]) {
       assert.ok(!lower.includes(competitor), `public HTML must not name ${competitor}`);
     }
+  });
+
+  it("ships bounded real-console captures with provenance", async () => {
+    for (const name of ["console-desktop.webp", "console-mobile.webp"]) {
+      const image = join(DIST, name);
+      const meta = await sharp(image).metadata();
+      assert.ok(meta.width <= 2000 && meta.height <= 2000);
+      assert.ok(statSync(image).size < 180000);
+    }
+    mustContain(html, "synthetic example data", "console fixture provenance");
+    mustContain(html, "current source build", "console release boundary");
   });
 
   it("avoids unsupported product claims", () => {

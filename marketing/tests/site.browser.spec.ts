@@ -108,9 +108,9 @@ test("exposes landmarks, one H1, and a working skip link", async ({ page }) => {
 
 test("section navigation reaches every anchored section", async ({ page }) => {
   await page.goto("/", { waitUntil: "networkidle" });
-  for (const section of ["configuration", "anatomy", "use-cases", "why", "start", "faq"]) {
+  for (const section of ["configuration", "console", "use-cases"]) {
     await page.getByRole("navigation", { name: "Sections" })
-      .getByRole("link", { name: new RegExp(section.replace("-", " "), "i") })
+      .locator(`a[href="#${section}"]`)
       .click();
     await expect(page.locator(`#${section}`)).toBeInViewport();
   }
@@ -170,7 +170,7 @@ test("all workflow content and native FAQ work without JavaScript", async ({ bro
     await expect(page.locator(`#workflow-${id}`)).toBeVisible();
   }
   await expect(page.locator("#configuration")).toContainText("mono-agent.config.json");
-  await expect(page.locator("#configuration .blueprint-callouts article")).toHaveCount(6);
+  await expect(page.locator("#configuration .blueprint-callouts article")).toHaveCount(3);
   await expect(page.getByRole("button", { name: /Copy install command/ })).toHaveCount(0);
   const question = page.locator(".faq summary").first();
   await question.click();
@@ -249,94 +249,54 @@ test("missing Clipboard API remains an honest manual-copy path", async ({ page }
   await expect(page.getByRole("status")).toContainText("Copy unavailable.");
 });
 
-test("enabling reduced motion clears active parallax", async ({ page }) => {
-  await page.emulateMedia({ reducedMotion: "no-preference" });
-  await page.goto("/");
-  await page.mouse.move(200, 250);
-  await expect.poll(() => page.locator(".hero-art").evaluate(el => el.style.getPropertyValue("--art-x"))).not.toBe("");
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await expect.poll(() => page.locator(".hero-art").evaluate(el => el.style.getPropertyValue("--art-x"))).toBe("");
-});
 
-async function scrubStory(page: import('@playwright/test').Page, progress: number) {
-  await page.evaluate(p => {
-    const box = document.querySelector('.story-layout')!.getBoundingClientRect();
-    window.scrollTo({ top: scrollY + box.top + (box.height - innerHeight) * p, behavior: 'instant' });
-  }, progress);
-  await expect(page.locator('[data-scroll-story]')).toHaveAttribute('data-chapter', String(Math.round(progress * 3)));
-}
-
-for (const width of [390, 768, 1440]) {
-  test(`scroll composes the agent, reverses, and releases the pin at ${width}px`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 900 });
-    await page.goto('/', { waitUntil: 'networkidle' });
-    await expect(page.locator('html')).toHaveAttribute('data-motion', 'on');
-    await scrubStory(page, 0);
-    const firstPose = await page.locator('[data-layer="3"]').getAttribute('style');
-    await scrubStory(page, 1/3);
-    expect(await page.locator('[data-layer="3"]').getAttribute('style')).not.toBe(firstPose);
-    const stage = await page.locator('.story-stage').boundingBox();
-    expect(stage!.y).toBeCloseTo(0, 0);
-    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
-    expect(results.violations, JSON.stringify(results.violations)).toEqual([]);
-    await scrubStory(page, 1);
-    expect(await page.locator('[data-scroll-story]').evaluate(el => el.style.getPropertyValue('--core-opacity'))).toBe('1');
+for (const width of [320, 390, 640]) {
+  test(`mobile menu is compact, keyboard-operable and closes at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({width, height:844});
+    await page.goto('/');
+    const menu = page.getByRole('button', {name:'Menu'});
+    const nav = page.getByRole('navigation', {name:'Sections'});
+    await expect(nav).not.toBeVisible();
+    expect((await page.locator('.site-header').boundingBox())!.height).toBeLessThan(85);
+    await menu.focus(); await page.keyboard.press('Enter');
+    await expect(nav).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(menu).toBeFocused();
+    await expect(nav).not.toBeVisible();
+    await menu.click(); await nav.getByRole('link', {name:'Console', exact:true}).click();
+    await expect(nav).not.toBeVisible();
+    await expect(page.locator('#console')).toBeInViewport();
+    await expect(page.locator('.blueprint-code')).not.toHaveAttribute('open');
+    await page.locator('.blueprint-code summary').click();
+    await expect(page.locator('#config-blueprint-json')).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
-    await scrubStory(page, 0);
-    expect(await page.locator('[data-layer="3"]').getAttribute('style')).toBe(firstPose);
-    await page.locator('#use-cases').evaluate(el => el.scrollIntoView({ behavior: 'instant' }));
-    await expect(page.locator('#use-cases')).toBeInViewport();
-    expect((await page.locator('.story-stage').boundingBox())!.y).toBeLessThan(0);
   });
 }
-
-test('pause motion restores the static narrative and can resume', async ({ page }) => {
+test('console screenshot is real component evidence with disclosed synthetic state', async ({page}) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Pause motion' }).click();
-  await expect(page.locator('html')).toHaveAttribute('data-motion', 'off');
-  expect(await page.locator('.story-stage').evaluate(el => getComputedStyle(el).position)).not.toBe('sticky');
-  expect(await page.locator('[data-layer="0"]').getAttribute('style')).toBe('');
-  await expect(page.locator('.story-chapter')).toHaveCount(4);
-  await page.getByRole('button', { name: 'Resume motion' }).click();
-  await expect(page.locator('html')).toHaveAttribute('data-motion', 'on');
+  await expect(page.locator('.console-shot')).toContainText('synthetic example data');
+  await expect(page.locator('.console-shot')).toContainText('current source build');
+  const result = await new AxeBuilder({page}).withTags(WCAG_TAGS).analyze();
+  expect(result.violations).toEqual([]);
+});
+test('mobile document is shorter and has no pinned scroll sequence', async ({page}) => {
+  await page.setViewportSize({width:390,height:844}); await page.goto('/');
+  await expect(page.locator('[data-scroll-story]')).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThan(6500);
 });
 
-test('reduced-motion and no-JS visitors get a static complete composition', async ({ browser }) => {
-  for (const options of [{ reducedMotion: 'reduce' as const }, { javaScriptEnabled: false }]) {
-    const context = await browser.newContext({ ...options, viewport: { width: 390, height: 844 } });
-    const page = await context.newPage();
-    await page.goto('/');
-    expect(await page.locator('.story-stage').evaluate(el => getComputedStyle(el).position)).not.toBe('sticky');
-    for (const chapter of await page.locator('.story-chapter').all()) await expect(chapter).toBeVisible();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-    if ('reducedMotion' in options) await expect(page.getByRole('button', { name: 'Reduced motion on' })).toBeDisabled();
-    await context.close();
-  }
+test('navigation and blueprint remain usable without JavaScript', async ({browser}) => {
+  const context = await browser.newContext({javaScriptEnabled:false,viewport:{width:390,height:844}});
+  const page = await context.newPage(); await page.goto('/');
+  await expect(page.getByRole('navigation',{name:'Sections'})).toBeVisible();
+  await page.locator('.blueprint-code summary').click();
+  await expect(page.locator('#config-blueprint-json')).toBeVisible();
+  await context.close();
 });
-
-test('deep links remain in view after the scroll story initializes', async ({ page }) => {
-  await page.goto('/#workflow-research', { waitUntil: 'networkidle' });
+test('blueprint reveal respects reduced motion and deep links stay visible', async ({page}) => {
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await page.goto('/#configuration');
+  expect(await page.locator('.blueprint-callouts article').first().evaluate(el=>getComputedStyle(el,'::after').animationName)).toBe('none');
+  await page.goto('/#workflow-research',{waitUntil:'networkidle'});
   await expect(page.locator('#workflow-research')).toBeInViewport();
-  await page.goto('/#faq', { waitUntil: 'networkidle' });
-  await expect(page.locator('#faq')).toBeInViewport();
-});
-
-test('motion and compact preferences can change during the story', async ({ page }) => {
-  await page.setViewportSize({ width: 1000, height: 900 });
-  await page.goto('/', { waitUntil: 'networkidle' });
-  await scrubStory(page, 1/3);
-  const desktopPose = await page.locator('[data-layer="0"]').getAttribute('style');
-  await page.setViewportSize({ width: 390, height: 844 });
-  await scrubStory(page, 1/3);
-  // The chapter is unchanged by this resize; wait for the scheduled pose frame,
-  // not the already-matching chapter attribute.
-  await expect.poll(() => page.locator('[data-layer="0"]').getAttribute('style')).not.toBe(desktopPose);
-  await page.emulateMedia({ reducedMotion: 'reduce' });
-  await expect(page.locator('html')).toHaveAttribute('data-motion', 'off');
-  expect(await page.locator('[data-layer="0"]').getAttribute('style')).toBe('');
-  expect(await page.locator('[data-scroll-story]').getAttribute('style')).toBeNull();
-  await page.emulateMedia({ reducedMotion: 'no-preference' });
-  await expect(page.locator('html')).toHaveAttribute('data-motion', 'on');
-  await scrubStory(page, 2/3);
-  expect(await page.locator('[data-layer="0"]').getAttribute('style')).toContain('transform:');
 });

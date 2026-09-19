@@ -3,7 +3,7 @@
 The prospective marketing site at **<https://mono-agent.dev/>** (not yet
 deployed — see [Prospective deployment](#prospective-deployment)). A standalone
 [Astro](https://astro.build/) static app: one crawlable HTML page, one
-stylesheet, and two small local progressive-enhancement modules. GitHub is the primary call to action; the
+stylesheet, and one small local progressive-enhancement module. GitHub is the primary call to action; the
 existing docs site is secondary.
 
 ## Architecture
@@ -52,27 +52,31 @@ stub success and refusal; they prove UI handling, not operating-system permissio
 Motion is finite or pointer-driven, disabled for reduced-motion users, and never
 hijacks scrolling. Readable text does not fade through low-contrast states.
 
-## Scroll composition
+## Mobile composition and console evidence
 
-`public/scroll-story.js` maps native scroll position to four reversible poses of a
-CSS 3D sculpture: a stack, an exploded set of components, connected capabilities,
-and a composed agent. A sticky stage accompanies real, server-rendered chapter text;
-a kinetic type strip and hero depth respond to the same scroll. All graphics are
-explicitly conceptual, not a screenshot or a real agent run.
+The page deliberately has no pinned scroll narrative. A finite, reduced-motion-aware
+connection reveal ties the JSON blueprint to its callouts. The mobile menu is a
+keyboard-operable disclosure; links remain visible without JavaScript. JSON stays
+server-rendered inside a native details element, initially collapsed on phones.
 
-There is no scroll interception, animation dependency, permanent frame loop, or
-content hidden pending JavaScript. Passive scroll/resize events schedule one frame;
-geometry interpolation is pure and unit-tested. Mobile uses a shorter stage and
-compressed poses. **Pause motion**, the OS reduced-motion preference, or no JavaScript
-produces a static complete composition instead. Preference changes clear transforms.
+Console screenshots are real React UI rendered by the existing isolated browser
+fixtures, with **synthetic example data**, not a live user's console or evidence of
+model execution. The section labels the current source build and links release status.
+Reproduce the input captures from repository root:
 
-`pnpm run screenshots` captures the hero, configuration overview and code detail,
-workflow, anatomy, and setup views at 1440×1000 and 390×844; generated files stay under
-`output/` and are gitignored. `pnpm run screenshots -- --video-only` records an
-automated real-browser scroll through the story into
-`output/scroll-story-desktop.webm`; add `--video` to capture both screenshots and
-the recording. The recording drives ordinary browser scrolling, not a generated
-product simulation. Every frame stays at 1440×1000.
+```bash
+VITE_PROJECT_SHOTS="$PWD/marketing/output/console-capture" pnpm --dir packages/web/webapp run test:browser -- src/Project.browser.test.tsx
+```
+
+The command currently runs the whole browser suite (162 tests), including the capture
+fixture. `dashboard-projects-desktop.png` is cropped to 1280×560, removing empty lower
+space; its mobile counterpart is resized to 390px wide. Both become quality-85 WebP
+assets under `public/console-*.webp`. No production console routes or private data
+are used. The fixture represents project/conversation organization, not every control.
+
+`pnpm run screenshots` captures the marketing hero, open mobile menu, blueprint,
+console, workflows and setup at desktop1440×1000 and mobile390×844. No screenshot
+dimension exceeds2000px. Output stays gitignored.
 
 ## Local development
 

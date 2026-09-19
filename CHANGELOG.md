@@ -11,8 +11,9 @@
   card, sitemap/robots, and a dedicated CI lane protect the static output. The
   illustrated workflow explorer supports keyboard tabs, with no-JavaScript
   content, reduced-motion artwork, native FAQ disclosures, and install-command
-  copying. A scroll-linked 3D composition unfolds the anatomy of an agent, with
-  a pinned visual stage, pause/reduced-motion controls and static fallbacks.
+  copying. A shorter mobile-first layout adds a compact disclosure menu, a
+  refined mark and CTAs, restrained blueprint motion, and real console UI
+  imagery with clearly labelled synthetic data and source-build availability.
   Source only; the site is not deployed yet.
 
 - Add an opt-in Hound backend for `WebSearch` and `WebFetch` alongside

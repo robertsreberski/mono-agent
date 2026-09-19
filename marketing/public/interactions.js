@@ -1,4 +1,3 @@
-import { initScrollStory } from "./scroll-story.js";
 
 // Progressive enhancement only: no model requests, tracking, or persistence.
 const explorer = document.querySelector('[data-workflow-explorer]');
@@ -75,31 +74,33 @@ if (copy && command && status) {
   });
 }
 
-// Small pointer-responsive artwork; no scroll hijacking or continuous loop.
-const hero = document.querySelector('.hero');
-const art = document.querySelector('.hero-art');
-const motion = matchMedia('(prefers-reduced-motion: reduce)');
-const finePointer = matchMedia('(hover: hover) and (pointer: fine)');
-if (hero && art) {
-  let frame = 0;
-  const reset = () => {
-    cancelAnimationFrame(frame);
-    art.style.removeProperty('--art-x');
-    art.style.removeProperty('--art-y');
+// A compact disclosure menu, with plain visible links when JS is unavailable.
+const menu = document.querySelector('.menu-toggle');
+const navigation = document.querySelector('#site-navigation');
+const compact = matchMedia('(max-width: 640px)');
+if (menu && navigation) {
+  menu.hidden = false;
+  document.documentElement.dataset.navigation = 'enhanced';
+  const closeMenu = (focus = false) => {
+    menu.setAttribute('aria-expanded', 'false');
+    if (focus) menu.focus();
   };
-  hero.addEventListener('pointermove', (event) => {
-    if (motion.matches || document.documentElement.dataset.motion === "off" || !finePointer.matches || event.pointerType !== 'mouse') return;
-    cancelAnimationFrame(frame);
-    frame = requestAnimationFrame(() => {
-      const box = hero.getBoundingClientRect();
-      art.style.setProperty('--art-x', `${((event.clientX - box.left) / box.width - 0.5) * 12}px`);
-      art.style.setProperty('--art-y', `${((event.clientY - box.top) / box.height - 0.5) * 8}px`);
-    });
-  });
-  hero.addEventListener('pointerleave', reset);
-  motion.addEventListener('change', reset);
-  document.documentElement.addEventListener('motionpreferencechange', reset);
-  finePointer.addEventListener('change', reset);
+  menu.addEventListener('click', () => menu.setAttribute('aria-expanded', String(menu.getAttribute('aria-expanded') !== 'true')));
+  navigation.addEventListener('click', event => { if (event.target.closest('a')) closeMenu(); });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape' && menu.getAttribute('aria-expanded') === 'true') closeMenu(true); });
+  document.addEventListener('click', event => { if (!event.target.closest('.site-header')) closeMenu(); });
+  compact.addEventListener('change', () => closeMenu());
 }
-
-initScrollStory();
+const blueprint = document.querySelector('.blueprint-code');
+if (blueprint && !compact.matches) blueprint.open = true;
+// A single drawn connection through the blueprint. Never a scroll-jacked scene.
+const configuration = document.querySelector('#configuration');
+if (configuration && 'IntersectionObserver' in window) {
+  const observer = new IntersectionObserver(entries => {
+    if (entries.some(entry => entry.isIntersecting)) {
+      configuration.dataset.entered = 'true';
+      observer.disconnect();
+    }
+  }, { threshold: .15 });
+  observer.observe(configuration);
+}
