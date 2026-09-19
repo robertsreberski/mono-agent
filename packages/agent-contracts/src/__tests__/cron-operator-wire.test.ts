@@ -683,4 +683,21 @@ describe("cron operator wire contract", () => {
     expect(wireBytes(overflow)).toBe(MAX_CRON_OPERATOR_RESPONSE_BYTES + 1);
     expect(() => parseCronOperatorRunPage(overflow)).toThrowError(/invalid cron operator/iu);
   });
+
+  it("accepts a preflight gate skip and still rejects an unknown status", () => {
+    const gateSkip = summary({
+      status: "skipped_gate",
+      completedAt: "2026-08-14T10:00:01.000Z",
+      error: "no new items",
+    });
+    expect(parseCronOperatorRunSummary(gateSkip)).toMatchObject({
+      status: "skipped_gate",
+      completedAt: "2026-08-14T10:00:01.000Z",
+      error: "no new items",
+    });
+    // A gate skip never ran, so it carries no startedAt or blocked-by attribution.
+    expect(parseCronOperatorRunSummary(gateSkip)).not.toHaveProperty("startedAt");
+    expect(() => parseCronOperatorRunSummary(summary({ status: "skipped_gate_future" })))
+      .toThrowError(/invalid cron operator/iu);
+  });
 });

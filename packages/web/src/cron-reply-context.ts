@@ -126,7 +126,8 @@ export function formatCronReplyContext(candidate: CronReplySnapshotCandidate): s
 
 const RUN_TRIGGERS = new Set<WebCronRunTrigger>(["scheduled", "manual"]);
 const RUN_STATUSES = new Set<WebCronRunStatus>([
-  "admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "dropped",
+  "admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "skipped_gate",
+  "dropped",
 ]);
 const SOURCE_TRUNCATED_FIELDS = new Set<WebCronRunTruncatedField>([
   "artifactRunId", "error", "failureKind", "text",

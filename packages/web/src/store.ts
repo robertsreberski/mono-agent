@@ -1693,9 +1693,13 @@ export class WebStore {
         snapshotKind,
         capturedAt: this.now(),
         run,
-        text: run.text ?? "",
+        // A gate skip is not a failure: its bounded reason rides in `error` on
+        // the wire, so surface it as result text rather than a failure message.
+        text: run.status === "skipped_gate"
+          ? `Skipped by preflight gate${run.error === undefined ? "" : `: ${run.error}`}`
+          : run.text ?? "",
         ...(run.failureKind === undefined ? {} : { errorCode: run.failureKind }),
-        ...(run.error === undefined ? {} : { errorMessage: run.error }),
+        ...(run.error === undefined || run.status === "skipped_gate" ? {} : { errorMessage: run.error }),
         sourceFieldsTruncated: run.fieldsTruncated ?? [],
         sourceTruncationKnown: true,
       };
@@ -7151,6 +7155,7 @@ function isTerminalCronRun(status: WebCronRun["status"]): boolean {
     || status === "failed"
     || status === "cancelled"
     || status === "skipped_overlap"
+    || status === "skipped_gate"
     || status === "dropped";
 }
 
@@ -7237,11 +7242,13 @@ function cronRunParts(
   if (!hasText) {
     const stateText = run.status === "succeeded"
       ? "Completed silently (no message was reported)."
-      : run.status === "skipped_overlap"
-        ? run.blockedByTrigger === "manual"
-          ? "Scheduled firing skipped because an operator-started manual run was still in flight."
-          : "Firing skipped because the previous run was still in flight."
-        : run.status === "queued"
+      : run.status === "skipped_gate"
+        ? run.error ?? "Firing skipped by the job's preflight gate before any model turn."
+        : run.status === "skipped_overlap"
+          ? run.blockedByTrigger === "manual"
+            ? "Scheduled firing skipped because an operator-started manual run was still in flight."
+            : "Firing skipped because the previous run was still in flight."
+          : run.status === "queued"
           ? `Queued behind an active run${run.queueDepth === undefined ? "." : ` (position ${String(run.queueDepth)}).`}`
           : run.status === "dropped"
             ? "Dropped because the pending-run queue was full."
@@ -7254,7 +7261,10 @@ function cronRunParts(
                   : "Run is in progress.";
     parts.push({ type: "text", text: stateText });
   }
+  // A gate skip's `error` is its bounded reason, already shown as the state
+  // text; presenting it again as a failure would misreport a deliberate skip.
   if (!preserveLoadedError
+    && run.status !== "skipped_gate"
     && run.error !== undefined
     && !parts.some((part) => part.type === "error" && part.message === run.error)) {
     parts.push({
@@ -7374,7 +7384,8 @@ function parseStoredCronRun(serialized: string): WebCronRunSummary {
     || typeof run.orderedAt !== "string"
     || !Number.isSafeInteger(run.sequence)
     || (run.trigger !== "scheduled" && run.trigger !== "manual")
-    || !["admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "dropped"]
+    || !["admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "skipped_gate",
+      "dropped"]
       .includes(String(run.status))
     || !Number.isSafeInteger(run.eventCount)
     || Number(run.eventCount) < 0) {

@@ -948,6 +948,7 @@ export function CronRunPart({ data }: DataMessagePartProps) {
     || status === "failed"
     || status === "cancelled"
     || status === "skipped_overlap"
+    || status === "skipped_gate"
     || status === "dropped";
   const replyState = sourceId !== undefined && jobId !== undefined
     ? cronReplyState(sourceId, jobId, runId)

@@ -440,4 +440,6 @@ The A2A provider is loaded through `channels.plugins[]` with `package: "@mono-ag
 | `MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS` | `cron.notifyFailureCooldownHours` | Single-job cooldown, in hours, for all-models-failed error notices on `notify: true` cron jobs; default `6`. |
 | `MONO_AGENT_CRON_MODEL` | `cron.model` | Runtime model override for the default single job. |
 | `MONO_AGENT_CRON_EFFORT` | `cron.effort` | Reasoning-effort override for the default single job, subject to model support. |
+| `MONO_AGENT_CRON_PREFLIGHT_JSON` | `cron.preflight` | Explicit argv array (one-line JSON) evaluated before the model responder for the default single job; `{"run":false}` ends the firing as `skipped_gate`, and every gate failure fails open. |
+| `MONO_AGENT_CRON_PREFLIGHT_TIMEOUT_MS` | `cron.preflightTimeoutMs` | Bound, in milliseconds, for one preflight evaluation before it is killed and fails open; default `5000`, max `60000`, separate from `maxRunMs`. |
 | `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. Folder and config jobs merge; duplicate ids error. See [cron channel configuration](/channels/cron/). |
