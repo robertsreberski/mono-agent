@@ -184,18 +184,25 @@ times with backoff, impersonates TLS/browser headers even in its HTTP tier,
 reads ambient server-side proxy and API-key configuration, and may download
 models or fall back to archive snapshots on its own. One provider dispatch
 fans out across Hound's engine pool, so it is never one underlying request;
-host budget and cooldown count Hound invocations only. Mono-agent implements
+host budget and cooldown count Hound invocations only. Actual Hound search and
+fetch are additionally refused before quota, admission, or dispatch whenever
+the resolved sandbox network policy is anything but unrestricted; an
+allowlisted endpoint does not authorize remote fanout. Mono-agent implements
 no key/proxy rotation and never asks Hound to bypass quota or access gates.
 
 Search sends one query per call with native `max_results`, `freshness`
 (`day|week|month|year`), `language`, `site` (single include domain), and
 `exclude_sites`; alternates run sequentially within the existing budget, and
 server-provided action hints are stripped in favor of host next actions.
-Fetch is HTTP-only: `force_fetcher: "http"`, `respect_robots: true`, fresh
-extraction (`cache_ttl: 0`), no actions, headers, cookies, or proxies, with a
-finite content limit. Responses whose tier is not HTTP-only, whose source is
-not live, whose provenance is missing, or that refuse on robots policy are
-rejected before presentation with terminal codes. Remote truncation is marked
+Fetch is HTTP-only: `force_fetcher: "http"`, requested `respect_robots: true`,
+fresh extraction (`cache_ttl: 0`), no actions, headers, cookies, or proxies,
+with a finite content limit. Upstream robots handling is fail-open
+(unreachable robots files allow), so the flag requests compliance without
+guaranteeing it; do not use Hound where strict robots enforcement is required.
+Responses whose tier is not HTTP-only, whose source is not live, whose
+provenance is missing, or that carry the known robots-denied marker are
+rejected before presentation with terminal codes — an explicit refusal of
+known cases, never a fail-closed guarantee. Remote truncation is marked
 in document metadata and never auto-paginated; remote page links are
 normalized as bounded untrusted evidence. Strict Hound doctor liveness, like
 Parallel, uses only `tools/list`.
@@ -464,7 +471,7 @@ Fetch advances to the next selected provider only for `unusable_content`
 other than 401/407, or retryable `request_failed`/`timeout`. Local transient
 retries complete first. Authentication, sandbox, invalid parameters, unsupported
 content, byte limits, cancellation, and unsafe coordination are terminal; a
-successful local extraction never triggers Parallel. Hound robots refusals
+successful local extraction never triggers Parallel. Known Hound robots refusals
 (`robots_denied`), non-HTTP tiers, and non-live sources are likewise terminal
 and never fall through to local extraction. Source failures in
 Parallel's `errors[]` preserve their HTTP status. Rendering and alternate

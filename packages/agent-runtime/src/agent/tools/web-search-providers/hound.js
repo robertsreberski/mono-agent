@@ -1,6 +1,6 @@
 // @ts-check
 import { claimWebSearchRequest } from "../web-search-state.js";
-import { callHoundMcp, houndFailure, houndStructuredContent, HOUND_SEARCH_TOOL } from "../hound-mcp.js";
+import { callHoundMcp, houndFailure, houndRemoteAllowedByPolicy, houndStructuredContent, validateHoundEndpoint, HOUND_SEARCH_TOOL } from "../hound-mcp.js";
 import { canonicalizeSearchUrl, collapseWhitespace } from "./shared.js";
 
 /**
@@ -23,6 +23,12 @@ export const houndProvider = {
   admission: (config) => ({ kind: "hound", key: config.hound.endpoint, processPolicy: "endpoint" }),
   networkTargets: (config) => [config.hound.endpoint],
   async search(query, options) {
+    // The loopback endpoint gate in searchOneQuery is not sufficient: Hound
+    // fans out server-side to arbitrary public engines. A restricted host
+    // policy fails here, before quota is claimed and before any MCP dispatch.
+    if (!houndRemoteAllowedByPolicy(options.policy)) {
+      return { ok: false, backend: "hound", code: "network_denied", message: "Network access denied by sandbox policy.", retryable: false };
+    }
     try {
       // Reserve before connecting too: an exhausted run must not connect.
       claimWebSearchRequest(options.searchState, "hound", options.callClaims);
@@ -83,21 +89,7 @@ function normalizeHoundResult(entry) {
 
 function normalizeHoundEndpointConfig(input, backend) {
   if (backend !== "hound" && input === undefined) return { value: undefined };
-  let parsed;
-  try {
-    parsed = new URL(input?.endpoint ?? "");
-  } catch {
-    return { error: "Hound endpoint must be a valid loopback HTTP MCP URL with an explicit /mcp path." };
-  }
-  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/gu, "");
-  if (parsed.protocol !== "http:"
-    || !["localhost", "127.0.0.1", "::1"].includes(host)
-    || parsed.username || parsed.password || parsed.search || parsed.hash) {
-    return { error: "Hound endpoint must be an unauthenticated loopback HTTP URL." };
-  }
-  parsed.pathname = parsed.pathname.replace(/\/+$/u, "");
-  if (!parsed.pathname.endsWith("/mcp")) {
-    return { error: "Hound endpoint must include the explicit /mcp path." };
-  }
-  return { value: { endpoint: parsed.href.replace(/\/+$/u, "") } };
+  const validated = validateHoundEndpoint(input?.endpoint);
+  if (validated.error) return { error: validated.error };
+  return { value: { endpoint: validated.endpoint } };
 }

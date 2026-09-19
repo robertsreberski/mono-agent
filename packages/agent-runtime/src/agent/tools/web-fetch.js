@@ -1,5 +1,6 @@
 import { fetchParallelDocument, unsupportedParallelFetchOption } from "./parallel-web-fetch.js";
 import { fetchHoundDocument, unsupportedHoundFetchOption } from "./hound-web-fetch.js";
+import { validateHoundEndpoint } from "./hound-mcp.js";
 import { parallelSessionId } from "./parallel-mcp.js";
 import { withWebDeadline, coordinatedWebRequest, webRequestFailure } from "./web-request.js";
 // @ts-check
@@ -999,23 +1000,9 @@ async function performParallelFetch(params, options) {
 }
 
 function validateHoundFetchEndpoint(input) {
-  let parsed;
-  try {
-    parsed = new URL(input ?? "");
-  } catch {
-    return { error: "Hound endpoint must be a valid loopback HTTP MCP URL with an explicit /mcp path." };
-  }
-  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/gu, "");
-  if (parsed.protocol !== "http:"
-    || !["localhost", "127.0.0.1", "::1"].includes(host)
-    || parsed.username || parsed.password || parsed.search || parsed.hash) {
-    return { error: "Hound endpoint must be an unauthenticated loopback HTTP URL." };
-  }
-  parsed.pathname = parsed.pathname.replace(/\/+$/u, "");
-  if (!parsed.pathname.endsWith("/mcp")) {
-    return { error: "Hound endpoint must include the explicit /mcp path." };
-  }
-  return { endpoint: parsed.href.replace(/\/+$/u, "") };
+  const validated = validateHoundEndpoint(input);
+  if (validated.error) return { error: validated.error };
+  return { endpoint: validated.endpoint };
 }
 
 async function performHoundFetch(params, options) {

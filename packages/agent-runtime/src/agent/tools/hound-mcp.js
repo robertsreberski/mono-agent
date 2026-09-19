@@ -25,22 +25,58 @@ const HOUND_CONNECT_TIMEOUT_MS = 15_000;
 const HOUND_CALL_TIMEOUT_MS = 30_000;
 const HOUND_SEARCH_MAX_BYTES = 2 * 1024 * 1024;
 const HOUND_FETCH_MAX_BYTES = 4 * 1024 * 1024;
+// A Hound fetch always acquires the full finite document ceiling; the view
+// (line ranges, output budget, focus) applies locally afterwards. Bounding the
+// acquisition keeps every cache entry, focus filter, and byte ceiling
+// consistent no matter which view warms the cache first.
+export const HOUND_FETCH_CONTENT_CHARS = 200_000;
+const HOUND_LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "::1"];
 
-/** The endpoint URL must be an exact configured value; never a derived one. */
-function assertHoundEndpoint(endpoint) {
-  if (typeof endpoint !== "string" || !endpoint) {
-    throw Object.assign(new Error("Hound endpoint is not configured."), { code: "invalid_hound_config" });
-  }
+/**
+ * Strict endpoint validation, centralized for readiness, search, and fetch:
+ * unauthenticated loopback HTTP with an explicit `/mcp` path. Anything else
+ * (remote hosts, HTTPS, credentials, query, fragment, missing path) is
+ * rejected before any connection. Returns the normalized endpoint or an
+ * `{ error }` — never throws, so adapters can map it to their own codes.
+ */
+export function validateHoundEndpoint(input) {
   let parsed;
   try {
-    parsed = new URL(endpoint);
+    parsed = new URL(input ?? "");
   } catch {
-    throw Object.assign(new Error("Hound endpoint is not a valid URL."), { code: "invalid_hound_config" });
+    return { error: "Hound endpoint must be a valid loopback HTTP MCP URL with an explicit /mcp path." };
   }
-  if (parsed.username || parsed.password) {
-    throw Object.assign(new Error("Hound endpoint must not contain credentials."), { code: "invalid_hound_config" });
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/gu, "");
+  if (parsed.protocol !== "http:"
+    || !HOUND_LOOPBACK_HOSTS.includes(host)
+    || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    return { error: "Hound endpoint must be an unauthenticated loopback HTTP URL." };
   }
-  return parsed.href;
+  parsed.pathname = parsed.pathname.replace(/\/+$/u, "");
+  if (!parsed.pathname.endsWith("/mcp")) {
+    return { error: "Hound endpoint must include the explicit /mcp path." };
+  }
+  return { endpoint: parsed.href.replace(/\/+$/u, "") };
+}
+
+/**
+ * Actual Hound search/fetch fans out server-side to arbitrary public engines
+ * and follows redirects internally, so passing the loopback endpoint gate is
+ * NOT sufficient. Only unrestricted host policies authorize that remote
+ * fanout: an absent policy, sandbox `off`, or network mode `all`. Every other
+ * representation — `none`, `localhost`, `allowlist`, unknown modes, malformed
+ * shapes — fails closed, matching the canonical network gate's fail-closed
+ * posture for restricted policies. Readiness probes contact only the
+ * configured endpoint and are exempt; adapters enforce this before quota
+ * claims, coordinator admission, and any MCP dispatch.
+ */
+export function houndRemoteAllowedByPolicy(policy) {
+  try {
+    if (policy == null || policy.mode === "off") return true;
+    return policy.network?.mode === "all";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -50,7 +86,11 @@ function assertHoundEndpoint(endpoint) {
  * @param {string | null} tool null means tools/list readiness, never a query.
  */
 export async function callHoundMcp(endpoint, tool, args, options) {
-  const target = assertHoundEndpoint(endpoint);
+  const validated = validateHoundEndpoint(endpoint);
+  if (validated.error) {
+    throw Object.assign(new Error(validated.error), { code: "invalid_hound_config" });
+  }
+  const target = validated.endpoint;
   if (!options.sandbox.networkAllowsUrl(options.policy, target)) {
     throw Object.assign(new Error("Network access denied by sandbox policy."), { code: "network_denied" });
   }

@@ -1,13 +1,10 @@
 // @ts-check
-import { callHoundMcp, houndFailure, houndStructuredContent, HOUND_FETCH_TOOL } from "./hound-mcp.js";
+import { callHoundMcp, houndFailure, houndRemoteAllowedByPolicy, houndStructuredContent, validateHoundEndpoint, HOUND_FETCH_CONTENT_CHARS, HOUND_FETCH_TOOL } from "./hound-mcp.js";
 import { guardedSearch, collapseWhitespace } from "./web-search-providers/shared.js";
-import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "./shared/constants.js";
 import { assertNoWebAccessInterstitial } from "./web-access-interstitial.js";
 import { markdownToText, MAX_WEB_FETCH_LINKS, MAX_WEB_FETCH_LINK_TEXT_CHARS } from "./web-document-extractor.js";
 
 export const HOUND_FETCH_TIMEOUT_MS = 25_000;
-const HOUND_MAX_CONTENT_CHARS = 200_000;
-const HOUND_MIN_CONTENT_CHARS = 500;
 
 /**
  * HTTP-only Hound fetch parameters rejected before any invocation. Hound has
@@ -29,6 +26,12 @@ export async function fetchHoundDocument(url, params, options) {
   if (typeof endpoint !== "string" || !endpoint) {
     return { ok: false, backend: "hound", code: "invalid_hound_config", message: "Hound endpoint is not configured.", retryable: false };
   }
+  // The loopback endpoint and target gates below are not sufficient: the
+  // server fetches and follows redirects internally. A restricted host policy
+  // fails here, before coordinator admission and before any MCP dispatch.
+  if (!houndRemoteAllowedByPolicy(options.policy)) {
+    return { ok: false, backend: "hound", code: "network_denied", message: "Network access denied by sandbox policy.", retryable: false };
+  }
   if (![url.href, endpoint].every((target) => options.sandbox.networkAllowsUrl(options.policy, target))) {
     return { ok: false, backend: "hound", code: "network_denied", message: "Network access denied by sandbox policy.", retryable: false };
   }
@@ -43,12 +46,15 @@ export async function fetchHoundDocument(url, params, options) {
 }
 
 function houndFetchArgs(url, params) {
-  const requested = Number(params.max_output_chars);
-  const budget = Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : DEFAULT_MAX_TOOL_OUTPUT_CHARS;
   return {
     url: url.href,
     extraction_type: params.format === "text" ? "text" : "markdown",
-    max_content_chars: Math.min(HOUND_MAX_CONTENT_CHARS, Math.max(HOUND_MIN_CONTENT_CHARS, budget)),
+    // Acquisition always spans the full finite document ceiling, independent
+    // of the viewer's output budget: the controller strips max_output_chars
+    // (and focus, links, slices) from the acquisition key, so a narrow first
+    // view must never shrink what later views, focus filters, and the shared
+    // cache can see. The fixed ceiling keeps transport bytes bounded.
+    max_content_chars: HOUND_FETCH_CONTENT_CHARS,
     // Inside the host call bound: the MCP call timeout aborts first, so the
     // server reports its own timeout instead of surfacing a transport abort.
     timeout: HOUND_FETCH_TIMEOUT_MS,
@@ -62,7 +68,9 @@ function houndFetchArgs(url, params) {
     options: {
       // Server default is False (and bypassable server-side); always request it.
       respect_robots: true,
-      ...(params.include_links ? { include_links: true } : {}),
+      // Remote links are always acquired bounded and normalized below; the
+      // presentation layer decides whether the caller asked to see them.
+      include_links: true,
     },
   };
 }
@@ -127,10 +135,15 @@ function normalizeHoundFetchResponse(response, url, params, options, started) {
   const body = params.format === "text" ? markdownToText(markdown) : markdown;
   const remoteTruncated = data.is_truncated === true;
   const totalExtracted = Number.isSafeInteger(data.total_extracted_chars) ? data.total_extracted_chars : markdown.length;
-  const links = params.include_links ? normalizeHoundLinks(data.links, finalUrl) : undefined;
+  // Links are always acquired bounded and normalized; formatWebFetchDocument
+  // decides whether the caller's view includes them.
+  const links = normalizeHoundLinks(data.links, finalUrl);
   const metadataParts = ["Hound remote HTTP-only extraction; provider-supplied content."];
   if (remoteTruncated) {
-    metadataParts.push(`Remote source truncated after ${totalExtracted} extracted characters; only the first ${markdown.length} are shown. The remainder is not fetched automatically; re-fetch with a narrower focus to read on.`);
+    // Truthful cut marker with no recovery promise: content past the remote
+    // cut was never acquired, so focus filters and continuations operate on
+    // this prefix only — including honest no-match.
+    metadataParts.push(`Remote source truncated after ${totalExtracted} extracted characters; only the first ${markdown.length} are shown.`);
   }
   const outcome = {
     status: "ok", code: "ok", backend: "hound", retryable: false, attempts: 1,
