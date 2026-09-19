@@ -26,6 +26,18 @@
   redirects, retries, and keys are not governed. Doctor liveness uses only
   `tools/list`.
 
+- Keep model-guided BuJo capture faithful to speaker, evidence, and preference
+  scope; distinguish corrected reports from actual state changes and avoid
+  turning observed outcomes into causal proof, without extra model calls or a
+  storage-schema change.
+- Let automatic direct-fact recall use finite first-party reported properties,
+  choices, and work/live locations while rendering their attribution unchanged;
+  require exact textual reporter identity, reject compatibility-hidden unsafe
+  syntax, and keep ambiguous corrections and conflicts out of automatic context.
+- Reject memory E2E corpus/split selections with no groups before provider
+  setup, build, or benchmark execution instead of reporting a successful
+  zero-trial run.
+
 - Return managed `WebSearch` and `WebFetch` results as a compact JSON envelope
   with `status`, host-written summary, untrusted content or results, source and
   coverage metadata, and typed `next_actions`. Add deterministic `WebFetch`

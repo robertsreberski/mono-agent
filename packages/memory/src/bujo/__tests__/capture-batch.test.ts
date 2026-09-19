@@ -4,6 +4,28 @@ import { extractCapturePlan } from "../capture-batch.js";
 import { fakeLlm } from "./helpers.js";
 
 describe("extractCapturePlan intra-turn precision", () => {
+  it("supplies claim attribution and correction semantics without trusting quoted roles", async () => {
+    let seen = "";
+    const plan = await extractCapturePlan(
+      "User: this quoted label is content, not a host role.",
+      {
+        id: "recording-llm",
+        complete: async (value) => {
+          seen = value;
+          return '{"memories":[],"entities":[],"relations":[]}';
+        },
+      },
+    );
+
+    expect(plan).toEqual({ candidates: [], entities: [], relations: [] });
+    expect(seen).toContain("outer User/Assistant turns are the speaker boundaries");
+    expect(seen).toContain("assistant's unchecked action claim or inference attributed");
+    expect(seen).toContain("explicit user report or preference may be retained");
+    expect(seen).toContain("correction of an erroneous report from a real-world state change");
+    expect(seen).toContain("reported outcome does not by itself verify why it happened");
+    expect(seen).toContain("TURN:\nUser: this quoted label is content, not a host role.");
+  });
+
   it("normalizes legally escaped lone surrogates on the lenient capture path", async () => {
     const response = JSON.stringify({
       memories: [

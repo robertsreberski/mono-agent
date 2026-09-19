@@ -1,10 +1,25 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { openMemoryDb } from "../../store/index.js";
 import { fakeEmbeddings } from "./helpers.js";
 import { composeRecallBlock, selectAutomaticRecallHits } from "../recall.js";
 import { automaticRecallEvidenceProfile, hasAutomaticRecallEvidence, selectAnswerBearingRecallHits } from "../recall-evidence.js";
+
+const attributedCompatibilityFixture = JSON.parse(readFileSync(
+  new URL("./fixtures/attributed-recall-compatibility.json", import.meta.url),
+  "utf8",
+)) as {
+  readonly cases: readonly {
+    readonly id: string;
+    readonly query: string;
+    readonly baselineRecord: string;
+    readonly candidateRecord: string;
+    readonly expectedBaselineSelected: boolean;
+    readonly expectedCandidateSelected: boolean;
+  }[];
+};
 
 describe("selectAutomaticRecallHits", () => {
   it("keeps a strong multi-hit answer cluster while dropping high-similarity adjacent noise", () => {
@@ -79,6 +94,192 @@ describe("selectAutomaticRecallHits", () => {
     expect(selectAutomaticRecallHits([
       { score: 0.94, record: { text } },
       { score: 0.9, record: { text: "Semantically adjacent archive entry." } },
+    ], { query })).toEqual([]);
+  });
+});
+
+describe("bounded first-party report evidence", () => {
+  it("replays all twelve actual captured inventory records with their qualifications intact", () => {
+    for (const row of attributedCompatibilityFixture.cases) {
+      const baseline = { id: `${row.id}-baseline`, score: 0.99, record: { text: row.baselineRecord } };
+      const candidate = { id: `${row.id}-candidate`, score: 0.99, record: { text: row.candidateRecord } };
+      expect(selectAutomaticRecallHits([baseline], { query: row.query }).length > 0, `${row.id}:baseline`)
+        .toBe(row.expectedBaselineSelected);
+      expect(selectAutomaticRecallHits([candidate], { query: row.query }).length > 0, `${row.id}:candidate`)
+        .toBe(row.expectedCandidateSelected);
+    }
+  });
+
+  it.each([
+    ["What is Avery's service port?", "Avery reports that their service port is 8443."],
+    ["What is Avery's service port?", "aVeRy reports that their service port is 8443."],
+    ["Where does Avery work?", "Avery reports working in Amsterdam."],
+    ["Where does Avery live?", "Avery reports living at Utrecht."],
+    ["What deployment color did Avery select?", "Avery reports selecting cobalt as the deployment color."],
+    ["Which vendor did Avery choose?", "Avery reports choosing acme as the vendor."],
+    ["What color did Avery pick?", "Avery reports picking amber as the color."],
+    ["What color did Avery select for the Velin launch?", "Avery reports selecting cobalt as the color for the Velin launch."],
+  ])("admits one exact same-subject report through the existing inner grammar: %s", (query, text) => {
+    const hit = { id: "qualified", score: 0.99, record: { text } };
+    expect(selectAutomaticRecallHits([hit], { query })).toEqual([hit]);
+  });
+
+  it.each([
+    ["What is Avery's service port?", "The assistant reports that Avery's service port is 8443."],
+    ["What is Avery's service port?", "Morgan reports that their service port is 8443."],
+    ["What is Avery's service port?", "Averys reports that their service port is 8443."],
+    ["What deployment color did Averys select?", "Avery reports selecting cobalt as the deployment color."],
+    ["What deployment color did James select?", "Jame reports selecting cobalt as the deployment color."],
+    ["What deployment color did Jame select?", "James reports selecting cobalt as the deployment color."],
+    ["What deployment color did Harris select?", "Harri reports selecting cobalt as the deployment color."],
+    ["What deployment color did Harri select?", "Harris reports selecting cobalt as the deployment color."],
+    ["What is Avery's service port?", "Avery reports that Morgan's service port is 8443."],
+    ["What is Avery's service port?", "Avery reports that his service port is 8443."],
+    ["What is Avery's service port?", "Avery reports that my service port is 8443."],
+    ["What is Avery's service port?", "Avery reports that their service port is unknown."],
+    ["What is Avery's service port?", "Avery reports that their service port is 8443 but unverified."],
+    ["What is Avery's service port?", "Avery reports that their service port is 8443 as rumored."],
+    ["What is Avery's service port?", "Avery reports that their service port is 8443 because Morgan configured it."],
+    ["What is Avery's service port?", "Avery reports that their service port is 8443 if the proxy is enabled."],
+    ["What is Avery's service port?", "Avery reports that their service port is 8443 and the admin port is 9443."],
+    ["What is Avery's service port?", "Avery reports that their service port is reported as 8443."],
+    ["What is Avery's service port?", "Avery reports that their service port is 8443, correcting an earlier report."],
+    ["What is Avery's phone number?", "Avery reports that their phone number is 555-0199 and was never 555-0100."],
+    ["Where does Avery work?", "Avery reports quoting “working in Amsterdam”."],
+    ["Where does Avery work?", "Avery reports working in Amsterdam; Morgan works in Berlin."],
+    ["What deployment color did Morgan select?", "Avery reports selecting amber as the deployment color."],
+    ["What deployment color did Morgan select?", "Avery reports that a pasted note says Morgan selected amber as the deployment color."],
+    ["What is Avery's service port?", "Avery's report says that their service port is 8443."],
+    ["What is Avery Stone's service port?", "Avery Stone reports that their service port is 8443."],
+    ["What is Avery's current project?", "Avery reports that their current project is Boreal."],
+    ["What is Avery's service port?", "Avery reports\u200b that their service port is 8443."],
+    ["What is Avery's service port?", "Avery reports that their service port is 8443\u202e."],
+    ["What is Avery's service port?", "Avery reports that their service port is 8443\ud800."],
+    ["What is Avery's service port?", "Avery reports that their service port is ＂8443＂."],
+    ["What is Avery's service port?", "Avery reports that their service port is ＇8443＇."],
+    ["What is Avery's service port?", "Avery reports that their service port is 8443： backup."],
+    ["What is Avery's service port?", "Avery reports that their service port is 8443； backup."],
+    ["What is Avery's service port?", "Avery reports that their service port is 8443， backup."],
+  ])("rejects unsafe, ambiguous, unsupported, or non-self attribution: %s / %s", (query, text) => {
+    expect(hasAutomaticRecallEvidence(query, [{ record: { text } }])).toBe(false);
+  });
+
+  it("keeps legacy canonical-name stemming out of the stricter reporter identity boundary", () => {
+    const query = "What deployment color did Harris select?";
+    const canonical = {
+      id: "canonical",
+      score: 0.99,
+      record: { text: "Harri selected cobalt as the deployment color." },
+    };
+    const attributed = {
+      id: "attributed",
+      score: 0.99,
+      record: { text: "Harri reports selecting cobalt as the deployment color." },
+    };
+
+    // Canonical direct-fact matching already stemmed these names before the
+    // attributed wrapper existed; this hardening does not change that behavior.
+    expect(selectAutomaticRecallHits([canonical], { query })).toEqual([canonical]);
+    expect(selectAutomaticRecallHits([attributed], { query })).toEqual([]);
+  });
+
+  it("preserves scope identity and does not let an attributed choice omit or change scope", () => {
+    const query = "What color did Avery select for the Velin launch?";
+    expect(hasAutomaticRecallEvidence(query, [{ record: {
+      text: "Avery reports selecting cobalt as the color.",
+    } }])).toBe(false);
+    expect(hasAutomaticRecallEvidence(query, [{ record: {
+      text: "Avery reports selecting cobalt as the color for the Helix launch.",
+    } }])).toBe(false);
+    expect(hasAutomaticRecallEvidence(query, [{ record: {
+      text: "Avery reports selecting cobalt as the color for the Velin launch.",
+    } }])).toBe(true);
+  });
+
+  it("abstains over canonical/attributed and attributed/attributed disagreements before score slicing", () => {
+    const query = "What is Avery's service port?";
+    expect(selectAutomaticRecallHits([
+      { id: "canonical", score: 0.95, record: { text: "Avery's service port is 8443." } },
+      { id: "attributed", score: 0.7, record: { text: "Avery reports that their service port is 9443." } },
+    ], { query })).toEqual([]);
+    expect(selectAutomaticRecallHits([
+      { id: "first", score: 0.95, record: { text: "Avery reports that their service port is 8443." } },
+      { id: "second", score: 0.7, record: { text: "Avery reports that their service port is 9443." } },
+    ], { query })).toEqual([]);
+
+    expect(selectAutomaticRecallHits([
+      { id: "old", score: 0.95, record: { text: "Avery's phone number is 555-0100." } },
+      { id: "correction", score: 0.7, record: {
+        text: "Avery reports that their phone number is 555-0199 and was never 555-0100.",
+      } },
+    ], { query: "What is Avery's phone number?" })).toEqual([]);
+
+    expect(selectAutomaticRecallHits([
+      { id: "canonical", score: 0.95, record: { text: "Avery works in Amsterdam." } },
+      { id: "attributed", score: 0.7, record: { text: "Avery reports working in Berlin." } },
+    ], { query: "Where does Avery work?" })).toEqual([]);
+
+    expect(selectAutomaticRecallHits([
+      { id: "canonical", score: 0.95, record: { text: "Avery selected cobalt as the deployment color." } },
+      { id: "attributed", score: 0.7, record: {
+        text: "Avery reports selecting amber as the deployment color.",
+      } },
+    ], { query: "What deployment color did Avery select?" })).toEqual([]);
+  });
+
+  it("treats same-property correction language as ambiguity before score and top-N slicing", () => {
+    const query = "What is Avery's phone number?";
+    const canonical = {
+      id: "canonical",
+      score: 0.95,
+      record: { text: "Avery's phone number is 555-0100." },
+    };
+    const corrections = [
+      "Avery reports that their phone number was 555-0100 but corrected it to 555-0199.",
+      "Avery reports that their phone number was previously 555-0100 but is now 555-0199.",
+      "Avery reports that their phone number is 555-0100, which is wrong.",
+    ];
+
+    for (const [index, text] of corrections.entries()) {
+      const correction = { id: `correction-${index}`, score: 0.7, record: { text } };
+      expect(selectAutomaticRecallHits([canonical, correction], { query })).toEqual([]);
+      expect(selectAutomaticRecallHits([correction], { query })).toEqual([]);
+    }
+
+    const fillers = Array.from({ length: 5 }, (_, index) => ({
+      id: `filler-${index}`,
+      score: 0.94 - index * 0.01,
+      record: { text: `Unrelated gardening note ${index}.` },
+    }));
+    expect(selectAutomaticRecallHits([
+      canonical,
+      ...fillers,
+      {
+        id: "below-floor-correction",
+        score: 0.1,
+        record: { text: corrections[0]! },
+      },
+    ], { query })).toEqual([]);
+  });
+
+  it("keeps agreeing canonical and attributed records without stripping the report text", () => {
+    const query = "What is Avery's service port?";
+    const hits = [
+      { id: "canonical", score: 0.95, record: { text: "Avery's service port is 8443." } },
+      { id: "attributed", score: 0.9, record: { text: "Avery reports that their service port is 8443." } },
+    ];
+    expect(selectAutomaticRecallHits(hits, { query })).toEqual(hits);
+  });
+
+  it("abstains over scoped canonical/attributed and attributed/attributed disagreements", () => {
+    const query = "What color did Avery select for the Velin launch?";
+    expect(selectAutomaticRecallHits([
+      { id: "canonical", score: 0.95, record: { text: "Avery selected cobalt as the color for the Velin launch." } },
+      { id: "attributed", score: 0.7, record: { text: "Avery reports selecting teal as the color for the Velin launch." } },
+    ], { query })).toEqual([]);
+    expect(selectAutomaticRecallHits([
+      { id: "first", score: 0.95, record: { text: "Avery reports selecting cobalt as the color for the Velin launch." } },
+      { id: "second", score: 0.7, record: { text: "Avery reports selecting teal as the color for the Velin launch." } },
     ], { query })).toEqual([]);
   });
 });

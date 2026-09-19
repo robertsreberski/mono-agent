@@ -131,6 +131,21 @@ provider or invent semantic scores. A Lite store with no embedding provider is
 normally `lexical_only` and is not degraded. Callers must keep the degradation
 visible even when no lexical hit survives their own selection policy.
 
+### Automatic direct-fact evidence
+
+The provider-free automatic selector accepts only finite direct-fact query and
+record grammars. An exact first-party report may wrap an otherwise supported
+property, choice, or work/live location when its textual reporter matches the
+query subject exactly apart from case; broader canonical name stemming is not
+used for that boundary. NFKC is used only to detect compatibility characters
+that hide unsafe quotation or punctuation, never to sanitize a report into an
+accepted form. The selector returns and renders the attributed record unchanged;
+it does not authenticate a user, resolve real identity from the name, or verify
+the proposition. Assistant, third-party, quoted, uncertain, corrected,
+coordinated, causal, conditional, negated, and conflicting evidence still
+abstains and remains available to deliberate recall. A same-property correction
+blocks automatic selection without inferring either its old or replacement value.
+
 ### Explicit remember writes
 
 `BujoMemoryStore.remember(conversationId, text)` durably stores one explicitly
@@ -205,6 +220,13 @@ reconcile prompt states the exact action-dependent objects: `ADD` has only index
 `NOOP` requires a supplied target id, and `UPDATE`/`SUPERSEDE` require that target plus
 complete replacement text. The strict parser remains authoritative and never clamps,
 rescales, fills missing fields, or coerces model values.
+
+Capture and reconciliation prompts ask the selected model to preserve material
+speaker, evidence, and preference scope; distinguish corrections of erroneous
+reports from real-world changes; and keep observed outcomes separate from causal
+guesses. This is model guidance, not factual verification: the parser enforces
+the JSON contract but cannot prove a claim, infer hidden evidence, or guarantee
+semantic fidelity.
 
 `@mono-agent/memory/bujo` also exposes a synchronous provider-free strict health
 audit. It takes a snapshot-coherent view of managed identity, SQLite and

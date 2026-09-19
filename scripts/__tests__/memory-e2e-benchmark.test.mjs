@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ARMS, loadCorpus, makePlan, serializableProfile, sourceOnly, contextFor, validateCorpus } from "../lib/memory-e2e-dataset.mjs";
+import { ARMS, armsFor, loadCorpus, makePlan, serializableProfile, sourceOnly, contextFor, validateCorpus } from "../lib/memory-e2e-dataset.mjs";
 import { Budget, canonicalFailureKind, captureLlm, failureKindOf, isFatalFailureKind, meteredEmbeddings, meteredRuntime, realProviders, scriptedProviders, usageOf } from "../lib/memory-e2e-providers.mjs";
 import { percentiles, ratio, lexicalDiagnostic, safeArtifact, ownedParent, summarize } from "../lib/memory-e2e-report.mjs";
 import { awaitReady, captureFailureKindFor, cleanupTrial, readySnapshot } from "../lib/memory-e2e-runner.mjs";
@@ -438,5 +438,139 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(providers.kind).toBe("scripted");
     const result = await providers.extractor.run("", { messages: [{ content: "\nTURN:\nUser (Fiction): A green cup.\nAssistant: Noted." }] });
     expect(JSON.parse(result.text).memories[0].text).toBe("Fiction said: A green cup.");
+  });
+});
+
+describe("bujo-learning-v1 corpus selection (baseline diagnosis, not model quality)", () => {
+  it("freezes the corpus and restricts it to the baseline and reference arms", async () => {
+    const { corpus, sha256 } = await loadCorpus("bujo-learning-v1");
+    expect(sha256).toBe("abef34dff9d24c83dcf8ccb2c79496693c85461834fadc33f3f4a64dd4b5c58b");
+    expect(corpus.groups).toHaveLength(8);
+    expect(armsFor(corpus)).toEqual(["bujo", "full-history"]);
+    // Eight distinct diagnostic categories, one per scenario.
+    expect(new Set(corpus.groups.map((g) => g.evaluation.category)).size).toBe(8);
+    const plan = makePlan({ corpus, sha256, split: "evaluation" });
+    expect(plan.arms).toEqual(["bujo", "full-history"]);
+    expect(plan.workload).toEqual({ questions: 8, trials: 16, historicalTurnsPerMemoryArm: 17, captureStepsMaximum: 34, readerStepsMaximum: 48 });
+    // The declared workload must fit the split's own step ceiling.
+    expect(plan.workload.captureStepsMaximum + plan.workload.readerStepsMaximum)
+      .toBeLessThanOrEqual(plan.limits.chatSteps);
+  });
+
+  it("keeps every evidence turn out of the recent-only reader context", async () => {
+    const { corpus } = await loadCorpus("bujo-learning-v1");
+    for (const group of corpus.groups) {
+      const source = sourceOnly(group);
+      const recent = JSON.stringify(contextFor(source, "bujo"));
+      // The bujo arm must recover evidence from memory, never from context.
+      for (const id of group.evaluation.evidenceTurnIds) {
+        const evidence = group.source.turns.find((turn) => turn.id === id);
+        expect(recent).not.toContain(evidence.user);
+      }
+      expect(Buffer.byteLength(recent)).toBeLessThanOrEqual(2048);
+    }
+  });
+
+  it("never leaks rubric, category or accepted answers into the source projection", async () => {
+    const { corpus } = await loadCorpus("bujo-learning-v1");
+    for (const group of corpus.groups) {
+      const projected = JSON.stringify(sourceOnly(group));
+      expect(projected).not.toContain(group.evaluation.rubric);
+      expect(projected).not.toContain(group.evaluation.category);
+      for (const accepted of group.evaluation.accepted) expect(projected.toLowerCase()).not.toContain(`"${accepted.toLowerCase()}"`);
+    }
+  });
+
+  it("preserves fictional-v1 semantics and rejects unknown or malformed corpora", async () => {
+    const original = await loadCorpus();
+    const development = makePlan(original);
+    expect(development.arms).toEqual(ARMS);
+    expect(development.workload).toEqual({ questions: 2, trials: 10, historicalTurnsPerMemoryArm: 8, captureStepsMaximum: 16, readerStepsMaximum: 30 });
+    expect(makePlan({ ...original, split: "evaluation" }).workload.questions).toBe(6);
+    await expect(loadCorpus("../../../etc/passwd")).rejects.toThrow("invalid_corpus_name");
+    await expect(loadCorpus("unknown-v9")).rejects.toThrow("invalid_corpus_name");
+    const { corpus } = await loadCorpus("bujo-learning-v1");
+    expect(() => validateCorpus({ ...corpus, arms: ["bujo", "bujo"] })).toThrow("invalid_arms");
+    expect(() => validateCorpus({ ...corpus, arms: ["nonexistent"] })).toThrow("invalid_arms");
+    expect(() => validateCorpus({ ...corpus, turnsPerGroup: { min: 3, max: 2 } })).toThrow("invalid_turn_bounds");
+    // A group outside the declared bounds must fail rather than run short.
+    const short = structuredClone(corpus);
+    short.groups[0].source.turns = short.groups[0].source.turns.slice(0, 1);
+    expect(() => validateCorpus(short)).toThrow("invalid_turns");
+  });
+
+  it("selects the corpus from the CLI and binds it into the confirmation digest", async () => {
+    const lines = [];
+    await main(["--dry-run", "--corpus", "bujo-learning-v1", "--split", "evaluation"], { stdout: (value) => lines.push(value) });
+    const plan = JSON.parse(lines[0]);
+    expect(plan.corpus).toBe("bujo-learning-v1");
+    expect(plan.arms).toEqual(["bujo", "full-history"]);
+    expect(plan.confirmation).toMatch(/^[0-9a-f]{64}$/u);
+
+    const other = [];
+    await main(["--dry-run", "--split", "evaluation"], { stdout: (value) => other.push(value) });
+    const base = JSON.parse(other[0]);
+    expect(base.corpus).toBe("fictional-v1");
+    // A different corpus must invalidate a confirmation taken for another one.
+    expect(base.confirmation).not.toBe(plan.confirmation);
+    await expect(main(["--dry-run", "--corpus", "nope"])).rejects.toThrow("invalid_corpus_name");
+  });
+
+  it.each(["bujo-learning-v1", "capture-fidelity-v1"])(
+    "rejects an omitted split for evaluation-only corpus %s",
+    async (corpusName) => {
+      const loaded = await loadCorpus(corpusName);
+      expect(() => makePlan(loaded)).toThrow("empty_corpus_split");
+      await expect(main(["--dry-run", "--corpus", corpusName])).rejects.toThrow("empty_corpus_split");
+    },
+  );
+
+  it.each(["bujo-learning-v1", "capture-fidelity-v1"])(
+    "rejects an explicitly empty split for %s before build or providers",
+    async (corpusName) => {
+      const prepareBuild = vi.fn();
+      const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
+      await expect(main(["--real", "--corpus", corpusName, "--split", "development"], { prepareBuild }))
+        .rejects.toThrow("empty_corpus_split");
+      expect(prepareBuild).not.toHaveBeenCalled();
+      expect(network).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("capture-fidelity-v1 frozen controls", () => {
+  it("binds the author-visible controls to an exact fixture and bounded workload", async () => {
+    const { corpus, sha256 } = await loadCorpus("capture-fidelity-v1");
+    expect(sha256).toBe("485dfe3f52da5e51a72a667721d30b5646d9c51d6cb0a3a327c727e88a3bb34e");
+    expect(corpus.groups).toHaveLength(6);
+    expect(armsFor(corpus)).toEqual(["bujo", "full-history"]);
+    expect(new Set(corpus.groups.map((group) => group.evaluation.category)).size).toBe(6);
+    const plan = makePlan({ corpus, sha256, split: "evaluation" });
+    expect(plan.workload).toEqual({
+      questions: 6,
+      trials: 12,
+      historicalTurnsPerMemoryArm: 18,
+      captureStepsMaximum: 36,
+      readerStepsMaximum: 36,
+    });
+    expect(plan.workload.captureStepsMaximum + plan.workload.readerStepsMaximum)
+      .toBeLessThanOrEqual(plan.limits.chatSteps);
+  });
+
+  it("keeps annotations out of both arms and evidence out of BuJo recent context", async () => {
+    const { corpus } = await loadCorpus("capture-fidelity-v1");
+    for (const group of corpus.groups) {
+      const source = sourceOnly(group);
+      const projected = JSON.stringify(source);
+      expect(projected).not.toContain(group.evaluation.rubric);
+      expect(projected).not.toContain(group.evaluation.category);
+      expect(projected).not.toContain("expectedMemory");
+      expect(contextFor(source, "full-history")).toHaveLength(source.turns.length * 2);
+      const recent = JSON.stringify(contextFor(source, "bujo"));
+      for (const id of group.evaluation.evidenceTurnIds) {
+        const evidence = group.source.turns.find((turn) => turn.id === id);
+        expect(recent).not.toContain(evidence.user);
+      }
+    }
   });
 });
