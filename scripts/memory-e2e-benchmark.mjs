@@ -2,7 +2,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join, relative } from "node:path";
-import { loadCorpus, makePlan } from "./lib/memory-e2e-dataset.mjs";
+import { CORPORA, loadCorpus, makePlan } from "./lib/memory-e2e-dataset.mjs";
 import { ownedParent, writeArtifacts } from "./lib/memory-e2e-report.mjs";
 
 import { prepareRealBuild, sourceState, verifyRealBuild } from "./lib/memory-e2e-build.mjs";
@@ -11,7 +11,7 @@ const ROOT = fileURLToPath(new URL("../", import.meta.url)).replace(/\/$/u, "");
 export function parseArguments(argv) {
   const flags = {};
   const boolean = new Set(["dry-run", "real", "help"]);
-  const valued = new Set(["split", "reader", "extractor", "embedding-provider", "embedding-model", "dimension", "confirm-plan", "pi-auth-path"]);
+  const valued = new Set(["corpus", "split", "reader", "extractor", "embedding-provider", "embedding-model", "dimension", "confirm-plan", "pi-auth-path"]);
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i].replace(/^--/u, "");
     if (argv[i] !== `--${key}` || Object.hasOwn(flags, key) || (!boolean.has(key) && !valued.has(key))) throw new Error("invalid_arguments");
@@ -46,11 +46,13 @@ export function profileFrom(flags) {
 export async function main(argv = process.argv.slice(2), { stdout = console.log, prepareBuild = prepareRealBuild } = {}) {
   const flags = parseArguments(argv);
   if (flags.help) {
-    stdout("memory-e2e-benchmark [--dry-run] [--split development|evaluation] [--pi-auth-path PATH]\nDefault: scripted offline production-path contract, NOT model quality.\nReal execution: --real --reader provider:model --extractor provider:model --embedding-provider ollama|lmstudio|openai --embedding-model model --dimension N [--pi-auth-path PATH] --confirm-plan SHA256\nOAuth chat routes need --pi-auth-path pointing at an existing Pi auth file (for example the standard Pi auth file; consumers may use different paths). Without it the runtimes keep ambient environment auth. The raw path never enters plans or reports; only its fingerprint binds the confirmation.\nFirst obtain SHA256 with the same profile and --dry-run. Outputs stay under .worklab-tmp/memory-e2e. No dataset downloads or consumer configuration.");
+    stdout("memory-e2e-benchmark [--dry-run] [--corpus fictional-v1|bujo-learning-v1|capture-fidelity-v1] [--split development|evaluation] [--pi-auth-path PATH]\nDefault: scripted offline production-path contract, NOT model quality.\nReal execution: --real --reader provider:model --extractor provider:model --embedding-provider ollama|lmstudio|openai --embedding-model model --dimension N [--pi-auth-path PATH] --confirm-plan SHA256\nOAuth chat routes need --pi-auth-path pointing at an existing Pi auth file (for example the standard Pi auth file; consumers may use different paths). Without it the runtimes keep ambient environment auth. The raw path never enters plans or reports; only its fingerprint binds the confirmation.\nFirst obtain SHA256 with the same profile and --dry-run. Outputs stay under .worklab-tmp/memory-e2e. No dataset downloads or consumer configuration.");
     return 0;
   }
   const { head } = sourceState(ROOT);
-  const loaded = await loadCorpus();
+  const corpusName = flags.corpus ?? "fictional-v1";
+  if (!CORPORA.includes(corpusName)) throw new Error("invalid_corpus_name");
+  const loaded = await loadCorpus(corpusName);
   const profile = profileFrom(flags);
   const plan = makePlan({ ...loaded, split: flags.split ?? "development", profile, codeRevision: head });
   if (flags["dry-run"]) { stdout(JSON.stringify(plan, null, 2)); return 0; }

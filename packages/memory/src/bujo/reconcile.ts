@@ -570,6 +570,9 @@ Use exactly one of these object shapes:
 
 Rules:
 - add means genuinely new; noop means duplicate; update means refinement; supersede means contradiction.
+- Compare the meaning as well as the topic: speaker attribution, stated scope, evidence limits, and correction-versus-state-change qualification are durable information.
+- Replacement text must not turn an attributed or unchecked claim into an unqualified fact, turn an observed outcome into causal proof, or turn correction of an erroneous report into a former real-world state. Preserve an explicit rename or other real state change as history when material.
+- An explicit user report or preference may remain useful without outside proof; preserve its speaker and scope rather than discarding it for being unverified.
 - Preserve every input index exactly once. N is the exact JSON integer from that input item.
 - For noop, update, and supersede, targetId is REQUIRED and copied byte-for-byte from that candidate's existing[].id. add MUST omit targetId.
 - A targetId may be selected by at most one decision in the whole batch.
@@ -744,6 +747,9 @@ a duplicate, a refinement, or a contradiction. Return ONLY JSON:
 - noop: an exact duplicate of an existing memory (no change needed).
 - update: refines/merges an existing memory; set targetId and text to the merged sentence.
 - supersede: contradicts/replaces an existing memory; set targetId and text to the new sentence.
+- Compare speaker attribution, stated scope, evidence limits, and correction-versus-state-change meaning, not just topic similarity.
+- Merged or replacement text must not promote an attributed or unchecked claim to fact, infer a cause from an observed outcome, or describe an erroneous report as a former real-world state. Preserve an explicit rename or other real state change as history when material.
+- Explicit user reports and preferences may remain useful without outside proof; preserve their speaker and scope.
 
 CANDIDATE: type=${candidate.type} text="${candidate.text}"
 
