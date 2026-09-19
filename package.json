@@ -36,6 +36,8 @@
     "generate:config-reference": "pnpm --filter @mono-agent/agent-app run build && node scripts/generate-config-reference.mjs",
     "typecheck": "pnpm -r --sort run typecheck",
     "test": "pnpm run release:test && pnpm run scripts:test && pnpm -r --sort run test",
+    "benchmark:memory:e2e": "pnpm --filter '@mono-agent/agent-app...' run build && node scripts/memory-e2e-benchmark.mjs",
+    "benchmark:memory:e2e:dry-run": "node scripts/memory-e2e-benchmark.mjs --dry-run",
     "benchmark:memory": "pnpm --filter '@mono-agent/memory...' run build && node scripts/memory-benchmark.mjs --gate",
     "release:validate": "node scripts/release/validate-release.mjs",
     "release:pack": "node scripts/release/pack-release.mjs",

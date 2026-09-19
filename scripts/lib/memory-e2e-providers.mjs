@@ -1,0 +1,317 @@
+import { performance } from "node:perf_hooks";
+
+export const MEMORY_SYSTEM = "You are the private memory maintenance LLM for mono-agent. Return only the requested JSON or plain text. Do not use tools, inspect files, or perform external actions.";
+
+/**
+ * Canonical runtime failure vocabulary the benchmark may retain, mirroring the
+ * core taxonomy in packages/agent-runtime/src/ai/failure.js (FAILURE_KINDS).
+ * Membership in this fixed list is the ONLY runtime failure detail that ever
+ * enters meter events, trials or reports. Raw error text, errorDetails
+ * objects, paths, endpoints and credentials are never serialized.
+ */
+export const RUNTIME_FAILURE_KINDS = Object.freeze([
+  "spawn", "timeout", "stall", "context_limit", "usage_limit", "invalid_result",
+  "invalid_delegation", "tool_failure", "provider_unavailable",
+  "provider_unavailable_exhausted", "provider_auth", "provider_protocol",
+  "skipped_capability_mismatch", "child_failed", "budget_exceeded",
+  "cancelled", "cancelled_user", "cancelled_stale", "cancelled_shutdown",
+  "cancelled_signal", "abandoned", "delegation_agent_not_in_team",
+  "delegation_team_roster_empty", "session_not_found", "session_busy",
+]);
+/**
+ * Fatal route categories: a dead credential or an exhausted quota will not heal
+ * inside this invocation, so observing one stops further provider admission.
+ * Anything else stays visible per trial without stopping the run.
+ */
+export const FATAL_RUNTIME_FAILURE_KINDS = Object.freeze(["provider_auth", "usage_limit"]);
+/** Allow-listed canonical kind, or null for unknown/untrusted values. */
+export function canonicalFailureKind(value) {
+  return typeof value === "string" && RUNTIME_FAILURE_KINDS.includes(value) ? value : null;
+}
+export function isFatalFailureKind(value) {
+  return FATAL_RUNTIME_FAILURE_KINDS.includes(canonicalFailureKind(value));
+}
+export class BenchmarkError extends Error {
+  constructor(code, options = {}) {
+    super(code);
+    this.code = code;
+    const failureKind = canonicalFailureKind(options?.failureKind);
+    if (failureKind !== null) this.failureKind = failureKind;
+  }
+}
+export function codeOf(error) { return error instanceof BenchmarkError ? error.code : "operation_failed"; }
+/** Structured category carried by a benchmark error, or null when generic. */
+export function failureKindOf(error) {
+  return error instanceof BenchmarkError ? canonicalFailureKind(error.failureKind) : null;
+}
+
+/** Reservations bound configured model steps/output, not unobservable HTTP retries or exact input. */
+export class Budget {
+  constructor(plan) {
+    this.plan = plan;
+    this.started = performance.now();
+    this.used = { chatSteps: 0, embeddingCalls: 0, estimatedInputTokens: 0, outputTokens: 0 };
+    this.events = [];
+    this.pending = new Set();
+    this.admissionStopped = false;
+    // Terminal provider stop ({ code, failureKind } or null). Set only by
+    // stopProviders on fatal auth/quota evidence; unlike admissionStopped it is
+    // never cleared by cleanup gating, so cleanup cannot reopen a dead route.
+    this.providerStop = null;
+    this.generation = 0;
+    this.controller = new AbortController();
+    this.timer = setTimeout(() => this.controller.abort(), plan.limits.runtimeMs - 10000);
+  }
+  reserve(cost) {
+    if (this.providerStop !== null || this.admissionStopped) throw new BenchmarkError("provider_admission_stopped");
+    if (this.controller.signal.aborted || performance.now() - this.started >= this.plan.limits.runtimeMs - 10000) throw new BenchmarkError("runtime_budget_exhausted");
+    for (const [key, amount] of Object.entries(cost)) {
+      if (!Number.isFinite(amount) || amount < 0 || this.used[key] + amount > this.plan.limits[key]) throw new BenchmarkError("budget_exhausted");
+    }
+    for (const [key, amount] of Object.entries(cost)) this.used[key] += amount;
+  }
+  track(promise) {
+    promise = Promise.resolve(promise);
+    this.generation += 1;
+    this.pending.add(promise);
+    promise.then(() => this.pending.delete(promise), () => this.pending.delete(promise));
+    return promise;
+  }
+  stopAdmission() { this.admissionStopped = true; }
+  /**
+   * Terminal stop after fatal provider evidence. Bounded fixed-vocabulary
+   * record only; sticky across successful cleanup. Disposal and settlement
+   * still run — this only refuses NEW admissions via reserve().
+   */
+  stopProviders(code, failureKind) {
+    if (this.providerStop !== null) return;
+    this.providerStop = { code: typeof code === "string" ? code : "provider_failed", failureKind: canonicalFailureKind(failureKind) };
+    this.stopAdmission();
+  }
+  /** Track the original operation, never the raced wrapper: abort is not settlement. */
+  wait(promise, { timeoutMs, signal = this.controller.signal, code = "runtime_budget_exhausted" } = {}) {
+    return bounded(this.track(promise), { timeoutMs, signal, code: () => this.controller.signal.reason instanceof BenchmarkError ? this.controller.signal.reason.code : code, onCancel: () => {
+      this.stopAdmission();
+      this.controller.abort(new BenchmarkError(code));
+    } });
+  }
+  // Call after producers have quiesced. Drain new generations as well as the initial
+  // snapshot; a capture continuation can enqueue an embedding while we are waiting.
+  async settle(timeoutMs = 10000) {
+    const deadline = performance.now() + timeoutMs;
+    do {
+      const generation = this.generation;
+      await bounded(Promise.allSettled([...this.pending]), {
+        timeoutMs: Math.max(0, deadline - performance.now()), code: "provider_settlement_unknown",
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      if (this.pending.size === 0 && this.generation === generation) return;
+      if (performance.now() >= deadline) throw new BenchmarkError("provider_settlement_unknown");
+    } while (true);
+  }
+  close() { clearTimeout(this.timer); }
+}
+
+/** Full-promise deadline, including bodies/tool continuations; consumes late rejection. */
+export function bounded(promise, { timeoutMs, signal, code, onCancel } = {}) {
+  return new Promise((resolve, reject) => {
+    let timer;
+    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", cancel); };
+    const cancel = () => { cleanup(); onCancel?.(); reject(new BenchmarkError(typeof code === "function" ? code() : code)); };
+    // Install handlers even when already cancelled so late failures are never unhandled.
+    Promise.resolve(promise).then((value) => { cleanup(); resolve(value); }, (error) => { cleanup(); reject(error); });
+    if (signal?.aborted) { cancel(); return; }
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (timeoutMs !== undefined) timer = setTimeout(cancel, timeoutMs);
+  });
+}
+
+/** Version-coupled existing Pi check cap; never pass an ignored generic maxTokens option. */
+export function cappedOptions(stage, plan) {
+  return {
+    maxTurns: stage === "reader" ? 3 : 1,
+    providerCheckMaxTokens: stage === "reader" ? plan.perCall.readerOutputTokens : plan.perCall.extractorOutputTokens,
+    compaction: { enabled: false }, piMaxRetries: 0, maxRetryDelayMs: 0, effort: "none",
+  };
+}
+function finite(value) { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null; }
+export function usageOf(value) {
+  const usage = value && typeof value === "object" ? value : {};
+  return {
+    inputTokens: finite(usage.inputTokens ?? usage.input_tokens ?? usage.input),
+    outputTokens: finite(usage.outputTokens ?? usage.output_tokens ?? usage.output),
+    cacheReadTokens: finite(usage.cacheReadTokens ?? usage.cache_read_input_tokens ?? usage.cacheRead),
+    cacheWriteTokens: finite(usage.cacheWriteTokens ?? usage.cache_creation_input_tokens ?? usage.cacheCreation ?? usage.cacheWrite),
+    reasoningTokens: finite(usage.reasoningTokens ?? usage.reasoning_tokens),
+  };
+}
+
+export function meteredRuntime(runtime, { budget, stage, tag, clock = performance.now.bind(performance) }) {
+  return {
+    async run(system, options) {
+      const cap = cappedOptions(stage, budget.plan);
+      // Conservative controlled-text estimate plus fixed schemas/framing allowance. Dynamic native
+      // schemas/tool continuations are not exactly countable here; observed context is separate.
+      const estimated = Math.ceil(Buffer.byteLength(system + JSON.stringify(options.messages), "utf8") / 3) + budget.plan.perCall.framingAndToolAllowance;
+      const inputLimit = stage === "reader" ? budget.plan.perCall.readerEstimatedInputTokens : budget.plan.perCall.extractorEstimatedInputTokens;
+      if (estimated > inputLimit) throw new BenchmarkError(stage === "reader" ? "context_budget_exceeded" : "capture_context_budget_exceeded");
+      budget.reserve({ chatSteps: cap.maxTurns, outputTokens: cap.providerCheckMaxTokens * cap.maxTurns, estimatedInputTokens: estimated * cap.maxTurns });
+      const started = clock();
+      const timeout = AbortSignal.timeout(budget.plan.perCall.callTimeoutMs);
+      const signal = AbortSignal.any([options.abortSignal, budget.controller.signal, timeout].filter(Boolean));
+      const event = { ...tag, stage, status: "started", configuredStepsReserved: cap.maxTurns, estimatedInputTokensReserved: estimated * cap.maxTurns, outputTokensReserved: cap.providerCheckMaxTokens * cap.maxTurns, transportAttempts: null, usage: usageOf(null), costUsd: null, requestedModel: options.model?.reference ?? null, executedModel: null, observedContext: [], durationMs: null, failureKind: null };
+      budget.events.push(event);
+      let compacted = false;
+      try {
+        if (signal.aborted) throw new BenchmarkError("provider_timeout_or_cancelled");
+        const result = await budget.wait(runtime.run(system, {
+          ...options, ...cap, abortSignal: signal,
+          onEvent: (value) => {
+            if (/compact/iu.test(String(value?.type ?? ""))) compacted = true;
+            if (value?.type === "context_usage") event.observedContext.push({ ...usageOf(value.tokens), contextWindow: finite(value.contextWindow), totalContextTokens: finite(value.tokens?.total), providerCostUsd: finite(value.providerCostUsd) });
+            options.onEvent?.(value);
+          },
+        }), { signal, timeoutMs: budget.plan.perCall.callTimeoutMs, code: "provider_timeout_or_cancelled" });
+        event.usage = usageOf(result.usage);
+        event.runtimeReportedCostUsd = finite(typeof result.cost === "number" ? result.cost : result.cost?.totalCost);
+        // Runtime cost may be estimated. Only explicitly provider-labelled costs enter this field.
+        event.costUsd = event.observedContext.length && event.observedContext.every((row) => row.providerCostUsd !== null)
+          ? event.observedContext.reduce((sum, row) => sum + row.providerCostUsd, 0) : null;
+        event.executedModel = typeof result.model === "string" ? result.model : null;
+        event.sdk = typeof result.sdk === "string" ? result.sdk : null;
+        event.observedModelTurns = finite(result.numTurns);
+        // Structured category only: allow-listed kind enters the event, raw
+        // error/errorDetails text never does (see RUNTIME_FAILURE_KINDS).
+        const resultFailureKind = canonicalFailureKind(result.failureKind);
+        if (resultFailureKind !== null) event.failureKind = resultFailureKind;
+        if (compacted) throw new BenchmarkError("unexpected_compaction", { failureKind: event.failureKind });
+        if (["length", "max_tokens"].includes(result.diagnostics?.pi_stop_reason)) throw new BenchmarkError("output_limit_reached", { failureKind: event.failureKind });
+        if (signal.aborted) throw new BenchmarkError("provider_timeout_or_cancelled");
+        if (result.failureKind || result.error || result.cancelled || typeof result.text !== "string" || !result.text.trim()) throw new BenchmarkError("provider_failed", { failureKind: event.failureKind });
+        event.status = "completed";
+        return result;
+      } catch (error) {
+        const code = signal.aborted ? "provider_timeout_or_cancelled" : error instanceof BenchmarkError ? error.code : "provider_failed";
+        // Prefer a structured kind carried by the thrown failure; otherwise keep
+        // the result-derived kind. Anything untrusted stays generic.
+        const failureKind = canonicalFailureKind(error?.failureKind) ?? event.failureKind;
+        if (failureKind !== null) {
+          event.failureKind = failureKind;
+          if (isFatalFailureKind(failureKind)) budget.stopProviders(code, failureKind);
+        }
+        event.status = code;
+        throw failureKind !== null ? new BenchmarkError(code, { failureKind }) : new BenchmarkError(code);
+      } finally { event.durationMs = clock() - started; }
+    },
+  };
+}
+
+export function captureLlm(runtime, { model, workspace, sessionsRoot, budget, tag, capture }) {
+  return {
+    id: `agent-host:${model.reference}`,
+    async complete(prompt, options = {}) {
+      const stage = options.label === "capture:reconcile-batch" ? "reconciliation" : "extraction";
+      const result = await meteredRuntime(runtime, { budget, stage, tag }).run(MEMORY_SYSTEM, {
+        model, messages: [{ role: "user", content: prompt }], abortSignal: options.abortSignal ?? new AbortController().signal,
+        cwd: workspace, piSessionsRoot: sessionsRoot, allowedTools: [], disallowedTools: [], mcpServers: {},
+      });
+      capture?.({ ...tag, stage, prompt, output: result.text });
+      return result.text;
+    },
+  };
+}
+
+export function meteredEmbeddings(provider, { budget, tag }) {
+  return {
+    id: provider.id,
+    async embed(texts, options) {
+      budget.reserve({ embeddingCalls: 1, estimatedInputTokens: Math.ceil(texts.reduce((n, text) => n + Buffer.byteLength(text), 0) / 3) });
+      const event = { ...tag, stage: "embedding", textCount: texts.length, status: "started", usage: usageOf(null), costUsd: null, transportAttempts: null, durationMs: null };
+      budget.events.push(event);
+      const start = performance.now();
+      const signal = AbortSignal.any([options?.abortSignal, budget.controller.signal, AbortSignal.timeout(budget.plan.perCall.embeddingTimeoutMs)].filter(Boolean));
+      try {
+        if (signal.aborted) throw new BenchmarkError("embedding_timeout_or_cancelled");
+        const result = await budget.wait(provider.embed(texts, { ...options, abortSignal: signal }), {
+          signal, timeoutMs: budget.plan.perCall.embeddingTimeoutMs, code: "embedding_timeout_or_cancelled",
+        });
+        event.status = "completed"; return result;
+      } catch (error) {
+        event.status = signal.aborted ? "embedding_timeout_or_cancelled" : error instanceof BenchmarkError ? error.code : "embedding_failed";
+        throw new BenchmarkError(event.status);
+      }
+      finally { event.durationMs = performance.now() - start; }
+    },
+  };
+}
+
+/** Offline doubles do not consult the evaluator projection and never produce quality scores. */
+export function scriptedProviders({ source } = {}) {
+  return {
+    kind: "scripted",
+    readerModel: { provider: "fixture", model: "reader", reference: "fixture:reader" },
+    extractorModel: { provider: "fixture", model: "extractor", reference: "fixture:extractor" },
+    dim: 8,
+    embeddings: { id: "fixture:e2e", async embed(texts) { return texts.map(() => [1, 0.2, 0.1, 0.1, 0.2, 0.1, 0.3, 0.1]); } },
+    extractor: {
+      async run(_system, options) {
+        const prompt = options.messages[0].content;
+        if (!prompt.includes("\nTURN:\n")) {
+          // Reconciliation output uses the strict production action format.
+          const indexes = [...prompt.matchAll(/"index"\s*:\s*(\d+)/gu)].map((match) => Number(match[1]));
+          return { text: JSON.stringify([...new Set(indexes)].map((index) => ({ index, action: "add" }))) };
+        }
+        const turn = prompt.split("\nTURN:\n").at(-1);
+        const match = /^User(?: \(([^)]+)\))?: ([\s\S]*?)\nAssistant:/u.exec(turn);
+        const fact = `${match?.[1] ?? "User"} said: ${match?.[2] ?? "A fictional fact."}`;
+        return { text: JSON.stringify({ memories: [{ type: "note", text: fact, salience: 0.8, isInsight: false, entityIds: [] }], entities: [], relations: [] }) };
+      },
+    },
+    reader: {
+      async run(_system, options) {
+        const server = options.mcpServers?.["mono-agent-memory"];
+        if (server) {
+          const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+          const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+          const client = new Client({ name: "memory-e2e-contract", version: "1.0.0" });
+          try {
+            await client.connect(new StreamableHTTPClientTransport(new URL(server.url)));
+            const args = { query: source?.question.text ?? "What was discussed?" };
+            await options.toolLifecycleSink?.({ phase: "invocation", toolCallId: "contract-recall", toolName: "MemoryRecall", arguments: args });
+            const result = await client.callTool({ name: "MemoryRecall", arguments: args });
+            await options.toolLifecycleSink?.({ phase: "result", toolCallId: "contract-recall", toolName: "MemoryRecall", state: result.isError ? "error" : "success", content: result.content });
+          } finally { await client.close(); }
+        }
+        return { text: "Scripted contract response; semantic correctness is not evaluated." };
+      },
+    },
+    async close() {},
+  };
+}
+
+/** Called only after CLI confirmation. No configured-app root leases or consumer configuration. */
+export async function realProviders(profile, { workspace, modules }) {
+  const { createMonoRuntime, parseMonoRuntimeModelReference, createPiOAuthApiKeyResolver } = modules.runtime;
+  // Explicit OAuth credential file only: one shared framework resolver for both
+  // runtimes (it reads/refreshes lazily per request — construction opens no
+  // credential file and copies no tokens). Without a selected path the bare
+  // ambient environment-auth behavior is preserved; consumer config is never
+  // discovered or read here.
+  const resolvePiApiKey = profile.piAuthPath === undefined ? undefined : (() => {
+    if (typeof createPiOAuthApiKeyResolver !== "function") throw new Error("pi_auth_resolver_unavailable");
+    return createPiOAuthApiKeyResolver({ path: profile.piAuthPath });
+  })();
+  const hostOptions = resolvePiApiKey === undefined ? { workspace } : { workspace, resolvePiApiKey };
+  const reader = createMonoRuntime(hostOptions);
+  const extractor = createMonoRuntime(hostOptions);
+  const raw = modules.search.createEmbeddingProvider({
+    provider: profile.embeddingProvider, model: profile.embeddingModel, timeoutMs: 10000,
+    ...(profile.embeddingProvider === "openai" ? { apiKey: process.env.OPENAI_API_KEY } : {}),
+  });
+  return {
+    kind: "real", reader, extractor,
+    readerModel: parseMonoRuntimeModelReference(profile.reader), extractorModel: parseMonoRuntimeModelReference(profile.extractor), dim: profile.dimension,
+    embeddings: modules.search.createCircuitBreakerEmbeddingProvider(raw),
+    async close() { await reader.disposeAllSessions?.(); await extractor.disposeAllSessions?.(); },
+  };
+}
