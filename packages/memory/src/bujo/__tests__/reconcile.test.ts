@@ -1275,3 +1275,154 @@ describe("reconcileBatch", () => {
     expect(db.get("WAIT-ABORT")?.text).toBe("third serialized update");
   });
 });
+
+describe("scoped preference and history contracts", () => {
+  it.each([
+    {
+      name: "one actor's preferences in different project scopes",
+      id: "VELIN-PREFERENCE",
+      existing: "Avery prefers terse status updates for the Velin launch.",
+      candidate: "Avery prefers detailed status updates for the Nimbus launch.",
+    },
+    {
+      name: "same display name with distinct role scopes",
+      id: "DESIGN-ALEX",
+      existing: "Alex from design prefers concise release notes.",
+      candidate: "Alex from operations prefers detailed runbooks.",
+    },
+  ])("keeps $name separate when the reconciliation plan selects ADD", async ({ id, existing, candidate }) => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, id, existing);
+    db.findSimilarMany = async () => [[{ record: db.get(id)!, distance: 0.1 }]];
+    let prompt = "";
+    const llm: ReconcileDeps["llm"] = {
+      id: "scope-add-plan",
+      complete: async (value) => {
+        prompt = value;
+        return '[{"index":0,"action":"add"}]';
+      },
+    };
+
+    const actions = await reconcileBatch(
+      [{ type: "note", text: candidate, salience: 0.8, isInsight: false }],
+      makeDeps(db, root, llm, { strictModelOutput: true }),
+    );
+
+    expect(actions).toEqual([{ kind: "add", id: expect.any(String) }]);
+    const addedId = actions[0]?.kind === "add" ? actions[0].id : "";
+    expect(db.count()).toBe(2);
+    expect(db.get(id)).toMatchObject({ status: "open", text: existing });
+    expect(db.get(addedId)).toMatchObject({ status: "open", text: candidate });
+    expect(prompt).toContain(existing);
+    expect(prompt).toContain(candidate);
+    expect(prompt).toContain("speaker attribution, stated scope, evidence limits");
+    expect(parseDailyFile(dailyContent(root)).bullets.map((bullet) => bullet.text))
+      .toEqual(expect.arrayContaining([existing, candidate]));
+  });
+
+  it("treats UPDATE as an in-place refinement rather than a historical state transition", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const before = "Morgan prefers brief Velin summaries.";
+    const merged = "Morgan prefers concise Velin summaries with bullet headings.";
+    await seed(db, root, "PREFERENCE", before);
+    db.findSimilarMany = async () => [[{ record: db.get("PREFERENCE")!, distance: 0.1 }]];
+    const llm: ReconcileDeps["llm"] = {
+      id: "scope-update-plan",
+      complete: async () => JSON.stringify([{
+        index: 0,
+        action: "update",
+        targetId: "PREFERENCE",
+        text: merged,
+      }]),
+    };
+
+    const actions = await reconcileBatch(
+      [{ type: "note", text: "Morgan also wants bullet headings in Velin summaries.", salience: 0.8, isInsight: false }],
+      makeDeps(db, root, llm, { strictModelOutput: true }),
+    );
+
+    expect(actions).toEqual([{ kind: "update", id: "PREFERENCE" }]);
+    expect(db.count()).toBe(1);
+    expect(db.get("PREFERENCE")).toMatchObject({
+      status: "open",
+      text: merged,
+      createdAt: FIXED.toISOString(),
+    });
+    expect(db.get("PREFERENCE")).not.toHaveProperty("validTo");
+    expect(db.get("PREFERENCE")).not.toHaveProperty("supersededBy");
+    expect(parseDailyFile(dailyContent(root)).bullets).toEqual([
+      expect.objectContaining({ id: "PREFERENCE", status: "open", text: merged }),
+    ]);
+  });
+
+  it("uses SUPERSEDE for a preference change and retains bounded historical lifecycle", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const changedAt = new Date("2026-07-01T09:30:00.000Z");
+    const oldText = "Morgan prefers concise status summaries for the Velin launch.";
+    const newText = "Morgan now prefers detailed status summaries for the Velin launch.";
+    await seed(db, root, "OLD-PREFERENCE", oldText);
+    db.findSimilarMany = async () => [[{ record: db.get("OLD-PREFERENCE")!, distance: 0.1 }]];
+    const llm: ReconcileDeps["llm"] = {
+      id: "scope-supersede-plan",
+      complete: async () => JSON.stringify([{
+        index: 0,
+        action: "supersede",
+        targetId: "OLD-PREFERENCE",
+        text: newText,
+      }]),
+    };
+
+    const actions = await reconcileBatch(
+      [{ type: "note", text: newText, salience: 0.8, isInsight: false }],
+      makeDeps(db, root, llm, {
+        strictModelOutput: true,
+        now: () => changedAt,
+        nextId: createIdFactory({ clock: () => changedAt, random: () => 0 }),
+      }),
+    );
+
+    const replacementId = actions[0]?.kind === "supersede" ? actions[0].newId : "";
+    expect(actions).toEqual([{
+      kind: "supersede",
+      oldId: "OLD-PREFERENCE",
+      newId: replacementId,
+    }]);
+    expect(db.get("OLD-PREFERENCE")).toMatchObject({
+      status: "invalidated",
+      supersededBy: replacementId,
+      supersededAt: changedAt.toISOString(),
+      validTo: changedAt.toISOString(),
+    });
+    expect(db.get(replacementId)).toMatchObject({
+      status: "open",
+      text: newText,
+      createdAt: changedAt.toISOString(),
+      source: { file: "daily/2026-07-01.md" },
+    });
+
+    const current = await db.recall("Morgan Velin status summaries", { topK: 5, now: changedAt });
+    expect(current.map((hit) => hit.record.id)).toContain(replacementId);
+    expect(current.map((hit) => hit.record.id)).not.toContain("OLD-PREFERENCE");
+    const withHistory = await db.recall("Morgan Velin status summaries", {
+      topK: 5,
+      includeInvalid: true,
+      now: changedAt,
+    });
+    expect(withHistory.map((hit) => hit.record.id))
+      .toEqual(expect.arrayContaining(["OLD-PREFERENCE", replacementId]));
+
+    const journal = db.browseJournal({
+      fromInclusive: "2026-06-01T00:00:00.000Z",
+      toExclusive: "2026-08-01T00:00:00.000Z",
+      maxEntries: 10,
+      maxBytes: 16_384,
+    });
+    expect(journal.records.map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: "OLD-PREFERENCE", status: "invalidated" },
+      { id: replacementId, status: "open" },
+    ]);
+  });
+});
