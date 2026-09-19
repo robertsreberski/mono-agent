@@ -415,6 +415,10 @@ a:hover {
   .configuration-intro {
     grid-template-columns: minmax(0, 1.55fr) minmax(20rem, 0.7fr);
   }
+
+  .configuration-intro > .section-label {
+    grid-column: 1 / -1;
+  }
 }
 
 .points p {

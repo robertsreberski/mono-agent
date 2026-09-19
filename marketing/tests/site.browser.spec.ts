@@ -328,7 +328,9 @@ test('motion and compact preferences can change during the story', async ({ page
   const desktopPose = await page.locator('[data-layer="0"]').getAttribute('style');
   await page.setViewportSize({ width: 390, height: 844 });
   await scrubStory(page, 1/3);
-  expect(await page.locator('[data-layer="0"]').getAttribute('style')).not.toBe(desktopPose);
+  // The chapter is unchanged by this resize; wait for the scheduled pose frame,
+  // not the already-matching chapter attribute.
+  await expect.poll(() => page.locator('[data-layer="0"]').getAttribute('style')).not.toBe(desktopPose);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await expect(page.locator('html')).toHaveAttribute('data-motion', 'off');
   expect(await page.locator('[data-layer="0"]').getAttribute('style')).toBe('');
