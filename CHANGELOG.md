@@ -21,6 +21,9 @@
   scope; distinguish corrected reports from actual state changes and avoid
   turning observed outcomes into causal proof, without extra model calls or a
   storage-schema change.
+- Reject memory E2E corpus/split selections with no groups before provider
+  setup, build, or benchmark execution instead of reporting a successful
+  zero-trial run.
 
 - Return managed `WebSearch` and `WebFetch` results as a compact JSON envelope
   with `status`, host-written summary, untrusted content or results, source and

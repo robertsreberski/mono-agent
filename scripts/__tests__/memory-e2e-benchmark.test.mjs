@@ -483,7 +483,10 @@ describe("bujo-learning-v1 corpus selection (baseline diagnosis, not model quali
 
   it("preserves fictional-v1 semantics and rejects unknown or malformed corpora", async () => {
     const original = await loadCorpus();
-    expect(makePlan(original).arms).toEqual(ARMS);
+    const development = makePlan(original);
+    expect(development.arms).toEqual(ARMS);
+    expect(development.workload).toEqual({ questions: 2, trials: 10, historicalTurnsPerMemoryArm: 8, captureStepsMaximum: 16, readerStepsMaximum: 30 });
+    expect(makePlan({ ...original, split: "evaluation" }).workload.questions).toBe(6);
     await expect(loadCorpus("../../../etc/passwd")).rejects.toThrow("invalid_corpus_name");
     await expect(loadCorpus("unknown-v9")).rejects.toThrow("invalid_corpus_name");
     const { corpus } = await loadCorpus("bujo-learning-v1");
@@ -512,6 +515,27 @@ describe("bujo-learning-v1 corpus selection (baseline diagnosis, not model quali
     expect(base.confirmation).not.toBe(plan.confirmation);
     await expect(main(["--dry-run", "--corpus", "nope"])).rejects.toThrow("invalid_corpus_name");
   });
+
+  it.each(["bujo-learning-v1", "capture-fidelity-v1"])(
+    "rejects an omitted split for evaluation-only corpus %s",
+    async (corpusName) => {
+      const loaded = await loadCorpus(corpusName);
+      expect(() => makePlan(loaded)).toThrow("empty_corpus_split");
+      await expect(main(["--dry-run", "--corpus", corpusName])).rejects.toThrow("empty_corpus_split");
+    },
+  );
+
+  it.each(["bujo-learning-v1", "capture-fidelity-v1"])(
+    "rejects an explicitly empty split for %s before build or providers",
+    async (corpusName) => {
+      const prepareBuild = vi.fn();
+      const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
+      await expect(main(["--real", "--corpus", corpusName, "--split", "development"], { prepareBuild }))
+        .rejects.toThrow("empty_corpus_split");
+      expect(prepareBuild).not.toHaveBeenCalled();
+      expect(network).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("capture-fidelity-v1 frozen controls", () => {
