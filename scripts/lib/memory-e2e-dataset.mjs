@@ -22,7 +22,7 @@ export function digest(value) {
  * question; everything else — build, digest, budget, provider, cleanup and
  * redaction paths — is shared unchanged.
  */
-export const CORPORA = Object.freeze(["fictional-v1", "bujo-learning-v1"]);
+export const CORPORA = Object.freeze(["fictional-v1", "bujo-learning-v1", "capture-fidelity-v1"]);
 
 export async function loadCorpus(name = "fictional-v1") {
   if (!CORPORA.includes(name)) throw new Error("invalid_corpus_name");

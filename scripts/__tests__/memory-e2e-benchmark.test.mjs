@@ -513,3 +513,40 @@ describe("bujo-learning-v1 corpus selection (baseline diagnosis, not model quali
     await expect(main(["--dry-run", "--corpus", "nope"])).rejects.toThrow("invalid_corpus_name");
   });
 });
+
+describe("capture-fidelity-v1 frozen controls", () => {
+  it("binds the author-visible controls to an exact fixture and bounded workload", async () => {
+    const { corpus, sha256 } = await loadCorpus("capture-fidelity-v1");
+    expect(sha256).toBe("485dfe3f52da5e51a72a667721d30b5646d9c51d6cb0a3a327c727e88a3bb34e");
+    expect(corpus.groups).toHaveLength(6);
+    expect(armsFor(corpus)).toEqual(["bujo", "full-history"]);
+    expect(new Set(corpus.groups.map((group) => group.evaluation.category)).size).toBe(6);
+    const plan = makePlan({ corpus, sha256, split: "evaluation" });
+    expect(plan.workload).toEqual({
+      questions: 6,
+      trials: 12,
+      historicalTurnsPerMemoryArm: 18,
+      captureStepsMaximum: 36,
+      readerStepsMaximum: 36,
+    });
+    expect(plan.workload.captureStepsMaximum + plan.workload.readerStepsMaximum)
+      .toBeLessThanOrEqual(plan.limits.chatSteps);
+  });
+
+  it("keeps annotations out of both arms and evidence out of BuJo recent context", async () => {
+    const { corpus } = await loadCorpus("capture-fidelity-v1");
+    for (const group of corpus.groups) {
+      const source = sourceOnly(group);
+      const projected = JSON.stringify(source);
+      expect(projected).not.toContain(group.evaluation.rubric);
+      expect(projected).not.toContain(group.evaluation.category);
+      expect(projected).not.toContain("expectedMemory");
+      expect(contextFor(source, "full-history")).toHaveLength(source.turns.length * 2);
+      const recent = JSON.stringify(contextFor(source, "bujo"));
+      for (const id of group.evaluation.evidenceTurnIds) {
+        const evidence = group.source.turns.find((turn) => turn.id === id);
+        expect(recent).not.toContain(evidence.user);
+      }
+    }
+  });
+});
