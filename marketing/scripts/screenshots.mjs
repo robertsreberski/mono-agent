@@ -24,8 +24,6 @@ const URL = `http://127.0.0.1:${PORT}/`;
 
 const SHOTS = [
   {name:"hero-tablet-768x1000.png",width:768,height:1000},
-  {name:"blocks-expanded-desktop-1440x1000.png",width:1440,height:1000,story:.8},
-  {name:"blocks-expanded-mobile-390x844.png",width:390,height:844,story:.7},
   {name:"blocks-desktop-1440x1000.png",width:1440,height:1000,scrollTo:".building-blocks"},
   {name:"blocks-mobile-390x844.png",width:390,height:844,scrollTo:".building-blocks"},
   { name: "console-desktop-1440x1000.png", width:1440,height:1000,scrollTo:"#console" },
@@ -111,16 +109,10 @@ async function main() {
           }, shot.scrollTo);
           await page.waitForTimeout(400);
         }
-        if (shot.story !== undefined) {
-          await page.evaluate((progress) => {
-            const rect = document.querySelector('[data-block-story]').getBoundingClientRect();
-            window.scrollTo({ top: scrollY + rect.top - innerHeight*.35 + (rect.height - innerHeight*.55) * progress, behavior: 'instant' });
-          }, shot.story);
-          await page.waitForTimeout(150);
-        }
         if (shot.menu) await page.getByRole('button', {name:'Menu'}).click();
         await page.screenshot({ path: join(outputDir, shot.name) });
         console.log(`screenshots: ${shot.name}`);
+        if (shot.name === "hero-mobile-390x844.png") console.log("mobile document height:", await page.evaluate(()=>document.documentElement.scrollHeight));
         await page.close();
       }
       if (process.argv.includes('--video') || process.argv.includes('--video-only')) {
@@ -143,10 +135,10 @@ async function main() {
             requestAnimationFrame(step);
           });
           await move(0, 1200);
-          const layout = document.querySelector('[data-block-story]');
+          const layout = document.querySelector('.building-blocks');
           const start = scrollY + layout.getBoundingClientRect().top;
-          await move(start, 2200);
-          await move(start + layout.getBoundingClientRect().height - innerHeight, 15000);
+          await move(Math.max(0,start - innerHeight*.6), 2200);
+          await move(start + layout.getBoundingClientRect().height - innerHeight*.4, 5000);
           await move(scrollY + document.querySelector('#use-cases').getBoundingClientRect().top, 1500);
           await move(scrollY, 1200);
         });

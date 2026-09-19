@@ -12,8 +12,8 @@
   illustrated workflow explorer supports keyboard tabs, with no-JavaScript
   content, reduced-motion artwork, native FAQ disclosures, and install-command
   copying. A shorter mobile-first layout adds a compact disclosure menu, a
-  refined mark and CTAs, a compact scroll-driven building-block composition, original transparent
-  sculptural artwork, self-hosted OFL typography, and real desktop console UI
+  refined mark and CTAs, simple building-block cards with restrained motion, a mobile-optimized
+  transparent hero, compact self-hosted OFL fonts, and real desktop console UI
   imagery with clearly labelled synthetic data and source-build availability.
   Source only; the site is not deployed yet.
 

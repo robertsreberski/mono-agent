@@ -78,8 +78,8 @@ const jsonLd = {
     <link rel="canonical" href={`${SITE_URL}/`} />
     <meta name="theme-color" content="#101211" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="preload" href="/fonts/manrope.ttf" as="font" type="font/ttf" crossorigin />
-    <link rel="preload" href="/fonts/instrument-serif-italic.ttf" as="font" type="font/ttf" crossorigin />
+    <link rel="preload" href="/fonts/manrope.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/instrument-serif-italic.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="/styles.css" />
     <script is:inline type="module" src="/interactions.js"></script>
 
@@ -153,6 +153,7 @@ const jsonLd = {
           <figure class="hero-art" aria-hidden="true">
             <div class="hero-halo"></div>
             <picture>
+              <source media="(max-width: 640px)" srcset="/hero-mobile-320.webp 320w, /hero-mobile-640.webp 640w" sizes="210px" width="640" height="640" />
               <source type="image/webp" srcset="/hero-640.webp 640w, /hero-960.webp 960w, /hero-1440.webp 1440w" sizes="(max-width: 640px) 100vw, 60vw" />
               <img
                 src="/hero-1440.webp"
@@ -196,38 +197,11 @@ const jsonLd = {
             </p>
           </figure>
 
-          <div class="blueprint-callouts blueprint-callouts-left">
-            <article>
-              <span class="config-key">runtime</span>
-              <h3>Choose the route</h3>
-              <p>Set the primary model, workspace, and ordered fallbacks. Route changes are reported rather than hidden.</p>
-              <a href={FALLBACK_URL}>Read routing behavior <span aria-hidden="true">↗</span></a>
-            </article>
-            <article>
-              <span class="config-key">context</span>
-              <h3>Bring the point of view</h3>
-              <p>Reference an identity and select versioned skills without folding their contents into the JSON file.</p>
-              <a href={`${DOCS_URL}context/`}>See context assembly <span aria-hidden="true">↗</span></a>
-            </article>
-            <article>
-              <span class="config-key">memory</span>
-              <h3>Pick the right weight</h3>
-              <p>Omit memory, start with local Lite, add embeddings with Journal, or configure BuJo’s model-assisted tier.</p>
-              <a href={MEMORY_URL}>Compare memory tiers <span aria-hidden="true">↗</span></a>
-            </article>
-          </div>
 
         </div>
         <section class="wrap building-blocks" aria-labelledby="blocks-heading">
-          <div class="blocks-heading"><div><span class="section-label">Choose your building blocks</span><h3 id="blocks-heading">A system that<br /><em>works together.</em></h3></div><p>Start with a model and a point of view. Add only what your work needs.</p></div>
-          <div class="block-story" data-block-story>
-            <figure class="block-visual"><div class="block-art" aria-hidden="true">
-              <div class="block-layer" style="--layer:3"><img src="/module-3.webp" width="640" height="427" loading="lazy" alt="" /></div>
-              <div class="block-layer" style="--layer:2"><img src="/module-2.webp" width="640" height="427" loading="lazy" alt="" /></div>
-              <div class="block-layer" style="--layer:1"><img src="/module-1.webp" width="640" height="427" loading="lazy" alt="" /></div>
-              <div class="block-layer" style="--layer:0"><img src="/module-0.webp" width="640" height="427" loading="lazy" alt="" /></div>
-            </div><figcaption><span class="block-caption">Four layers. One agent.</span><button class="blocks-motion" type="button" aria-pressed="false" hidden>Pause motion</button></figcaption></figure>
-            <ol class="block-chapters"><li class="block-chapter"><span class="config-key">01 / COMPOSE</span><h4>Give it a point of view.</h4><p>The stable foundation you should not have to paste into every conversation.</p><dl><div><dt><a href={`${DOCS_URL}context/`}>Identity & context <span aria-hidden="true">↗</span></a></dt><dd>Your role, instructions, and workspace.</dd></div><div><dt><a href={`${DOCS_URL}runtime/`}>Models & routing <span aria-hidden="true">↗</span></a></dt><dd>Choose supported local or hosted models and explicit fallbacks.</dd></div><div><dt><a href={`${DOCS_URL}context/skills/`}>Skills <span aria-hidden="true">↗</span></a></dt><dd>Version the instructions for recurring kinds of work.</dd></div></dl></li><li class="block-chapter"><span class="config-key">02 / COMPOSE</span><h4>Connect it to your work.</h4><p>Compose access and context around the task—not the other way around.</p><dl><div><dt><a href={`${DOCS_URL}tools/mcp/`}>Tools & MCP <span aria-hidden="true">↗</span></a></dt><dd>Read files, research the web, or connect your own services.</dd></div><div><dt><a href={`${DOCS_URL}memory/`}>Memory <span aria-hidden="true">↗</span></a></dt><dd>Choose none, Lite, Journal, or BuJo for continuity across conversations.</dd></div><div><dt><a href={`${DOCS_URL}programmatic/composition/`}>Packages & adapters <span aria-hidden="true">↗</span></a></dt><dd>Use the workspace or embed its responder in your product.</dd></div></dl></li><li class="block-chapter"><span class="config-key">03 / COMPOSE</span><h4>Let the work branch out.</h4><p>One conversation can coordinate specialists and long-running commands.</p><dl><div><dt><a href={`${DOCS_URL}config/blueprint/`}>Subagents <span aria-hidden="true">↗</span></a></dt><dd>Delegate a focused question; bring the result back to the parent.</dd></div><div><dt><a href={`${DOCS_URL}tools/background-process-jobs/`}>Background jobs <span aria-hidden="true">↗</span></a></dt><dd>Keep long-running commands off-turn and receive their completion.</dd></div><div><dt><a href={`${DOCS_URL}tools/sandbox/`}>Sandbox & policy <span aria-hidden="true">↗</span></a></dt><dd>Choose tool access and execution boundaries for that work.</dd></div></dl></li><li class="block-chapter"><span class="config-key">04 / COMPOSE</span><h4>Close the loop.</h4><p>Arrange where work starts, where results arrive, and what you can inspect.</p><dl><div><dt><a href={`${DOCS_URL}channels/`}>Channels <span aria-hidden="true">↗</span></a></dt><dd>Talk through the browser, messaging, webhooks, or an API.</dd></div><div><dt><a href={`${DOCS_URL}channels/cron/`}>Schedules <span aria-hidden="true">↗</span></a></dt><dd>Start recurring work through configured cron jobs.</dd></div><div><dt><a href={`${DOCS_URL}observability/`}>Run evidence <span aria-hidden="true">↗</span></a></dt><dd>Inspect local events, summaries, and optional traces.</dd></div></dl></li></ol></div><p class="blocks-note">Compose what you need; not every capability is on by default. Persistent/background subagents and console projects/tags require the current source build. <a href={RELEASE_STATUS_URL}>Check release availability ↗</a></p></section>
+          <div class="blocks-heading"><div><h3 id="blocks-heading">Choose your<br /><em>building blocks.</em></h3></div><p>Start with a model and a point of view. Add only what your work needs.</p></div>
+          <div class="block-summary"><ol class="block-chapters"><li class="block-chapter"><h4>Foundation</h4><dl><div><dt><a href={`${DOCS_URL}context/`}>Identity & context <span aria-hidden="true">↗</span></a></dt><dd>Role, instructions, workspace.</dd></div><div><dt><a href={`${DOCS_URL}runtime/`}>Models & routing <span aria-hidden="true">↗</span></a></dt><dd>Local or cloud. Explicit fallbacks.</dd></div><div><dt><a href={`${DOCS_URL}context/skills/`}>Skills <span aria-hidden="true">↗</span></a></dt><dd>Reusable task instructions.</dd></div></dl></li><li class="block-chapter"><h4>Context & connections</h4><dl><div><dt><a href={`${DOCS_URL}tools/mcp/`}>Tools & MCP <span aria-hidden="true">↗</span></a></dt><dd>Files, web, connected services.</dd></div><div><dt><a href={`${DOCS_URL}memory/`}>Memory <span aria-hidden="true">↗</span></a></dt><dd>None, Lite, Journal, or BuJo.</dd></div><div><dt><a href={`${DOCS_URL}programmatic/composition/`}>Packages & adapters <span aria-hidden="true">↗</span></a></dt><dd>Embed or extend the framework.</dd></div></dl></li><li class="block-chapter"><h4>Delegated work</h4><dl><div><dt><a href={`${DOCS_URL}config/blueprint/`}>Subagents <span aria-hidden="true">↗</span></a></dt><dd>Delegate focused work.</dd></div><div><dt><a href={`${DOCS_URL}tools/background-process-jobs/`}>Background jobs <span aria-hidden="true">↗</span></a></dt><dd>Run commands off-turn.</dd></div><div><dt><a href={`${DOCS_URL}tools/sandbox/`}>Sandbox & policy <span aria-hidden="true">↗</span></a></dt><dd>Tool access and execution limits.</dd></div></dl></li><li class="block-chapter"><h4>Continuity</h4><dl><div><dt><a href={`${DOCS_URL}channels/`}>Channels <span aria-hidden="true">↗</span></a></dt><dd>Web, messaging, webhooks, API.</dd></div><div><dt><a href={`${DOCS_URL}channels/cron/`}>Schedules <span aria-hidden="true">↗</span></a></dt><dd>Recurring work with cron.</dd></div><div><dt><a href={`${DOCS_URL}observability/`}>Run evidence <span aria-hidden="true">↗</span></a></dt><dd>Events, summaries, traces.</dd></div></dl></li></ol></div><p class="blocks-note">Compose what you need; not every capability is on by default. Persistent/background subagents and console projects/tags require the current source build. <a href={RELEASE_STATUS_URL}>Check release availability ↗</a></p></section>
       </section>
 
       <section class="console-section section" id="console" aria-labelledby="console-heading">
@@ -249,6 +223,7 @@ const jsonLd = {
           <h2 id="use-cases-heading">Less switching.<br /><em>More doing.</em></h2>
           <p class="section-intro">For the code you need to ship, the question you need to answer,
             and the routine you would rather not repeat.</p>
+          <p class="workflow-note">Illustrative workflows — not live agent runs.</p>
           <div class="workflow-explorer" data-workflow-explorer>
             <nav class="workflow-tabs" aria-label="Choose a workflow">
               <a id="tab-build" href="#workflow-build" data-workflow="build"><span>01</span> Build <span class="tab-arrow" aria-hidden="true">↗</span></a>
@@ -261,33 +236,18 @@ const jsonLd = {
                   <p class="workflow-recipe"><span>BUILDING BLOCKS</span>Skills · subagents · background jobs · run evidence</p><p class="workflow-gain">Less handoff overhead: repository conventions, findings, and test results stay in one place instead of being copied between chats.</p>
                   <a class="workflow-link" href={`${DOCS_URL}getting-started/quickstart/`}>Start with a project <span aria-hidden="true">↗</span></a>
                 </div>
-                <figure class="workflow-art">
-                  <span class="scene-label">FIELD NOTES / 01</span>
-                  <img src="/module-0.webp" width="640" height="427" loading="lazy" alt="" /><svg viewBox="0 0 520 400" fill="none" aria-hidden="true"><path class="scene-wire" d="M80 180H160Q190 180 190 220V250H310Q340 250 340 210V170H450"/><rect class="scene-sheet" x="55" y="95" width="160" height="140" rx="12" transform="rotate(-8 135 165)"/><path class="scene-accent" d="M105 140L82 163L105 186M161 140L184 163L161 186M145 135L122 190"/><rect class="scene-sheet" x="300" y="165" width="165" height="145" rx="12" transform="rotate(8 380 235)"/><path class="scene-accent" d="M330 223L346 239L376 205"/><path class="scene-line" d="M393 216H431M393 233H419M329 263H426"/><circle class="scene-core" cx="260" cy="165" r="36"/><path class="scene-accent" d="M245 165H275M260 150V180"/></svg>
-                  <figcaption>Codebase → investigate → proposed change<small>Illustrative workflow — not a live agent run</small></figcaption>
-                </figure>
               </article>
               <article class="workflow-panel" id="workflow-research" data-panel="research">
                 <div class="workflow-content"><span class="section-label">Your sources. A clearer picture.</span><h3>Connect the dots.</h3><p>Connect search and source material through tools or MCP. Give subagents separate questions to investigate, then compare their evidence in one conversation. Optional memory can retain useful context for the next session.</p>
                   <p class="workflow-recipe"><span>BUILDING BLOCKS</span>Tools & MCP · subagents · optional memory</p><p class="workflow-gain">Less repeated setup: return to the same brief, challenge the synthesis, and refine it without reintroducing every source.</p>
                   <a class="workflow-link" href={`${DOCS_URL}memory/`}>Explore optional memory <span aria-hidden="true">↗</span></a>
                 </div>
-                <figure class="workflow-art">
-                  <span class="scene-label">FIELD NOTES / 02</span>
-                  <img src="/module-1.webp" width="640" height="427" loading="lazy" alt="" /><svg viewBox="0 0 520 400" fill="none" aria-hidden="true"><path class="scene-wire" d="M100 210C180 210 180 125 260 125S335 260 420 260"/><rect class="scene-sheet" x="80" y="90" width="155" height="190" rx="9" transform="rotate(-12 155 185)"/><path class="scene-line" d="M105 130H196M105 155H180M105 180H196M105 205H158"/><rect class="scene-sheet" x="278" y="116" width="155" height="190" rx="9" transform="rotate(9 355 215)"/><path class="scene-line" d="M305 156H403M305 184H380M305 212H397M305 240H370"/><circle class="scene-core" cx="258" cy="195" r="49"/><path class="scene-accent" d="M236 192L251 207L280 178"/><path class="scene-accent" d="M111 232H180M307 269H387"/></svg>
-                  <figcaption>Source material → compare → working draft<small>Illustrative workflow — not a live agent run</small></figcaption>
-                </figure>
               </article>
               <article class="workflow-panel" id="workflow-automate" data-panel="automate">
                 <div class="workflow-content"><span class="section-label">Your routine. Less repetition.</span><h3>Find your rhythm.</h3><p>Configure a cron trigger, the sources to check, and a channel for the result. The same agent can prepare a recurring digest and answer your follow-up questions with its configured context.</p>
                   <p class="workflow-recipe"><span>BUILDING BLOCKS</span>Schedules · channels · tools · run evidence</p><p class="workflow-gain">Less checking by hand: information comes to you on a schedule, with a conversation ready when something needs attention.</p>
                   <a class="workflow-link" href={`${DOCS_URL}channels/cron/`}>Explore scheduled work <span aria-hidden="true">↗</span></a>
                 </div>
-                <figure class="workflow-art">
-                  <span class="scene-label">FIELD NOTES / 03</span>
-                  <img src="/module-3.webp" width="640" height="427" loading="lazy" alt="" /><svg viewBox="0 0 520 400" fill="none" aria-hidden="true"><circle class="scene-orbit" cx="260" cy="200" r="126"/><circle class="scene-orbit" cx="260" cy="200" r="85"/><path class="scene-wire" d="M134 200H386M260 74V326"/><rect class="scene-sheet" x="217" y="155" width="86" height="90" rx="20"/><path class="scene-accent" d="M265 171L245 202H272L252 230"/><circle class="scene-core" cx="260" cy="74" r="25"/><path class="scene-accent" d="M249 74L257 82L271 66"/><circle class="scene-core" cx="386" cy="200" r="25"/><path class="scene-accent" d="M375 200H397M386 189V211"/><circle class="scene-core" cx="134" cy="200" r="25"/><path class="scene-accent" d="M123 195H145M123 205H139"/><circle class="scene-core" cx="260" cy="326" r="25"/><path class="scene-accent" d="M260 312V326L270 332"/></svg>
-                  <figcaption>Schedule → configured agent → digest<small>Illustrative workflow — not a live agent run</small></figcaption>
-                </figure>
               </article>
             </div>
           </div>

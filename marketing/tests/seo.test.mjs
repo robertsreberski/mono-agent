@@ -209,7 +209,7 @@ describe("marketing built output", () => {
     assert.equal(scripts.length, 1);
     assert.ok(scripts[0].includes('src="/interactions.js"'));
     assert.ok(scripts[0].includes('type="module"'));
-    assert.ok(statSync(join(DIST, "interactions.js")).size < 6500);
+    assert.ok(statSync(join(DIST, "interactions.js")).size < 5500);
     for (const id of ["workflow-build", "workflow-research", "workflow-automate"]) {
       mustContain(html, `id="${id}"`, "server-rendered workflow");
     }
@@ -235,7 +235,7 @@ describe("marketing built output", () => {
   });
 
   it("keeps sculptural assets truly transparent and bounded", async () => {
-    for (const name of ["hero-640.webp", "hero-960.webp", "hero-1440.webp", ...[0,1,2,3].map(i=>`module-${i}.webp`)]) {
+    for (const name of ["hero-640.webp", "hero-960.webp", "hero-1440.webp", "hero-mobile-320.webp", "hero-mobile-640.webp"]) {
       const path = join(DIST,name);
       const meta = await sharp(path).metadata();
       assert.ok(meta.hasAlpha, `${name} must blend without a baked backdrop`);
@@ -244,6 +244,9 @@ describe("marketing built output", () => {
       assert.equal(corner[3],0,`${name} corner must be transparent`);
       assert.ok(statSync(path).size < 180000);
     }
+    let fontsSize=0;
+    for (const font of ["instrument-serif.woff2", "instrument-serif-italic.woff2", "manrope.woff2"]) fontsSize+=statSync(join(DIST,"fonts",font)).size;
+    assert.ok(fontsSize<60000, "total local font budget");
     for (const license of ["InstrumentSerif-OFL.txt", "Manrope-OFL.txt"]) {
       assert.ok(existsSync(join(DIST,"fonts",license)));
     }

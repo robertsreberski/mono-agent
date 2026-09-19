@@ -170,7 +170,7 @@ test("all workflow content and native FAQ work without JavaScript", async ({ bro
     await expect(page.locator(`#workflow-${id}`)).toBeVisible();
   }
   await expect(page.locator("#configuration")).toContainText("mono-agent.config.json");
-  await expect(page.locator("#configuration .blueprint-callouts article")).toHaveCount(3);
+  await expect(page.locator("#configuration .block-chapter dt")).toHaveCount(12);
   await expect(page.getByRole("button", { name: /Copy install command/ })).toHaveCount(0);
   const question = page.locator(".faq summary").first();
   await question.click();
@@ -203,18 +203,6 @@ test("clipboard refusal leaves honest manual instructions", async ({ page }) => 
   await expect(page.getByRole("status")).toHaveText("Copy unavailable. Select and copy the command above.");
   await expect(page.getByRole("button", { name: /Copy install command/ })).toBeEnabled();
 });
-
-test("reduced motion disables the interactive artwork movement", async ({ browser }) => {
-  const context = await browser.newContext({ reducedMotion: "reduce" });
-  const page = await context.newPage();
-  await page.goto("/");
-  await page.mouse.move(700, 400);
-  expect(await page.locator(".hero-art").evaluate(el => el.style.getPropertyValue("--art-x"))).toBe("");
-  await page.getByRole("tab", { name: /Research/ }).click();
-  expect(await page.locator("#workflow-research svg").evaluate(el => getComputedStyle(el).animationName)).toBe("none");
-  await context.close();
-});
-
 
 test("workflow URL follows selection and back/forward navigation", async ({ page }) => {
   await page.goto("/#workflow-research");
@@ -280,7 +268,7 @@ test('console screenshot is real component evidence with disclosed synthetic sta
 test('mobile document keeps a bounded reading length with visible configuration', async ({page}) => {
   await page.setViewportSize({width:390,height:844}); await page.goto('/');
   await expect(page.locator('[data-scroll-story]')).toHaveCount(0);
-  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThan(9200);
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThan(6900);
 });
 
 test('navigation and blueprint remain usable without JavaScript', async ({browser}) => {
@@ -290,10 +278,9 @@ test('navigation and blueprint remain usable without JavaScript', async ({browse
   await expect(page.locator('#config-blueprint-json')).toBeVisible();
   await context.close();
 });
-test('blueprint reveal respects reduced motion and deep links stay visible', async ({page}) => {
+test('workflow deep links stay visible with reduced motion', async ({page}) => {
   await page.emulateMedia({reducedMotion:'reduce'});
   await page.goto('/#configuration');
-  expect(await page.locator('.blueprint-callouts article').first().evaluate(el=>getComputedStyle(el,'::after').animationName)).toBe('none');
   await page.goto('/#workflow-research',{waitUntil:'networkidle'});
   await expect(page.locator('#workflow-research')).toBeInViewport();
 });
@@ -320,44 +307,35 @@ test('mobile hero is complete and sits above the CTA', async ({page}) => {
   const image=await page.locator('.hero-art img').boundingBox();
   const cta=await page.locator('.hero-actions').boundingBox();
   expect(image!.y+image!.height).toBeLessThanOrEqual(cta!.y+1);
-  expect(image!.width/image!.height).toBeCloseTo(1.5,1);
+  expect(image!.width/image!.height).toBeCloseTo(1,1);
   expect(await page.locator('.hero-art img').evaluate(el=>getComputedStyle(el).maskImage)).toBe('none');
 });
-for (const width of [390,1440]) {
-  test(`building block animation reverses, pauses and respects live motion changes at ${width}px`, async ({page}) => {
-    await page.setViewportSize({width,height:900}); await page.goto('/');
-    const story=page.locator('[data-block-story]');
-    const progress=()=>story.evaluate(el=>Number((el as HTMLElement).style.getPropertyValue('--block-progress')));
-    const move=async (fraction:number)=>{
-      await story.evaluate((el,f)=>{const r=el.getBoundingClientRect();scrollTo({top:scrollY+r.top-innerHeight*.35+f*(r.height-innerHeight*.55),behavior:'instant'});},fraction);
-    };
-    await move(.15); await expect.poll(progress).toBeCloseTo(.15,1);
 
-    await move(.8); await expect.poll(progress).toBeCloseTo(.8,1);
-
-    await move(.15); await expect.poll(progress).toBeCloseTo(.15,1);
-
-    await move(.6); await expect.poll(progress).toBeCloseTo(.6,1);
-    const poses=()=>story.locator('.block-layer').evaluateAll(els=>els.map(el=>getComputedStyle(el).transform));
-    const beforePause=await poses();
-    await page.getByRole('button',{name:'Pause motion'}).click();
-    await expect(story).toHaveAttribute('data-paused','true');
-    expect(await poses()).toEqual(beforePause);
-    await expect(page.getByRole('button',{name:'Resume motion'})).toBeInViewport();
-    await expect(page.getByRole('button',{name:'Resume motion'})).toBeFocused();
-    const paused=await progress(); await move(.7); expect(await progress()).toBe(paused);
-    await page.getByRole('button',{name:'Resume motion'}).click();
-    await expect(story).toHaveAttribute('data-motion','true');
-    await page.emulateMedia({reducedMotion:'reduce'});
-    await expect(story).toHaveAttribute('data-motion','false');
-    await expect(page.locator('.blocks-motion')).not.toBeVisible();
-    await page.emulateMedia({reducedMotion:'no-preference'});
-    await expect(story).toHaveAttribute('data-motion','true');
-  });
-}
-
-test('mobile sticky artwork identifies the chapter under its reading edge', async ({page}) => {
+test('mobile page uses compact cards and no floating components', async ({page}) => {
   await page.setViewportSize({width:390,height:844}); await page.goto('/');
-  await page.locator('.block-chapter').nth(2).evaluate(el=>scrollTo({top:scrollY+el.getBoundingClientRect().top-285,behavior:'instant'}));
-  await expect.poll(()=>page.locator('.block-caption').textContent()).toBe('03 / Execution');
+  await expect(page.locator('.block-chapter')).toHaveCount(4);
+  await expect(page.locator('.block-chapter dt')).toHaveCount(12);
+  await expect(page.locator('[data-block-story], .block-layer, .workflow-art')).toHaveCount(0);
+  expect((await page.locator('.building-blocks').boundingBox())!.height).toBeLessThan(1000);
+  expect((await page.locator('.hero-actions').boundingBox())!.y).toBeLessThan(740);
+});
+test('high density mobile loads the mobile hero and compressed local fonts', async ({browser}) => {
+  const context=await browser.newContext({viewport:{width:390,height:844},deviceScaleFactor:3});
+  const page=await context.newPage(); const requests:string[]=[];
+  page.on('request',request=>requests.push(request.url()));
+  await page.goto('/'); await page.evaluate(()=>document.fonts.ready);
+  expect(await page.locator('.hero-art img').evaluate((el:HTMLImageElement)=>el.currentSrc)).toMatch(/hero-mobile-640.webp$/);
+  expect(requests.some(url=>/hero-1440|module-|\.ttf/.test(url))).toBe(false);
+  expect(requests.filter(url=>url.includes('/fonts/')).every(url=>url.endsWith('.woff2'))).toBe(true);
+  await context.close();
+});
+
+test('simple cards settle once into their grid and honor reduced motion', async ({page}) => {
+  await page.goto('/'); const cards=page.locator('.block-summary');
+  await cards.evaluate(el=>scrollTo({top:scrollY+el.getBoundingClientRect().top-innerHeight*.8,behavior:'instant'}));
+  await expect.poll(()=>cards.evaluate(el=>Number((el as HTMLElement).style.getPropertyValue('--card-open')))).toBeLessThan(.5);
+  await cards.evaluate(el=>scrollTo({top:scrollY+el.getBoundingClientRect().top-innerHeight*.25,behavior:'instant'}));
+  await expect.poll(()=>cards.evaluate(el=>Number((el as HTMLElement).style.getPropertyValue('--card-open')))).toBe(1);
+  await page.emulateMedia({reducedMotion:'reduce'}); await expect(cards).toHaveAttribute('data-cards-motion','false');
+  expect(await cards.locator('.block-chapter').first().evaluate(el=>getComputedStyle(el).transform)).toBe('none');
 });

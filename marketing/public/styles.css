@@ -1,18 +1,18 @@
 /* Mono Agent — an editorial machine for thought. One canvas, one material language. */
 @font-face {
   font-family:Manrope;
-  src:url('/fonts/manrope.ttf') format('truetype');
+  src:url('/fonts/manrope.woff2') format('woff2');
   font-weight:200 800;
   font-display:swap
 }
 @font-face {
   font-family:Instrument;
-  src:url('/fonts/instrument-serif.ttf') format('truetype');
+  src:url('/fonts/instrument-serif.woff2') format('woff2');
   font-display:swap
 }
 @font-face {
   font-family:Instrument;
-  src:url('/fonts/instrument-serif-italic.ttf') format('truetype');
+  src:url('/fonts/instrument-serif-italic.woff2') format('woff2');
   font-style:italic;
   font-display:swap
 }
@@ -459,109 +459,6 @@ pre {
   max-width:330px;
   font-size:14px
 }
-.block-story {
-  --block-progress:.5;
-  display:grid;
-  grid-template-columns:1.3fr 1fr;
-  gap:80px;
-  align-items:start
-}
-.block-visual {
-  position:sticky;
-  top:70px;
-  min-width:0
-}
-.block-art {
-  position:relative;
-  height:480px;
-  isolation:isolate
-}
-.block-art::before {
-  content:'';
-  position:absolute;
-  inset:10% 6%;
-  border:1px solid #c3d99524;
-  border-radius:50%;
-  transform:rotate(-30deg) scaleY(.62)
-}
-.block-art::after {
-  content:'MONO / COMPOSITION';
-  position:absolute;
-  left:0;
-  top:0;
-  color:var(--faint);
-  font:8px var(--mono);
-  letter-spacing:.15em
-}
-.block-layer {
-  position:absolute;
-  width:62%;
-  height:auto;
-  left:19%;
-  top:26%;
-  will-change:transform;
-  transform:translate(calc(var(--node-x) * 1px),calc(var(--node-y) * 1px)) rotate(calc(var(--node-r) * 1deg));
-  z-index:var(--layer);
-  opacity:.75
-}
-.block-layer img {
-  display:block;
-  width:100%;
-  height:auto;
-  filter:saturate(.7)
-}
-.block-layer:nth-child(1) {
-  --node-x:140;
-  --node-y:105;
-  --node-r:10
-}
-.block-layer:nth-child(2) {
-  --node-x:-130;
-  --node-y:105;
-  --node-r:-15
-}
-.block-layer:nth-child(3) {
-  --node-x:135;
-  --node-y:-95;
-  --node-r:10
-}
-.block-layer:nth-child(4) {
-  --node-x:-135;
-  --node-y:-90;
-  --node-r:-15
-}
-.block-layer small,.block-layer strong,.block-layer span {
-  display:none
-}
-[data-motion="true"] .block-layer {
-  transform:translate(calc(var(--node-x) * (0.3 + var(--block-progress) * .7) * 1px),calc(var(--node-y) * (0.3 + var(--block-progress) * .7) * 1px)) rotate(calc(var(--node-r) * var(--block-progress) * 1deg))
-}
-[data-motion="true"][data-phase="0"] .block-layer:nth-child(4),[data-motion="true"][data-phase="1"] .block-layer:nth-child(3),[data-motion="true"][data-phase="2"] .block-layer:nth-child(2),[data-motion="true"][data-phase="3"] .block-layer:nth-child(1) {
-  opacity:1;
-  z-index:5
-}
-.block-visual figcaption {
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:12px;
-  border-top:1px solid var(--line);
-  padding:18px 0;
-  font:10px var(--mono);
-  color:var(--muted)
-}
-.blocks-motion {
-  font:9px var(--mono);
-  background:transparent;
-  border:1px solid var(--line);
-  color:var(--muted);
-  border-radius:20px;
-  padding:8px 12px
-}
-.blocks-motion:hover {
-  color:var(--ink);
-  border-color:var(--muted)
-}
 .block-chapters {
   padding:0;
   margin:0;
@@ -744,34 +641,6 @@ pre {
   text-decoration:none;
   margin-top:22px
 }
-.workflow-art {
-  position:relative
-}
-.workflow-art img {
-  width:100%;
-  display:block;
-  height:auto
-}
-.workflow-art svg {
-  display:none
-}
-.scene-label {
-  font:8px var(--mono);
-  letter-spacing:.15em;
-  color:var(--faint)
-}
-.workflow-art figcaption {
-  font-size:11px;
-  padding-top:15px;
-  border-top:1px solid var(--line);
-  color:var(--muted)
-}
-.workflow-art figcaption small {
-  display:block;
-  font:8px var(--mono);
-  color:var(--faint);
-  margin-top:7px
-}
 .steps {
   display:grid;
   grid-template-columns:repeat(3,minmax(0,1fr));
@@ -902,32 +771,6 @@ pre {
     width:140%;
     margin-left:-22%
   }
-  .configuration-intro,.blueprint-layout,.block-story {
-    gap:45px
-  }
-  .block-art {
-    height:430px
-  }
-  .block-layer {
-    width:70%;
-    left:15%
-  }
-  .block-layer:nth-child(1) {
-    --node-x:65;
-    --node-y:85
-  }
-  .block-layer:nth-child(2) {
-    --node-x:-65;
-    --node-y:85
-  }
-  .block-layer:nth-child(3) {
-    --node-x:65;
-    --node-y:-65
-  }
-  .block-layer:nth-child(4) {
-    --node-x:-65;
-    --node-y:-65
-  }
   .workflow-panel {
     gap:40px
   }
@@ -970,14 +813,6 @@ pre {
   }
   .steps {
     grid-template-columns:1fr
-  }
-  .block-story {
-    grid-template-columns:1fr 1fr;
-    gap:30px
-  }
-  .block-layer {
-    width:80%;
-    left:10%
   }
 }
 @media(max-width:640px) {
@@ -1244,55 +1079,6 @@ pre {
     margin-top:20px;
     max-width:300px
   }
-  .block-story {
-    display:block
-  }
-  .block-visual {
-    position:relative;
-    top:0;
-    background:var(--bg);
-    z-index:3
-  }
-  .block-art {
-    height:235px;
-    overflow:hidden
-  }
-  .block-art::after {
-    top:12px
-  }
-  .block-layer {
-    width:55%;
-    left:22.5%;
-    top:22%
-  }
-  .block-layer:nth-child(1) {
-    --node-x:66;
-    --node-y:45
-  }
-  .block-layer:nth-child(2) {
-    --node-x:-62;
-    --node-y:45
-  }
-  .block-layer:nth-child(3) {
-    --node-x:60;
-    --node-y:-40
-  }
-  .block-layer:nth-child(4) {
-    --node-x:-60;
-    --node-y:-40
-  }
-  [data-motion="true"] .block-visual {
-    position:sticky;
-    top:0
-  }
-  .block-visual figcaption {
-    font-size:8px;
-    padding:10px 0
-  }
-  .blocks-motion {
-    font-size:8px;
-    padding:7px 10px
-  }
   .block-chapter {
     min-height:345px;
     padding:27px 0 35px;
@@ -1388,17 +1174,6 @@ pre {
   .workflow-link {
     font-size:10px
   }
-  .workflow-art {
-    width:100%;
-    max-width:350px
-  }
-  .workflow-art img {
-    width:80%;
-    margin:0 auto
-  }
-  .workflow-art figcaption {
-    font-size:10px
-  }
   .steps {
     display:block;
     margin:35px 0 25px
@@ -1447,10 +1222,6 @@ pre {
     animation:none!important;
     transition:none!important
   }
-  .block-visual {
-    position:relative!important;
-    top:0!important
-  }
 }
 @media(prefers-reduced-motion:no-preference) {
   html {
@@ -1489,15 +1260,6 @@ pre {
 .blocks-note,.console-shot figcaption {
   font-size:11px
 }
-.block-caption {
-  color:var(--lime)
-}
-.block-visual figcaption {
-  font-size:11px
-}
-.blocks-motion {
-  font-size:10px
-}
 @media(max-width:640px) {
   .lede,.workflow-content>p {
     font-size:13px
@@ -1513,13 +1275,63 @@ pre {
   .blocks-note,.console-shot figcaption {
     font-size:10px
   }
-  .block-visual figcaption {
-    font-size:10px
-  }
-  .blocks-motion {
-    font-size:9px
-  }
   .workflow-content>.workflow-gain {
     font-size:12px
   }
 }
+
+/* One hero illustration and a static, compact component reference. */
+.block-chapters { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:30px; }
+.block-chapter { min-height:0; padding:24px 0; }
+.block-chapter h4 { font-size:19px; min-height:2.2em; margin:12px 0 20px; }
+.block-chapter dl>div { margin-top:18px; }
+.block-chapter dt { font-size:12px; }
+.block-chapter dd { font-size:12px; line-height:1.7; }
+.blocks-heading { margin-bottom:30px; }
+.building-blocks { margin-top:65px; padding-top:55px; }
+.workflow-panel { display:block; max-width:850px; }
+.workflow-content { max-width:760px; }
+.workflow-content>.workflow-gain { max-width:650px; }
+@media(max-width:1050px) { .block-chapters {grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 35px;} }
+@media(max-width:640px) {
+ .hero-grid { padding-top:32px; }
+ .hero-art { width:210px; margin:14px auto 22px; }
+ .hero-art img,.hero-art picture { aspect-ratio:1; width:100%; height:auto; }
+ .hero-meta { margin-top:12px; }
+ .hero-footnote { display:none; }
+ .section { padding:52px 0; }
+ .configuration { padding-top:52px; }
+ .building-blocks { margin-top:45px; padding-top:42px; }
+ .blocks-heading { margin-bottom:25px; }
+ .blocks-heading h3 { font-size:34px; }
+ .blocks-heading>p { margin-top:15px; }
+ .block-chapters { gap:5px 22px; }
+ .block-chapter { padding:20px 0 24px; min-height:0; scroll-margin-top:25px; }
+ .block-chapter h4 { font-size:16px; margin:10px 0 14px; }
+ .block-chapter dt,.block-chapter dd { font-size:12px; }
+ .block-chapter a {scroll-margin-top:25px;}
+ .block-chapter dl>div {margin-top:17px;}
+ .blocks-note { padding-bottom:42px; }
+ .workflow-panel { padding-top:25px; }
+}
+
+.blueprint-layout{display:block}.config-blueprint{max-width:800px;margin:0 auto}
+.workflow-note{font-size:10px;color:var(--faint);margin-top:-20px}
+.block-chapter h4{min-height:0;margin:0 0 20px}.block-chapter dd{margin-top:4px}
+@media(max-width:640px){.hero-actions .btn{font-size:11px;min-height:48px}.menu-toggle{font-size:11px;min-height:44px}.block-chapter h4{min-height:2.2em;margin-bottom:14px}.workflow-note{font-size:10px;margin-top:-15px}}
+
+/* The original quiet cards, now containing the summary itself. No pinned stage. */
+.block-chapters{gap:18px;padding:8px 0}
+.block-chapter{--card-ink:#23331a;--card-muted:#43523a;--card-angle:-1.5deg;background:#c9dcaa;color:var(--card-ink);border:1px solid #e0edc9;border-radius:10px;padding:23px 20px;box-shadow:0 4px 0 #74806445;transform-origin:center}
+.block-chapter:nth-child(2){--card-ink:#292336;--card-muted:#4b4459;--card-angle:1.5deg;background:#d2c9dc;border-color:#e8dff0}
+.block-chapter:nth-child(3){--card-ink:#30342b;--card-muted:#505549;--card-angle:-1deg;background:#d9dbc9;border-color:#f0f0e0}
+.block-chapter:nth-child(4){--card-ink:#e9eee2;--card-muted:#c0c9b6;--card-angle:1deg;background:#253322;border-color:#627854}
+.block-chapter h4{font-size:18px;letter-spacing:-.025em;min-height:2.2em;margin:0 0 16px}
+.block-chapter dt,.block-chapter a{color:var(--card-ink)}
+.block-chapter dd{color:var(--card-muted)}
+.block-chapter a:hover{color:var(--card-ink);text-decoration:underline}
+.block-chapter :focus-visible{outline-color:var(--card-ink)}
+[data-cards-motion="true"] .block-chapter{transform:translateY(calc((1 - var(--card-open,1)) * 12px)) rotate(calc((1 - var(--card-open,1)) * var(--card-angle)))}
+@media(max-width:640px){.block-chapters{gap:15px}.block-chapter{padding:18px 14px}.block-chapter h4{font-size:15px}.block-chapter dt,.block-chapter dd{font-size:11px}.block-chapter dl>div{margin-top:14px}}
+.block-chapter dl>div:first-child{margin-top:0}
+@media(max-width:640px){.block-chapter dt,.block-chapter dd{font-size:12px}.block-chapter h4{margin-bottom:10px}}

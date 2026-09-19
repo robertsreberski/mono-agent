@@ -24,17 +24,18 @@ existing docs site is secondary.
   source-only capabilities as published, never promise setup speed or security properties, and never present
   the brand artwork as a screenshot.
 - **Artwork is decorative.** The original transparent graphite/chrome sculpture
-  and four companion components share one material language across the hero,
-  building-block motion and workflows. `public/hero-*.webp` preserve alpha;
+  is used once in the hero. `public/hero-*.webp` preserve alpha;
   there is no baked background or CSS mask hiding an image seam. The social card
-  is composed deterministically from the same sculpture. Local source PNGs live
-  at `assets-source/sculpture.png` and `assets-source/components.png` (gitignored).
+  is composed deterministically from the same sculpture. The local source PNG lives
+  at `assets-source/sculpture.png` (gitignored).
   Regenerate committed derivatives with `pnpm run assets`. The hero is never
   presented as product UI. Original generation is not reproducible from this
   repository alone; the optimized files are committed so builds need no generator.
 - **Typography is self-hosted.** Manrope and Instrument Serif are bundled under
   their SIL Open Font Licenses in `public/fonts/`, sourced from the Google Fonts
   `google/fonts` repository's `ofl/manrope` and `ofl/instrumentserif` directories.
+  Shipped files use Google Fonts' Latin WOFF2 subsets (55,300 bytes total),
+  not the larger original TTFs.
   The page makes no runtime font-provider requests. The CSS uses one continuous
   dark canvas and a single responsive stylesheet rather than layered legacy themes.
 - **SEO is tested, not assumed.** `tests/seo.test.mjs` audits the built
@@ -44,11 +45,11 @@ existing docs site is secondary.
 
 ## Interaction design
 
-The configuration blueprint and three outcome callouts are server-rendered,
+The configuration blueprint and twelve linked building blocks are server-rendered,
 including the caveats that identity/skills/MCP files, secrets/auth, and runtime
 state remain separate. It is a readable example, not a fake editor or a deploy
-control. The workflow field guide pairs three sculptural illustrations with
-server-rendered Build, Research and Automate content. `public/interactions.js` progressively adds
+control. The workflow field guide presents concise, server-rendered Build,
+Research and Automate content without repeated decorative illustrations. `public/interactions.js` progressively adds
 ARIA tabs (arrow keys, Home/End, Enter/Space), direct workflow links, a copy-install
 button with honest success/failure feedback, and the compact mobile menu.
 All workflow content remains readable when JavaScript is disabled; FAQ disclosures
@@ -62,13 +63,16 @@ hijacks scrolling. Readable text does not fade through low-contrast states.
 ## Mobile composition and console evidence
 
 The JSON configuration is always rendered visibly, including on phones without
-JavaScript. Mobile hero artwork keeps its full aspect ratio and precedes the CTAs.
-The compact four-chapter building-block story uses passive, on-demand scroll frames:
-its illustrated components separate and highlight foundation, connections, execution and
-continuity alongside twelve linked capabilities. A persistent caption identifies the
-chapter at the reading edge, including while motion is paused. Pause, runtime reduced-motion and
-no-JS paths retain the complete readable content; scrolling is never intercepted.
-Workflows identify the useful components and the repeated work they help remove.
+JavaScript. A dedicated square mobile hero crop removes transparent side space,
+not the subject, and stays above the CTAs. Phones request 320px/640px WebP sources
+instead of the larger desktop variants, including at high device pixel ratios.
+
+Simple colored cards summarize twelve capabilities across all screen sizes. They
+settle from a slight fan (at most 1.5 degrees and 12px) into their reading grid.
+There is no pinned scene, orbital imagery, phase switching, or continuous animation
+loop. Reduced-motion/no-JS modes use the plain grid. Workflows identify the useful
+components and repeated work they help remove. Repeated blueprint callouts are
+removed because the same capabilities already appear in the cards.
 
 The console image is the actual desktop App, Messages and Composer, captured at
 1280×900 CSS pixels with 1.5× device scale (1920×1350 pixels), encoded losslessly.
@@ -92,7 +96,7 @@ contacting a running console. The asset is `marketing/public/console-desktop.web
 Review this recipe if the source fixture changes. No production data is used.
 
 `pnpm run screenshots` captures desktop1440×1000 and mobile390×844 views, including
-both building-block states. Add `-- --video` for a genuine browser scroll recording.
+the building-block cards. Add `-- --video` for a genuine browser scroll recording.
 No screenshot dimension exceeds2000px. Output stays gitignored.
 
 ## Local development
