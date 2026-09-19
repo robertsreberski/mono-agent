@@ -3,8 +3,8 @@
 //
 // Copy rules for this file: every claim must already be true of the published
 // baseline or be explicitly framed as configuration. Never advertise
-// source-only capabilities (console projects/tags, durable subagents, usage
-// meters — see docs/reference/release-status.md), never promise setup speed,
+// source-only capabilities as published (label them and link release status),
+// never promise setup speed,
 // security, or availability, and never present the decorative brand artwork
 // as a product screenshot.
 const SITE_URL = "https://mono-agent.dev";
@@ -216,12 +216,13 @@ const jsonLd = {
           </div>
 
         </div>
+        <div class="wrap"><details class="building-blocks"><summary>Choose your building blocks <span>12 capabilities <span aria-hidden="true">+</span></span></summary><ul><li><a href={`${DOCS_URL}context/`}>Identity & context <span aria-hidden="true">↗</span></a><p>Your role, instructions, and workspace.</p></li><li><a href={`${DOCS_URL}runtime/`}>Models & routing <span aria-hidden="true">↗</span></a><p>Local or hosted models; explicit fallbacks.</p></li><li><a href={`${DOCS_URL}context/skills/`}>Skills <span aria-hidden="true">↗</span></a><p>Reusable instructions for particular work.</p></li><li><a href={`${DOCS_URL}tools/mcp/`}>Tools & MCP <span aria-hidden="true">↗</span></a><p>Built-in tools and connected capabilities.</p></li><li><a href={`${DOCS_URL}memory/`}>Memory <span aria-hidden="true">↗</span></a><p>None, Lite, Journal, or BuJo.</p></li><li><a href={`${DOCS_URL}channels/`}>Channels <span aria-hidden="true">↗</span></a><p>Browser, messaging, webhooks, and API.</p></li><li><a href={`${DOCS_URL}config/blueprint/`}>Subagents <span aria-hidden="true">↗</span></a><p>Delegate focused work to specialist agents.</p></li><li><a href={`${DOCS_URL}tools/background-process-jobs/`}>Background jobs <span aria-hidden="true">↗</span></a><p>Let long-running commands finish off-turn.</p></li><li><a href={`${DOCS_URL}channels/cron/`}>Schedules <span aria-hidden="true">↗</span></a><p>Recurring work through configured cron jobs.</p></li><li><a href={`${DOCS_URL}tools/sandbox/`}>Sandbox & policy <span aria-hidden="true">↗</span></a><p>Choose tool access and execution boundaries.</p></li><li><a href={`${DOCS_URL}observability/`}>Run evidence <span aria-hidden="true">↗</span></a><p>Local events, summaries, and optional traces.</p></li><li><a href={`${DOCS_URL}programmatic/composition/`}>Packages & adapters <span aria-hidden="true">↗</span></a><p>Embed the framework or extend its edges.</p></li></ul><p class="blocks-note">Compose what you need; not every capability is on by default. Persistent/background subagents and console projects/tags require the current source build. <a href={RELEASE_STATUS_URL}>Check release availability ↗</a></p></details></div>
       </section>
 
       <section class="console-section section" id="console" aria-labelledby="console-heading">
         <div class="wrap">
           <div class="console-intro"><div><span class="section-label">The workspace</span><h2 id="console-heading">Made for you.<br /><em>Open to your agent.</em></h2></div><p>One considered interface for conversations, context, and the models behind your work.</p></div>
-          <figure class="console-shot"><a href="/console-desktop.webp" aria-label="Open full console screenshot"><picture><source media="(max-width: 640px)" srcset="/console-mobile.webp" /><img src="/console-desktop.webp" width="1280" height="560" loading="lazy" alt="Mono Agent console with a project and two example conversations." /></picture></a><figcaption>Actual console UI · synthetic example data · current source build. <a href={RELEASE_STATUS_URL}>Release availability ↗</a></figcaption></figure>
+          <figure class="console-shot"><a class="console-desktop-view" href="/console-desktop.webp" aria-label="Open full desktop console screenshot"><img src="/console-desktop.webp" width="1280" height="560" loading="lazy" alt="Mono Agent console with a project and two example conversations." /></a><a class="console-mobile-view" href="/console-mobile.webp" aria-label="Open full mobile console screenshot"><img src="/console-mobile.webp" width="390" height="844" loading="lazy" alt="Mobile Mono Agent console with synthetic project and conversation data." /></a><figcaption>Actual console UI · synthetic example data · current source build. <a href={RELEASE_STATUS_URL}>Release availability ↗</a></figcaption></figure>
           <div class="console-benefits" id="why">
             <article><span>01 / CONTINUITY</span><h3>Change models. Keep the thread.</h3><p>Choose a supported model for your next reply without starting over. Your conversation stays with you.</p></article>
             <article><span>02 / SHARED CONTROLS</span><h3>You click. Your agent calls a tool.</h3><p>Create projects, organize tags, and find conversations through the interface—or let your agent use the corresponding tools.</p></article>

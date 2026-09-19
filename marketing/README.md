@@ -17,12 +17,11 @@ existing docs site is secondary.
   thesis, then connect its runtime, context, memory, tools, and channel blocks
   to the framework/package composition story. The displayed example is valid
   JSON and its keys/types are checked against the generated app schema. Every
-  claim on the page must already be true of the published npm baseline, or be
-  explicitly framed as configuration. The honesty rules live in a comment at
+  claim must be source-grounded; source-only showcases must be explicitly
+  labelled and linked to release availability. The honesty rules live in a comment at
   the top of that file — read them before editing copy.
-  `docs/reference/release-status.md` is the boundary reference: never advertise
-  source-only capabilities (console projects/tags, durable subagents, usage
-  meters), never promise setup speed or security properties, and never present
+  `docs/reference/release-status.md` is the boundary reference: never present
+  source-only capabilities as published, never promise setup speed or security properties, and never present
   the brand artwork as a screenshot.
 - **Artwork is decorative.** `public/hero-*.{jpg,webp}` and
   `public/og-1200x630.jpg` are optimized derivatives of a supplied brand
@@ -37,19 +36,19 @@ existing docs site is secondary.
 
 ## Interaction design
 
-The configuration blueprint and all six outcome callouts are server-rendered,
+The configuration blueprint and three outcome callouts are server-rendered,
 including the caveats that identity/skills/MCP files, secrets/auth, and runtime
 state remain separate. It is a readable example, not a fake editor or a deploy
 control. The workflow field guide pairs three original SVG illustrations with
 server-rendered Build, Research and Automate content. `public/interactions.js` progressively adds
 ARIA tabs (arrow keys, Home/End, Enter/Space), direct workflow links, a copy-install
-button with honest success/failure feedback, and subtle pointer-responsive hero art.
+button with honest success/failure feedback, and the compact mobile menu.
 All workflow content remains readable when JavaScript is disabled; FAQ disclosures
 are native HTML. These are illustrative workflows, never live model output.
 
 No model calls, analytics, third-party scripts or storage are used. Clipboard tests
 stub success and refusal; they prove UI handling, not operating-system permission.
-Motion is finite or pointer-driven, disabled for reduced-motion users, and never
+Motion is finite, disabled for reduced-motion users, and never
 hijacks scrolling. Readable text does not fade through low-contrast states.
 
 ## Mobile composition and console evidence

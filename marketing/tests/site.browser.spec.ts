@@ -300,3 +300,19 @@ test('blueprint reveal respects reduced motion and deep links stay visible', asy
   await page.goto('/#workflow-research',{waitUntil:'networkidle'});
   await expect(page.locator('#workflow-research')).toBeInViewport();
 });
+
+test('building blocks stay low-key until opened and disclose source availability', async ({page}) => {
+  await page.goto('/');
+  const blocks=page.locator('.building-blocks');
+  await expect(blocks).not.toHaveAttribute('open');
+  await blocks.locator('summary').click();
+  await expect(blocks.locator('li')).toHaveCount(12);
+  await expect(blocks).toContainText('Subagents');
+  await expect(blocks).toContainText('Background jobs');
+  await expect(blocks).toContainText('current source build');
+});
+test('console full-size link matches the displayed mobile screenshot', async ({page}) => {
+  await page.setViewportSize({width:390,height:844}); await page.goto('/');
+  await expect(page.getByRole('link',{name:'Open full mobile console screenshot'})).toHaveAttribute('href','/console-mobile.webp');
+  await expect(page.getByRole('link',{name:'Open full desktop console screenshot'})).not.toBeVisible();
+});
