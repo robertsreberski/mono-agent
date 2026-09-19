@@ -16,7 +16,7 @@ import {
   type SharedRecallStore,
 } from "../memory-retrieval.js";
 
-function fakeStore(options: { readonly fail?: boolean } = {}): SharedRecallStore & { readonly queries: string[]; readonly accesses: string[][] } {
+function fakeStore(options: { readonly fail?: boolean; readonly disputed?: boolean } = {}): SharedRecallStore & { readonly queries: string[]; readonly accesses: string[][] } {
   const queries: string[] = [];
   const accesses: string[][] = [];
   return {
@@ -28,6 +28,17 @@ function fakeStore(options: { readonly fail?: boolean } = {}): SharedRecallStore
       if (options.fail) throw new Error("embedding endpoint offline");
       if (query.includes("unrelated")) {
         return [{ score: 0.05, record: { id: "low", text: "low confidence neighbour" } }];
+      }
+      if (query.includes("velin")) {
+        const hits = [
+          { score: 1.005, record: { id: "scoped", text: "Mira selected cobalt as the color for the Velin launch." } },
+          { score: 0.751, record: { id: "adjacent", text: "Mira's office is in Amsterdam." } },
+        ];
+        // A contradictory record that score order alone would have hidden.
+        if (options.disputed === true) {
+          hits.push({ score: 0.7, record: { id: "conflict", text: "Mira selected teal as the color for the Velin launch." } });
+        }
+        return hits;
       }
       if (query.includes("launch color")) {
         return [
@@ -171,6 +182,36 @@ describe("MemoryRetrievalService", () => {
     const block = await service.load("conversation", "What launch color did Morgan select?", { turnId: "turn-calibrated" });
     expect(block?.content).toContain("selected cobalt as the launch color");
     expect(block?.content).not.toContain("office");
+  });
+
+  it("injects a scope-qualified choice answer and reuses the same backend lookup for the tool", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+    const query = "What color did Mira select for the Velin launch?";
+
+    const block = await service.load("conversation", query, { turnId: "turn-velin" });
+    const hits = await service.recallForTurn("turn-velin", "what color did mira select for the velin launch?", { topK: 8 });
+
+    expect(block?.content).toContain("Mira selected cobalt as the color for the Velin launch.");
+    expect(block?.content).not.toContain("Amsterdam");
+    expect(hits).toHaveLength(2);
+    expect(store.queries).toEqual(["what color did mira select for the velin launch?"]);
+  });
+
+  it("abstains from automatic injection when a disputed scoped choice is in reach, leaving the tool usable", async () => {
+    const store = fakeStore({ disputed: true });
+    const service = new MemoryRetrievalService(store);
+    const query = "What color did Mira select for the Velin launch?";
+
+    await expect(service.load("conversation", query, { turnId: "turn-disputed" })).resolves.toBeUndefined();
+    // Abstaining automatically must not mark any record as served.
+    expect(store.accesses.flat()).toEqual([]);
+
+    // The explicit tool still sees the records and can present both to the model.
+    const hits = await service.recallForTurn("turn-disputed", "what color did mira select for the velin launch?", { topK: 8 });
+    expect(hits.map((hit) => hit.record.id)).toContain("conflict");
+    // Still one shared backend lookup; abstention paid for no extra retrieval.
+    expect(store.queries).toEqual(["what color did mira select for the velin launch?"]);
   });
 
   it("normalizes Unicode, case, and whitespace deterministically", () => {
