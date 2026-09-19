@@ -26,6 +26,7 @@ export {
   searchCodexSubscription,
 } from "./codex-subscription-search.js";
 export { inspectParallelWeb } from "./parallel-mcp.js";
+export { inspectHoundWeb } from "./hound-mcp.js";
 export { createWebToolController } from "./web-controller.js";
 
 export { isPathAllowed, isWorkdirAllowed } from "./shared/path-resolver.js";

@@ -415,6 +415,7 @@ execToolRun
 globToolImpl
 grepToolImpl
 inspectCodexSubscriptionSearch
+inspectHoundWeb
 inspectParallelWeb
 isPathAllowed
 isWorkdirAllowed

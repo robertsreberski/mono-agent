@@ -4099,6 +4099,36 @@ describe("validateMonoAgentFolder — web tools", () => {
     expect(fetchSpy.mock.calls.every(([, init]) => init.redirect === "error")).toBe(true);
   });
 
+  it("probes strict Hound endpoints with tools/list only and names the trust boundary", async () => {
+    const methods: string[] = [];
+    const fetchSpy = vi.fn(async (_url: unknown, init: RequestInit) => {
+      if (init.method === "GET") return new Response(null, { status: 405 });
+      const message = JSON.parse(String(init.body)) as { method: string; id?: number };
+      methods.push(message.method);
+      if (message.method === "notifications/initialized") return new Response(null, { status: 202 });
+      const result = message.method === "initialize"
+        ? { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } }
+        : { tools: ["mcp_smart_search", "mcp_smart_fetch"].map((name) => ({ name, inputSchema: { type: "object" } })) };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }), { headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({
+      search: { backend: "hound", hound: { endpoint: "http://127.0.0.1:8765/mcp" } },
+      fetch: { provider: "hound", hound: { endpoint: "http://127.0.0.1:8765/mcp" } },
+    });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
+    const section = sectionById(report, "web-tools");
+    expect(section.status).toBe("ok");
+    expect(section.details).toContain(
+      "Hound search endpoint: http://127.0.0.1:8765/mcp (trusted user-managed service; responses are validated, server internals are not governed).",
+    );
+    expect(section.details).toContain(
+      "Hound tools/list advertises mcp_smart_search and mcp_smart_fetch (extraction not exercised).",
+    );
+    expect(methods).toContain("tools/list");
+    expect(methods).not.toContain("tools/call");
+  });
+
   it("reports the static defaults without running a liveness probe", async () => {
     const fetchSpy = vi.fn();
     const execSpy = vi.fn();

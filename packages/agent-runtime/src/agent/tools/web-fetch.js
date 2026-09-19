@@ -1,4 +1,5 @@
 import { fetchParallelDocument, unsupportedParallelFetchOption } from "./parallel-web-fetch.js";
+import { fetchHoundDocument, unsupportedHoundFetchOption } from "./hound-web-fetch.js";
 import { parallelSessionId } from "./parallel-mcp.js";
 import { withWebDeadline, coordinatedWebRequest, webRequestFailure } from "./web-request.js";
 // @ts-check
@@ -917,6 +918,7 @@ function countCompleteLines(prefix, whole) {
 
 function linksUnavailableReason(outcome) {
   if (outcome?.backend === "parallel") return "remote extraction does not provide page links";
+  if (outcome?.backend === "hound") return "remote extraction did not return page links";
   if (outcome?.rendered === true) return "browser rendering skips static link extraction";
   if (outcome?.extractionStage === "raw") return "raw format skips HTML link extraction";
   const kind = typeof outcome?.contentKind === "string" && outcome.contentKind ? outcome.contentKind : "this";
@@ -928,12 +930,17 @@ async function performFetchChain(params, options) {
   const started = Date.now();
   const selection = options.fetchConfig?.provider ?? "local";
   const names = Array.isArray(selection) ? selection : [selection];
-  if (!names.length || new Set(names).size !== names.length || names.some((name) => !["local", "parallel"].includes(name))) {
+  if (!names.length || new Set(names).size !== names.length || names.some((name) => !["local", "parallel", "hound"].includes(name))) {
     return failure("Error: Invalid WebFetch provider selection.", "invalid_fetch_config", started);
   }
-  const unsupported = unsupportedParallelFetchOption(params);
-  if (!names.includes("local") && unsupported) {
-    return failure(`Error: Parallel WebFetch does not support ${unsupported}.`, "unsupported_parameter", started, { backend: "parallel", option: unsupported });
+  const parallelUnsupported = unsupportedParallelFetchOption(params);
+  const houndUnsupported = unsupportedHoundFetchOption(params);
+  const remoteUnsupported = (name) => (name === "parallel" ? parallelUnsupported : houndUnsupported);
+  if (!names.includes("local") && names.every((name) => name !== "local" && remoteUnsupported(name))) {
+    const first = names.find((name) => name !== "local");
+    const unsupported = remoteUnsupported(first);
+    const label = first === "parallel" ? "Parallel" : "Hound";
+    return failure(`Error: ${label} WebFetch does not support ${unsupported}.`, "unsupported_parameter", started, { backend: first, option: unsupported });
   }
   if (!names.includes("local") && options.fetchConfig?.render === "auto") {
     return failure('Error: fetch.render "auto" requires the local provider.', "invalid_fetch_config", started);
@@ -941,9 +948,10 @@ async function performFetchChain(params, options) {
   let result;
   const attemptedProviders = [];
   for (const name of names) {
-    if (name === "parallel" && unsupported) continue;
+    if (name === "parallel" && parallelUnsupported) continue;
+    if (name === "hound" && houndUnsupported) continue;
     attemptedProviders.push(name);
-    result = name === "local" ? await performFetch(params, options) : await performParallelFetch(params, options);
+    result = name === "local" ? await performFetch(params, options) : name === "parallel" ? await performParallelFetch(params, options) : await performHoundFetch(params, options);
     if (!result.error || !fetchProviderMayAdvance(result.outcome)) break;
   }
   return { ...result, outcome: { ...result.outcome, attemptedProviders, fallbackUsed: attemptedProviders.length > 1 } };
@@ -982,6 +990,63 @@ async function performParallelFetch(params, options) {
   });
   if (!result.ok) return failure(`Error: ${result.message}`, result.code, started, {
     backend: "parallel", retryable: result.retryable, statusCode: result.statusCode,
+    retryAfterMs: result.retryAfterMs, rateLimited: result.rateLimited,
+  });
+  const document = result.document;
+  document.outcome = { ...document.outcome, queueWaitMs: result.coordinationWaitMs, backendDurationMs: result.backendDurationMs };
+  return options.documentOnly ? { text: "", error: false, document, outcome: document.outcome }
+    : formatWebFetchDocument(document, params, ctx);
+}
+
+function validateHoundFetchEndpoint(input) {
+  let parsed;
+  try {
+    parsed = new URL(input ?? "");
+  } catch {
+    return { error: "Hound endpoint must be a valid loopback HTTP MCP URL with an explicit /mcp path." };
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/gu, "");
+  if (parsed.protocol !== "http:"
+    || !["localhost", "127.0.0.1", "::1"].includes(host)
+    || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    return { error: "Hound endpoint must be an unauthenticated loopback HTTP URL." };
+  }
+  parsed.pathname = parsed.pathname.replace(/\/+$/u, "");
+  if (!parsed.pathname.endsWith("/mcp")) {
+    return { error: "Hound endpoint must include the explicit /mcp path." };
+  }
+  return { endpoint: parsed.href.replace(/\/+$/u, "") };
+}
+
+async function performHoundFetch(params, options) {
+  const started = Date.now();
+  if ((params.start_line !== undefined && (!Number.isSafeInteger(params.start_line) || params.start_line < 1))
+    || (params.max_lines !== undefined && (!Number.isSafeInteger(params.max_lines) || params.max_lines < 1 || params.max_lines > 10000))) {
+    return failure("Error: Invalid WebFetch line range.", "invalid_range", started);
+  }
+  const researchOptions = normalizeWebResearchOptions({ focus: params.focus, include_links: params.include_links });
+  if (researchOptions.error) {
+    return failure(researchOptions.error.message, researchOptions.error.code, started);
+  }
+  let url;
+  try { url = new URL(params.url); } catch { return failure("Error: Invalid URL", "invalid_url", started); }
+  if (!["http:", "https:"].includes(url.protocol)) return failure("Error: WebFetch only supports http(s) URLs.", "unsupported_protocol", started);
+  if (url.username || url.password) return failure("Error: WebFetch URL credentials are not allowed.", "url_credentials_rejected", started);
+  if (params.format !== undefined && !["markdown", "text"].includes(params.format)) return failure("Error: Invalid WebFetch format.", "invalid_format", started);
+  if (params.render !== undefined && params.render !== "never") return failure("Error: Invalid WebFetch render mode.", "invalid_render_mode", started);
+  if (params.headers != null && Object.keys(params.headers).length) return failure("Error: Hound WebFetch does not support headers.", "unsupported_parameter", started, { backend: "hound", option: "headers" });
+  const validated = validateHoundFetchEndpoint(options.fetchConfig?.hound?.endpoint);
+  if (validated.error) {
+    return failure("Error: Hound WebFetch endpoint is not configured.", "invalid_fetch_config", started);
+  }
+  const ctx = options.ctx ?? readToolRuntime();
+  const sandbox = ctx.sandbox ?? passthroughSandbox;
+  const policy = resolveSandboxPolicy(ctx, options.sandboxPolicy);
+  const result = await fetchHoundDocument(url, params, {
+    ...options, endpoint: validated.endpoint, ctx, sandbox, policy,
+  });
+  if (!result.ok) return failure(`Error: ${result.message}`, result.code, started, {
+    backend: "hound", retryable: result.retryable, statusCode: result.statusCode,
     retryAfterMs: result.retryAfterMs, rateLimited: result.rateLimited,
   });
   const document = result.document;

@@ -1,5 +1,5 @@
 import { persistentSubagentsEnabled, subagentInstancesRoot } from "./subagent-instances.js";
-import { inspectParallelWeb } from "@mono-agent/agent-runtime/agent/tools/index.js";
+import { inspectHoundWeb, inspectParallelWeb } from "@mono-agent/agent-runtime/agent/tools/index.js";
 import { inspectWebControl } from "./web-request-coordinator.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
@@ -2021,6 +2021,29 @@ async function webToolsSection(
   }
 
   details.push(`WebFetch provider: ${JSON.stringify(fetchConfig.provider ?? "local")}.`);
+  if (chain.includes("hound") || fetchProviders.includes("hound")) {
+    const houndProbes = [
+      ...(chain.includes("hound") ? [{ label: "search" as const, endpoint: search.hound?.endpoint, strict: !chained }] : []),
+      ...(fetchProviders.includes("hound") ? [{ label: "fetch" as const, endpoint: fetchConfig.hound?.endpoint, strict: fetchProviders.length === 1 }] : []),
+    ];
+    for (const entry of houndProbes) {
+      if (entry.endpoint === undefined) {
+        status = "waiting";
+        details.push(`[WARN] Hound ${entry.label} is selected but tools.web.${entry.label}.hound.endpoint is missing.`);
+        continue;
+      }
+      details.push(`Hound ${entry.label} endpoint: ${entry.endpoint} (trusted user-managed service; responses are validated, server internals are not governed).`);
+      if (!liveness || !entry.strict) {
+        details.push(`Hound ${entry.label} tools/list was not probed; readiness is checked on use.`);
+      } else {
+        const probe = await inspectHoundWeb({ endpoint: entry.endpoint,
+          sandbox: { networkAllowsUrl: networkPolicyAllowsUrl }, policy: config.sandbox });
+        if (!probe.ok) status = "waiting";
+        details.push(probe.ok ? "Hound tools/list advertises mcp_smart_search and mcp_smart_fetch (extraction not exercised)."
+          : `[WARN] Hound tools/list unavailable (${probe.reason}).`);
+      }
+    }
+  }
   details.push(`WebFetch browser rendering: ${fetchConfig.render}.`);
   if (fetchConfig.render === "never") {
     details.push("Static Defuddle/Readability extraction is active; agent-browser is not required.");

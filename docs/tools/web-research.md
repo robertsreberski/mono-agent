@@ -80,8 +80,10 @@ Environment equivalents:
 | `tools.web.search.ollama.trustPublicUrl` | `MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL` | `false` |
 | `tools.web.search.codex.model` | `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | `gpt-5.6-luna` |
 | `tools.web.search.parallel.apiKeyEnv` | `MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV` | unset (anonymous) |
+| `tools.web.search.hound.endpoint` | `MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT` | unset (required when search selects `hound`) |
 | `tools.web.fetch.provider` | `MONO_AGENT_WEB_FETCH_PROVIDER` | `local` |
 | `tools.web.fetch.parallel.apiKeyEnv` | `MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV` | unset (anonymous) |
+| `tools.web.fetch.hound.endpoint` | `MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT` | unset (required when fetch selects `hound`) |
 | `tools.web.fetch.render` | `MONO_AGENT_WEB_FETCH_RENDER` | `never` |
 | `tools.web.fetch.browserCommand` | `MONO_AGENT_WEB_BROWSER_COMMAND` | `agent-browser` |
 
@@ -101,6 +103,7 @@ whole call. SearXNG requires an endpoint at load time; Ollama needs no block.
 | `codex` | ChatGPT-authenticated `codex` app-server with the configured model and web-search capability. |
 | `keyless` | Virtual opt-in group: DuckDuckGo HTML, then Startpage. |
 | `duckduckgo`, `startpage` | Select either HTML engine individually. |
+| `hound` | Opt-in user-managed Hound MCP endpoint (loopback HTTP, explicit `/mcp` path). |
 
 ### Migrating from auto
 
@@ -150,6 +153,52 @@ HTTP 429 or MCP rate-limit errors open a cooldown; malformed/protocol/auth
 responses are `backend_unavailable`, never a fabricated `No results`. Strict
 Parallel doctor/validate liveness uses only `tools/list`, without a query or
 extraction, and reports anonymous versus configured `apiKeyEnv` access.
+
+### Hound MCP (opt-in)
+
+Hound is a user-managed companion, like SearXNG: the operator installs, runs,
+and updates `hound` separately (for example `hound --http`, which serves
+streamable HTTP at `http://127.0.0.1:8765/mcp`), then points mono-agent at it
+explicitly. Mono-agent never starts, stops, installs, or upgrades Hound, and
+selecting it changes no default. Pin compatibility: the adapter speaks the
+hand-written `mcp_smart_search` / `mcp_smart_fetch` tools of hound-mcp 12.4.1;
+readiness asserts both names on every `tools/list` probe and assumes nothing
+across Hound versions.
+
+```json
+{
+  "tools": { "web": {
+    "search": { "backend": ["hound", "ollama"], "hound": { "endpoint": "http://127.0.0.1:8765/mcp" } },
+    "fetch": { "provider": ["local", "hound"], "hound": { "endpoint": "http://127.0.0.1:8765/mcp" } }
+  } }
+}
+```
+
+Each endpoint must be an unauthenticated loopback `http://` URL with an
+explicit `/mcp` path; anything else (remote hosts, credentials, query strings,
+fragments, missing path) is a config error, and a selected provider without
+its endpoint is a config error. The endpoint is trusted: per-call arguments
+request behavior and responses are validated, but neither governs the remote
+server. Hound follows redirects internally, retries transient failures several
+times with backoff, impersonates TLS/browser headers even in its HTTP tier,
+reads ambient server-side proxy and API-key configuration, and may download
+models or fall back to archive snapshots on its own. One provider dispatch
+fans out across Hound's engine pool, so it is never one underlying request;
+host budget and cooldown count Hound invocations only. Mono-agent implements
+no key/proxy rotation and never asks Hound to bypass quota or access gates.
+
+Search sends one query per call with native `max_results`, `freshness`
+(`day|week|month|year`), `language`, `site` (single include domain), and
+`exclude_sites`; alternates run sequentially within the existing budget, and
+server-provided action hints are stripped in favor of host next actions.
+Fetch is HTTP-only: `force_fetcher: "http"`, `respect_robots: true`, fresh
+extraction (`cache_ttl: 0`), no actions, headers, cookies, or proxies, with a
+finite content limit. Responses whose tier is not HTTP-only, whose source is
+not live, whose provenance is missing, or that refuse on robots policy are
+rejected before presentation with terminal codes. Remote truncation is marked
+in document metadata and never auto-paginated; remote page links are
+normalized as bounded untrusted evidence. Strict Hound doctor liveness, like
+Parallel, uses only `tools/list`.
 
 ### Ollama Web Search
 
@@ -395,7 +444,9 @@ not rotate accounts, proxies or VPN exits.
 
 `tools.web.fetch.provider` defaults to `"local"`. Select `"parallel"` for strict
 remote extraction or an ordered array such as `["local", "parallel"]` for
-explicit fallback. No remote fetch fallback is enabled by default.
+explicit fallback. Select `"hound"` for strict HTTP-only extraction from a
+user-managed Hound endpoint (see Hound MCP above), or chain it explicitly such
+as `["local", "hound"]`. No remote fetch fallback is enabled by default.
 
 Parallel calls `web_fetch` for one URL with `full_content: true`, preferring
 full content. If only excerpts are returned, document metadata explicitly says
@@ -413,7 +464,9 @@ Fetch advances to the next selected provider only for `unusable_content`
 other than 401/407, or retryable `request_failed`/`timeout`. Local transient
 retries complete first. Authentication, sandbox, invalid parameters, unsupported
 content, byte limits, cancellation, and unsafe coordination are terminal; a
-successful local extraction never triggers Parallel. Source failures in
+successful local extraction never triggers Parallel. Hound robots refusals
+(`robots_denied`), non-HTTP tiers, and non-live sources are likewise terminal
+and never fall through to local extraction. Source failures in
 Parallel's `errors[]` preserve their HTTP status. Rendering and alternate
 providers do not grant permission to bypass site policy or access controls.
 
