@@ -389,13 +389,20 @@ describe("WebSearch", () => {
     }));
 
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ query: "bounded output evidence", max_results: 7 });
-    expect(result.outcome).toMatchObject({ resultCount: 7, truncated: true });
+    expect(result.outcome).toMatchObject({ resultCount: 7, truncated: true, status: "partial", code: "ok" });
     expect(result.outcome.bytes).toBe(Buffer.byteLength(result.text, "utf8"));
     expect(result.outcome.bytes).toBeLessThan(MAX_TOOL_RESULT_BYTES);
-    expect(result.text).toContain("1. [Bounded output evidence source 1]");
-    expect(result.text).toContain("7. [Bounded output evidence source 7]");
+    const payload = JSON.parse(result.text);
+    expect(payload).toMatchObject({ tool: "WebSearch", status: "partial", code: "ok" });
+    expect(payload.results).toHaveLength(7);
+    expect(payload.results[0].title).toBe("Bounded output evidence source 1");
+    expect(payload.results[6].url).toBe("https://example.com/source-7");
+    expect(payload.coverage.resultCount).toBe(7);
+    expect(payload.untrusted_fields).toEqual(["results"]);
+    expect(payload.next_actions[0]).toMatchObject({
+      tool: "WebFetch", args: { url: "https://example.com/source-1" },
+    });
     expect(result.text).toContain(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER);
-    expect(result.text).toContain("[END UNTRUSTED WEB SEARCH RESULTS]");
     expect(guarded.details?.tool_payload_truncated).toBeUndefined();
     expect(guarded.content[0].text).toBe(result.text);
   });
@@ -419,18 +426,27 @@ describe("WebSearch", () => {
       })),
       ctx: runtimeContext(),
     });
-    const begin = "[BEGIN UNTRUSTED WEB SEARCH RESULTS]";
-    const end = "[END UNTRUSTED WEB SEARCH RESULTS]";
-    const body = result.text.slice(result.text.indexOf(begin) + begin.length, result.text.lastIndexOf(end));
+    const payload = JSON.parse(result.text);
+    const body = JSON.stringify(payload.results);
 
     expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(WEB_SEARCH_BODY_MAX_BYTES + 1_024);
     expect(Buffer.byteLength(result.text, "utf8")).toBeLessThan(MAX_TOOL_RESULT_BYTES);
-    expect(result.text).toContain("[Search control:");
-    expect(result.text).toContain("[Search metadata:");
-    expect(result.text).toContain("[Requested filters:");
-    expect(result.text.indexOf(begin)).toBeLessThan(result.text.indexOf(end));
-    expect(result.outcome).toMatchObject({ resultCount: 10, truncated: true });
+    expect(payload).toMatchObject({ tool: "WebSearch" });
+    expect(payload.coverage.requestedFilters).toMatchObject({
+      language: "n".repeat(100),
+      timeRange: "month",
+      note: expect.stringContaining("verify dates in sources"),
+    });
+    expect(result.outcome).toMatchObject({ truncated: true });
     expect(result.outcome.bytes).toBe(Buffer.byteLength(result.text, "utf8"));
+    expect(payload.coverage.resultCount).toBe(result.outcome.resultCount);
+    expect(payload.results.length).toBeGreaterThan(0);
+    for (const entry of payload.results) {
+      expect(typeof entry.title).toBe("string");
+      expect(typeof entry.url).toBe("string");
+      expect(typeof entry.snippet).toBe("string");
+    }
+    expect(payload.untrusted_fields).toEqual(["results"]);
   });
 
   it("host-binds Ollama bearer auth and includes explicitly configured Ollama first in auto", async () => {
@@ -542,8 +558,10 @@ describe("WebSearch", () => {
       },
     });
     expect(result.outcome.providerAttempts[0].retryAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
-    expect(result.text).toContain("ollama deferred for the remainder of this run");
-    expect(result.text).toContain("Use WebFetch");
+    const chainPayload = JSON.parse(result.text);
+    expect(chainPayload.coverage.cooldownBackends).toContain("ollama");
+    expect(chainPayload.coverage.failureSummary).toContain("ollama:rate_limited");
+    expect(chainPayload.next_actions[0]).toMatchObject({ tool: "WebFetch" });
     expect(calls).toEqual([
       "https://ollama.com/api/web_search",
       "http://127.0.0.1:8088/search",
@@ -1017,8 +1035,8 @@ describe("WebSearch", () => {
     expect(codexSearch).toHaveBeenCalledWith(exactQuery, expect.objectContaining({
       model: "gpt-5.6-luna",
     }));
-    expect(result.text).toContain("actual_query=\"site:anthropic.com \\\"Claude Opus 5\\\"\"");
     expect(result.text).toContain("https://www.anthropic.com/news/claude-opus-5");
+    expect(JSON.parse(result.text).coverage.actualQueries).toContain(exactQuery);
     expect(result.text).not.toContain("Los Angeles");
   });
 
@@ -1052,7 +1070,7 @@ describe("WebSearch", () => {
       error: false,
       outcome: { actualQueries: [actualQuery], requestsThisCall: 1 },
     });
-    expect(result.text).toContain(`actual_query=${JSON.stringify(actualQuery)}`);
+    expect(JSON.parse(result.text).coverage.actualQueries).toEqual([actualQuery]);
   });
 
   it("keeps strict Codex mode strict and never calls local or keyless HTTP backends", async () => {
@@ -1095,8 +1113,9 @@ describe("WebSearch", () => {
 
     expect(result).toMatchObject({
       error: true,
-      outcome: { status: "error", code: "rate_limited", rateLimited: true, retryable: true },
+      outcome: { status: "blocked", code: "rate_limited", rateLimited: true, retryable: true },
     });
+    expect(JSON.parse(result.text)).toMatchObject({ tool: "WebSearch", status: "blocked", code: "rate_limited" });
     expect(result.text).not.toContain("No results.");
     // Naming each engine and its reason is the whole point: it turns "search is
     // broken" into "these engines are blocked" without reading any logs.
@@ -1135,7 +1154,11 @@ describe("WebSearch", () => {
       error: false,
       outcome: { status: "ok", code: "no_results", resultCount: 0 },
     });
-    expect(result.text).toContain("No results.");
+    const emptyPayload = JSON.parse(result.text);
+    expect(emptyPayload).toMatchObject({ tool: "WebSearch", status: "ok", code: "no_results" });
+    expect(emptyPayload.summary).toMatch(/^No results from /u);
+    expect(emptyPayload).not.toHaveProperty("results");
+    expect(emptyPayload).not.toHaveProperty("next_actions");
   });
 
   it("lets keyless results rescue an empty SearXNG answer in auto mode", async () => {
@@ -1173,7 +1196,7 @@ describe("WebSearch", () => {
       error: false,
       outcome: { status: "ok", code: "no_results", resultCount: 0 },
     });
-    expect(result.text).toContain("No results.");
+    expect(JSON.parse(result.text).summary).toMatch(/^No results from /u);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
@@ -1247,7 +1270,7 @@ describe("WebSearch", () => {
 
     expect(result).toMatchObject({
       error: true,
-      outcome: { status: "error", code: "rate_limited", rateLimited: true, retryable: true },
+      outcome: { status: "blocked", code: "rate_limited", rateLimited: true, retryable: true },
     });
     // The old behaviour turned a ban into a confident "No results." answer.
     expect(result.text).not.toContain("No results.");
@@ -1273,7 +1296,7 @@ describe("WebSearch", () => {
 
     expect(result).toMatchObject({
       error: true,
-      outcome: { status: "error", code: "rate_limited", rateLimited: true },
+      outcome: { status: "blocked", code: "rate_limited", rateLimited: true },
     });
     expect(result.text).not.toContain("No results.");
     expect(result.outcome.cooldownBackends).toContain("startpage");
@@ -1524,7 +1547,7 @@ describe("WebFetch", () => {
       ctx: runtimeContext(),
     });
     expect(genericJson).toMatchObject({ error: false, outcome: { contentKind: "json", extractionStage: "json" } });
-    expect(genericJson.text).toContain('"answer": 42');
+    expect(JSON.parse(genericJson.text).content).toContain('"answer": 42');
 
     const plainJson = await performWebFetch({ url: "https://example.com/plain", format: "text" }, {
       fetchImpl: async () => new Response('{"answer":42}', { headers: { "content-type": "text/plain" } }),
@@ -1604,7 +1627,7 @@ describe("WebFetch", () => {
       }),
       ctx: runtimeContext(),
     });
-    expect(json.text).toContain('  "answer": 42');
+    expect(JSON.parse(json.text).content).toContain('  "answer": 42');
 
     const rss = await performWebFetch({ url: "https://example.com/feed", format: "text" }, {
       fetchImpl: async () => new Response(
@@ -1613,7 +1636,7 @@ describe("WebFetch", () => {
       ),
       ctx: runtimeContext(),
     });
-    expect(rss.text).toContain("Update\nhttps://example.com/u\nNews");
+    expect(JSON.parse(rss.text).content).toBe("Update\nhttps://example.com/u\nNews");
 
     const pdf = await performWebFetch({ url: "https://example.com/file.pdf", format: "text" }, {
       fetchImpl: async () => new Response(minimalPdf("Hello PDF"), {
@@ -1886,13 +1909,19 @@ describe("WebFetch", () => {
       retryDelaysMs: [],
       ctx: runtimeContext(),
     });
-    expect(failed.text).toContain("[BEGIN UNTRUSTED WEB ERROR BODY");
-    expect(failed.text).toContain("untrusted failure instructions");
-    expect(failed.text).toContain("[END UNTRUSTED WEB ERROR BODY]");
     expect(failed).toMatchObject({
       error: true,
       outcome: { status: "error", code: "http_404", statusCode: 404 },
     });
+    const failedPayload = JSON.parse(failed.text);
+    expect(failedPayload).toMatchObject({
+      tool: "WebFetch",
+      status: "error",
+      code: "http_404",
+      content: "untrusted failure instructions",
+      untrusted_fields: ["content"],
+    });
+    expect(failedPayload.summary).toContain("HTTP 404");
   });
 
   it("retries transient body-stream failures without losing the eventual response", async () => {
@@ -2140,10 +2169,14 @@ describe("run-scoped web controller and browser isolation", () => {
     expect(cached.outcome).not.toHaveProperty("retryAfterMs");
     expect(cached.outcome).not.toHaveProperty("retryAt");
     expect(cached.outcome.bytes).toBe(Buffer.byteLength(cached.text, "utf8"));
-    expect(cached.text).toContain("[Search metadata: backend=searxng; attempted=none;");
-    expect(cached.text).toContain("fallback=none]");
-    expect(cached.text).not.toContain("ollama:rate_limited");
-    expect(cached.text).not.toContain("deferred for the remainder of this run");
+    const cachedPayload = JSON.parse(cached.text);
+    expect(cachedPayload.coverage).toMatchObject({
+      backend: "searxng",
+      attemptedBackends: [],
+      failureSummary: [],
+      cacheHit: true,
+    });
+    expect(cached.text).not.toContain("ollama");
     expect(fetchImpl.mock.calls.length).toBe(callsAfterProducer);
     await consumer.close();
   });
@@ -2194,8 +2227,12 @@ describe("run-scoped web controller and browser isolation", () => {
       providerFailureCount: 0,
       fallbackUsed: false,
     });
-    expect(cached.text).toContain("[Search control: requests=0/4; remaining=4; Use WebFetch");
-    expect(cached.text).toContain("attempted=none");
+    expect(JSON.parse(cached.text).coverage).toMatchObject({
+      requestsUsed: 0,
+      requestsRemaining: 4,
+      retryInRun: true,
+      attemptedBackends: [],
+    });
     expect(cached.outcome.bytes).toBe(Buffer.byteLength(cached.text, "utf8"));
     expect(fetchImpl.mock.calls.length).toBe(callsAfterProducer);
     await consumer.close();

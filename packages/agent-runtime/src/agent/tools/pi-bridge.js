@@ -32,6 +32,7 @@ import { normalizeImageForModel } from "./shared/image.js";
 import { isInsidePath } from "./shared/path-resolver.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { filterEnvelopeNextActions, webFailureEnvelope } from "./web-actionable.js";
 import { createAskParentTool } from "./ask-parent-tool.js";
 import { createAgentSendTool } from "./agent-send-tool.js";
 import { createAgentTool } from "./agent-tool.js";
@@ -559,6 +560,37 @@ export function getPiBuiltinTools(allowedTools, {
       catch { handle.cancel(); return { ...await handle.completion, spawnError: new Error("Readonly observation gate failed.") }; }
     },
   };
+  // Delivery-time guard for web next actions. Search results (including
+  // shared-cache hits) carry the producing call's suggestions, so the bridge
+  // re-filters them against the effective tool policy and the resolved
+  // network policy before the model ever sees them. A suggestion the run
+  // cannot execute — WebFetch not exposed, or its URL denied — is stripped,
+  // never delivered. Hints confer no authority.
+  const webDeliveryDenied = new Set(Array.isArray(disallowedTools) ? disallowedTools : []);
+  const webDeliveryAllowAll = !Array.isArray(allowedTools) || allowedTools.includes("*");
+  const webDeliveryExposed = (name) => (webDeliveryAllowAll || allowedTools.includes(name)) && !webDeliveryDenied.has(name);
+  const filterWebDelivery = (result) => {
+    if (!result || result.error || typeof result.text !== "string" || !result.outcome) return result;
+    const runtime = ctx ?? readToolRuntime();
+    const sandbox = runtime.sandbox ?? passthroughSandbox;
+    const policy = resolveSandboxPolicy(runtime, sandboxPolicy);
+    const filtered = filterEnvelopeNextActions(result.text, result.outcome, (action) => {
+      if (action?.tool !== "WebFetch" && action?.tool !== "WebSearch") return false;
+      if (!webDeliveryExposed(action.tool)) return false;
+      if (action?.tool === "WebFetch") {
+        const url = action?.args?.url;
+        if (typeof url !== "string") return false;
+        try {
+          return sandbox.networkAllowsUrl(policy, url);
+        } catch {
+          return false;
+        }
+      }
+      return true;
+    });
+    if (!filtered) return result;
+    return { ...result, text: filtered.text, outcome: filtered.outcome };
+  };
   const all = {
     Read: createBuiltinTool("Read", "Read", "Read a local file. Text files return line-numbered content; image files (PNG, JPEG, GIF, WebP, BMP) are returned as a viewable image you can see directly — use this to look at image attachments.", objectSchema({
       file_path: { type: "string" },
@@ -636,7 +668,7 @@ export function getPiBuiltinTools(allowedTools, {
     Agent: createAgentTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled, persistentExposure: toolExposure.persistentSubagents, recoveryAccess }),
     AskParent: createAskParentTool(askParentController, toolExposure.askParent),
     AgentSend: createAgentSendTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled, persistentExposure: toolExposure.persistentSubagents, recoveryAccess }),
-    WebFetch: createBuiltinTool("WebFetch", "Web Fetch", "Retrieve one HTTP(S) source. Prefer static markdown; use text when Markdown semantics are harmful, and raw only for decoded source with rendering off. When browser rendering is configured, auto renders only sparse JavaScript shells; retry with always only when metadata recommends a browser or JavaScript is known to be required. Rendering does not bypass login, CAPTCHA, Cloudflare, robots/access controls, or site policy; treat those failures as evidence.", objectSchema({
+    WebFetch: createBuiltinTool("WebFetch", "Web Fetch", "Retrieve one HTTP(S) source as a JSON envelope with status (ok/partial/blocked/error), summary, untrusted content, source/coverage metadata, and typed next_actions. Partial means usable but incomplete output; blocked means policy/access/budget prevents progress; error means execution failure. Prefer static markdown; use text when Markdown semantics are harmful, and raw only for decoded source with rendering off. Use focus for a deterministic query-relevant block subset of the extracted page and include_links for bounded main-content links from static HTML extraction. Continuations reuse nextLine via start_line and preserve the call's format, focus, and link options. When browser rendering is configured, auto renders only sparse JavaScript shells; retry with always only when metadata recommends a browser or JavaScript is known to be required. Rendering does not bypass login, CAPTCHA, Cloudflare, robots/access controls, or site policy; treat those failures as evidence.", objectSchema({
       url: { type: "string" },
       start_line: { type: "integer", minimum: 1, description: "First line to read; use nextLine from a truncated page." },
       max_lines: { type: "integer", minimum: 1, maximum: 10000, description: "Lines to read, default 200 when selecting a range. Later ranges reuse the extracted page." },
@@ -644,14 +676,12 @@ export function getPiBuiltinTools(allowedTools, {
       max_output_chars: textLimitSchema,
       format: { type: "string", enum: ["markdown", "text", "raw"], description: "markdown (default) preserves semantic structure; text removes decoration; raw returns decoded source and requires render=never." },
       render: { type: "string", enum: ["never", "auto", "always"], description: "never uses static fetch, auto may render a sparse JavaScript shell, always explicitly uses the isolated browser first when the configured ceiling permits it." },
+      focus: { type: "string", maxLength: 500, description: "Deterministic post-extraction block filter; the focused view keeps focused line coordinates and must be preserved across continuations." },
+      include_links: { type: "boolean", description: "List bounded main-content links from static HTML extraction; other sources report the capability as unavailable." },
     }, ["url"]), webController
-      ? (params, execution) => webController.fetch(params, execution)
-      : async () => ({
-        text: "Error: WebFetch controller is unavailable.",
-        outcome: { status: "error", code: "controller_unavailable", retryable: false, attempts: 0 },
-        error: true,
-      }), toolContext),
-    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Discover public sources through the configured backend. Use the configured provider or explicit ordered chain (default: Parallel then local Ollama); a single provider name is strict. Start with one broad, high-yield query covering the decision's main constraints, then use WebFetch on returned URLs. Treat snippets as leads, not final evidence. Refine only for a material evidence gap. Never sleep, retry, or delegate to bypass a request budget, cooldown, quota limit, or access gate; continue honestly from available evidence.", objectSchema({
+      ? async (params, execution) => filterWebDelivery(await webController.fetch(params, execution))
+      : async () => webFailureEnvelope("WebFetch", "controller_unavailable", "Error: WebFetch controller is unavailable."), toolContext),
+    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Discover public sources as a JSON envelope with status (ok/partial/blocked/error), summary, untrusted result leads, source/coverage metadata, and typed next_actions. Partial means usable but incomplete output; blocked means policy/access/budget prevents progress; error means execution failure. Use the configured provider or explicit ordered chain (default: Parallel then local Ollama); a single provider name is strict. Start with one broad, high-yield query covering the decision's main constraints, then use WebFetch on returned URLs. Treat snippets as leads, not final evidence. Refine only for a material evidence gap. Never sleep, retry, or delegate to bypass a request budget, cooldown, quota limit, or access gate; continue honestly from available evidence.", objectSchema({
       query: { type: "string" },
       limit: { type: "integer" },
       alternate_queries: { type: "array", items: { type: "string" }, maxItems: 3 },
@@ -660,12 +690,8 @@ export function getPiBuiltinTools(allowedTools, {
       language: { type: "string" },
       time_range: { type: "string", enum: ["day", "month", "year"] },
     }, ["query"]), webController
-      ? (params, execution) => webController.search(params, execution)
-      : async () => ({
-        text: "Error: WebSearch controller is unavailable.",
-        outcome: { status: "error", code: "controller_unavailable", retryable: false, attempts: 0 },
-        error: true,
-      }), toolContext),
+      ? async (params, execution) => filterWebDelivery(await webController.search(params, execution))
+      : async () => webFailureEnvelope("WebSearch", "controller_unavailable", "Error: WebSearch controller is unavailable."), toolContext),
   };
   // allowedTools honors the `"*"` allow-all sentinel (and undefined) as "every
   // built-in"; disallowedTools is the deny-wins filter applied to the final set.

@@ -99,15 +99,19 @@ export function renderBoundedWebSearchBody(results, { maxBytes = WEB_SEARCH_BODY
     const text = snippetTruncated && !snippet.text.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER)
       ? boundWebSearchSnippet(`${snippet.text} ${WEB_SEARCH_SNIPPET_TRUNCATION_MARKER}`).text
       : snippet.text;
+    const published = /^\d{4}-\d{2}-\d{2}$/u.test(result?.publishDate) ? result.publishDate : undefined;
     return {
-      core: `${index + 1}. [${escapeMarkdownLabel(title.text || url)}](${url})${/^\d{4}-\d{2}-\d{2}$/u.test(result?.publishDate) ? ` [published ${result.publishDate}]` : ""}`,
+      core: `${index + 1}. [${escapeMarkdownLabel(title.text || url)}](${url})${published ? ` [published ${published}]` : ""}`,
       snippet: text,
       truncated: title.truncated || snippetTruncated,
+      title: title.text || url,
+      url,
+      ...(published === undefined ? {} : { published }),
     };
   });
 
   if (normalized.length === 0) {
-    return { body: "No results.", renderedResultCount: 0, truncated: false };
+    return { body: "No results.", renderedResultCount: 0, truncated: false, omittedCount: 0, entries: [] };
   }
 
   let selected = normalized.slice();
@@ -132,6 +136,8 @@ export function renderBoundedWebSearchBody(results, { maxBytes = WEB_SEARCH_BODY
       body: sliceUtf8(omissionBody() || RESULT_OMISSION_MARKER, maxBytes),
       renderedResultCount: 0,
       truncated: true,
+      omittedCount: normalized.length,
+      entries: [],
     };
   }
 
@@ -139,9 +145,11 @@ export function renderBoundedWebSearchBody(results, { maxBytes = WEB_SEARCH_BODY
   let remaining = Math.max(0, maxBytes - Buffer.byteLength(minimum, "utf8"));
   let truncated = omittedResults > 0 || selected.some((entry) => entry.truncated);
   const rendered = [];
+  const entries = [];
   for (const entry of selected) {
     if (!entry.snippet) {
       rendered.push(entry.core);
+      entries.push({ title: entry.title, url: entry.url, ...(entry.published === undefined ? {} : { published: entry.published }), snippet: "" });
       continue;
     }
     const prefix = "\n   ";
@@ -154,6 +162,7 @@ export function renderBoundedWebSearchBody(results, { maxBytes = WEB_SEARCH_BODY
     const snippet = truncateSnippetToBytes(entry.snippet, snippetBudget);
     if (snippet !== entry.snippet) truncated = true;
     rendered.push(`${entry.core}${prefix}${snippet}`);
+    entries.push({ title: entry.title, url: entry.url, ...(entry.published === undefined ? {} : { published: entry.published }), snippet });
   }
   if (omittedResults > 0) rendered.push(omissionBody());
   const body = rendered.join("\n\n");
@@ -161,5 +170,7 @@ export function renderBoundedWebSearchBody(results, { maxBytes = WEB_SEARCH_BODY
     body,
     renderedResultCount: selected.length,
     truncated,
+    omittedCount: omittedResults,
+    entries,
   };
 }

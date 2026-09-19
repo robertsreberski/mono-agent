@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Return managed `WebSearch` and `WebFetch` results as a compact JSON envelope
+  with `status`, host-written summary, untrusted content or results, source and
+  coverage metadata, and typed `next_actions`. Add deterministic `WebFetch`
+  `focus` block filtering and bounded `include_links` from static HTML
+  extraction; both reuse the cached extraction without added requests.
+
 - Let a cron job declare a deterministic `preflight` argv evaluated before the
   model responder. `{"run":false}` ends the firing as `skipped_gate` with no
   model turn or notification; `{"run":true,"input":"…"}` runs the job with the
