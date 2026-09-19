@@ -136,11 +136,15 @@ visible even when no lexical hit survives their own selection policy.
 The provider-free automatic selector accepts only finite direct-fact query and
 record grammars. An exact first-party report may wrap an otherwise supported
 property, choice, or work/live location when its textual reporter matches the
-query subject. The selector returns and renders the attributed record unchanged;
+query subject exactly apart from case; broader canonical name stemming is not
+used for that boundary. NFKC is used only to detect compatibility characters
+that hide unsafe quotation or punctuation, never to sanitize a report into an
+accepted form. The selector returns and renders the attributed record unchanged;
 it does not authenticate a user, resolve real identity from the name, or verify
 the proposition. Assistant, third-party, quoted, uncertain, corrected,
 coordinated, causal, conditional, negated, and conflicting evidence still
-abstains and remains available to deliberate recall.
+abstains and remains available to deliberate recall. A same-property correction
+blocks automatic selection without inferring either its old or replacement value.
 
 ### Explicit remember writes
 

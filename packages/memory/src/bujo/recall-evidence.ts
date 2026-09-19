@@ -27,9 +27,10 @@
  * first-party report envelopes may carry the same inner property, choice, or
  * location grammar when the textual reporter equals the queried subject. The
  * original attributed record is returned unchanged; this is evidence matching,
- * not speaker authentication or factual verification. Shared canonicalization
- * permits documented aliases without loosening that pairing. Other reported
- * speech, ambiguous relations, unsafe clauses, negation, and unknown values
+ * not speaker authentication or factual verification. Reporter pairing is an
+ * exact case-insensitive textual comparison and never uses the broader proper-
+ * name stemming retained by canonical direct facts. Other reported speech,
+ * ambiguous relations, unsafe clauses, negation, and unknown values
  * fail closed instead of being automatically injected.
  *
  * This is intentionally not a general natural-language parser. A semantically
@@ -86,8 +87,10 @@ const UNSAFE_FACT_LANGUAGE = /\b(?:and|but|or|while|whereas|although|because|if|
 const REPORTED_OR_DITRANSITIVE = /\b(?:gave|give|gives|told|tell|tells|asked|ask|asks|said|say|says|reported|reports|discussed|discusses|mentioned|mentions|informed|informs|showed|shows|sent|sends)\b/iu;
 const NEGATION_OR_UNKNOWN = /\b(?:no|not|never|neither|unknown|unset|tbd|none)\b/iu;
 const ATTRIBUTED_REPORT_EXCLUSION = /\b(?:assistant|quote|quoted|quotes|quoting|quotation|pasted|claim|claimed|claims|claiming|unconfirmed|unverified|unchecked|uncertain|uncertainty|unclear|unsure|doubtful|alleged|allegedly|apparently|maybe|perhaps|possibly|probably|rumor|rumored|rumoured|supposedly|seemingly|without|correction|corrected|correcting|incorrect|wrong|erroneous)\b/iu;
+const ATTRIBUTED_REPORT_CORRECTION = /\b(?:correction|corrected|correcting|incorrect|wrong|erroneous|previously|formerly|now|instead|rather)\b/iu;
 const ATTRIBUTED_REPORT_QUOTATION = /["'“”‘’«»‹›]/u;
 const ATTRIBUTED_REPORT_UNSAFE_UNICODE = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
+const ATTRIBUTED_REPORT_NORMALIZED_SYNTAX = /["'“”‘’«»‹›,:;?!.\s]/u;
 
 const ALIASES: Readonly<Record<string, string>> = {
   based: "location", city: "location", located: "location", location: "location",
@@ -118,12 +121,12 @@ const TRAILING_S_SINGULARS = new Set([
 type AnswerKind = "generic" | "location" | "temporal" | "time";
 
 type DirectFactQuery =
-  | { readonly kind: "named-property"; readonly subject: string; readonly property: string; readonly answerKind: AnswerKind }
-  | { readonly kind: "choice"; readonly subject: string; readonly property: string }
-  | { readonly kind: "scoped-choice"; readonly subject: string; readonly property: string; readonly scope: string }
+  | { readonly kind: "named-property"; readonly subject: string; readonly reporterSubject: string; readonly property: string; readonly answerKind: AnswerKind }
+  | { readonly kind: "choice"; readonly subject: string; readonly reporterSubject: string; readonly property: string }
+  | { readonly kind: "scoped-choice"; readonly subject: string; readonly reporterSubject: string; readonly property: string; readonly scope: string }
   | { readonly kind: "event-time"; readonly subject: string; readonly predicate: string; readonly answerKind: "temporal" | "time" }
   | { readonly kind: "copular-time"; readonly subject: string; readonly answerKind: "temporal" | "time" }
-  | { readonly kind: "location"; readonly subject: string; readonly predicate: string };
+  | { readonly kind: "location"; readonly subject: string; readonly reporterSubject: string; readonly predicate: string };
 
 /** Return score-ordered records that independently match a canonical direct fact. */
 export function selectAnswerBearingRecallHits<T extends RecallEvidenceHit>(
@@ -183,7 +186,11 @@ function hasConflictingValues(
     if (parsed === undefined) {
       const qualifiedConflict = firstPartyPropertyConflictValue(query, hit.record.text);
       if (qualifiedConflict === undefined) continue;
-      values.add(qualifiedConflict);
+      // A same-subject/property correction is deliberately not parsed into a
+      // replacement value. Its ambiguity is enough to prevent automatic use of
+      // another candidate that may be the obsolete value.
+      if (qualifiedConflict.ambiguousCorrection) return true;
+      values.add(qualifiedConflict.value);
       hasAttributed = true;
     } else {
       values.add(parsed.value);
@@ -213,6 +220,7 @@ function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
     return {
       kind: "choice",
       subject: canonicalName(choice[2]!.toLowerCase()),
+      reporterSubject: textualReporterIdentity(choice[2]!),
       property: canonicalPhrase(choice[1]!),
     };
   }
@@ -226,6 +234,7 @@ function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
     return {
       kind: "scoped-choice",
       subject: canonicalName(scopedChoice[2]!.toLowerCase()),
+      reporterSubject: textualReporterIdentity(scopedChoice[2]!),
       property: canonicalPhrase(scopedChoice[1]!),
       scope,
     };
@@ -255,6 +264,7 @@ function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
     return {
       kind: "location",
       subject: canonicalName(location[1]!.toLowerCase()),
+      reporterSubject: textualReporterIdentity(location[1]!),
       predicate: canonicalPredicate(location[2]!),
     };
   }
@@ -273,6 +283,7 @@ function parseNamedPropertyQuery(query: string): DirectFactQuery | undefined {
     return {
       kind: "named-property",
       subject: anchor,
+      reporterSubject: textualReporterIdentity(simple[2]!),
       property,
       answerKind: questionWord === "where"
         ? "location"
@@ -288,6 +299,7 @@ function parseNamedPropertyQuery(query: string): DirectFactQuery | undefined {
     return {
       kind: "named-property",
       subject: anchor,
+      reporterSubject: textualReporterIdentity(aspect[2]!),
       property,
       answerKind: answerKindForProperty(property),
     };
@@ -303,25 +315,43 @@ interface DirectFactValue {
 }
 
 /**
+ * NFKC is used only to discover hidden unsafe syntax. Parsing and rendering keep
+ * the original bytes: compatibility punctuation must not be silently folded
+ * into an admissible report.
+ */
+function attributedReportIsSafe(rawText: string): boolean {
+  if (ATTRIBUTED_REPORT_UNSAFE_UNICODE.test(rawText)) return false;
+  const normalized = rawText.normalize("NFKC");
+  if (ATTRIBUTED_REPORT_UNSAFE_UNICODE.test(normalized)
+    || ATTRIBUTED_REPORT_QUOTATION.test(normalized)
+    || [...rawText].some((character) => {
+      const folded = character.normalize("NFKC");
+      return folded !== character && ATTRIBUTED_REPORT_NORMALIZED_SYNTAX.test(folded);
+    })) return false;
+  const safetyText = normalized.trim().replace(/[?!.]+$/u, "").replace(/\s+/gu, " ");
+  return safetyText.length > 0
+    && !/[?!.]/u.test(safetyText)
+    && !/[,:;\n\r]/u.test(safetyText)
+    && !ATTRIBUTED_REPORT_EXCLUSION.test(safetyText);
+}
+
+/**
  * Convert only three exact first-party report envelopes into the canonical
  * sentence shapes the existing direct-fact grammar already understands. This
  * is query-text evidence matching, not authentication of the named reporter or
  * verification of the proposition. The stored/rendered text is never changed.
  */
 function firstPartyReportInner(query: DirectFactQuery, rawText: string): string | undefined {
-  if (!("subject" in query) || query.kind === "event-time" || query.kind === "copular-time") return undefined;
-  if (ATTRIBUTED_REPORT_UNSAFE_UNICODE.test(rawText) || ATTRIBUTED_REPORT_QUOTATION.test(rawText)) return undefined;
+  if (!("reporterSubject" in query) || !attributedReportIsSafe(rawText)) return undefined;
   const text = rawText.trim().replace(/[?!.]+$/u, "").replace(/\s+/gu, " ");
-  if (text.length === 0 || /[?!.]/u.test(text) || /[,:;\n\r]/u.test(text)
-    || ATTRIBUTED_REPORT_EXCLUSION.test(text)) return undefined;
 
   const property = /^([A-Z][A-Za-z0-9-]*)\s+reports\s+that\s+their\s+(.+?)\s+(is|was)\s+(.+)$/iu.exec(text);
-  if (property !== null && canonicalName(property[1]!.toLowerCase()) === query.subject) {
+  if (property !== null && textualReporterIdentity(property[1]!) === query.reporterSubject) {
     return `${property[1]}'s ${property[2]} ${property[3]} ${property[4]}`;
   }
 
   const choice = /^([A-Z][A-Za-z0-9-]*)\s+reports\s+(selecting|choosing|picking)\s+(.+?)\s+as\s+(?:the\s+)?(.+)$/iu.exec(text);
-  if (choice !== null && canonicalName(choice[1]!.toLowerCase()) === query.subject) {
+  if (choice !== null && textualReporterIdentity(choice[1]!) === query.reporterSubject) {
     const verb = choice[2]!.toLowerCase() === "choosing"
       ? "chose"
       : choice[2]!.toLowerCase() === "picking"
@@ -331,28 +361,38 @@ function firstPartyReportInner(query: DirectFactQuery, rawText: string): string 
   }
 
   const location = /^([A-Z][A-Za-z0-9-]*)\s+reports\s+(working|living)\s+(in|at)\s+(.+)$/iu.exec(text);
-  if (location !== null && canonicalName(location[1]!.toLowerCase()) === query.subject) {
+  if (location !== null && textualReporterIdentity(location[1]!) === query.reporterSubject) {
     const verb = location[2]!.toLowerCase() === "living" ? "lives" : "works";
     return `${location[1]} ${verb} ${location[3]} ${location[4]}`;
   }
   return undefined;
 }
 
+type FirstPartyPropertyConflict =
+  | { readonly ambiguousCorrection: true }
+  | { readonly ambiguousCorrection: false; readonly value: string };
+
 /**
  * A qualified/unsafe first-party property report is never selectable, but its
  * leading direct value can still prevent a contradictory canonical record from
- * being injected as if the disagreement were absent. This is an abstention-only
- * parser and does not make correction or uncertainty text answer-bearing.
+ * being injected as if the disagreement were absent. Correction language is an
+ * unconditional same-property abstention signal: choosing either an old or a
+ * replacement value would require semantic inference this gate does not make.
  */
-function firstPartyPropertyConflictValue(query: DirectFactQuery, rawText: string): string | undefined {
+function firstPartyPropertyConflictValue(
+  query: DirectFactQuery,
+  rawText: string,
+): FirstPartyPropertyConflict | undefined {
   if (query.kind !== "named-property" || ATTRIBUTED_REPORT_UNSAFE_UNICODE.test(rawText)) return undefined;
   const text = rawText.trim().replace(/[?!.]+$/u, "").replace(/\s+/gu, " ");
   const match = /^([A-Z][A-Za-z0-9-]*)\s+reports\s+that\s+their\s+(.+?)\s+(?:is|was)\s+(.+)$/iu.exec(text);
-  if (match === null || canonicalName(match[1]!.toLowerCase()) !== query.subject
+  if (match === null || textualReporterIdentity(match[1]!) !== query.reporterSubject
     || canonicalPhrase(match[2]!) !== query.property) return undefined;
+  const ambiguousCorrection = ATTRIBUTED_REPORT_CORRECTION.test(rawText.normalize("NFKC"));
   const value = match[3]!.split(/\s+(?:and|but|because|if|unless|since|which|who|after|before)\b|[,;:]/iu, 1)[0]?.trim();
+  if (ambiguousCorrection) return { ambiguousCorrection: true };
   if (value === undefined || !hasAnswerValue(query.answerKind, query.property, value)) return undefined;
-  return identityText(value);
+  return { value: identityText(value), ambiguousCorrection: false };
 }
 
 function normalizedDirectFact(
@@ -474,6 +514,11 @@ function answerKindForProperty(property: string): AnswerKind {
 function possessiveSubject(token: string): string {
   const lower = token.toLowerCase().replace(/[’']/gu, "");
   return canonicalName(lower);
+}
+
+/** Exact identity for the attributed-report boundary; deliberately no stemming. */
+function textualReporterIdentity(token: string): string {
+  return token.trim().replace(/(?:['’]s)$/iu, "").toLowerCase();
 }
 
 function singleNamedAnchor(text: string): string | undefined {
