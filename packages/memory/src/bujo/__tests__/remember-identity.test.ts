@@ -160,15 +160,34 @@ describe("remembered-fact identity is preserved through reconciliation", () => {
       await seedBullet(db, root, rememberedId, REMEMBERED);
       const before = db.count();
 
-      await run(
+      // This candidate is inside the default thread threshold (0.35), so the
+      // redirected ADD is expected to thread to its neighbour. Assert the
+      // precondition rather than assuming it, since threading is conditional.
+      const [neighbour] = await db.findSimilar(CANDIDATE, 5);
+      expect(neighbour?.record.id).toBe(rememberedId);
+      expect(neighbour!.distance).toBeLessThanOrEqual(0.35);
+
+      const actions = await run(
         [{ type: "note", text: CANDIDATE, salience: 0.6, isInsight: false }],
         makeDeps(db, root, batchUpdateLlm(rememberedId)),
       );
+
+      // The UPDATE decision is redirected to an ADD, not applied in place.
+      const action = actions[0];
+      expect(action?.kind).toBe("add");
+      const addedId = action?.kind === "add" ? action.id : "";
+      expect(addedId).not.toBe(rememberedId);
 
       // Identity invariant holds in canonical source and in the index.
       expect(bulletById(root, rememberedId)?.text).toBe(REMEMBERED);
       expect(db.get(rememberedId)?.text).toBe(REMEMBERED);
       expect(isRememberedMemoryId(rememberedId, db.get(rememberedId)?.text ?? "")).toBe(true);
+
+      // The new row carries the CANDIDATE text, not the model's merged text:
+      // nothing is rewritten, so there is nothing to merge into.
+      expect(db.get(addedId)?.text).toBe(CANDIDATE);
+      expect(db.get(addedId)?.text).not.toBe(MERGED);
+      expect(bulletById(root, addedId)?.text).toBe(CANDIDATE);
 
       // The refinement is not discarded: it lands as its own memory, and the
       // remembered fact is NOT marked invalidated/superseded (no invented
@@ -176,8 +195,39 @@ describe("remembered-fact identity is preserved through reconciliation", () => {
       expect(db.count()).toBe(before + 1);
       expect(db.get(rememberedId)?.status).toBe("open");
       expect(db.get(rememberedId)?.supersededBy).toBeUndefined();
+
+      // Related, not replaced: an in-threshold neighbour gets a thread edge.
+      expect(db.allEdges()).toContainEqual(expect.objectContaining({
+        src: addedId,
+        dst: rememberedId,
+        kind: "thread",
+      }));
+      expect(db.allEdges().some((edge) => edge.kind === "supersedes")).toBe(false);
     },
   );
+
+  it("leaves an already hash-mismatched RM- bullet on the ordinary update path", async () => {
+    // Only a bullet whose id genuinely hashes its own text carries the
+    // self-verifying claim. A hash-mismatched or hand-authored `RM-…` id does
+    // not, so it keeps ordinary behaviour. This fix protects new
+    // reconciliation; it deliberately does NOT detect or repair records that
+    // are already broken.
+    const root = newRoot("mismatch");
+    const db = openDb(root);
+    const mismatchedId = `${REMEMBER_ID_PREFIX}${"0".repeat(64)}`;
+    await seedBullet(db, root, mismatchedId, REMEMBERED);
+    expect(isRememberedMemoryId(mismatchedId, REMEMBERED)).toBe(false);
+    const before = db.count();
+
+    await reconcileBatch(
+      [{ type: "note", text: CANDIDATE, salience: 0.6, isInsight: false }],
+      makeDeps(db, root, batchUpdateLlm(mismatchedId)),
+    );
+
+    expect(db.get(mismatchedId)?.text).toBe(MERGED);
+    expect(bulletById(root, mismatchedId)?.text).toBe(MERGED);
+    expect(db.count()).toBe(before);
+  });
 
   it("still merges text in place for an ordinary (non-remembered) target", async () => {
     const root = newRoot("nonrm");
