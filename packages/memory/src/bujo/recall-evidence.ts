@@ -13,6 +13,13 @@
  *    -> `The API launch date is 2026-08-14.`
  * 5. location: `Where does Morgan work?`
  *    -> `Morgan works in Amsterdam.`
+ * 6. scoped-choice: `What color did Mira select for the Velin launch?`
+ *    -> `Mira selected cobalt as the color for the Velin launch.`
+ *    The record must name the property *and* the scope. A scope is not a
+ *    property, so `Mira selected cobalt for the Velin launch.` stays rejected:
+ *    it never states that cobalt is the *color*. Scope identity is compared
+ *    conservatively (see `scopeIdentity`), and contradictory values for the
+ *    same subject/property/scope abstain instead of injecting either.
  *
  * `parseDirectFactQuery` accepts only those finite query grammars;
  * `matchesDirectFact` then requires one record to satisfy the corresponding
@@ -106,6 +113,7 @@ type AnswerKind = "generic" | "location" | "temporal" | "time";
 type DirectFactQuery =
   | { readonly kind: "named-property"; readonly subject: string; readonly property: string; readonly answerKind: AnswerKind }
   | { readonly kind: "choice"; readonly subject: string; readonly property: string }
+  | { readonly kind: "scoped-choice"; readonly subject: string; readonly property: string; readonly scope: string }
   | { readonly kind: "event-time"; readonly subject: string; readonly predicate: string; readonly answerKind: "temporal" | "time" }
   | { readonly kind: "copular-time"; readonly subject: string; readonly answerKind: "temporal" | "time" }
   | { readonly kind: "location"; readonly subject: string; readonly predicate: string };
@@ -118,7 +126,40 @@ export function selectAnswerBearingRecallHits<T extends RecallEvidenceHit>(
   if (hits.length === 0 || isConversationRelativeQuery(query)) return [];
   const directFact = parseDirectFactQuery(query);
   if (directFact === undefined) return [];
+  // Two different answers to the same scoped question cannot both be injected,
+  // and picking one by retrieval score would silently invent a winner.
+  if (directFact.kind === "scoped-choice" && hasConflictingValues(directFact, hits)) return [];
   return hits.filter((hit) => matchesDirectFact(directFact, hit.record.text));
+}
+
+/**
+ * True when the bounded candidate set already contains contradictory answers to
+ * a scoped-choice question. Callers pass the hits they have retrieved; this
+ * makes no extra lookup and therefore claims nothing about the wider corpus.
+ * Score floors and top-N slicing must not hide such a record, so automatic
+ * callers check this against their full candidate set before selecting.
+ */
+export function hasConflictingScopedChoiceEvidence(
+  query: string,
+  hits: readonly RecallEvidenceHit[],
+): boolean {
+  const directFact = parseDirectFactQuery(query);
+  if (directFact === undefined || directFact.kind !== "scoped-choice") return false;
+  return hasConflictingValues(directFact, hits);
+}
+
+function hasConflictingValues(
+  query: Extract<DirectFactQuery, { kind: "scoped-choice" }>,
+  hits: readonly RecallEvidenceHit[],
+): boolean {
+  const values = new Set<string>();
+  for (const hit of hits) {
+    const value = scopedChoiceValue(query, hit.record.text);
+    // Records that agree on the value are duplicates, not a conflict.
+    if (value !== undefined) values.add(value);
+    if (values.size > 1) return true;
+  }
+  return false;
 }
 
 export function hasAutomaticRecallEvidence(query: string, hits: readonly RecallEvidenceHit[]): boolean {
@@ -138,6 +179,20 @@ function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
       kind: "choice",
       subject: canonicalName(choice[2]!.toLowerCase()),
       property: canonicalPhrase(choice[1]!),
+    };
+  }
+
+  // Scope-qualified choice. Only reachable for questions the unscoped grammar
+  // above already rejects, so existing unscoped behaviour is unchanged.
+  const scopedChoice = /^(?:what|which)\s+(.+?)\s+did\s+([A-Z][A-Za-z0-9-]*)\s+(?:select|choose|pick)\s+for\s+(.+)$/iu.exec(query);
+  if (scopedChoice !== null) {
+    const scope = scopeIdentity(scopedChoice[3]!);
+    if (scope === undefined) return undefined;
+    return {
+      kind: "scoped-choice",
+      subject: canonicalName(scopedChoice[2]!.toLowerCase()),
+      property: canonicalPhrase(scopedChoice[1]!),
+      scope,
     };
   }
 
@@ -205,7 +260,34 @@ function parseNamedPropertyQuery(query: string): DirectFactQuery | undefined {
   return undefined;
 }
 
+const SCOPED_CHOICE_FACT = /^([A-Z][A-Za-z0-9-]*)\s+(?:selected|chose|picked)\s+(.+?)\s+as\s+(?:the\s+)?(.+?)\s+for\s+(.+)$/iu;
+
+/**
+ * Canonical answer value when `rawText` independently answers the scoped-choice
+ * question, otherwise `undefined`. Returning the value (not just a boolean)
+ * lets the caller detect contradictory records without re-parsing.
+ */
+function scopedChoiceValue(
+  query: Extract<DirectFactQuery, { kind: "scoped-choice" }>,
+  rawText: string,
+): string | undefined {
+  const text = normalizeFactText(rawText);
+  if (text === undefined) return undefined;
+  const match = SCOPED_CHOICE_FACT.exec(text);
+  if (match === null) return undefined;
+  if (canonicalName(match[1]!.toLowerCase()) !== query.subject) return undefined;
+  if (canonicalPhrase(match[3]!) !== query.property) return undefined;
+  if (scopeIdentity(match[4]!) !== query.scope) return undefined;
+  // The <=1 proper-name guard still applies, but only outside the scope span:
+  // names inside the scope are already pinned by the identity check above.
+  const outsideScope = text.slice(0, text.length - match[4]!.length);
+  if (properNameConcepts(outsideScope, true).size > 1) return undefined;
+  if (!hasAnswerValue("generic", query.property, match[2]!)) return undefined;
+  return identityText(match[2]!);
+}
+
 function matchesDirectFact(query: DirectFactQuery, rawText: string): boolean {
+  if (query.kind === "scoped-choice") return scopedChoiceValue(query, rawText) !== undefined;
   const text = normalizeFactText(rawText);
   if (text === undefined) return false;
 
@@ -313,6 +395,27 @@ function canonicalPredicate(value: string): string {
 
 function canonicalPhrase(text: string): string {
   return [...concepts(text)].join(" ");
+}
+
+/** Case/width/whitespace folding only. Every other character is identifying. */
+function identityText(raw: string): string {
+  return raw.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase();
+}
+
+/**
+ * Conservative scope identity.
+ *
+ * A scope names one specific project or event, so identity-bearing tokens,
+ * their order, repetition, digits and punctuation must all survive. Only case,
+ * Unicode width, surrounding whitespace and a single leading article are
+ * normalized. `canonicalPhrase` must NEVER be used here: it drops stop words
+ * and one-character tokens, folds plurals, applies property aliases and
+ * de-duplicates, which would equate `Project A`/`Project B`, `launch 1`/
+ * `launch 2` and `Bora Bora`/`Bora`. An empty result is not a scope.
+ */
+function scopeIdentity(raw: string): string | undefined {
+  const identity = identityText(raw).replace(/^(?:the|a|an)\b\s*/u, "").trim();
+  return identity.length === 0 ? undefined : identity;
 }
 
 export function automaticRecallEvidenceProfile(query: string): {
