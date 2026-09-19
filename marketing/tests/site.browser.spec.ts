@@ -337,8 +337,14 @@ for (const width of [390,1440]) {
     await expect(story).toHaveAttribute('data-phase','3');
     await move(.15); await expect.poll(progress).toBeCloseTo(.15,1);
     await expect(story).toHaveAttribute('data-phase','0');
+    await move(.6); await expect.poll(progress).toBeCloseTo(.6,1);
+    const poses=()=>story.locator('.block-layer').evaluateAll(els=>els.map(el=>getComputedStyle(el).transform));
+    const beforePause=await poses();
     await page.getByRole('button',{name:'Pause motion'}).click();
-    await expect(story).toHaveAttribute('data-motion','false');
+    await expect(story).toHaveAttribute('data-paused','true');
+    expect(await poses()).toEqual(beforePause);
+    await expect(page.getByRole('button',{name:'Resume motion'})).toBeInViewport();
+    await expect(page.getByRole('button',{name:'Resume motion'})).toBeFocused();
     const paused=await progress(); await move(.7); expect(await progress()).toBe(paused);
     await page.getByRole('button',{name:'Resume motion'}).click();
     await expect(story).toHaveAttribute('data-motion','true');

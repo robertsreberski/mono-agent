@@ -126,7 +126,8 @@ if (story) {
   const preference = () => {
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
-    story.dataset.motion = String(!reduce.matches && !paused);
+    story.dataset.motion = String(!reduce.matches);
+    story.dataset.paused = String(paused);
     toggle.hidden = reduce.matches;
     if (!reduce.matches && !paused) update();
   };
