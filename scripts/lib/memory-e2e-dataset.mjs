@@ -13,22 +13,58 @@ export function digest(value) {
   return createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
 }
 
-export async function loadCorpus() {
-  const bytes = await readFile(new URL("../fixtures/memory-e2e/fictional-v1.json", import.meta.url), "utf8");
+/**
+ * Selectable fictional corpora. A closed allow-list, never a caller-supplied
+ * path: the name only ever indexes this map.
+ *
+ * `fictional-v1` keeps its exact prior shape and semantics (four turns per
+ * group, all five arms). A corpus may narrow those two axes for a different
+ * question; everything else — build, digest, budget, provider, cleanup and
+ * redaction paths — is shared unchanged.
+ */
+export const CORPORA = Object.freeze(["fictional-v1", "bujo-learning-v1"]);
+
+export async function loadCorpus(name = "fictional-v1") {
+  if (!CORPORA.includes(name)) throw new Error("invalid_corpus_name");
+  const bytes = await readFile(new URL(`../fixtures/memory-e2e/${name}.json`, import.meta.url), "utf8");
   const corpus = JSON.parse(bytes);
   validateCorpus(corpus);
+  if (corpus.name !== name) throw new Error("invalid_corpus");
   return { corpus, sha256: digest(bytes) };
+}
+
+/** Per-group turn bounds. Absent means the original exact-four contract. */
+function turnBounds(corpus) {
+  const declared = corpus.turnsPerGroup ?? { min: 4, max: 4 };
+  const { min, max } = declared;
+  if (!Number.isSafeInteger(min) || !Number.isSafeInteger(max) || min < 1 || max > 8 || min > max) {
+    throw new Error("invalid_turn_bounds");
+  }
+  return { min, max };
+}
+
+/** Arms this corpus exercises. Absent means every arm, as before. */
+export function armsFor(corpus) {
+  const declared = corpus.arms ?? ARMS;
+  if (!Array.isArray(declared) || declared.length === 0 || new Set(declared).size !== declared.length
+    || !declared.every((arm) => ARMS.includes(arm))) {
+    throw new Error("invalid_arms");
+  }
+  return declared;
 }
 
 function text(value) { return typeof value === "string" && value.trim().length > 0; }
 function instant(value) { return text(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value; }
 export function validateCorpus(corpus) {
-  if (corpus.schemaVersion !== 1 || corpus.name !== "fictional-v1" || !Array.isArray(corpus.groups)) throw new Error("invalid_corpus");
+  if (corpus.schemaVersion !== 1 || !CORPORA.includes(corpus.name) || !Array.isArray(corpus.groups)) throw new Error("invalid_corpus");
+  const bounds = turnBounds(corpus);
+  armsFor(corpus);
   const ids = new Set();
   for (const group of corpus.groups) {
     if (!/^[a-z-]+$/u.test(group.id) || ids.has(group.id) || !Object.hasOwn(LIMITS, group.split)) throw new Error("invalid_group");
     ids.add(group.id);
-    if (!Array.isArray(group.source?.turns) || group.source.turns.length !== 4) throw new Error("invalid_turns");
+    if (!Array.isArray(group.source?.turns)
+      || group.source.turns.length < bounds.min || group.source.turns.length > bounds.max) throw new Error("invalid_turns");
     let previous = -Infinity;
     const turns = new Set();
     for (const turn of group.source.turns) {
@@ -79,11 +115,12 @@ export function makePlan({ corpus, sha256, split = "development", profile = null
   if (!Object.hasOwn(LIMITS, split)) throw new Error("invalid_split");
   const groups = corpus.groups.filter((group) => group.split === split);
   const turns = groups.reduce((sum, group) => sum + group.source.turns.length, 0);
+  const arms = armsFor(corpus);
   const manifest = {
     protocol: PROTOCOL, realBuildPolicy: BUILD_POLICY, corpus: corpus.name, corpusSha256: sha256, split, codeRevision,
-    groupIds: groups.map((group) => group.id), arms: ARMS, repeats: 1, order: "fixed-listed-order",
+    groupIds: groups.map((group) => group.id), arms, repeats: 1, order: "fixed-listed-order",
     profile: serializableProfile(profile), limits: LIMITS[split],
-    workload: { questions: groups.length, trials: groups.length * ARMS.length, historicalTurnsPerMemoryArm: turns, captureStepsMaximum: turns * 2, readerStepsMaximum: groups.length * ARMS.length * 3 },
+    workload: { questions: groups.length, trials: groups.length * arms.length, historicalTurnsPerMemoryArm: turns, captureStepsMaximum: turns * 2, readerStepsMaximum: groups.length * arms.length * 3 },
     perCall: { readerOutputTokens: 512, extractorOutputTokens: 2048, readerEstimatedInputTokens: 16384, extractorEstimatedInputTokens: 8192, framingAndToolAllowance: 4096, callTimeoutMs: 60000, embeddingTimeoutMs: 10000, readinessTimeoutMs: 120000, cleanupTimeoutMs: 10000 },
     limitations: ["controlled-text input estimates, not native payload limits", "transport attempt count unknown unless provider reports it", "fixed arm order; cache warmth uncontrolled", "one repeat; quality/human grading unmeasured"],
   };
