@@ -12,7 +12,7 @@ const GITHUB_URL = "https://github.com/robertsreberski/mono-agent";
 const DOCS_URL = "https://mono-agent-docs.vercel.app/";
 const RELEASE_STATUS_URL = `${DOCS_URL}reference/release-status/`;
 
-const TITLE = "mono-agent — Your agents. Your models. Your workspace.";
+const TITLE = "mono-agent — Local-first AI workspace for coding and research";
 const DESCRIPTION =
   "mono-agent is a local-first, config-first AI workspace for coding, research, and automation. One mono-agent.config.json defines your agent — models, tools, skills, memory, and channels. Open source (GPL-3.0).";
 const OG_IMAGE = `${SITE_URL}/og-1200x630.jpg`;
@@ -60,7 +60,7 @@ const jsonLd = {
     <meta property="og:image:height" content="630" />
     <meta
       property="og:image:alt"
-      content="Decorative mono-agent brand artwork: dark stacked slabs crossed by a lime filament."
+      content="mono-agent social card: the brand name and “Local-first AI workspace for coding and research” beside the stacked-slab artwork."
     />
 
     <meta name="twitter:card" content="summary_large_image" />
@@ -69,7 +69,7 @@ const jsonLd = {
     <meta name="twitter:image" content={OG_IMAGE} />
     <meta
       name="twitter:image:alt"
-      content="Decorative mono-agent brand artwork: dark stacked slabs crossed by a lime filament."
+      content="mono-agent social card: the brand name and “Local-first AI workspace for coding and research” beside the stacked-slab artwork."
     />
 
     <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
@@ -185,8 +185,9 @@ const jsonLd = {
               <h3>One file defines the agent</h3>
               <p>
                 <code>mono-agent.config.json</code> holds the model routes,
-                tools, skills, memory, and channels. Rename the folder, copy
-                the file, and the agent moves with it.
+                tools, skills, memory, and channels — configuration you can
+                version, review, and reuse across folders instead of host
+                code you maintain.
               </p>
             </li>
             <li>
@@ -284,10 +285,12 @@ mono-agent web run --loopback</code></pre>
             <div>
               <dt>What does “local-first” actually mean here?</dt>
               <dd>
-                Your agent files, run artifacts, and credentials live on your
-                machine — nothing is uploaded to operate the agent itself. Model
-                calls still go to whichever provider you configure, which can be
-                a model running on your own hardware.
+                Your agent files and run artifacts are stored on your machine
+                by default — nothing extra is uploaded just to operate the
+                agent. The models, tools, and channels you configure may still
+                send the context they need to their own services, so read what
+                each one transmits before you enable it. Preferring a model on
+                your own hardware keeps even inference local.
               </dd>
             </div>
             <div>

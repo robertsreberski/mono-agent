@@ -25,12 +25,13 @@ describe("marketing CI contract", () => {
         },
         { name: "Install pinned pnpm", run: "npm install --global pnpm@11.18.0" },
         { name: "Install marketing dependencies", run: "pnpm install --frozen-lockfile" },
-        { name: "Test marketing contracts", run: "pnpm run test:unit" },
         { name: "Install Chromium", run: "pnpm exec playwright install --with-deps chromium" },
         {
           name: "Build marketing site (astro build -> check-links)",
           run: "pnpm run build",
         },
+        // Contracts read dist/, so the build must precede them.
+        { name: "Test marketing contracts against the build", run: "pnpm run test:unit" },
         { name: "Audit the built page for accessibility and responsiveness", run: "pnpm run test:browser" },
       ],
     });

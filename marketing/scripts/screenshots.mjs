@@ -23,8 +23,32 @@ const PORT = 4331;
 const URL = `http://127.0.0.1:${PORT}/`;
 
 const SHOTS = [
-  { name: "desktop-1440x1000.png", width: 1440, height: 1000 },
-  { name: "mobile-390x844.png", width: 390, height: 844 },
+  { name: "hero-desktop-1440x1000.png", width: 1440, height: 1000 },
+  { name: "hero-mobile-390x844.png", width: 390, height: 844 },
+  {
+    name: "usecases-desktop-1440x1000.png",
+    width: 1440,
+    height: 1000,
+    scrollTo: "#use-cases",
+  },
+  {
+    name: "usecases-mobile-390x844.png",
+    width: 390,
+    height: 844,
+    scrollTo: "#use-cases",
+  },
+  {
+    name: "start-desktop-1440x1000.png",
+    width: 1440,
+    height: 1000,
+    scrollTo: "#start",
+  },
+  {
+    name: "start-mobile-390x844.png",
+    width: 390,
+    height: 844,
+    scrollTo: "#start",
+  },
 ];
 
 async function waitForServer(url, tries = 60) {
@@ -56,6 +80,16 @@ async function main() {
           viewport: { width: shot.width, height: shot.height },
         });
         await page.goto(URL, { waitUntil: "networkidle" });
+        if (shot.scrollTo) {
+          // Instant jump: the site enables smooth scroll-behavior, which
+          // would otherwise leave the capture mid-flight.
+          await page.evaluate((selector) => {
+            document
+              .querySelector(selector)
+              ?.scrollIntoView({ behavior: "instant", block: "start" });
+          }, shot.scrollTo);
+          await page.waitForTimeout(400);
+        }
         await page.screenshot({ path: join(outputDir, shot.name) });
         console.log(`screenshots: ${shot.name}`);
         await page.close();

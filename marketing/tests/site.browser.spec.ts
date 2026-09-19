@@ -47,12 +47,42 @@ for (const viewport of VIEWPORTS) {
           name: "Your agents. Your models. Your workspace.",
         }),
       ).toBeVisible();
-      await expect(
-        page.getByRole("link", { name: "Get the code on GitHub" }).first(),
-      ).toBeVisible();
-      await expect(
-        page.getByRole("link", { name: "Read the docs" }).first(),
-      ).toBeVisible();
+    });
+
+    test("keeps both hero CTAs fully inside the initial viewport", async ({
+      page,
+    }) => {
+      await page.goto("/", { waitUntil: "networkidle" });
+      // Deterministic settle: no webfonts to load, but wait out the
+      // entrance animation so the measured boxes are final.
+      await page.evaluate(() => document.fonts.ready);
+      await page.waitForFunction(
+        () =>
+          document
+            .getAnimations()
+            .every((animation) => animation.playState !== "running"),
+        null,
+        { timeout: 5000 },
+      );
+      const viewport = page.viewportSize();
+      expect(viewport).not.toBeNull();
+      for (const name of ["Get the code on GitHub", "Read the docs"]) {
+        const box = await page
+          .getByRole("link", { name })
+          .first()
+          .boundingBox();
+        expect(box, `${name} has a bounding box`).not.toBeNull();
+        expect(box!.x, `${name} left edge`).toBeGreaterThanOrEqual(0);
+        expect(box!.y, `${name} top edge`).toBeGreaterThanOrEqual(0);
+        expect(
+          box!.x + box!.width,
+          `${name} right edge`,
+        ).toBeLessThanOrEqual(viewport!.width);
+        expect(
+          box!.y + box!.height,
+          `${name} bottom edge`,
+        ).toBeLessThanOrEqual(viewport!.height);
+      }
     });
   });
 }

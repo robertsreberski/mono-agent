@@ -35,7 +35,7 @@ describe("marketing built output", () => {
   it("declares the exact title, description, and canonical URL", () => {
     mustContain(
       html,
-      "<title>mono-agent — Your agents. Your models. Your workspace.</title>",
+      "<title>mono-agent — Local-first AI workspace for coding and research</title>",
       "exact <title>",
     );
     const description = html.match(/<meta name="description" content="([^"]+)"\/?>/);
@@ -71,6 +71,17 @@ describe("marketing built output", () => {
     assert.equal(meta.width, 1200, "og card width");
     assert.equal(meta.height, 630, "og card height");
     assert.ok(statSync(path).size < 120_000, "og card stays small");
+    // The card carries real brand typography: both image alts must describe
+    // the actual card, not the bare artwork.
+    for (const attr of ["property=\"og:image:alt\"", "name=\"twitter:image:alt\""]) {
+      const match = html.match(new RegExp(`<meta ${attr} content="([^"]+)"`));
+      assert.ok(match, `${attr} must exist`);
+      assert.ok(match[1].includes("mono-agent"), `${attr} names the brand`);
+      assert.ok(
+        match[1].toLowerCase().includes("local-first ai workspace"),
+        `${attr} carries the descriptor`,
+      );
+    }
   });
 
   it("keeps hero art responsive, decorative, and small", async () => {

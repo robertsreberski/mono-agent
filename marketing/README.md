@@ -81,6 +81,6 @@ the docs site on Vercel) is:
 ## CI
 
 The repo's `ci.yml` runs a dedicated parallel **`marketing`** job: isolated
-install, unit contracts, Chromium install, build (with link check), then the
-browser audit. Treat a red **`marketing`** check as a merge blocker by
-convention, same as the `website` lane.
+install, Chromium install, build (with link check), unit contracts against
+the build, then the browser audit. Treat a red **`marketing`** check as a
+merge blocker by convention, same as the `website` lane.

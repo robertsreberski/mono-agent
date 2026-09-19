@@ -12,11 +12,17 @@
 //
 //   pnpm run assets   (from marketing/)
 //
-// Outputs (all deterministic for the pinned sharp 0.35.4):
+// Outputs (all scripted for the pinned sharp 0.35.4):
 //   public/hero-1440.{jpg,webp}   hero artwork, desktop widths
 //   public/hero-960.{jpg,webp}    hero artwork, tablet widths
 //   public/hero-640.{jpg,webp}    hero artwork, mobile widths
 //   public/og-1200x630.jpg        Open Graph / Twitter card (1200x630)
+//
+// The social card composites deterministic SVG typography onto the cropped
+// artwork: the brand name plus a one-line category descriptor, set in the
+// platform sans (Verdana locally, DejaVu Sans on Ubuntu CI) on the dark
+// left side the attention crop preserves. The card is generated once and
+// committed — CI serves and tests the file, never re-renders it.
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,9 +67,20 @@ async function main() {
   }
 
   // Social card: exact 1200x630. The `attention` crop keeps the bright
-  // filament/monolith (right side) and trims the dark negative space first.
-  await sharp(source)
-    .resize(1200, 630, { fit: "cover", position: sharp.strategy.attention })
+  // filament/monolith (right side) and trims the dark negative space first;
+  // brand typography is then composited onto the dark left side.
+  const cardBase = sharp(source).resize(1200, 630, {
+    fit: "cover",
+    position: sharp.strategy.attention,
+  });
+  const cardType = Buffer.from(`<svg width="1200" height="630" xmlns="http://www.w3.org/2000/svg">
+  <text x="80" y="296" font-family="Verdana, 'DejaVu Sans', sans-serif" font-size="88" font-weight="700" fill="#f2f3ec">mono-agent</text>
+  <rect x="84" y="326" width="72" height="7" fill="#cbf078"/>
+  <text x="80" y="402" font-family="Verdana, 'DejaVu Sans', sans-serif" font-size="40" font-weight="700" fill="#cbf078">Local-first AI workspace</text>
+  <text x="80" y="456" font-family="Verdana, 'DejaVu Sans', sans-serif" font-size="40" fill="#bcc1b3">for coding and research</text>
+</svg>`);
+  await cardBase
+    .composite([{ input: cardType, left: 0, top: 0 }])
     .jpeg({ quality: 82, mozjpeg: true })
     .toFile(join(publicDir, "og-1200x630.jpg"));
   console.log("assets: og-1200x630.jpg");
