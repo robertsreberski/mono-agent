@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="mono-agent mark">
+  <rect width="64" height="64" rx="14" fill="#101311"/>
+  <rect x="14" y="11" width="36" height="12" rx="4" fill="#2b302b"/>
+  <rect x="14" y="26" width="36" height="12" rx="4" fill="#2b302b"/>
+  <rect x="14" y="41" width="36" height="12" rx="4" fill="#2b302b"/>
+  <path d="M40 11v13a7 7 0 0 1-7 7h-2a7 7 0 0 0-7 7v15" fill="none" stroke="#cbf078" stroke-width="2.6" stroke-linecap="round"/>
+</svg>

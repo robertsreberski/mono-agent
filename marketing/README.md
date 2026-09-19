@@ -1,0 +1,86 @@
+# mono-agent marketing site
+
+The prospective marketing site at **<https://mono-agent.dev/>** (not yet
+deployed — see [Prospective deployment](#prospective-deployment)). A standalone
+[Astro](https://astro.build/) static app: one crawlable HTML page, one
+stylesheet, zero client JavaScript. GitHub is the primary call to action; the
+existing docs site is secondary.
+
+## Architecture
+
+- **`marketing/` is an isolated app.** It has its own `pnpm-workspace.yaml`,
+  so it never enters the root `pnpm -r build`, `pnpm -r test`, release graph,
+  or `check:architecture`. Install and build it on its own, following the
+  `website/` precedent.
+- **Content is authored in `src/pages/index.astro`.** Every claim on the page
+  must already be true of the published npm baseline, or be explicitly framed
+  as configuration. The honesty rules live in a comment at the top of that
+  file — read them before editing copy. `docs/reference/release-status.md` is
+  the boundary reference: never advertise source-only capabilities (console
+  projects/tags, durable subagents, usage meters), never promise setup speed
+  or security properties, and never present the brand artwork as a screenshot.
+- **Artwork is decorative.** `public/hero-*.{jpg,webp}` and
+  `public/og-1200x630.jpg` are optimized derivatives of a supplied brand
+  source (charcoal monolith, lime filament, no text). The source itself stays
+  out of git at `marketing/assets-source/` (gitignored); regenerate with
+  `pnpm run assets` after placing it there. The hero image carries empty `alt`
+  plus a visually-hidden “not a product screenshot” caption.
+- **SEO is tested, not assumed.** `tests/seo.test.mjs` audits the built
+  `dist/`: title/description/canonical, absolute Open Graph/Twitter URLs, the
+  real 1200×630 card dimensions, sitemap/robots, honest JSON-LD, single-H1
+  structure, working anchors, zero client scripts, and claim guards.
+
+## Local development
+
+```bash
+# from this directory (marketing/)
+pnpm install                 # isolated install — uses marketing/pnpm-lock.yaml
+pnpm run dev                 # astro dev (live preview)
+pnpm run build               # astro build + internal-link check
+pnpm run test:unit           # SEO/asset/anchor contracts against dist/
+pnpm exec playwright install chromium  # local audit browser, once
+pnpm run test:browser        # serve dist/ and audit a11y + responsiveness
+pnpm run screenshots         # capture output/*.png for human review (gitignored)
+pnpm run assets              # regenerate public/ derivatives from assets-source/
+```
+
+`scripts/check-links.mjs` validates the built `dist/` (same shape as the
+website's checker) and fails the build on a broken internal link.
+`tests/site.browser.spec.ts` audits the previewed page in Chromium with axe
+(zero WCAG 2.0 A/AA, 2.1 A/AA, or 2.2 AA violations), asserts no horizontal
+overflow and visible hero CTAs at 1440×1000 and 390×844, and checks the skip
+link, landmarks, section navigation, and reduced-motion handling.
+
+## Accessibility gate
+
+Run `pnpm run build` before `pnpm run test:browser`; the browser suite
+intentionally audits the production-shaped output, not the dev server. This is
+an automated baseline, not a claim of complete WCAG conformance; keyboard
+navigation, responsive layouts, zoom, and prose clarity still need human review
+when those surfaces change.
+
+## Version pins — do not bump blindly
+
+`package.json` pins the tested Astro 7 line (`astro ~7.2.8`, matching
+`website/`) and `sharp 0.35.4` (matching the root security floor). Before
+raising any site dependency, run the complete build and both test gates and
+confirm metadata, card dimensions, and internal links still hold.
+
+## Prospective deployment
+
+The site is **not deployed yet**. When it is, the intended shape (mirroring
+the docs site on Vercel) is:
+
+- `vercel.json` pins `framework: astro`, `buildCommand: pnpm run build`,
+  `outputDirectory: dist`.
+- In the hosting project, set the project root to `marketing/` and the domain
+  to `mono-agent.dev`.
+- No environment variables, analytics, or backends are required — the output
+  is static files only.
+
+## CI
+
+The repo's `ci.yml` runs a dedicated parallel **`marketing`** job: isolated
+install, unit contracts, Chromium install, build (with link check), then the
+browser audit. Treat a red **`marketing`** check as a merge blocker by
+convention, same as the `website` lane.

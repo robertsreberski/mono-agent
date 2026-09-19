@@ -1,0 +1,361 @@
+---
+// mono-agent marketing site — single static page for https://mono-agent.dev/.
+//
+// Copy rules for this file: every claim must already be true of the published
+// baseline or be explicitly framed as configuration. Never advertise
+// source-only capabilities (console projects/tags, durable subagents, usage
+// meters — see docs/reference/release-status.md), never promise setup speed,
+// security, or availability, and never present the decorative brand artwork
+// as a product screenshot.
+const SITE_URL = "https://mono-agent.dev";
+const GITHUB_URL = "https://github.com/robertsreberski/mono-agent";
+const DOCS_URL = "https://mono-agent-docs.vercel.app/";
+const RELEASE_STATUS_URL = `${DOCS_URL}reference/release-status/`;
+
+const TITLE = "mono-agent — Your agents. Your models. Your workspace.";
+const DESCRIPTION =
+  "mono-agent is a local-first, config-first AI workspace for coding, research, and automation. One mono-agent.config.json defines your agent — models, tools, skills, memory, and channels. Open source (GPL-3.0).";
+const OG_IMAGE = `${SITE_URL}/og-1200x630.jpg`;
+
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": `${SITE_URL}/#website`,
+      url: `${SITE_URL}/`,
+      name: "mono-agent",
+      description: DESCRIPTION,
+    },
+    {
+      "@type": "Organization",
+      "@id": `${SITE_URL}/#organization`,
+      name: "mono-agent",
+      url: `${SITE_URL}/`,
+      logo: OG_IMAGE,
+      sameAs: [GITHUB_URL],
+    },
+  ],
+};
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{TITLE}</title>
+    <meta name="description" content={DESCRIPTION} />
+    <link rel="canonical" href={`${SITE_URL}/`} />
+    <meta name="theme-color" content="#101311" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="mono-agent" />
+    <meta property="og:title" content={TITLE} />
+    <meta property="og:description" content={DESCRIPTION} />
+    <meta property="og:url" content={`${SITE_URL}/`} />
+    <meta property="og:image" content={OG_IMAGE} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Decorative mono-agent brand artwork: dark stacked slabs crossed by a lime filament."
+    />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={TITLE} />
+    <meta name="twitter:description" content={DESCRIPTION} />
+    <meta name="twitter:image" content={OG_IMAGE} />
+    <meta
+      name="twitter:image:alt"
+      content="Decorative mono-agent brand artwork: dark stacked slabs crossed by a lime filament."
+    />
+
+    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="wrap">
+        <a class="brand" href="#top" aria-label="mono-agent — back to top">
+          <img src="/favicon.svg" alt="" width="30" height="30" aria-hidden="true" />
+          <span>mono-agent</span>
+        </a>
+        <nav class="site-nav" aria-label="Sections">
+          <ul>
+            <li><a href="#use-cases">Use cases</a></li>
+            <li><a href="#why">Why mono-agent</a></li>
+            <li><a href="#start">Get started</a></li>
+            <li><a href="#faq">FAQ</a></li>
+          </ul>
+        </nav>
+        <div class="header-cta">
+          <a class="link-docs" href={DOCS_URL}>Docs</a>
+          <a class="btn btn-primary btn-small" href={GITHUB_URL}>GitHub</a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top" aria-labelledby="hero-heading">
+        <div class="wrap hero-grid">
+          <div class="hero-copy">
+            <span class="eyebrow">Open source · GPL-3.0 · Local-first</span>
+            <h1 id="hero-heading">Your agents. Your models. Your workspace.</h1>
+            <p class="lede">
+              mono-agent turns a folder into an AI agent you work with in a
+              persistent web workspace — for coding, research, and automation.
+              One <code>mono-agent.config.json</code> defines the whole agent:
+              models, tools, skills, memory, and channels.
+            </p>
+            <div class="hero-actions">
+              <a class="btn btn-primary" href={GITHUB_URL}>Get the code on GitHub</a>
+              <a class="btn btn-secondary" href={DOCS_URL}>Read the docs</a>
+            </div>
+            <p class="hero-meta">Needs Node.js 24.15 or newer · Bring your own models, including local ones</p>
+          </div>
+          <figure class="hero-art" aria-hidden="true">
+            <picture>
+              <source type="image/webp" srcset="/hero-640.webp 640w, /hero-960.webp 960w, /hero-1440.webp 1440w" sizes="(max-width: 959px) 100vw, 520px" />
+              <img
+                src="/hero-1440.jpg"
+                srcset="/hero-640.jpg 640w, /hero-960.jpg 960w, /hero-1440.jpg 1440w"
+                sizes="(max-width: 959px) 100vw, 520px"
+                width="1536"
+                height="1024"
+                alt=""
+                fetchpriority="high"
+              />
+            </picture>
+            <figcaption class="visually-hidden">Decorative brand illustration, not a product screenshot.</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="section" id="use-cases" aria-labelledby="use-cases-heading">
+        <div class="wrap">
+          <span class="section-label">Use cases</span>
+          <h2 id="use-cases-heading">One agent, three kinds of work</h2>
+          <p class="section-intro">
+            The same config-first agent adapts to the folder you give it — a
+            codebase, a research pile, or a routine worth automating.
+          </p>
+          <ol class="use-cases">
+            <li>
+              <h3>Build</h3>
+              <p>
+                Open a project folder as the agent workspace and ask it to fix a
+                failing test, review a diff, trace a bug, or run commands and
+                explain what failed. The conversation persists, so closing the
+                tab never loses the thread.
+              </p>
+            </li>
+            <li>
+              <h3>Research</h3>
+              <p>
+                Point it at a research folder and have it plan, draft, compare,
+                and summarize from your source material. Optional memory tiers
+                carry what it learns into later conversations.
+              </p>
+            </li>
+            <li>
+              <h3>Automate</h3>
+              <p>
+                Schedule a recurring digest, accept requests on a webhook,
+                publish an OpenAI-compatible endpoint, or talk to the agent from
+                Telegram and Slack — all from that same one config file.
+              </p>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="section" id="why" aria-labelledby="why-heading">
+        <div class="wrap">
+          <span class="section-label">Why mono-agent</span>
+          <h2 id="why-heading">Configured, not glued together</h2>
+          <p class="section-intro">
+            What you set up is something you can read, review, version, and
+            move — not host code you maintain.
+          </p>
+          <ul class="points">
+            <li>
+              <h3>One file defines the agent</h3>
+              <p>
+                <code>mono-agent.config.json</code> holds the model routes,
+                tools, skills, memory, and channels. Rename the folder, copy
+                the file, and the agent moves with it.
+              </p>
+            </li>
+            <li>
+              <h3>Local-first, not local-only</h3>
+              <p>
+                Run artifacts stay on your machine, credentials stay in a dotenv
+                file or your provider's own auth store, and model requests go
+                wherever you point them — a subscription or API provider, or a
+                fully local model.
+              </p>
+            </li>
+            <li>
+              <h3>Reach it where you work</h3>
+              <p>
+                The browser console, Telegram, Slack, webhooks, cron schedules,
+                and an OpenAI-compatible endpoint are transports for the same
+                agent, each enabled with its own config flag.
+              </p>
+            </li>
+            <li>
+              <h3>Extend without writing a host</h3>
+              <p>
+                Add instruction sets as skills, attach MCP servers for extra
+                tools, and narrow the tool surface with policy — plus an opt-in
+                sandbox that confines tool subprocesses to the roots you allow.
+              </p>
+            </li>
+          </ul>
+          <div class="note">
+            <p>
+              <strong>Two defaults worth knowing.</strong> Tools are allow-all
+              by default and the sandbox is opt-in, so narrow
+              <code>tools.allowedTools</code> before exposing an agent. The web
+              console has no application login — run it on loopback and read
+              the safety docs before widening access.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="start" aria-labelledby="start-heading">
+        <div class="wrap">
+          <span class="section-label">Get started</span>
+          <h2 id="start-heading">From empty folder to working agent</h2>
+          <p class="section-intro">
+            Guided setup is genuine, not instant: it signs you in to the
+            provider you choose and proves every selected route with a real
+            model call, which can take several minutes and counts as usage on
+            your account.
+          </p>
+          <ol class="steps">
+            <li>
+              <h3>Install the CLI</h3>
+              <p>Requires Node.js 24.15.0 or newer. No pnpm needed.</p>
+              <pre><code>npm i -g create-mono-agent</code></pre>
+            </li>
+            <li>
+              <h3>Create the agent folder</h3>
+              <p>
+                Bare <code>init</code> on a terminal is the guided wizard: it
+                names the agent, writes its role, and proves each model route.
+                Any flag scaffolds the files only.
+              </p>
+              <pre><code>mkdir my-agent
+cd my-agent
+mono-agent init</code></pre>
+            </li>
+            <li>
+              <h3>Start it, then open the workspace</h3>
+              <p>
+                Validate and start the agent, then run the browser console in
+                its own terminal and open the URL it prints.
+              </p>
+              <pre><code>mono-agent validate
+mono-agent start
+mono-agent web run --loopback</code></pre>
+            </li>
+          </ol>
+          <div class="note">
+            <p>
+              <strong>Published vs. source.</strong> The docs describe the
+              current source; the published npm release can lag behind it. The
+              <a href={RELEASE_STATUS_URL}>release status page</a> lists exactly
+              what is in the release and how to run a source build instead.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="faq" aria-labelledby="faq-heading">
+        <div class="wrap">
+          <span class="section-label">FAQ</span>
+          <h2 id="faq-heading">Short answers, honestly</h2>
+          <dl class="faq">
+            <div>
+              <dt>What does “local-first” actually mean here?</dt>
+              <dd>
+                Your agent files, run artifacts, and credentials live on your
+                machine — nothing is uploaded to operate the agent itself. Model
+                calls still go to whichever provider you configure, which can be
+                a model running on your own hardware.
+              </dd>
+            </div>
+            <div>
+              <dt>Which models can I use?</dt>
+              <dd>
+                Any <code>&lt;provider&gt;:&lt;model&gt;</code> route, including
+                subscription and API providers such as OpenAI Codex and
+                Anthropic, plus fully local providers like Ollama or LM Studio.
+                Ordered fallbacks keep a turn alive when the primary route fails.
+              </dd>
+            </div>
+            <div>
+              <dt>Is the web console safe to expose?</dt>
+              <dd>
+                Treat it as single-owner with no application login: anyone who
+                can reach it can operate your agents. Keep it on loopback
+                unless you have a reason not to, and read the console security
+                docs first.
+              </dd>
+            </div>
+            <div>
+              <dt>What does it cost?</dt>
+              <dd>
+                mono-agent itself is free, open-source software under GPL-3.0.
+                You pay your model provider for the calls your agent makes —
+                including the proof calls guided setup runs.
+              </dd>
+            </div>
+            <div>
+              <dt>Where is the full documentation?</dt>
+              <dd>
+                The complete guides, configuration reference, and security model
+                live on the documentation site — start there when the config
+                file gets ambitious.
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="closing" aria-labelledby="closing-heading">
+        <div class="wrap">
+          <span class="section-label">Get the code</span>
+          <h2 id="closing-heading">Start with a folder.</h2>
+          <p>
+            Clone the repository, define one config file, and work with an
+            agent that keeps its state where you can see it. GPL-3.0, no
+            account, no backend to sign up for.
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href={GITHUB_URL}>Get the code on GitHub</a>
+            <a class="btn btn-secondary" href={DOCS_URL}>Read the docs</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <span>mono-agent — open source under GPL-3.0-only.</span>
+        <nav aria-label="Project links">
+          <ul>
+            <li><a href={GITHUB_URL}>GitHub</a></li>
+            <li><a href={DOCS_URL}>Documentation</a></li>
+            <li><a href={RELEASE_STATUS_URL}>Release status</a></li>
+          </ul>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

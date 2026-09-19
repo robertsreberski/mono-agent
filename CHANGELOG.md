@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add the standalone static marketing site source for the prospective
+  `mono-agent.dev` domain. The isolated `marketing/` Astro app renders one
+  crawlable page — hero, Build/Research/Automate use cases, honest setup
+  steps, FAQ, and GitHub/docs calls to action — with tested SEO metadata, a
+  social card, sitemap/robots, and a dedicated CI lane. Source only; the site
+  is not deployed yet.
+
 - Return managed `WebSearch` and `WebFetch` results as a compact JSON envelope
   with `status`, host-written summary, untrusted content or results, source and
   coverage metadata, and typed `next_actions`. Add deterministic `WebFetch`
