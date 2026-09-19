@@ -7,11 +7,11 @@ import { searchCodexSubscription } from "./codex-subscription-search.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { webSearchProviders, expandSearchProvider } from "./web-search-providers/registry.js";
-import { guardedSearch, canonicalizeSearchUrl, collapseWhitespace, escapeMarkdownLabel, cooldownBackendNames } from "./web-search-providers/shared.js";
+import { guardedSearch, canonicalizeSearchUrl, collapseWhitespace, cooldownBackendNames } from "./web-search-providers/shared.js";
 export { canonicalizeSearchUrl, __resetWebSearchThrottleForTests } from "./web-search-providers/shared.js";
 export { parseDuckDuckGoResults } from "./web-search-providers/duckduckgo.js";
 export { parseStartpageResults } from "./web-search-providers/startpage.js";
-import { renderBoundedWebSearchBody, WEB_SEARCH_BODY_MAX_BYTES } from "./web-search-output.js";
+import { boundWebSearchEntries } from "./web-search-output.js";
 import { buildWebNextAction, formatActionableEnvelope, webStatusForCode } from "./web-actionable.js";
 import {
   refundWebSearchRequests,
@@ -262,27 +262,23 @@ async function performSearch(
   const backend = providersUsed.size === 1
     ? [...providersUsed][0]
     : providersUsed.size > 1 ? "mixed" : config.backend;
-  const rendered = renderBoundedWebSearchBody(merged);
+  const bounded = boundWebSearchEntries(merged);
   const budget = webSearchBudgetSnapshot(searchState, callClaims.requests);
   const retryInRun = searchState.requestsUsed < searchState.maxRequests;
-  const nextAction = rendered.renderedResultCount > 0
+  const nextAction = bounded.resultCount > 0
     ? "fetch_existing_sources"
     : retryInRun ? "refine_query" : "use_available_evidence";
-  const code = rendered.renderedResultCount === 0 ? "no_results" : "ok";
+  const code = bounded.resultCount === 0 ? "no_results" : "ok";
   // Lossy output truncation is honest incompleteness; a rescued chain whose
   // results are whole stays ok with its degradation disclosed in coverage.
   // Result entries double as the source citations (title/url/published), so no
-  // separate sources array duplicates them. The entries JSON reuses the 64 KiB
-  // body allocation; envelope framing (summary, coverage, next actions) stays
-  // outside it, as the old control/metadata framing did.
-  let fittedEntries = rendered.entries;
-  let omittedCount = rendered.omittedCount;
-  while (fittedEntries.length > 1
-    && Buffer.byteLength(JSON.stringify(fittedEntries), "utf8") > WEB_SEARCH_BODY_MAX_BYTES) {
-    fittedEntries = fittedEntries.slice(0, -1);
-    omittedCount += 1;
-  }
-  const truncatedFinal = rendered.truncated || omittedCount > rendered.omittedCount;
+  // separate sources array duplicates them. The entries JSON is already bounded
+  // to the 64 KiB allocation inside boundWebSearchEntries; envelope framing
+  // (summary, coverage, next actions) stays outside it, as the old
+  // control/metadata framing did.
+  const fittedEntries = bounded.entries;
+  const omittedCount = bounded.omittedCount;
+  const truncatedFinal = bounded.truncated;
   const status = truncatedFinal ? "partial" : "ok";
   const actualQueryList = uniqueStrings(actualQueries.length > 0 ? actualQueries : [normalizedQuery], 4);
   const failureSummary = sanitizeFailureMetadata(providerFailures)

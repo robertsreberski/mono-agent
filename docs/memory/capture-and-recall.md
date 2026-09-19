@@ -235,6 +235,15 @@ The agent performs targeted durable-memory search through the read-only `MemoryR
 
 `MemoryRecall` runs **no chat LLM** — recall is embeddings + full-text search only. Durable writes stay in-app on the agent-host LLM via [per-turn capture](#capture--per-turn-intelligent-capture-bujo); recall just reads.
 
+Recall returns live records, which includes completed, scheduled, and migrated
+items — not only open ones. Terminal `dropped`/`invalidated` records stay
+excluded. So that a finished or deferred item cannot read as a current fact, a
+result whose status is not `open` is prefixed with that status, for example
+`0.800  [done] Ship the 0.9 release.`; an ordinary open record is rendered
+exactly as before. Structured results carry `type` and `status` alongside `id`,
+`score`, and `text` whenever the backend supplies them — a remote backend that
+reports neither keeps its previous result shape unchanged.
+
 Questions about the active chat are intentionally not durable-memory queries. For
 unqualified prompts such as `What did you send in the last message?`, `What was your
 previous reply?`, or `What happened in this conversation?`, automatic recall injects

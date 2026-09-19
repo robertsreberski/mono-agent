@@ -23,6 +23,29 @@
   `focus` block filtering and bounded `include_links` from static HTML
   extraction; both reuse the cached extraction without added requests.
 
+- Fix an explicitly remembered fact being silently lost when capture later
+  refined it. A `Remember` write is content-addressed — its id is the SHA-256 of
+  its own text — but reconciliation could merge new wording into that bullet in
+  place, leaving the id asserting a hash of text it no longer held. Remembering
+  the original fact again then matched that id and reported a false duplicate,
+  so the fact was never stored. Reconciliation now keeps a remembered bullet
+  exactly as written and records the refinement as a separate memory, which is
+  linked to the original when it is close enough to be threaded. Refinement is
+  not treated as contradiction, so the remembered fact is never invalidated or
+  superseded, and ordinary (non-remembered) memories still merge in place as
+  before. This protects new reconciliation only: records already rewritten this
+  way are not detected or repaired, and a capture already queued before the
+  upgrade can still apply its original in-place edit when it is replayed.
+- Report memory lifecycle state in `MemoryRecall` results. Recall returns
+  completed, scheduled, and migrated records alongside open ones, but the tool
+  previously showed only a score and the text, so a finished or deferred item
+  could read as a current fact — a distinction automatic recall already made
+  through its status-bearing bullet marker. A result whose status is not `open`
+  is now prefixed with that status, and structured results carry `type` and
+  `status` when the backend supplies them. Open records render exactly as
+  before, a backend that reports neither keeps its previous result shape, and
+  which records are retrieved, ranked, or excluded is unchanged.
+
 - Let a cron job declare a deterministic `preflight` argv evaluated before the
   model responder. `{"run":false}` ends the firing as `skipped_gate` with no
   model turn or notification; `{"run":true,"input":"…"}` runs the job with the
@@ -68,6 +91,9 @@
 - Fix `WebSearch` budgets to charge answered searches, refund failed providers,
   and count Ollama endpoint probes once. Bound network dispatches separately
   and include provider failures in budget-exhaustion messages.
+- Fix `WebSearch` tight-budget snippet truncation to keep the visible truncation
+  marker for highly escapable content instead of emptying the snippet, while
+  staying within the 64 KiB structured results bound.
 
 - Fix conversation render crashes when switching between cached transcripts of
   different shapes. Add local technical details and copyable diagnostics to the
