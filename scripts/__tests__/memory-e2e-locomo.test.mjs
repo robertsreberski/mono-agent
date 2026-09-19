@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { contextFor, sourceOnly } from "../lib/memory-e2e-dataset.mjs";
-import { lexicalAnswerScore, locomoCategory5Abstains, makeLocomoPlan, parseLocomoTimestamp, projectLocomo, projectLocomoSession } from "../lib/memory-e2e-locomo.mjs";
+import { LOCOMO_HOSTED_PROFILE, lexicalAnswerScore, locomoCategory5Abstains, locomoExecutionProfile, makeLocomoPlan, parseLocomoTimestamp, projectLocomo, projectLocomoSession } from "../lib/memory-e2e-locomo.mjs";
 import { lexicalDiagnostic } from "../lib/memory-e2e-report.mjs";
 
 function sample(id, { missing = [] } = {}) {
@@ -86,6 +86,50 @@ describe("LoCoMo pinned-data adapter (synthetic schema only)", () => {
     expect(plan.locomo.ceilings).toMatchObject({ captureAdmissions: 1, captureModelSteps: 2, readerInvocations: 10, readerModelSteps: 30, chatInputTokensReserved: 1_490_944, embeddingInputTokensReserved: 84_704, semanticJudgeInvocations: 0 });
     expect(plan.locomo.executionGate).toMatchObject({ status: "blocked_pending_synthetic_native_context_probe", nativeNumCtxConfigured: false, redirectsRejectedByExistingAdapter: false, silentNativeTruncationDetectable: false });
     expect(JSON.stringify(plan)).not.toMatch(/QUESTION_SENTINEL|GOLD_ANSWER|SOURCE_SENTINEL/u);
+  });
+
+  it("requires and binds the exact hosted-transfer profile without exposing the auth path", () => {
+    const rawProfile = {
+      reader: LOCOMO_HOSTED_PROFILE.reader,
+      extractor: LOCOMO_HOSTED_PROFILE.extractor,
+      embeddingProvider: "ollama",
+      embeddingModel: "bge-m3:latest",
+      dimension: 1024,
+      piAuthPath: "/private/existing-pi-auth.json",
+    };
+    expect(() => locomoExecutionProfile(rawProfile)).toThrow("locomo_hosted_transfer_ack_required");
+    expect(() => locomoExecutionProfile({ ...rawProfile, embeddingModel: "other" }, { allowHostedTransfer: true }))
+      .toThrow("hosted_locomo_profile_mismatch");
+    expect(() => locomoExecutionProfile({ ...rawProfile, piAuthPath: undefined }, { allowHostedTransfer: true }))
+      .toThrow("hosted_locomo_profile_mismatch");
+    const profile = locomoExecutionProfile(rawProfile, { allowHostedTransfer: true });
+    expect(profile).toMatchObject({
+      ...rawProfile,
+      hostedChatContextWindow: 272_000,
+      embeddingEndpoint: "http://127.0.0.1:11434",
+      locomoDatasetTransferAck: LOCOMO_HOSTED_PROFILE.datasetTransferAck,
+    });
+    const corpus = projectLocomo(dataset());
+    const plan = makeLocomoPlan({ corpus, sha256: "fixture", split: "development", profile, codeRevision: "HEAD" });
+    expect(plan.profile).not.toHaveProperty("piAuthPath");
+    expect(plan.profile.piAuthFingerprint).toMatch(/^[0-9a-f]{64}$/u);
+    expect(JSON.stringify(plan)).not.toContain("existing-pi-auth");
+    expect(plan.locomo.datasetTransfer).toMatchObject({
+      acknowledged: true,
+      chatRoute: "openai-codex:gpt-5.6-luna",
+      localEmbeddingsOnly: true,
+      excluded: expect.arrayContaining(["reference_answers", "adversarial_answers", "images", "unselected_conversations"]),
+    });
+    expect(plan.locomo.executionGate).toMatchObject({
+      status: "ready_for_parent_review_hosted_transfer_not_executed",
+      sourceCatalogContextWindow: 272_000,
+      largestReservedPromptAndOutput: 49_664,
+      sourceCatalogAdmissionFits: true,
+      compactionDisabled: true,
+      referencesExcludedFromProviderProjection: true,
+      realDatasetInferencePerformed: false,
+    });
+    expect(plan.confirmation).not.toBe(makeLocomoPlan({ corpus, sha256: "fixture", split: "development", codeRevision: "HEAD" }).confirmation);
   });
 
   it("never treats category-5 answer fields as truth and applies only the pinned abstention rule", () => {

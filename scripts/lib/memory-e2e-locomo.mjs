@@ -31,6 +31,48 @@ export const LOCOMO_EVALUATOR = Object.freeze({
   category5Rule: "output contains 'no information available' or 'not mentioned'",
 });
 
+export const LOCOMO_HOSTED_PROFILE = Object.freeze({
+  reader: "openai-codex:gpt-5.6-luna",
+  extractor: "openai-codex:gpt-5.6-luna",
+  embeddingProvider: "ollama",
+  embeddingModel: "bge-m3:latest",
+  dimension: 1024,
+  chatContextWindow: 272_000,
+  datasetTransferAck: "selected-public-locomo-projection-to-hosted-luna",
+});
+
+/** Fail closed unless the exact hosted profile carries an affirmative transfer acknowledgement. */
+export function locomoExecutionProfile(profile, { allowHostedTransfer = false } = {}) {
+  if (profile === null) {
+    if (allowHostedTransfer) throw new Error("hosted_locomo_transfer_ack_requires_profile");
+    return null;
+  }
+  const localChat = profile.reader.startsWith("ollama:") && profile.extractor.startsWith("ollama:")
+    && profile.embeddingProvider === "ollama";
+  if (!allowHostedTransfer) {
+    if (!localChat) throw new Error("locomo_hosted_transfer_ack_required");
+    return {
+      ...profile,
+      ollamaEndpoint: "http://127.0.0.1:11434",
+      embeddingEndpoint: "http://127.0.0.1:11434",
+      clientContextWindow: 65_536,
+    };
+  }
+  const exactHostedProfile = profile.reader === LOCOMO_HOSTED_PROFILE.reader
+    && profile.extractor === LOCOMO_HOSTED_PROFILE.extractor
+    && profile.embeddingProvider === LOCOMO_HOSTED_PROFILE.embeddingProvider
+    && profile.embeddingModel === LOCOMO_HOSTED_PROFILE.embeddingModel
+    && profile.dimension === LOCOMO_HOSTED_PROFILE.dimension
+    && nonempty(profile.piAuthPath);
+  if (!exactHostedProfile) throw new Error("hosted_locomo_profile_mismatch");
+  return {
+    ...profile,
+    embeddingEndpoint: "http://127.0.0.1:11434",
+    hostedChatContextWindow: LOCOMO_HOSTED_PROFILE.chatContextWindow,
+    locomoDatasetTransferAck: LOCOMO_HOSTED_PROFILE.datasetTransferAck,
+  };
+}
+
 function nonempty(value) { return typeof value === "string" && value.trim().length > 0; }
 function sha(value) { return createHash("sha256").update(value).digest("hex"); }
 function sessionNumber(key) { return Number(key.slice("session_".length)); }
@@ -238,7 +280,14 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
     outputTokens: captureModelSteps * 2048 + readerModelSteps * 512,
     runtimeMs,
   };
-  const plan = makePlan({ corpus, sha256, split, profile, codeRevision, limits, perCall: { readerEstimatedInputTokens: 49152, readerHistoryHeadroomMessages: 8 } });
+  const basePlan = makePlan({ corpus, sha256, split, profile, codeRevision, limits, perCall: { readerEstimatedInputTokens: 49152, readerHistoryHeadroomMessages: 8 } });
+  const hosted = profile?.locomoDatasetTransferAck === LOCOMO_HOSTED_PROFILE.datasetTransferAck;
+  const plan = hosted ? {
+    ...basePlan,
+    limitations: basePlan.limitations
+      .filter((value) => value !== "native payload/context limits require an explicit capability probe")
+      .concat("hosted context admission is source-catalog metadata plus conservative input/output reservations, not observed token usage"),
+  } : basePlan;
   const locomo = {
     revision: LOCOMO.revision,
     path: LOCOMO.path,
@@ -279,7 +328,43 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
       category5ExactF1: "not_applicable",
       category5Diagnostic: "deterministic_upstream_abstention_phrase_only",
     },
-    executionGate: {
+    datasetTransfer: hosted ? {
+      acknowledged: true,
+      acknowledgement: LOCOMO_HOSTED_PROFILE.datasetTransferAck,
+      chatRoute: LOCOMO_HOSTED_PROFILE.reader,
+      scope: ["selected_projected_dialogue_episodes", "selected_question_text", "provider_derived_bujo_memory"],
+      excluded: ["reference_answers", "adversarial_answers", "evidence_annotations", "images", "summaries", "observations", "unselected_conversations"],
+      localEmbeddingsOnly: true,
+    } : {
+      acknowledged: false,
+      acknowledgement: null,
+      chatRoute: "local_only",
+      scope: [],
+      excluded: ["all_dataset_content_from_hosted_chat"],
+      localEmbeddingsOnly: true,
+    },
+    executionGate: hosted ? {
+      status: "ready_for_parent_review_hosted_transfer_not_executed",
+      route: LOCOMO_HOSTED_PROFILE.reader,
+      datasetTransferAcknowledged: true,
+      sourceCatalogContextWindow: LOCOMO_HOSTED_PROFILE.chatContextWindow,
+      readerInputReservation: plan.perCall.readerEstimatedInputTokens,
+      readerOutputReservation: plan.perCall.readerOutputTokens,
+      extractorInputReservation: plan.perCall.extractorEstimatedInputTokens,
+      extractorOutputReservation: plan.perCall.extractorOutputTokens,
+      largestReservedPromptAndOutput: Math.max(
+        plan.perCall.readerEstimatedInputTokens + plan.perCall.readerOutputTokens,
+        plan.perCall.extractorEstimatedInputTokens + plan.perCall.extractorOutputTokens,
+      ),
+      sourceCatalogAdmissionFits: Math.max(
+        plan.perCall.readerEstimatedInputTokens + plan.perCall.readerOutputTokens,
+        plan.perCall.extractorEstimatedInputTokens + plan.perCall.extractorOutputTokens,
+      ) <= LOCOMO_HOSTED_PROFILE.chatContextWindow,
+      compactionDisabled: true,
+      referencesExcludedFromProviderProjection: true,
+      localEmbeddingEndpoint: profile.embeddingEndpoint,
+      realDatasetInferencePerformed: false,
+    } : {
       status: "blocked_pending_synthetic_native_context_probe",
       explicitLoopbackEndpoint: true,
       clientContextWindow: profile?.clientContextWindow ?? null,

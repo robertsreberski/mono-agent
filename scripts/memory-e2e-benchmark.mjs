@@ -10,7 +10,7 @@ import { prepareRealBuild, sourceState, verifyRealBuild } from "./lib/memory-e2e
 const ROOT = fileURLToPath(new URL("../", import.meta.url)).replace(/\/$/u, "");
 export function parseArguments(argv) {
   const flags = {};
-  const boolean = new Set(["dry-run", "real", "help"]);
+  const boolean = new Set(["dry-run", "real", "help", "allow-hosted-locomo-transfer"]);
   const valued = new Set(["corpus", "dataset", "split", "reader", "extractor", "embedding-provider", "embedding-model", "dimension", "confirm-plan", "pi-auth-path"]);
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i].replace(/^--/u, "");
@@ -46,7 +46,7 @@ export function profileFrom(flags) {
 export async function main(argv = process.argv.slice(2), { stdout = console.log, prepareBuild = prepareRealBuild } = {}) {
   const flags = parseArguments(argv);
   if (flags.help) {
-    stdout("memory-e2e-benchmark [--dry-run] [--corpus fictional-v1|bujo-learning-v1|capture-fidelity-v1|locomo-v1] [--dataset PATH] [--split development|evaluation] [--pi-auth-path PATH]\nDefault: scripted offline production-path contract, NOT model quality. LoCoMo requires a separately downloaded, pinned --dataset file and is CC BY-NC 4.0 noncommercial-only input.\nReal execution: --real --reader provider:model --extractor provider:model --embedding-provider ollama|lmstudio|openai --embedding-model model --dimension N [--pi-auth-path PATH] --confirm-plan SHA256\nOAuth chat routes need --pi-auth-path pointing at an existing Pi auth file (for example the standard Pi auth file; consumers may use different paths). Without it the runtimes keep ambient environment auth. Raw paths never enter plans or reports; only the auth-path fingerprint binds the confirmation.\nFirst obtain SHA256 with the same profile and --dry-run. Outputs stay under .worklab-tmp/memory-e2e. The benchmark never downloads datasets or changes consumer configuration.");
+    stdout("memory-e2e-benchmark [--dry-run] [--corpus fictional-v1|bujo-learning-v1|capture-fidelity-v1|locomo-v1] [--dataset PATH] [--split development|evaluation] [--pi-auth-path PATH] [--allow-hosted-locomo-transfer]\nDefault: scripted offline production-path contract, NOT model quality. LoCoMo requires a separately downloaded, pinned --dataset file and is CC BY-NC 4.0 noncommercial-only input.\nReal execution: --real --reader provider:model --extractor provider:model --embedding-provider ollama|lmstudio|openai --embedding-model model --dimension N [--pi-auth-path PATH] --confirm-plan SHA256\nHosted LoCoMo is rejected unless --allow-hosted-locomo-transfer affirmatively selects the exact documented Luna chat/local bge-m3 profile; the acknowledgement is bound into the plan digest. OAuth chat routes need --pi-auth-path pointing at an existing Pi auth file. Raw paths never enter plans or reports; only the auth-path fingerprint binds the confirmation.\nFirst obtain SHA256 with the same profile and --dry-run. Outputs stay under .worklab-tmp/memory-e2e. The benchmark never downloads datasets or changes consumer configuration.");
     return 0;
   }
   const { head } = sourceState(ROOT);
@@ -56,23 +56,14 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   if (!locomo && flags.dataset !== undefined) throw new Error("dataset_requires_external_corpus");
   const split = flags.split ?? "development";
   const profile = profileFrom(flags);
-  if (locomo && profile && (!profile.reader.startsWith("ollama:") || !profile.extractor.startsWith("ollama:") || profile.embeddingProvider !== "ollama")) {
-    throw new Error("locomo_requires_local_ollama_profile");
-  }
-  // The external adapter has no endpoint flags: LoCoMo is pinned to the numeric
-  // loopback service root and a client-side context reservation. A future real
-  // run still requires the separately documented native num_ctx/truncation probe.
-  const executionProfile = locomo && profile ? {
-    ...profile,
-    ollamaEndpoint: "http://127.0.0.1:11434",
-    embeddingEndpoint: "http://127.0.0.1:11434",
-    clientContextWindow: 65_536,
-  } : profile;
-  const loaded = locomo
-    ? await import("./lib/memory-e2e-locomo.mjs").then(({ loadLocomo }) => loadLocomo(flags.dataset))
-    : await loadCorpus(corpusName);
+  if (!locomo && flags["allow-hosted-locomo-transfer"]) throw new Error("hosted_locomo_transfer_ack_requires_locomo");
+  const locomoAdapter = locomo ? await import("./lib/memory-e2e-locomo.mjs") : null;
+  const executionProfile = locomo
+    ? locomoAdapter.locomoExecutionProfile(profile, { allowHostedTransfer: flags["allow-hosted-locomo-transfer"] === true })
+    : profile;
+  const loaded = locomo ? await locomoAdapter.loadLocomo(flags.dataset) : await loadCorpus(corpusName);
   const plan = locomo
-    ? await import("./lib/memory-e2e-locomo.mjs").then(({ makeLocomoPlan }) => makeLocomoPlan({ ...loaded, split, profile: executionProfile, codeRevision: head }))
+    ? locomoAdapter.makeLocomoPlan({ ...loaded, split, profile: executionProfile, codeRevision: head })
     : makePlan({ ...loaded, split, profile: executionProfile, codeRevision: head });
   if (flags["dry-run"]) { stdout(JSON.stringify(plan, null, 2)); return 0; }
   if (flags.real && (!profile || flags["confirm-plan"] !== plan.confirmation)) throw new Error("real_execution_requires_confirmed_profile");

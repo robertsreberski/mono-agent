@@ -144,6 +144,15 @@ explicitly:
 ```bash
 node scripts/memory-e2e-benchmark.mjs --dry-run --corpus locomo-v1 \
   --dataset .worklab-tmp/private/locomo10.json --split development
+
+# Hosted chat remains a dry plan until its new confirmation is reviewed.
+node scripts/memory-e2e-benchmark.mjs --dry-run --corpus locomo-v1 \
+  --dataset .worklab-tmp/private/locomo10.json --split development \
+  --reader openai-codex:gpt-5.6-luna \
+  --extractor openai-codex:gpt-5.6-luna \
+  --embedding-provider ollama --embedding-model bge-m3:latest \
+  --dimension 1024 --pi-auth-path /PATH/TO/EXISTING/pi-auth.json \
+  --allow-hosted-locomo-transfer
 ```
 
 The adapter hashes all ten unique conversations into conversation-disjoint
@@ -166,23 +175,33 @@ exact match and token F1 are deterministic diagnostics for categories 1–4, not
 model or human judgments. Category 5 has no truth-reference exact/F1: the
 pinned upstream evaluator checks only whether output contains `no information
 available` or `not mentioned`, and `adversarial_answer` is never accepted as
-truth. Confirmed LoCoMo profiles are restricted to local `ollama:` reader and
-extractor routes plus Ollama embeddings, with both service roots pinned to
-`http://127.0.0.1:11434`. The preferred installed embedding profile is `bge-m3`
-at 1,024 dimensions because its reported 8,192-token context exceeds the
-installed `nomic-embed-text:v1.5` model's native 2,048-token context; catalog
-name alone is not a selection criterion.
+truth. Local LoCoMo profiles remain restricted to `ollama:` reader/extractor
+routes plus Ollama embeddings, with both service roots pinned to
+`http://127.0.0.1:11434`. The preferred installed embedding profile is
+`bge-m3:latest` at 1,024 dimensions because its reported 8,192-token context
+exceeds the installed `nomic-embed-text:v1.5` model's native 2,048-token
+context; catalog name alone is not a selection criterion.
 
-The existing Pi OpenAI-compatible Ollama path can bind an explicit loopback
-base URL and client-side context metadata, and the benchmark disables compaction
-and maps a structured `context_limit` failure to full-history not-applicable.
-It cannot currently prove that redirects are rejected, send/verify native
-Ollama `num_ctx`, or detect silent server-side truncation. Therefore the frozen
-LoCoMo plans are preparation artifacts only: before any pilot, an explicitly
-authorized synthetic capability probe must prove the effective context plus
-reserved output without raw LoCoMo text. Do not treat `/api/show` model metadata
-or the client-side context window as that proof, and do not implement a second
-provider stack merely to bypass this checkpoint.
+Hosted chat is fail-closed and requires the affirmative
+`--allow-hosted-locomo-transfer` flag. For this adapter the flag accepts only
+`openai-codex:gpt-5.6-luna` for both reader and extractor, local
+`bge-m3:latest` Ollama embeddings at 1,024 dimensions, and an explicit
+`--pi-auth-path`. The plan replaces that path with its fingerprint and binds a
+named dataset-transfer acknowledgement into the confirmation digest. The
+acknowledged provider projection is limited to the selected conversations'
+speaker-attributed dialogue episodes, selected question text, and
+provider-derived BuJo memory. Reference/adversarial answers, evidence
+annotations, images, summaries, observations, and unselected conversations
+remain excluded. The flag never authorizes another corpus or profile.
+
+The pinned Luna catalog row exposes a 272,000-token context window. The adapter
+keeps compaction disabled and admits at most 49,152 estimated reader-input plus
+512 output tokens (extractor: 8,192 plus 2,048), so the full controlled source
+fits that source-catalog limit without truncation. Reservations remain
+conservative estimates rather than observed provider usage. The old local chat
+profile remains blocked: the existing Pi OpenAI-compatible Ollama path cannot
+prove redirect rejection, native `num_ctx`, or silent-truncation behavior.
+Hosted Luna does not weaken or bypass that local-only checkpoint.
 
 LoCoMo limits reserve chat controlled-text/framing separately from bounded
 embedding text (one 8×160-code-point candidate batch plus one 8×280-code-point

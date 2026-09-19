@@ -32,8 +32,11 @@
   benchmark, with conversation-disjoint selection, capture-once question
   batches, image/reference leakage barriers, full 64-session history retention,
   bounded embedding-input accounting, category-5 abstention diagnostics, and
-  explicit unstarted rows after fatal batched failures. Local execution is
-  loopback-pinned but remains gated on a native Ollama context/truncation probe.
+  explicit unstarted rows after fatal batched failures. Keep local chat
+  loopback-pinned and context-probe-gated; allow only an affirmatively
+  acknowledged hosted Luna chat profile with local `bge-m3` embeddings, binding
+  its narrow dataset-transfer scope and credential-path fingerprint into the
+  confirmed plan.
 
 - Return managed `WebSearch` and `WebFetch` results as a compact JSON envelope
   with `status`, host-written summary, untrusted content or results, source and

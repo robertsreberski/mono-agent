@@ -61,9 +61,12 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(network).not.toHaveBeenCalled();
     expect(() => parseArguments(["--memory-path", "/private"])).toThrow();
     expect(() => parseArguments(["--real", "--real"])).toThrow();
+    expect(parseArguments(["--allow-hosted-locomo-transfer"])).toEqual({ "allow-hosted-locomo-transfer": true });
     expect(() => profileFrom({ reader: "openai:model" })).toThrow("incomplete_profile");
     await expect(main(["--dry-run", "--corpus", "locomo-v1", "--reader", "openai:model", "--extractor", "openai:model", "--embedding-provider", "ollama", "--embedding-model", "fixture", "--dimension", "8"]))
-      .rejects.toThrow("locomo_requires_local_ollama_profile");
+      .rejects.toThrow("locomo_hosted_transfer_ack_required");
+    await expect(main(["--dry-run", "--allow-hosted-locomo-transfer"]))
+      .rejects.toThrow("hosted_locomo_transfer_ack_requires_locomo");
   });
   it("the direct confirmed real command cannot import production/providers before a required build", async () => {
     const profile = ["--reader", "fixture:reader", "--extractor", "fixture:extractor", "--embedding-provider", "ollama", "--embedding-model", "fixture", "--dimension", "8"];
@@ -441,6 +444,32 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(optionsForLocal.mock.calls[0][1][0].models[0].capabilities).toMatchObject({ context_window: 65_536, max_tokens: 2048 });
     expect(modules.search.createEmbeddingProvider).toHaveBeenCalledWith(expect.objectContaining({ endpoint: "http://127.0.0.1:11434", model: "bge-m3:latest" }));
     await expect(realProviders({ ...profile, ollamaEndpoint: "http://localhost:11434" }, { workspace: "workspace", modules })).rejects.toThrow("invalid_local_ollama_profile");
+  });
+  it("uses the existing hosted Pi resolver while keeping LoCoMo embeddings on numeric loopback", async () => {
+    const resolver = async () => "fixture-key";
+    const modules = {
+      runtime: {
+        createMonoRuntime: vi.fn((options) => ({ options })),
+        parseMonoRuntimeModelReference: (reference) => ({ provider: "openai-codex", model: "gpt-5.6-luna", reference }),
+        createPiOAuthApiKeyResolver: vi.fn(() => resolver),
+        runtimeOptionsForLocalProvider: vi.fn(() => { throw new Error("hosted_chat_must_not_use_local_resolver"); }),
+      },
+      search: { createEmbeddingProvider: vi.fn(() => ({})), createCircuitBreakerEmbeddingProvider: vi.fn((raw) => raw) },
+    };
+    const profile = {
+      reader: "openai-codex:gpt-5.6-luna", extractor: "openai-codex:gpt-5.6-luna",
+      embeddingProvider: "ollama", embeddingModel: "bge-m3:latest", dimension: 1024,
+      piAuthPath: "/private/existing-pi-auth.json", embeddingEndpoint: "http://127.0.0.1:11434",
+      hostedChatContextWindow: 272_000, locomoDatasetTransferAck: "selected-public-locomo-projection-to-hosted-luna",
+    };
+    await realProviders(profile, { workspace: "workspace", modules });
+    expect(modules.runtime.createPiOAuthApiKeyResolver).toHaveBeenCalledWith({ path: "/private/existing-pi-auth.json" });
+    expect(modules.runtime.createMonoRuntime).toHaveBeenCalledTimes(2);
+    expect(modules.runtime.createMonoRuntime.mock.calls[0][0]).toEqual({ workspace: "workspace", resolvePiApiKey: resolver });
+    expect(modules.runtime.runtimeOptionsForLocalProvider).not.toHaveBeenCalled();
+    expect(modules.search.createEmbeddingProvider).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "ollama", model: "bge-m3:latest", endpoint: "http://127.0.0.1:11434",
+    }));
   });
   it("dry-run binds the auth fingerprint without touching credentials or network", async () => {
     const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));

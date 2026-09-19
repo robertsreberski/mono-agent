@@ -79,8 +79,8 @@ describe("fictional E2E production-path contract, not model quality", () => {
       split: "development",
       source: { turns: original.source.turns, contextPolicy: "memory-only" },
       questions: [
-        { id: "q-one", source: { text: "First synthetic question?", timestamp: original.source.question.timestamp }, evaluation: original.evaluation },
-        { id: "q-two", source: { text: "Second synthetic question?", timestamp: original.source.question.timestamp }, evaluation: original.evaluation },
+        { id: "q-one", source: { text: "First synthetic question?", timestamp: original.source.question.timestamp }, evaluation: { ...original.evaluation, accepted: ["REFERENCE_CANARY"], forbidden: ["ADVERSARIAL_CANARY"] } },
+        { id: "q-two", source: { text: "Second synthetic question?", timestamp: original.source.question.timestamp }, evaluation: { ...original.evaluation, accepted: ["REFERENCE_CANARY"], forbidden: ["ADVERSARIAL_CANARY"] } },
       ],
     };
     const corpus = { schemaVersion: 1, name: "fictional-v1", arms: ["full-history", "bujo"], groups: [group] };
@@ -96,7 +96,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
     expect(report.trials).toHaveLength(4);
     expect(report.trials.every((trial: any) => trial.status === "completed")).toBe(true);
     expect(providerFactory).toHaveBeenCalledTimes(2); // once per arm, never once per question
-    expect(JSON.stringify(providerSources)).not.toMatch(/First synthetic question|Second synthetic question/u);
+    expect(JSON.stringify(providerSources)).not.toMatch(/First synthetic question|Second synthetic question|REFERENCE_CANARY|ADVERSARIAL_CANARY/u);
     expect(admissions).toHaveLength(4); // four sessions captured once for the single BuJo arm
     expect(report.capture.filter((row: any) => row.arm === "bujo" && row.stage === "inventory")).toHaveLength(4);
     expect(readerInputs).toHaveLength(4);
@@ -106,6 +106,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
       const other = row.tag.questionId === "q-one" ? "Second synthetic question?" : "First synthetic question?";
       expect(bytes).toContain(current);
       expect(bytes).not.toContain(other);
+      expect(bytes).not.toMatch(/REFERENCE_CANARY|ADVERSARIAL_CANARY/u);
     }
   }, 30000);
 
