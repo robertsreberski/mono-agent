@@ -63,6 +63,16 @@ describe("selectKnownEntityHints", () => {
     );
   });
 
+  it("offers same-name entities as separate ids instead of inventing an alias merge", () => {
+    const graph = [
+      { id: "person:alex-design", name: "Alex", type: "person", createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "person:alex-operations", name: "Alex", type: "person", createdAt: "2026-02-01T00:00:00.000Z" },
+    ];
+
+    expect(selectKnownEntityHints("Alex changed the rollout notes", graph).map((hint) => hint.id))
+      .toEqual(["person:alex-operations", "person:alex-design"]);
+  });
+
   it("bounds how many hints reach the prompt", () => {
     const many = Array.from({ length: 200 }, (_, index) => ({
       id: `topic:curtain-${index}`,
