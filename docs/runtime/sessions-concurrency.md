@@ -306,11 +306,12 @@ Canonical context import is a separate optional v1 contract; `append` or
 two-message provenance/assistant batch fits every retention and staging quota,
 and when durable provider state is explicitly absent or exact retirement is
 fail-closed. The default store serializes import with Send in continuous,
-per-message, and sessions-disabled modes. The new non-provider path holds only
-logical/exact claims during provider execution, then briefly acquires the
-physical shard to verify an opaque history version and publish. The existing
-durable-provider transaction still holds that shard for the full turn; this
-known same-shard blocking behavior is unchanged.
+per-message, and sessions-disabled modes. Both non-provider and durable-provider
+turns retain logical/exact keyed claims during runtime execution, without holding
+a physical shard transaction. Non-provider commits verify an opaque history
+version under those claims; publication uses the root lock. Unrelated physical
+shard collisions do not serialize turns, though root-locked maintenance and
+fail-closed retirement can still delay publication.
 
 An exact retained provenance/assistant pair is the bounded retry receipt. A
 same-key/same-text retry returns `duplicate`, including after a later Send while

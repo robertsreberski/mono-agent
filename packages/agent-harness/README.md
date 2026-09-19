@@ -426,7 +426,7 @@ but cannot reconstruct a canonical account from process-local observations.
 Daily-rollover reset claims its normalized logical id as a namespaced opaque
 digest in a fixed 16-file, cross-process owner registry from bucket discovery
 through every physical bucket reset. Appends take the same logical claim before
-their physical-conversation lock, so reset cannot miss a newly created bucket or
+any physical-conversation mutation, so reset cannot miss a newly created bucket or
 leave a post-reset append in a bucket it already cleared. Rollover-shaped
 physical ids also take a namespaced exact-id claim. A date-shaped logical reset
 anchors that same exact-id claim before discovery, preserving the contract for
