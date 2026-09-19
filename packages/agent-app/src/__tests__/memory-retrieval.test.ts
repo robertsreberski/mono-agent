@@ -159,6 +159,34 @@ describe("MemoryRetrievalService", () => {
     ]);
   });
 
+  it("renders first-party report evidence verbatim and shares its turn-scoped lookup with explicit recall", async () => {
+    const store = fakeStore();
+    store.recall = async (query) => {
+      store.queries.push(query);
+      return [{
+        score: 0.99,
+        record: {
+          id: "attributed-port",
+          text: "Avery reports that their service port is 8443.",
+          type: "note" as const,
+          status: "open" as const,
+          isInsight: false,
+        },
+      }];
+    };
+    const service = new MemoryRetrievalService(store);
+    const query = "What is Avery's service port?";
+
+    const block = await service.load("private:conversation-a", query, { turnId: "turn-attributed" });
+    const hits = await service.recallForTurn("turn-attributed", query.toLowerCase());
+
+    expect(block?.content).toContain("Avery reports that their service port is 8443.");
+    expect(block?.content).not.toContain("Avery's service port is 8443.");
+    expect(hits.map((hit) => hit.record.text)).toEqual(["Avery reports that their service port is 8443."]);
+    expect(store.queries).toEqual([query.toLowerCase()]);
+    expect(store.accesses).toEqual([["attributed-port"]]);
+  });
+
   it("abstains from automatic injection below the confidence floor", async () => {
     const service = new MemoryRetrievalService(fakeStore());
     await expect(service.load("conversation", "unrelated topic", { turnId: "turn-2" })).resolves.toBeUndefined();

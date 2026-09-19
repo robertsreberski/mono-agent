@@ -236,6 +236,34 @@ describe("reconcile", () => {
     expect(parsed.bullets).toHaveLength(1);
   });
 
+  it("gives batch reconciliation attribution and correction-preservation rules", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "TARGET", "Avery reported the database was harbor_arch");
+    db.findSimilarMany = async () => [[{ record: db.get("TARGET")!, distance: 0.1 }]];
+    let seen = "";
+    const llm = {
+      id: "recording-llm",
+      complete: async (prompt: string) => {
+        seen = prompt;
+        return '[{"index":0,"action":"noop","targetId":"TARGET"}]';
+      },
+    };
+
+    const actions = await reconcileBatch([{
+      type: "note",
+      text: "Avery corrected the erroneous harbor_arch report to harbor_archive",
+      salience: 0.8,
+      isInsight: false,
+    }], makeDeps(db, root, llm));
+
+    expect(actions).toEqual([{ kind: "noop", id: "TARGET" }]);
+    expect(seen).toContain("speaker attribution, stated scope, evidence limits");
+    expect(seen).toContain("correction-versus-state-change qualification");
+    expect(seen).toContain("attributed or unchecked claim into an unqualified fact");
+    expect(seen).toContain("explicit user report or preference may remain useful");
+  });
+
   it("case 3 — contradicting candidate + LLM says supersede → old invalidated, new added", async () => {
     const root = newRoot();
     const db = openDb(root);

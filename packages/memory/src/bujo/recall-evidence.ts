@@ -23,10 +23,15 @@
  *
  * `parseDirectFactQuery` accepts only those finite query grammars;
  * `matchesDirectFact` then requires one record to satisfy the corresponding
- * fact grammar, subject, property/predicate, and answer kind. Shared
- * canonicalization permits documented aliases without loosening that pairing.
- * Ambiguous relations, unsafe clauses, reported speech, negation, and unknown
- * values therefore fail closed instead of being automatically injected.
+ * fact grammar, subject, property/predicate, and answer kind. Three exact
+ * first-party report envelopes may carry the same inner property, choice, or
+ * location grammar when the textual reporter equals the queried subject. The
+ * original attributed record is returned unchanged; this is evidence matching,
+ * not speaker authentication or factual verification. Reporter pairing is an
+ * exact case-insensitive textual comparison and never uses the broader proper-
+ * name stemming retained by canonical direct facts. Other reported speech,
+ * ambiguous relations, unsafe clauses, negation, and unknown values
+ * fail closed instead of being automatically injected.
  *
  * This is intentionally not a general natural-language parser. A semantically
  * relevant record outside these shapes remains available through the default-on
@@ -81,6 +86,11 @@ const ACTOR_OR_RELATION_QUERY = /\b(?:who|whose|manager|manages?|managed|lead|le
 const UNSAFE_FACT_LANGUAGE = /\b(?:and|but|or|while|whereas|although|because|if|unless|since|that|which|who|after|before)\b|[,:;\n\r]/iu;
 const REPORTED_OR_DITRANSITIVE = /\b(?:gave|give|gives|told|tell|tells|asked|ask|asks|said|say|says|reported|reports|discussed|discusses|mentioned|mentions|informed|informs|showed|shows|sent|sends)\b/iu;
 const NEGATION_OR_UNKNOWN = /\b(?:no|not|never|neither|unknown|unset|tbd|none)\b/iu;
+const ATTRIBUTED_REPORT_EXCLUSION = /\b(?:assistant|quote|quoted|quotes|quoting|quotation|pasted|claim|claimed|claims|claiming|unconfirmed|unverified|unchecked|uncertain|uncertainty|unclear|unsure|doubtful|alleged|allegedly|apparently|maybe|perhaps|possibly|probably|rumor|rumored|rumoured|supposedly|seemingly|without|correction|corrected|correcting|incorrect|wrong|erroneous)\b/iu;
+const ATTRIBUTED_REPORT_CORRECTION = /\b(?:correction|corrected|correcting|incorrect|wrong|erroneous|previously|formerly|now|instead|rather)\b/iu;
+const ATTRIBUTED_REPORT_QUOTATION = /["'“”‘’«»‹›]/u;
+const ATTRIBUTED_REPORT_UNSAFE_UNICODE = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
+const ATTRIBUTED_REPORT_NORMALIZED_SYNTAX = /["'“”‘’«»‹›,:;?!.\s]/u;
 
 const ALIASES: Readonly<Record<string, string>> = {
   based: "location", city: "location", located: "location", location: "location",
@@ -111,12 +121,12 @@ const TRAILING_S_SINGULARS = new Set([
 type AnswerKind = "generic" | "location" | "temporal" | "time";
 
 type DirectFactQuery =
-  | { readonly kind: "named-property"; readonly subject: string; readonly property: string; readonly answerKind: AnswerKind }
-  | { readonly kind: "choice"; readonly subject: string; readonly property: string }
-  | { readonly kind: "scoped-choice"; readonly subject: string; readonly property: string; readonly scope: string }
+  | { readonly kind: "named-property"; readonly subject: string; readonly reporterSubject: string; readonly property: string; readonly answerKind: AnswerKind }
+  | { readonly kind: "choice"; readonly subject: string; readonly reporterSubject: string; readonly property: string }
+  | { readonly kind: "scoped-choice"; readonly subject: string; readonly reporterSubject: string; readonly property: string; readonly scope: string }
   | { readonly kind: "event-time"; readonly subject: string; readonly predicate: string; readonly answerKind: "temporal" | "time" }
   | { readonly kind: "copular-time"; readonly subject: string; readonly answerKind: "temporal" | "time" }
-  | { readonly kind: "location"; readonly subject: string; readonly predicate: string };
+  | { readonly kind: "location"; readonly subject: string; readonly reporterSubject: string; readonly predicate: string };
 
 /** Return score-ordered records that independently match a canonical direct fact. */
 export function selectAnswerBearingRecallHits<T extends RecallEvidenceHit>(
@@ -126,9 +136,11 @@ export function selectAnswerBearingRecallHits<T extends RecallEvidenceHit>(
   if (hits.length === 0 || isConversationRelativeQuery(query)) return [];
   const directFact = parseDirectFactQuery(query);
   if (directFact === undefined) return [];
-  // Two different answers to the same scoped question cannot both be injected,
-  // and picking one by retrieval score would silently invent a winner.
-  if (directFact.kind === "scoped-choice" && hasConflictingValues(directFact, hits)) return [];
+  // Two different answers to the same scoped question cannot both be injected.
+  // The same applies when at least one answer uses the bounded first-party
+  // report wrapper: dropping that qualified disagreement would silently make
+  // an unqualified record look confirmed by omission.
+  if (hasConflictingValues(directFact, hits, directFact.kind === "scoped-choice")) return [];
   return hits.filter((hit) => matchesDirectFact(directFact, hit.record.text));
 }
 
@@ -145,19 +157,49 @@ export function hasConflictingScopedChoiceEvidence(
 ): boolean {
   const directFact = parseDirectFactQuery(query);
   if (directFact === undefined || directFact.kind !== "scoped-choice") return false;
-  return hasConflictingValues(directFact, hits);
+  return hasConflictingValues(directFact, hits, true);
+}
+
+/**
+ * Full-candidate conflict guard for automatic injection. Canonical-only
+ * abstention remains scoped-choice behavior; other families abstain when a
+ * bounded first-party report disagrees with another answer in the cohort.
+ */
+export function hasConflictingAutomaticRecallEvidence(
+  query: string,
+  hits: readonly RecallEvidenceHit[],
+): boolean {
+  const directFact = parseDirectFactQuery(query);
+  if (directFact === undefined) return false;
+  return hasConflictingValues(directFact, hits, directFact.kind === "scoped-choice");
 }
 
 function hasConflictingValues(
-  query: Extract<DirectFactQuery, { kind: "scoped-choice" }>,
+  query: DirectFactQuery,
   hits: readonly RecallEvidenceHit[],
+  includeCanonicalOnly: boolean,
 ): boolean {
   const values = new Set<string>();
+  let hasAttributed = false;
   for (const hit of hits) {
-    const value = scopedChoiceValue(query, hit.record.text);
-    // Records that agree on the value are duplicates, not a conflict.
-    if (value !== undefined) values.add(value);
-    if (values.size > 1) return true;
+    const parsed = directFactValue(query, hit.record.text);
+    if (parsed === undefined) {
+      const qualifiedConflict = firstPartyPropertyConflictValue(query, hit.record.text);
+      if (qualifiedConflict === undefined) continue;
+      // A same-subject/property correction is deliberately not parsed into a
+      // replacement value. Its ambiguity is enough to prevent automatic use of
+      // another candidate that may be the obsolete value.
+      if (qualifiedConflict.ambiguousCorrection) return true;
+      values.add(qualifiedConflict.value);
+      hasAttributed = true;
+    } else {
+      values.add(parsed.value);
+      hasAttributed ||= parsed.attributed;
+    }
+    // Canonical-only conflicts preserve the existing abstention contract only
+    // for scoped choices. Other direct-fact families add abstention solely when
+    // this change introduces an attributed answer into the cohort.
+    if (values.size > 1 && (includeCanonicalOnly || hasAttributed)) return true;
   }
   return false;
 }
@@ -178,6 +220,7 @@ function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
     return {
       kind: "choice",
       subject: canonicalName(choice[2]!.toLowerCase()),
+      reporterSubject: textualReporterIdentity(choice[2]!),
       property: canonicalPhrase(choice[1]!),
     };
   }
@@ -191,6 +234,7 @@ function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
     return {
       kind: "scoped-choice",
       subject: canonicalName(scopedChoice[2]!.toLowerCase()),
+      reporterSubject: textualReporterIdentity(scopedChoice[2]!),
       property: canonicalPhrase(scopedChoice[1]!),
       scope,
     };
@@ -220,6 +264,7 @@ function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
     return {
       kind: "location",
       subject: canonicalName(location[1]!.toLowerCase()),
+      reporterSubject: textualReporterIdentity(location[1]!),
       predicate: canonicalPredicate(location[2]!),
     };
   }
@@ -238,6 +283,7 @@ function parseNamedPropertyQuery(query: string): DirectFactQuery | undefined {
     return {
       kind: "named-property",
       subject: anchor,
+      reporterSubject: textualReporterIdentity(simple[2]!),
       property,
       answerKind: questionWord === "where"
         ? "location"
@@ -253,6 +299,7 @@ function parseNamedPropertyQuery(query: string): DirectFactQuery | undefined {
     return {
       kind: "named-property",
       subject: anchor,
+      reporterSubject: textualReporterIdentity(aspect[2]!),
       property,
       answerKind: answerKindForProperty(property),
     };
@@ -262,73 +309,168 @@ function parseNamedPropertyQuery(query: string): DirectFactQuery | undefined {
 
 const SCOPED_CHOICE_FACT = /^([A-Z][A-Za-z0-9-]*)\s+(?:selected|chose|picked)\s+(.+?)\s+as\s+(?:the\s+)?(.+?)\s+for\s+(.+)$/iu;
 
-/**
- * Canonical answer value when `rawText` independently answers the scoped-choice
- * question, otherwise `undefined`. Returning the value (not just a boolean)
- * lets the caller detect contradictory records without re-parsing.
- */
-function scopedChoiceValue(
-  query: Extract<DirectFactQuery, { kind: "scoped-choice" }>,
-  rawText: string,
-): string | undefined {
-  const text = normalizeFactText(rawText);
-  if (text === undefined) return undefined;
-  const match = SCOPED_CHOICE_FACT.exec(text);
-  if (match === null) return undefined;
-  if (canonicalName(match[1]!.toLowerCase()) !== query.subject) return undefined;
-  if (canonicalPhrase(match[3]!) !== query.property) return undefined;
-  if (scopeIdentity(match[4]!) !== query.scope) return undefined;
-  // The <=1 proper-name guard still applies, but only outside the scope span:
-  // names inside the scope are already pinned by the identity check above.
-  const outsideScope = text.slice(0, text.length - match[4]!.length);
-  if (properNameConcepts(outsideScope, true).size > 1) return undefined;
-  if (!hasAnswerValue("generic", query.property, match[2]!)) return undefined;
-  return identityText(match[2]!);
+interface DirectFactValue {
+  readonly value: string;
+  readonly attributed: boolean;
 }
 
-function matchesDirectFact(query: DirectFactQuery, rawText: string): boolean {
-  if (query.kind === "scoped-choice") return scopedChoiceValue(query, rawText) !== undefined;
-  const text = normalizeFactText(rawText);
-  if (text === undefined) return false;
+/**
+ * NFKC is used only to discover hidden unsafe syntax. Parsing and rendering keep
+ * the original bytes: compatibility punctuation must not be silently folded
+ * into an admissible report.
+ */
+function attributedReportIsSafe(rawText: string): boolean {
+  if (ATTRIBUTED_REPORT_UNSAFE_UNICODE.test(rawText)) return false;
+  const normalized = rawText.normalize("NFKC");
+  if (ATTRIBUTED_REPORT_UNSAFE_UNICODE.test(normalized)
+    || ATTRIBUTED_REPORT_QUOTATION.test(normalized)
+    || [...rawText].some((character) => {
+      const folded = character.normalize("NFKC");
+      return folded !== character && ATTRIBUTED_REPORT_NORMALIZED_SYNTAX.test(folded);
+    })) return false;
+  const safetyText = normalized.trim().replace(/[?!.]+$/u, "").replace(/\s+/gu, " ");
+  return safetyText.length > 0
+    && !/[?!.]/u.test(safetyText)
+    && !/[,:;\n\r]/u.test(safetyText)
+    && !ATTRIBUTED_REPORT_EXCLUSION.test(safetyText);
+}
+
+/**
+ * Convert only three exact first-party report envelopes into the canonical
+ * sentence shapes the existing direct-fact grammar already understands. This
+ * is query-text evidence matching, not authentication of the named reporter or
+ * verification of the proposition. The stored/rendered text is never changed.
+ */
+function firstPartyReportInner(query: DirectFactQuery, rawText: string): string | undefined {
+  if (!("reporterSubject" in query) || !attributedReportIsSafe(rawText)) return undefined;
+  const text = rawText.trim().replace(/[?!.]+$/u, "").replace(/\s+/gu, " ");
+
+  const property = /^([A-Z][A-Za-z0-9-]*)\s+reports\s+that\s+their\s+(.+?)\s+(is|was)\s+(.+)$/iu.exec(text);
+  if (property !== null && textualReporterIdentity(property[1]!) === query.reporterSubject) {
+    return `${property[1]}'s ${property[2]} ${property[3]} ${property[4]}`;
+  }
+
+  const choice = /^([A-Z][A-Za-z0-9-]*)\s+reports\s+(selecting|choosing|picking)\s+(.+?)\s+as\s+(?:the\s+)?(.+)$/iu.exec(text);
+  if (choice !== null && textualReporterIdentity(choice[1]!) === query.reporterSubject) {
+    const verb = choice[2]!.toLowerCase() === "choosing"
+      ? "chose"
+      : choice[2]!.toLowerCase() === "picking"
+        ? "picked"
+        : "selected";
+    return `${choice[1]} ${verb} ${choice[3]} as the ${choice[4]}`;
+  }
+
+  const location = /^([A-Z][A-Za-z0-9-]*)\s+reports\s+(working|living)\s+(in|at)\s+(.+)$/iu.exec(text);
+  if (location !== null && textualReporterIdentity(location[1]!) === query.reporterSubject) {
+    const verb = location[2]!.toLowerCase() === "living" ? "lives" : "works";
+    return `${location[1]} ${verb} ${location[3]} ${location[4]}`;
+  }
+  return undefined;
+}
+
+type FirstPartyPropertyConflict =
+  | { readonly ambiguousCorrection: true }
+  | { readonly ambiguousCorrection: false; readonly value: string };
+
+/**
+ * A qualified/unsafe first-party property report is never selectable, but its
+ * leading direct value can still prevent a contradictory canonical record from
+ * being injected as if the disagreement were absent. Correction language is an
+ * unconditional same-property abstention signal: choosing either an old or a
+ * replacement value would require semantic inference this gate does not make.
+ */
+function firstPartyPropertyConflictValue(
+  query: DirectFactQuery,
+  rawText: string,
+): FirstPartyPropertyConflict | undefined {
+  if (query.kind !== "named-property" || ATTRIBUTED_REPORT_UNSAFE_UNICODE.test(rawText)) return undefined;
+  const text = rawText.trim().replace(/[?!.]+$/u, "").replace(/\s+/gu, " ");
+  const match = /^([A-Z][A-Za-z0-9-]*)\s+reports\s+that\s+their\s+(.+?)\s+(?:is|was)\s+(.+)$/iu.exec(text);
+  if (match === null || textualReporterIdentity(match[1]!) !== query.reporterSubject
+    || canonicalPhrase(match[2]!) !== query.property) return undefined;
+  const ambiguousCorrection = ATTRIBUTED_REPORT_CORRECTION.test(rawText.normalize("NFKC"));
+  const value = match[3]!.split(/\s+(?:and|but|because|if|unless|since|which|who|after|before)\b|[,;:]/iu, 1)[0]?.trim();
+  if (ambiguousCorrection) return { ambiguousCorrection: true };
+  if (value === undefined || !hasAnswerValue(query.answerKind, query.property, value)) return undefined;
+  return { value: identityText(value), ambiguousCorrection: false };
+}
+
+function normalizedDirectFact(
+  query: DirectFactQuery,
+  rawText: string,
+): { readonly text: string; readonly attributed: boolean } | undefined {
+  const inner = firstPartyReportInner(query, rawText);
+  const text = normalizeFactText(inner ?? rawText);
+  if (text === undefined) return undefined;
+  return { text, attributed: inner !== undefined };
+}
+
+function directFactValue(query: DirectFactQuery, rawText: string): DirectFactValue | undefined {
+  const normalized = normalizedDirectFact(query, rawText);
+  if (normalized === undefined) return undefined;
+  const { text, attributed } = normalized;
+
+  if (query.kind === "scoped-choice") {
+    const match = SCOPED_CHOICE_FACT.exec(text);
+    if (match === null) return undefined;
+    if (canonicalName(match[1]!.toLowerCase()) !== query.subject) return undefined;
+    if (canonicalPhrase(match[3]!) !== query.property) return undefined;
+    if (scopeIdentity(match[4]!) !== query.scope) return undefined;
+    // The <=1 proper-name guard still applies, but only outside the scope span:
+    // names inside the scope are already pinned by the identity check above.
+    const outsideScope = text.slice(0, text.length - match[4]!.length);
+    if (properNameConcepts(outsideScope, true).size > 1) return undefined;
+    if (!hasAnswerValue("generic", query.property, match[2]!)) return undefined;
+    return { value: identityText(match[2]!), attributed };
+  }
 
   if (query.kind === "named-property") {
     const match = /^([A-Z][A-Za-z0-9-]*)['’]s\s+(.+?)\s+(?:is|was)\s+(.+)$/iu.exec(text);
-    if (match === null) return false;
-    if (canonicalName(match[1]!.toLowerCase()) !== query.subject) return false;
-    if (canonicalPhrase(match[2]!) !== query.property) return false;
-    if (query.answerKind !== "location" && properNameConcepts(text, true).size > 1) return false;
-    return hasAnswerValue(query.answerKind, query.property, match[3]!);
+    if (match === null) return undefined;
+    if (canonicalName(match[1]!.toLowerCase()) !== query.subject) return undefined;
+    if (canonicalPhrase(match[2]!) !== query.property) return undefined;
+    if (query.answerKind !== "location" && properNameConcepts(text, true).size > 1) return undefined;
+    if (!hasAnswerValue(query.answerKind, query.property, match[3]!)) return undefined;
+    return { value: identityText(match[3]!), attributed };
   }
 
   if (query.kind === "choice") {
-    const match = /^([A-Z][A-Za-z0-9-]*)\s+(selected|chose|picked)\s+(.+?)\s+as\s+(?:the\s+)?(.+)$/iu.exec(text);
-    return match !== null
-      && canonicalName(match[1]!.toLowerCase()) === query.subject
-      && canonicalPhrase(match[4]!) === query.property
-      && properNameConcepts(text, true).size <= 1
-      && hasAnswerValue("generic", query.property, match[3]!);
+    const match = /^([A-Z][A-Za-z0-9-]*)\s+(?:selected|chose|picked)\s+(.+?)\s+as\s+(?:the\s+)?(.+)$/iu.exec(text);
+    if (match === null
+      || canonicalName(match[1]!.toLowerCase()) !== query.subject
+      || canonicalPhrase(match[3]!) !== query.property
+      || properNameConcepts(text, true).size > 1
+      || !hasAnswerValue("generic", query.property, match[2]!)) return undefined;
+    return { value: identityText(match[2]!), attributed };
   }
 
   if (query.kind === "event-time") {
     const match = /^(?:the\s+)?(.+?)\s+(?:now\s+)?(leaves|departs|starts|launches)\s+(?:on|at)\s+(.+)$/iu.exec(text);
-    return match !== null
-      && canonicalPhrase(match[1]!) === query.subject
-      && canonicalPredicate(match[2]!) === query.predicate
-      && hasAnswerValue(query.answerKind, "temporal", match[3]!);
+    if (match === null
+      || canonicalPhrase(match[1]!) !== query.subject
+      || canonicalPredicate(match[2]!) !== query.predicate
+      || !hasAnswerValue(query.answerKind, "temporal", match[3]!)) return undefined;
+    return { value: identityText(match[3]!), attributed };
   }
 
   if (query.kind === "copular-time") {
     const match = /^(?:the\s+)?(.+?)\s+(?:is|was)\s+(.+)$/iu.exec(text);
-    return match !== null
-      && canonicalTemporalSubject(match[1]!) === query.subject
-      && hasAnswerValue(query.answerKind, "temporal", match[2]!);
+    if (match === null
+      || canonicalTemporalSubject(match[1]!) !== query.subject
+      || !hasAnswerValue(query.answerKind, "temporal", match[2]!)) return undefined;
+    return { value: identityText(match[2]!), attributed };
   }
 
   const match = /^([A-Z][A-Za-z0-9-]*)\s+(works|lives)\s+(in|at)\s+(.+)$/iu.exec(text);
-  return match !== null
-    && canonicalName(match[1]!.toLowerCase()) === query.subject
-    && canonicalPredicate(match[2]!) === query.predicate
-    && hasAnswerValue("location", "location", `${match[3]!} ${match[4]!}`);
+  if (match === null
+    || canonicalName(match[1]!.toLowerCase()) !== query.subject
+    || canonicalPredicate(match[2]!) !== query.predicate
+    || !hasAnswerValue("location", "location", `${match[3]!} ${match[4]!}`)) return undefined;
+  return { value: identityText(match[4]!), attributed };
+}
+
+function matchesDirectFact(query: DirectFactQuery, rawText: string): boolean {
+  return directFactValue(query, rawText) !== undefined;
 }
 
 function normalizeQuestion(value: string): string | undefined {
@@ -372,6 +514,11 @@ function answerKindForProperty(property: string): AnswerKind {
 function possessiveSubject(token: string): string {
   const lower = token.toLowerCase().replace(/[’']/gu, "");
   return canonicalName(lower);
+}
+
+/** Exact identity for the attributed-report boundary; deliberately no stemming. */
+function textualReporterIdentity(token: string): string {
+  return token.trim().replace(/(?:['’]s)$/iu, "").toLowerCase();
 }
 
 function singleNamedAnchor(text: string): string | undefined {

@@ -102,7 +102,9 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
     finally { row.durationMs = performance.now() - start; }
   };
   try {
-    trialsLoop: for (const group of groups) for (const arm of ARMS) {
+    // Arms come from the confirmed plan, so a corpus that exercises a narrower
+    // set cannot silently run combinations its budget never reserved.
+    trialsLoop: for (const group of groups) for (const arm of plan.arms ?? ARMS) {
       // Terminal provider stop (fatal auth/quota): no further provider
       // factory, store, model or embedding work. Remaining trials stay
       // unpushed so trialsNotStarted counts them as unstarted, never as
