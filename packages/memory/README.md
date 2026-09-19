@@ -206,6 +206,13 @@ reconcile prompt states the exact action-dependent objects: `ADD` has only index
 complete replacement text. The strict parser remains authoritative and never clamps,
 rescales, fills missing fields, or coerces model values.
 
+Capture and reconciliation prompts ask the selected model to preserve material
+speaker, evidence, and preference scope; distinguish corrections of erroneous
+reports from real-world changes; and keep observed outcomes separate from causal
+guesses. This is model guidance, not factual verification: the parser enforces
+the JSON contract but cannot prove a claim, infer hidden evidence, or guarantee
+semantic fidelity.
+
 `@mono-agent/memory/bujo` also exposes a synchronous provider-free strict health
 audit. It takes a snapshot-coherent view of managed identity, SQLite and
 canonical parity, durable intake/outbox state, temporary artifacts, and runtime
