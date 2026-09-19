@@ -900,7 +900,8 @@ subscription search preserves a 10% allowance reserve. An optional host-injected
 coordinator shares admission and cooldowns across processes. Parallel batches
 primary/alternate queries once and supports optional remote WebFetch extraction.
 `fetch.provider` defaults to local; Parallel cannot serve raw/header/browser
-options. See the web-research guide for privacy and chain behavior. `WebFetch`
+options and reports `include_links` as an unsupported parameter. See the
+web-research guide for privacy and chain behavior. `WebFetch`
 deterministically decodes and extracts HTML, JSON, feeds, PDFs, and text locally
 with bounded redirects, bodies, headers, retries, and structured parser
 failures. Config can opt into isolated `agent-browser` rendering for sparse
@@ -918,8 +919,16 @@ to the model; children and later runs receive fresh budgets.
 Each normalized WebSearch result caps its title at 500 characters and its
 snippet at 4,000 characters, including a visible truncation marker directing
 the model to `WebFetch`. The ranked result body is capped at 64 KiB UTF-8;
-lower-ranked snippets shrink before whole results are omitted, while the
-control, metadata, filter, and balanced untrusted-result framing always remain.
+lower-ranked snippets shrink before whole results are omitted. Both tools
+return a compact JSON envelope with `status` (`ok`/`partial`/`blocked`/`error`),
+a host-written `summary`, untrusted `content` or `results`, source and `coverage`
+metadata, and typed `next_actions` with schema-valid tool arguments.
+`partial` means usable but incomplete output, `blocked` means
+policy/access/budget prevents progress, and `error` means execution failure.
+Search snippets stay discovery leads; `WebFetch` provides evidence. `WebFetch`
+accepts an optional deterministic `focus` block filter and `include_links` for
+bounded static-HTML links; focus and link selection are post-extraction views
+that reuse the cached extraction without added requests.
 Ollama receives the caller's effective 1–10 result limit as `max_results`.
 
 Pi runs with selected skills also expose `ReadSkill`. It returns the complete

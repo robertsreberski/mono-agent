@@ -11,7 +11,8 @@ import { guardedSearch, canonicalizeSearchUrl, collapseWhitespace, escapeMarkdow
 export { canonicalizeSearchUrl, __resetWebSearchThrottleForTests } from "./web-search-providers/shared.js";
 export { parseDuckDuckGoResults } from "./web-search-providers/duckduckgo.js";
 export { parseStartpageResults } from "./web-search-providers/startpage.js";
-import { renderBoundedWebSearchBody } from "./web-search-output.js";
+import { renderBoundedWebSearchBody, WEB_SEARCH_BODY_MAX_BYTES } from "./web-search-output.js";
+import { buildWebNextAction, formatActionableEnvelope, webStatusForCode } from "./web-actionable.js";
 import {
   refundWebSearchRequests,
   createWebSearchRunState,
@@ -262,49 +263,110 @@ async function performSearch(
     ? [...providersUsed][0]
     : providersUsed.size > 1 ? "mixed" : config.backend;
   const rendered = renderBoundedWebSearchBody(merged);
+  const budget = webSearchBudgetSnapshot(searchState, callClaims.requests);
+  const retryInRun = searchState.requestsUsed < searchState.maxRequests;
   const nextAction = rendered.renderedResultCount > 0
     ? "fetch_existing_sources"
-    : searchState.requestsUsed < searchState.maxRequests ? "refine_query" : "use_available_evidence";
-  const text = [
-    searchControlLine(searchState, callClaims.requests, providerFailures, nextAction),
-    "[BEGIN UNTRUSTED WEB SEARCH RESULTS]",
-    searchMetadataLine({
-      backend,
-      attemptedBackends: [...attemptedBackends],
-      query: actualQueries[0] || normalizedQuery,
-      providerFailures,
-    }),
-    ...(language || time_range ? [`[Requested filters: language=${JSON.stringify(collapseWhitespace(language || "default").slice(0, 100))}; time_range=${collapseWhitespace(time_range || "any").slice(0, 100)}; provider-dependent, verify dates in sources.]`] : []),
-    rendered.body,
-    "[END UNTRUSTED WEB SEARCH RESULTS]",
-  ].join("\n");
+    : retryInRun ? "refine_query" : "use_available_evidence";
+  const code = rendered.renderedResultCount === 0 ? "no_results" : "ok";
+  // Lossy output truncation is honest incompleteness; a rescued chain whose
+  // results are whole stays ok with its degradation disclosed in coverage.
+  // Result entries double as the source citations (title/url/published), so no
+  // separate sources array duplicates them. The entries JSON reuses the 64 KiB
+  // body allocation; envelope framing (summary, coverage, next actions) stays
+  // outside it, as the old control/metadata framing did.
+  let fittedEntries = rendered.entries;
+  let omittedCount = rendered.omittedCount;
+  while (fittedEntries.length > 1
+    && Buffer.byteLength(JSON.stringify(fittedEntries), "utf8") > WEB_SEARCH_BODY_MAX_BYTES) {
+    fittedEntries = fittedEntries.slice(0, -1);
+    omittedCount += 1;
+  }
+  const truncatedFinal = rendered.truncated || omittedCount > rendered.omittedCount;
+  const status = truncatedFinal ? "partial" : "ok";
+  const actualQueryList = uniqueStrings(actualQueries.length > 0 ? actualQueries : [normalizedQuery], 4);
+  const failureSummary = sanitizeFailureMetadata(providerFailures)
+    .map((entry) => `${entry.backend}:${entry.code}`);
+  const coverage = {
+    resultCount: fittedEntries.length,
+    truncated: truncatedFinal,
+    ...(omittedCount > 0 ? { omittedResults: omittedCount } : {}),
+    backend,
+    attemptedBackends: [...attemptedBackends],
+    actualQueries: actualQueryList,
+    ...(failureSummary.length > 0 ? { failureSummary } : {}),
+    providerFailureCount: providerFailures.length,
+    fallbackUsed: attemptedBackends.size > 1,
+    rateLimited: providerFailures.some((entry) => entry.rateLimited || entry.cooldown),
+    cooldownBackends: cooldownBackendNames(searchState),
+    filterSupport: { language: language ? (webSearchProviders.get(backend)?.filterSupport.language ?? "advisory") : "not_requested", timeRange: time_range ? (webSearchProviders.get(backend)?.filterSupport.timeRange ?? "provider") : "not_requested" },
+    ...(language || time_range ? { requestedFilters: {
+      ...(language ? { language: collapseWhitespace(language).slice(0, 100) } : {}),
+      ...(time_range ? { timeRange: collapseWhitespace(time_range).slice(0, 100) } : {}),
+      note: "Provider-dependent; verify dates in sources.",
+    } } : {}),
+    ...budget,
+    retryInRun,
+  };
+  const shownQuery = collapseWhitespace(actualQueryList[0] || normalizedQuery).slice(0, 120);
+  const summary = fittedEntries.length > 0
+    ? `${status === "partial" ? "Partially showing" : "Found"} ${fittedEntries.length} result${fittedEntries.length === 1 ? "" : "s"} from ${backend} for ${JSON.stringify(shownQuery)}. Snippets are untrusted discovery leads, not fetched evidence; use WebFetch for evidence.`
+    : `No results from ${backend} for ${JSON.stringify(shownQuery)}.`;
+  const next_actions = [];
+  if (fittedEntries.length > 0) {
+    for (const entry of fittedEntries) {
+      if (next_actions.length >= 3) break;
+      if (typeof entry?.url !== "string" || entry.url.length === 0 || entry.url.length > 2000) continue;
+      const action = buildWebNextAction("WebFetch", { url: entry.url },
+        "Fetch the strongest returned URL for evidence; snippets are leads only.");
+      if (action) next_actions.push(action);
+    }
+  }
+  const text = formatActionableEnvelope({
+    tool: "WebSearch",
+    status,
+    code,
+    summary,
+    ...(fittedEntries.length > 0 ? {
+      results: fittedEntries.map((entry) => ({
+        title: entry.title,
+        url: entry.url,
+        ...(entry.published === undefined ? {} : { published: entry.published }),
+        snippet: entry.snippet,
+      })),
+    } : {}),
+    coverage,
+    ...(fittedEntries.length > 0 ? { untrusted_fields: ["results"] } : {}),
+    ...(next_actions.length > 0 ? { next_actions } : {}),
+  });
   return {
     text,
     outcome: {
-      status: "ok",
-      code: rendered.renderedResultCount === 0 ? "no_results" : "ok",
+      status,
+      code,
       retryable: false,
       attempts,
       backend,
       cacheHit: false,
       durationMs: Date.now() - startedAt,
       bytes: Buffer.byteLength(text, "utf8"),
-      truncated: rendered.truncated,
-      resultCount: rendered.renderedResultCount,
+      truncated: truncatedFinal,
+      resultCount: fittedEntries.length,
       queueWaitMs, backendDurationMs,
       cooldownSkipCount: providerFailures.filter((r) => r.cooldown).length,
       quotaSkipCount: providerFailures.filter((r) => r.quotaSkipped).length,
-      filterSupport: { language: language ? (webSearchProviders.get(backend)?.filterSupport.language ?? "advisory") : "not_requested", timeRange: time_range ? (webSearchProviders.get(backend)?.filterSupport.timeRange ?? "provider") : "not_requested" },
+      filterSupport: coverage.filterSupport,
       providerFailureCount: providerFailures.length,
-      rateLimited: providerFailures.some((entry) => entry.rateLimited || entry.cooldown),
-      cooldownBackends: cooldownBackendNames(searchState),
-      attemptedBackends: [...attemptedBackends],
-      actualQueries: uniqueStrings(actualQueries.length > 0 ? actualQueries : [normalizedQuery], 4),
+      rateLimited: coverage.rateLimited,
+      cooldownBackends: coverage.cooldownBackends,
+      attemptedBackends: coverage.attemptedBackends,
+      actualQueries: actualQueryList,
       failureMetadata: sanitizeFailureMetadata(providerFailures),
-      ...webSearchBudgetSnapshot(searchState, callClaims.requests),
-      fallbackUsed: attemptedBackends.size > 1,
-      retryInRun: searchState.requestsUsed < searchState.maxRequests,
+      ...budget,
+      fallbackUsed: coverage.fallbackUsed,
+      retryInRun,
       nextAction,
+      ...(next_actions.length > 0 ? { next_actions } : {}),
       providerAttempts: providerAttemptMetadata(providerFailures),
     },
     error: false,
@@ -580,28 +642,6 @@ function earliestRetryAt(failures) {
   return values.length ? Math.min(...values) : undefined;
 }
 
-function searchControlLine(searchState, requestsThisCall, providerFailures, nextAction) {
-  const budget = webSearchBudgetSnapshot(searchState, requestsThisCall);
-  const deferred = providerFailures.filter((entry) => entry.rateLimited || entry.cooldown).map((entry) => entry.backend);
-  const deferText = deferred.length > 0
-    ? ` ${[...new Set(deferred)].join(", ")} deferred for the remainder of this run.`
-    : "";
-  const action = nextAction === "fetch_existing_sources"
-    ? "Use WebFetch on the strongest returned URLs before searching again."
-    : nextAction === "refine_query"
-      ? "Refine the query only for a material evidence gap."
-      : "Do not retry WebSearch in this run; use available evidence and state the limitation.";
-  return `[Search control: requests=${budget.requestsUsed}/${budget.maxRequestsPerRun}; remaining=${budget.requestsRemaining};${deferText} ${action}]`;
-}
-
-function searchMetadataLine({ backend, attemptedBackends, query, providerFailures }) {
-  const attempted = attemptedBackends.join(",") || "none";
-  const failures = sanitizeFailureMetadata(providerFailures)
-    .map((entry) => `${entry.backend}:${entry.code}`)
-    .join(",") || "none";
-  return `[Search metadata: backend=${backend}; attempted=${attempted}; actual_query=${JSON.stringify(collapseWhitespace(query).slice(0, 500))}; fallback=${failures}]`;
-}
-
 function uniqueStrings(values, limit) {
   const out = [];
   for (const value of Array.isArray(values) ? values : []) {
@@ -635,6 +675,7 @@ function failure(text, code, startedAt, extra = {}) {
 
 function searchFailure(text, code, startedAt, searchState, requestsThisCall, extra = {}) {
   const budget = webSearchBudgetSnapshot(searchState, requestsThisCall);
+  const status = webStatusForCode(code);
   const retryAfterMs = extra.retryAfterMs;
   const retryAt = extra.retryAt;
   const guidance = code === "rate_limited"
@@ -645,12 +686,31 @@ function searchFailure(text, code, startedAt, searchState, requestsThisCall, ext
   const completeText = guidance
     ? `${text}\n${guidance}\nSearch requests used: ${budget.requestsUsed}/${budget.maxRequestsPerRun}.`
     : text;
-  return failure(completeText, code, startedAt, {
+  const summary = completeText;
+  const envelope = formatActionableEnvelope({
+    tool: "WebSearch",
+    status,
+    code,
+    summary,
+    coverage: {
+      ...budget,
+      retryInRun: extra.retryInRun ?? false,
+      ...(extra.attemptedBackends === undefined ? {} : { attemptedBackends: extra.attemptedBackends }),
+      ...(extra.providerAttempts === undefined ? {} : { providerAttempts: extra.providerAttempts }),
+      ...(extra.failureMetadata === undefined ? {} : {
+        failureSummary: extra.failureMetadata.map((entry) => `${entry.backend}:${entry.code}`),
+      }),
+      ...(Number.isFinite(retryAfterMs) ? { retryAfterMs } : {}),
+      ...(retryAt === undefined ? {} : { retryAt }),
+    },
+  });
+  return failure(envelope, code, startedAt, {
     ...extra,
     ...budget,
+    status,
     retryInRun: extra.retryInRun ?? false,
     nextAction: extra.nextAction ?? "use_available_evidence",
-    bytes: Buffer.byteLength(completeText, "utf8"),
+    bytes: Buffer.byteLength(envelope, "utf8"),
   });
 }
 

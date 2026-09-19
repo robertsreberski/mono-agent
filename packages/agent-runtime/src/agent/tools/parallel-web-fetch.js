@@ -8,6 +8,7 @@ export function unsupportedParallelFetchOption(params) {
   if (params.format === "raw") return "format:raw";
   if (params.headers != null && Object.keys(params.headers).length) return "headers";
   if (["auto", "always"].includes(params.render)) return `render:${params.render}`;
+  if (params.include_links) return "include_links";
   return undefined;
 }
 

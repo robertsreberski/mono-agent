@@ -9,8 +9,9 @@ import { capChars } from "./shared/output-truncation.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { renderWithAgentBrowser } from "./web-browser-render.js";
-import { contentKind, decodeWebBytes, extractWebDocument, markdownToText, shouldAutoRender } from "./web-document-extractor.js";
+import { contentKind, decodeWebBytes, extractHtmlLinks, extractWebDocument, markdownToText, shouldAutoRender } from "./web-document-extractor.js";
 import { assertNoWebAccessInterstitial } from "./web-access-interstitial.js";
+import { applyFocusFilter, buildWebNextAction, formatActionableEnvelope, normalizeWebResearchOptions, webStatusForCode } from "./web-actionable.js";
 
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_REDIRECTS = 5;
@@ -44,7 +45,7 @@ class WebFetchError extends Error {
 /**
  * Compatibility wrapper for direct callers.
  *
- * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number}} params
+ * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
  * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 export async function webFetchToolImpl(params, options = {}) {
@@ -54,7 +55,7 @@ export async function webFetchToolImpl(params, options = {}) {
 /**
  * Fetch and locally extract one public URL.
  *
- * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number}} params
+ * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
  * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 export async function performWebFetch(params, options = {}) {
@@ -74,7 +75,7 @@ export async function performWebFetch(params, options = {}) {
 /**
  * Fetch and locally extract one public URL.
  *
- * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number}} params
+ * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
  * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 async function performFetch(
@@ -82,9 +83,10 @@ async function performFetch(
     url,
     headers = {},
     max_output_chars,
-    format = "markdown",
+    format: requestedFormat,
     render,
     start_line, max_lines,
+    focus, include_links,
   },
   {
     coordinator,
@@ -106,6 +108,10 @@ async function performFetch(
     || (max_lines !== undefined && (!Number.isSafeInteger(max_lines) || max_lines < 1 || max_lines > 10_000))) {
     return failure("Error: start_line must be positive; max_lines must be between 1 and 10000.", "invalid_range", startedAt);
   }
+  const researchOptions = normalizeWebResearchOptions({ focus, include_links });
+  if (researchOptions.error) {
+    return failure(researchOptions.error.message, researchOptions.error.code, startedAt);
+  }
   let parsed;
   try { parsed = new URL(url); } catch {
     return failure("Error: Invalid URL", "invalid_url", startedAt);
@@ -120,7 +126,7 @@ async function performFetch(
   if (requestHeaders.error) {
     return failure(`Error: ${requestHeaders.error}`, "header_rejected", startedAt);
   }
-  const outputFormat = ["markdown", "text", "raw"].includes(format) ? format : null;
+  const outputFormat = ["markdown", "text", "raw"].includes(requestedFormat ?? "markdown") ? (requestedFormat ?? "markdown") : null;
   if (!outputFormat) {
     return failure("Error: WebFetch format must be markdown, text, or raw.", "invalid_format", startedAt);
   }
@@ -180,7 +186,7 @@ async function performFetch(
         },
       };
       return documentOnly ? { text: "", error: false, outcome: document.outcome, document }
-        : formatWebFetchDocument(document, { start_line, max_lines, max_output_chars: maxChars }, resolvedCtx);
+        : formatWebFetchDocument(document, { start_line, max_lines, max_output_chars: maxChars, format: requestedFormat, render, focus, include_links }, resolvedCtx);
     } catch (error) {
       const code = ["access_challenge", "authentication_required", "network_denied"].includes(error?.code)
         ? error.code : "browser_render_failed";
@@ -309,13 +315,7 @@ async function performFetch(
     const preview = responseKind === "binary"
       ? "(binary response body omitted)"
       : safeDecodePreview(bytes, contentType, responseKind);
-    const errorText = [
-      `HTTP ${response.status}`,
-      `[BEGIN UNTRUSTED WEB ERROR BODY source=${JSON.stringify(finalUrl)}]`,
-      preview,
-      "[END UNTRUSTED WEB ERROR BODY]",
-    ].join("\n");
-    return failure(errorText, `http_${response.status}`, startedAt, {
+    return failure(`HTTP ${response.status} for ${finalUrl}.`, `http_${response.status}`, startedAt, {
       attempts,
       retryable: response.status === 429 || response.status >= 500,
       statusCode: response.status,
@@ -323,6 +323,7 @@ async function performFetch(
       backend: "http",
       redirectCount,
       browserRecommended: requestedRender === "auto" && [406, 415].includes(response.status),
+      untrustedContent: preview,
     });
   }
   if (responseKind === "binary") {
@@ -436,7 +437,15 @@ async function performFetch(
     return failure("Error: Page contains an unusable loading shell; no readable evidence was retrieved.", "unusable_content", startedAt, { backend, rendered: false, renderFailed, browserRecommended: true });
   }
   const body = extracted.body || "(no readable content)";
+  // Bounded citation/main-content links come from the already-downloaded static
+  // HTML only: no extra request, same cache identity as the document. Rendered,
+  // remote, raw, and non-HTML documents report the capability as unavailable
+  // at format time instead of faking empty success.
+  const links = responseKind === "html" && backend === "http" && decoding
+    ? extractHtmlLinks(decoding.text, finalUrl)
+    : undefined;
   const document = { body, finalUrl,
+    ...(links === undefined ? {} : { links }),
     outcome: {
       status: "ok",
       code: renderFailed ? "ok_static_render_failed" : "ok",
@@ -464,7 +473,7 @@ async function performFetch(
     },
     };
   return documentOnly ? { text: "", error: false, outcome: document.outcome, document }
-    : formatWebFetchDocument(document, { start_line, max_lines, max_output_chars: maxChars }, resolvedCtx);
+    : formatWebFetchDocument(document, { start_line, max_lines, max_output_chars: maxChars, format: requestedFormat, render, focus, include_links }, resolvedCtx);
 }
 
 function normalizeBrowserResult(value, requestedUrl) {
@@ -655,11 +664,20 @@ function normalizeFetchError(error) {
   );
 }
 
-function failure(text, code, startedAt, extra = {}) {
+function failure(summary, code, startedAt, extra = {}) {
+  const { untrustedContent, ...telemetry } = extra;
+  const status = webStatusForCode(code);
+  const text = formatActionableEnvelope({
+    tool: "WebFetch",
+    status,
+    code,
+    summary,
+    ...(untrustedContent === undefined ? {} : { content: untrustedContent, untrusted_fields: ["content"] }),
+  });
   return {
     text,
     outcome: {
-      status: "error",
+      status,
       code,
       retryable: false,
       attempts: 0,
@@ -668,7 +686,7 @@ function failure(text, code, startedAt, extra = {}) {
       durationMs: Date.now() - startedAt,
       bytes: Buffer.byteLength(text, "utf8"),
       truncated: false,
-      ...extra,
+      ...telemetry,
     },
     error: true,
   };
@@ -692,33 +710,147 @@ export function formatWebFetchDocument(document, params, ctx) {
     || (params.max_lines !== undefined && (!Number.isSafeInteger(params.max_lines) || params.max_lines < 1 || params.max_lines > 10000))) {
     return failure("Error: Invalid WebFetch line range.", "invalid_range", Date.now());
   }
+  const researchOptions = normalizeWebResearchOptions({ focus: params.focus, include_links: params.include_links });
+  if (researchOptions.error) {
+    return failure(researchOptions.error.message, researchOptions.error.code, Date.now());
+  }
   const { body, finalUrl } = document;
+  // Focus is a deterministic post-extraction view over the cached document:
+  // filter first, then paginate the focused view so continuations stay in
+  // focused coordinates while the focus string is preserved for the next call.
+  const focusResult = researchOptions.focus ? applyFocusFilter(body, researchOptions.focus) : null;
+  const focusedBody = focusResult ? focusResult.text : body;
+  const focusNoMatch = focusResult !== null && focusResult.matchedBlocks === 0;
   const ranged = params.start_line !== undefined || params.max_lines !== undefined;
-  const lines = body.split("\n");
+  const lines = focusNoMatch ? [] : focusedBody.split("\n");
+  const totalLines = focusNoMatch ? 0 : (focusedBody ? lines.length : 0);
   const start = params.start_line ?? 1;
   const count = params.max_lines ?? 200;
-  const selected = ranged ? lines.slice(start - 1, start - 1 + count).join("\n") : body;
+  const selected = focusNoMatch ? "" : (ranged ? lines.slice(start - 1, start - 1 + count).join("\n") : focusedBody);
   const maxChars = positiveInteger(params.max_output_chars, DEFAULT_MAX_TOOL_OUTPUT_CHARS);
-  const capped = capChars(selected, { label: "WebFetch", maxChars, ctx });
-  const shownLines = capped === selected ? (selected ? selected.split("\n").length : 0)
-    : Math.max(0, capped.slice(0, capped.lastIndexOf("[truncated WebFetch output:")).split("\n").length - 1);
+  const capped = focusNoMatch ? "" : capChars(selected, { label: "WebFetch", maxChars, ctx });
+  const shownLines = focusNoMatch || capped !== selected
+    ? (focusNoMatch ? 0 : Math.max(0, capped.slice(0, capped.lastIndexOf("[truncated WebFetch output:")).split("\n").length - 1))
+    : (selected ? selected.split("\n").length : 0);
   const end = Math.min(lines.length, start - 1 + shownLines);
   const continuation = end < lines.length ? Math.max(start, end + 1) : null;
-  const continuationHint = continuation === start && capped !== selected
-    ? `The next line exceeds the output budget. Increase max_output_chars or read the saved output artifact; repeating this range with the same budget cannot advance.`
-    : `Continue with WebFetch url=${JSON.stringify(finalUrl)} start_line=${continuation} max_lines=${count}.`;
+  const stalled = continuation !== null && continuation <= start && capped !== selected;
+  const baseOutcome = document.outcome || {};
+  // Usable but incomplete views classify as partial: excerpts-only remote
+  // content, a static fallback after render failure, or a focus-filtered
+  // subset. A focus with no matching blocks never pretends full success.
+  const partialView = baseOutcome.excerptsOnly === true
+    || baseOutcome.code === "ok_static_render_failed"
+    || (focusResult !== null && focusResult.matchedBlocks < focusResult.totalBlocks);
+  const status = partialView ? "partial" : (baseOutcome.status || "ok");
+  const code = focusNoMatch ? "focus_no_match" : (baseOutcome.code || "ok");
+  const summaryParts = [`Fetched ${finalUrl} (lines ${totalLines === 0 ? 0 : start}-${end} of ${totalLines}).`];
+  if (document.metadata) summaryParts.push(String(document.metadata));
+  if (baseOutcome.excerptsOnly === true) summaryParts.push("Provider returned excerpts only; full content is unavailable.");
+  if (baseOutcome.code === "ok_static_render_failed") summaryParts.push("Browser rendering failed; returning the static extraction.");
+  if (focusResult !== null) {
+    summaryParts.push(focusNoMatch
+      ? `Focus ${JSON.stringify(researchOptions.focus)} matched 0 of ${focusResult.totalBlocks} blocks; no content shown.`
+      : `Focus ${JSON.stringify(researchOptions.focus)} matched ${focusResult.matchedBlocks} of ${focusResult.totalBlocks} blocks.`);
+  }
+  if (stalled) {
+    summaryParts.push("The next line exceeds the output budget. Increase max_output_chars or read the saved output artifact; repeating this range with the same budget cannot advance.");
+  }
+  // Bounded citation/main-content links reuse the static HTML extraction.
+  // Any other source reports the missing capability explicitly.
+  let links;
+  let linksCoverage;
+  if (researchOptions.includeLinks) {
+    if (Array.isArray(document.links)) {
+      links = document.links;
+      linksCoverage = { available: true, count: links.length };
+      summaryParts.push(links.length === 1 ? "1 page link listed." : `${links.length} page links listed.`);
+    } else {
+      linksCoverage = { available: false, reason: linksUnavailableReason(baseOutcome) };
+      summaryParts.push(`Page links are unavailable (${linksCoverage.reason}).`);
+    }
+  }
+  const next_actions = [];
+  if (focusNoMatch) {
+    const retry = buildWebNextAction("WebFetch",
+      {
+        url: finalUrl,
+        ...(params.format !== undefined ? { format: params.format } : {}),
+        ...(params.render !== undefined ? { render: params.render } : {}),
+        ...(researchOptions.includeLinks ? { include_links: true } : {}),
+      },
+      "Re-read the page without focus; no blocks matched the focus string.");
+    if (retry) next_actions.push(retry);
+  } else if (continuation !== null && continuation > start) {
+    const advance = buildWebNextAction("WebFetch",
+      {
+        url: finalUrl,
+        start_line: continuation,
+        max_lines: count,
+        ...(params.format !== undefined ? { format: params.format } : {}),
+        ...(params.render !== undefined ? { render: params.render } : {}),
+        ...(researchOptions.focus !== undefined ? { focus: researchOptions.focus } : {}),
+        ...(researchOptions.includeLinks ? { include_links: true } : {}),
+      },
+      `Read the next lines of this page (line ${continuation} on).`);
+    if (advance) next_actions.push(advance);
+  }
+  const untrusted_fields = [
+    ...(focusNoMatch ? [] : ["content"]),
+    ...(links === undefined ? [] : ["links"]),
+  ];
+  const text = formatActionableEnvelope({
+    tool: "WebFetch",
+    status,
+    code,
+    summary: summaryParts.join(" "),
+    source: { url: finalUrl },
+    coverage: {
+      startLine: start,
+      endLine: end,
+      totalLines,
+      nextLine: continuation,
+      truncated: selected.length > maxChars || end < lines.length,
+      ...(focusResult === null ? {} : {
+        focus: {
+          query: researchOptions.focus,
+          matchedBlocks: focusResult.matchedBlocks,
+          totalBlocks: focusResult.totalBlocks,
+        },
+      }),
+      ...(linksCoverage === undefined ? {} : { links: linksCoverage }),
+      ...(document.metadata ? { note: String(document.metadata) } : {}),
+    },
+    ...(focusNoMatch ? {} : { content: capped }),
+    ...(links === undefined ? {} : { links }),
+    ...(untrusted_fields.length > 0 ? { untrusted_fields } : {}),
+    ...(next_actions.length > 0 ? { next_actions } : {}),
+  });
   return {
-    text: [`[BEGIN UNTRUSTED WEB CONTENT source=${JSON.stringify(finalUrl)}]`,
-      ...(document.metadata ? [`[${document.metadata}]`] : []),
-      ...(ranged || continuation ? [`[Lines ${start}-${end} of ${lines.length}.]`] : []),
-      capped,
-      ...(continuation ? [`[${continuationHint}]`] : []),
-      "[END UNTRUSTED WEB CONTENT]"].join("\n"),
-    outcome: { ...document.outcome, truncated: selected.length > maxChars || end < lines.length,
-      startLine: start, endLine: end, totalLines: lines.length, nextLine: continuation },
+    text,
+    outcome: { ...baseOutcome, status, code, truncated: selected.length > maxChars || end < lines.length,
+      startLine: start, endLine: end, totalLines, nextLine: continuation,
+      bytes: Buffer.byteLength(text, "utf8"),
+      ...(focusResult === null ? {} : {
+        focusApplied: true,
+        focusQuery: researchOptions.focus,
+        focusMatchedBlocks: focusResult.matchedBlocks,
+        focusTotalBlocks: focusResult.totalBlocks,
+      }),
+      ...(linksCoverage === undefined ? {} : { linksAvailable: linksCoverage.available }),
+      ...(next_actions.length > 0 ? { next_actions } : {}),
+    },
     error: false,
     document,
   };
+}
+
+function linksUnavailableReason(outcome) {
+  if (outcome?.backend === "parallel") return "remote extraction does not provide page links";
+  if (outcome?.rendered === true) return "browser rendering skips static link extraction";
+  if (outcome?.extractionStage === "raw") return "raw format skips HTML link extraction";
+  const kind = typeof outcome?.contentKind === "string" && outcome.contentKind ? outcome.contentKind : "this";
+  return `links are only extracted from static HTML, not ${kind} content`;
 }
 
 
@@ -761,6 +893,10 @@ async function performParallelFetch(params, options) {
   if ((params.start_line !== undefined && (!Number.isSafeInteger(params.start_line) || params.start_line < 1))
     || (params.max_lines !== undefined && (!Number.isSafeInteger(params.max_lines) || params.max_lines < 1 || params.max_lines > 10000))) {
     return failure("Error: Invalid WebFetch line range.", "invalid_range", started);
+  }
+  const researchOptions = normalizeWebResearchOptions({ focus: params.focus, include_links: params.include_links });
+  if (researchOptions.error) {
+    return failure(researchOptions.error.message, researchOptions.error.code, started);
   }
   let url;
   try { url = new URL(params.url); } catch { return failure("Error: Invalid URL", "invalid_url", started); }
