@@ -66,7 +66,7 @@ for (const viewport of VIEWPORTS) {
       );
       const viewport = page.viewportSize();
       expect(viewport).not.toBeNull();
-      for (const name of ["Get the code on GitHub", "Read the docs"]) {
+      for (const name of ["Get the code on GitHub", "Explore the blueprint"]) {
         const box = await page
           .getByRole("link", { name })
           .first()
@@ -108,7 +108,7 @@ test("exposes landmarks, one H1, and a working skip link", async ({ page }) => {
 
 test("section navigation reaches every anchored section", async ({ page }) => {
   await page.goto("/", { waitUntil: "networkidle" });
-  for (const section of ["use-cases", "why", "start", "faq"]) {
+  for (const section of ["configuration", "anatomy", "use-cases", "why", "start", "faq"]) {
     await page.getByRole("navigation", { name: "Sections" })
       .getByRole("link", { name: new RegExp(section.replace("-", " "), "i") })
       .click();
@@ -134,7 +134,7 @@ for (const width of [320, 768, 1024]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/", { waitUntil: "networkidle" });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
-    await expect(page.getByRole("figure").filter({ hasText: "Minimal example" })).toBeVisible();
+    await expect(page.getByRole("figure").filter({ hasText: "mono-agent.config.json" })).toBeVisible();
     const examples = page.locator(".example-prompt");
     await expect(examples).toHaveCount(3);
   });
@@ -169,6 +169,8 @@ test("all workflow content and native FAQ work without JavaScript", async ({ bro
   for (const id of ["build", "research", "automate"]) {
     await expect(page.locator(`#workflow-${id}`)).toBeVisible();
   }
+  await expect(page.locator("#configuration")).toContainText("mono-agent.config.json");
+  await expect(page.locator("#configuration .blueprint-callouts article")).toHaveCount(6);
   await expect(page.getByRole("button", { name: /Copy install command/ })).toHaveCount(0);
   const question = page.locator(".faq summary").first();
   await question.click();

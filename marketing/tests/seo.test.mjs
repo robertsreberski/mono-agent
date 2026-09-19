@@ -15,6 +15,7 @@ import { describe, it } from "node:test";
 import sharp from "sharp";
 
 const DIST = fileURLToPath(new URL("../dist/", import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const SITE_URL = "https://mono-agent.dev";
 const GITHUB_URL = "https://github.com/robertsreberski/mono-agent";
 const DOCS_URL = "https://mono-agent-docs.vercel.app/";
@@ -27,6 +28,43 @@ function readDist(rel) {
 
 function mustContain(html, snippet, label) {
   assert.ok(html.includes(snippet), `${label} must be present`);
+}
+
+function decodeHtmlText(value) {
+  return value
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
+
+function assertMatchesGeneratedSchema(value, schema, path = "config") {
+  if (schema.const !== undefined) assert.deepEqual(value, schema.const, `${path} matches const`);
+  if (schema.enum) assert.ok(schema.enum.includes(value), `${path} matches enum`);
+
+  if (schema.type === "object") {
+    assert.ok(value !== null && typeof value === "object" && !Array.isArray(value), `${path} is an object`);
+    for (const key of schema.required ?? []) {
+      assert.ok(Object.hasOwn(value, key), `${path}.${key} is required`);
+    }
+    for (const [key, child] of Object.entries(value)) {
+      const childSchema = schema.properties?.[key];
+      assert.ok(childSchema || schema.additionalProperties !== false, `${path}.${key} exists in generated schema`);
+      if (childSchema) assertMatchesGeneratedSchema(child, childSchema, `${path}.${key}`);
+    }
+    return;
+  }
+  if (schema.type === "array") {
+    assert.ok(Array.isArray(value), `${path} is an array`);
+    if (schema.items) value.forEach((child, index) => assertMatchesGeneratedSchema(child, schema.items, `${path}[${index}]`));
+    return;
+  }
+  if (schema.type === "integer") {
+    assert.ok(Number.isInteger(value), `${path} is an integer`);
+    return;
+  }
+  if (typeof schema.type === "string") assert.equal(typeof value, schema.type, `${path} has generated type ${schema.type}`);
 }
 
 describe("marketing built output", () => {
@@ -137,6 +175,26 @@ describe("marketing built output", () => {
     }
   });
 
+  it("makes the central configuration prominent and keeps its example valid", () => {
+    const hero = html.match(/<section class="hero"[\s\S]*?<\/section>/)?.[0] ?? "";
+    mustContain(hero, "mono-agent.config.json", "hero configuration filename");
+    mustContain(html, "One JSON file.", "configuration thesis headline");
+    mustContain(html, "Your agent’s blueprint.", "configuration thesis continuation");
+    mustContain(html, 'id="configuration"', "configuration anchor");
+
+    const code = html.match(/<code id="config-blueprint-json">([\s\S]*?)<\/code>/);
+    assert.ok(code, "rendered configuration example exists");
+    const config = JSON.parse(decodeHtmlText(code[1]));
+    const schema = JSON.parse(readFileSync(
+      join(REPO_ROOT, "packages/agent-app/schema/mono-agent.config.schema.json"),
+      "utf8",
+    ));
+    assertMatchesGeneratedSchema(config, schema);
+    assert.deepEqual(Object.keys(config), ["runtime", "context", "memory", "tools", "telegram"]);
+    assert.equal(config.memory.mode, "lite");
+    assert.equal(config.telegram.botToken, undefined, "example keeps secrets out of JSON");
+  });
+
   it("links GitHub as primary CTA and docs as secondary", () => {
     assert.ok(html.includes(`href="${GITHUB_URL}"`), "GitHub links present");
     const githubCount = html.split(`href="${GITHUB_URL}"`).length - 1;
@@ -155,6 +213,13 @@ describe("marketing built output", () => {
       mustContain(html, `id="${id}"`, "server-rendered workflow");
     }
     mustContain(html, "Illustrative workflow", "honest illustrative label");
+  });
+
+  it("keeps competitor research out of public copy", () => {
+    const lower = html.toLowerCase();
+    for (const competitor of ["hermes", "openclaw", "open claw"]) {
+      assert.ok(!lower.includes(competitor), `public HTML must not name ${competitor}`);
+    }
   });
 
   it("avoids unsupported product claims", () => {

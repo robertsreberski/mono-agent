@@ -12,13 +12,18 @@ existing docs site is secondary.
   so it never enters the root `pnpm -r build`, `pnpm -r test`, release graph,
   or `check:architecture`. Install and build it on its own, following the
   `website/` precedent.
-- **Content is authored in `src/pages/index.astro`.** Every claim on the page
-  must already be true of the published npm baseline, or be explicitly framed
-  as configuration. The honesty rules live in a comment at the top of that
-  file — read them before editing copy. `docs/reference/release-status.md` is
-  the boundary reference: never advertise source-only capabilities (console
-  projects/tags, durable subagents, usage meters), never promise setup speed
-  or security properties, and never present the brand artwork as a screenshot.
+- **Content is authored in `src/pages/index.astro`.** The hero and the major
+  `#configuration` section make `mono-agent.config.json` the central visual
+  thesis, then connect its runtime, context, memory, tools, and channel blocks
+  to the framework/package composition story. The displayed example is valid
+  JSON and its keys/types are checked against the generated app schema. Every
+  claim on the page must already be true of the published npm baseline, or be
+  explicitly framed as configuration. The honesty rules live in a comment at
+  the top of that file — read them before editing copy.
+  `docs/reference/release-status.md` is the boundary reference: never advertise
+  source-only capabilities (console projects/tags, durable subagents, usage
+  meters), never promise setup speed or security properties, and never present
+  the brand artwork as a screenshot.
 - **Artwork is decorative.** `public/hero-*.{jpg,webp}` and
   `public/og-1200x630.jpg` are optimized derivatives of a supplied brand
   source (charcoal monolith, lime filament, no text). The source itself stays
@@ -32,8 +37,11 @@ existing docs site is secondary.
 
 ## Interaction design
 
-The workflow field guide pairs three original SVG illustrations with server-rendered
-Build, Research and Automate content. `public/interactions.js` progressively adds
+The configuration blueprint and all six outcome callouts are server-rendered,
+including the caveats that identity/skills/MCP files, secrets/auth, and runtime
+state remain separate. It is a readable example, not a fake editor or a deploy
+control. The workflow field guide pairs three original SVG illustrations with
+server-rendered Build, Research and Automate content. `public/interactions.js` progressively adds
 ARIA tabs (arrow keys, Home/End, Enter/Space), direct workflow links, a copy-install
 button with honest success/failure feedback, and subtle pointer-responsive hero art.
 All workflow content remains readable when JavaScript is disabled; FAQ disclosures
@@ -58,10 +66,13 @@ geometry interpolation is pure and unit-tested. Mobile uses a shorter stage and
 compressed poses. **Pause motion**, the OS reduced-motion preference, or no JavaScript
 produces a static complete composition instead. Preference changes clear transforms.
 
-`pnpm run screenshots -- --video-only` records an automated real-browser scroll
-through the story into `output/scroll-story-desktop.webm`; add `--video` to capture
-both screenshots and the recording. The recording drives ordinary browser scrolling,
-not a generated product simulation. Every frame stays at 1440×1000.
+`pnpm run screenshots` captures the hero, configuration blueprint, workflow,
+anatomy, and setup views at 1440×1000 and 390×844; generated files stay under
+`output/` and are gitignored. `pnpm run screenshots -- --video-only` records an
+automated real-browser scroll through the story into
+`output/scroll-story-desktop.webm`; add `--video` to capture both screenshots and
+the recording. The recording drives ordinary browser scrolling, not a generated
+product simulation. Every frame stays at 1440×1000.
 
 ## Local development
 

@@ -42,8 +42,8 @@ const SHOTS = [
     height: 844,
     scrollTo: "#use-cases",
   },
-  { name: "config-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: ".config-story" },
-  { name: "config-mobile-390x844.png", width: 390, height: 844, scrollTo: ".config-story" },
+  { name: "configuration-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: ".config-blueprint" },
+  { name: "configuration-mobile-390x844.png", width: 390, height: 844, scrollTo: ".config-blueprint" },
   {
     name: "start-desktop-1440x1000.png",
     width: 1440,

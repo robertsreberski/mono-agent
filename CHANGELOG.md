@@ -4,14 +4,16 @@
 
 - Add the standalone static marketing site source for the prospective
   `mono-agent.dev` domain. The isolated `marketing/` Astro app renders one
-  crawlable page — hero, Build/Research/Automate use cases, honest setup
-  steps, FAQ, and GitHub/docs calls to action — with tested SEO metadata, a
-  social card, sitemap/robots, and a dedicated CI lane. The illustrated workflow
-  explorer supports keyboard tabs, with no-JavaScript content, reduced-motion
-  artwork, native FAQ disclosures, and install-command copying. A scroll-linked
-  3D composition unfolds the anatomy of an agent, with a pinned visual stage,
-  pause/reduced-motion controls and static fallbacks. Source only; the site
-  is not deployed yet.
+  crawlable page centered on a schema-checked `mono-agent.config.json`
+  blueprint, framework/package composition, deliberate memory tiers, explicit
+  model routes, local run evidence, Build/Research/Automate use cases, honest
+  setup, FAQ, and GitHub/docs calls to action. Tested SEO metadata, a social
+  card, sitemap/robots, and a dedicated CI lane protect the static output. The
+  illustrated workflow explorer supports keyboard tabs, with no-JavaScript
+  content, reduced-motion artwork, native FAQ disclosures, and install-command
+  copying. A scroll-linked 3D composition unfolds the anatomy of an agent, with
+  a pinned visual stage, pause/reduced-motion controls and static fallbacks.
+  Source only; the site is not deployed yet.
 
 - Add an opt-in Hound backend for `WebSearch` and `WebFetch` alongside
   Parallel and Ollama, keeping the `parallel,ollama` search and `local` fetch
