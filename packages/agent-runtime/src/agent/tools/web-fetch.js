@@ -5,7 +5,7 @@ import { withWebDeadline, coordinatedWebRequest, webRequestFailure } from "./web
 
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "./shared/constants.js";
-import { capChars } from "./shared/output-truncation.js";
+import { capChars, truncationSuffix, writeToolArtifact } from "./shared/output-truncation.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { renderWithAgentBrowser } from "./web-browser-render.js";
@@ -728,7 +728,19 @@ export function formatWebFetchDocument(document, params, ctx) {
   const count = params.max_lines ?? 200;
   const selected = focusNoMatch ? "" : (ranged ? lines.slice(start - 1, start - 1 + count).join("\n") : focusedBody);
   const maxChars = positiveInteger(params.max_output_chars, DEFAULT_MAX_TOOL_OUTPUT_CHARS);
-  const capped = focusNoMatch ? "" : capChars(selected, { label: "WebFetch", maxChars, ctx });
+  let capped = focusNoMatch ? "" : capChars(selected, { label: "WebFetch", maxChars, ctx });
+  // The shared capChars floors small budgets to 200 characters globally.
+  // Honor an exact positive caller budget here for the page content only:
+  // envelope framing (summary, coverage, next actions) always sits outside
+  // it. The shared helper's global behavior is unchanged.
+  const explicitBudget = Number.isSafeInteger(params.max_output_chars) && params.max_output_chars > 0
+    ? params.max_output_chars
+    : null;
+  if (!focusNoMatch && explicitBudget !== null && capped.length > explicitBudget) {
+    const artifact = writeToolArtifact("WebFetch", selected, ctx);
+    const suffix = truncationSuffix({ label: "WebFetch", shown: explicitBudget, total: selected.length, artifact, hint: undefined });
+    capped = `${selected.slice(0, Math.max(0, explicitBudget - suffix.length))}${suffix}`;
+  }
   const shownLines = focusNoMatch || capped !== selected
     ? (focusNoMatch ? 0 : Math.max(0, capped.slice(0, capped.lastIndexOf("[truncated WebFetch output:")).split("\n").length - 1))
     : (selected ? selected.split("\n").length : 0);
@@ -739,20 +751,27 @@ export function formatWebFetchDocument(document, params, ctx) {
   // Any incomplete returned view classifies as partial, even when the
   // requested slice itself was satisfied: excerpts-only remote content, a
   // static fallback after render failure, a focus-filtered subset, lossy
-  // character-budget capping, or remaining lines beyond this page. A focus
+  // character-budget capping, remaining lines beyond this page, or omitted
+  // preceding lines when the view starts after line 1. A focus
   // with no matching blocks never pretends full success. Coverage (line
   // coordinates, truncation flag, focus block counts, link availability)
   // distinguishes the cause.
   const cappedTruncated = capped !== selected;
   const hasMoreLines = continuation !== null;
+  const omittedPreceding = !focusNoMatch && ranged && start > 1 && totalLines > 0;
+  const beyondEnd = !focusNoMatch && totalLines > 0 && start > totalLines;
+  const truncatedView = selected.length > maxChars || end < lines.length || omittedPreceding;
   const partialView = baseOutcome.excerptsOnly === true
     || baseOutcome.code === "ok_static_render_failed"
     || (focusResult !== null && focusResult.matchedBlocks < focusResult.totalBlocks)
     || cappedTruncated
-    || hasMoreLines;
+    || hasMoreLines
+    || omittedPreceding;
   const status = partialView ? "partial" : (baseOutcome.status || "ok");
   const code = focusNoMatch ? "focus_no_match" : (baseOutcome.code || "ok");
-  const summaryParts = [`Fetched ${finalUrl} (lines ${totalLines === 0 ? 0 : start}-${end} of ${totalLines}).`];
+  const summaryParts = [beyondEnd
+    ? `Fetched ${finalUrl} (no lines shown; start_line ${start} is beyond the total ${totalLines} lines).`
+    : `Fetched ${finalUrl} (lines ${totalLines === 0 ? 0 : start}-${end} of ${totalLines}).`];
   if (document.metadata) summaryParts.push(String(document.metadata));
   if (baseOutcome.excerptsOnly === true) summaryParts.push("Provider returned excerpts only; full content is unavailable.");
   if (baseOutcome.code === "ok_static_render_failed") summaryParts.push("Browser rendering failed; returning the static extraction.");
@@ -824,7 +843,7 @@ export function formatWebFetchDocument(document, params, ctx) {
       endLine: end,
       totalLines,
       nextLine: continuation,
-      truncated: selected.length > maxChars || end < lines.length,
+      truncated: truncatedView,
       ...(focusResult === null ? {} : {
         focus: {
           query: researchOptions.focus,
@@ -842,7 +861,7 @@ export function formatWebFetchDocument(document, params, ctx) {
   });
   return {
     text,
-    outcome: { ...baseOutcome, status, code, truncated: selected.length > maxChars || end < lines.length,
+    outcome: { ...baseOutcome, status, code, truncated: truncatedView,
       startLine: start, endLine: end, totalLines, nextLine: continuation,
       bytes: Buffer.byteLength(text, "utf8"),
       ...(focusResult === null ? {} : {
