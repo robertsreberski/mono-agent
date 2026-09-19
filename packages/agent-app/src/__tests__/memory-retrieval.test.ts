@@ -6,6 +6,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { MemoryCompletedTurn, MemoryWriteResult } from "@mono-agent/agent-contracts";
 import { createAgentHarness } from "@mono-agent/agent-harness";
+import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
+import { MemorySearchError } from "@mono-agent/memory/search";
 import { openMemoryDb, type MemoryRecord } from "@mono-agent/memory/store";
 import { describe, expect, it } from "vitest";
 
@@ -235,6 +237,50 @@ describe("MemoryRetrievalService", () => {
     }
   });
 
+  it("rejects degraded blocks below the minimum meaningful budget without recording unserved hits", async () => {
+    const degradedStore = () => {
+      const store = fakeStore();
+      store.recallWithOutcome = async (query) => {
+        store.queries.push(query);
+        return {
+          hits: [
+            { score: 1.005, record: { id: "first", text: "Morgan selected cobalt as the deployment color." } },
+            { score: 1.005, record: { id: "second", text: "Morgan selected azure as the deployment color." } },
+          ],
+          retrievalMode: "lexical_only" as const,
+          degradation: { code: "embedding_unavailable" as const },
+        };
+      };
+      return store;
+    };
+    const minimumBlock = "## Memory degraded: lexical-only\n\n- Morgan selected cobalt as the deployment color.";
+    const minimumBytes = Buffer.byteLength(minimumBlock, "utf8");
+
+    const tinyStore = degradedStore();
+    const tiny = new MemoryRetrievalService(tinyStore, { maxBytes: 1 });
+    await expect(tiny.load("conversation", "What deployment color did Morgan select?", { turnId: "turn-one-byte" })).rejects.toThrow(
+      "Semantic memory retrieval is unavailable; the memory byte budget cannot include lexical-only evidence.",
+    );
+    expect(tinyStore.accesses).toEqual([]);
+
+    const belowStore = degradedStore();
+    const below = new MemoryRetrievalService(belowStore, { maxBytes: minimumBytes - 1 });
+    await expect(below.load("conversation", "What deployment color did Morgan select?", { turnId: "turn-below-minimum" })).rejects.toThrow(
+      "Semantic memory retrieval is unavailable; the memory byte budget cannot include lexical-only evidence.",
+    );
+    expect(belowStore.accesses).toEqual([]);
+
+    const boundaryStore = degradedStore();
+    const boundary = new MemoryRetrievalService(boundaryStore, { maxBytes: minimumBytes });
+    await expect(boundary.load("conversation", "What deployment color did Morgan select?", { turnId: "turn-minimum" })).resolves.toEqual({
+      kind: "markdown",
+      content: minimumBlock,
+      source: "memory",
+      truncated: true,
+    });
+    expect(boundaryStore.accesses).toEqual([["first", "second"]]);
+  });
+
   it("drops the query cache when the logical turn is released", async () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);
@@ -246,6 +292,118 @@ describe("MemoryRetrievalService", () => {
 });
 
 describe("shared MemoryRecall MCP", () => {
+  it("shares one degraded lookup across automatic and explicit recall while preserving status through graph expansion", async () => {
+    const store = fakeStore();
+    let outcomeCalls = 0;
+    let expansionCalls = 0;
+    store.recallWithOutcome = async (query) => {
+      outcomeCalls += 1;
+      store.queries.push(query);
+      return {
+        hits: [{ score: 1.005, record: { id: "answer", text: "Morgan selected cobalt as the launch color." } }],
+        retrievalMode: "lexical_only",
+        degradation: { code: "embedding_unavailable" },
+      };
+    };
+    store.expandGraph = (_query, direct) => {
+      expansionCalls += 1;
+      return direct;
+    };
+    const service = new MemoryRetrievalService(store, { maxBytes: 120 });
+    const query = "What launch color did Morgan select?";
+    await expect(service.recallForTurn("turn-degraded", query)).rejects.toThrow(
+      "Memory recall is degraded; use status-bearing recall to inspect lexical-only results.",
+    );
+    expect(store.accesses).toEqual([]);
+    await expect(service.recallOutcomeForTurn("turn-degraded", query, { trackAccess: false })).resolves.toMatchObject({
+      retrievalMode: "lexical_only",
+      degradation: { code: "embedding_unavailable" },
+      hits: [expect.objectContaining({ record: expect.objectContaining({ id: "answer" }) })],
+    });
+    expect(store.accesses).toEqual([]);
+
+    const block = await service.load("conversation", query, { turnId: "turn-degraded" });
+    expect(block?.content).toContain("## Memory (recalled; lexical-only — semantic retrieval unavailable)");
+    expect(block?.content).toContain("Morgan selected cobalt");
+    expect(Buffer.byteLength(block?.content ?? "", "utf8")).toBeLessThanOrEqual(120);
+
+    const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-degraded" });
+    const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+    const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const result = await client.callTool({ name: "MemoryRecall", arguments: { query, limit: 5 } });
+      expect(result.structuredContent).toMatchObject({
+        degraded: true,
+        retrievalMode: "lexical_only",
+        degradation: { code: "embedding_unavailable" },
+        hits: [expect.objectContaining({ id: "answer" })],
+      });
+      expect(result.content).toEqual(expect.arrayContaining([
+        expect.objectContaining({ text: expect.stringContaining("showing lexical-only matches") }),
+      ]));
+      expect(outcomeCalls).toBe(1);
+      expect(expansionCalls).toBe(1);
+      expect(store.accesses).toEqual([["answer"]]);
+    } finally {
+      await client.close().catch(() => undefined);
+      await extension.cleanup();
+    }
+  });
+
+  it("keeps zero-hit degradation visible and redacts a recognized provider error across outcome and MCP", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mono-agent-memory-redaction-"));
+    const privateDetail = "PRIVATE_PROVIDER_SENTINEL_do_not_surface";
+    let providerCalls = 0;
+    const store = createBujoMemoryStore({
+      root,
+      tier: "journal",
+      dim: 4,
+      embeddings: {
+        id: "recognized-error-redaction:4",
+        async embed() {
+          providerCalls += 1;
+          throw new MemorySearchError("embedding_request_failed", privateDetail, {
+            providerDetail: privateDetail,
+          });
+        },
+      },
+    });
+    const service = new MemoryRetrievalService(store);
+    const query = "What launch color did Morgan select?";
+    await expect(service.load("conversation", query, { turnId: "turn-degraded-empty" })).rejects.toThrow(
+      "Semantic memory retrieval is unavailable; lexical-only recall found no eligible automatic evidence.",
+    );
+    const outcome = await service.recallOutcomeForTurn("turn-degraded-empty", query, { trackAccess: false });
+    expect(outcome).toMatchObject({
+      hits: [],
+      retrievalMode: "lexical_only",
+      degradation: { code: "embedding_unavailable" },
+    });
+    expect(JSON.stringify(outcome)).not.toContain(privateDetail);
+
+    const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-degraded-empty" });
+    const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+    const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const result = await client.callTool({ name: "MemoryRecall", arguments: { query } });
+      expect(result.structuredContent).toMatchObject({
+        hits: [],
+        degraded: true,
+        retrievalMode: "lexical_only",
+        degradation: { code: "embedding_unavailable" },
+      });
+      expect(JSON.stringify(result)).not.toContain(privateDetail);
+      expect(providerCalls).toBe(1);
+    } finally {
+      await client.close().catch(() => undefined);
+      await extension.cleanup();
+      await store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not query the configured backend for the exact Telegram last-message question", async () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);
@@ -427,6 +585,54 @@ describe("shared MemoryRecall MCP", () => {
       expect(response.failure).toBeUndefined();
       expect(seenMcpServers).toEqual([{}]);
       expect(warnings).toHaveLength(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("continues the provider turn and warns when a tiny budget cannot carry degraded evidence", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-memory-retrieval-degraded-"));
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const store = fakeStore();
+    store.recallWithOutcome = async (query) => {
+      store.queries.push(query);
+      return {
+        hits: [{ score: 1, record: { id: "tiny-budget-hit", text: "Morgan selected cobalt as the launch color." } }],
+        retrievalMode: "lexical_only",
+        degradation: { code: "embedding_unavailable" },
+      };
+    };
+    const events: Array<Record<string, unknown>> = [];
+    try {
+      const service = new MemoryRetrievalService(store, { maxBytes: 1 });
+      const harness = createAgentHarness({
+        identityPath,
+        model: {
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          reference: "openai-codex:gpt-5.5",
+        },
+        runtime: {
+          async run() { return { text: "provider still ran" }; },
+        },
+        memory: service,
+      });
+
+      const response = await harness.run({
+        conversationId: "turn-degraded-empty",
+        userMessage: "What launch color did Morgan select?",
+        abortSignal: new AbortController().signal,
+        onEvent: (event) => events.push(event as Record<string, unknown>),
+      });
+
+      expect(response.text).toBe("provider still ran");
+      expect(response.failure).toBeUndefined();
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "runtime_warning",
+        warning_kind: "memory_degraded",
+      }));
+      expect(store.accesses).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

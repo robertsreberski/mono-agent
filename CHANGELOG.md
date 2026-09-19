@@ -64,6 +64,11 @@
   release notes with a refusing-when-empty script, and publish the filed
   section as the GitHub Release body.
 
+- Preserve local lexical memory matches during recognized embedding-provider
+  outages, while clearly marking automatic and explicit recall as degraded,
+  keeping statusless recall strict, and warning instead of serving meaningless
+  fragments when the automatic-context byte budget is too small.
+
 ## 0.22.0 — Persistent subagents and Projects (2026-09-16)
 
 ### Persistent subagents

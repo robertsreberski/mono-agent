@@ -23,16 +23,30 @@ import {
   type MemoryRecord,
   type RecallHit,
   type RecallOptions,
+  type RecallOutcome,
   type RecallWeights,
   type SimilarHit,
 } from "./types.js";
 import { lexicalEvidence, relevanceTokens } from "./db-relation-evidence.js";
 import { isCanonicalDailySourcePath } from "./journal-source.js";
-import type { EmbeddingProvider } from "../search/index.js";
+import {
+  MemorySearchError,
+  type EmbeddingProvider,
+  type MemorySearchErrorCode,
+} from "../search/index.js";
 
 const MIN_SEMANTIC_SIMILARITY = 0.5;
 const VECTOR_CANDIDATE_SCAN_CAP = 4_096;
+const LEXICAL_FALLBACK_EMBEDDING_CODES = new Set<MemorySearchErrorCode>([
+  "embedding_request_failed",
+  "embedding_circuit_open",
+  "embedding_response_invalid",
+]);
 export const DEFAULT_EMBEDDING_BATCH_SIZE = 32;
+
+function isEligibleEmbeddingFallback(error: unknown): error is MemorySearchError {
+  return error instanceof MemorySearchError && LEXICAL_FALLBACK_EMBEDDING_CODES.has(error.code);
+}
 
 export class MemoryDbCore {
   protected readonly db: Database;
@@ -552,22 +566,65 @@ export class MemoryDbCore {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM memories`).get() as { n: number }).n;
   }
   async recall(query: string, options: RecallOptions = {}): Promise<RecallHit[]> {
+    const outcome = await this.recallInternal(query, options, false);
+    return [...outcome.hits];
+  }
+
+  /**
+   * Opt-in local outage behavior. A narrowly identified embedding-provider
+   * failure may retain already-computed lexical candidates with explicit status;
+   * strict `recall()` callers continue to receive the original failure.
+   */
+  async recallWithOutcome(query: string, options: RecallOptions = {}): Promise<RecallOutcome> {
+    return await this.recallInternal(query, options, true);
+  }
+
+  private async recallInternal(
+    query: string,
+    options: RecallOptions,
+    allowLexicalFallback: boolean,
+  ): Promise<RecallOutcome> {
     options.abortSignal?.throwIfAborted();
     const topK = options.topK ?? 8;
     const candidates = options.candidates ?? Math.max(topK * 4, 20);
     const now = options.now ?? this.clock();
 
     const ftsIds = this.keywordCandidates(query, candidates, options.includeInvalid === true, now);
-    const vecCandidates = this.embeddings !== undefined
-      ? await this.vectorCandidates(query, candidates, options.includeInvalid === true, now, options.abortSignal)
-      : [];
+    let vecCandidates: Array<{ id: string; similarity: number }> = [];
+    let degraded = false;
+    if (this.embeddings !== undefined) {
+      try {
+        vecCandidates = await this.vectorCandidates(
+          query,
+          candidates,
+          options.includeInvalid === true,
+          now,
+          options.abortSignal,
+        );
+      } catch (error) {
+        // Caller/shutdown cancellation always wins, including a race with a
+        // provider failure. Do not perform fallback SQLite work after abort.
+        options.abortSignal?.throwIfAborted();
+        if (!allowLexicalFallback || !isEligibleEmbeddingFallback(error)) throw error;
+        degraded = true;
+      }
+    }
     options.abortSignal?.throwIfAborted();
     const vecIds = vecCandidates.map((candidate) => candidate.id);
     const vectorSimilarity = new Map(vecCandidates.map((candidate) => [candidate.id, candidate.similarity]));
     const retrieverCount = Number(vecIds.length > 0) + Number(ftsIds.length > 0);
-    // When embeddings are absent, fuse only the FTS list (RRF of one list still re-ranks correctly).
+    // With absent/unavailable embeddings, fuse only the FTS list. RRF and
+    // evidence scoring therefore use one real retriever and no semantic score.
     const fused = rrfFuse([vecIds, ftsIds], this.k);
-    if (fused.length === 0) return [];
+    const retrievalMode = this.embeddings === undefined || degraded ? "lexical_only" : "hybrid";
+    const degradation = degraded ? { code: "embedding_unavailable" as const } : undefined;
+    if (fused.length === 0) {
+      return {
+        hits: [],
+        retrievalMode,
+        ...(degradation === undefined ? {} : { degradation }),
+      };
+    }
 
     const byId = new Map(fused.map((f) => [f.id, f.rrfScore]));
     const placeholders = fused.map(() => "?").join(",");
@@ -603,11 +660,24 @@ export class MemoryDbCore {
     }
     scored.sort((a, b) => b.score - a.score || (a.record.id < b.record.id ? -1 : a.record.id > b.record.id ? 1 : 0));
     const top = scored.slice(0, topK);
-    if (options.trackAccess === false) {
-      return top;
-    }
-    this.bumpAccess(top.map((h) => h.record.id), now);
-    return top.map((h) => ({ ...h, record: { ...h.record, accessCount: h.record.accessCount + 1, lastAccessedAt: now.toISOString() } }));
+    const hits = options.trackAccess === false
+      ? top
+      : (() => {
+          this.bumpAccess(top.map((h) => h.record.id), now);
+          return top.map((h) => ({
+            ...h,
+            record: {
+              ...h.record,
+              accessCount: h.record.accessCount + 1,
+              lastAccessedAt: now.toISOString(),
+            },
+          }));
+        })();
+    return {
+      hits,
+      retrievalMode,
+      ...(degradation === undefined ? {} : { degradation }),
+    };
   }
 
   protected async vectorCandidates(

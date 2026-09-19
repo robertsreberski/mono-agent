@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { MemorySearchError, type EmbeddingProvider } from "../../search/index.js";
 import { openMemoryDb } from "../db.js";
 import { fakeEmbeddings } from "./helpers.js";
 import type { MemoryRecord } from "../types.js";
@@ -8,6 +9,23 @@ function note(id: string, text: string, over: Partial<MemoryRecord> = {}): Memor
   return {
     id, type: "note", status: "open", text, salience: 0.5, isInsight: false,
     createdAt: "2026-06-15T09:00:00.000Z", accessCount: 0, tags: [], source: {}, ...over,
+  };
+}
+
+function switchableEmbeddings(dim = 64): EmbeddingProvider & {
+  failure: unknown;
+  calls: number;
+} {
+  const healthy = fakeEmbeddings(dim);
+  return {
+    id: healthy.id,
+    failure: undefined,
+    calls: 0,
+    async embed(texts) {
+      this.calls += 1;
+      if (this.failure !== undefined) throw this.failure;
+      return await healthy.embed(texts);
+    },
   };
 }
 
@@ -122,5 +140,100 @@ describe("recall", () => {
 
     expect(hits.map((hit) => hit.record.id)).toEqual(["live-vector"]);
     db.close();
+  });
+
+  it.each([
+    "embedding_request_failed",
+    "embedding_circuit_open",
+    "embedding_response_invalid",
+  ] as const)("retains ranked lexical hits with explicit status for %s", async (code) => {
+    const embeddings = switchableEmbeddings();
+    const db = openMemoryDb({ path: ":memory:", embeddings, dim: 64 });
+    await db.upsertMany([
+      note("target", "The deploy pipeline uses blue green releases."),
+      note("noise", "Lunch preferences are unrelated."),
+    ]);
+    embeddings.calls = 0;
+    embeddings.failure = new MemorySearchError(code, "private provider detail must not escape");
+
+    const outcome = await db.recallWithOutcome("deploy pipeline releases", {
+      topK: 5,
+      trackAccess: false,
+    });
+
+    expect(outcome).toMatchObject({
+      retrievalMode: "lexical_only",
+      degradation: { code: "embedding_unavailable" },
+      hits: [expect.objectContaining({ record: expect.objectContaining({ id: "target" }) })],
+    });
+    expect(outcome.hits[0]?.score).toBeGreaterThan(0);
+    expect(embeddings.calls).toBe(1);
+    expect(db.get("target")?.accessCount).toBe(0);
+    db.close();
+  });
+
+  it("keeps healthy hybrid ranking identical on strict and status-bearing surfaces", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    await db.upsertMany([
+      note("target", "The deploy pipeline uses blue green releases."),
+      note("other", "Morgan prefers quiet mornings."),
+    ]);
+
+    const strict = await db.recall("deploy pipeline releases", { topK: 5, trackAccess: false });
+    const outcome = await db.recallWithOutcome("deploy pipeline releases", { topK: 5, trackAccess: false });
+
+    expect(outcome.retrievalMode).toBe("hybrid");
+    expect(outcome.degradation).toBeUndefined();
+    expect(outcome.hits).toEqual(strict);
+    db.close();
+  });
+
+  it("keeps legacy recall strict while the opt-in outcome can degrade", async () => {
+    const embeddings = switchableEmbeddings();
+    const db = openMemoryDb({ path: ":memory:", embeddings, dim: 64 });
+    await db.upsert(note("target", "The deploy pipeline uses blue green releases."));
+    const failure = new MemorySearchError("embedding_request_failed", "provider unavailable");
+    embeddings.failure = failure;
+
+    await expect(db.recall("deploy pipeline", { trackAccess: false })).rejects.toBe(failure);
+    await expect(db.recallWithOutcome("deploy pipeline", { trackAccess: false })).resolves.toMatchObject({
+      retrievalMode: "lexical_only",
+      degradation: { code: "embedding_unavailable" },
+    });
+    db.close();
+  });
+
+  it("treats an unconfigured lexical store as healthy, not degraded", async () => {
+    const db = openMemoryDb({ path: ":memory:" });
+    await db.upsert(note("target", "The deploy pipeline uses blue green releases."));
+
+    await expect(db.recallWithOutcome("deploy pipeline", { trackAccess: false })).resolves.toMatchObject({
+      retrievalMode: "lexical_only",
+      hits: [expect.objectContaining({ record: expect.objectContaining({ id: "target" }) })],
+    });
+    expect((await db.recallWithOutcome("deploy pipeline", { trackAccess: false })).degradation).toBeUndefined();
+    db.close();
+  });
+
+  it("does not mask cancellation, dimension mismatch, unknown provider errors, or closed databases", async () => {
+    const embeddings = switchableEmbeddings();
+    const db = openMemoryDb({ path: ":memory:", embeddings, dim: 64 });
+    await db.upsert(note("target", "The deploy pipeline uses blue green releases."));
+
+    const abort = new AbortController();
+    abort.abort(new Error("caller cancelled"));
+    embeddings.calls = 0;
+    await expect(db.recallWithOutcome("deploy pipeline", { abortSignal: abort.signal })).rejects.toThrow(/cancelled/u);
+    expect(embeddings.calls).toBe(0);
+
+    embeddings.failure = new Error("programming invariant failed");
+    await expect(db.recallWithOutcome("deploy pipeline")).rejects.toThrow(/programming invariant/u);
+
+    embeddings.failure = undefined;
+    embeddings.embed = async () => [[1, 2, 3]];
+    await expect(db.recallWithOutcome("deploy pipeline")).rejects.toThrow(/dimension mismatch/iu);
+
+    db.close();
+    await expect(db.recallWithOutcome("deploy pipeline")).rejects.toThrow();
   });
 });
