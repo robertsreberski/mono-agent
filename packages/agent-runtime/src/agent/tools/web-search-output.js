@@ -155,37 +155,42 @@ export function boundWebSearchEntries(results, { maxBytes = WEB_SEARCH_BODY_MAX_
   // so escapes and multibyte sequences count toward the bound; only snippets
   // shrink, URLs and titles keep their character-bound values intact.
   const finalSnippets = normalizedSelected.map((entry) => minimalSnippet(entry.snippet));
+  const measuredBytes = (snippets) => Buffer.byteLength(JSON.stringify(
+    normalizedSelected.map((entry, trialIndex) => toOutput(entry, snippets[trialIndex])),
+  ), "utf8");
   let truncated = omittedCount > 0 || normalizedSelected.some((entry) => entry.truncated);
   for (let index = 0; index < normalizedSelected.length; index += 1) {
     const desired = normalizedSelected[index].snippet;
     if (!desired || finalSnippets[index] === desired) continue;
-    let candidate = desired;
-    while (true) {
+    const floor = minimalSnippet(desired);
+    const floorBytes = Buffer.byteLength(floor, "utf8");
+    const desiredBytes = Buffer.byteLength(desired, "utf8");
+    const fullTrial = finalSnippets.slice();
+    fullTrial[index] = desired;
+    if (measuredBytes(fullTrial) <= budget) {
+      finalSnippets[index] = desired;
+      continue;
+    }
+    // Binary-search the largest raw snippet budget whose full serialized entry
+    // still fits. The floor is the hard minimum: highly escapable content
+    // (quotes/backslashes) can make JSON overflow far larger than the raw
+    // deficit, so subtracting the overflow from raw bytes overshoots to empty.
+    let best = floor;
+    let low = floorBytes;
+    let high = desiredBytes;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const candidate = truncateSnippetToBytes(desired, mid);
       const trial = finalSnippets.slice();
       trial[index] = candidate;
-      const size = Buffer.byteLength(JSON.stringify(
-        normalizedSelected.map((entry, trialIndex) => toOutput(entry, trial[trialIndex])),
-      ), "utf8");
-      if (size <= budget) {
-        finalSnippets[index] = candidate;
-        break;
+      if (measuredBytes(trial) <= budget) {
+        best = candidate;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
       }
-      if (candidate === minimalSnippet(desired)) {
-        finalSnippets[index] = candidate;
-        break;
-      }
-      const overflow = size - budget;
-      const candidateBytes = Buffer.byteLength(candidate, "utf8");
-      let nextBudget = candidateBytes - overflow;
-      if (nextBudget >= candidateBytes) nextBudget = candidateBytes - 1;
-      if (nextBudget < 0) nextBudget = 0;
-      const next = truncateSnippetToBytes(desired, nextBudget);
-      if (next === candidate) {
-        finalSnippets[index] = candidate;
-        break;
-      }
-      candidate = next;
     }
+    finalSnippets[index] = best;
     if (finalSnippets[index] !== desired) truncated = true;
   }
 

@@ -295,6 +295,24 @@ describe("WebSearch output bounds", () => {
       expect(entry.snippet).not.toMatch(/[\ud800-\udfff]/u);
     }
   });
+
+  it("keeps the truncation marker for highly escapable content at a tight JSON budget", () => {
+    for (const snippet of [`"`.repeat(1000), `\\`.repeat(1000), `🙂`.repeat(1000)]) {
+      const bounded = boundWebSearchEntries([
+        { title: "x", url: "https://example.com", snippet },
+      ], { maxBytes: 512 });
+
+      expect(bounded.resultCount).toBe(1);
+      expect(bounded.omittedCount).toBe(0);
+      expect(bounded.truncated).toBe(true);
+      expect(bounded.entries).toHaveLength(1);
+      expect(bounded.entries[0].url).toBe("https://example.com");
+      expect(bounded.entries[0].snippet.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER)).toBe(true);
+      expect(bounded.entries[0].snippet.length).toBeGreaterThan(0);
+      expect(Buffer.byteLength(JSON.stringify(bounded.entries), "utf8")).toBeLessThanOrEqual(512);
+      expect(bounded.entries[0].snippet).not.toMatch(/[\ud800-\udfff]/u);
+    }
+  });
 });
 
 afterEach(() => {
