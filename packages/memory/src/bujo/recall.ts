@@ -2,7 +2,7 @@ import type { MemoryBlock } from "@mono-agent/agent-contracts";
 import type { MemoryDb } from "../store/index.js";
 
 import { MARKER_FOR } from "./grammar.js";
-import { selectAnswerBearingRecallHits } from "./recall-evidence.js";
+import { hasConflictingScopedChoiceEvidence, selectAnswerBearingRecallHits } from "./recall-evidence.js";
 
 /** Confidence floor for automatic prompt injection. Deliberate tool recall may inspect lower scores. */
 export const AUTO_RECALL_MIN_SCORE = 0.65;
@@ -29,6 +29,13 @@ export function selectAutomaticRecallHits<T extends {
     ? []
     : hits.filter((hit) => hit.score >= floor).slice(0, maxHits);
   if (options.query === undefined) return selected;
+  // Contradictory scoped answers must abstain even when the score floor or the
+  // top-N slice would have exposed only one of them. This inspects the hits the
+  // caller already retrieved -- no extra lookup, and no claim about records
+  // outside that bounded candidate set.
+  const candidates = hits.filter((hit): hit is T & { readonly record: { readonly text: string } } =>
+    hit.record !== undefined);
+  if (hasConflictingScopedChoiceEvidence(options.query, candidates)) return [];
   const evidenceHits = selected.filter((hit): hit is T & { readonly record: { readonly text: string } } =>
     hit.record !== undefined);
   if (evidenceHits.length !== selected.length) return [];
