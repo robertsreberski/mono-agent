@@ -11,7 +11,7 @@ const ROOT = fileURLToPath(new URL("../", import.meta.url)).replace(/\/$/u, "");
 export function parseArguments(argv) {
   const flags = {};
   const boolean = new Set(["dry-run", "real", "help"]);
-  const valued = new Set(["corpus", "split", "reader", "extractor", "embedding-provider", "embedding-model", "dimension", "confirm-plan", "pi-auth-path"]);
+  const valued = new Set(["corpus", "dataset", "split", "reader", "extractor", "embedding-provider", "embedding-model", "dimension", "confirm-plan", "pi-auth-path"]);
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i].replace(/^--/u, "");
     if (argv[i] !== `--${key}` || Object.hasOwn(flags, key) || (!boolean.has(key) && !valued.has(key))) throw new Error("invalid_arguments");
@@ -46,15 +46,25 @@ export function profileFrom(flags) {
 export async function main(argv = process.argv.slice(2), { stdout = console.log, prepareBuild = prepareRealBuild } = {}) {
   const flags = parseArguments(argv);
   if (flags.help) {
-    stdout("memory-e2e-benchmark [--dry-run] [--corpus fictional-v1|bujo-learning-v1|capture-fidelity-v1] [--split development|evaluation] [--pi-auth-path PATH]\nDefault: scripted offline production-path contract, NOT model quality.\nReal execution: --real --reader provider:model --extractor provider:model --embedding-provider ollama|lmstudio|openai --embedding-model model --dimension N [--pi-auth-path PATH] --confirm-plan SHA256\nOAuth chat routes need --pi-auth-path pointing at an existing Pi auth file (for example the standard Pi auth file; consumers may use different paths). Without it the runtimes keep ambient environment auth. The raw path never enters plans or reports; only its fingerprint binds the confirmation.\nFirst obtain SHA256 with the same profile and --dry-run. Outputs stay under .worklab-tmp/memory-e2e. No dataset downloads or consumer configuration.");
+    stdout("memory-e2e-benchmark [--dry-run] [--corpus fictional-v1|bujo-learning-v1|capture-fidelity-v1|locomo-v1] [--dataset PATH] [--split development|evaluation] [--pi-auth-path PATH]\nDefault: scripted offline production-path contract, NOT model quality. LoCoMo requires a separately downloaded, pinned --dataset file and is CC BY-NC 4.0 noncommercial-only input.\nReal execution: --real --reader provider:model --extractor provider:model --embedding-provider ollama|lmstudio|openai --embedding-model model --dimension N [--pi-auth-path PATH] --confirm-plan SHA256\nOAuth chat routes need --pi-auth-path pointing at an existing Pi auth file (for example the standard Pi auth file; consumers may use different paths). Without it the runtimes keep ambient environment auth. Raw paths never enter plans or reports; only the auth-path fingerprint binds the confirmation.\nFirst obtain SHA256 with the same profile and --dry-run. Outputs stay under .worklab-tmp/memory-e2e. The benchmark never downloads datasets or changes consumer configuration.");
     return 0;
   }
   const { head } = sourceState(ROOT);
   const corpusName = flags.corpus ?? "fictional-v1";
-  if (!CORPORA.includes(corpusName)) throw new Error("invalid_corpus_name");
-  const loaded = await loadCorpus(corpusName);
+  const locomo = corpusName === "locomo-v1";
+  if (!locomo && !CORPORA.includes(corpusName)) throw new Error("invalid_corpus_name");
+  if (!locomo && flags.dataset !== undefined) throw new Error("dataset_requires_external_corpus");
+  const split = flags.split ?? "development";
   const profile = profileFrom(flags);
-  const plan = makePlan({ ...loaded, split: flags.split ?? "development", profile, codeRevision: head });
+  if (locomo && profile && (!profile.reader.startsWith("ollama:") || !profile.extractor.startsWith("ollama:") || profile.embeddingProvider !== "ollama")) {
+    throw new Error("locomo_requires_local_ollama_profile");
+  }
+  const loaded = locomo
+    ? await import("./lib/memory-e2e-locomo.mjs").then(({ loadLocomo }) => loadLocomo(flags.dataset))
+    : await loadCorpus(corpusName);
+  const plan = locomo
+    ? await import("./lib/memory-e2e-locomo.mjs").then(({ makeLocomoPlan }) => makeLocomoPlan({ ...loaded, split, profile, codeRevision: head }))
+    : makePlan({ ...loaded, split, profile, codeRevision: head });
   if (flags["dry-run"]) { stdout(JSON.stringify(plan, null, 2)); return 0; }
   if (flags.real && (!profile || flags["confirm-plan"] !== plan.confirmation)) throw new Error("real_execution_requires_confirmed_profile");
   if (!flags.real && (profile || flags["confirm-plan"])) throw new Error("profile_requires_explicit_real_mode");

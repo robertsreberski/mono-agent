@@ -62,6 +62,8 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(() => parseArguments(["--memory-path", "/private"])).toThrow();
     expect(() => parseArguments(["--real", "--real"])).toThrow();
     expect(() => profileFrom({ reader: "openai:model" })).toThrow("incomplete_profile");
+    await expect(main(["--dry-run", "--corpus", "locomo-v1", "--reader", "openai:model", "--extractor", "openai:model", "--embedding-provider", "ollama", "--embedding-model", "fixture", "--dimension", "8"]))
+      .rejects.toThrow("locomo_requires_local_ollama_profile");
   });
   it("the direct confirmed real command cannot import production/providers before a required build", async () => {
     const profile = ["--reader", "fixture:reader", "--extractor", "fixture:extractor", "--embedding-provider", "ollama", "--embedding-model", "fixture", "--dimension", "8"];
@@ -421,6 +423,8 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(lexicalDiagnostic("It is not amber", gold, "real").value).toBe(false);
     expect(lexicalDiagnostic("amber", gold, "scripted").value).toBeNull();
     expect(lexicalDiagnostic("amber or violet", gold, "real").value).toBe(false);
+    expect(lexicalDiagnostic("The blue bicycle", { ...gold, accepted: ["blue bicycle"], locomoCategory: 4 }, "real"))
+      .toEqual({ status: "normalized_exact_f1", exact: true, f1: 1 });
   });
   it("redacts path/credential/endpoint canaries without treating unknown values as zero", () => {
     const safe = JSON.stringify(safeArtifact({ prompt: "/Users/example/memory sk-123456789012 https://host/?token=secret", headers: { Authorization: "Bearer canary" }, cost: null, answer: "Fictional cobalt." }));

@@ -276,7 +276,8 @@ export function scriptedProviders({ source } = {}) {
           const client = new Client({ name: "memory-e2e-contract", version: "1.0.0" });
           try {
             await client.connect(new StreamableHTTPClientTransport(new URL(server.url)));
-            const args = { query: source?.question.text ?? "What was discussed?" };
+            const currentQuestion = [...(options.messages ?? [])].reverse().find((message) => message.role === "user")?.content;
+            const args = { query: source?.question?.text ?? (typeof currentQuestion === "string" ? currentQuestion : "What was discussed?") };
             await options.toolLifecycleSink?.({ phase: "invocation", toolCallId: "contract-recall", toolName: "MemoryRecall", arguments: args });
             const result = await client.callTool({ name: "MemoryRecall", arguments: args });
             await options.toolLifecycleSink?.({ phase: "result", toolCallId: "contract-recall", toolName: "MemoryRecall", state: result.isError ? "error" : "success", content: result.content });

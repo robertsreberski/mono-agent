@@ -70,6 +70,45 @@ describe("fictional E2E production-path contract, not model quality", () => {
     expect(stores).toHaveLength(6);
   }, 30000);
 
+  it("captures a batched conversation once and answers independent question contexts", async () => {
+    const input = await fixture();
+    const dataset = await script("memory-e2e-dataset");
+    const original = input.corpus.groups[0];
+    const group = {
+      id: original.id,
+      split: "development",
+      source: { turns: original.source.turns, contextPolicy: "memory-only" },
+      questions: [
+        { id: "q-one", source: { text: "First synthetic question?", timestamp: original.source.question.timestamp }, evaluation: original.evaluation },
+        { id: "q-two", source: { text: "Second synthetic question?", timestamp: original.source.question.timestamp }, evaluation: original.evaluation },
+      ],
+    };
+    const corpus = { schemaVersion: 1, name: "fictional-v1", arms: ["full-history", "bujo"], groups: [group] };
+    dataset.validateCorpus(corpus);
+    const plan = dataset.makePlan({ corpus, sha256: "synthetic-batch" });
+    const providerSources: any[] = [];
+    const providerFactory = vi.fn((args: any) => { providerSources.push(args.source); return input.providers.scriptedProviders(args); });
+    const admissions: any[] = []; const readerInputs: any[] = [];
+    const report = await input.runner.runBenchmark({ ...input, corpus, plan, providerFactory, hooks: {
+      admission: (turn: unknown) => admissions.push(turn),
+      readerInput: (_system: string, options: any, tag: any) => readerInputs.push({ tag, messages: options.messages }),
+    } });
+    expect(report.trials).toHaveLength(4);
+    expect(report.trials.every((trial: any) => trial.status === "completed")).toBe(true);
+    expect(providerFactory).toHaveBeenCalledTimes(2); // once per arm, never once per question
+    expect(JSON.stringify(providerSources)).not.toMatch(/First synthetic question|Second synthetic question/u);
+    expect(admissions).toHaveLength(4); // four sessions captured once for the single BuJo arm
+    expect(report.capture.filter((row: any) => row.arm === "bujo" && row.stage === "inventory")).toHaveLength(4);
+    expect(readerInputs).toHaveLength(4);
+    for (const row of readerInputs) {
+      const bytes = JSON.stringify(row.messages);
+      const current = row.tag.questionId === "q-one" ? "First synthetic question?" : "Second synthetic question?";
+      const other = row.tag.questionId === "q-one" ? "Second synthetic question?" : "First synthetic question?";
+      expect(bytes).toContain(current);
+      expect(bytes).not.toContain(other);
+    }
+  }, 30000);
+
   it("malformed strict extraction leaves a visible not-ready trial despite successful flush", async () => {
     const input = await fixture();
     const report = await input.runner.runBenchmark({ ...input, providerFactory: (args: any) => {

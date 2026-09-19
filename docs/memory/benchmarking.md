@@ -131,6 +131,38 @@ observed outcomes from causal claims. It uses the same `bujo` and `full-history`
 arms. Its controls are checked in and author-visible, not a blind holdout or a
 general memory-quality score.
 
+The optional `locomo-v1` adapter accepts only the 2,805,274-byte
+`data/locomo10.json` from snap-research/locomo revision
+`3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376` with SHA-256
+`79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`.
+LoCoMo is licensed [CC BY-NC 4.0](https://github.com/snap-research/locomo/blob/3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376/LICENSE.txt): obtain and use it
+separately only for a confirmed noncommercial purpose, preserve attribution,
+and do not vendor it into this repository. The benchmark never downloads it.
+Keep the local copy in an owner-only ignored directory and pass its path
+explicitly:
+
+```bash
+node scripts/memory-e2e-benchmark.mjs --dry-run --corpus locomo-v1 \
+  --dataset .worklab-tmp/private/locomo10.json --split development
+```
+
+The adapter hashes all ten unique conversations into conversation-disjoint
+partitions and selects at most one QA row per integer category by original-index
+hash before outcomes are available. It runs only the lowest-hash development
+conversation and lowest-hash held-out conversation, with separate confirmed
+plans. Missing categories and selected image-only evidence remain explicit
+not-applicable denominators; it never fetches images or forwards image URLs,
+captions, summaries, observations, references, categories, or evidence labels.
+Each chronological session is one completed-turn capture episode. Both humans
+remain explicitly attributed reports in the user payload; neither is recast as
+the host assistant. BuJo captures the conversation once and answers selected
+questions with independent histories over the same store. Full history receives
+every projected session and fails not-applicable rather than truncating.
+Reference answers stay in the local evaluator projection, where normalized
+exact match and token F1 are deterministic diagnostics, not model or human
+judgments. Confirmed LoCoMo profiles are restricted to local `ollama:` reader
+and extractor routes plus Ollama embeddings; the adapter refuses hosted routes.
+
 All five arms use the same reader, question, identity, output budget and
 controlled-text context estimate:
 

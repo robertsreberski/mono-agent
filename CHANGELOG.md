@@ -28,6 +28,9 @@
 - Reject memory E2E corpus/split selections with no groups before provider
   setup, build, or benchmark execution instead of reporting a successful
   zero-trial run.
+- Add an opt-in, noncommercial-only pinned LoCoMo adapter to the memory E2E
+  benchmark, with conversation-disjoint selection, capture-once question
+  batches, image/reference leakage barriers, and deterministic local scoring.
 
 - Return managed `WebSearch` and `WebFetch` results as a compact JSON envelope
   with `status`, host-written summary, untrusted content or results, source and
