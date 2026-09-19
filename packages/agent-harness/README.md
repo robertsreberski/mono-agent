@@ -110,6 +110,13 @@ Continuous provider sessions bind to the requested primary model. Repeated overr
 
 The built-in history store persists `providerSession.modelKey` and a strict version-4 recovery fence. Legacy unbound records load but take one cold reseed; older binaries reject newly bound records. Custom coordinators must advertise `providerSessionModelBinding: "v1"` to enable durable override sessions. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
 
+Durable provider turns hold exact-key logical/session claims rather than lifetime
+physical shard transactions, so an unrelated shard collision cannot block turn
+admission or cancellation publication. Concurrent history writers must be
+claim-aware (v0.20.0 or later); stop older writers before sharing the directory.
+This compatibility floor is not enforced against old binaries. Root maintenance
+and existing per-conversation legacy locks retain their safety boundaries.
+
 The harness is the request-to-runtime composition boundary:
 
 ### Data flow

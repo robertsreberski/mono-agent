@@ -243,7 +243,24 @@ Env vars: `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`, `MONO_AGENT_PI_TRANSPORT`, `
 
 ### Durable sessions and restart
 
-With the configured app's default history store, setting `piSessionsRoot` persists Pi sessions to JSONL and enables history-coordinated resume after restart. Before provider execution, the store publishes and fsyncs a separate owner-only dirty fence while holding a cross-process conversation lock from a fixed 16-shard table. The fixed table bounds lock files while safely serializing shard collisions; legacy per-conversation lock files are honored in place during migration. The fence does not replace, count as, or prune canonical history. A successful provider result is eligible for reuse only when it returns the exact epoch-derived id and the runtime affirmatively fsyncs both its JSONL file and parent directory. The history messages, clean provider epoch, and incremented transcript revision then publish in one atomic replacement before the fence is cleared.
+With the configured app's default history store, setting `piSessionsRoot` persists Pi sessions to JSONL and enables history-coordinated resume after restart. Before provider execution, the store publishes and fsyncs a separate owner-only dirty fence while holding cross-process logical/exact owner rows in the fixed 16-file claim registry. Physical shard collisions do not serialize unrelated provider turns or their cancellation publication; existing legacy per-conversation lock files are still honored in place. The fence does not replace, count as, or prune canonical history. A successful provider result is eligible for reuse only when it returns the exact epoch-derived id and the runtime affirmatively fsyncs both its JSONL file and parent directory. The history messages, clean provider epoch, and incremented transcript revision then publish in one atomic replacement before the fence is cleared.
+
+Concurrent writers sharing a history directory must use v0.20.0 or later and
+participate in the logical/exact claim protocol. Stop all pre-v0.20.0 writers
+before sharing that directory with an upgraded writer. This is a supported
+co-owner boundary, **not** a technical fence that rejects old binaries. Claim-aware
+older writers may still hold physical shard transactions; upgraded writers share
+their exact-key claims without waiting on unrelated shard transactions. Existing
+model-binding schema restrictions still apply independently.
+
+The root SQLite lock still serializes retention accounting, active-marker and
+dirty-fence maintenance, and history publication; it is not held across provider
+execution. Fail-closed provider retirement during root maintenance can still delay
+other mutations. Claim rows are deleted on settlement or reclaimed only after
+owner death, never stolen on a timer. The bounded registry and existing 16
+conversation-shard files remain in place; no per-conversation lock files are
+created, and no possibly-open lock inode is unlinked. Storage growth and claim
+capacity limits are unchanged.
 
 If the process dies after provider mutation but before that clean commit, the fence remains. The next same-conversation run retires the exact fenced JSONL, rotates to a new random epoch, and replays canonical history. An unrelated mutation also reclaims inactive fences as retirement journals: provider deletion and directory fsync complete before the fence is removed. If canonical epoch/revision proves that history commit succeeded and only fence cleanup crashed, maintenance preserves the valid transcript and removes only the stale fence. Beginning and aborting a fresh conversation cannot evict an older successful conversation because fences are bounded separately. Missing/v1 records, failed sync, retention that removes a record, and `appendVerbatimTurn` host-only deliveries retire and rotate provider state for the same reason.
 

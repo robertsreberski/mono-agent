@@ -1305,6 +1305,81 @@ describe("DurableConversationHistoryStore", () => {
     expect((await lstat(legacyLockPath)).mode & 0o777).toBe(0o600);
   });
 
+  for (const legacyShard of [false, true]) {
+    it(`isolates physical collisions from a live process (${legacyShard ? "claim-aware legacy shard owner" : "current owner"}) and recovers its death`, async () => {
+      const dir = await tempDir();
+      const root = join(dir, "history");
+      const firstId = "cross-process-provider-0#2026-09-19";
+      const secondId = Array.from({ length: 1_000 }, (_, i) => `unrelated-provider-${i}`)
+        .find((id) => conversationShardForTest(id) === conversationShardForTest(firstId))!;
+      expect(secondId).toBeDefined();
+      expect(secondId).not.toBe(firstId);
+      expect(conversationShardForTest(secondId)).toBe(conversationShardForTest(firstId));
+      await compileDurableHistoryFixture(dir);
+      const workerPath = join(dir, "collision-owner.mjs");
+      // Protocol fixture for >=0.20.0 co-owners: the real store owns the same
+      // logical/exact rows and dirty fence, plus the old lifetime shard lock.
+      // Do not claim compatibility with pre-claim writers.
+      await writeFile(workerPath, [
+        'import { createDurableHistoryStore } from "./durable-history.mjs";',
+        'import { DatabaseSync } from "node:sqlite";',
+        'import { join } from "node:path";',
+        'const [root, id, shard, legacy] = process.argv.slice(2);',
+        'const turn = await createDurableHistoryStore({ root }).beginProviderSessionTurn(id, "held");',
+        'const db = legacy === "true" ? new DatabaseSync(join(root, ".locks", `conversation-shard-${shard}.sqlite`)) : undefined;',
+        'db?.exec("PRAGMA journal_mode=MEMORY; BEGIN IMMEDIATE");',
+        'process.stdout.write(`HELD:${turn.providerSessionId}\\n`);',
+        'setInterval(() => {}, 60_000);',
+      ].join("\n"));
+      const child = spawn(process.execPath, [workerPath, root, firstId,
+        conversationShardForTest(firstId).toString(16).padStart(2, "0"), String(legacyShard)],
+      { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+      child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+      const exited = once(child, "exit");
+      const retired: string[] = [];
+      const store = createDurableHistoryStore({ root, retireProviderSession: async (id) => { retired.push(id); } });
+      let unrelated: ReturnType<typeof store.beginProviderSessionTurn> | undefined;
+      let same: ReturnType<typeof store.beginProviderSessionTurn> | undefined;
+      try {
+        await waitForChildOutput(child, "HELD:", 2_000);
+        const crashedId = stdout.match(/HELD:([a-f0-9]{64})/u)![1]!;
+        let unrelatedReady = false;
+        unrelated = store.beginProviderSessionTurn(secondId, "unrelated").then(async (turn) => {
+          const prepared = await turn.prepareCommit([{ role: "assistant", content: "independent commit" }], { providerSessionSynced: true });
+          await prepared.commit();
+          unrelatedReady = true;
+          return turn;
+        });
+        await expect.poll(() => unrelatedReady, { timeout: 2_000 }).toBe(true);
+        expect((await store.load(secondId))[0]?.content).toBe("independent commit");
+        let sameReady = false;
+        same = store.beginProviderSessionTurn(firstId, "recover").then((turn) => {
+          sameReady = true;
+          return turn;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(sameReady).toBe(false);
+        expect(retired).not.toContain(crashedId);
+        child.kill("SIGKILL");
+        await exited;
+        const recovered = await same;
+        expect(recovered.providerSessionId).not.toBe(crashedId);
+        expect(retired).toContain(crashedId);
+        await recovered.abort();
+        expect(await sessionClaimCount(root)).toBe(0);
+        expect(stderr).not.toContain("Error");
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        await exited;
+        await (await unrelated)?.abort();
+        await (await same)?.abort();
+      }
+    }, 15_000);
+  }
+
   it("waits for a live cross-process owner and recovers its dirty epoch after process death", async () => {
     const dir = await tempDir();
     const root = join(dir, "history");
