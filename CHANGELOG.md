@@ -23,8 +23,8 @@
   storage-schema change.
 - Let automatic direct-fact recall use finite first-party reported properties,
   choices, and work/live locations while rendering their attribution unchanged;
-  keep unsafe, ambiguous, corrected, and conflicting reports out of automatic
-  context.
+  require exact textual reporter identity, reject compatibility-hidden unsafe
+  syntax, and keep ambiguous corrections and conflicts out of automatic context.
 - Reject memory E2E corpus/split selections with no groups before provider
   setup, build, or benchmark execution instead of reporting a successful
   zero-trial run.

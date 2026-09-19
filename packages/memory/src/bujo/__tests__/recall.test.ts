@@ -112,6 +112,7 @@ describe("bounded first-party report evidence", () => {
 
   it.each([
     ["What is Avery's service port?", "Avery reports that their service port is 8443."],
+    ["What is Avery's service port?", "aVeRy reports that their service port is 8443."],
     ["Where does Avery work?", "Avery reports working in Amsterdam."],
     ["Where does Avery live?", "Avery reports living at Utrecht."],
     ["What deployment color did Avery select?", "Avery reports selecting cobalt as the deployment color."],
@@ -126,6 +127,12 @@ describe("bounded first-party report evidence", () => {
   it.each([
     ["What is Avery's service port?", "The assistant reports that Avery's service port is 8443."],
     ["What is Avery's service port?", "Morgan reports that their service port is 8443."],
+    ["What is Avery's service port?", "Averys reports that their service port is 8443."],
+    ["What deployment color did Averys select?", "Avery reports selecting cobalt as the deployment color."],
+    ["What deployment color did James select?", "Jame reports selecting cobalt as the deployment color."],
+    ["What deployment color did Jame select?", "James reports selecting cobalt as the deployment color."],
+    ["What deployment color did Harris select?", "Harri reports selecting cobalt as the deployment color."],
+    ["What deployment color did Harri select?", "Harris reports selecting cobalt as the deployment color."],
     ["What is Avery's service port?", "Avery reports that Morgan's service port is 8443."],
     ["What is Avery's service port?", "Avery reports that his service port is 8443."],
     ["What is Avery's service port?", "Avery reports that my service port is 8443."],
@@ -148,8 +155,32 @@ describe("bounded first-party report evidence", () => {
     ["What is Avery's service port?", "Avery reports\u200b that their service port is 8443."],
     ["What is Avery's service port?", "Avery reports that their service port is 8443\u202e."],
     ["What is Avery's service port?", "Avery reports that their service port is 8443\ud800."],
+    ["What is Avery's service port?", "Avery reports that their service port is ＂8443＂."],
+    ["What is Avery's service port?", "Avery reports that their service port is ＇8443＇."],
+    ["What is Avery's service port?", "Avery reports that their service port is 8443： backup."],
+    ["What is Avery's service port?", "Avery reports that their service port is 8443； backup."],
+    ["What is Avery's service port?", "Avery reports that their service port is 8443， backup."],
   ])("rejects unsafe, ambiguous, unsupported, or non-self attribution: %s / %s", (query, text) => {
     expect(hasAutomaticRecallEvidence(query, [{ record: { text } }])).toBe(false);
+  });
+
+  it("keeps legacy canonical-name stemming out of the stricter reporter identity boundary", () => {
+    const query = "What deployment color did Harris select?";
+    const canonical = {
+      id: "canonical",
+      score: 0.99,
+      record: { text: "Harri selected cobalt as the deployment color." },
+    };
+    const attributed = {
+      id: "attributed",
+      score: 0.99,
+      record: { text: "Harri reports selecting cobalt as the deployment color." },
+    };
+
+    // Canonical direct-fact matching already stemmed these names before the
+    // attributed wrapper existed; this hardening does not change that behavior.
+    expect(selectAutomaticRecallHits([canonical], { query })).toEqual([canonical]);
+    expect(selectAutomaticRecallHits([attributed], { query })).toEqual([]);
   });
 
   it("preserves scope identity and does not let an attributed choice omit or change scope", () => {
@@ -194,6 +225,41 @@ describe("bounded first-party report evidence", () => {
         text: "Avery reports selecting amber as the deployment color.",
       } },
     ], { query: "What deployment color did Avery select?" })).toEqual([]);
+  });
+
+  it("treats same-property correction language as ambiguity before score and top-N slicing", () => {
+    const query = "What is Avery's phone number?";
+    const canonical = {
+      id: "canonical",
+      score: 0.95,
+      record: { text: "Avery's phone number is 555-0100." },
+    };
+    const corrections = [
+      "Avery reports that their phone number was 555-0100 but corrected it to 555-0199.",
+      "Avery reports that their phone number was previously 555-0100 but is now 555-0199.",
+      "Avery reports that their phone number is 555-0100, which is wrong.",
+    ];
+
+    for (const [index, text] of corrections.entries()) {
+      const correction = { id: `correction-${index}`, score: 0.7, record: { text } };
+      expect(selectAutomaticRecallHits([canonical, correction], { query })).toEqual([]);
+      expect(selectAutomaticRecallHits([correction], { query })).toEqual([]);
+    }
+
+    const fillers = Array.from({ length: 5 }, (_, index) => ({
+      id: `filler-${index}`,
+      score: 0.94 - index * 0.01,
+      record: { text: `Unrelated gardening note ${index}.` },
+    }));
+    expect(selectAutomaticRecallHits([
+      canonical,
+      ...fillers,
+      {
+        id: "below-floor-correction",
+        score: 0.1,
+        record: { text: corrections[0]! },
+      },
+    ], { query })).toEqual([]);
   });
 
   it("keeps agreeing canonical and attributed records without stripping the report text", () => {
