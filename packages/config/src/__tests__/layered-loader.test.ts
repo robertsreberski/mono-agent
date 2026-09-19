@@ -175,6 +175,21 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT).toBeUndefined();
   });
 
+  it("projects Hound endpoint blocks while real env wins", () => {
+    const layered = layerJsonOntoEnv({ tools: { web: {
+      search: { backend: "hound", hound: { endpoint: "http://127.0.0.1:8765/mcp" } },
+      fetch: { provider: "hound", hound: { endpoint: "http://127.0.0.1:8765/mcp" } },
+    } } }, {
+      MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT: "http://localhost:8765/mcp",
+    });
+    expect(layered).toMatchObject({
+      MONO_AGENT_WEB_SEARCH_BACKEND: "hound",
+      MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT: "http://127.0.0.1:8765/mcp",
+      MONO_AGENT_WEB_FETCH_PROVIDER: "hound",
+      MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT: "http://localhost:8765/mcp",
+    });
+  });
+
   it("lets the canonical fallback env override JSON", () => {
     const json = {
       runtime: { fallbacks: [{ model: "anthropic:claude-sonnet-4-6" }] },

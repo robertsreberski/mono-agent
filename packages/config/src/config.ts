@@ -230,7 +230,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   );
   const webSearchBackend = readWebProviderSelection<WebSearchBackend>(
     input.env.MONO_AGENT_WEB_SEARCH_BACKEND, "MONO_AGENT_WEB_SEARCH_BACKEND",
-    ["searxng", "ollama", "codex", "keyless", "duckduckgo", "startpage", "parallel"],
+    ["searxng", "ollama", "codex", "keyless", "duckduckgo", "startpage", "parallel", "hound"],
     ["parallel", "ollama"], input.env,
   );
   const legacyWebSearchEndpoint = readWebSearchEndpoint(
@@ -271,9 +271,31 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   }
   const webSearchParallel = readParallelWebConfig(input.env, "MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV");
   const webFetchParallel = readParallelWebConfig(input.env, "MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV");
-  const webFetchProvider = readWebProviderSelection<"local" | "parallel">(
-    input.env.MONO_AGENT_WEB_FETCH_PROVIDER, "MONO_AGENT_WEB_FETCH_PROVIDER", ["local", "parallel"], "local", input.env,
+  const webSearchHound = readHoundWebEndpoint(
+    input.env.MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT,
+    "MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT",
   );
+  const webFetchHound = readHoundWebEndpoint(
+    input.env.MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT,
+    "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT",
+  );
+  if (selectedWebProvider(webSearchBackend, "hound") && webSearchHound === undefined) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT is required when MONO_AGENT_WEB_SEARCH_BACKEND=hound.",
+      { env: "MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT" },
+    );
+  }
+  const webFetchProvider = readWebProviderSelection<"local" | "parallel" | "hound">(
+    input.env.MONO_AGENT_WEB_FETCH_PROVIDER, "MONO_AGENT_WEB_FETCH_PROVIDER", ["local", "parallel", "hound"], "local", input.env,
+  );
+  if (selectedWebProvider(webFetchProvider, "hound") && webFetchHound === undefined) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT is required when MONO_AGENT_WEB_FETCH_PROVIDER=hound.",
+      { env: "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT" },
+    );
+  }
   const webFetchRender = readChoice<WebFetchRenderMode>(
     input.env.MONO_AGENT_WEB_FETCH_RENDER,
     "MONO_AGENT_WEB_FETCH_RENDER",
@@ -324,11 +346,13 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
         maxRequestsPerRun: webSearchMaxRequestsPerRun,
         ...(webSearchEndpoint === undefined ? {} : { searxng: { endpoint: webSearchEndpoint } }),
         ...(webSearchOllama === undefined ? {} : { ollama: webSearchOllama }),
+        ...(webSearchHound === undefined ? {} : { hound: { endpoint: webSearchHound } }),
         codex: { model: webSearchCodexModel },
       },
       fetch: {
         provider: webFetchProvider,
         ...(webFetchParallel === undefined ? {} : { parallel: webFetchParallel }),
+        ...(webFetchHound === undefined ? {} : { hound: { endpoint: webFetchHound } }),
         render: webFetchRender,
         browserCommand: webBrowserCommand,
       },
@@ -1060,6 +1084,42 @@ function readWebSearchEndpoint(raw: string | undefined, source: string): string 
     throw new MonoAgentConfigError(
       "invalid_env",
       `${source} must be an unauthenticated loopback HTTP URL.`,
+      { env: source },
+    );
+  }
+}
+
+/**
+ * User-managed Hound MCP endpoint: unauthenticated loopback HTTP, preserving
+ * the operator's path, which must address the streamable-HTTP handler
+ * (`/mcp`). The endpoint is trusted — this validates where Mono connects, not
+ * what the remote Hound server does internally.
+ */
+function readHoundWebEndpoint(raw: string | undefined, source: string): string | undefined {
+  const normalized = normalizeOptionalString(raw);
+  if (normalized === undefined) return undefined;
+  try {
+    const endpoint = new URL(normalized);
+    const host = endpoint.hostname.toLowerCase().replace(/^\[|\]$/gu, "");
+    if (
+      endpoint.protocol !== "http:"
+      || !["localhost", "127.0.0.1", "::1"].includes(host)
+      || endpoint.username
+      || endpoint.password
+      || endpoint.search
+      || endpoint.hash
+    ) {
+      throw new Error("not loopback HTTP");
+    }
+    endpoint.pathname = endpoint.pathname.replace(/\/+$/u, "");
+    if (!endpoint.pathname.endsWith("/mcp")) {
+      throw new Error("missing /mcp path");
+    }
+    return endpoint.href.replace(/\/+$/u, "");
+  } catch {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source} must be an unauthenticated loopback HTTP URL with an explicit /mcp path (for example http://127.0.0.1:8765/mcp).`,
       { env: source },
     );
   }

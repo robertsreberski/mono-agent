@@ -66,8 +66,8 @@ Equivalent environment overrides exist for headless deploys:
 | `tools.disallowedTools` | `MONO_AGENT_DISALLOWED_TOOLS` |
 | `tools.mcpConfigPath` | `MONO_AGENT_MCP_CONFIG_PATH` |
 | `tools.continuationServers` | `MONO_AGENT_CONTINUATION_SERVERS` |
-| `tools.web.search.backend` / `.maxRequestsPerRun` / `.searxng.endpoint` / `.ollama.*` / `.codex.model` | `MONO_AGENT_WEB_SEARCH_BACKEND` / `MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN` / `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` / `MONO_AGENT_WEB_SEARCH_OLLAMA_*` / `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` |
-| `tools.web.fetch.render` / `.browserCommand` | `MONO_AGENT_WEB_FETCH_RENDER` / `MONO_AGENT_WEB_BROWSER_COMMAND` |
+| `tools.web.search.backend` / `.maxRequestsPerRun` / `.searxng.endpoint` / `.hound.endpoint` / `.ollama.*` / `.codex.model` | `MONO_AGENT_WEB_SEARCH_BACKEND` / `MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN` / `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` / `MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT` / `MONO_AGENT_WEB_SEARCH_OLLAMA_*` / `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` |
+| `tools.web.fetch.provider` / `.hound.endpoint` / `.render` / `.browserCommand` | `MONO_AGENT_WEB_FETCH_PROVIDER` / `MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT` / `MONO_AGENT_WEB_FETCH_RENDER` / `MONO_AGENT_WEB_BROWSER_COMMAND` |
 | `sandbox.mode` | `MONO_AGENT_SANDBOX_MODE` |
 | `sandbox.network.mode` / `.allowlist` | `MONO_AGENT_SANDBOX_NETWORK` / `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` |
 | `sandbox.fallback` | `MONO_AGENT_SANDBOX_FALLBACK` |

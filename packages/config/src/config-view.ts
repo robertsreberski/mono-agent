@@ -139,6 +139,8 @@ export const CONFIG_ENV_KEYS = {
   "tools.web.search.maxRequestsPerRun": "MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN",
   "tools.web.search.endpoint": "MONO_AGENT_WEB_SEARCH_ENDPOINT",
   "tools.web.search.searxng.endpoint": "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT",
+  "tools.web.search.hound.endpoint": "MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT",
+  "tools.web.fetch.hound.endpoint": "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT",
   "tools.web.search.ollama.baseUrl": "MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL",
   "tools.web.search.ollama.apiKeyEnv": "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV",
   "tools.web.search.ollama.trustPublicUrl": "MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL",
@@ -865,6 +867,28 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
           ? "env"
           : json.tools?.web?.search?.searxng?.endpoint !== undefined
               || json.tools?.web?.search?.endpoint !== undefined
+            ? "json"
+            : "default",
+      }),
+      toField(env, {
+        id: "tools.web.search.hound.endpoint",
+        label: "Hound search endpoint",
+        value: tools.web?.search.hound?.endpoint ?? "not configured",
+        jsonPresent: json.tools?.web?.search?.hound?.endpoint !== undefined,
+        source: envHas(env, "MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT")
+          ? "env"
+          : json.tools?.web?.search?.hound?.endpoint !== undefined
+            ? "json"
+            : "default",
+      }),
+      toField(env, {
+        id: "tools.web.fetch.hound.endpoint",
+        label: "Hound fetch endpoint",
+        value: tools.web?.fetch?.hound?.endpoint ?? "not configured",
+        jsonPresent: json.tools?.web?.fetch?.hound?.endpoint !== undefined,
+        source: envHas(env, "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT")
+          ? "env"
+          : json.tools?.web?.fetch?.hound?.endpoint !== undefined
             ? "json"
             : "default",
       }),

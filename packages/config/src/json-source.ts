@@ -261,6 +261,9 @@ export interface MonoAgentConfigJson extends SettingsJson {
         readonly searxng?: {
           readonly endpoint?: string;
         };
+        readonly hound?: {
+          readonly endpoint?: string;
+        };
         readonly ollama?: {
           readonly baseUrl?: string;
           readonly apiKeyEnv?: string;
@@ -273,6 +276,9 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly fetch?: {
         readonly provider?: string | readonly string[];
         readonly parallel?: { readonly apiKeyEnv?: string };
+        readonly hound?: {
+          readonly endpoint?: string;
+        };
         readonly render?: string;
         readonly browserCommand?: string;
       };

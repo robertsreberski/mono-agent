@@ -750,13 +750,23 @@ async function searchOneQuery(query, options) {
       failures.push({ ok: false, backend: name, code: "backend_unavailable", message: `${name} requirements are not satisfied.`, retryable: false });
       continue;
     }
-    const admission = provider.admission(options.config);
+    // Provider preflight runs before admission is constructed or the
+    // coordinator is touched: a provider that cannot legally attempt under the
+    // resolved policy must not wait on, consume, or poison shared admission
+    // state. Only providers with remote side effects implement it; absence
+    // means proceed. The in-provider gate stays as defense in depth.
+    const preflight = provider.preflight?.(options);
     let result;
-    if (provider.networkTargets(options.config).some((url) => !options.sandbox.networkAllowsUrl(options.policy, url))) {
-      result = { ok: false, backend: name, message: "Network access denied by sandbox policy.", retryable: false };
+    if (preflight) {
+      result = { ok: false, backend: name, ...preflight };
     } else {
-      result = await searchWithRequestCount(options, () => guardedSearch(admission.kind, admission.key,
-        { ...options, admission }, () => provider.search(query, options)));
+      const admission = provider.admission(options.config);
+      if (provider.networkTargets(options.config).some((url) => !options.sandbox.networkAllowsUrl(options.policy, url))) {
+        result = { ok: false, backend: name, message: "Network access denied by sandbox policy.", retryable: false };
+      } else {
+        result = await searchWithRequestCount(options, () => guardedSearch(admission.kind, admission.key,
+          { ...options, admission }, () => provider.search(query, options)));
+      }
     }
     rememberProviderDeferral(result, options.searchState);
     // Strict names preserve provider errors and raw results for the outer gate.

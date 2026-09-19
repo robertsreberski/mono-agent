@@ -415,6 +415,7 @@ execToolRun
 globToolImpl
 grepToolImpl
 inspectCodexSubscriptionSearch
+inspectHoundWeb
 inspectParallelWeb
 isPathAllowed
 isWorkdirAllowed
@@ -785,8 +786,8 @@ Per-call options (a non-exhaustive selection):
 | `skills` / `skillsRoot` | `{name, description}[]` / `string` | Skills disclosed to the run and the directory holding `<name>/SKILL.md`. |
 | `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http). |
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
-| `webSearchConfig` | `{ backend?, maxRequestsPerRun?, searxng?: { endpoint? }, ollama?: { baseUrl?, apiKey?, apiKeyEnv?, trustPublicUrl? }, codex?: { model? } }` | Run-scoped ordered WebSearch selection and a 1–20 answered-search budget (default 4), including empty answers. Failed attempts are refunded; network dispatches are capped at four times the budget. The default chain is Parallel then local Ollama; names are strict and arrays are ordered fallback chains. Keyless is opt-in; `auto` is rejected. The deprecated top-level `endpoint` remains a SearXNG compatibility alias. |
-| `webFetchConfig` | `{ render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. |
+| `webSearchConfig` | `{ backend?, maxRequestsPerRun?, searxng?: { endpoint? }, hound?: { endpoint? }, ollama?: { baseUrl?, apiKey?, apiKeyEnv?, trustPublicUrl? }, codex?: { model? } }` | Run-scoped ordered WebSearch selection and a 1–20 answered-search budget (default 4), including empty answers. Failed attempts are refunded; network dispatches are capped at four times the budget. The default chain is Parallel then local Ollama; names are strict and arrays are ordered fallback chains. Keyless and Hound are opt-in; `auto` is rejected. The deprecated top-level `endpoint` remains a SearXNG compatibility alias. A Hound selection requires its user-managed loopback HTTP MCP endpoint with an explicit `/mcp` path; actual Hound search is refused under any restricted sandbox network policy before quota or dispatch. |
+| `webFetchConfig` | `{ provider?, hound?: { endpoint? }, render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. The default provider is local; `parallel` and `hound` opt into remote extraction. A Hound selection requires its user-managed loopback HTTP MCP endpoint with an explicit `/mcp` path; actual Hound fetch is HTTP-only and refused under any restricted sandbox network policy before admission or dispatch. |
 | `piToolExecutionMode` | `"safe-parallel" \| "sequential"` | Pi built-in scheduling. Safe parallelism is the default; read-only tools may overlap only when the offered tool set contains no stateful/mutating or MCP tool. Otherwise Pi 0.85 serializes the whole batch. |
 | `maxTurns` | `number` | Hard cap on agent turns. |
 | `outputSchema` | `JSONSchema` | Requests structured JSON; see “Structured output” below. |
