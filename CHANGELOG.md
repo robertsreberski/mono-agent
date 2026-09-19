@@ -17,6 +17,11 @@
   redirects, retries, and keys are not governed. Doctor liveness uses only
   `tools/list`.
 
+- Keep model-guided BuJo capture faithful to speaker, evidence, and preference
+  scope; distinguish corrected reports from actual state changes and avoid
+  turning observed outcomes into causal proof, without extra model calls or a
+  storage-schema change.
+
 - Return managed `WebSearch` and `WebFetch` results as a compact JSON envelope
   with `status`, host-written summary, untrusted content or results, source and
   coverage metadata, and typed `next_actions`. Add deterministic `WebFetch`
