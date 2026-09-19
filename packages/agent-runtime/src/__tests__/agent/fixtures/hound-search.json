@@ -1,0 +1,41 @@
+{
+  "query": "Hound MCP smart fetch",
+  "results": [
+    {
+      "title": "Hound smart fetch conventions",
+      "url": "https://docs.example.com/hound/smart-fetch",
+      "snippet": "Hound smart fetch requests HTTP-only extraction with explicit options.",
+      "relevance_score": 0.92,
+      "fetch_relevance": "high",
+      "engines_consensus": "3 of 8",
+      "source_type": "docs"
+    },
+    {
+      "title": "Loopback MCP endpoint setup",
+      "url": "https://docs.example.com/hound/endpoint",
+      "snippet": "Point the operator-managed endpoint at the local streamable HTTP handler.",
+      "relevance_score": 0.71,
+      "fetch_relevance": "med",
+      "engines_consensus": "2 of 8",
+      "source_type": "docs"
+    },
+    {
+      "title": "Unrelated forum thread",
+      "url": "https://forum.example.com/threads/42",
+      "snippet": "A forum discussion that barely mentions the query terms.",
+      "relevance_score": 0.2,
+      "fetch_relevance": "low",
+      "engines_consensus": "1 of 8",
+      "source_type": "forum"
+    }
+  ],
+  "total_results": 3,
+  "duration_ms": 1840.5,
+  "engines_used": ["duckduckgo", "brave", "mojeek"],
+  "engine_blocked": ["yandex"],
+  "fetch_hint": "2 high/med results; smart_fetch the high result first",
+  "summary": "3 results from 3 engines in 1.8s",
+  "next_action": "smart_fetch the high result",
+  "related_queries": ["Hound MCP endpoint options"],
+  "error": ""
+}

@@ -14,8 +14,8 @@ import type {
 
 export type MemoryWriteMode = (typeof MEMORY_WRITE_MODES)[number];
 export type MemoryMode = (typeof MEMORY_MODES)[number];
-export type WebSearchBackend = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel";
-export type WebFetchProvider = "local" | "parallel";
+export type WebSearchBackend = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel" | "hound";
+export type WebFetchProvider = "local" | "parallel" | "hound";
 export interface ParallelWebConfig {
   /** Environment variable name only; the credential is read at call time. */
   readonly apiKeyEnv?: string;
@@ -24,6 +24,18 @@ export type WebFetchRenderMode = "never" | "auto";
 
 export interface SearxngWebSearchConfig {
   /** SearXNG must be unauthenticated loopback HTTP. */
+  readonly endpoint: string;
+}
+
+/**
+ * User-managed Hound MCP endpoint (search or fetch). Explicit opt-in only:
+ * the operator runs `hound` separately and points Mono at its loopback
+ * streamable-HTTP URL (including the `/mcp` path). The endpoint is trusted:
+ * per-call arguments request behavior and responses are validated, but neither
+ * governs the remote server's internal redirects, retries, proxies, or keys.
+ */
+export interface HoundWebEndpointConfig {
+  /** Hound must be unauthenticated loopback HTTP with an explicit `/mcp` path. */
   readonly endpoint: string;
 }
 
@@ -455,6 +467,8 @@ export interface MonoAgentConfig {
         readonly searxng?: SearxngWebSearchConfig;
         readonly ollama?: OllamaWebSearchConfig;
         readonly parallel?: ParallelWebConfig;
+        /** User-managed Hound MCP endpoint, required when the search chain selects hound. */
+        readonly hound?: HoundWebEndpointConfig;
         /** ChatGPT-subscription Codex app-server search settings. */
         readonly codex?: {
           /** Defaults to the low-cost, low-latency GPT-5.6 Luna route. */
@@ -464,6 +478,8 @@ export interface MonoAgentConfig {
       readonly fetch: {
         readonly provider?: WebFetchProvider | readonly WebFetchProvider[];
         readonly parallel?: ParallelWebConfig;
+        /** User-managed Hound MCP endpoint, required when the fetch chain selects hound. */
+        readonly hound?: HoundWebEndpointConfig;
         readonly render: WebFetchRenderMode;
         readonly browserCommand: string;
       };

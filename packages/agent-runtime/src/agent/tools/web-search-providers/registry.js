@@ -1,5 +1,6 @@
 // @ts-check
 import { parallelProvider } from "./parallel.js";
+import { houndProvider } from "./hound.js";
 import { searxngProvider } from "./searxng.js";
 import { ollamaProvider } from "./ollama.js";
 import { codexProvider } from "./codex.js";
@@ -17,6 +18,9 @@ import { startpageProvider } from "./startpage.js";
  * search claims immediately before dispatch, via web-search-state; setup and
  * failed responses are refunded by the chain. batchesQueries providers receive
  * options.queries in primary-first order; others receive sequential queries.
+ * An optional preflight may refuse the attempt before admission is constructed
+ * or the coordinator is touched (no quota claimed, no dispatch); it returns a
+ * failure object or nullish to proceed.
  *
  * @typedef {Object} SearchProvider
  * @property {string} name
@@ -28,6 +32,7 @@ import { startpageProvider } from "./startpage.js";
  * @property {boolean} batchesQueries
  * @property {boolean} [primaryOnly]
  * @property {number} [chainDeadlineMs]
+ * @property {((options: any) => {code: string, message: string, retryable: boolean} | null | undefined)} [preflight]
  * @property {(query: string, options: any) => any} search
  */
 
@@ -46,7 +51,7 @@ export function registerSearchProvider(provider) {
   return () => { webSearchProviders.delete(provider.name); };
 }
 
-for (const provider of [searxngProvider, ollamaProvider, codexProvider, duckduckgoProvider, startpageProvider, parallelProvider]) {
+for (const provider of [searxngProvider, ollamaProvider, codexProvider, duckduckgoProvider, startpageProvider, parallelProvider, houndProvider]) {
   registerSearchProvider(provider);
 }
 
