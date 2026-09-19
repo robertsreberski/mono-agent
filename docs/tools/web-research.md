@@ -451,7 +451,9 @@ structured tool failures; browser rendering never runs for those responses.
 
 Use `start_line` (one-based) and `max_lines` (1–10000, default 200 when slicing).
 Omitting both preserves the normal capped document output. `max_output_chars`
-bounds the returned page content only; envelope framing (summary, coverage,
+bounds the returned page content to exactly that many page characters; the
+truncation notice and any saved-artifact path appear in the summary, never
+inside the content. Envelope framing (summary, coverage,
 and next actions) always sits outside that budget and is never cut to fit it.
 A view that starts after line 1 omits earlier lines and is `partial`, even the
 final page; a `start_line` beyond the total reports no content as `partial`

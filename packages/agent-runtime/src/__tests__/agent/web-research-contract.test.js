@@ -332,10 +332,51 @@ describe("managed web-research contract", () => {
     const payload = JSON.parse(result.text);
     expect(payload).toMatchObject({ tool: "WebFetch", status: "partial", code: "ok" });
     expect(payload.coverage.truncated).toBe(true);
+    // Content holds only page characters within the exact budget.
+    expect(payload.content.length).toBeLessThanOrEqual(120);
+    expect(payload.content).not.toContain("[truncated");
     expect(payload.summary).toContain("budget");
-    // The budget cannot even advance one line, so no schema-valid advance
-    // exists; the stalled summary names the remedy instead of a dead action.
-    expect(payload).not.toHaveProperty("next_actions");
+    // The cut lands mid-line: the continuation resumes at that line instead
+    // of skipping it, and the line is never claimed as fully shown.
+    expect(payload.summary).toContain("partially shown");
+    assertValidNextActions(payload.next_actions);
+    expect(payload.next_actions).toHaveLength(1);
+    expect(payload.coverage.nextLine).toBe(payload.next_actions[0].args.start_line);
+    expect(result.outcome.next_actions).toEqual(payload.next_actions);
+  });
+
+  it.each([1, 120, 200, 260])("caps content at exactly %i characters with and without a persisted artifact", async (budget) => {
+    const doc = "q".repeat(400);
+    for (const withArtifact of [false, true]) {
+      const ctx = withArtifact
+        ? { ...runtimeContext(), persistArtifact: () => `/tmp/tool-output/${"p".repeat(300)}.txt` }
+        : runtimeContext();
+      const result = await performWebFetch({ url: "https://example.com/exact", format: "text", max_output_chars: budget }, {
+        fetchImpl: async () => new Response(doc, { headers: { "content-type": "text/plain" } }),
+        ctx,
+      });
+      const payload = JSON.parse(result.text);
+      expect(payload).toMatchObject({ tool: "WebFetch", status: "partial", code: "ok" });
+      expect(payload.content.length).toBeLessThanOrEqual(budget);
+      expect(payload.content).not.toContain("[truncated");
+      expect(payload.coverage.truncated).toBe(true);
+      expect(payload.summary).toContain("budget");
+      if (withArtifact) expect(payload.summary).toContain("saved to");
+      expect(result.outcome).toMatchObject({ status: "partial", truncated: true });
+      expect(result.outcome.status).toBe(payload.status);
+    }
+  });
+
+  it("returns content unchanged when below the budget", async () => {
+    const doc = "Short fixture body, well under budget.";
+    const result = await performWebFetch({ url: "https://example.com/short", format: "text", max_output_chars: 120 }, {
+      fetchImpl: async () => new Response(doc, { headers: { "content-type": "text/plain" } }),
+      ctx: runtimeContext(),
+    });
+    const payload = JSON.parse(result.text);
+    expect(payload).toMatchObject({ tool: "WebFetch", status: "ok", code: "ok" });
+    expect(payload.content).toBe(doc);
+    expect(payload.coverage.truncated).toBe(false);
   });
 
   it("marks the final page partial when earlier lines are omitted", async () => {
@@ -365,45 +406,6 @@ describe("managed web-research contract", () => {
     expect(payload.summary).toContain("beyond");
     expect(payload.coverage).toMatchObject({ startLine: 20, totalLines: 10, truncated: true });
     expect(payload).not.toHaveProperty("next_actions");
-  });
-
-  it("honors an exact small content budget below the shared floor", async () => {
-    const doc = "x".repeat(150);
-    const result = await performWebFetch({ url: "https://example.com/budget", format: "text", max_output_chars: 120 }, {
-      fetchImpl: async () => new Response(doc, { headers: { "content-type": "text/plain" } }),
-      ctx: runtimeContext(),
-    });
-    const payload = JSON.parse(result.text);
-    expect(payload).toMatchObject({ tool: "WebFetch", status: "partial", code: "ok" });
-    expect(payload.coverage.truncated).toBe(true);
-    expect(payload.content.length).toBeLessThanOrEqual(130);
-    expect(payload.content).toContain("[truncated WebFetch output:");
-    expect(result.outcome).toMatchObject({ status: "partial", truncated: true });
-  });
-
-  it("survives a very small content budget without diverging status and coverage", async () => {
-    const doc = "y".repeat(150);
-    const result = await performWebFetch({ url: "https://example.com/tiny", format: "text", max_output_chars: 20 }, {
-      fetchImpl: async () => new Response(doc, { headers: { "content-type": "text/plain" } }),
-      ctx: runtimeContext(),
-    });
-    const payload = JSON.parse(result.text);
-    expect(payload).toMatchObject({ tool: "WebFetch", status: "partial", code: "ok" });
-    expect(payload.coverage.truncated).toBe(true);
-    expect(result.outcome.status).toBe(payload.status);
-  });
-
-  it("keeps the shared-helper path consistent for budgets at or above its floor", async () => {
-    const doc = "z".repeat(600);
-    const result = await performWebFetch({ url: "https://example.com/floor", format: "text", max_output_chars: 250 }, {
-      fetchImpl: async () => new Response(doc, { headers: { "content-type": "text/plain" } }),
-      ctx: runtimeContext(),
-    });
-    const payload = JSON.parse(result.text);
-    expect(payload).toMatchObject({ tool: "WebFetch", status: "partial", code: "ok" });
-    expect(payload.coverage.truncated).toBe(true);
-    expect(payload.content.length).toBeLessThanOrEqual(260);
-    expect(result.outcome.status).toBe(payload.status);
   });
 
   it("applies focus post-extraction and keeps the focused continuation consistent", async () => {

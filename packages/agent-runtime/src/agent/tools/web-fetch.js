@@ -5,7 +5,7 @@ import { withWebDeadline, coordinatedWebRequest, webRequestFailure } from "./web
 
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "./shared/constants.js";
-import { capChars, truncationSuffix, writeToolArtifact } from "./shared/output-truncation.js";
+import { capChars, writeToolArtifact } from "./shared/output-truncation.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { renderWithAgentBrowser } from "./web-browser-render.js";
@@ -727,26 +727,48 @@ export function formatWebFetchDocument(document, params, ctx) {
   const start = params.start_line ?? 1;
   const count = params.max_lines ?? 200;
   const selected = focusNoMatch ? "" : (ranged ? lines.slice(start - 1, start - 1 + count).join("\n") : focusedBody);
-  const maxChars = positiveInteger(params.max_output_chars, DEFAULT_MAX_TOOL_OUTPUT_CHARS);
-  let capped = focusNoMatch ? "" : capChars(selected, { label: "WebFetch", maxChars, ctx });
-  // The shared capChars floors small budgets to 200 characters globally.
-  // Honor an exact positive caller budget here for the page content only:
-  // envelope framing (summary, coverage, next actions) always sits outside
-  // it. The shared helper's global behavior is unchanged.
-  const explicitBudget = Number.isSafeInteger(params.max_output_chars) && params.max_output_chars > 0
-    ? params.max_output_chars
+  const requestedBudget = Number(params.max_output_chars);
+  const explicitBudget = Number.isFinite(requestedBudget) && requestedBudget > 0
+    ? Math.floor(requestedBudget)
     : null;
-  if (!focusNoMatch && explicitBudget !== null && capped.length > explicitBudget) {
-    const artifact = writeToolArtifact("WebFetch", selected, ctx);
-    const suffix = truncationSuffix({ label: "WebFetch", shown: explicitBudget, total: selected.length, artifact, hint: undefined });
-    capped = `${selected.slice(0, Math.max(0, explicitBudget - suffix.length))}${suffix}`;
+  const maxChars = explicitBudget ?? DEFAULT_MAX_TOOL_OUTPUT_CHARS;
+  // Content carries only actual page characters. An explicit caller budget is
+  // enforced exactly on the content; envelope framing (summary, coverage, next
+  // actions) always sits outside it, with the truncation notice and any
+  // saved-artifact path in the summary instead of a marker inside content.
+  // Without an explicit budget the shared capChars path applies unchanged.
+  // The artifact is written at most once: only the explicit path writes here,
+  // and it never calls capChars.
+  let content;
+  let truncationArtifact = null;
+  if (focusNoMatch) {
+    content = "";
+  } else if (explicitBudget !== null) {
+    if (selected.length <= explicitBudget) {
+      content = selected;
+    } else {
+      content = selected.slice(0, explicitBudget);
+      truncationArtifact = writeToolArtifact("WebFetch", selected, ctx);
+    }
+  } else {
+    content = capChars(selected, { label: "WebFetch", maxChars, ctx });
   }
-  const shownLines = focusNoMatch || capped !== selected
-    ? (focusNoMatch ? 0 : Math.max(0, capped.slice(0, capped.lastIndexOf("[truncated WebFetch output:")).split("\n").length - 1))
-    : (selected ? selected.split("\n").length : 0);
+  const contentTruncated = content !== selected;
+  // Line coordinates derive from the actual shown page prefix: only complete
+  // lines count, so a line cut mid-budget is resumed (not skipped) by the
+  // continuation and never claimed as fully shown.
+  let shownLines;
+  if (focusNoMatch) {
+    shownLines = 0;
+  } else if (explicitBudget !== null || content === selected) {
+    shownLines = countCompleteLines(content, selected);
+  } else {
+    // Shared-helper path only, where the marker suffix is part of content.
+    shownLines = Math.max(0, content.slice(0, content.lastIndexOf("[truncated WebFetch output:")).split("\n").length - 1);
+  }
   const end = Math.min(lines.length, start - 1 + shownLines);
   const continuation = end < lines.length ? Math.max(start, end + 1) : null;
-  const stalled = continuation !== null && continuation <= start && capped !== selected;
+  const stalled = continuation !== null && continuation <= start && contentTruncated;
   const baseOutcome = document.outcome || {};
   // Any incomplete returned view classifies as partial, even when the
   // requested slice itself was satisfied: excerpts-only remote content, a
@@ -756,7 +778,6 @@ export function formatWebFetchDocument(document, params, ctx) {
   // with no matching blocks never pretends full success. Coverage (line
   // coordinates, truncation flag, focus block counts, link availability)
   // distinguishes the cause.
-  const cappedTruncated = capped !== selected;
   const hasMoreLines = continuation !== null;
   const omittedPreceding = !focusNoMatch && ranged && start > 1 && totalLines > 0;
   const beyondEnd = !focusNoMatch && totalLines > 0 && start > totalLines;
@@ -764,7 +785,7 @@ export function formatWebFetchDocument(document, params, ctx) {
   const partialView = baseOutcome.excerptsOnly === true
     || baseOutcome.code === "ok_static_render_failed"
     || (focusResult !== null && focusResult.matchedBlocks < focusResult.totalBlocks)
-    || cappedTruncated
+    || contentTruncated
     || hasMoreLines
     || omittedPreceding;
   const status = partialView ? "partial" : (baseOutcome.status || "ok");
@@ -780,14 +801,21 @@ export function formatWebFetchDocument(document, params, ctx) {
       ? `Focus ${JSON.stringify(researchOptions.focus)} matched 0 of ${focusResult.totalBlocks} blocks; no content shown.`
       : `Focus ${JSON.stringify(researchOptions.focus)} matched ${focusResult.matchedBlocks} of ${focusResult.totalBlocks} blocks.`);
   }
+  const artifactTail = truncationArtifact
+    ? `Full slice saved to: ${truncationArtifact.path}`
+    : "Increase max_output_chars for the full slice.";
   if (stalled) {
-    summaryParts.push("The next line exceeds the output budget. Increase max_output_chars or read the saved output artifact; repeating this range with the same budget cannot advance.");
-  }
-  if (cappedTruncated && !stalled) {
-    summaryParts.push("Output truncated to the character budget; increase max_output_chars or read the saved output artifact for the full slice.");
+    summaryParts.push(`The next line exceeds the output budget; repeating this range with the same budget cannot advance. ${artifactTail}`);
+  } else if (contentTruncated) {
+    summaryParts.push(`Output truncated to the character budget (showing ${content.length} of ${selected.length} characters). ${artifactTail}`);
   }
   if (continuation !== null && continuation > start) {
     summaryParts.push(`More lines remain after line ${end}; continue with start_line ${continuation}.`);
+  }
+  if (!focusNoMatch && explicitBudget !== null && contentTruncated
+    && continuation !== null && continuation > start
+    && content.length < selected.length && selected[content.length] !== "\n") {
+    summaryParts.push(`Line ${continuation} is only partially shown; continue with start_line ${continuation} to reread it from its start.`);
   }
   // Bounded citation/main-content links reuse the static HTML extraction.
   // Any other source reports the missing capability explicitly.
@@ -854,7 +882,7 @@ export function formatWebFetchDocument(document, params, ctx) {
       ...(linksCoverage === undefined ? {} : { links: linksCoverage }),
       ...(document.metadata ? { note: String(document.metadata) } : {}),
     },
-    ...(focusNoMatch ? {} : { content: capped }),
+    ...(focusNoMatch ? {} : { content }),
     ...(links === undefined ? {} : { links }),
     ...(untrusted_fields.length > 0 ? { untrusted_fields } : {}),
     ...(next_actions.length > 0 ? { next_actions } : {}),
@@ -876,6 +904,29 @@ export function formatWebFetchDocument(document, params, ctx) {
     error: false,
     document,
   };
+}
+
+/**
+ * Count the lines of `whole` fully contained in `prefix`. A line counts only
+ * when its complete text lies within the prefix, so a line cut mid-budget is
+ * excluded and the continuation resumes at it instead of skipping it.
+ *
+ * @param {string} prefix
+ * @param {string} whole
+ */
+function countCompleteLines(prefix, whole) {
+  if (!prefix) return 0;
+  if (prefix.length >= whole.length) return whole.split("\n").length;
+  const parts = whole.split("\n");
+  let pos = 0;
+  let count = 0;
+  for (const part of parts) {
+    if (pos + part.length <= prefix.length) {
+      count += 1;
+      pos += part.length + 1;
+    } else break;
+  }
+  return count;
 }
 
 function linksUnavailableReason(outcome) {
