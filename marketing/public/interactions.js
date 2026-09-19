@@ -4,7 +4,10 @@ if (explorer) {
   const nav = explorer.querySelector('.workflow-tabs');
   const tabs = [...explorer.querySelectorAll('[data-workflow]')];
   const panels = [...explorer.querySelectorAll('[data-panel]')];
-  const activate = (index, focus = false) => {
+  const activate = (index, focus = false, updateUrl = false) => {
+    if (updateUrl && location.hash !== `#${panels[index].id}`) {
+      history.pushState(null, '', `#${panels[index].id}`);
+    }
     tabs.forEach((tab, i) => {
       tab.setAttribute('aria-selected', String(i === index));
       tab.tabIndex = i === index ? 0 : -1;
@@ -22,7 +25,7 @@ if (explorer) {
       panels[index].tabIndex = 0;
       tab.addEventListener('click', (event) => {
         event.preventDefault();
-        activate(index);
+        activate(index, false, true);
       });
       tab.addEventListener('keydown', (event) => {
         let next;
@@ -33,7 +36,7 @@ if (explorer) {
         if (event.key === ' ') next = index;
         if (next !== undefined) {
           event.preventDefault();
-          activate(next, true);
+          activate(next, true, true);
         }
       });
     });
@@ -43,6 +46,10 @@ if (explorer) {
     window.addEventListener('hashchange', () => {
       const index = panels.findIndex(panel => `#${panel.id}` === location.hash);
       if (index >= 0) activate(index);
+    });
+    window.addEventListener('popstate', () => {
+      const index = panels.findIndex(panel => `#${panel.id}` === location.hash);
+      activate(index >= 0 ? index : 0);
     });
     explorer.dataset.enhanced = 'true';
   }

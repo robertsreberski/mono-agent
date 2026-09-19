@@ -212,3 +212,46 @@ test("reduced motion disables the interactive artwork movement", async ({ browse
   expect(await page.locator("#workflow-research svg").evaluate(el => getComputedStyle(el).animationName)).toBe("none");
   await context.close();
 });
+
+
+test("workflow URL follows selection and back/forward navigation", async ({ page }) => {
+  await page.goto("/#workflow-research");
+  await page.getByRole("tab", { name: /Automate/ }).click();
+  await expect(page).toHaveURL(/#workflow-automate$/);
+  await page.reload();
+  await expect(page.getByRole("tabpanel")).toContainText("Find your rhythm.");
+  await page.goBack();
+  await expect(page.getByRole("tab", { name: /Research/ })).toHaveAttribute("aria-selected", "true");
+  await page.goForward();
+  await expect(page.getByRole("tab", { name: /Automate/ })).toHaveAttribute("aria-selected", "true");
+  await page.evaluate(() => { location.hash = "workflow-build"; });
+  await expect(page.getByRole("tabpanel")).toContainText("From stuck to shipped.");
+});
+
+test("workflow tabs support Enter and Space activation", async ({ page }) => {
+  await page.goto("/");
+  const research = page.getByRole("tab", { name: /Research/ });
+  await research.focus();
+  await research.press("Enter");
+  await expect(research).toHaveAttribute("aria-selected", "true");
+  const automate = page.getByRole("tab", { name: /Automate/ });
+  await automate.focus();
+  await automate.press("Space");
+  await expect(automate).toHaveAttribute("aria-selected", "true");
+});
+
+test("missing Clipboard API remains an honest manual-copy path", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", { value: undefined }));
+  await page.goto("/");
+  await page.getByRole("button", { name: /Copy install command/ }).click();
+  await expect(page.getByRole("status")).toContainText("Copy unavailable.");
+});
+
+test("enabling reduced motion clears active parallax", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.goto("/");
+  await page.mouse.move(200, 250);
+  await expect.poll(() => page.locator(".hero-art").evaluate(el => el.style.getPropertyValue("--art-x"))).not.toBe("");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect.poll(() => page.locator(".hero-art").evaluate(el => el.style.getPropertyValue("--art-x"))).toBe("");
+});
