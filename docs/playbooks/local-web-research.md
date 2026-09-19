@@ -6,10 +6,17 @@ sidebar:
 ---
 
 This playbook gives a Pi-backed mono-agent a reliable public-web research path:
-explicit Ollama or local SearXNG for discovery, deterministic result fusion, local content
+Parallel then local Ollama by default, or opt-in SearXNG for discovery, deterministic result fusion, local content
 extraction, and optional isolated browser rendering for sparse JavaScript pages.
 SearXNG and the browser run locally, but fetched/search-engine traffic still
 leaves the machine.
+
+The default search chain sends queries to Parallel before trying local Ollama;
+keyless engines are opt-in. To use the optional SearXNG service below, select
+`["searxng", "parallel"]` and set `search.searxng.endpoint` to its loopback URL.
+Search `auto` is no longer accepted; its config error supplies the old explicit
+chain for migration. WebFetch remains local unless `fetch.provider` opts in to
+Parallel. See [provider chains and privacy](/tools/web-research/) for details.
 
 ## 1. Provision an optional SearXNG instance
 
@@ -199,10 +206,9 @@ tools enabled and add their local-first settings:
     "web": {
       "coordination": "host",
       "search": {
-        "backend": "auto",
+        "backend": ["parallel", "ollama"],
         "maxRequestsPerRun": 4,
-        "ollama": { "baseUrl": "http://127.0.0.1:11434" },
-        "searxng": { "endpoint": "http://127.0.0.1:8088" }
+        "ollama": { "baseUrl": "http://127.0.0.1:11434" }
       },
       "fetch": {
         "render": "never",

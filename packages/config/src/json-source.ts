@@ -253,7 +253,8 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly web?: {
       readonly coordination?: "process" | "host";
       readonly search?: {
-        readonly backend?: string;
+        readonly backend?: string | readonly string[];
+        readonly parallel?: { readonly apiKeyEnv?: string };
         readonly maxRequestsPerRun?: number;
         /** Compatibility alias for tools.web.search.searxng.endpoint. */
         readonly endpoint?: string;
@@ -270,6 +271,8 @@ export interface MonoAgentConfigJson extends SettingsJson {
         };
       };
       readonly fetch?: {
+        readonly provider?: string | readonly string[];
+        readonly parallel?: { readonly apiKeyEnv?: string };
         readonly render?: string;
         readonly browserCommand?: string;
       };

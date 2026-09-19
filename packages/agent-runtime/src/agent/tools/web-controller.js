@@ -1,5 +1,6 @@
 // @ts-check
 
+import { parallelCacheIdentity, parallelSessionId } from "./parallel-mcp.js";
 import { createHash, randomUUID } from "node:crypto";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
@@ -162,11 +163,11 @@ export function createWebToolController({
         || (max_lines !== undefined && (!Number.isSafeInteger(max_lines) || max_lines < 1 || max_lines > 10000))) {
         return { text: "Error: Invalid WebFetch line range.", error: true, outcome: { status: "error", code: "invalid_range" } };
       }
-      const key = stableKey({ request, fetchConfig, policy, coordination: coordinator?.scope });
+      const key = stableKey({ request, fetchConfig: { ...fetchConfig, parallel: parallelCacheIdentity(fetchConfig?.parallel) }, policy, coordination: coordinator?.scope });
       const result = await cachedRun(fetchCache, fetchInFlight, key, async () => performWebFetch(request, {
         documentOnly: true, coordinator, fetchConfig, sandboxPolicy: policy, sandboxEngine,
         ctx: resolvedCtx, fetchImpl, browserRenderer, signal: execution.signal,
-        namespace, registerCleanup,
+        namespace, registerCleanup, sessionId: parallelSessionId(resolvedCtx, searchState),
       }));
       if (result.error || !result.document) return result;
       const sliced = formatWebFetchDocument({ ...result.document, outcome: result.outcome }, params, resolvedCtx);
@@ -192,6 +193,7 @@ export function createWebToolController({
 function safeSearchCacheIdentity(searchConfig) {
   if (!searchConfig || typeof searchConfig !== "object") return searchConfig;
   const { maxRequestsPerRun: _budget, ...identity } = searchConfig;
+  if (searchConfig.parallel) identity.parallel = parallelCacheIdentity(searchConfig.parallel);
   if (typeof searchConfig?.ollama?.apiKey !== "string") return identity;
   return {
     ...identity,

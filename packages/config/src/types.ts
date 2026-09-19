@@ -14,7 +14,12 @@ import type {
 
 export type MemoryWriteMode = (typeof MEMORY_WRITE_MODES)[number];
 export type MemoryMode = (typeof MEMORY_MODES)[number];
-export type WebSearchBackend = "auto" | "searxng" | "ollama" | "codex" | "keyless";
+export type WebSearchBackend = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel";
+export type WebFetchProvider = "local" | "parallel";
+export interface ParallelWebConfig {
+  /** Environment variable name only; the credential is read at call time. */
+  readonly apiKeyEnv?: string;
+}
 export type WebFetchRenderMode = "never" | "auto";
 
 export interface SearxngWebSearchConfig {
@@ -442,13 +447,14 @@ export interface MonoAgentConfig {
     readonly web?: {
       readonly coordination?: "process" | "host";
       readonly search: {
-        readonly backend: WebSearchBackend;
+        readonly backend: WebSearchBackend | readonly WebSearchBackend[];
         /** Hard ceiling on answered provider searches per logical run; failed dispatches are refunded. */
         readonly maxRequestsPerRun: number;
         /** @deprecated Use searxng.endpoint. Accepted for programmatic embedders. */
         readonly endpoint?: string;
         readonly searxng?: SearxngWebSearchConfig;
         readonly ollama?: OllamaWebSearchConfig;
+        readonly parallel?: ParallelWebConfig;
         /** ChatGPT-subscription Codex app-server search settings. */
         readonly codex?: {
           /** Defaults to the low-cost, low-latency GPT-5.6 Luna route. */
@@ -456,6 +462,8 @@ export interface MonoAgentConfig {
         };
       };
       readonly fetch: {
+        readonly provider?: WebFetchProvider | readonly WebFetchProvider[];
+        readonly parallel?: ParallelWebConfig;
         readonly render: WebFetchRenderMode;
         readonly browserCommand: string;
       };

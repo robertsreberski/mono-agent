@@ -375,7 +375,7 @@ describe("buildMonoAgentConfigView", () => {
 
   it("shows web tool defaults and JSON/env precedence", () => {
     const defaults = buildView(baseEnv);
-    expect(field(defaults, "tools.web.search.backend")).toMatchObject({ value: "auto", source: "default" });
+    expect(field(defaults, "tools.web.search.backend")).toMatchObject({ value: '["parallel","ollama"]', source: "default" });
     expect(field(defaults, "tools.web.search.maxRequestsPerRun")).toMatchObject({ value: "4", source: "default" });
     expect(field(defaults, "tools.web.search.codex.model")).toMatchObject({
       value: "gpt-5.6-luna",

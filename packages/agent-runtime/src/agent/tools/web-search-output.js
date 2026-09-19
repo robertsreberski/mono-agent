@@ -87,7 +87,7 @@ function truncateSnippetToBytes(value, maxBytes) {
 }
 
 /**
- * @param {Array<{title?: unknown, url?: unknown, snippet?: unknown, snippetTruncated?: boolean}>} results
+ * @param {Array<{title?: unknown, url?: unknown, snippet?: unknown, snippetTruncated?: boolean, publishDate?: string}>} results
  * @param {{maxBytes?: number}} [options]
  */
 export function renderBoundedWebSearchBody(results, { maxBytes = WEB_SEARCH_BODY_MAX_BYTES } = {}) {
@@ -100,7 +100,7 @@ export function renderBoundedWebSearchBody(results, { maxBytes = WEB_SEARCH_BODY
       ? boundWebSearchSnippet(`${snippet.text} ${WEB_SEARCH_SNIPPET_TRUNCATION_MARKER}`).text
       : snippet.text;
     return {
-      core: `${index + 1}. [${escapeMarkdownLabel(title.text || url)}](${url})`,
+      core: `${index + 1}. [${escapeMarkdownLabel(title.text || url)}](${url})${/^\d{4}-\d{2}-\d{2}$/u.test(result?.publishDate) ? ` [published ${result.publishDate}]` : ""}`,
       snippet: text,
       truncated: title.truncated || snippetTruncated,
     };

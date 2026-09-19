@@ -551,7 +551,7 @@ export interface RuntimeRunOptions {
   /** Host-owned shared web admission; never model-configurable. */
   readonly webRequestCoordinator?: {
     readonly scope: string;
-    acquire(request: { kind: "searxng" | "ollama" | "duckduckgo" | "startpage" | "codex" | "fetch"; key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
+    acquire(request: { kind: "searxng" | "ollama" | "duckduckgo" | "startpage" | "codex" | "fetch" | "parallel" | (string & {}); key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
       readonly waitMs: number;
       complete(outcome: { status: "ok" | "rate_limited" | "unavailable" | "cancelled"; retryAfterMs?: number; retryAtMs?: number }): Promise<void | { retryAfterMs: number; retryAtMs: number }>;
     }>;
@@ -560,7 +560,7 @@ export interface RuntimeRunOptions {
   };
   /** Local-first WebSearch backend selection for this run. */
   readonly webSearchConfig?: {
-    readonly backend?: "auto" | "searxng" | "ollama" | "codex" | "keyless";
+    readonly backend?: WebSearchProviderName | readonly WebSearchProviderName[];
     readonly maxRequestsPerRun?: number;
     /** @deprecated Use searxng.endpoint. */
     readonly endpoint?: string;
@@ -571,10 +571,13 @@ export interface RuntimeRunOptions {
       readonly apiKeyEnv?: string;
       readonly trustPublicUrl?: boolean;
     };
+    readonly parallel?: { readonly apiKeyEnv?: string };
     readonly codex?: { readonly model?: string };
   };
   /** Static WebFetch extraction and optional isolated browser-render policy. */
   readonly webFetchConfig?: {
+    readonly provider?: "local" | "parallel" | readonly ("local" | "parallel")[];
+    readonly parallel?: { readonly apiKeyEnv?: string };
     readonly render?: "never" | "auto";
     readonly browserCommand?: string;
   };
@@ -688,3 +691,6 @@ export interface MonoRuntimeHostOptions extends RuntimeToolOptions {
   readonly approvalAlwaysAllowTools?: readonly string[];
   readonly [key: string]: unknown;
 }
+
+/** Source-level built-in web search provider names; arrays are ordered fallback chains. */
+type WebSearchProviderName = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel";
