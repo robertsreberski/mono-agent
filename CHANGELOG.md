@@ -76,6 +76,9 @@
 - Fix `WebSearch` budgets to charge answered searches, refund failed providers,
   and count Ollama endpoint probes once. Bound network dispatches separately
   and include provider failures in budget-exhaustion messages.
+- Fix `WebSearch` tight-budget snippet truncation to keep the visible truncation
+  marker for highly escapable content instead of emptying the snippet, while
+  staying within the 64 KiB structured results bound.
 
 - Fix conversation render crashes when switching between cached transcripts of
   different shapes. Add local technical details and copyable diagnostics to the
