@@ -261,6 +261,65 @@ describe("MemoryRetrievalService", () => {
     expect(store.queries).toEqual(["what color did mira select for the velin launch?"]);
   });
 
+  it("injects a scheduled fact, but a late conflict blocks automatic context while explicit recall stays raw", async () => {
+    const query = "When is the Project Atlas production migration scheduled?";
+    const target = {
+      score: 0.99,
+      record: {
+        id: "atlas-schedule",
+        text: "Project Atlas production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris.",
+      },
+    };
+    const distractors = [
+      { score: 0.98, record: { id: "owner", text: "Priya owns the Project Atlas database cutover." } },
+      { score: 0.97, record: { id: "downtime", text: "The approved downtime budget for Project Atlas is 30 minutes." } },
+      { score: 0.96, record: { id: "other-project", text: "Project Boreal production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris." } },
+    ];
+
+    const cleanStore = fakeStore();
+    cleanStore.recall = async (backendQuery) => {
+      cleanStore.queries.push(backendQuery);
+      return [target, ...distractors];
+    };
+    const cleanService = new MemoryRetrievalService(cleanStore);
+    const block = await cleanService.load("conversation", query, { turnId: "turn-scheduled" });
+    expect(block?.content).toContain(target.record.text);
+    expect(block?.content).not.toContain("owns");
+    expect(block?.content).not.toContain("downtime");
+    expect(block?.content).not.toContain("Boreal");
+
+    const conflict = {
+      score: 0.1,
+      record: {
+        id: "atlas-late-conflict",
+        text: "Project Atlas production migration is scheduled for 21 November 2026 at 08:30 Europe/Paris.",
+      },
+    };
+    const lateFillers = Array.from({ length: 48 }, (_, index) => ({
+      score: 0.95 - index * 0.01,
+      record: { id: `adjacent-${index}`, text: `Unrelated archive record ${index}.` },
+    }));
+    const disputedStore = fakeStore();
+    disputedStore.recall = async (backendQuery) => {
+      disputedStore.queries.push(backendQuery);
+      return [target, ...lateFillers, conflict];
+    };
+    const disputedService = new MemoryRetrievalService(disputedStore);
+
+    await expect(disputedService.load("conversation", query, { turnId: "turn-scheduled-conflict" }))
+      .resolves.toBeUndefined();
+    const explicitHits = await disputedService.recallForTurn(
+      "turn-scheduled-conflict",
+      query,
+      { topK: 50, trackAccess: false },
+    );
+    expect(explicitHits).toHaveLength(50);
+    expect(explicitHits.map((hit) => hit.record.id)).toContain("atlas-schedule");
+    expect(explicitHits.map((hit) => hit.record.id)).toContain("atlas-late-conflict");
+    expect(disputedStore.queries).toEqual([query.toLowerCase()]);
+    expect(disputedStore.accesses).toEqual([]);
+  });
+
   it("normalizes Unicode, case, and whitespace deterministically", () => {
     expect(normalizeMemoryRecallQuery("  ＤEPLOY\n\tPipeline  ")).toBe("deploy pipeline");
   });

@@ -8,7 +8,7 @@
 
 - Extend the marketing site and README with a shared responsive agent overview, companion-led positioning, and opt-in PostHog events with privacy controls.
 
-- Add the standalone static marketing site source for the prospective
+- Add the standalone static marketing site source for the
   `mono-agent.dev` domain. The isolated `marketing/` Astro app renders one
   crawlable page centered on a schema-checked `mono-agent.config.json`
   blueprint, framework/package composition, deliberate memory tiers, explicit
@@ -30,7 +30,12 @@
   shared project context, delegated work, and retained execution evidence as
   concrete benefits. Keep the JSON blueprint prominent, compare architectural
   approaches honestly, and correct availability labels against v0.22.0.
-  Source only; the site is not deployed yet.
+  The marketing site is deployed at `mono-agent.dev`, with documentation at
+  `docs.mono-agent.dev`.
+- Let automatic memory recall answer directly scheduled temporal questions with
+  valid clock times while preserving exact event identity and abstaining on
+  qualified, compatibility-hidden, or conflicting schedule payloads; keep raw
+  candidates available through `MemoryRecall`.
 
 - Let `WebSearch` request an optional ISO country localization preference,
   defaulting to no requested country. Apply documented DuckDuckGo regions,
@@ -74,6 +79,14 @@
 - Reject memory E2E corpus/split selections with no groups before provider
   setup, build, or benchmark execution instead of reporting a successful
   zero-trial run.
+- Add opt-in LoCoMo memory diagnostics with ordered source exchanges, one
+  capture pass per conversation within a run, independent question histories,
+  and exact completed-result reuse. Report lexical scores separately from
+  unmeasured semantic quality and expose capture, retrieval, and budget limits.
+- Keep memory E2E strict capture on the runtime's authoritative structured
+  result, including reconciliation projection, and pin real requests to SSE
+  with no transport retry. Report output reservations as provider hints and
+  refuse known Codex routes that cannot enforce the requested wire output cap.
 
 - Return managed `WebSearch` and `WebFetch` results as a compact JSON envelope
   with `status`, host-written summary, untrusted content or results, source and

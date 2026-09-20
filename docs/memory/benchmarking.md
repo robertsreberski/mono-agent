@@ -131,6 +131,84 @@ observed outcomes from causal claims. It uses the same `bujo` and `full-history`
 arms. Its controls are checked in and author-visible, not a blind holdout or a
 general memory-quality score.
 
+### Private LoCoMo BuJo diagnostic
+
+The optional `locomo-v1` adapter is a closed, non-publishable diagnostic. It
+accepts only the pinned 2,805,274-byte upstream `locomo10.json` file and never
+downloads or vendors it. Keep the CC BY-NC 4.0 corpus in an owner-only ignored
+directory. The adapter sends neither references, evidence annotations, images,
+summaries, observations, nor unselected conversations to a provider.
+
+Protocol `locomo-adjacent-exchanges-v2` projects each session into ordered,
+non-overlapping adjacent pairs of source utterances; a final odd utterance stands
+alone. Pairing uses only source order, never questions or answers. Speaker and
+text bytes are preserved without trimming, both participants remain quoted
+humans, and a claim-free synthetic acknowledgement completes each harness turn.
+The same exchange projection feeds full history and BuJo capture. No exchange is
+truncated; an oversized exchange fails preflight.
+
+Two samples are frozen before inference:
+
+- `locomo-bujo-eval-v1-rank5-development-30`: six pre-outcome-hash questions per
+  category from partition rank 5.
+- `locomo-bujo-eval-v1-rank6-confirmation-20`: four per category from previously
+  unexecuted partition rank 6. Do not tune after reading confirmation results.
+
+Both arms use reader prompt `locomo-evidence-reader-v2`, including the explicit
+`No information available.` abstention accepted by the pinned official category-5
+phrase check. The original lexical evaluator stays unchanged and secondary.
+`officialLexicalMetricMeasured` reports only whether that diagnostic completed.
+The runner leaves `qualityMeasured` and `semanticQualityMeasured` false; only a
+separately completed human review can establish semantic quality. `review.json`
+supplies blinded arm labels and a human `correct`, `partial`, `incorrect`, or
+`abstained` rubric, while preserving separate category-5 answerability
+and image-association/dependency-unknown fields. There is no automatic semantic
+judge.
+
+```bash
+node scripts/memory-e2e-benchmark.mjs --dry-run --corpus locomo-v1 \
+  --dataset /OWNER-ONLY/PATH/locomo10.json \
+  --locomo-experiment locomo-bujo-eval-v1-rank5-development-30 \
+  --locomo-arm bujo \
+  --reader openai-codex:gpt-5.6-luna \
+  --extractor openai-codex:gpt-5.6-luna \
+  --embedding-provider ollama --embedding-model bge-m3:latest \
+  --dimension 1024 --pi-auth-path /PATH/TO/EXISTING/pi-auth.json \
+  --allow-hosted-locomo-transfer
+```
+
+The dry plan binds source/question projection digests, code revision, arm,
+models/profile, prompt, metric and per-invocation capture/reader/embedding/token/time
+limits into one confirmation. Within one successful BuJo invocation, capture runs
+once and questions then use fresh reader histories over that store, so prior
+answers cannot contaminate later questions. A completed artifact contains
+`checkpoint.json`; `--reuse-artifact` accepts it only when all checksums and the
+complete expanded identity match. This is complete-result reuse, **not** a capture
+checkpoint: an invocation that fails after capture remains retained evidence but
+cannot resume readers, and restarting it would capture again. Do not claim
+capture-once across failed invocations or automatically rerun an expensive plan.
+
+`plannedComparisonAggregateMaximum` is arithmetic planning metadata for exactly
+three separate invocations: baseline BuJo, candidate BuJo and one full-history
+reader. It is not a cross-process admission controller or provider-quota promise.
+Each command enforces only its own `limits`; the parent must control the finite
+sequence and account for completed artifacts. The frozen 30/20 selectors produce
+a worst-case two-phase estimate of 2,816 chat steps, 2,616 embedding calls,
+79,028,364 reserved input tokens and 40 hours. **That execution is not approved.**
+Before real LoCoMo work, use a parent-approved materially smaller diagnostic
+budget strategy (beginning with the separate product conformance canary) or add a
+separately reviewed narrow capture checkpoint. A dry-plan confirmation is not
+execution authorization.
+
+Private artifacts record extraction candidates, reconciliation actions,
+committed snapshots, raw backend retrieval outcomes where supported, automatic
+blocks and explicit tool results actually delivered, and reader answers. A
+missing stage is marked unavailable. The diagnostic funnel and official lexical
+metric remain unmeasured unless capture, recall instrumentation and every
+scheduled answer complete. Semantic quality remains unmeasured even then until
+actual human review. Dry runs and synthetic tests prove contracts, not memory
+quality; real inference is always an explicit separately authorized action.
+
 All five arms use the same reader, question, identity, output budget and
 controlled-text context estimate:
 
@@ -210,23 +288,38 @@ each trial. A failed build or changed source/output refuses admission. Building
 does not itself authorize provider calls. Existing offline `dist` remains
 explicitly **unverified**, even when the offline manifest reports a clean HEAD.
 
-The reader and extractor use separate fallback-free `MonoRuntimeLike` runtimes;
-`LlmComplete` forwards the strict production prompt unchanged, with the existing
-maintenance system prompt, no tools and one model step. The built-in embedding
-factory supports Ollama, LM Studio and OpenAI at their default endpoints. OpenAI
-embeddings use the existing `OPENAI_API_KEY` environment convention; runtime
-providers use existing supported authentication. No credentials/config file is
-copied, printed or created by the benchmark. There is no custom endpoint,
-consumer memory path, external dataset or arbitrary provider-module flag.
+The reader and extractor use separate fallback-free `MonoRuntimeLike` runtimes.
+The capture `LlmComplete` wrapper forwards the strict production prompt unchanged
+with the existing maintenance system prompt, one model step and ordinary tool/MCP
+access disabled. When production capture selects a schema, the runtime still
+exposes its reserved terminal `StructuredOutput` tool. The wrapper accepts only
+the authoritative structured result after successful runtime settlement,
+serializes the extraction object or projected reconciliation `decisions` into the
+capture trace and strict parser, and fails closed rather than falling back to
+plausible prose. Reader memory-tool behavior is unchanged.
 
-Compaction is explicitly disabled for **both** models, Pi retries are disabled,
-and no fallback route is installed. Unexpected compaction fails the trial. The
-output limit reuses the repository-internal `providerCheckMaxTokens` Pi option,
-not an invented generic `maxTokens` setting. A faux-provider contract test drives
-the real Pi harness and checks the capped dispatched model on both initial and
-post-tool requests. This is version-coupled integration evidence, not a real
-provider's billing/termination guarantee. Actual transport attempts and native
-usage stay unknown unless observable.
+The built-in embedding factory supports Ollama, LM Studio and OpenAI at their
+default endpoints. OpenAI embeddings use the existing `OPENAI_API_KEY`
+environment convention; runtime providers use existing supported authentication.
+No credentials/config file is copied, printed or created by the benchmark. There
+is no custom endpoint, consumer memory path or arbitrary provider-module flag.
+The only supported external dataset is the explicitly selected,
+provenance-pinned LoCoMo corpus described above.
+
+Compaction is explicitly disabled for **both** models. Requests select explicit
+SSE with Pi retries set to zero, avoiding the selected Codex route's automatic
+WebSocket attempts and SSE fallback outside that retry count; no fallback route
+is installed. Unexpected compaction fails the trial. The repository-internal
+`providerCheckMaxTokens` option supplies an output-token hint and reservation,
+not a universal wire-enforced cap. A faux-provider contract test verifies model
+clamping inside the real Pi harness, but the selected Codex request body omits the
+cap. Dry plans therefore report that limitation, and a confirmed Codex `--real`
+run fails with `strict_output_budget_unsupported` before build, credential access
+or provider construction. Exact completed-artifact reuse remains available
+because it performs no provider request and is checked before this preflight.
+Resolving cap support requires a newly reviewed implementation/profile and fresh
+authorization; a confirmation digest alone is not authority to bypass the check.
+Actual transport attempts and native usage stay unknown unless observable.
 
 ### Pilot limits and accounting
 
@@ -242,10 +335,11 @@ repeats or external suites. Concurrency is one. The initial workload ceilings ar
 | Output-token reservations | 50,000 | 150,000 |
 | Runtime including cleanup reserve | 15 min | 40 min |
 
-Each reader reserves at most three model steps with a 512-token output limit;
-each extraction/reconciliation step reserves 2,048 output tokens. Model calls
-have a 60-second full-promise deadline, embeddings a 10-second full-promise
-deadline (including response bodies), each readiness barrier 120 seconds, and
+Each reader reserves at most three model steps with a 512-token output hint per
+step; each extraction/reconciliation step reserves 2,048 output tokens. These
+are reservation/accounting values and provider hints, not wire-output guarantees.
+Model calls have a 60-second full-promise deadline, embeddings a 10-second
+full-promise deadline (including response bodies), each readiness barrier 120 seconds, and
 cleanup one overall 10-second deadline. Global cancellation also bounds these
 awaits; the original raw promises remain tracked independently of the wrappers.
 Cleanup first quiesces harnesses and the store, rejects a timed-out/discarded
