@@ -4,7 +4,7 @@
 // vendored ddgs MIT (c) 2022 deedy5 / Pragmatic School. Full notices and
 // verified source digest: package-root THIRD_PARTY_NOTICES.md.
 import { parseHTML } from "linkedom";
-import { canonicalizeSearchUrl, collapseWhitespace } from "../web-search-providers/shared.js";
+import { canonicalizeSearchUrl, collapseWhitespace, wrappedSearchDestination } from "../web-search-providers/shared.js";
 
 export const HOUND_ENGINES = Object.freeze([
   { name: "duckduckgo", origin: "https://html.duckduckgo.com", date: true },
@@ -72,7 +72,7 @@ function safeSearchUrl(value, base) {
     if (!result) return null;
     // Reject credential-bearing wrapped destinations before canonicalization
     // can strip userinfo, rather than laundering them into usable results.
-    const wrapped = ["uddg", "url", "u", "target"].map((name) => parsed.searchParams.get(name)).find(Boolean);
+    const wrapped = wrappedSearchDestination(parsed);
     if (wrapped) {
       const target = new URL(wrapped);
       if (target.username || target.password) return null;

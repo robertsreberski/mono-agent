@@ -6,6 +6,14 @@ const url = "https://example.com/limited";
 const ctx = { workspace: process.cwd(), sandbox: passthroughSandbox };
 
 describe("terminal fetch refusals", () => {
+  it.each([200, 503])("classifies binary login responses before retries or fallback (%i)", async (status) => {
+    const fetchImpl = vi.fn(async () => new Response(new Uint8Array([0, 0, 0]), { status, headers: { "content-type": "application/octet-stream" } }));
+    const result = await performWebFetch({ url: "https://example.com/login" }, {
+      ctx, fetchImpl, retryDelaysMs: [0, 0], fetchConfig: { provider: ["local", "parallel"] },
+    });
+    expect(result).toMatchObject({ error: true, outcome: { code: "authentication_required", attempts: 1, attemptedProviders: ["local"] } });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
   it.each(["parallel", "hound"])("does not repeat a 429 or forward the URL to %s", async (next) => {
     const fetchImpl = vi.fn(async () => new Response("Too many requests", { status: 429, headers: { "retry-after": "3600" } }));
     const result = await performWebFetch({ url }, {

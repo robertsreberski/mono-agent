@@ -10,6 +10,13 @@ const url = "https://example.com/docs/intro";
 const article = "Native document extraction must retain useful article prose and citations rather than just a tiny navigation label. ".repeat(6);
 
 describe("native Hound-derived extraction", () => {
+  it("rejects image destinations with no visible text but preserves labels, short prose and code", async () => {
+    const parsers = { primary: async () => { throw new Error("failed"); }, article: () => null };
+    await expect(extractHoundHtml('<img src="/tracking.png">', url, parsers)).rejects.toMatchObject({ code: "extraction_failed" });
+    for (const source of ['<img alt="Evidence" src="/tracking.png">', '<a href="/long-url">OK</a>', '<p>Hi.</p>', '<pre><code>---\n</code></pre>', '<pre><code>![](tracking.png)\n</code></pre>']) {
+      expect((await extractHoundHtml(source, url, parsers)).markdown).toBeTruthy();
+    }
+  });
   it("rejects a tiny primary candidate when a real article is available", async () => {
     const output = await extractHoundHtml(`<html><head><title>Article title</title></head><body><main>${article}</main></body></html>`, url, {
       primary: async () => ({ contentMarkdown: "Menu", title: "Bad candidate" }), article: () => null,

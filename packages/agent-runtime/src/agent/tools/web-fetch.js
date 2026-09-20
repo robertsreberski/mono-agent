@@ -229,7 +229,7 @@ async function performFetch(
       response = fetched.response;
       finalUrl = fetched.url;
       redirectCount = fetched.redirects;
-      if (isTransientResponse(response, fetched.bytes) && attempt < delays.length) {
+      if (isTransientResponse(response, fetched.bytes, finalUrl) && attempt < delays.length) {
         const delay = retryDelayForResponse(response, delays[attempt]);
         try { await response.body?.cancel(); } catch { /* best effort */ }
         await waitForRetry(delay, signal);
@@ -303,7 +303,7 @@ async function performFetch(
       // where their decoding metadata and browser recommendation are retained.
       decodedForExtraction = undefined;
     }
-  } else if ([401, 407].includes(response.status)) {
+  } else {
     try {
       assertNoWebAccessInterstitial({ url: finalUrl, statusCode: response.status });
     } catch (error) {
@@ -625,14 +625,14 @@ function requestSignal(signal) {
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-function isTransientResponse(response, bytes) {
+function isTransientResponse(response, bytes, url) {
   if (!TRANSIENT_STATUS.has(response.status) && response.status < 500) return false;
   // A 503 may be an access gate, not a transient service outage. Never retry
   // observed challenges even before the normal extraction/classification path.
   const contentType = response.headers.get("content-type") || "";
   let text = "";
   try { text = decodeWebBytes(bytes.subarray(0, 32 * 1024), contentType).text; } catch { /* normal decoding error follows */ }
-  return !classifyWebAccessInterstitial({ text, statusCode: response.status });
+  return !classifyWebAccessInterstitial({ url, text, statusCode: response.status });
 }
 
 function retryDelayForResponse(response, fallback) {

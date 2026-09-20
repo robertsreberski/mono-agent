@@ -242,15 +242,20 @@ export function normalizedResult(entry, backend) {
   }];
 }
 
+/** The exact wrapper recognition used by canonicalization and credential checks.
+ * Semantic query parameters on ordinary result hosts are not redirects.
+ */
+export function wrappedSearchDestination(parsed) {
+  if (!["duckduckgo.com", "startpage.com"].some((host) => parsed.hostname === host || parsed.hostname.endsWith(`.${host}`))) return undefined;
+  return ["uddg", "url", "u", "target"].map((key) => parsed.searchParams.get(key)).find(Boolean);
+}
+
 export function canonicalizeSearchUrl(value, base) {
   if (typeof value !== "string" || value.trim().length === 0) return null;
   let parsed;
   try { parsed = new URL(value, base); } catch { return null; }
-  const wrapped = ["uddg", "url", "u", "target"].map((key) => parsed.searchParams.get(key)).find(Boolean);
-  if (wrapped && (
-    (parsed.hostname === "duckduckgo.com" || parsed.hostname.endsWith(".duckduckgo.com"))
-    || (parsed.hostname === "startpage.com" || parsed.hostname.endsWith(".startpage.com"))
-  )) {
+  const wrapped = wrappedSearchDestination(parsed);
+  if (wrapped) {
     try { parsed = new URL(wrapped); } catch { /* keep the wrapper URL */ }
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;

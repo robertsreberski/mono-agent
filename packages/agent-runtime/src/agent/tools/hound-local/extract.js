@@ -7,6 +7,7 @@ import { Readability } from "@mozilla/readability";
 import { Defuddle as parseDefuddle } from "defuddle/node";
 import { parseHTML } from "linkedom";
 import TurndownService from "turndown";
+import { markdownToText } from "../web-markdown-text.js";
 import { sanitizeDocumentLinks } from "./links.js";
 
 const NOISE = "script,style,noscript,template,svg";
@@ -79,7 +80,7 @@ export async function extractHoundHtml(html, url, {
 }
 
 function meaningful(value) {
-  return String(value || "").replace(/<[^>]*>/gu, "").replace(/[\s#*_`~>|-]/gu, "").length;
+  return markdownToText(value).replace(/\s/gu, "").length;
 }
 
 export function htmlToMarkdown(html, url) {

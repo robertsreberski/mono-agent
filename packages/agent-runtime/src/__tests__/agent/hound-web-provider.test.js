@@ -94,6 +94,28 @@ describe("native Hound search", () => {
     expect(result.error).toBe(true); expect(fetchImpl).toHaveBeenCalledTimes(3);
     expect(fetchImpl.mock.calls.every(([url]) => new URL(url).pathname === "/robots.txt")).toBe(true);
   });
+  it("propagates aggregate Retry-After and defers the run without another send", async () => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 4 });
+    const fetchImpl = vi.fn(async () => new Response("limited", { status: 429, headers: { "retry-after": "120" } }));
+    const options = searchOptions({ fetchImpl, searchState: state });
+    const result = await performWebSearch({ query: "mono agent" }, options);
+    expect(result.outcome).toMatchObject({ code: "rate_limited", rateLimited: true, retryAfterMs: 120_000, requestsUsed: 0, dispatchesUsed: 3, retryInRun: false });
+    expect(state.deferredProviders.get("hound").retryAtMs).toBeGreaterThan(Date.now() + 119_000);
+    expect(JSON.parse(result.text).coverage).toMatchObject({ rateLimited: true, retryAfterMs: 120_000 });
+    expect(JSON.parse(result.text).next_actions?.some((entry) => entry.tool === "WebSearch")).not.toBe(true);
+    await performWebSearch({ query: "another query" }, options);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+  it("keeps a useful mixed pool partial without applying one child's cooldown to the whole provider", async () => {
+    const native = searchFetch();
+    const fetchImpl = vi.fn(async (url, init) => String(url).includes("brave") ? new Response("limited", { status: 429, headers: { "retry-after": "120" } }) : native(url, init));
+    const state = createWebSearchRunState({ maxRequestsPerRun: 4 });
+    const result = await performWebSearch({ query: "mono agent evidence" }, searchOptions({ fetchImpl, searchState: state }));
+    expect(result).toMatchObject({ error: false, outcome: { status: "partial", rateLimited: false } });
+    expect(result.outcome.engineOutcomes).toContainEqual({ engine: "brave", code: "rate_limited", retryAfterMs: 120_000 });
+    expect(state.deferredProviders.has("hound")).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+  });
   it("retains refusal cooldowns across calls without dispatching or advancing the chain", async () => {
     const fetchImpl = vi.fn(async () => response("refused", 429));
     const options = searchOptions({ fetchImpl, searchConfig: { backend: ["hound", "parallel"] } });
@@ -128,6 +150,16 @@ describe("native Hound search", () => {
 });
 
 describe("Hound engine algorithms and attribution adaptations", () => {
+  it("preserves semantic query parameters and rejects only real credential-bearing engine wrappers", () => {
+    for (const key of ["target", "u", "url", "uddg"]) {
+      const ordinary = `https://example.com/go?${key}=/article`;
+      expect(new URL(parseHoundEngine(HOUND_ENGINES[0], engineHtml("duckduckgo", ordinary))[0].url).searchParams.get(key)).toBe("/article");
+    }
+    const wrapped = "https://duckduckgo.com/l/?uddg=" + encodeURIComponent("https://user:secret@example.com/article");
+    expect(() => parseHoundEngine(HOUND_ENGINES[0], engineHtml("duckduckgo", wrapped))).toThrow(/Unrecognized/);
+    const valid = "https://duckduckgo.com/l/?uddg=" + encodeURIComponent("https://example.com/article");
+    expect(parseHoundEngine(HOUND_ENGINES[0], engineHtml("duckduckgo", valid))[0].url).toBe("https://example.com/article");
+  });
   it("ports request/date fields and parses the three reviewed layouts", () => {
     for (const engine of HOUND_ENGINES) expect(parseHoundEngine(engine, engineHtml(engine.name))).toHaveLength(1);
     const ddg = houndEngineRequest(HOUND_ENGINES[0], 'exact "query"', "day");

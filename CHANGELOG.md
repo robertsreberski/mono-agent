@@ -5,7 +5,9 @@
 - Improve local web extraction with Hound-derived content-link prioritization,
   title and main-content fallbacks, and Markdown tables that retain links and
   code. Keep rate-limit and access refusals terminal instead of retrying or
-  forwarding the same fetch to another provider.
+  forwarding the same fetch to another provider, including binary login pages.
+  Reject image-only extraction without visible text, preserve ordinary search
+  URL parameters, and retain native Hound aggregate cooldown evidence.
 
 - Fix unrelated provider turns blocking history admission and cancellation
   publication when conversation keys share a lock shard. Concurrent writers

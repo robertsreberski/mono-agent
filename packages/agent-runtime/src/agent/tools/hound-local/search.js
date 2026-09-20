@@ -42,7 +42,13 @@ export async function searchLocalHound(query, options) {
       }
     }));
     const engineOutcomes = entries.map((entry) => ({ engine: entry.engine, code: entry.code, ...("retryAfterMs" in entry ? { retryAfterMs: entry.retryAfterMs } : {}) }));
-    const fail = (code) => ({ ok: false, backend: "hound", code, message: `Native Hound search refused (${code}).`, retryable: false, engineOutcomes, ...metrics });
+    const delays = engineOutcomes.filter((entry) => entry.code === "rate_limited")
+      .map((entry) => entry.retryAfterMs).filter((delay) => Number.isFinite(delay) && delay >= 0);
+    const now = Date.now();
+    const retryAfterMs = delays.length ? Math.min(8_640_000_000_000_000 - now, ...delays) : undefined;
+    const fail = (code) => ({
+      ...(code === "rate_limited" ? { rateLimited: true, ...(retryAfterMs === undefined ? {} : { retryAfterMs, retryAtMs: now + retryAfterMs }) } : {}),
+      ok: false, backend: "hound", code, message: `Native Hound search refused (${code}).`, retryable: false, engineOutcomes, ...metrics });
     if (options.signal?.aborted) return fail(options.signal.reason?.code === "deadline_exceeded" ? "deadline_exceeded" : "aborted");
     if (fatal) return fail(fatal);
     if (deadlineSignal.aborted) return fail("deadline_exceeded");
@@ -50,7 +56,7 @@ export async function searchLocalHound(query, options) {
     const partial = entries.some((entry) => !["ok", "empty"].includes(entry.code));
     if (!results.length) {
       if (entries.some((entry) => entry.code === "search_budget_exhausted")) return fail("search_budget_exhausted");
-      if (!entries.some((entry) => ["ok", "empty"].includes(entry.code))) return fail(entries.find((entry) => entry.code !== "unsupported_filter")?.code ?? "provider_unavailable");
+      if (!entries.some((entry) => ["ok", "empty"].includes(entry.code))) return fail(entries.some((entry) => entry.code === "rate_limited") ? "rate_limited" : entries.find((entry) => entry.code !== "unsupported_filter")?.code ?? "provider_unavailable");
     }
     return { ok: true, backend: "hound", results, partial, engineOutcomes, ...metrics };
   });

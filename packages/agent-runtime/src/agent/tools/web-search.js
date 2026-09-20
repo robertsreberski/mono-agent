@@ -722,6 +722,8 @@ function searchFailure(text, code, startedAt, searchState, requestsThisCall, ext
       ...(extra.failureMetadata === undefined ? {} : {
         failureSummary: extra.failureMetadata.map((entry) => `${entry.backend}:${entry.code}`),
       }),
+      ...(extra.rateLimited === undefined ? {} : { rateLimited: extra.rateLimited }),
+      ...(extra.engineOutcomes === undefined ? {} : { engineOutcomes: extra.engineOutcomes }),
       ...(Number.isFinite(retryAfterMs) ? { retryAfterMs } : {}),
       ...(retryAt === undefined ? {} : { retryAt }),
     },
