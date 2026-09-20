@@ -32,6 +32,14 @@ export const MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES = 384 * 1024;
 
 export type CronOperatorRunTrigger = "scheduled" | "manual";
 
+/**
+ * Terminal and in-flight cron run states.
+ *
+ * `skipped_overlap` means a firing was dropped because another run of the same
+ * job held the slot. `skipped_gate` means the job's own preflight gate declined
+ * this firing: no responder turn ran, so the reason (when the gate supplied
+ * one) is the bounded `error` text rather than a failure.
+ */
 export type CronOperatorRunStatus =
   | "admitted"
   | "running"
@@ -40,6 +48,7 @@ export type CronOperatorRunStatus =
   | "failed"
   | "cancelled"
   | "skipped_overlap"
+  | "skipped_gate"
   | "dropped";
 
 export type CronOperatorHealth = "healthy" | "warning" | "unhealthy" | "disabled" | "unknown";
@@ -245,7 +254,8 @@ function parseRunBase(
     || Number(run.sequence) <= 0
     || (run.trigger !== "scheduled" && run.trigger !== "manual")
     || !oneOf(run.status, [
-      "admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "dropped",
+      "admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "skipped_gate",
+      "dropped",
     ])
     || !Number.isSafeInteger(run.eventCount)
     || Number(run.eventCount) < 0

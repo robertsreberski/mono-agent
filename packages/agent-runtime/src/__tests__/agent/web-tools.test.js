@@ -18,10 +18,10 @@ import {
   parseStartpageResults,
   performWebSearch,
 } from "../../agent/tools/web-search.js";
-import { createWebSearchRunState } from "../../agent/tools/web-search-state.js";
+import { claimWebSearchRequest, countWebSearchDispatch, createWebSearchRunState, refundWebSearchRequests, webSearchBudgetSnapshot } from "../../agent/tools/web-search-state.js";
 import {
+  boundWebSearchEntries,
   boundWebSearchSnippet,
-  renderBoundedWebSearchBody,
   sliceUtf8,
   WEB_SEARCH_BODY_MAX_BYTES,
   WEB_SEARCH_SNIPPET_MAX_CHARS,
@@ -49,6 +49,179 @@ beforeEach(() => {
   __resetSharedSearchCacheForTests();
 });
 
+describe("WebSearch answer budget settlement", () => {
+  const ollamaConfig = { backend: "ollama", ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-key" } };
+
+  it("refunds invalid Ollama results before quota-skipped Codex and a keyless answer, leaving room for a later call", async () => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 2 });
+    const fetchImpl = vi.fn(async (url) => String(url).includes("ollama.com")
+      ? new Response('{"results":null}')
+      : new Response('<div class="result"><a class="result__a" href="https://example.com/evidence">Mono Agent evidence</a></div>'));
+    const codexSearch = vi.fn(async () => ({ ok: false, backend: "codex", code: "quota_unavailable", quotaSkipped: true }));
+    const options = { searchState: state, searchConfig: { ...ollamaConfig, backend: ["ollama", "codex", "keyless"] }, fetchImpl, codexSearch, ctx: runtimeContext() };
+    const first = await performWebSearch({ query: "mono agent evidence" }, options);
+    expect(first).toMatchObject({ error: false, outcome: {
+      requestsUsed: 1, requestsThisCall: 1, requestsRemaining: 1, dispatchesUsed: 2,
+      providerAttempts: [
+        { backend: "ollama", code: "invalid_response", requests: 0 },
+        { backend: "codex", code: "quota_unavailable", requests: 0 },
+      ],
+    } });
+    const later = await performWebSearch({ query: "mono agent later evidence" }, options);
+    expect(later).toMatchObject({ error: false, outcome: { requestsUsed: 2, requestsThisCall: 1, dispatchesUsed: 4 } });
+  });
+
+  it.each([
+    ["HTTP 5xx", "ollama", () => new Response("failure", { status: 503 }), 1],
+    ["HTTP 429", "ollama", () => new Response("limited", { status: 429 }), 1],
+    ["transport", "ollama", () => { throw new TypeError("fetch failed"); }, 1],
+    ["invalid JSON", "ollama", () => new Response("not json"), 1],
+    ["invalid_response", "ollama", () => new Response('{"results":null}'), 1],
+    ["endpoint_not_supported", "local", () => new Response("missing", { status: 404 }), 2],
+    ["sandbox denial", "denied", () => { throw new Error("must not fetch"); }, 0],
+    ["challenge/captcha", "keyless", () => new Response("captcha challenge-form"), 2],
+    ["SearXNG HTTP 5xx", "searxng", () => new Response("failure", { status: 503 }), 1],
+    ["SearXNG invalid JSON", "searxng", () => new Response("not json"), 1],
+    ["keyless transport", "keyless", () => { throw new TypeError("fetch failed"); }, 2],
+  ])("does not charge %s", async (_label, kind, response, dispatches) => {
+    const state = createWebSearchRunState({});
+    const searchConfig = kind === "local" ? { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } }
+      : kind === "keyless" ? { backend: "keyless" }
+        : kind === "searxng" ? { backend: "searxng", endpoint: "http://127.0.0.1:8088" } : ollamaConfig;
+    const fetchImpl = vi.fn(async () => response());
+    const sandbox = kind === "denied" ? { ...passthroughSandbox, networkAllowsUrl: () => false } : passthroughSandbox;
+    const result = await performWebSearch({ query: "mono agent" }, { searchConfig, searchState: state, fetchImpl, ctx: runtimeContext(undefined, sandbox) });
+    expect(result).toMatchObject({ error: true, outcome: { requestsUsed: 0, requestsThisCall: 0, dispatchesUsed: dispatches } });
+    expect(fetchImpl).toHaveBeenCalledTimes(dispatches);
+  });
+
+  it.each([{ results: [] }, { results: [{ title: "Mono Agent", url: "https://example.com", content: "Mono Agent evidence" }] }])("charges an answered Ollama search, including an empty 200 (%j)", async ({ results }) => {
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: ollamaConfig, ctx: runtimeContext(), fetchImpl: async () => new Response(JSON.stringify({ results })),
+    });
+    expect(result.outcome).toMatchObject({ requestsUsed: 1, requestsThisCall: 1, dispatchesUsed: 1 });
+  });
+
+  it("charges one answer and two dispatches for Ollama's compatibility probe", async () => {
+    const fetchImpl = vi.fn(async (url) => String(url).includes("experimental")
+      ? new Response("missing", { status: 404 }) : new Response('{"results":[]}'));
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", maxRequestsPerRun: 1, ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl, ctx: runtimeContext(),
+    });
+    expect(result).toMatchObject({ error: false, outcome: { requestsUsed: 1, requestsThisCall: 1, dispatchesUsed: 2 } });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds failure-only runs and stops auto/alternate loops with historical provider failures", async () => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 1 });
+    const fetchImpl = vi.fn(async () => new Response('{"results":null}'));
+    const options = { searchState: state, searchConfig: ollamaConfig, fetchImpl, ctx: runtimeContext() };
+    for (let i = 0; i < 4; i++) await performWebSearch({ query: "private-query" }, options);
+    const codexSearch = vi.fn();
+    const exhausted = await performWebSearch({ query: "private-query", alternate_queries: ["variant-1", "variant-2"] }, {
+      ...options, searchConfig: { ...ollamaConfig, backend: ["ollama", "codex", "keyless"] }, codexSearch,
+    });
+    expect(exhausted).toMatchObject({ error: true, outcome: {
+      code: "search_budget_exhausted", requestsUsed: 0, requestsThisCall: 0, requestsRemaining: 1,
+      dispatchesUsed: 4, maxDispatches: 4, dispatchesRemaining: 0,
+      attempts: 1, attemptedBackends: ["ollama"], retryInRun: false, nextAction: "use_available_evidence",
+      providerAttempts: [{ backend: "ollama", code: "search_budget_exhausted", requests: 0 }],
+    } });
+    expect(exhausted.text).toContain("spent its dispatches on failing providers");
+    expect(exhausted.text).toContain("ollama invalid_response");
+    expect(exhausted.text).toContain("ollama next dispatch refused");
+    expect(exhausted.text).not.toMatch(/private-query|variant-|sentinel-key|https?:/u);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(codexSearch).not.toHaveBeenCalled();
+  });
+
+  it("keeps exhaustion diagnostics bounded, deduplicated, and free of provider-controlled text", async () => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 1 });
+    const options = { searchState: state, searchConfig: { backend: "codex" }, ctx: runtimeContext() };
+    for (let i = 0; i < 20; i++) {
+      await performWebSearch({ query: "private-query" }, { ...options, codexSearch: async () => ({
+        ok: false, backend: "https://user:secret@example.com/" + "x".repeat(5000),
+        code: "credential-body-" + i, message: "raw-secret-body", quotaSkipped: true,
+      }) });
+    }
+    await performWebSearch({ query: "private-query" }, { ...options, codexSearch: async (_query, opts) => {
+      opts.claimRequest();
+      return { ok: true, backend: "codex", results: [] };
+    } });
+    const exhausted = await performWebSearch({ query: "private-query" }, { ...options, codexSearch: async (_query, opts) => { opts.claimRequest(); } });
+    expect(exhausted.outcome.code).toBe("search_budget_exhausted");
+    expect(exhausted.text).toContain("unknown unavailable");
+    expect(exhausted.text.match(/unknown unavailable/gu)).toHaveLength(1);
+    expect(exhausted.text).not.toMatch(/secret|https?:|credential|private-query|raw-/u);
+    expect(exhausted.text.length).toBeLessThan(1300);
+  });
+
+  it("includes known cooldown timing and past failures when answered searches exhaust the run", async () => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 1 });
+    const fetchImpl = vi.fn(async (url) => String(url).includes("ollama.com")
+      ? new Response("private-body", { status: 429, headers: { "retry-after": "204" } })
+      : new Response('{"results":[]}'));
+    const options = { searchState: state, fetchImpl, ctx: runtimeContext(), searchConfig: {
+      ...ollamaConfig, backend: ["ollama", "searxng", "codex", "keyless"], endpoint: "http://127.0.0.1:8088",
+    } };
+    // Empty SearXNG answers stay charged; the following Codex reservation refuses.
+    const result = await performWebSearch({ query: "private-query" }, { ...options, codexSearch: async (_query, opts) => { opts.claimRequest(); } });
+    expect(result.outcome.code).toBe("search_budget_exhausted");
+    expect(result.text).toMatch(/ollama rate_limited \(retry in 20[34]s\)/u);
+    expect(result.text).toContain("codex next dispatch refused");
+    expect(result.text).not.toMatch(/private-|sentinel|https?:/u);
+    expect(result.outcome).toMatchObject({ requestsUsed: 1, dispatchesUsed: 2 });
+  });
+
+  it("refuses a second Ollama probe at the dispatch ceiling and refunds its single reservation", async () => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 1 });
+    state.dispatchesUsed = 3;
+    const fetchImpl = vi.fn(async () => new Response("missing", { status: 404 }));
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchState: state, searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } }, fetchImpl, ctx: runtimeContext(),
+    });
+    expect(result.outcome).toMatchObject({ code: "search_budget_exhausted", requestsUsed: 0, requestsThisCall: 0, dispatchesUsed: 4 });
+    expect(result.text).toContain("spent its dispatches on failing providers");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("preserves legacy state, clamps refunds, and never refunds dispatches", () => {
+    const state = { schema: "mono-agent.web-search-run.v1", maxRequests: 1, requestsUsed: 0, deferredProviders: new Map() };
+    expect(createWebSearchRunState({}, state)).toBe(state);
+    expect(webSearchBudgetSnapshot(state)).toMatchObject({ dispatchesUsed: 0, maxDispatches: 4, dispatchesRemaining: 4 });
+    const claims = { requests: 0 };
+    claimWebSearchRequest(state, "ollama", claims);
+    refundWebSearchRequests(state, 99, claims);
+    expect(claims.requests).toBe(0);
+    expect(webSearchBudgetSnapshot(state)).toMatchObject({ requestsUsed: 0, dispatchesUsed: 1 });
+    for (let i = 0; i < 3; i++) countWebSearchDispatch(state, "ollama");
+    expect(() => claimWebSearchRequest(state, "ollama", claims)).toThrow(expect.objectContaining({ code: "search_budget_exhausted", reason: "dispatch_ceiling" }));
+    expect(claims.requests).toBe(0);
+    expect(() => refundWebSearchRequests({}, 1, claims)).toThrow("Invalid WebSearch run state.");
+  });
+
+  it.each(["answer", "dispatch"])("cannot oversubscribe the %s ceiling across concurrent calls", async (kind) => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 2 });
+    if (kind === "dispatch") state.dispatchesUsed = 7;
+    let release;
+    const gate = new Promise((resolvePromise) => { release = resolvePromise; });
+    const fetchImpl = vi.fn(async () => { await gate; return new Response("failure", { status: 503 }); });
+    const calls = Array.from({ length: 3 }, (_, i) => performWebSearch({ query: "concurrent" }, {
+      searchState: state, searchConfig: { backend: "searxng", endpoint: `http://127.0.0.1:${8088 + i}` }, fetchImpl, ctx: runtimeContext(),
+    }));
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(kind === "dispatch" ? 1 : 2));
+    expect(state.requestsUsed).toBe(kind === "dispatch" ? 1 : 2);
+    expect(state.dispatchesUsed).toBe(kind === "dispatch" ? 8 : 2);
+    release();
+    const results = await Promise.all(calls);
+    expect(results.filter((result) => result.outcome.code === "search_budget_exhausted")).toHaveLength(kind === "dispatch" ? 2 : 1);
+    expect(state.requestsUsed).toBe(0);
+    expect(state.dispatchesUsed).toBe(kind === "dispatch" ? 8 : 2);
+    expect(results.every((result) => result.outcome.requestsThisCall === 0)).toBe(true);
+  });
+});
+
 describe("WebSearch output bounds", () => {
   it("keeps the exact snippet boundary and marks the first truncated character within it", () => {
     const exact = boundWebSearchSnippet("x".repeat(WEB_SEARCH_SNIPPET_MAX_CHARS));
@@ -70,18 +243,76 @@ describe("WebSearch output bounds", () => {
     expect(sliceUtf8(`x\ud800🙂y`, 8)).not.toMatch(/[\ud800-\udfff]/u);
   });
 
-  it("omits a pathological trailing result as a whole instead of cutting its Markdown link", () => {
-    const rendered = renderBoundedWebSearchBody([
+  it("omits a pathological trailing result as a whole instead of cutting its URL", () => {
+    const bounded = boundWebSearchEntries([
       { title: "usable", url: "https://example.com/usable", snippet: "evidence" },
       { title: "too large", url: `https://example.com/${"x".repeat(600)}`, snippet: "evidence" },
     ], { maxBytes: 160 });
 
-    expect(rendered.renderedResultCount).toBe(1);
-    expect(rendered.truncated).toBe(true);
-    expect(rendered.body).toContain("1. [usable](https://example.com/usable)");
-    expect(rendered.body).toContain("[additional search results omitted by WebSearch output bound] (1)");
-    expect(rendered.body).not.toContain("too large");
-    expect(Buffer.byteLength(rendered.body, "utf8")).toBeLessThanOrEqual(160);
+    expect(bounded.resultCount).toBe(1);
+    expect(bounded.truncated).toBe(true);
+    expect(bounded.omittedCount).toBe(1);
+    expect(bounded.entries).toHaveLength(1);
+    expect(bounded.entries[0]).toMatchObject({
+      title: "usable",
+      url: "https://example.com/usable",
+      snippet: "evidence",
+    });
+    expect(JSON.stringify(bounded.entries)).not.toContain("too large");
+    expect(Buffer.byteLength(JSON.stringify(bounded.entries), "utf8")).toBeLessThanOrEqual(160);
+  });
+
+  it("truncates a single oversized snippet to the JSON budget without cutting its URL", () => {
+    const url = "https://example.com/single-oversized";
+    const bounded = boundWebSearchEntries([
+      { title: "single", url, snippet: `lead ${"🙂".repeat(500)} tail` },
+    ], { maxBytes: 512 });
+
+    expect(bounded.resultCount).toBe(1);
+    expect(bounded.omittedCount).toBe(0);
+    expect(bounded.truncated).toBe(true);
+    expect(bounded.entries).toHaveLength(1);
+    expect(bounded.entries[0].url).toBe(url);
+    expect(bounded.entries[0].snippet.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER)).toBe(true);
+    expect(bounded.entries[0].snippet).not.toMatch(/[\ud800-\udfff]/u);
+    expect(Buffer.byteLength(JSON.stringify(bounded.entries), "utf8")).toBeLessThanOrEqual(512);
+  });
+
+  it("budgets JSON escapes and multibyte sequences truthfully while preserving order", () => {
+    const bounded = boundWebSearchEntries([
+      { title: 'first "quoted" \\ title', url: "https://example.com/first", snippet: 'lead "quote" \\ and 🙂 emoji' },
+      { title: "second", url: "https://example.com/second", snippet: `second ${"x".repeat(400)}` },
+      { title: "third", url: "https://example.com/third", snippet: "third evidence" },
+    ], { maxBytes: 420 });
+
+    expect(bounded.entries.length).toBeGreaterThan(0);
+    expect(bounded.entries[0].url).toBe("https://example.com/first");
+    expect(bounded.entries[0].title).toBe('first "quoted" \\ title');
+    expect(Buffer.byteLength(JSON.stringify(bounded.entries), "utf8")).toBeLessThanOrEqual(420);
+    if (bounded.omittedCount > 0 || bounded.entries.some((entry) => entry.snippet.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER))) {
+      expect(bounded.truncated).toBe(true);
+    }
+    for (const entry of bounded.entries) {
+      expect(entry.snippet).not.toMatch(/[\ud800-\udfff]/u);
+    }
+  });
+
+  it("keeps the truncation marker for highly escapable content at a tight JSON budget", () => {
+    for (const snippet of [`"`.repeat(1000), `\\`.repeat(1000), `🙂`.repeat(1000)]) {
+      const bounded = boundWebSearchEntries([
+        { title: "x", url: "https://example.com", snippet },
+      ], { maxBytes: 512 });
+
+      expect(bounded.resultCount).toBe(1);
+      expect(bounded.omittedCount).toBe(0);
+      expect(bounded.truncated).toBe(true);
+      expect(bounded.entries).toHaveLength(1);
+      expect(bounded.entries[0].url).toBe("https://example.com");
+      expect(bounded.entries[0].snippet.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER)).toBe(true);
+      expect(bounded.entries[0].snippet.length).toBeGreaterThan(0);
+      expect(Buffer.byteLength(JSON.stringify(bounded.entries), "utf8")).toBeLessThanOrEqual(512);
+      expect(bounded.entries[0].snippet).not.toMatch(/[\ud800-\udfff]/u);
+    }
   });
 });
 
@@ -169,6 +400,102 @@ describe("WebSearch", () => {
     }
   });
 
+  it.each(["USA", "ZZ", "1A", ""])('rejects invalid country %j before network or budget', async (country) => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 4 });
+    const fetchImpl = vi.fn();
+    const result = await performWebSearch({ query: "mono agent", country }, {
+      searchState: state, searchConfig: { backend: "duckduckgo" }, fetchImpl, ctx: runtimeContext(),
+    });
+    expect(result).toMatchObject({ error: true, outcome: { code: "invalid_country", requestsUsed: 0, dispatchesUsed: 0 } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["searxng", { backend: "searxng", endpoint: "http://127.0.0.1:8088" }],
+    ["ollama", { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } }],
+    ["codex", { backend: "codex" }],
+    ["startpage", { backend: "startpage" }],
+    ["duckduckgo", { backend: "duckduckgo" }],
+  ])("skips strict %s before dispatch when country targeting is unsupported", async (_backend, searchConfig) => {
+    const fetchImpl = vi.fn();
+    const codexSearch = vi.fn();
+    const result = await performWebSearch({ query: "mono agent", country: "AD" }, {
+      searchConfig, fetchImpl, codexSearch, ctx: runtimeContext(),
+    });
+    expect(result).toMatchObject({ error: true, outcome: {
+      code: "unsupported_country_filter", requestsUsed: 0, dispatchesUsed: 0,
+      providerAttempts: [{ code: "unsupported_country_filter", requests: 0 }],
+    } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(codexSearch).not.toHaveBeenCalled();
+  });
+
+  it("reports deterministic country refusal before cooldown without bypassing cooldown for capable requests", async () => {
+    const state = createWebSearchRunState({});
+    const fetchImpl = vi.fn(async () => new Response("limited", { status: 429, headers: { "retry-after": "120" } }));
+    const options = { searchState: state, searchConfig: { backend: "duckduckgo" }, fetchImpl, ctx: runtimeContext() };
+
+    const limited = await performWebSearch({ query: "mono agent" }, options);
+    expect(limited).toMatchObject({ error: true, outcome: {
+      code: "rate_limited", requestsUsed: 0, dispatchesUsed: 1,
+    } });
+
+    const unsupported = await performWebSearch({ query: "mono agent", country: "AD" }, options);
+    expect(unsupported).toMatchObject({ error: true, outcome: {
+      code: "unsupported_country_filter", requestsUsed: 0, dispatchesUsed: 1,
+      filterSupport: { country: "unsupported" },
+      providerAttempts: [{ backend: "duckduckgo", code: "unsupported_country_filter", requests: 0 }],
+    } });
+
+    const capable = await performWebSearch({ query: "mono agent", country: "PL" }, options);
+    expect(capable).toMatchObject({ error: true, outcome: {
+      code: "rate_limited", requestsUsed: 0, dispatchesUsed: 1,
+      filterSupport: { country: "not_applied" },
+    } });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("advances past an unsupported provider and sends exact country and date parameters to DDG", async () => {
+    const calls = [];
+    const fetchImpl = vi.fn(async (url, init) => {
+      calls.push({ url: new URL(url), init });
+      return new Response('<div class="result"><a class="result__a" href="https://example.com/mono-agent">Mono Agent evidence</a></div>');
+    });
+    const result = await performWebSearch({
+      query: "mono agent", alternate_queries: ["unused alternate"], country: "gb", language: "pl", time_range: "month",
+    }, { searchConfig: { backend: ["startpage", "duckduckgo"] }, fetchImpl, ctx: runtimeContext() });
+    expect(result).toMatchObject({ error: false, outcome: {
+      backend: "duckduckgo", requestsUsed: 1, dispatchesUsed: 1,
+      filterSupport: { language: "advisory", country: "provider", timeRange: "provider" },
+      providerAttempts: [{ backend: "startpage", code: "unsupported_country_filter", requests: 0 }],
+    } });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.searchParams.get("kl")).toBe("uk-en");
+    expect(calls[0].url.searchParams.get("df")).toBe("m");
+    expect(calls[0].init.headers["Accept-Language"]).toBe("pl");
+    expect(JSON.parse(result.text).coverage.requestedFilters).toMatchObject({ country: "GB", language: "pl", timeRange: "month" });
+  });
+
+  it("canonicalizes country for cache identity while separating PL, GB, and global calls", async () => {
+    const seenRegions = [];
+    const fetchImpl = vi.fn(async (url) => {
+      seenRegions.push(new URL(url).searchParams.get("kl"));
+      return new Response('<div class="result"><a class="result__a" href="https://example.com/mono-agent">Mono Agent evidence</a></div>');
+    });
+    const controller = createWebToolController({ searchConfig: { backend: "duckduckgo" }, fetchImpl, ctx: runtimeContext() });
+    try {
+      const lower = await controller.search({ query: "mono agent", country: "pl" });
+      const upper = await controller.search({ query: "mono agent", country: "PL" });
+      const gb = await controller.search({ query: "mono agent", country: "GB" });
+      const global = await controller.search({ query: "mono agent" });
+      expect(lower.outcome.cacheHit).toBe(false);
+      expect(upper.outcome.cacheHit).toBe(true);
+      expect(gb.outcome.cacheHit).toBe(false);
+      expect(global.outcome.cacheHit).toBe(false);
+      expect(seenRegions).toEqual(["pl-pl", "uk-en", "wt-wt"]);
+    } finally { await controller.close(); }
+  });
+
   it("queries strict local Ollama without credentials and uses only its same-origin compatibility route", async () => {
     const calls = [];
     const fetchImpl = vi.fn(async (url, init) => {
@@ -217,13 +544,20 @@ describe("WebSearch", () => {
     }));
 
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ query: "bounded output evidence", max_results: 7 });
-    expect(result.outcome).toMatchObject({ resultCount: 7, truncated: true });
+    expect(result.outcome).toMatchObject({ resultCount: 7, truncated: true, status: "partial", code: "ok" });
     expect(result.outcome.bytes).toBe(Buffer.byteLength(result.text, "utf8"));
     expect(result.outcome.bytes).toBeLessThan(MAX_TOOL_RESULT_BYTES);
-    expect(result.text).toContain("1. [Bounded output evidence source 1]");
-    expect(result.text).toContain("7. [Bounded output evidence source 7]");
+    const payload = JSON.parse(result.text);
+    expect(payload).toMatchObject({ tool: "WebSearch", status: "partial", code: "ok" });
+    expect(payload.results).toHaveLength(7);
+    expect(payload.results[0].title).toBe("Bounded output evidence source 1");
+    expect(payload.results[6].url).toBe("https://example.com/source-7");
+    expect(payload.coverage.resultCount).toBe(7);
+    expect(payload.untrusted_fields).toEqual(["results"]);
+    expect(payload.next_actions[0]).toMatchObject({
+      tool: "WebFetch", args: { url: "https://example.com/source-1" },
+    });
     expect(result.text).toContain(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER);
-    expect(result.text).toContain("[END UNTRUSTED WEB SEARCH RESULTS]");
     expect(guarded.details?.tool_payload_truncated).toBeUndefined();
     expect(guarded.content[0].text).toBe(result.text);
   });
@@ -247,18 +581,27 @@ describe("WebSearch", () => {
       })),
       ctx: runtimeContext(),
     });
-    const begin = "[BEGIN UNTRUSTED WEB SEARCH RESULTS]";
-    const end = "[END UNTRUSTED WEB SEARCH RESULTS]";
-    const body = result.text.slice(result.text.indexOf(begin) + begin.length, result.text.lastIndexOf(end));
+    const payload = JSON.parse(result.text);
+    const body = JSON.stringify(payload.results);
 
-    expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(WEB_SEARCH_BODY_MAX_BYTES + 1_024);
+    expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(WEB_SEARCH_BODY_MAX_BYTES);
     expect(Buffer.byteLength(result.text, "utf8")).toBeLessThan(MAX_TOOL_RESULT_BYTES);
-    expect(result.text).toContain("[Search control:");
-    expect(result.text).toContain("[Search metadata:");
-    expect(result.text).toContain("[Requested filters:");
-    expect(result.text.indexOf(begin)).toBeLessThan(result.text.indexOf(end));
-    expect(result.outcome).toMatchObject({ resultCount: 10, truncated: true });
+    expect(payload).toMatchObject({ tool: "WebSearch" });
+    expect(payload.coverage.requestedFilters).toMatchObject({
+      language: "n".repeat(100),
+      timeRange: "month",
+      note: expect.stringContaining("verify dates in sources"),
+    });
+    expect(result.outcome).toMatchObject({ truncated: true });
     expect(result.outcome.bytes).toBe(Buffer.byteLength(result.text, "utf8"));
+    expect(payload.coverage.resultCount).toBe(result.outcome.resultCount);
+    expect(payload.results.length).toBeGreaterThan(0);
+    for (const entry of payload.results) {
+      expect(typeof entry.title).toBe("string");
+      expect(typeof entry.url).toBe("string");
+      expect(typeof entry.snippet).toBe("string");
+    }
+    expect(payload.untrusted_fields).toEqual(["results"]);
   });
 
   it("host-binds Ollama bearer auth and includes explicitly configured Ollama first in auto", async () => {
@@ -285,7 +628,7 @@ describe("WebSearch", () => {
     });
     const automatic = await performWebSearch({ query: "mono agent" }, {
       searchConfig: {
-        backend: "auto",
+        backend: ["ollama", "codex", "keyless"],
         ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
       },
       codexSearch: vi.fn(async () => {
@@ -315,7 +658,7 @@ describe("WebSearch", () => {
       }] }), { headers: { "content-type": "application/json" } });
     });
     const result = await performWebSearch({ query: "mono agent" }, {
-      searchConfig: { backend: "auto", searxng: { endpoint: "http://127.0.0.1:8088" } },
+      searchConfig: { backend: ["searxng", "codex", "keyless"], searxng: { endpoint: "http://127.0.0.1:8088" } },
       fetchImpl,
       ctx: runtimeContext(),
     });
@@ -343,7 +686,7 @@ describe("WebSearch", () => {
     const codexSearch = vi.fn();
     const result = await performWebSearch({ query: "mono agent resilient search" }, {
       searchConfig: {
-        backend: "auto",
+        backend: ["ollama", "searxng", "codex", "keyless"],
         ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
         searxng: { endpoint: "http://127.0.0.1:8088" },
       },
@@ -359,19 +702,21 @@ describe("WebSearch", () => {
         attemptedBackends: ["ollama", "searxng"],
         fallbackUsed: true,
         rateLimited: true,
-        requestsThisCall: 2,
+        requestsThisCall: 1,
         providerAttempts: [{
           backend: "ollama",
           code: "rate_limited",
           disposition: "deferred_for_run",
-          requests: 1,
+          requests: 0,
           retryAfterMs: 2_760_000,
         }],
       },
     });
     expect(result.outcome.providerAttempts[0].retryAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
-    expect(result.text).toContain("ollama deferred for the remainder of this run");
-    expect(result.text).toContain("Use WebFetch");
+    const chainPayload = JSON.parse(result.text);
+    expect(chainPayload.coverage.cooldownBackends).toContain("ollama");
+    expect(chainPayload.coverage.failureSummary).toContain("ollama:rate_limited");
+    expect(chainPayload.next_actions[0]).toMatchObject({ tool: "WebFetch" });
     expect(calls).toEqual([
       "https://ollama.com/api/web_search",
       "http://127.0.0.1:8088/search",
@@ -379,7 +724,7 @@ describe("WebSearch", () => {
     expect(codexSearch).not.toHaveBeenCalled();
   });
 
-  it("uses the complete auto order and spends at most the default four-request budget", async () => {
+  it("uses the complete auto order and charges only the answered search", async () => {
     const order = [];
     const fetchImpl = vi.fn(async (url) => {
       const value = String(url);
@@ -402,7 +747,7 @@ describe("WebSearch", () => {
 
     const result = await performWebSearch({ query: "mono agent resilient search" }, {
       searchConfig: {
-        backend: "auto",
+        backend: ["ollama", "searxng", "codex", "keyless"],
         ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
         searxng: { endpoint: "http://127.0.0.1:8088" },
       },
@@ -417,9 +762,10 @@ describe("WebSearch", () => {
       outcome: {
         backend: "duckduckgo",
         attemptedBackends: ["ollama", "searxng", "codex", "keyless"],
-        requestsThisCall: 4,
-        requestsUsed: 4,
-        requestsRemaining: 0,
+        requestsThisCall: 1,
+        requestsUsed: 1,
+        requestsRemaining: 3,
+        dispatchesUsed: 4,
         fallbackUsed: true,
       },
     });
@@ -440,7 +786,7 @@ describe("WebSearch", () => {
       }] }), { headers: { "content-type": "application/json" } });
     });
     const searchConfig = {
-      backend: "auto",
+      backend: ["ollama", "searxng", "codex", "keyless"],
       maxRequestsPerRun: 4,
       ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
       searxng: { endpoint: "http://127.0.0.1:8088" },
@@ -453,15 +799,15 @@ describe("WebSearch", () => {
       searchConfig, searchState: state, fetchImpl, ctx: runtimeContext(),
     });
 
-    expect(first.outcome.requestsUsed).toBe(2);
+    expect(first.outcome.requestsUsed).toBe(1);
     expect(second).toMatchObject({
       error: false,
       outcome: {
         backend: "searxng",
         attemptedBackends: ["ollama", "searxng"],
         requestsThisCall: 1,
-        requestsUsed: 3,
-        requestsRemaining: 1,
+        requestsUsed: 2,
+        requestsRemaining: 2,
       },
     });
     expect(calls.filter((url) => url.includes("ollama.com"))).toHaveLength(1);
@@ -472,36 +818,51 @@ describe("WebSearch", () => {
 
   it.each([
     ["120", 120_000, true],
-    [new Date(Date.now() + 120_000).toUTCString(), 120_000, true],
+    ["http-date:+120s", 120_000, true],
     ["1.5", 300_000, true],
     ["-1", 300_000, true],
     ["not-a-date", 300_000, true],
   ])("parses Retry-After %s without inventing malformed retry times", async (retryAfter, expected, hasAbsolute) => {
-    const result = await performWebSearch({ query: "mono agent" }, {
-      searchConfig: {
-        backend: "ollama",
-        ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
-      },
-      fetchImpl: vi.fn(async () => new Response("limited", {
-        status: 429,
-        headers: { "retry-after": retryAfter },
-      })),
-      ctx: runtimeContext(),
-    });
-
-    expect(result).toMatchObject({
-      error: true,
-      outcome: { code: "rate_limited", retryInRun: false },
-    });
-    if (expected === undefined) {
-      expect(result.outcome.retryAfterMs).toBeUndefined();
-      expect(result.outcome.retryAt).toBeUndefined();
-    } else {
-      expect(result.outcome.retryAfterMs).toBeGreaterThanOrEqual(expected - 1_500);
-      expect(result.outcome.retryAfterMs).toBeLessThanOrEqual(expected + 1_500);
-      expect(Boolean(result.outcome.retryAt)).toBe(hasAbsolute);
+    // HTTP dates resolve to whole seconds, so a header built at collection time
+    // drifts as setup/scheduling elapse before parsing (CI saw 118485ms vs the
+    // 118500ms floor). Build the date header at test start under a
+    // second-aligned frozen clock so the 120s expectation is exact.
+    let headerValue = retryAfter;
+    let nowSpy;
+    if (retryAfter === "http-date:+120s") {
+      const frozenNow = Math.ceil(Date.now() / 1000) * 1000;
+      nowSpy = vi.spyOn(Date, "now").mockReturnValue(frozenNow);
+      headerValue = new Date(frozenNow + 120_000).toUTCString();
     }
-    expect(result.text).toContain("Do not sleep or retry WebSearch");
+    try {
+      const result = await performWebSearch({ query: "mono agent" }, {
+        searchConfig: {
+          backend: "ollama",
+          ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+        },
+        fetchImpl: vi.fn(async () => new Response("limited", {
+          status: 429,
+          headers: { "retry-after": headerValue },
+        })),
+        ctx: runtimeContext(),
+      });
+
+      expect(result).toMatchObject({
+        error: true,
+        outcome: { code: "rate_limited", retryInRun: false },
+      });
+      if (expected === undefined) {
+        expect(result.outcome.retryAfterMs).toBeUndefined();
+        expect(result.outcome.retryAt).toBeUndefined();
+      } else {
+        expect(result.outcome.retryAfterMs).toBeGreaterThanOrEqual(expected - 1_500);
+        expect(result.outcome.retryAfterMs).toBeLessThanOrEqual(expected + 1_500);
+        expect(Boolean(result.outcome.retryAt)).toBe(hasAbsolute);
+      }
+      expect(result.text).toContain("Do not sleep or retry WebSearch");
+    } finally {
+      nowSpy?.mockRestore();
+    }
   });
 
   it("enforces the hard request budget across WebSearch calls in one logical run", async () => {
@@ -544,6 +905,8 @@ describe("WebSearch", () => {
     ["maximum above the hard cap", { maxRequests: 21, requestsUsed: 0 }],
     ["negative usage", { maxRequests: 4, requestsUsed: -1 }],
     ["usage above the maximum", { maxRequests: 4, requestsUsed: 5 }],
+    ["negative dispatches", { maxRequests: 4, requestsUsed: 0, dispatchesUsed: -1 }],
+    ["dispatches above the ceiling", { maxRequests: 4, requestsUsed: 0, dispatchesUsed: 17 }],
   ])("replaces injected WebSearch state with %s", (_label, values) => {
     const injected = {
       schema: "mono-agent.web-search-run.v1",
@@ -588,15 +951,15 @@ describe("WebSearch", () => {
     expect(firstResult).toMatchObject({
       error: true,
       outcome: {
-        requestsThisCall: 1,
-        requestsUsed: 2,
-        requestsRemaining: 0,
-        providerAttempts: [{ backend: "searxng", requests: 1 }],
+        requestsThisCall: 0,
+        requestsUsed: 1,
+        requestsRemaining: 1,
+        providerAttempts: [{ backend: "searxng", requests: 0 }],
       },
     });
     expect(secondResult).toMatchObject({
       error: false,
-      outcome: { requestsThisCall: 1, requestsUsed: 2, requestsRemaining: 0 },
+      outcome: { requestsThisCall: 1, requestsUsed: 1, requestsRemaining: 1 },
     });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
@@ -767,7 +1130,7 @@ describe("WebSearch", () => {
       `);
     });
     const automatic = await performWebSearch({ query: "mono agent" }, {
-      searchConfig: { backend: "auto", endpoint: "http://127.0.0.1:8088" },
+      searchConfig: { backend: ["searxng", "codex", "keyless"], endpoint: "http://127.0.0.1:8088" },
       codexSearch: vi.fn(async () => ({
         ok: false, backend: "codex", message: "Codex subscription search unavailable.", retryable: false,
       })),
@@ -805,7 +1168,7 @@ describe("WebSearch", () => {
     const exactQuery = 'site:anthropic.com "Claude Opus 5"';
     const result = await performWebSearch({ query: exactQuery }, {
       searchConfig: {
-        backend: "auto",
+        backend: ["searxng", "codex", "keyless"],
         endpoint: "http://127.0.0.1:8088",
         codex: { model: "gpt-5.6-luna" },
       },
@@ -827,8 +1190,8 @@ describe("WebSearch", () => {
     expect(codexSearch).toHaveBeenCalledWith(exactQuery, expect.objectContaining({
       model: "gpt-5.6-luna",
     }));
-    expect(result.text).toContain("actual_query=\"site:anthropic.com \\\"Claude Opus 5\\\"\"");
     expect(result.text).toContain("https://www.anthropic.com/news/claude-opus-5");
+    expect(JSON.parse(result.text).coverage.actualQueries).toContain(exactQuery);
     expect(result.text).not.toContain("Los Angeles");
   });
 
@@ -862,7 +1225,7 @@ describe("WebSearch", () => {
       error: false,
       outcome: { actualQueries: [actualQuery], requestsThisCall: 1 },
     });
-    expect(result.text).toContain(`actual_query=${JSON.stringify(actualQuery)}`);
+    expect(JSON.parse(result.text).coverage.actualQueries).toEqual([actualQuery]);
   });
 
   it("keeps strict Codex mode strict and never calls local or keyless HTTP backends", async () => {
@@ -905,8 +1268,9 @@ describe("WebSearch", () => {
 
     expect(result).toMatchObject({
       error: true,
-      outcome: { status: "error", code: "rate_limited", rateLimited: true, retryable: true },
+      outcome: { status: "blocked", code: "rate_limited", rateLimited: true, retryable: true },
     });
+    expect(JSON.parse(result.text)).toMatchObject({ tool: "WebSearch", status: "blocked", code: "rate_limited" });
     expect(result.text).not.toContain("No results.");
     // Naming each engine and its reason is the whole point: it turns "search is
     // broken" into "these engines are blocked" without reading any logs.
@@ -945,7 +1309,11 @@ describe("WebSearch", () => {
       error: false,
       outcome: { status: "ok", code: "no_results", resultCount: 0 },
     });
-    expect(result.text).toContain("No results.");
+    const emptyPayload = JSON.parse(result.text);
+    expect(emptyPayload).toMatchObject({ tool: "WebSearch", status: "ok", code: "no_results" });
+    expect(emptyPayload.summary).toMatch(/^No results from /u);
+    expect(emptyPayload).not.toHaveProperty("results");
+    expect(emptyPayload).not.toHaveProperty("next_actions");
   });
 
   it("lets keyless results rescue an empty SearXNG answer in auto mode", async () => {
@@ -956,7 +1324,7 @@ describe("WebSearch", () => {
       : new Response('<div class="result"><a class="result__a" href="https://example.com/guide">Mono agent guide</a></div>')));
 
     const result = await performWebSearch({ query: "mono agent" }, {
-      searchConfig: { backend: "auto", endpoint: "http://127.0.0.1:8088" },
+      searchConfig: { backend: ["searxng", "codex", "keyless"], endpoint: "http://127.0.0.1:8088" },
       codexSearch: vi.fn(async () => ({
         ok: false, backend: "codex", message: "Codex subscription search unavailable.", retryable: false,
       })),
@@ -983,7 +1351,7 @@ describe("WebSearch", () => {
       error: false,
       outcome: { status: "ok", code: "no_results", resultCount: 0 },
     });
-    expect(result.text).toContain("No results.");
+    expect(JSON.parse(result.text).summary).toMatch(/^No results from /u);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
@@ -1057,7 +1425,7 @@ describe("WebSearch", () => {
 
     expect(result).toMatchObject({
       error: true,
-      outcome: { status: "error", code: "rate_limited", rateLimited: true, retryable: true },
+      outcome: { status: "blocked", code: "rate_limited", rateLimited: true, retryable: true },
     });
     // The old behaviour turned a ban into a confident "No results." answer.
     expect(result.text).not.toContain("No results.");
@@ -1083,7 +1451,7 @@ describe("WebSearch", () => {
 
     expect(result).toMatchObject({
       error: true,
-      outcome: { status: "error", code: "rate_limited", rateLimited: true },
+      outcome: { status: "blocked", code: "rate_limited", rateLimited: true },
     });
     expect(result.text).not.toContain("No results.");
     expect(result.outcome.cooldownBackends).toContain("startpage");
@@ -1334,7 +1702,7 @@ describe("WebFetch", () => {
       ctx: runtimeContext(),
     });
     expect(genericJson).toMatchObject({ error: false, outcome: { contentKind: "json", extractionStage: "json" } });
-    expect(genericJson.text).toContain('"answer": 42');
+    expect(JSON.parse(genericJson.text).content).toContain('"answer": 42');
 
     const plainJson = await performWebFetch({ url: "https://example.com/plain", format: "text" }, {
       fetchImpl: async () => new Response('{"answer":42}', { headers: { "content-type": "text/plain" } }),
@@ -1414,7 +1782,7 @@ describe("WebFetch", () => {
       }),
       ctx: runtimeContext(),
     });
-    expect(json.text).toContain('  "answer": 42');
+    expect(JSON.parse(json.text).content).toContain('  "answer": 42');
 
     const rss = await performWebFetch({ url: "https://example.com/feed", format: "text" }, {
       fetchImpl: async () => new Response(
@@ -1423,7 +1791,7 @@ describe("WebFetch", () => {
       ),
       ctx: runtimeContext(),
     });
-    expect(rss.text).toContain("Update\nhttps://example.com/u\nNews");
+    expect(JSON.parse(rss.text).content).toBe("Update\nhttps://example.com/u\nNews");
 
     const pdf = await performWebFetch({ url: "https://example.com/file.pdf", format: "text" }, {
       fetchImpl: async () => new Response(minimalPdf("Hello PDF"), {
@@ -1696,13 +2064,19 @@ describe("WebFetch", () => {
       retryDelaysMs: [],
       ctx: runtimeContext(),
     });
-    expect(failed.text).toContain("[BEGIN UNTRUSTED WEB ERROR BODY");
-    expect(failed.text).toContain("untrusted failure instructions");
-    expect(failed.text).toContain("[END UNTRUSTED WEB ERROR BODY]");
     expect(failed).toMatchObject({
       error: true,
       outcome: { status: "error", code: "http_404", statusCode: 404 },
     });
+    const failedPayload = JSON.parse(failed.text);
+    expect(failedPayload).toMatchObject({
+      tool: "WebFetch",
+      status: "error",
+      code: "http_404",
+      content: "untrusted failure instructions",
+      untrusted_fields: ["content"],
+    });
+    expect(failedPayload.summary).toContain("HTTP 404");
   });
 
   it("retries transient body-stream failures without losing the eventual response", async () => {
@@ -1901,7 +2275,7 @@ describe("run-scoped web controller and browser isolation", () => {
     });
     const options = {
       searchConfig: {
-        backend: "auto",
+        backend: ["ollama", "searxng", "codex", "keyless"],
         ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
         searxng: { endpoint: "http://127.0.0.1:8088" },
       },
@@ -1922,7 +2296,7 @@ describe("run-scoped web controller and browser isolation", () => {
       attemptedBackends: ["ollama", "searxng"],
       fallbackUsed: true,
       rateLimited: true,
-      requestsUsed: 2,
+      requestsUsed: 1,
     });
     expect(cached.outcome).toMatchObject({
       cacheHit: true,
@@ -1950,10 +2324,14 @@ describe("run-scoped web controller and browser isolation", () => {
     expect(cached.outcome).not.toHaveProperty("retryAfterMs");
     expect(cached.outcome).not.toHaveProperty("retryAt");
     expect(cached.outcome.bytes).toBe(Buffer.byteLength(cached.text, "utf8"));
-    expect(cached.text).toContain("[Search metadata: backend=searxng; attempted=none;");
-    expect(cached.text).toContain("fallback=none]");
-    expect(cached.text).not.toContain("ollama:rate_limited");
-    expect(cached.text).not.toContain("deferred for the remainder of this run");
+    const cachedPayload = JSON.parse(cached.text);
+    expect(cachedPayload.coverage).toMatchObject({
+      backend: "searxng",
+      attemptedBackends: [],
+      failureSummary: [],
+      cacheHit: true,
+    });
+    expect(cached.text).not.toContain("ollama");
     expect(fetchImpl.mock.calls.length).toBe(callsAfterProducer);
     await consumer.close();
   });
@@ -1962,17 +2340,17 @@ describe("run-scoped web controller and browser isolation", () => {
     const fetchImpl = vi.fn(async (url) => {
       const value = String(url);
       if (value.includes("ollama.com") || value.startsWith("http://127.0.0.1")) {
-        return new Response("unavailable", { status: 503 });
+        return new Response(JSON.stringify({ results: [] }));
       }
       return new Response('<div class="result"><a class="result__a" href="https://example.com/full-budget">Full-budget evidence</a></div>');
     });
     const codexSearch = vi.fn(async (_query, options) => {
       options.claimRequest();
-      return { ok: false, backend: "codex", message: "Codex unavailable.", retryable: true };
+      return { ok: true, backend: "codex", results: [] };
     });
     const options = {
       searchConfig: {
-        backend: "auto",
+        backend: ["ollama", "searxng", "codex", "keyless"],
         ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
         searxng: { endpoint: "http://127.0.0.1:8088" },
       },
@@ -2004,8 +2382,12 @@ describe("run-scoped web controller and browser isolation", () => {
       providerFailureCount: 0,
       fallbackUsed: false,
     });
-    expect(cached.text).toContain("[Search control: requests=0/4; remaining=4; Use WebFetch");
-    expect(cached.text).toContain("attempted=none");
+    expect(JSON.parse(cached.text).coverage).toMatchObject({
+      requestsUsed: 0,
+      requestsRemaining: 4,
+      retryInRun: true,
+      attemptedBackends: [],
+    });
     expect(cached.outcome.bytes).toBe(Buffer.byteLength(cached.text, "utf8"));
     expect(fetchImpl.mock.calls.length).toBe(callsAfterProducer);
     await consumer.close();
@@ -2083,7 +2465,7 @@ describe("run-scoped web controller and browser isolation", () => {
         rateLimited: true,
         attemptedBackends: ["ollama"],
         failureMetadata: [{ backend: "ollama", code: "rate_limited" }],
-        providerAttempts: [{ backend: "ollama", code: "rate_limited", requests: 1 }],
+        providerAttempts: [{ backend: "ollama", code: "rate_limited", requests: 0 }],
         retryInRun: false,
         nextAction: "use_available_evidence",
       },
@@ -2424,13 +2806,13 @@ describe("web research regressions", () => {
   it("does not send traffic or fall back when the shared coordinator fails", async () => {
     const fetchImpl = vi.fn(); const codexSearch = vi.fn();
     const result = await performWebSearch({ query: "python docs" }, {
-      searchConfig: { backend: "auto", endpoint: "http://127.0.0.1:8088" }, ctx: runtimeContext(), fetchImpl, codexSearch,
+      searchConfig: { backend: ["searxng", "codex", "keyless"], endpoint: "http://127.0.0.1:8088" }, ctx: runtimeContext(), fetchImpl, codexSearch,
       coordinator: { acquire: async () => { throw Object.assign(new Error("unavailable"), { code: "coordination_unavailable" }); } },
     });
     expect(result.outcome.code).toBe("coordination_unavailable");
     expect(fetchImpl).not.toHaveBeenCalled(); expect(codexSearch).not.toHaveBeenCalled();
   });
-  it("releases host admission without recording a provider failure when the run budget is exhausted", async () => {
+  it.each(["answer", "dispatch"])("releases host admission without recording a provider failure when the %s budget is exhausted", async (kind) => {
     const completed = [];
     const coordinator = {
       scope: "host:test",
@@ -2450,12 +2832,13 @@ describe("web research regressions", () => {
     }));
     const options = { searchConfig, searchState, coordinator, fetchImpl, ctx: runtimeContext() };
 
-    await performWebSearch({ query: "first" }, { ctx, ...options });
+    if (kind === "dispatch") searchState.dispatchesUsed = 4;
+    else await performWebSearch({ query: "first" }, { ctx, ...options });
     const exhausted = await performWebSearch({ query: "second" }, { ctx, ...options });
 
     expect(exhausted.outcome.code).toBe("search_budget_exhausted");
-    expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(completed).toEqual([{ status: "ok" }, { status: "cancelled" }]);
+    expect(fetchImpl).toHaveBeenCalledTimes(kind === "dispatch" ? 0 : 1);
+    expect(completed).toEqual(kind === "dispatch" ? [{ status: "cancelled" }] : [{ status: "ok" }, { status: "cancelled" }]);
   });
   it("reads later page slices from one extraction and validates cached range inputs", async () => {
     const fetchImpl = vi.fn(async () => new Response(Array.from({ length: 40 }, (_, i) => `Evidence line ${i + 1}`).join("\n"), { headers: { "content-type": "text/plain" } }));

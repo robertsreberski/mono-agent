@@ -91,7 +91,10 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "tools.mcpCallTimeoutMs": "integer",
   "tools.mcpCallMaxTotalTimeoutMs": "integer",
   "tools.web.coordination": "string",
-  "tools.web.search.backend": "string",
+  "tools.web.search.backend": "string | string[]",
+  "tools.web.fetch.provider": "string | string[]",
+  "tools.web.search.parallel.apiKeyEnv": "string",
+  "tools.web.fetch.parallel.apiKeyEnv": "string",
   "tools.web.search.maxRequestsPerRun": "integer",
   "tools.web.search.codex.model": "string",
   "tools.web.search.endpoint": "string",
@@ -126,6 +129,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   providers: "object",
   "providers.piAuthPath": "string",
   "providers.piNative.transport": "string",
+  "providers.piNative.cacheRetention": "string",
   "providers.piNative.promptCacheDiagnostics": "boolean",
   "providers.piNative.piMaxRetries": "integer",
   "providers.piNative.maxRetryDelayMs": "integer",
@@ -167,6 +171,20 @@ function repoRoot(): string {
 }
 
 describe("config reference", () => {
+  it("accepts the retired monitors block only as deprecated inert configuration", () => {
+    const schema = buildMonoAgentConfigSchema();
+    expect((schema.properties as Record<string, unknown>).monitors).toEqual({
+      type: "object",
+      deprecated: true,
+      description: "Deprecated and ignored. Monitors were removed; use background process jobs for finite work.",
+    });
+    expect(findUnknownAppConfigPaths({ monitors: { enabled: true, legacySetting: "ignored" } })).toEqual([]);
+    expect(allConfigReferenceFields()).toContainEqual(expect.objectContaining({
+      jsonPath: "monitors",
+      type: "object",
+      description: expect.stringContaining("including unknown nested keys, is accepted and ignored"),
+    }));
+  });
   it("describes string and strict named subagent model choices", () => {
     const schema = buildMonoAgentConfigSchema();
     expect((schema.properties as Record<string, unknown>).subagents).toMatchObject({
@@ -178,17 +196,6 @@ describe("config reference", () => {
         } },
       ] } } },
     });
-  });
-
-  it("publishes the Monitor wake ceiling and expanded chain cap", () => {
-    const schema = buildMonoAgentConfigSchema();
-    expect((schema.properties as Record<string, unknown>).monitors).toMatchObject({
-      properties: {
-        maxWakeIntervalMs: { type: "integer", minimum: 1, maximum: 300000, default: 300000 },
-        maxChainDepth: { type: "integer", minimum: 1, maximum: 64, default: 4 },
-      },
-    });
-    expect(buildGeneratedConfigReferenceMarkdown()).toContain("monitors.maxWakeIntervalMs");
   });
 
   it("rejects unknown top-level and nested keys from the generated schema", () => {
@@ -298,7 +305,7 @@ describe("config reference", () => {
       expect(field, `missing config reference field for ${id}`).toBeDefined();
       const expectedType = EXPECTED_CORE_FIELD_TYPES[id];
       expect(field?.type, `${id} inferred ConfigReferenceType`).toBe(expectedType);
-      expect(schemaForField(field!).type, `${id} generated JSON-Schema type`).toBe(
+      expect(schemaForField(field!).type, `${id} generated JSON-Schema type`).toEqual(
         jsonSchemaTypeFor(expectedType),
       );
     }
@@ -315,6 +322,26 @@ describe("config reference", () => {
     expect(schemaNode(schema, "interaction", "askUser", "timeoutMs").type).toEqual(["integer", "null"]);
     expect(schemaNode(schema, "memory", "embeddings", "circuitBreaker", "failureThreshold").type).toBe("integer");
     expect(schemaNode(schema, "cron", "jobs").items?.required).toEqual(["id", "expression", "prompt"]);
+    expect(schemaNode(schema, "cron", "jobs").items?.properties?.preflight).toMatchObject({
+      type: "array",
+      minItems: 1,
+      items: { type: "string", minLength: 1 },
+    });
+    expect(schemaNode(schema, "cron", "jobs").items?.properties?.preflightTimeoutMs).toMatchObject({
+      type: "integer",
+      minimum: 1,
+      maximum: 60_000,
+    });
+    expect(schemaNode(schema, "cron", "preflight")).toMatchObject({
+      type: "array",
+      minItems: 1,
+      items: { type: "string", minLength: 1 },
+    });
+    expect(schemaNode(schema, "cron", "preflightTimeoutMs")).toMatchObject({
+      type: "integer",
+      minimum: 1,
+      maximum: 60_000,
+    });
     expect(schemaNode(schema, "webhook", "endpoints").items?.required).toEqual(["path"]);
     expect(schemaNode(schema, "webhook", "endpoints").items?.properties?.maxRunMs).toMatchObject({
       type: "integer",
@@ -589,7 +616,8 @@ function schemaNode(schema: SchemaNode, ...path: readonly string[]): SchemaNode 
   return current;
 }
 
-function jsonSchemaTypeFor(type: ConfigReferenceType): Exclude<ConfigReferenceType, "string[]"> {
+function jsonSchemaTypeFor(type: ConfigReferenceType): string | string[] {
+  if (type === "string | string[]") return ["string", "array"];
   return type === "string[]" ? "array" : type;
 }
 
@@ -634,4 +662,14 @@ it("continues to accept AskParent in global and profile deny policy", () => {
   } });
   expect(config.tools.disallowedTools).toContain("AskParent");
   expect(config.subagents?.definitions?.[0]?.disallowedTools).toContain("AskParent");
+});
+
+it("keeps the Anthropic retention schema default aligned with config normalization", () => {
+  const config = loadMonoAgentConfig({ cwd: process.cwd(), env: {
+    MONO_AGENT_MODEL: "anthropic:claude-sonnet-4-6", MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
+  } });
+  const node = schemaNode(buildMonoAgentConfigSchema() as SchemaNode, "providers", "piNative", "cacheRetention");
+  expect(node.default).toBe("long");
+  expect(node.default).toBe(config.providers?.piNative?.cacheRetention);
+  expect(node.enum).toEqual(["short", "long"]);
 });

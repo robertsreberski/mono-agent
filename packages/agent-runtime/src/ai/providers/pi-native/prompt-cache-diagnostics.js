@@ -44,6 +44,7 @@ function cacheMetadata(payload, family) {
   const key = payload.prompt_cache_key ?? payload.cache_key ?? payload.cachedContent
     ?? (family === "pi-messages" ? record(payload.options)?.sessionId : undefined);
   let explicit = false;
+  const ttls = new Set();
   const pending = [{ value: payload, depth: 0 }];
   let visited = 0;
   while (pending.length > 0 && visited < 10_000) {
@@ -52,10 +53,16 @@ function cacheMetadata(payload, family) {
     if (depth > 12 || value === null || typeof value !== "object") continue;
     for (const [name, child] of Object.entries(value)) {
       if (["cache_control", "cachePoint", "cache_point", "prompt_cache_retention", "prompt_cache_options"].includes(name) && child != null) explicit = true;
+      if (family === "anthropic" && name === "cache_control" && record(child)?.type === "ephemeral") {
+        // Anthropic's omitted ephemeral TTL is the documented five-minute TTL.
+        if (child.ttl === undefined || child.ttl === "5m") ttls.add("5m");
+        else if (child.ttl === "1h") ttls.add("1h");
+      }
       if (typeof child === "object" && child !== null) pending.push({ value: child, depth: depth + 1 });
     }
   }
   return {
+    observedCacheTtls: [...ttls].sort(),
     cacheMode: disabled ? "disabled" : [key === undefined ? "" : "keyed", explicit ? "explicit" : ""].filter(Boolean).join("+") || "provider-default",
     ...(disabled || key === undefined ? {} : { cacheKeyFingerprint: fingerprint(key) }),
   };
@@ -77,6 +84,7 @@ export function installPromptCacheDiagnostics(harness, options) {
       model: [safeString(model.provider), safeString(model.id)].filter(Boolean).join(":") || "unknown",
       api: safeString(model.api) ?? "unknown",
       payloadFamily: normalized.family,
+      requestedCacheRetention: ["short", "long"].includes(options.cacheRetention) ? options.cacheRetention : "unset",
     };
     if (normalized.family === "unsupported") {
       options.onEvent({ ...base, supported: false, unsupportedReason: normalized.reason });

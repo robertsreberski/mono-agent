@@ -3,12 +3,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createChannelUserCancelReason } from "@mono-agent/agent-contracts";
+import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
 import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
+import type { HistoryMessage } from "../index.js";
 import {
   CANCELLED_TURN_ASSISTANT_MAX_BYTES,
   CANCELLED_TURN_MAX_BYTES,
@@ -496,12 +498,6 @@ describe("cancelled turn natural continuity", () => {
           text: "Use the blue deployment window",
           receivedAt: "2026-09-06T12:01:00.000Z",
         },
-        {
-          id: "monitor-applied",
-          text: "internal monitor wake",
-          receivedAt: "2026-09-06T12:01:01.000Z",
-          deliveryKey: "monitor:one:1",
-        },
       ],
       reason: cancelledTurnReason(undefined, "cancelled"),
       outcome: "cancelled",
@@ -513,7 +509,6 @@ describe("cancelled turn natural continuity", () => {
       text: "Use the blue deployment window",
       receivedAt: "2026-09-06T12:01:00.000Z",
     }]);
-    expect(messages[1]!.content).not.toContain("internal monitor wake");
   });
 
   it("omits oversized completed pairs as whole units with an explicit count", async () => {
@@ -572,22 +567,27 @@ describe("cancelled turn natural continuity", () => {
     });
   });
 
-  it("fails later turns closed when cancellation history publication fails", async () => {
+  it("retries a rejected cancellation publication on the next turn and self-heals", async () => {
     const identityPath = await identityFixture();
     const controller = new AbortController();
     let runtimeCalls = 0;
+    let failAppend = true;
+    const appended: HistoryMessage[][] = [];
     const harness = createAgentHarness({
       identityPath,
       model,
       historyStore: {
         async load() { return []; },
-        async append() { throw new Error("history unavailable"); },
+        async append(_conversationId: string, messages: readonly HistoryMessage[]) {
+          if (failAppend) throw new Error("history unavailable");
+          appended.push([...messages]);
+        },
       },
       runtime: {
         async run(): Promise<RuntimeResult> {
           runtimeCalls += 1;
-          controller.abort(new Error("transport cancelled"));
-          return { text: "late answer" };
+          if (runtimeCalls === 1) controller.abort(new Error("transport cancelled"));
+          return runtimeCalls === 1 ? { text: "late answer" } : { text: "second answer" };
         },
       },
     });
@@ -597,17 +597,551 @@ describe("cancelled turn natural continuity", () => {
       userMessage: "first request",
       abortSignal: controller.signal,
     })).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+    // The store is still down: the next turn retries the publication once and
+    // reports the retryable residual error instead of running the provider.
+    const blocked = await harness.run({
+      conversationId: "publication-failure",
+      userMessage: "continue",
+      abortSignal: new AbortController().signal,
+    });
+    expect(blocked.failure).toMatchObject({
+      kind: "cancellation_continuity_unavailable",
+      message: expect.stringContaining("retry"),
+    });
+    expect(blocked.failure?.details).toMatchObject({
+      cause: { name: "Error", message: "history unavailable" },
+    });
+    expect(runtimeCalls).toBe(1);
+    // Once the store recovers, the following turn republishes the account and runs.
+    failAppend = false;
     await expect(harness.run({
       conversationId: "publication-failure",
       userMessage: "continue",
       abortSignal: new AbortController().signal,
-    })).resolves.toMatchObject({
-      failure: {
-        kind: "cancellation_continuity_unavailable",
-        message: expect.stringContaining("previous cancelled turn"),
+    })).resolves.toMatchObject({ text: "second answer" });
+    expect(runtimeCalls).toBe(2);
+    expect(appended).toHaveLength(2);
+    expect(appended[0]).toHaveLength(2);
+    expect(appended[0]![0]).toMatchObject({ role: "user", content: "first request" });
+    expect(appended[1]![0]).toMatchObject({ role: "user", content: "continue" });
+  });
+
+  it("delays the next turn behind a slow cancellation publication instead of failing", async () => {
+    const identityPath = await identityFixture();
+    const controller = new AbortController();
+    const stored: HistoryMessage[] = [];
+    let appendStarted!: () => void;
+    const appendEntered = new Promise<void>((resolve) => { appendStarted = resolve; });
+    let releaseAppend!: () => void;
+    const appendGate = new Promise<void>((resolve) => { releaseAppend = resolve; });
+    const calls: RuntimeRunOptions[] = [];
+    const harness = createAgentHarness({
+      identityPath,
+      model,
+      historyStore: {
+        async load() { return stored; },
+        async append(_conversationId: string, messages: readonly HistoryMessage[]) {
+          appendStarted();
+          await appendGate;
+          stored.push(...messages);
+        },
+      },
+      runtime: {
+        async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+          calls.push(options);
+          if (calls.length === 1) controller.abort(createChannelUserCancelReason("Web"));
+          return calls.length === 1 ? { text: "late answer" } : { text: "second answer" };
+        },
       },
     });
-    expect(runtimeCalls).toBe(1);
+
+    const first = harness.run({
+      conversationId: "slow-publication",
+      userMessage: "first request",
+      abortSignal: controller.signal,
+    });
+    await appendEntered;
+    let secondSettled = false;
+    const second = harness.run({
+      conversationId: "slow-publication",
+      userMessage: "follow-up",
+      abortSignal: new AbortController().signal,
+    }).then(
+      (response) => { secondSettled = true; return response; },
+      (error) => { secondSettled = true; throw error; },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(secondSettled).toBe(false);
+    expect(calls).toHaveLength(1);
+
+    releaseAppend();
+    await expect(first).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+    await expect(second).resolves.toMatchObject({ text: "second answer" });
+    expect(calls).toHaveLength(2);
+    expect(JSON.stringify(calls[1]!.messages)).toContain("first request");
+  });
+
+  it("keeps the barrier installed when a waiting turn is cancelled", async () => {
+    const identityPath = await identityFixture();
+    const controller = new AbortController();
+    const stored: HistoryMessage[] = [];
+    let appendStarted!: () => void;
+    const appendEntered = new Promise<void>((resolve) => { appendStarted = resolve; });
+    let releaseAppend!: () => void;
+    const appendGate = new Promise<void>((resolve) => { releaseAppend = resolve; });
+    const calls: RuntimeRunOptions[] = [];
+    const harness = createAgentHarness({
+      identityPath,
+      model,
+      historyStore: {
+        async load() { return stored; },
+        async append(_conversationId: string, messages: readonly HistoryMessage[]) {
+          appendStarted();
+          await appendGate;
+          stored.push(...messages);
+        },
+      },
+      runtime: {
+        async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+          calls.push(options);
+          if (calls.length === 1) controller.abort(createChannelUserCancelReason("Web"));
+          return { text: "late answer" };
+        },
+      },
+    });
+
+    const first = harness.run({
+      conversationId: "aborted-waiter",
+      userMessage: "first request",
+      abortSignal: controller.signal,
+    });
+    await appendEntered;
+    const waiting = new AbortController();
+    const second = harness.run({
+      conversationId: "aborted-waiter",
+      userMessage: "impatient follow-up",
+      abortSignal: waiting.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(calls).toHaveLength(1);
+    waiting.abort(new Error("waiter gave up"));
+    await expect(second).resolves.toMatchObject({
+      failure: { kind: "cancelled", message: expect.stringContaining("cancelled before runtime execution") },
+    });
+    expect(calls).toHaveLength(1);
+
+    releaseAppend();
+    await expect(first).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+    // The aborted wait left the barrier intact: the third turn still observes
+    // the published account instead of running ahead of it.
+    const third = await harness.run({
+      conversationId: "aborted-waiter",
+      userMessage: "after",
+      abortSignal: new AbortController().signal,
+    });
+    expect(third.text).toBe("late answer");
+    expect(calls).toHaveLength(2);
+    expect(JSON.stringify(calls[1]!.messages)).toContain("first request");
+  });
+
+  it("caps repeated slow-publication warnings during a longer configured wait", async () => {
+    const identityPath = await identityFixture();
+    const controller = new AbortController();
+    const stored: HistoryMessage[] = [];
+    let appendStarted!: () => void;
+    const appendEntered = new Promise<void>((resolve) => { appendStarted = resolve; });
+    let releaseAppend!: () => void;
+    const appendGate = new Promise<void>((resolve) => { releaseAppend = resolve; });
+    const calls: RuntimeRunOptions[] = [];
+    const warned: RuntimeEventLike[] = [];
+    const harness = createAgentHarness({
+      identityPath,
+      model,
+      session: { mode: "per-message", idleTimeoutMs: 60_000, turnContinuityPublicationWaitMs: 240_000 },
+      historyStore: {
+        async load() { return stored; },
+        async append(_conversationId: string, messages: readonly HistoryMessage[]) {
+          appendStarted();
+          await appendGate;
+          stored.push(...messages);
+        },
+      },
+      runtime: {
+        async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+          calls.push(options);
+          if (calls.length === 1) controller.abort(createChannelUserCancelReason("Web"));
+          return calls.length === 1 ? { text: "late answer" } : { text: "second answer" };
+        },
+      },
+    });
+
+    const first = harness.run({
+      conversationId: "slow-warn",
+      userMessage: "first request",
+      abortSignal: controller.signal,
+    });
+    await appendEntered;
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const second = harness.run({
+        conversationId: "slow-warn",
+        userMessage: "follow-up",
+        abortSignal: new AbortController().signal,
+        onEvent: (event) => { warned.push(event); },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toHaveLength(1);
+      expect(warned.filter((event) => (event as { warning_kind?: string }).warning_kind === "turn_continuity_publication_slow")).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const slow = warned.filter((event) => (event as { warning_kind?: string }).warning_kind === "turn_continuity_publication_slow");
+      expect(slow).toHaveLength(1);
+      expect(slow[0]).toMatchObject({ conversationId: "slow-warn", outcome: "cancelled" });
+      expect((slow[0] as { elapsedMs?: unknown }).elapsedMs).toBeGreaterThanOrEqual(5_000);
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(warned).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(warned[1]).toMatchObject({ elapsedMs: 20_000 });
+      await vi.advanceTimersByTimeAsync(150_000);
+      expect(warned).toHaveLength(12);
+      expect(warned[11]).toMatchObject({ elapsedMs: 170_000 });
+      await vi.advanceTimersByTimeAsync(50_000);
+      expect(warned).toHaveLength(12);
+      expect(calls).toHaveLength(1);
+      vi.useRealTimers();
+      releaseAppend();
+      await expect(second).resolves.toMatchObject({ text: "second answer" });
+      expect(warned.filter((event) => (event as { warning_kind?: string }).warning_kind === "turn_continuity_publication_slow")).toHaveLength(12);
+      await expect(first).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+    } finally {
+      vi.useRealTimers();
+      releaseAppend();
+    }
+  });
+
+  it.each([
+    ["cancelled", false, undefined],
+    ["failed", false, undefined],
+    ["cancelled", true, undefined],
+    ["failed", true, undefined],
+    ["cancelled", false, 180_000],
+    ["failed", true, 1_000],
+  ] as const)("bounds a pending %s publication (republish: %s, budget: %s) without bypassing it", async (outcome, republish, configuredWaitMs) => {
+    const waitMs = configuredWaitMs ?? 30_000;
+    const identityPath = await identityFixture();
+    const controller = new AbortController();
+    const stored: HistoryMessage[] = [];
+    let appendStarted!: () => void;
+    const appendEntered = new Promise<void>((resolve) => { appendStarted = resolve; });
+    let releaseAppend!: () => void;
+    // Intentionally never settles during either waiter's entire deadline.
+    const appendGate = new Promise<void>((resolve) => { releaseAppend = resolve; });
+    let appendCalls = 0;
+    let runtimeCalls = 0;
+    const reset = vi.fn(async () => { stored.length = 0; });
+    const load = vi.fn(async () => stored);
+    const harness = createAgentHarness({
+      identityPath,
+      model,
+      ...(configuredWaitMs === undefined ? {} : {
+        session: { mode: "per-message" as const, idleTimeoutMs: 60_000, turnContinuityPublicationWaitMs: configuredWaitMs },
+      }),
+      historyStore: {
+        load,
+        reset,
+        async append(_conversationId: string, messages: readonly HistoryMessage[]) {
+          appendCalls += 1;
+          if (republish && appendCalls === 1) throw new Error("initial publication rejected");
+          appendStarted();
+          await appendGate;
+          stored.push(...messages);
+        },
+      },
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          runtimeCalls += 1;
+          if (runtimeCalls === 1) {
+            if (outcome === "cancelled") controller.abort(createChannelUserCancelReason("Web"));
+            else throw new Error("provider failed");
+          }
+          return { text: "answer" };
+        },
+      },
+    });
+    const request = { conversationId: "pending-publication", userMessage: "first request", abortSignal: controller.signal };
+    const first = harness.run(request);
+    if (republish) await first;
+    else await appendEntered;
+    const loadsBeforeWait = load.mock.calls.length;
+    const expectedKind = outcome === "cancelled" ? "cancellation_continuity_unavailable" : "failure_continuity_unavailable";
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      let response: Awaited<ReturnType<typeof harness.run>> | undefined;
+      const second = harness.run({ ...request, userMessage: "follow-up", abortSignal: new AbortController().signal })
+        .then((result) => { response = result; });
+      await vi.advanceTimersByTimeAsync(0);
+      await appendEntered;
+      await vi.advanceTimersByTimeAsync(waitMs - 1);
+      expect(response).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(response?.failure).toMatchObject({ kind: expectedKind, message: expect.stringContaining("retry") });
+      await second;
+      expect(runtimeCalls).toBe(1);
+      expect(load).toHaveBeenCalledTimes(loadsBeforeWait);
+      expect(appendCalls).toBe(republish ? 2 : 1);
+      expect(stored).toHaveLength(0);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Reset must not discard a still-live barrier: its late append could
+      // otherwise land on top of the reset conversation and a successor turn.
+      const resetting = harness.resetConversation!(request.conversationId);
+      const resetResult = expect(resetting).rejects.toMatchObject({ failureKind: expectedKind });
+      await vi.advanceTimersByTimeAsync(waitMs);
+      await resetResult;
+      expect(reset).not.toHaveBeenCalled();
+      const retry = harness.run({ ...request, abortSignal: new AbortController().signal });
+      const retryResult = expect(retry).resolves.toMatchObject({ failure: { kind: expectedKind } });
+      await vi.advanceTimersByTimeAsync(waitMs);
+      await retryResult;
+      expect(runtimeCalls).toBe(1);
+      expect(appendCalls).toBe(republish ? 2 : 1);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // A genuinely late publication can still unblock the conversation, once.
+      vi.useRealTimers();
+      releaseAppend();
+      await first;
+      await expect(harness.run({ ...request, userMessage: "continue", abortSignal: new AbortController().signal }))
+        .resolves.toMatchObject({ text: "answer" });
+      expect(runtimeCalls).toBe(2);
+      expect(stored.filter((message) => message.content === "first request")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      releaseAppend();
+      await first;
+    }
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity, 2_147_483_648])("rejects invalid continuity wait budget: %s", (turnContinuityPublicationWaitMs) => {
+    expect(() => createAgentHarness({
+      identityPath: "IDENTITY.md",
+      model,
+      runtime: { async run() { return { text: "unused" }; } },
+      session: { mode: "per-message", idleTimeoutMs: 60_000, turnContinuityPublicationWaitMs },
+    })).toThrow("turnContinuityPublicationWaitMs must be an integer between 1 and 2147483647.");
+  });
+
+  it("does not let recorder finalization delay the next turn", async () => {
+    const identityPath = await identityFixture();
+    const controller = new AbortController();
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    let finishStarted!: () => void;
+    const finishEntered = new Promise<void>((resolve) => { finishStarted = resolve; });
+    let releaseFinish!: () => void;
+    const finishGate = new Promise<void>((resolve) => { releaseFinish = resolve; });
+    const summarize = (status: RunSummary["status"]): RunSummary => ({
+      runId: "gated", conversationId: "recorder-gate", status, durationMs: 0, eventCount: 0, artifactPaths: [],
+    });
+    let recorderCalls = 0;
+    const passThrough = (result: RuntimeResultLike): RunSummary =>
+      summarize(result.cancelled === true ? "cancelled" : "succeeded");
+    const gatedRecorder = (gated: boolean): RunRecorder => ({
+      onEvent(): void {},
+      async finish(result: RuntimeResultLike): Promise<RunSummary> {
+        if (gated) {
+          finishStarted();
+          await finishGate;
+        }
+        return passThrough(result);
+      },
+      async fail(): Promise<RunSummary> {
+        return summarize("failed");
+      },
+    });
+    let runtimeCalls = 0;
+    const harness = createAgentHarness({
+      identityPath,
+      model,
+      historyStore,
+      recorderFactory: () => {
+        recorderCalls += 1;
+        return gatedRecorder(recorderCalls === 1);
+      },
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          runtimeCalls += 1;
+          if (runtimeCalls === 1) controller.abort(createChannelUserCancelReason("Web"));
+          return runtimeCalls === 1 ? { text: "late answer" } : { text: "second answer" };
+        },
+      },
+    });
+
+    const first = harness.run({
+      conversationId: "recorder-gate",
+      userMessage: "cancel me",
+      abortSignal: controller.signal,
+    });
+    await finishEntered;
+    // The account is already durable even though the first run is still
+    // parked inside recorder finalization.
+    expect(await historyStore.load("recorder-gate")).toHaveLength(2);
+    const second = await harness.run({
+      conversationId: "recorder-gate",
+      userMessage: "follow-up",
+      abortSignal: new AbortController().signal,
+    });
+    expect(second.text).toBe("second answer");
+    releaseFinish();
+    await expect(first).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+  });
+
+  it("lets resetConversation discard an unrecoverable publication and clear the barrier", async () => {
+    const identityPath = await identityFixture();
+    const controller = new AbortController();
+    let runtimeCalls = 0;
+    let failAppend = true;
+    const stored: HistoryMessage[] = [];
+    let resets = 0;
+    const harness = createAgentHarness({
+      identityPath,
+      model,
+      historyStore: {
+        async load() { return stored; },
+        async append(_conversationId: string, messages: readonly HistoryMessage[]) {
+          if (failAppend) throw new Error("history unavailable");
+          stored.push(...messages);
+        },
+        async reset() { resets += 1; stored.length = 0; },
+      },
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          runtimeCalls += 1;
+          if (runtimeCalls === 1) controller.abort(new Error("transport cancelled"));
+          return { text: "late answer" };
+        },
+      },
+    });
+
+    await expect(harness.run({
+      conversationId: "reset-heal",
+      userMessage: "first request",
+      abortSignal: controller.signal,
+    })).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+    await expect(harness.resetConversation!("reset-heal")).resolves.toBeUndefined();
+    expect(resets).toBe(1);
+    failAppend = false;
+    const next = await harness.run({
+      conversationId: "reset-heal",
+      userMessage: "after reset",
+      abortSignal: new AbortController().signal,
+    });
+    expect(next.text).toBe("late answer");
+    expect(runtimeCalls).toBe(2);
+    // The reset discarded the unpublished account: only the new turn is stored.
+    expect(stored.map((message) => message.content)).toEqual(["after reset", "late answer"]);
+  });
+
+  it("keeps the barrier when resetConversation itself fails", async () => {
+    const identityPath = await identityFixture();
+    const controller = new AbortController();
+    let runtimeCalls = 0;
+    let failAppend = true;
+    let failReset = true;
+    const stored: HistoryMessage[] = [];
+    const harness = createAgentHarness({
+      identityPath,
+      model,
+      historyStore: {
+        async load() { return stored; },
+        async append(_conversationId: string, messages: readonly HistoryMessage[]) {
+          if (failAppend) throw new Error("history unavailable");
+          stored.push(...messages);
+        },
+        async reset() {
+          if (failReset) throw new Error("reset unavailable");
+          stored.length = 0;
+        },
+      },
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          runtimeCalls += 1;
+          if (runtimeCalls === 1) controller.abort(new Error("transport cancelled"));
+          return { text: "late answer" };
+        },
+      },
+    });
+
+    await expect(harness.run({
+      conversationId: "reset-kept",
+      userMessage: "first request",
+      abortSignal: controller.signal,
+    })).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+    await expect(harness.resetConversation!("reset-kept")).rejects.toThrow("reset unavailable");
+    // The barrier survived the failed reset: healing the store lets the next
+    // turn republish the original account instead of losing it.
+    failAppend = false;
+    const next = await harness.run({
+      conversationId: "reset-kept",
+      userMessage: "after failed reset",
+      abortSignal: new AbortController().signal,
+    });
+    expect(next.text).toBe("late answer");
+    expect(stored.map((message) => message.content)).toEqual([
+      "first request",
+      expect.stringContaining("cancelled_turn_data"),
+      "after failed reset",
+      "late answer",
+    ]);
+  });
+
+  it("drains a parked continuity waiter on dispose once it aborts", async () => {
+    const identityPath = await identityFixture();
+    const controller = new AbortController();
+    const stored: HistoryMessage[] = [];
+    let appendStarted!: () => void;
+    const appendEntered = new Promise<void>((resolve) => { appendStarted = resolve; });
+    let releaseAppend!: () => void;
+    const appendGate = new Promise<void>((resolve) => { releaseAppend = resolve; });
+    const calls: RuntimeRunOptions[] = [];
+    const harness = createAgentHarness({
+      identityPath,
+      model,
+      historyStore: {
+        async load() { return stored; },
+        async append(_conversationId: string, messages: readonly HistoryMessage[]) {
+          appendStarted();
+          await appendGate;
+          stored.push(...messages);
+        },
+      },
+      runtime: {
+        async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+          calls.push(options);
+          if (calls.length === 1) controller.abort(createChannelUserCancelReason("Web"));
+          return { text: "late answer" };
+        },
+      },
+    });
+
+    const first = harness.run({
+      conversationId: "dispose-waiter",
+      userMessage: "first request",
+      abortSignal: controller.signal,
+    });
+    await appendEntered;
+    const waiting = new AbortController();
+    const second = harness.run({
+      conversationId: "dispose-waiter",
+      userMessage: "parked",
+      abortSignal: waiting.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(calls).toHaveLength(1);
+    const disposed = harness.dispose!();
+    waiting.abort(new Error("shutting down"));
+    await expect(second).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+    releaseAppend();
+    await expect(first).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+    await expect(disposed).resolves.toBeUndefined();
   });
 
   it("serializes conversation reset after cancellation publication", async () => {

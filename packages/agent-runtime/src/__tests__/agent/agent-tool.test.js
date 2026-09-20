@@ -345,6 +345,9 @@ describe("Agent tool activity forwarding", () => {
       subagent: { id: "call-1", name: "researcher", callIndex: 1, label: "find the thing" },
     });
     expect(lifecycle[1]).toMatchObject({ isError: false, content: "ok · 0 tool calls" });
+    // Unknown stays unknown: with no explicit, profile, or inherited route the
+    // started bookend carries no attribution rather than a guessed badge.
+    expect(lifecycle[0].subagent).not.toHaveProperty("attribution");
   });
 
   it("forwards each child tool call with a namespaced id and subagent metadata", async () => {
@@ -386,6 +389,91 @@ describe("Agent tool activity forwarding", () => {
     expect(events.find((event) => event.phase === "agent_started")?.subagent.attribution).toBeUndefined();
   });
 
+  it("publishes the launch route on agent_started and replaces it at completion", async () => {
+    const definitions = [{ ...PROFILE,
+      model: { provider: "provider", model: "primary", reference: "provider:primary" }, effort: "high" }];
+    const { events, done } = capture(async () => ({ text: "done", events: [] }),
+      { name: "researcher", prompt: "x" }, { definitions });
+    await done;
+
+    expect(events.find((event) => event.phase === "agent_started")?.subagent.attribution).toEqual({
+      requested: { model: "provider:primary", effort: "high" },
+      disposition: "unknown",
+      transitions: [],
+      retries: [],
+    });
+    expect(events.find((event) => event.phase === "agent_completed")?.subagent.attribution).toMatchObject({
+      requested: { model: "provider:primary", effort: "high" },
+      disposition: "requested",
+    });
+  });
+
+  it("badges an inherited-only route at launch without verdicting a fallback at completion", async () => {
+    const parent = { provider: "anthropic", model: "parent", reference: "anthropic:parent" };
+    const events = [];
+    const tool = createAgentTool(subagentOptions({ run: okRun("done") }),
+      { model: parent, effort: "xhigh", onEvent: (event) => events.push(event) });
+    await tool.execute("call-1", { prompt: "x" });
+
+    expect(events.find((event) => event.phase === "agent_started")?.subagent.attribution).toEqual({
+      requested: { model: "anthropic:parent", effort: "xhigh" },
+      disposition: "unknown",
+      transitions: [],
+      retries: [],
+    });
+    // The launch route is display-only: with no execution evidence the
+    // completed bookend carries no attribution rather than a
+    // requested/fallback verdict over a route nobody explicitly asked for.
+    expect(events.find((event) => event.phase === "agent_completed")?.subagent.attribution).toBeUndefined();
+  });
+
+  it("completes an inherited-only route as requested when the provider confirms it", async () => {
+    const parent = { provider: "anthropic", model: "parent", reference: "anthropic:parent" };
+    const run = async (request) => {
+      request.onEvent({ type: "provider_execution_config", model: "anthropic:parent", effort: "xhigh", effectiveEffort: "xhigh" });
+      return { text: "done", events: [], model: "anthropic:parent", effort: "xhigh", effectiveEffort: "xhigh" };
+    };
+    const events = [];
+    const tool = createAgentTool(subagentOptions({ run }),
+      { model: parent, effort: "xhigh", onEvent: (event) => events.push(event) });
+    await tool.execute("call-1", { prompt: "x" });
+
+    expect(events.find((event) => event.phase === "agent_started")?.subagent.attribution).toMatchObject({
+      requested: { model: "anthropic:parent", effort: "xhigh" },
+      disposition: "unknown",
+    });
+    expect(events.find((event) => event.phase === "agent_completed")?.subagent.attribution).toMatchObject({
+      disposition: "requested",
+    });
+  });
+
+  it("reports the inherited launch route on a detached child while it runs", async () => {
+    const reports = [];
+    const parent = { provider: "anthropic", model: "parent", reference: "anthropic:parent" };
+    const instances = {
+      create: async (spec) => ({ id: "inst-1", turns: 0, status: "running", ...spec }),
+      reserve: async () => ({ id: "inst-1", incarnation: "", activeTurn: { token: "token" } }),
+      begin: async () => ({ id: "inst-1" }),
+      finish: async () => ({}),
+      releaseReservation: async () => {},
+    };
+    const background = {
+      startInternal: async (options) => {
+        await options.run(new AbortController().signal, () => {}, (event) => reports.push(event), undefined);
+        return { jobId: "job-1", instanceId: "inst-1", state: "running", startedAt: new Date().toISOString() };
+      },
+    };
+    const tool = createAgentTool(
+      subagentOptions({ run: okRun("done"), instances, backgroundSubagentController: background }),
+      { model: parent, effort: "xhigh" });
+    const result = await tool.execute("call-1", { prompt: "x", persist: true, background: true });
+
+    expect(result.details.state).toBe("running");
+    expect(reports.filter((event) => event.type === "route")).toEqual([
+      { type: "route", requested: { model: "anthropic:parent", effort: "xhigh" } },
+    ]);
+  });
+
   it("bounds a child's multi-hop route history while retaining origin and newest hops", async () => {
     const run = async (request) => {
       for (let index = 0; index < 40; index += 1) {
@@ -422,6 +510,23 @@ describe("Agent tool activity forwarding", () => {
       disposition: "requested",
       transitions: [],
       retries: [{ model: "provider:primary", retryIndex: 1, attempts: 2, reason: "overloaded" }],
+    });
+  });
+
+  it.each([
+    ["successful", { text: "done", events: [] }],
+    ["awaiting-reply", { subagentQuestion: { question: "Which scope?" }, events: [] }],
+  ])("keeps a pinned requested route when a %s result reports no executed identifiers", async (_case, result) => {
+    const definitions = [{ ...PROFILE,
+      model: { provider: "provider", model: "primary", reference: "provider:primary" }, effort: "high" }];
+    const { events, done } = capture(async () => result, { name: "researcher", prompt: "x" }, { definitions });
+    await done;
+
+    expect(events.find((event) => event.phase === "agent_completed")?.subagent.attribution).toEqual({
+      requested: { model: "provider:primary", effort: "high" },
+      disposition: "requested",
+      transitions: [],
+      retries: [],
     });
   });
 
@@ -527,7 +632,7 @@ describe("Agent tool confinement", () => {
 
   it("offers web configuration and host coordination to every child request", async () => {
     const run = okRun();
-    const webSearchConfig = { backend: "auto", maxRequestsPerRun: 4 };
+    const webSearchConfig = { backend: ["parallel", "ollama"], maxRequestsPerRun: 4 };
     const webFetchConfig = { render: "never", browserCommand: "agent-browser" };
     const webRequestCoordinator = { scope: "host:test" };
     const tool = createAgentTool(subagentOptions({ run }), {
@@ -1058,4 +1163,19 @@ describe("Agent call-time routes", () => {
       .rejects.toThrow("Choices: none configured");
     expect(run).not.toHaveBeenCalled();
   });
+});
+
+
+it("definitions stay byte-identical across admission changes and optional operations refuse before side effects", async () => {
+  const run = okRun();
+  const context = { persistentExposure: true };
+  const unavailable = createAgentTool({ run }, context);
+  const instances = { reserve: vi.fn(), releaseReservation: vi.fn(), create: vi.fn() };
+  const available = createAgentTool({ run, instances, backgroundSubagentController: { start: vi.fn() } }, context);
+  const definition = ({ name, description, parameters }) => JSON.stringify({ name, description, parameters });
+  expect(definition(unavailable)).toBe(definition(available));
+  for (const params of [{ prompt: "x", persist: true }, { prompt: "x", persist: true, background: true }, { prompt: "x", persist: true, verification: { workdir: "/repo" } }]) {
+    await expect(unavailable.execute("no", params)).rejects.toThrow(/unavailable/);
+  }
+  expect(run).not.toHaveBeenCalled(); expect(instances.create).not.toHaveBeenCalled();
 });

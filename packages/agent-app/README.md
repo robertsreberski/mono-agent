@@ -46,7 +46,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   conversation, independent of daily rollover buckets.
 - Expose the sibling request-scoped read-only `SessionHistory` tool over the
   harness's canonical retained managed-tool lifecycle sidecar.
-- Expose the request-scoped `SetConversationTitle` tool only to writable
+- Expose the request-scoped `SetConversationTitle` definition across turns, admitting calls only on writable
   interactive web turns, so the agent can keep an automatic semantic thread
   title current without overriding a title the user renamed.
 - Opt in to Pi-native Exec/Bash process jobs through `processJobs.*`: keep the
@@ -69,15 +69,41 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   routes, and `mono-agent jobs` CLI at the app boundary. This
   local contract does not resist a hostile same-UID provider; use OS privilege
   separation when that is in the threat model.
-- Opt in to Pi-native host-owned watches through `monitors.*`. Telegram, Slack,
-  and existing web conversations receive coalesced event batches as exact-origin
-  tool-capable wake turns; web uses ordinary assistant turns rather than a
-  Monitor card, and shares one per-thread serialization lane with ProcessJobs
-  wakes and queued user follow-ups.
-  Optional batch deduplication and wake intervals suppress unnecessary inference;
-  exit-only watches deliver one terminal wake. The host clamps intervals through
-  `monitors.maxWakeIntervalMs` (default/cap 300000) and exposes durable suppression
-  and delivery-disposition counters. `maxChainDepth` defaults to 4, with cap 64.
+- Keep persistent child incarnation/turn intents and minimal recovery fences in
+  the owner-private registry. Abandoned linked turns cannot unblock without
+  exact registered-owner proof; retained-root index failure blocks replacement
+  creation. Terminal child ownership/publication obligations pin process-job
+  retention, admission and fallback snapshots independently of delivery status.
+  Detached managed turns use an awaited, one-command gated controller on the
+  original job slot; registry admission identity, actual provider settlement and
+  terminal publication are distinct fences. Failed command ownership never
+  falls back to an untracked foreground process. Foreground persistent turns
+  do not gain supervised process ownership. Their failures are currently lost or
+  unknown, not retained acknowledgement epochs; settled authorized inspection
+  returns `structured_job_recovery_unavailable`, and recovery requires explicit
+  close/create. A late answer or existing transcript does not promote continuity.
+  Ordinary successful foreground continuation and AskParent are unchanged.
+  Bounded private command receipts
+  retain actual exit/budget/cleanup measurements without argv, environment,
+  output prose or inferred verification success; optional receipts yield space
+  to mandatory ownership. Restart cleanup does not invent an exit receipt.
+  Recovery inspection reauthorizes bounded facts; retained-only acknowledgement
+  is consumed atomically with a new turn intent. Private keyed request bindings
+  never enter runtime handles, Session guidance or job/wake projections. Private
+  registry directory/read/write failures collapse to a path-free unavailable
+  result without consuming an acknowledgement. A failed acknowledged
+  `close:true` continuation preserves its pending question and does not retire the
+  instance; the consumed request is never executed twice. Doctor reads only the
+  configured owner-only ProcessJobs records and reports bounded path-free retained,
+  unresolved, and owner-unavailable child-ownership counts without a live probe.
+  Observation uses only fixed root-installed native Git (macOS Command Line Tools
+  or Linux `/usr/bin/git`) through the read-only sandbox, never PATH wrappers or
+  the macOS developer-selection shim. Missing/untrusted tooling yields a typed
+  gap; runtime executable access does not authorize repository/private data. The
+  prepared command must retain the selected executable and declared observation
+  cwd, while root or Git-metadata replacement yields an inconsistent observation.
+  Repository config includes are unsupported and fail closed before status;
+  initialized submodules are not traversed, so nested changes are not reported.
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `degraded` / `failed` status.
   `degraded` means a temporarily unavailable transport owns its recovery while
@@ -105,7 +131,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   provider-free strict health and payload-free intake inspect/retry/resolve).
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.
-- Resolve local-first WebSearch/WebFetch settings into every runtime run and
+- Resolve explicit WebSearch/WebFetch provider chains (Parallel then local Ollama
+  search; local fetch by default) into every runtime run and
   report the four-request default WebSearch budget plus separate bounded
   readiness for explicit Ollama or loopback
   SearXNG plus the optional `agent-browser` renderer; the app never owns any
@@ -134,6 +161,14 @@ Persistent Agent/AgentSend can run detached through the app-private in-process
 ProcessJobs lane. Durable admission reserves the child; completion and AskParent
 wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
+`AgentSend({id, stop:true})` cooperatively stops managed detached work without
+starting a new turn. Only a proven `resumable:true` receipt permits ordinary
+message continuation on the same session or `close:true`; `stop_requested`
+keeps messages/close blocked. Stop neither force-kills nor undoes external effects.
+Detached children receive a foreground Bash/Exec ceiling bounded by their own
+job’s remaining runtime and `subagents.commandTimeoutMs` (default 30 minutes).
+The job deadline remains authoritative; child-owned background commands are
+unsupported. Interactive and foreground-child caps, and NodeRepl, are unchanged.
 See [background subagents](../../docs/tools/background-process-jobs.md#detached-persistent-children).
 
 ## Install / Usage
@@ -488,7 +523,8 @@ Every app-owned TUI/operator endpoint owns an in-memory provider-auth service
 for the web console's Agent settings, with no additional configuration. Its
 routes are keyless when the endpoint has no normal API key and otherwise require
 that bearer. It reports only providers used by effective configured routes and
-keeps credential detection distinct from a successful live request. GitHub
+keeps credential detection, account API acceptance (`verified_by_account_request`),
+and successful live inference (`verified_by_live_request`) distinct. GitHub
 Copilot and OpenAI Codex use Pi's native device-code flow; Anthropic uses the
 existing manual-code redirect callback; API-key providers use masked
 provider-owned prompts. Returned credentials pass through the same owner-private,
@@ -671,6 +707,17 @@ or decision, `MemoryJournal` for a broad retrospective over explicit local
 calendar dates, and `RunHistory`/`SessionHistory` for exact execution evidence.
 Unhinted interrupted-work recovery still begins with `RunHistory {}`.
 
+For built-in local memory, a narrowly recognized embedding request, circuit, or
+response failure preserves already-computed lexical hits instead of silently
+returning no memory. The automatic block is headed
+`Memory (recalled; lexical-only — semantic retrieval unavailable)`, and the
+explicit tool returns the same closed `embedding_unavailable` status, including
+when lexical search has no matches. One status-bearing lookup is shared across
+the automatic and explicit paths for the turn; graph expansion cannot erase the
+status, and only final served IDs update access telemetry. Lite mode remains
+normal lexical service. External and legacy array-only backends keep their
+existing behavior.
+
 `MemoryJournal` is request-scoped and read-only. It is offered only for a local
 Lite, Journal, or BuJo store when `memory.recallTool.enabled` is on and normal
 tool policy allows it. Supermemory has search but no chronological capability.
@@ -703,10 +750,10 @@ than redacted, so a mangled value is never persisted behind a success result.
 
 ### Console project tools
 
-Writable interactive web turns can use `ListProjects`, `GetProject`,
+Writable web turns, typed or woken by a background host job, can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
 `SearchConversations`, `CreateConversation`, `SetConversationProject`, `ListTags`,
-`CreateTag`, `UpdateTag`, `DeleteTag`, and `UpdateConversationTags` under
+`CreateTag`, `UpdateTag`, `DeleteTag`, `UpdateConversationTags`, and `MarkConversationRead` under
 per-tool allow/deny policy. The app authenticates through owner-private console discovery; metadata
 alone never authorizes a callback. Tools return real IDs and applied/pending
 results, restrict all targets to the originating agent, and reject late calls.
@@ -716,6 +763,17 @@ palette and belong to one agent; `UpdateConversationTags` idempotently adds/remo
 IDs on the current or named conversation without replacing other tags. Tag changes
 apply immediately and reach the next turn's context snapshot. The MCP server name
 and policy aliases remain `mono-agent-console-projects`. See [Console project tools](../../docs/tools/mcp.md#console-project-tools).
+
+`MarkConversationRead({ conversationId? })` clears the unread dot for one of the
+calling agent's conversations (the current conversation by default). It returns
+`conversationId` and `readRevision`, persisting the current revision as an explicit
+server read watermark without changing conversation revision or recent ordering.
+Each console adopts this signal upward into its device-local seen map when it
+receives the summary; disconnected consoles catch up on their next summary read.
+Opening a conversation remains device-local, and later activity can make it
+unread again, including the rest of the calling turn. Replaying an operation
+returns its original receipt rather than marking newer activity read. There is
+no mark-all operation.
 
 ### Web conversation titles
 
@@ -740,7 +798,7 @@ title remains the fallback.
 ### Channel interactions and conversation history
 
 The configured agent preserves the harness's positive `importContext`
-capability through root-ownership, monitor, process-job, posted-reply, reply-file,
+capability through root-ownership, process-job, posted-reply, reply-file,
 and MCP-App decorators. The default durable store exposes it only when complete
 batch retention and provider-state retirement or absence are provable. Slack's
 posted-reply wrapper overlays destination history only on the leased Send view;
@@ -769,21 +827,33 @@ skill/startup-context reload on its next turn.
 
 The app publishes a cached, content-free `memoryHealth` snapshot in the primary
 trace-source heartbeat and any enabled best-effort global mirror. Built-in
-health is computed through a dynamic memory import so a native SQLite ABI
-failure becomes sanitized `unknown` health
-instead of crashing unrelated CLI startup. Concurrent refreshes coalesce; in
-steady state, ordinary trace events and the completion-based timer never run a
-full audit less than 30 seconds after the prior completion. Startup and reload
-make one explicit post-lifecycle exception so the registered snapshot reflects
-the newly started store. The timer is unreferenced and invalidated at
-stop/reconfigure entry, and the same
-snapshot is used for both registries. The shape is limited to backend/mode,
-closed status and issue vocabularies, ISO check time, and eight whitelisted
-counts—never paths, ids, content, payloads, or raw errors.
+health is audited in a dedicated, lazily started worker thread, so synchronous
+SQLite and canonical-source inspection do not block the controller event loop.
+The periodic worker uses one stability attempt; a real concurrent mutation is
+reported as `mutation_in_progress` and retried on the next normal cycle rather
+than immediately repeating the full audit. Only the deterministic canonical
+graph projection is memoized, and only while the fingerprint of every canonical
+source byte is unchanged. SQLite integrity and inventory, queues, runtime,
+locks, temporary artifacts, mutation markers, and parity against the current DB
+are recomputed on every cycle.
 
-Unexpected built-in audit failures use the stable `health_check_failed` issue,
-while durable work that exceeds its ownership grace uses `work_stalled`; both
-are fixed metadata-only classifications.
+Concurrent refreshes coalesce; in steady state, ordinary trace events and the
+completion-based timer never run an audit less than 30 seconds after the prior
+completion. Startup and reload make one explicit post-lifecycle exception so
+the registered snapshot reflects the newly started store. Stop and reconfigure
+fence pending work, retire the worker without delaying lifecycle teardown, and
+reject results from a replaced store. The timer and idle worker are
+unreferenced, and the same snapshot is used for both registries. `checkedAt` is
+the time of the complete audit that produced the published snapshot, including
+cycles whose unchanged canonical projection was reused.
+
+The shape is limited to backend/mode, closed status and issue vocabularies, ISO
+check time, and eight whitelisted counts—never paths, ids, content, payloads, or
+raw errors. Worker startup, timeout, crash, malformed response, and unexpected
+audit failures publish fresh sanitized `unknown` health with the stable
+`health_check_failed` issue rather than stale counts. Durable work that exceeds
+its ownership grace uses `work_stalled`; both are fixed metadata-only
+classifications.
 
 Operator automation should use:
 
@@ -912,7 +982,7 @@ otherwise neither the runtime extension nor operator capability is exposed.
 Stored resources follow `artifacts.retention.maxAgeDays` within that aggregate
 ceiling; live connections are separately bounded by an eight-entry LRU and
 ten-minute idle timeout. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 for native channel behavior, fallbacks, browser security, and limits.
 
 Successful cron answers suppressed by the shared notification classifier project
@@ -921,7 +991,34 @@ full stored answer before either byte limit, including a sentinel on the final
 line of long narration. Agent SQLite and retained activity keep the original
 text; failures and non-suppressed output retain their existing truncation rules.
 
+### Anthropic cache retention
+
+`providers.piNative.cacheRetention` defaults to `"long"` (one hour); set `"short"`
+(five minutes) to opt out. Nonempty `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON,
+then the `"long"` default. Both the default and explicit values override Pi's
+separate ambient `PI_CACHE_RETENTION`, including explicit `"short"` when Pi's
+environment requests long retention.
+The runtime forwards retention only to Anthropic Messages, including child
+routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
+unsupported models receive no one-hour TTL.
+
+One-hour writes cost **2× normal input**, reads **0.1×**, versus **1.25×** for
+short-cache writes. Model support is required, and no cache hit is guaranteed.
+Metadata-only diagnostics record the requested setting and observed cache TTL;
+an ephemeral Anthropic cache control without an explicit TTL denotes five
+minutes. Evaluate the measurement gates before separately authorizing spending.
+
+The default benefits agents whose turns arrive 5–60 minutes apart. In a measured
+maintainer-console workload, 72% of Anthropic cache writes were 5–60-minute
+re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
+This is workload-specific evidence, not a billing guarantee. Agents that only
+chain turns within five minutes pay slightly more with long retention and can
+set `"short"` instead.
+
+
 ## Architecture
+
+The controller wraps its shared Pi-store-scoped `provider-usage.ts` service in an agent-config-scoped `provider-usage-scope.ts` operator for web/TUI and `provider-usage-tool.ts` request extensions. Activation reuses provider authentication’s effective primary/fallback, agent-host memory LLM, and enabled cron/webhook model references. Each read reloads channel references; new configs receive new scopes without changing the shared credential cache. Aggregate reads/refreshes visit only active supported providers, and explicit inactive reads return an empty snapshot before credential discovery or vendor work. Credential presence alone never activates usage. Pure mappers retain only Claude/Codex/OpenCode Go/GitHub Copilot core subscription windows. Copilot OAuth quota reads use Pi's underlying GitHub device token (`credential.refresh`), never inference `access`; inference expiry/rotation/model catalogs do not refresh or invalidate usage. Cache/retention identity follows source, GitHub token and Pi-normalized host. Missing/blank refresh or malformed/non-github.com `enterpriseUrl` omits usage without local fallback. Blank/absent host means github.com. Pi API keys are sent directly. All Copilot quota 401/403 responses get one request, no resolver/retry, and the five-minute failure fence. Only absent Pi Copilot entries allow bounded local editor apps.json/hosts.json, the active github.com token in gh hosts.yml, and shell-free noninteractive `gh auth token --hostname github.com` (2s, bounded output, token environment removed). The private `copilot-usage-credentials.ts` discovery seams are injectable; stores are never mutated. Unusable Pi entries or unreadable ownership never select a local account. Only github.com tokens qualify; no environment-token fallback, cookies or organization billing calls. Paid Credits and free Chat/Completions are percentages; unlimited/zero placeholders are omitted and explicit token billing may show only a plan. Demand-driven five-minute caching, coalescing, last-good stale data and Retry-After keep usage reads bounded. Explicit `refresh()` bypasses successful freshness and awaits shared vendor work, but honors error/backoff fences and preserves last-good fetch times. Default snapshots and tool reads retain their cached/SWR behavior. `ProviderUsage` honors normal app-tool policy and never purchases quota or changes routing. Only agent-owned Pi credential success/auth-failure outcomes feed the controller's credential-generation-fenced auth observations without additional vendor calls. Account acceptance is weaker than live inference proof; account rejection has no model and uses the existing `provider_auth` failure kind.
 
 Configured continuous sessions persist the requested primary model with their durable epoch. Per-model runtime factories are cached for the harness lifetime, and history retirement resolves the owning runtime. A model switch cold-seeds one new epoch; repeated overrides stay warm. Existing fallback and proactive-isolation policies continue to apply. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
 
@@ -1205,18 +1302,18 @@ compose communication adapters; adapters never depend on it.
 Opt in to metadata-only prompt-cache request fingerprints with
 `providers.piNative.promptCacheDiagnostics` (default `false`) or
 `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`. The offline reader is documented in
-[Prompt-cache measurement](https://mono-agent-docs.vercel.app/runtime/prompt-cache-measurement/).
+[Prompt-cache measurement](https://docs.mono-agent.dev/runtime/prompt-cache-measurement/).
 
 ## Related Documentation
 
-- [Quickstart](https://mono-agent-docs.vercel.app/getting-started/quickstart/)
-- [Agent folder layout](https://mono-agent-docs.vercel.app/config/folder-layout/)
-- [Configuration blueprint](https://mono-agent-docs.vercel.app/config/blueprint/)
-- [CLI reference](https://mono-agent-docs.vercel.app/observability/cli-reference/)
-- [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/composition/)
-- [Channels](https://mono-agent-docs.vercel.app/channels/)
-- [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+- [Quickstart](https://docs.mono-agent.dev/getting-started/quickstart/)
+- [Agent folder layout](https://docs.mono-agent.dev/config/folder-layout/)
+- [Configuration blueprint](https://docs.mono-agent.dev/config/blueprint/)
+- [CLI reference](https://docs.mono-agent.dev/observability/cli-reference/)
+- [Programmatic composition](https://docs.mono-agent.dev/programmatic/composition/)
+- [Channels](https://docs.mono-agent.dev/channels/)
+- [Local-first web research](https://docs.mono-agent.dev/tools/web-research/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-app)
 
 ## Verification
@@ -1229,3 +1326,15 @@ pnpm run check:architecture
 
 Smoke path: `mono-agent init` in a temp folder, `mono-agent validate`, then
 `mono-agent start` and a `curl` POST against the printed webhook invoke URL.
+
+For the detached-child stop contract, run from the repository root:
+
+```bash
+pnpm --filter @mono-agent/agent-app... run build
+node packages/agent-app/scripts/smoke-subagent-stop.mjs
+```
+
+This uses built app packages, the runtime's shipped JavaScript and a controlled
+Pi provider (no network credentials). It prints JSON evidence for tool-bearing
+stop/resume/close and bounded uncooperative stop, then removes its private
+throwaway state under the worktree's `node_modules`.

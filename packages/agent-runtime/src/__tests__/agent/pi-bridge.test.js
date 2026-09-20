@@ -271,7 +271,7 @@ describe("pi MCP tool helpers", () => {
     }, { ctx, cwd: "/repo", toolLimits })).toMatchObject({ timeout_ms: 120_000 });
   });
 
-  it("states the host's configured background ceiling in the tool schema", () => {
+  it("keeps host ceilings out of the tool schema", () => {
     // The model must be able to size the work BEFORE launching. Learning the
     // budget only from a start receipt means it has already committed to a plan.
     const [bash, exec] = ["Bash", "Exec"].map((name) => getPiBuiltinTools([name], { ctx,
@@ -283,10 +283,10 @@ describe("pi MCP tool helpers", () => {
     }).find((tool) => tool.name === name));
 
     for (const tool of [bash, exec]) {
-      expect(tool.parameters.properties.background.description).toContain("8h (28800000 ms)");
+      expect(tool.parameters.properties.background.description).not.toContain("28800000");
       expect(tool.parameters.properties.background.description).toContain("max_runtime_ms");
-      expect(tool.parameters.properties.timeout_ms.description).toContain("2m (120000 ms)");
-      expect(tool.parameters.properties.timeout_ms.description).toContain("8h (28800000 ms)");
+      expect(tool.parameters.properties.timeout_ms.description).toContain("current command ceiling");
+      expect(tool.parameters.properties.timeout_ms.description).not.toContain("28800000");
     }
   });
 
@@ -297,7 +297,7 @@ describe("pi MCP tool helpers", () => {
     }).find((tool) => tool.name === "Bash");
 
     expect(bash.parameters.properties.background.description).not.toContain("ms)");
-    expect(bash.parameters.properties.timeout_ms.description).toContain("2m (120000 ms)");
+    expect(bash.parameters.properties.timeout_ms.description).toContain("current command ceiling");
   });
 
   it("returns image files read by the builtin Read tool as an image content block", async () => {
@@ -1276,10 +1276,14 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
     const fetch = tools.find((tool) => tool.name === "WebFetch");
     const search = tools.find((tool) => tool.name === "WebSearch");
 
-    expect(search.description).toContain("configured Ollama");
+    expect(search.description).toContain("Parallel then local Ollama");
+    expect(search.description).toContain("explicit ordered chain");
     expect(search.description).toContain("one broad, high-yield query");
     expect(search.description).toContain("Never sleep");
     expect(search.description).toContain("snippets as leads");
+    expect(search.description).toContain("ISO 3166-1");
+    expect(search.description).toContain("does not guarantee");
+    expect(search.parameters.properties.country).toMatchObject({ type: "string", pattern: "^[A-Za-z]{2}$" });
     expect(fetch.description).toContain("Prefer static markdown");
     expect(fetch.description).toContain("does not bypass login, CAPTCHA, Cloudflare");
     expect(fetch.parameters.properties.format.description).toContain("raw returns decoded source");
@@ -1438,7 +1442,7 @@ describe("getPiBuiltinTools Agent registration", () => {
     // guard's cap by design, so this is the only way its full text is kept.
     const runArtifactDir = join(tempWorkspace(), ".mono-agent", "artifacts", "run-agent");
     const answer = "r".repeat(40_000);
-    const agent = getPiBuiltinTools(["Agent"], {
+    const agent = getPiBuiltinTools(["Agent"], { ctx,
       subagents: { ...subagents(), run: async () => ({ text: answer, events: [] }) },
       persistArtifact: makeSink(runArtifactDir),
     }).find((tool) => tool.name === "Agent");
@@ -1497,5 +1501,104 @@ describe("stable MCP discovery surface", () => {
       expect(failed.result.tools.map((tool) => tool.name)).toEqual(["zeta"]);
       expect(failed.result.warnings).toContainEqual(expect.objectContaining({ warning_kind: "mcp_list_tools_failed", server: "second" }));
     } finally { connect.mockRestore(); close.mockRestore(); list.mockRestore(); }
+  });
+});
+
+it.each([1, 30_000, 1_800_000])("advertises and normalizes a per-run command ceiling of %s ms", (bashTimeoutMs) => {
+  for (const name of ["Bash", "Exec"]) {
+    const toolLimits = { bashTimeoutMs };
+    const tool = getPiBuiltinTools([name], { ctx, toolLimits }).find((t) => t.name === name);
+    expect(tool.description).toContain("host_turn_context");
+    expect(tool.parameters.properties.timeout_ms.description).not.toContain(`${bashTimeoutMs} ms`);
+    expect(tool.parameters.properties.timeout_ms.description).toContain("requires current host admission");
+    expect(normalizePiBuiltinToolParams(name, { timeout_ms: 3_600_000 }, { ctx, toolLimits }).timeout_ms).toBe(bashTimeoutMs);
+    expect(normalizePiBuiltinToolParams(name, {}, { ctx, toolLimits }).timeout_ms).toBe(bashTimeoutMs);
+  }
+});
+
+
+it("sorts servers and source tools before collision naming regardless of randomized discovery order", async () => {
+  let seed = 42;
+  const random = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;
+  const shuffle = (items) => {
+    const result = [...items];
+    for (let i = result.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [result[i], result[j]] = [result[j], result[i]]; }
+    return result;
+  };
+  const connect = vi.spyOn(McpClient.prototype, "connect").mockImplementation(async () => {
+    await new Promise((resolve) => setTimeout(resolve, Math.floor(random() * 5)));
+  });
+  const close = vi.spyOn(McpClient.prototype, "close").mockResolvedValue(undefined);
+  const list = vi.spyOn(McpClient.prototype, "listTools").mockImplementation(async () => {
+    await new Promise((resolve) => setTimeout(resolve, Math.floor(random() * 5)));
+    return { tools: shuffle(["shared", "Read", "alpha"]).map((name) => ({ name, description: name, inputSchema: { type: "object", properties: {} } })) };
+  });
+  try {
+    let baseline;
+    for (let i = 0; i < 12; i++) {
+      const servers = Object.fromEntries(shuffle(["z", "A", "a"]).map((name) => [name, { type: "http", url: "http://127.0.0.1:19000/mcp" }]));
+      const result = await initPiMcpTools(servers, new Set(["Read"]), { ctx });
+      const bytes = JSON.stringify(result.tools.map(({ name, description, parameters }) => ({ name, description, parameters })));
+      baseline ??= bytes;
+      expect(bytes).toBe(baseline);
+      expect(result.tools.map((tool) => tool.name)).toEqual(["mcp__A__Read", "alpha", "shared", "mcp__a__Read", "mcp__a__alpha", "mcp__a__shared", "mcp__z__Read", "mcp__z__alpha", "mcp__z__shared"]);
+      await closePiMcpClients(result.clients);
+    }
+  } finally { connect.mockRestore(); close.mockRestore(); list.mockRestore(); }
+});
+
+describe("web delivery guards", () => {
+  function searchEnvelopeWithAction(url = "https://example.com/evidence") {
+    const next_actions = [{ tool: "WebFetch", args: { url }, reason: "Fetch for evidence." }];
+    const text = JSON.stringify({
+      tool: "WebSearch", status: "ok", code: "ok", summary: "Found 1 result.",
+      results: [{ title: "Evidence", url, snippet: "lead" }],
+      coverage: {}, untrusted_fields: ["results"], next_actions,
+    });
+    return {
+      text,
+      outcome: { status: "ok", code: "ok", next_actions, bytes: Buffer.byteLength(text, "utf8") },
+      error: false,
+    };
+  }
+
+  it("returns a JSON envelope when the web controller is unavailable", async () => {
+    const fetch = getPiBuiltinTools(["WebFetch"], { ctx }).find((tool) => tool.name === "WebFetch");
+    const fetchResult = await fetch.execute("WebFetch:1", { url: "https://example.com" });
+    expect(JSON.parse(fetchResult.content[0].text)).toMatchObject({
+      tool: "WebFetch", status: "error", code: "controller_unavailable",
+    });
+
+    const search = getPiBuiltinTools(["WebSearch"], { ctx }).find((tool) => tool.name === "WebSearch");
+    const searchResult = await search.execute("WebSearch:1", { query: "evidence" });
+    expect(JSON.parse(searchResult.content[0].text)).toMatchObject({
+      tool: "WebSearch", status: "error", code: "controller_unavailable",
+    });
+  });
+
+  it("strips WebFetch suggestions when WebFetch is not exposed", async () => {
+    const webController = { search: async () => searchEnvelopeWithAction(), fetch: async () => ({}) };
+
+    const searchOnly = getPiBuiltinTools(["WebSearch"], { ctx, webController })
+      .find((tool) => tool.name === "WebSearch");
+    const stripped = await searchOnly.execute("WebSearch:1", { query: "evidence" });
+    expect(JSON.parse(stripped.content[0].text)).not.toHaveProperty("next_actions");
+
+    const both = getPiBuiltinTools(["WebSearch", "WebFetch"], { ctx, webController })
+      .find((tool) => tool.name === "WebSearch");
+    const kept = await both.execute("WebSearch:1", { query: "evidence" });
+    const payload = JSON.parse(kept.content[0].text);
+    expect(payload.next_actions).toHaveLength(1);
+    expect(payload.next_actions[0].args.url).toBe("https://example.com/evidence");
+  });
+
+  it("strips suggestions denied by the resolved network policy", async () => {
+    const webController = { search: async () => searchEnvelopeWithAction(), fetch: async () => ({}) };
+    const search = getPiBuiltinTools(["WebSearch", "WebFetch"], { ctx,
+      webController,
+      sandboxPolicy: { mode: "native", network: { mode: "none" } },
+    }).find((tool) => tool.name === "WebSearch");
+    const result = await search.execute("WebSearch:1", { query: "evidence" });
+    expect(JSON.parse(result.content[0].text)).not.toHaveProperty("next_actions");
   });
 });

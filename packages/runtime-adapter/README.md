@@ -121,12 +121,6 @@ default. Fallback route-attempt resolvers cannot supply or replace it.
 
 ## Architecture
 
-`MonitorStartRequest` carries optional `wakeOn`, `dedupe`, and
-`minWakeIntervalMs`; `MonitorStartResult` reports the effective values.
-`MonitorControllerLimits.maxWakeIntervalMs` publishes the host interval cap.
-The bridge rejects malformed policy and nondefault dedupe/interval with exit-only
-wakes. Defaults remain batch/none/0.
-
 `runtime-adapter` is the typed boundary between harness code and the JavaScript
 provider kernel:
 
@@ -143,6 +137,14 @@ provider kernel:
    runtime options without importing channel or application code.
 5. `bridgeProcessJobsController()` validates host limits and adapts the typed
    process-job controller to the kernel's JSDoc-only structural shape.
+6. `bridgeOwnedForegroundProcesses()` forwards an optional, host-owned awaited
+   command capability. Each Pi invocation receives its own attempt controller;
+   Bash/Exec pass the host tool-call identity and exact prepared command without
+   enabling background schemas. The owner must persist gated process identity
+   before release and retain cleanup authority on rejection or unknown group
+   exit. This low-level seam alone does not implement durable child recovery;
+   hosts without it retain ordinary foreground behavior. Route-attempt plugins
+   cannot replace the owner.
 
 Live-input callbacks separate native queue acceptance (`accepted`), exact
 transcript consumption (`acknowledge`), uncertain terminal delivery
@@ -166,6 +168,10 @@ suppresses unrelated same-ID callback owners.
 | `src/local-providers.ts` | Ollama, LM Studio, and OpenAI-compatible provider validation/discovery |
 | `src/mcp-servers.ts` | MCP normalization |
 | `src/process-jobs.ts` | Typed host controller, kernel-shape bridge, launch/result contracts, and conformance boundary |
+
+SRT command preparation terminates the sandbox CLI's options with `--` before
+forwarding the exact target argv. Target flags such as Git's `-c` must not become
+SRT's own shell-command option.
 
 ## Public API
 
@@ -212,14 +218,6 @@ MANAGED_SRT_TREE_SHA256
 MODEL_REFERENCE_ECHO_MAX_BYTES
 MODEL_REFERENCE_REASON_MAX_BYTES
 ModelEffortLevels
-MonitorControllerLimits
-MonitorLaunchOptions
-MonitorProcessHandle
-MonitorProcessResult
-MonitorStartRequest
-MonitorStartResult
-MonitorStopResult
-MonitorsController
 MonoRuntimeApprovalDecision
 MonoRuntimeApprovalRequest
 MonoRuntimeAttemptContext
@@ -238,6 +236,9 @@ MonoRuntimeSandboxEngine
 MonoRuntimeSupportDescription
 NormalizedMcpServer
 NormalizedMcpTransport
+OwnedForegroundProcessController
+OwnedForegroundProcessRequest
+OwnedForegroundProcesses
 PI_TRANSPORTS
 PiTransport
 PrepareSandboxedCommandInput
@@ -269,6 +270,11 @@ RuntimeRunOptions
 RuntimeSubagentActivityEvent
 RuntimeSubagentActivityPhase
 RuntimeSubagentIdentity
+RuntimeSubagentRouteAttribution
+RuntimeSubagentRouteExecution
+RuntimeSubagentRouteRetry
+RuntimeSubagentRouteSelection
+RuntimeSubagentRouteTransition
 RuntimeToolLifecycleEvent
 RuntimeToolLifecyclePersistence
 RuntimeToolLifecycleSink
@@ -299,7 +305,7 @@ SrtNetworkSettings
 SrtSandboxEngineOptions
 SrtSettings
 assertParsedRuntimeModelReference
-bridgeMonitorsController
+bridgeOwnedForegroundProcesses
 bridgeProcessJobsController
 createMonoRuntime
 createPiOAuthApiKeyResolver
@@ -365,7 +371,12 @@ synthetic fallback for orphan lifecycle records), while optional `nativeId` and
 `agentPath` retain provider correlation metadata. Its
 `RuntimeSubagentActivityPhase` phases are `agent_started`, `started`,
 `completed`, `message`, and `agent_completed`; child `message` activity is never
-parent answer text or a tool completion. `RuntimeEventLike` remains permissive
+parent answer text or a tool completion. The `agent_started` bookend already
+carries the launch route in `subagent.attribution` — the explicit request
+completed with the inherited parent route, with `disposition: "unknown"` — so
+consumers can badge the delegation while it runs; the `agent_completed`
+bookend replaces it with the final accounting, where `requested` is the
+explicit request alone. `RuntimeEventLike` remains permissive
 for other provider telemetry; use `isRuntimeSubagentActivityEvent()` to narrow
 an open event before consuming the required normalized fields.
 
@@ -384,13 +395,13 @@ It does not build prompts, manage memory, expose UI, poll communication channels
 
 ## Related Documentation
 
-- [Runtime and providers](https://mono-agent-docs.vercel.app/runtime/) explains the normal
+- [Runtime and providers](https://docs.mono-agent.dev/runtime/) explains the normal
   config-first path.
-- [Backends and model references](https://mono-agent-docs.vercel.app/runtime/backends/)
+- [Backends and model references](https://docs.mono-agent.dev/runtime/backends/)
   documents the five bridge selections surfaced by this facade.
-- [Local providers](https://mono-agent-docs.vercel.app/runtime/local-providers/) covers
+- [Local providers](https://docs.mono-agent.dev/runtime/local-providers/) covers
   Ollama, LM Studio, and compatible gateways.
-- [Sandboxing](https://mono-agent-docs.vercel.app/tools/sandbox/) describes the policy that
+- [Sandboxing](https://docs.mono-agent.dev/tools/sandbox/) describes the policy that
   this package validates and enforces through managed SRT.
 - [`@mono-agent/agent-runtime`](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-runtime)
   owns the underlying provider kernel.

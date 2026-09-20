@@ -188,6 +188,8 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             cancelled: false,
             usage: {},
           };
+          // A settled user abort may have no provider failure. Preserve that
+          // distinction in attempt evidence used by strict native-tail recovery.
           failoverHistory.push({
             model: entry.model,
             failureKind: "skipped_capability_mismatch",
@@ -354,7 +356,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
 
           failoverHistory.push({
             model: entry.model,
-            failureKind: result.failureKind || null,
+            failureKind: result.cancelled && !result.failureKind ? "cancelled" : (result.failureKind || null),
             requestId: retryability.requestId,
             retryableSubkind: retryability.subkind,
             ...(retryIndex > 0 ? { retryIndex } : {}),

@@ -460,15 +460,18 @@ For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/po
 
 ## Console project tools
 
-Writable interactive web turns can use `ListProjects`, `GetProject`,
+Writable web turns can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
 `SearchConversations`, `CreateConversation`, `SetConversationProject`,
-`ListTags`, `CreateTag`, `UpdateTag`, `DeleteTag`, and `UpdateConversationTags`. They
+`ListTags`, `CreateTag`, `UpdateTag`, `DeleteTag`, `UpdateConversationTags`, and `MarkConversationRead`. They
 require no new config.
 Each tool honors its bare name, `mcp__mono-agent-console-projects__<name>`,
 `mcp__mono-agent-console-projects__*`, and `*` in allow/deny policy; deny wins.
-They are scoped to the originating agent and unavailable to cron, background
-wakes, archived conversations, and requests without active console authority.
+Typed turns and background host wakes (process-job completions) on an
+ordinary conversation both carry the capability, so an agent may file or move the
+conversation while reacting to finished background work.
+They are scoped to the originating agent and unavailable to cron, archived
+conversations, and requests without active console authority.
 
 These tools perform synchronous authenticated callbacks and return real IDs and
 applied/pending membership results. `CreateProject` can atomically attach the
@@ -501,6 +504,17 @@ The tag palette is `default`, `blue`, `purple`, `amber`, `rose`, `green`, `teal`
 or `red`; the project palette is unchanged. `DeleteTag` removes membership
 without deleting conversations. Tags are deleted, never archived.
 
+`MarkConversationRead({ conversationId? })` clears the unread dot for one of the
+calling agent's conversations (the current conversation by default). It returns
+`conversationId` and `readRevision`, persisting the current revision as an explicit
+server read watermark without changing conversation revision or recent ordering.
+Each console adopts this signal upward into its device-local seen map when it
+receives the summary; disconnected consoles catch up on their next summary read.
+Opening a conversation remains device-local, and later activity can make it
+unread again, including the rest of the calling turn. Replaying an operation
+returns its original receipt rather than marking newer activity read. There is
+no mark-all operation.
+
 `UpdateConversationTags` accepts an optional `conversationId` (current conversation
 by default), and at least one of `add` or `remove`, each containing at most 20 tag IDs. It is
 idempotent and preserves other tags; removal wins when an ID appears in both
@@ -514,3 +528,48 @@ line alongside any project context. Steering retains that snapshot; the next
 turn gets fresh tags. Stored user messages stay unprefixed. There is no pending
 tag membership or separate enablement key: the MCP server remains
 `mono-agent-console-projects` so existing policy aliases keep working.
+
+
+## `ProviderUsage`: subscription quota
+
+`ProviderUsage` is a read-only app-owned, request-scoped MCP tool. It takes no
+required arguments; optional `provider` accepts only `anthropic`, `openai-codex`,
+`opencode-go`, or `github-copilot`, and optional `refresh` accepts a boolean
+(absent or `false` keeps the cached read; `true` forces a current read). It works on permitted agent turns on any channel, independently
+of the web console's writable-turn tools. It returns the same
+`mono-agent.provider-usage.v1` JSON snapshot as
+[Agent settings usage meters](/observability/web-console/#subscription-usage):
+`providers[]` with provider id/label, optional plan, core windows
+(`kind`, `label`, `usedPercent`, optional `resetsAt`, nominal `periodMs`),
+`fetchedAt`, `stale`, and optional fixed `error.code`/`error.message`.
+Only providers activated by this agent’s effective primary/fallback, agent-host
+memory LLM, and enabled cron/webhook model references are eligible. An explicit
+inactive provider returns an empty snapshot without credential lookup or vendor
+requests. Credentials alone do not activate providers. Providers without usable credentials are omitted; an empty providers array does not
+prove any remaining quota. Last-good stale data is not current quota truth.
+
+The tool prefers this agent's `providers.piAuthPath`, using the existing Pi
+resolver for Claude/Codex OAuth refresh. Copilot OAuth quota reads use the GitHub
+device-flow token in `credential.refresh`, never inference `access`, and never
+invoke the resolver for expiry or rejection. Only absent Pi Copilot credentials
+allow local editor and GitHub CLI github.com discovery; unusable/enterprise Pi
+entries are omitted without local fallback, in the documented [usage credential order](/observability/web-console/#subscription-usage).
+It does not accept credentials, paths, URLs or
+account identifiers. Console and tool share one five-minute per-provider cache
+and coalesced refresh/backoff. There is no vendor write,
+quota purchase, routing decision or local cost calculation. A forced tool read
+joins the shared in-flight fetch and never bypasses error backoff or
+`Retry-After`. Retained usage fetches also
+feed passive credential-health evidence only when using agent-owned Pi credentials:
+vendor acceptance is **Credential OK**,
+not proof of inference/model entitlement, while final auth rejection is **Needs action**.
+Copilot paid-plan Credits and free-plan Chat/Completions are percentages only;
+unlimited/zero-entitlement buckets, Extra Usage and organization billing are omitted.
+A token-based-billing seat may return a plan without windows. Local Copilot tokens
+never verify the agent’s inference credential or refresh on rejection.
+
+Allow-all exposes it automatically. A restrictive `tools.allowedTools` must
+include `ProviderUsage`, `mcp__mono-agent-provider-usage__ProviderUsage`, or
+`mcp__mono-agent-provider-usage__*`. The same aliases and `*` work in
+`tools.disallowedTools`; deny wins. The request-scoped endpoint is removed at
+turn cleanup. No new config switch or external MCP declaration is needed.

@@ -209,10 +209,10 @@ in the trace-source registry. The config view remains read-only.
 
 ## Related Documentation
 
-- [Terminal UI guide](https://mono-agent-docs.vercel.app/observability/tui/)
-- [Operator stream endpoint](https://mono-agent-docs.vercel.app/channels/tui/)
-- [Artifacts and traces](https://mono-agent-docs.vercel.app/observability/artifacts-and-traces/)
-- [Configuration blueprint](https://mono-agent-docs.vercel.app/config/blueprint/)
+- [Terminal UI guide](https://docs.mono-agent.dev/observability/tui/)
+- [Operator stream endpoint](https://docs.mono-agent.dev/channels/tui/)
+- [Artifacts and traces](https://docs.mono-agent.dev/observability/artifacts-and-traces/)
+- [Configuration blueprint](https://docs.mono-agent.dev/config/blueprint/)
 
 ## Verification
 

@@ -124,15 +124,29 @@ describe("SetConversationTitle request-scoped tool", () => {
     ["non-web source", { source: "tui", web: { threadId: "thread-one", turnId: "turn-one", conversationTitle: { schema: 1, writable: true } } }],
     ["missing capability", { source: "web", web: { threadId: "thread-one", turnId: "turn-one" } }],
     ["trigger-managed turn", { source: "web", web: { threadId: "thread-one", turnId: "turn-one", trigger: "job", conversationTitle: { schema: 1, writable: true } } }],
-  ])("does not register for a %s", async (_label, metadata) => {
+  ])("retains definitions but refuses a %s", async (_label, metadata) => {
     const extension = await createSetConversationTitleRuntimeExtension()(request({ metadata }));
-    expect(extension.runtimeOptions).toEqual({});
-    await extension.cleanup?.();
+    const servers = extension.runtimeOptions?.mcpServers as Record<string, { url: string }>;
+    const client = new Client({ name: "title-refusal", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(servers[SET_CONVERSATION_TITLE_MCP_SERVER_NAME]!.url)) as never);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([SET_CONVERSATION_TITLE_TOOL_NAME]);
+      const result = await client.callTool({ name: SET_CONVERSATION_TITLE_TOOL_NAME, arguments: { title: "Forged success" } });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toBeUndefined();
+    } finally { await client.close(); await extension.cleanup?.(); }
   });
 
   it("rejects a capability whose thread does not own the conversation", async () => {
     const extension = await createSetConversationTitleRuntimeExtension()(request({ conversationId: "web:other-thread" }));
-    expect(extension.runtimeOptions).toEqual({});
-    await extension.cleanup?.();
+    const servers = extension.runtimeOptions?.mcpServers as Record<string, { url: string }>;
+    const client = new Client({ name: "title-refusal", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(servers[SET_CONVERSATION_TITLE_MCP_SERVER_NAME]!.url)) as never);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([SET_CONVERSATION_TITLE_TOOL_NAME]);
+      const result = await client.callTool({ name: SET_CONVERSATION_TITLE_TOOL_NAME, arguments: { title: "Forged success" } });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toBeUndefined();
+    } finally { await client.close(); await extension.cleanup?.(); }
   });
 });

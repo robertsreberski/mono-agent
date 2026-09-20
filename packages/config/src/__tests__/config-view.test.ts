@@ -375,7 +375,7 @@ describe("buildMonoAgentConfigView", () => {
 
   it("shows web tool defaults and JSON/env precedence", () => {
     const defaults = buildView(baseEnv);
-    expect(field(defaults, "tools.web.search.backend")).toMatchObject({ value: "auto", source: "default" });
+    expect(field(defaults, "tools.web.search.backend")).toMatchObject({ value: '["parallel","ollama"]', source: "default" });
     expect(field(defaults, "tools.web.search.maxRequestsPerRun")).toMatchObject({ value: "4", source: "default" });
     expect(field(defaults, "tools.web.search.codex.model")).toMatchObject({
       value: "gpt-5.6-luna",
@@ -427,6 +427,12 @@ describe("buildMonoAgentConfigView", () => {
       value: "http://127.0.0.1:9090",
       source: "env",
     });
+  });
+
+  it("does not offer retired Hound endpoint settings in the editable view", () => {
+    const defaults = buildView(baseEnv);
+    expect(defaults.flatMap((section) => section.fields).some((entry) => entry.id.includes("hound.endpoint"))).toBe(false);
+    expect(() => buildView({ ...baseEnv, MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT: "" })).toThrow(/was removed/);
   });
 });
 
@@ -518,4 +524,13 @@ describe("findRemovedConfigWarnings", () => {
     ]);
     expect(warnings.join("\n")).not.toContain("secret-ish-cron");
   });
+});
+
+
+it("reports cache retention source with the provider config-view precedence convention", () => {
+  const env = { ...baseEnv, MONO_AGENT_MODEL: "anthropic:claude-sonnet-4-6" };
+  const json = { providers: { piNative: { cacheRetention: "long" as const } } };
+  expect(field(buildView(env, json), "providers.piNative.cacheRetention")).toMatchObject({ value: "long", source: "json" });
+  expect(field(buildView({ ...env, MONO_AGENT_PI_CACHE_RETENTION: "short" }, json), "providers.piNative.cacheRetention")).toMatchObject({ value: "short", source: "env" });
+  expect(field(buildView(env), "providers.piNative.cacheRetention")).toMatchObject({ value: "long", source: "default" });
 });

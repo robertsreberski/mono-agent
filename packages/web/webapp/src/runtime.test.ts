@@ -2,11 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   canSendInConsole,
   canUploadInConsole,
-  coalesceMonitorWakeMessages,
   convertWebMessage,
 } from "./runtime";
 import { projectProcessJobPresentation } from "./process-job-presentation";
-import { agent, attachment, monitor, processJob, thread } from "./test/fixtures";
+import { agent, attachment, processJob, thread } from "./test/fixtures";
 import type { WebMessage } from "./types";
 
 const processJobReceipt = (
@@ -42,283 +41,6 @@ const message = (overrides: Partial<WebMessage> = {}): WebMessage => ({
   ...overrides,
 });
 
-const monitorWake = (
-  id: string,
-  projection = monitor(),
-  overrides: Partial<WebMessage> = {},
-): WebMessage => message({
-  id,
-  threadId: "thread-1",
-  turnId: `turn-${id}`,
-  role: "assistant",
-  parts: [{
-    type: "monitor-activity",
-    monitors: [{ projection, deliveryKeys: [`monitor:${projection.monitorId}:${String(projection.counters.seq)}`] }],
-  }],
-  attachments: [],
-  createdAt: `2026-07-17T10:00:0${id}.000Z`,
-  updatedAt: `2026-07-17T10:00:1${id}.000Z`,
-  finishedAt: `2026-07-17T10:00:1${id}.000Z`,
-  status: "complete",
-  ...overrides,
-});
-
-describe("coalesceMonitorWakeMessages", () => {
-  it("does not coalesce across a project transition anchor", () => {
-    const first = monitorWake("1");
-    const anchor = monitorWake("2", monitor(), { projectTransitions: [{ id: 1, afterMessageId: "2", turnId: "turn-2", before: null, after: { id: "p", name: "P", color: "blue" }, createdAt: "2026-09-12T00:00:00Z" }] });
-    const last = monitorWake("3");
-    const result = coalesceMonitorWakeMessages([first, anchor, last]);
-    expect(result.map((item) => item.id)).toEqual(["1", "2", "3"]);
-    expect(convertWebMessage(anchor).metadata?.custom?.projectTransitions).toEqual(anchor.projectTransitions);
-  });
-  it("does not coalesce across a route change anchor", () => {
-    const first = monitorWake("1");
-    const anchor = monitorWake("2", monitor(), { modelTransitions: [{ id: 1, afterMessageId: "2", turnId: "turn-3", before: { model: "provider/sol", effort: "low" }, after: { model: "provider/astra", effort: "high" }, createdAt: "2026-09-12T00:00:00Z" }] });
-    const last = monitorWake("3");
-    const result = coalesceMonitorWakeMessages([first, anchor, last]);
-    expect(result.map((item) => item.id)).toEqual(["1", "2", "3"]);
-    expect(convertWebMessage(anchor).metadata?.custom?.modelTransitions).toEqual(anchor.modelTransitions);
-  });
-  it("uses the newest same-Monitor wake as one chronological presentation carrier", () => {
-    const firstProjection = monitor({
-      description: "First batch",
-      counters: { ...monitor().counters, seq: 1, batchesDelivered: 1 },
-    });
-    const secondProjection = monitor({
-      description: "Second batch",
-      counters: { ...monitor().counters, seq: 2, batchesDelivered: 2 },
-    });
-    const terminalProjection = monitor({
-      description: "Terminal batch",
-      state: "exited",
-      timestamps: { ...monitor().timestamps, completedAt: "2026-07-17T10:00:13.000Z" },
-      counters: { ...monitor().counters, seq: 3, batchesDelivered: 3 },
-      exitCode: 0,
-    });
-    const first = monitorWake("1", firstProjection, {
-      parts: [
-        { type: "reasoning", text: "Check the underlying source." },
-        { type: "tool-call", toolCallId: "read-1", toolName: "Read", status: "complete" },
-        {
-          type: "monitor-activity",
-          monitors: [{ projection: firstProjection, deliveryKeys: ["monitor:first"] }],
-        },
-      ],
-    });
-    const second = monitorWake("2", secondProjection);
-    const terminal = monitorWake("3", terminalProjection, {
-      turnId: "turn-terminal",
-      updatedAt: "2026-07-17T10:00:30.000Z",
-      finishedAt: "2026-07-17T10:00:30.000Z",
-      parts: [
-        {
-          type: "monitor-activity",
-          monitors: [{ projection: terminalProjection, deliveryKeys: ["monitor:terminal"] }],
-        },
-        { type: "text", text: "The watch finished normally." },
-      ],
-    });
-
-    const shaped = coalesceMonitorWakeMessages([first, second, terminal]);
-
-    expect(shaped).toHaveLength(1);
-    expect(shaped[0]).toMatchObject({
-      id: "3",
-      turnId: "turn-terminal",
-      status: "complete",
-      updatedAt: "2026-07-17T10:00:30.000Z",
-      finishedAt: "2026-07-17T10:00:30.000Z",
-    });
-    expect(shaped[0]?.parts.map((part) => part.type)).toEqual([
-      "reasoning",
-      "tool-call",
-      "monitor-activity",
-      "monitor-activity",
-      "monitor-activity",
-      "text",
-    ]);
-    expect(shaped[0]?.parts.flatMap((part) =>
-      part.type === "monitor-activity" ? part.monitors.map((entry) => entry.projection.description) : [],
-    )).toEqual(["First batch", "Second batch", "Terminal batch"]);
-    expect(first.parts).toHaveLength(3);
-    expect(second.parts).toHaveLength(1);
-  });
-
-  it("recomputes a streaming carrier from raw messages without duplicating its terminal update", () => {
-    const first = monitorWake("1", monitor({
-      description: "First batch",
-      counters: { ...monitor().counters, seq: 1, batchesDelivered: 1 },
-    }));
-    const runningProjection = monitor({
-      description: "Streaming batch",
-      counters: { ...monitor().counters, seq: 2, batchesDelivered: 2 },
-    });
-    const running = monitorWake("2", runningProjection, {
-      status: "running",
-      finishedAt: undefined,
-    });
-
-    const streaming = coalesceMonitorWakeMessages([first, running]);
-    expect(streaming).toHaveLength(1);
-    expect(streaming[0]).toMatchObject({ id: "2", status: "running", turnId: "turn-2" });
-    expect(streaming[0]?.parts).toHaveLength(2);
-
-    const terminalProjection = monitor({
-      description: "Terminal batch",
-      state: "exited",
-      timestamps: { ...monitor().timestamps, completedAt: "2026-07-17T10:00:20.000Z" },
-      counters: { ...monitor().counters, seq: 2, batchesDelivered: 2 },
-      exitCode: 0,
-    });
-    const settled = monitorWake("2", terminalProjection);
-    const completed = coalesceMonitorWakeMessages([first, settled]);
-
-    expect(completed).toHaveLength(1);
-    expect(completed[0]).toMatchObject({ id: "2", status: "complete", turnId: "turn-2" });
-    expect(completed[0]?.parts.flatMap((part) =>
-      part.type === "monitor-activity" && part.monitors[0]?.projection.state === "exited" ? [part] : [],
-    )).toHaveLength(1);
-  });
-
-  it("does not fold a later wake past a visible same-Monitor reply", () => {
-    const first = monitorWake("1");
-    const visible = monitorWake("2", monitor({ description: "Important batch" }), {
-      parts: [
-        {
-          type: "monitor-activity",
-          monitors: [{ projection: monitor({ description: "Important batch" }), deliveryKeys: ["monitor:important"] }],
-        },
-        { type: "text", text: "The queue needs attention." },
-      ],
-    });
-    const later = monitorWake("3", monitor({ description: "Later batch" }));
-
-    const shaped = coalesceMonitorWakeMessages([first, visible, later]);
-
-    expect(shaped).toHaveLength(2);
-    expect(shaped.map((entry) => entry.id)).toEqual(["2", "3"]);
-    expect(shaped[0]?.parts.at(-1)).toEqual({ type: "text", text: "The queue needs attention." });
-  });
-
-  it.each([
-    ["different Monitor", monitorWake("2", monitor({ monitorId: "different-monitor" }))],
-    ["mixed Monitor ids", monitorWake("2", monitor(), {
-      parts: [{
-        type: "monitor-activity" as const,
-        monitors: [
-          { projection: monitor(), deliveryKeys: ["monitor:first"] },
-          { projection: monitor({ monitorId: "different-monitor" }), deliveryKeys: ["monitor:second"] },
-        ],
-      }],
-    })],
-    ["identity-less legacy activity", monitorWake("2", monitor(), {
-      parts: [{ type: "monitor-activity" as const, monitors: [] }],
-    })],
-    ["malformed Monitor id", monitorWake("2", monitor(), {
-      parts: [{
-        type: "monitor-activity" as const,
-        monitors: [{
-          projection: { ...monitor(), monitorId: "   " },
-          deliveryKeys: ["monitor:malformed"],
-        }],
-      }],
-    })],
-    ["process job", monitorWake("2", monitor(), {
-      parts: [
-        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
-        { type: "process-job" as const, job: processJob() },
-      ],
-    })],
-    ["message attachment", monitorWake("2", monitor(), {
-      attachments: [attachment("upload")],
-    })],
-    ["error", monitorWake("2", monitor(), {
-      parts: [
-        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
-        { type: "error" as const, code: "provider_failed", message: "Provider failed." },
-      ],
-    })],
-    ["model fallback", monitorWake("2", monitor(), {
-      attribution: {
-        requested: { model: "fixture:a", effort: "high" },
-        attempted: { model: "fixture:b", effort: "high", effectiveEffort: "off" },
-        executed: { model: "fixture:b", effort: "high", effectiveEffort: "off" },
-        disposition: "fallback" as const,
-        transitions: [{ from: "fixture:a", to: "fixture:b", reason: "overloaded" }],
-        retries: [],
-      },
-    })],
-    ["reply attachment", monitorWake("2", monitor(), {
-      parts: [
-        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
-        {
-          type: "attachment" as const,
-          id: "reply",
-          artifactId: "artifact",
-          name: "report.txt",
-          mediaType: "text/plain",
-          sizeBytes: 12,
-          integrityId: `sha256:${"a".repeat(64)}`,
-        },
-      ],
-    })],
-    ["Monitor start receipt", monitorWake("2", monitor(), {
-      parts: [
-        { type: "tool-call" as const, toolCallId: "monitor-start", toolName: "Monitor", status: "complete" as const },
-        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
-      ],
-    })],
-    ["nested AskUser", monitorWake("2", monitor(), {
-      parts: [
-        {
-          type: "subagent" as const,
-          toolCallId: "agent-one",
-          name: "worker",
-          status: "complete" as const,
-          calls: [{ toolCallId: "ask-one", toolName: "mcp__interaction__AskUser", status: "complete" as const }],
-        },
-        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
-      ],
-    })],
-  ])("keeps %s as a presentation boundary", (_name, boundary) => {
-    expect(coalesceMonitorWakeMessages([monitorWake("1"), boundary])).toHaveLength(2);
-  });
-
-  it.each(["user", "system", "assistant"] as const)(
-    "does not join across an intervening %s message",
-    (role) => {
-      const separator = message({
-        id: "separator",
-        role,
-        parts: role === "assistant" ? [{ type: "text", text: "Ordinary reply." }] : [],
-      });
-      const shaped = coalesceMonitorWakeMessages([
-        monitorWake("1"),
-        separator,
-        monitorWake("2"),
-      ]);
-      expect(shaped.map((entry) => entry.id)).toEqual(["1", "separator", "2"]);
-    },
-  );
-
-  it("keeps a receipt-bearing background launch as its own Monitor wake boundary", () => {
-    const job = processJob();
-    const launchWake = monitorWake("2", monitor(), {
-      parts: [
-        launchPart(job, "background-launch"),
-        { type: "monitor-activity", monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
-      ],
-    });
-    expect(coalesceMonitorWakeMessages([monitorWake("1"), launchWake]).map(({ id }) => id)).toEqual(["1", "2"]);
-    const withoutReceipt = {
-      ...launchWake,
-      parts: launchWake.parts.map((part) => part.type === "tool-call" ? { ...part, structuredResult: undefined } : part),
-    };
-    expect(coalesceMonitorWakeMessages([monitorWake("1"), withoutReceipt])).toHaveLength(1);
-  });
-});
-
 describe("projectProcessJobPresentation", () => {
   const directAttribution = {
     requested: { model: "provider:selected" },
@@ -336,7 +58,7 @@ describe("projectProcessJobPresentation", () => {
       attribution: directAttribution,
     });
 
-    const projected = projectProcessJobPresentation([source], { selectedModel: "provider:selected" });
+    const projected = projectProcessJobPresentation([source]);
 
     expect(projected.messages).toEqual([]);
     expect(projected.jobs).toEqual([{ messageId: source.id, part: source.parts[0] }]);
@@ -348,7 +70,7 @@ describe("projectProcessJobPresentation", () => {
       id: "attributed",
       role: "assistant",
       parts: [{ type: "process-job", job: processJob({ jobId: "job-attributed" }) }],
-      attribution: directAttribution,
+      attribution: { ...directAttribution, disposition: "fallback" as const },
     });
     const failed = message({
       id: "failed",
@@ -367,10 +89,7 @@ describe("projectProcessJobPresentation", () => {
       attachments: [attachment("reply")],
     });
 
-    const projected = projectProcessJobPresentation(
-      [visibleAttribution, failed, rich],
-      { selectedModel: "provider:other" },
-    );
+    const projected = projectProcessJobPresentation([visibleAttribution, failed, rich]);
 
     expect(projected.messages.map(({ id }) => id)).toEqual(["attributed", "failed", "rich"]);
     expect(projected.messages[0]?.parts).toEqual([]);
@@ -809,30 +528,31 @@ describe("live input placement", () => {
 });
 
 describe("convertWebMessage", () => {
-  it("derives transient run-attribution visibility from the selected model", () => {
-    const requested = {
-      requested: { model: "provider:requested" },
-      attempted: { model: "provider:executed" },
-      executed: { model: "provider:executed" },
+  it("marks run attribution visible only for a run that deviated from its request", () => {
+    const ran = {
+      requested: { model: "provider:requested", effort: "high" },
+      attempted: { model: "provider:requested", effort: "high", effectiveEffort: "high" },
+      executed: { model: "provider:requested", effort: "high", effectiveEffort: "high" },
       disposition: "requested" as const,
       transitions: [],
       retries: [],
     };
-    const attributed = message({ role: "assistant", attribution: requested });
 
-    expect(convertWebMessage(
-      attributed,
-      { selectedModel: "provider:selected" },
-    ).metadata?.custom?.showRunAttribution).toBe(true);
-    expect(convertWebMessage(
-      attributed,
-      { selectedModel: "provider:executed" },
-    ).metadata?.custom?.showRunAttribution).toBe(false);
-    expect(convertWebMessage(attributed).metadata?.custom?.showRunAttribution).toBe(false);
+    expect(convertWebMessage(message({ role: "assistant", attribution: ran }))
+      .metadata?.custom?.showRunAttribution).toBe(false);
     expect(convertWebMessage(message()).metadata?.custom?.showRunAttribution).toBe(false);
     expect(convertWebMessage(message({
       role: "assistant",
-      attribution: { ...requested, disposition: "fallback" },
+      attribution: { ...ran, disposition: "fallback" },
+    })).metadata?.custom?.showRunAttribution).toBe(true);
+    expect(convertWebMessage(message({
+      role: "assistant",
+      attribution: { ...ran, retries: [{ model: "provider:requested", retryIndex: 1 }] },
+    })).metadata?.custom?.showRunAttribution).toBe(true);
+    expect(convertWebMessage(message({
+      role: "assistant",
+      status: "failed",
+      attribution: { ...ran, executed: undefined, attempted: { model: "provider:other" } },
     })).metadata?.custom?.showRunAttribution).toBe(true);
   });
 
@@ -872,7 +592,7 @@ describe("convertWebMessage", () => {
   });
 
   it.each(["running", "complete", "failed", "cancelled", "interrupted"] as const)(
-    "keeps launch lifecycle rows adjacent for a %s response",
+    "folds the launch call into its start row for a %s response",
     (status) => {
       const job = processJob();
       const source = message({
@@ -886,9 +606,85 @@ describe("convertWebMessage", () => {
       ];
       const content = convertWebMessage(source, { processJobEvents: events }).content as readonly { readonly type: string }[];
       const types = content.map((part) => part.type);
-      expect(types).toEqual(["tool-call", "data-process-job-event", "data-process-job-event", "text"]);
+      // One row for the launch (the started event carries its arguments) plus
+      // the later terminal fact, then the answer.
+      expect(types).toEqual(["data-process-job-event", "data-process-job-event", "text"]);
     },
   );
+
+  it("folds the paired launch arguments into the started event", () => {
+    const job = processJob();
+    const launch = {
+      ...launchPart(job, "launch"),
+      args: { command: "node worker.js --launch", description: "Generate the report" },
+    };
+    const source = message({ role: "assistant", parts: [launch] });
+    const events = [
+      { schema: "mono-agent.process-job-activity-event.v1" as const, id: `process-job:${job.jobId}:started`, toolCallId: "launch", jobId: job.jobId, tool: job.tool, summary: job.summary, phase: "started" as const, state: job.state, occurredAt: job.timestamps.startedAt! },
+    ];
+    const content = convertWebMessage(source, { processJobEvents: events }).content as readonly {
+      readonly type: string; readonly data?: Record<string, unknown>;
+    }[];
+    expect(content.map((part) => part.type)).toEqual(["data-process-job-event"]);
+    expect(content[0]?.data).toMatchObject({
+      id: `process-job:${job.jobId}:started`,
+      phase: "started",
+      launchArgs: { command: "node worker.js --launch", description: "Generate the report" },
+    });
+  });
+
+  it("carries a truncated launch preview with its size so the row can offer a repair", () => {
+    const job = processJob();
+    const launch = {
+      ...launchPart(job, "launch"),
+      args: "HEAD-".repeat(8),
+      argsTruncated: true as const,
+      argsBytes: 20 * 1_024,
+    };
+    const source = message({ role: "assistant", parts: [launch] });
+    const events = [
+      { schema: "mono-agent.process-job-activity-event.v1" as const, id: `process-job:${job.jobId}:started`, toolCallId: "launch", jobId: job.jobId, tool: job.tool, summary: job.summary, phase: "started" as const, state: job.state, occurredAt: job.timestamps.startedAt! },
+    ];
+    const content = convertWebMessage(source, { processJobEvents: events }).content as readonly {
+      readonly type: string; readonly data?: Record<string, unknown>;
+    }[];
+    expect(content.map((part) => part.type)).toEqual(["data-process-job-event"]);
+    expect(content[0]?.data).toMatchObject({
+      phase: "started",
+      launchArgsTruncated: true,
+      launchArgsBytes: 20 * 1_024,
+    });
+  });
+
+  it("keeps the launch tool-call row when only a terminal event exists", () => {
+    const job = processJob();
+    const source = message({ role: "assistant", parts: [launchPart(job, "launch")] });
+    const events = [
+      { schema: "mono-agent.process-job-activity-event.v1" as const, id: `process-job:${job.jobId}:terminal`, toolCallId: "launch", jobId: job.jobId, tool: job.tool, summary: job.summary, phase: "terminal" as const, state: job.state, occurredAt: job.timestamps.completedAt! },
+    ];
+    const content = convertWebMessage(source, { processJobEvents: events }).content as readonly { readonly type: string }[];
+    // No valid start produced a started event, so the launch row survives next
+    // to the later terminal fact.
+    expect(content.map((part) => part.type)).toEqual(["tool-call", "data-process-job-event"]);
+  });
+
+  it("keeps a failed launch as an ordinary error tool-call row", () => {
+    const job = processJob();
+    const failedLaunch = { ...launchPart(job, "launch"), status: "failed" as const };
+    const source = message({ role: "assistant", parts: [failedLaunch] });
+    const events = [
+      { schema: "mono-agent.process-job-activity-event.v1" as const, id: `process-job:${job.jobId}:started`, toolCallId: "launch", jobId: job.jobId, tool: job.tool, summary: job.summary, phase: "started" as const, state: job.state, occurredAt: job.timestamps.startedAt! },
+    ];
+    const content = convertWebMessage(source, { processJobEvents: events }).content as readonly { readonly type: string }[];
+    expect(content.map((part) => part.type)).toEqual(["tool-call", "data-process-job-event"]);
+  });
+
+  it("keeps an unpaired launch tool-call row without inventing an event", () => {
+    const job = processJob();
+    const source = message({ role: "assistant", parts: [launchPart(job, "launch")] });
+    const content = convertWebMessage(source).content as readonly { readonly type: string }[];
+    expect(content.map((part) => part.type)).toEqual(["tool-call"]);
+  });
 
   it("separates consecutive receipt-bearing launches while ordinary adjacent calls still cluster", () => {
     const job = processJob();
@@ -916,8 +712,10 @@ describe("convertWebMessage", () => {
       occurredAt: item.timestamps.completedAt!,
     }]);
     const launchContent = convertWebMessage(launches, { processJobEvents: events }).content as readonly { readonly type: string }[];
+    // Each launch folds into its own started row; the later terminal fact stays
+    // beside it. Ordinary same-tool calls still cluster.
     expect(launchContent.map((part) => part.type))
-      .toEqual(["tool-call", "data-process-job-event", "data-process-job-event", "tool-call", "data-process-job-event", "data-process-job-event"]);
+      .toEqual(["data-process-job-event", "data-process-job-event", "data-process-job-event", "data-process-job-event"]);
 
     const ordinary = message({ role: "assistant", parts: [
       { type: "tool-call", toolCallId: "one", toolName: "Exec", status: "complete" },
@@ -1072,106 +870,6 @@ describe("convertWebMessage", () => {
     expect(converted.content).toEqual([{ type: "text", text: "I'm really sorry" }]);
   });
 
-  it("keeps Monitor activity compact without splitting one streamed word", () => {
-    const projection = monitor();
-    const converted = convertWebMessage(message({
-      role: "assistant",
-      status: "complete",
-      parts: [
-        { type: "text", text: "The worker is re" },
-        {
-          type: "monitor-activity",
-          monitors: [{ projection, deliveryKeys: ["monitor:one", "monitor:two"] }],
-        },
-        { type: "text", text: "ady." },
-      ],
-    }));
-
-    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
-    expect(converted.content).toEqual([
-      {
-        type: "data-monitor-activity",
-        data: {
-          type: "monitor-activity",
-          monitors: [{ projection, deliveryKeys: ["monitor:one", "monitor:two"] }],
-        },
-      },
-      { type: "text", text: "The worker is ready." },
-    ]);
-  });
-
-  it("uses assistant message boundaries to keep Monitor wake responses separate", () => {
-    const boundary = {
-      type: "telemetry" as const,
-      event: "runtime_telemetry",
-      data: { type: "runtime_telemetry", kind: "assistant_message_boundary" },
-    };
-    const converted = convertWebMessage(message({
-      role: "assistant",
-      status: "complete",
-      parts: [
-        { type: "text", text: "Initial response." },
-        boundary,
-        {
-          type: "monitor-activity",
-          monitors: [{ projection: monitor(), deliveryKeys: ["monitor:one", "monitor:two"] }],
-        },
-        { type: "text", text: "First update." },
-        boundary,
-        { type: "text", text: "Second update." },
-      ],
-    }));
-
-    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
-    expect(converted.content.map((part) => part.type)).toEqual([
-      "data-note",
-      "data-monitor-activity",
-      "data-note",
-      "text",
-    ]);
-    expect(converted.content[0]).toEqual({ type: "data-note", data: { text: "Initial response." } });
-    expect(converted.content[2]).toEqual({ type: "data-note", data: { text: "First update." } });
-    expect(converted.content[3]).toEqual({ type: "text", text: "Second update." });
-  });
-
-  it("collapses legacy Monitor steering rows and uses context usage as their response boundary", () => {
-    const converted = convertWebMessage(message({
-      role: "assistant",
-      status: "cancelled",
-      parts: [
-        { type: "text", text: "First update." },
-        {
-          type: "tool-call",
-          toolCallId: "live-input:monitor:first",
-          toolName: "Steered: Monitor update",
-          status: "complete",
-        },
-        {
-          type: "telemetry",
-          event: "runtime_telemetry",
-          data: { type: "runtime_telemetry", kind: "context_usage" },
-        },
-        { type: "text", text: "Second update." },
-        {
-          type: "tool-call",
-          toolCallId: "live-input:monitor:second",
-          toolName: "Steered: Monitor update",
-          status: "complete",
-        },
-      ],
-    }));
-
-    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
-    expect(converted.content).toEqual([
-      { type: "text", text: "First update." },
-      {
-        type: "data-monitor-activity",
-        data: { type: "monitor-activity", monitors: [], legacyUpdateCount: 2 },
-      },
-      { type: "text", text: "Second update." },
-    ]);
-  });
-
   it("keeps text either side of a delegation apart", () => {
     const converted = convertWebMessage(
       message({
@@ -1191,6 +889,107 @@ describe("convertWebMessage", () => {
       "data-subagent",
       "text",
     ]);
+  });
+
+  it.each(["complete", "running", "cancelled", "failed", "interrupted"] as const)(
+    "joins text split by a thought for %s replies", (status) => {
+      const converted = convertWebMessage(message({ role: "assistant", status, parts: [
+        { type: "text", text: "Tot" },
+        { type: "reasoning", text: "hmm" },
+        { type: "text", text: "ally fair." },
+      ] }));
+      if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+      // The later text joins into the earlier part, so the reader always sees
+      // one sentence; only the settled fold moves the thought row above it.
+      expect(converted.content).toEqual(status === "complete" ? [
+        { type: "reasoning", text: "hmm" }, { type: "text", text: "Totally fair." },
+      ] : [
+        { type: "text", text: "Totally fair." }, { type: "reasoning", text: "hmm" },
+      ]);
+    },
+  );
+
+  it.each(["running", "complete"] as const)(
+    "drops a punctuation-only thought instead of rendering a step for %s replies", (status) => {
+      const converted = convertWebMessage(message({
+        role: "assistant",
+        status,
+        parts: [
+          { type: "text", text: "The" },
+          { type: "reasoning", text: "." },
+          { type: "text", text: " targeted search only surfaced daycare threads." },
+        ],
+      }));
+      if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+      // One sentence, no thought row — and with nothing else to group, no
+      // empty activity card either.
+      expect(converted.content).toEqual([
+        { type: "text", text: "The targeted search only surfaced daycare threads." },
+      ]);
+    },
+  );
+
+  it.each(["", "   ", ".", "**", "… —"] as const)(
+    "treats %j as a thought with no readable content", (text) => {
+      const converted = convertWebMessage(message({
+        role: "assistant",
+        status: "running",
+        parts: [{ type: "reasoning", text }],
+      }));
+      if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+      expect(converted.content).toEqual([]);
+    },
+  );
+
+  it("keeps a thought that carries real content, punctuation included", () => {
+    const converted = convertWebMessage(message({
+      role: "assistant",
+      status: "running",
+      parts: [
+        { type: "text", text: "The" },
+        { type: "reasoning", text: ". Let me check the inbox" },
+        { type: "text", text: " targeted search continues." },
+      ],
+    }));
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content).toEqual([
+      { type: "text", text: "The targeted search continues." },
+      { type: "reasoning", text: ". Let me check the inbox" },
+    ]);
+  });
+
+  it("keeps an emoji-only thought as readable content", () => {
+    const converted = convertWebMessage(message({
+      role: "assistant",
+      status: "running",
+      parts: [{ type: "reasoning", text: "🤔" }],
+    }));
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content).toEqual([{ type: "reasoning", text: "🤔" }]);
+  });
+
+  it("keeps answer fragments together across reasoning, without joining tool narration", () => {
+    const converted = convertWebMessage(message({
+      role: "assistant", status: "complete",
+      parts: [
+        { type: "text", text: "Looking." },
+        { type: "tool-call", toolCallId: "t1", toolName: "Search", args: {}, status: "complete" },
+        { type: "reasoning", text: "Checking" },
+        { type: "text", text: "Tot" },
+        { type: "reasoning", text: "Hmm" },
+        { type: "text", text: "ally" },
+        { type: "reasoning", text: "More" },
+        { type: "text", text: " " },
+        { type: "reasoning", text: "Done" },
+        { type: "text", text: "fair — yes." },
+      ],
+    }));
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content.filter((part) => part.type === "text"))
+      .toEqual([{ type: "text", text: "Totally fair — yes." }]);
+    expect(converted.content.filter((part) => part.type === "data-note"))
+      .toEqual([{ type: "data-note", data: { text: "Looking." } }]);
+    expect(converted.content.filter((part) => part.type === "reasoning")).toHaveLength(4);
   });
 
   it("folds a settled turn into one run of activity over the answer", () => {
@@ -1534,23 +1333,4 @@ describe("runtime capability gates", () => {
       canUploadInConsole("live", agent("agent"), thread("no-files", "agent", { canUpload: false })),
     ).toBe(false);
   });
-});
-
-
-it("renders a normalized Monitor answer below reasoning and activity", () => {
-  const converted = convertWebMessage(message({ role: "assistant", parts: [
-    { type: "monitor-activity", monitors: [{ projection: monitor(), deliveryKeys: ["monitor:one:1"] }] },
-    { type: "reasoning", text: "Inspecting the pane." },
-    { type: "text", text: "The worker is ready for Robert's review." },
-    { type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "assistant_message_boundary" } },
-    { type: "reasoning", text: "No new update." },
-    { type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "assistant_message_boundary" } },
-  ] }));
-  if (typeof converted.content === "string") throw new Error("Expected structured content");
-  expect(converted.content.at(-1)).toEqual({ type: "text", text: "The worker is ready for Robert's review." });
-  expect(converted.content.filter((part) => part.type === "reasoning")).toEqual([
-    { type: "reasoning", text: "Inspecting the pane." }, { type: "reasoning", text: "No new update." },
-  ]);
-  expect(converted.content.some((part) => part.type === "data-monitor-activity")).toBe(true);
-  expect(converted.content.some((part) => part.type === "data-note")).toBe(false);
 });

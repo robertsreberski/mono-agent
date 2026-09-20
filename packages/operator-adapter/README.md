@@ -107,10 +107,7 @@ Keep bearer values out of source config when possible. Set
   shared TUI override lane before the responder runs. The response is chunked
   `application/x-ndjson` with frames
   (`status | append | replace | event | finish | error`). Closing the socket
-  aborts the in-flight turn. Host Monitor wake keys in turn submissions or live
-  input additionally require the independent Monitor owner bearer in
-  `x-mono-agent-monitor-wake-authorization`; an ordinary operator API key cannot
-  authorize a Monitor flight.
+  aborts the in-flight turn.
 - `GET {basePath}/v1/conversations/:id/ask` - the current pending `AskUser`
   snapshot, or `{ ask: null }`.
 - `GET {basePath}/v1/interactions/:interactionId` - an exact pending or bounded
@@ -179,9 +176,11 @@ when the responder does not implement the corresponding ownership or authorized
 resource surface.
 The web consumer retains the legacy 8 MiB input ceiling so it can read an older
 agent even though current producers emit at most 256 KiB per frame. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 ## Architecture
+
+An app-owned `ProviderUsageOperator` enables bearer-protected `GET ${basePath}/v1/provider-usage` (optional exact `anthropic`, `openai-codex`, `opencode-go` or `github-copilot` provider filter) and `capabilities.providerUsage: {version: 1}`. This no-store read is separate from auth status and validates the secret-free v1 projection. An optional `ProviderUsageOperator.refresh()` additionally advertises `refresh: true` and enables bearer-protected `POST ${basePath}/v1/provider-usage/refresh` (empty JSON object, same strict optional provider query). It awaits a refresh respecting backoff; snapshot-only hosts return an explicit unavailable response, never cached fallback.
 
 ### Data flow
 
@@ -193,9 +192,8 @@ agent even though current producers emit at most 256 KiB per frame. See
    while that turn is active; disconnecting the turn stream aborts the request.
 
 Web host wakes carry `deliveryKey` on live-input requests and the legacy-named
-`processJobWakeDeliveryKey` on reserved fallback turns. That additive field now
-carries either a ProcessJobs key or a namespaced `monitor:<id>:<seq>` key. The
-server validates both, forwards the exact-run target to the responder, and moves
+`processJobWakeDeliveryKey` on reserved fallback turns. That field carries a ProcessJobs key. The
+server validates it, forwards the exact-run target to the responder, and moves
 the fallback identity onto a non-enumerable host-only metadata symbol so it
 cannot become prompt, history, or JSON wire content.
 
@@ -311,11 +309,11 @@ loopback is a host decision guarded by `allowNonLoopback`.
 
 ## Related Documentation
 
-- [Operator stream endpoint](https://mono-agent-docs.vercel.app/channels/tui/)
-- [Terminal UI](https://mono-agent-docs.vercel.app/observability/tui/)
-- [Always-on web console](https://mono-agent-docs.vercel.app/observability/web-console/)
-- [Artifacts and traces](https://mono-agent-docs.vercel.app/observability/artifacts-and-traces/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+- [Operator stream endpoint](https://docs.mono-agent.dev/channels/tui/)
+- [Terminal UI](https://docs.mono-agent.dev/observability/tui/)
+- [Always-on web console](https://docs.mono-agent.dev/observability/web-console/)
+- [Artifacts and traces](https://docs.mono-agent.dev/observability/artifacts-and-traces/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 
 ## Verification
 

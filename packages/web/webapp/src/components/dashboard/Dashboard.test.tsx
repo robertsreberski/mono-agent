@@ -256,7 +256,7 @@ describe("Dashboard conversation rows", () => {
     expect(screen.getByText(emptyCopy)).toBeVisible();
   });
 
-  it("renders active jobs on an unselected conversation and clears activity at completion", () => {
+  it("renders active jobs on an unselected conversation and omits status at completion", () => {
     const running = thread("worker", "agent-one", {
       title: "Background work",
       messageCount: 5,
@@ -279,9 +279,55 @@ describe("Dashboard conversation rows", () => {
       } },
     }]);
     rerender(<Dashboard />);
-    expect(row).toHaveTextContent("Completed");
+    expect(row).not.toHaveTextContent("Completed");
+    // The settled slot shows the newest reply, never the job card's own words.
+    expect(row.querySelector(".thread-preview-text")?.textContent).toBe("Older reply");
     expect(row).not.toHaveTextContent("Results are ready");
     expect(within(row).queryByRole("img", { name: /running|Working/u })).toBeNull();
+  });
+
+  it("spends a settled row's empty status slot on the newest reply, and nothing else", () => {
+    const settled = thread("settled", "agent-one", {
+      title: "Settled work",
+      runState: { status: "complete" },
+      lastMessagePreview: "The deploy is green again.",
+    });
+    const quiet = thread("quiet", "agent-one", {
+      title: "Quiet work",
+      runState: { status: "complete" },
+    });
+    const failed = thread("broken", "agent-one", {
+      title: "Broken work",
+      runState: { status: "failed" },
+      lastMessagePreview: "An older answer",
+    });
+    const busy = thread("busy", "agent-one", {
+      title: "Busy work",
+      runState: { status: "running" },
+      lastMessagePreview: "An older answer",
+    });
+    const threads = [settled, quiet, failed, busy];
+    storeMock.current = createStore(threads);
+    render(<Dashboard />);
+
+    const settledRow = screen.getByRole("button", { name: "Open Settled work" });
+    const preview = settledRow.querySelector(".thread-preview-text")!;
+    expect(preview.textContent).toBe("The deploy is green again.");
+    // Hovering the ellipsized line shows the fuller text, as status lines do.
+    expect(preview).toHaveAttribute("title", "The deploy is green again.");
+
+    const quietRow = screen.getByRole("button", { name: "Open Quiet work" });
+    expect(quietRow.querySelector(".thread-preview-text")?.textContent).toBe("");
+
+    const failedRow = screen.getByRole("button", { name: "Open Broken work" });
+    expect(failedRow).toHaveTextContent("Failed");
+    expect(failedRow).not.toHaveTextContent("An older answer");
+
+    const busyRow = screen.getByRole("button", { name: "Open Busy work" });
+    expect(busyRow).toHaveTextContent("Working…");
+    expect(busyRow).not.toHaveTextContent("An older answer");
+    // The running dot keeps describing the work, never the excerpt.
+    expect(within(busyRow).getByRole("img", { name: "Working…" })).toBeVisible();
   });
 
   it("shows cancellation status in archived conversations", () => {
@@ -568,6 +614,43 @@ describe("Dashboard running section", () => {
 });
 
 describe("Dashboard search", () => {
+  it("shows only conversation results while a search is active", async () => {
+    const running = thread("running", "agent-one", {
+      title: "Running chat",
+      runState: { status: "running" },
+    });
+    storeMock.current = {
+      ...createStore(),
+      activeThreads: {
+        threads: [running],
+        total: 1,
+        truncated: false,
+        runningCounts: { "agent-one": 1 },
+        authoritative: true,
+      },
+    };
+    render(<Dashboard />);
+
+    expect(screen.getByRole("heading", { name: "Running, 1" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Projects" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Recent" })).toBeVisible();
+
+    type("tailscale");
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(await screen.findByRole("heading", { name: "Conversations" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: /Running/u })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Projects" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Recent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Chats" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open older title" })).toBeVisible();
+
+    type("");
+    expect(screen.getByRole("heading", { name: "Running, 1" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Projects" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Recent" })).toBeVisible();
+  });
+
   it("leaves the conversation list alone until the query is worth running", async () => {
     render(<Dashboard />);
 
@@ -594,11 +677,10 @@ describe("Dashboard search", () => {
     expect(screen.queryByText(SEARCH_HIGHLIGHT_OPEN)).toBeNull();
     // Paging belongs to the list, not to a result set the server already ranked.
     expect(screen.queryByRole("button", { name: "Load older conversations" })).toBeNull();
-    // The chips stay: the list's other face is one tap away during a search,
-    // and switching to it retires the query, which meant something else.
-    expect(screen.getByRole("button", { name: "Chats" })).toHaveAttribute("aria-pressed", "true");
-    fireEvent.click(screen.getByRole("button", { name: /^Automations/u }));
-    expect(store().setNavigationDestination).toHaveBeenCalledWith("automations");
+    // Search results own the scroll area: list navigation returns when the
+    // query is cleared instead of competing with the result set.
+    expect(screen.queryByRole("button", { name: "Chats" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Automations/u })).toBeNull();
   });
 
   it("still finds a project's conversations, and says which project they are in", async () => {

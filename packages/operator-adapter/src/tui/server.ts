@@ -1,3 +1,4 @@
+import { isProviderUsageId, parseProviderUsageSnapshot, type ProviderUsageOperator } from "@mono-agent/agent-contracts";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { isAbsolute } from "node:path";
@@ -21,8 +22,6 @@ import {
   createChannelUserCancelReason,
   decodeAgentAttachmentText,
   isAgentResponseCancelledError,
-  parseMonitorProjection,
-  parseMonitorProjections,
   parseProcessJobProjection,
   parseProcessJobProjections,
   parseProviderAuthSessionInput,
@@ -35,7 +34,6 @@ import {
   type AgentAttachment,
   type AgentContextImportRequest,
   type AgentMessageStream,
-  type MonitorOperator,
   type AgentReplyAttachmentPart,
   type AgentReplyPart,
   type AgentLiveInputOffer,
@@ -282,12 +280,9 @@ export interface TuiAdapterOptions {
   readonly processJobs?: ProcessJobOperator;
   /** Independent owner bearer for process-job routes. Required with processJobs. */
   readonly processJobsBearer?: string;
-  /** Owner-authorized monitor control plane; omitted when unavailable. */
-  readonly monitors?: MonitorOperator;
-  /** Independent owner bearer for monitor routes. Required with monitors. */
-  readonly monitorsBearer?: string;
   /** Pi credential status/login surface; uses apiKey when the endpoint has one. */
   readonly providerAuth?: ProviderAuthOperator;
+  readonly providerUsage?: ProviderUsageOperator;
 }
 
 export interface TuiAdapterStartResult {
@@ -346,13 +341,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       "processJobs and processJobsBearer must be configured together.",
     );
   }
-  const monitorsBearer = normalizeOptionalString(options.monitorsBearer);
-  if ((options.monitors === undefined) !== (monitorsBearer === undefined)) {
-    throw new TuiAdapterError(
-      "invalid_config",
-      "monitors and monitorsBearer must be configured together.",
-    );
-  }
   if (options.requestToolEnvironment !== undefined && !isLoopbackHost(host)) {
     throw new TuiAdapterError(
       "unsafe_host",
@@ -401,9 +389,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const jobsPath = `${basePath}/v1/jobs`;
   const jobPath = `${basePath}/v1/jobs/:jobId`;
   const jobCancelPath = `${basePath}/v1/jobs/:jobId/cancel`;
-  const monitorsPath = `${basePath}/v1/monitors`;
-  const monitorPath = `${basePath}/v1/monitors/:monitorId`;
-  const monitorCancelPath = `${basePath}/v1/monitors/:monitorId/cancel`;
   const providerAuthPath = `${basePath}/v1/provider-auth`;
   const providerAuthSessionsPath = `${providerAuthPath}/sessions`;
   const providerAuthSessionPath = `${providerAuthSessionsPath}/:sessionId`;
@@ -474,11 +459,11 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                     },
                   }),
             ...(options.processJobs === undefined || processJobsBearer === undefined ? {} : { jobs: true }),
-            ...(options.monitors === undefined || monitorsBearer === undefined ? {} : { monitors: true }),
             ...(options.requestToolEnvironment === undefined ? {} : { toolEnvironment: true }),
             ...(options.modelCatalog === undefined
               ? {}
               : { modelCatalog: { version: 1, maxPageSize: MAX_MODEL_CATALOG_PAGE_SIZE } }),
+            ...(options.providerUsage === undefined ? {} : { providerUsage: { version: 1, ...(typeof options.providerUsage.refresh === "function" ? { refresh: true } : {}) } }),
             ...(options.providerAuth === undefined
               ? {}
               : {
@@ -596,77 +581,12 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       });
   });
 
-  app.get(monitorsPath, (req, res, next) => {
-    if (!authorize(req, res, monitorsBearer)) return;
-    if (options.monitors === undefined || monitorsBearer === undefined) {
-      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Monitors are unavailable."));
-      return;
-    }
-    void options.monitors.list()
-      .then((monitors) => {
-        res.status(200).json({ monitors: parseMonitorProjections(monitors) });
-      })
-      .catch(next);
-  });
-
-  app.get(monitorPath, (req, res, next) => {
-    if (!authorize(req, res, monitorsBearer)) return;
-    if (options.monitors === undefined || monitorsBearer === undefined) {
-      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Monitors are unavailable."));
-      return;
-    }
-    const monitorId = boundedMonitorId(req.params.monitorId);
-    if (monitorId === undefined) {
-      sendJsonError(res, 400, new TuiAdapterError("invalid_request", "A bounded monitorId is required."));
-      return;
-    }
-    void options.monitors.get(monitorId)
-      .then((monitor) => {
-        if (monitor === undefined) {
-          res.status(404).json({ error: { code: "monitor_not_found", message: "Monitor was not found." } });
-        } else {
-          res.status(200).json(parseMonitorProjection(monitor));
-        }
-      })
-      .catch(next);
-  });
-
-  app.post(monitorCancelPath, (req, res, next) => {
-    if (!authorize(req, res, monitorsBearer)) return;
-    if (options.monitors === undefined || monitorsBearer === undefined) {
-      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Monitors are unavailable."));
-      return;
-    }
-    const monitorId = boundedMonitorId(req.params.monitorId);
-    if (monitorId === undefined) {
-      sendJsonError(res, 400, new TuiAdapterError("invalid_request", "A bounded monitorId is required."));
-      return;
-    }
-    void options.monitors.cancel(monitorId)
-      .then((monitor) => {
-        res.status(200).json(parseMonitorProjection(monitor));
-      })
-      .catch((error: unknown) => {
-        const code = typeof error === "object" && error !== null
-          ? (error as { code?: unknown }).code
-          : undefined;
-        if (code === "monitor_not_found") {
-          res.status(404).json({ error: { code, message: errorToMessage(error) } });
-        } else if (code === "monitor_conflict") {
-          res.status(409).json({ error: { code, message: errorToMessage(error) } });
-        } else {
-          next(error);
-        }
-      });
-  });
-
   // Keep the enlarged parser scoped to turn submission. 64 MiB of decoded
   // files expands to about 85.4 MiB in base64, while info/cancel stay bodyless.
   app.post(turnsPath, express.json({ limit: MAX_TURN_BODY_BYTES }), (req, res) => {
     if (!authorize(req, res, apiKey)) {
       return;
     }
-    if (!authorizeMonitorWake(req, res, req.body?.processJobWakeDeliveryKey, monitorsBearer)) return;
     void handleTurn(req, res).catch((error: unknown) => {
       options.logger?.error?.("TUI turn failed before response.", { error: errorToMessage(error) });
       if (!res.headersSent) {
@@ -916,7 +836,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       ));
       return;
     }
-    if (!authorizeMonitorWake(req, res, body.deliveryKey, monitorsBearer)) return;
     if (typeof options.responder.offerLiveInput !== "function") {
       res.status(200).json({ status: "unavailable", reason: "unsupported" });
       return;
@@ -1173,6 +1092,32 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
     res.status(status).json(body);
   };
+
+  app.use(`${basePath}/v1/provider-usage`, (_req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    next();
+  });
+  app.post(`${basePath}/v1/provider-usage/refresh`, express.json({ limit: 1024, strict: true }), (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (typeof options.providerUsage?.refresh !== "function") { res.status(409).json({ error: "provider_usage_refresh_unavailable" }); return; }
+    const provider = req.query.provider;
+    if (Object.keys(req.query).some((key) => key !== "provider") || (provider !== undefined && !isProviderUsageId(provider))
+      || req.body === null || typeof req.body !== "object" || Array.isArray(req.body) || Object.keys(req.body).length !== 0) {
+      res.status(400).json({ error: "invalid_provider_usage_refresh" }); return;
+    }
+    void options.providerUsage.refresh(provider).then((snapshot) => res.json(parseProviderUsageSnapshot(snapshot))).catch(next);
+  });
+
+  app.get(`${basePath}/v1/provider-usage`, (req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    if (!authorize(req, res, apiKey)) return;
+    if (options.providerUsage === undefined) { res.status(503).json({ error: "provider_usage_unavailable" }); return; }
+    const provider = req.query.provider;
+    if (Object.keys(req.query).some((key) => key !== "provider") || (provider !== undefined && !isProviderUsageId(provider))) {
+      res.status(400).json({ error: "invalid_provider" }); return;
+    }
+    void options.providerUsage.snapshot(provider).then((snapshot) => res.json(parseProviderUsageSnapshot(snapshot))).catch(next);
+  });
 
   app.use(providerAuthPath, (_req, res, next) => {
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
@@ -2610,15 +2555,6 @@ function sendBoundedCronJson(res: Response, status: number, value: unknown): voi
   res.status(status).type("application/json").send(serialized);
 }
 
-/** A wake key identifies a flight; only the independent owner bearer authorizes it. */
-function authorizeMonitorWake(req: Request, res: Response, key: unknown, ownerBearer: string | undefined): boolean {
-  if (typeof key !== "string" || !key.trim().startsWith("monitor:")) return true;
-  const presented = readAuthorizationBearer(req.header("x-mono-agent-monitor-wake-authorization"));
-  if (ownerBearer !== undefined && presented !== undefined && bearerTokensEqual(presented, ownerBearer)) return true;
-  res.status(401).json({ error: { message: "Monitor wake requires owner authorization.", code: "invalid_api_key" } });
-  return false;
-}
-
 function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {
   if (apiKey === undefined) {
     return true;
@@ -2810,9 +2746,4 @@ function normalizeBasePath(basePath: string): string {
     throw new TuiAdapterError("invalid_config", "basePath must start with '/'.");
   }
   return basePath.length === 1 ? "" : basePath.replace(/\/+$/u, "");
-}
-
-function boundedMonitorId(value: unknown): string | undefined {
-  const monitorId = normalizeOptionalString(typeof value === "string" ? value : undefined);
-  return monitorId === undefined || monitorId.length > 256 ? undefined : monitorId;
 }

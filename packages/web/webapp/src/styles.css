@@ -144,8 +144,43 @@
    while leaving the reader's own text-size preference working; `none` would
    take that away too. It belongs here and nowhere else: scoping it to one
    subtree only moves the bug to the next one. */
-html, body, #root { width: 100%; min-width: 320px; height: 100%; margin: 0; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-body { overflow: hidden; background: var(--app-bg); color: var(--text); }
+/* The document box is `100dvh`, not `100%`, because a percentage resolves
+   against the initial containing block and the ICB is not the visible area of
+   an installed iOS/iPadOS 26 web app. A Home Screen app installed without
+   `apple-mobile-web-app-status-bar-style: black-translucent` — which this
+   console deliberately is, see index.html — is laid out below an opaque system
+   bar, yet `vh`, `lvh` and the ICB still measure the whole screen, while `svh`
+   and `dvh` measure the content area (WebKit 316008, 301994). The document was
+   therefore exactly that bar taller than the app shell below it, and the extra
+   strip was pannable: a drag pushed the chat header up under the system bar.
+   `dvh` is the same unit `.app-shell` already uses, so the shell and the
+   document it lives in now measure the same viewport everywhere. */
+html, body, #root { width: 100%; min-width: 320px; height: 100dvh; margin: 0; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* Installed iOS can sample a real fixed element at the viewport top rather
+   than theme-color. With `black-translucent` the header's own surface is what
+   shows behind the status bar, so this is now the launch and document fallback
+   for the same band — it still paints the header's surface, without overlaying
+   UI or participating in layout, and it still matters for an older install that
+   has not been re-added to the Home Screen yet. CSS variables follow the same
+   theme/media changes as the header, not a JS color snapshot. */
+html { --status-bar-bg: var(--panel); background: var(--status-bar-bg); }
+/* These full-screen states deliberately use a different surface. */
+html:has(#root > :is(.initial-state, .fatal-state)) { --status-bar-bg: var(--surface); }
+/* `overscroll-behavior: none` is the second half of that fix: the console owns
+   its scrollers (`.thread-viewport` already contains its own overscroll), so a
+   drag that reaches the end of one must not chain into the document and pan the
+   whole app, and the viewport must not rubber-band into the system bar. */
+body { overflow: hidden; overscroll-behavior: none; background: var(--status-bar-bg); color: var(--text); }
+.status-bar-surface {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background: var(--status-bar-bg);
+  pointer-events: none;
+  z-index: -1;
+}
 button, input, textarea, select { font: inherit; color: inherit; }
 button { border: 0; }
 button, select { -webkit-tap-highlight-color: transparent; }
@@ -333,6 +368,13 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .dashboard-section-label { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; color: var(--text-muted); font-size: 10px; font-weight: 700; letter-spacing: 0.14em; line-height: 1; text-transform: uppercase; }
 .dashboard-section-label.is-running { color: var(--accent); }
 .dashboard-section-count { color: var(--text-muted); font-size: 10px; font-weight: 500; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+/* The Projects label is its collapse toggle: the button inherits the eyebrow
+   type so the heading reads unchanged, and its chevron turns down while open. */
+.dashboard-section-toggle { display: inline-flex; align-items: center; gap: 6px; margin: 0; padding: 0; color: inherit; background: transparent; border: 0; cursor: pointer; font: inherit; letter-spacing: inherit; text-transform: inherit; }
+.dashboard-section-toggle:hover { color: var(--text); }
+.dashboard-section-chevron { display: flex; color: var(--text-muted); transition: transform 150ms ease; }
+.dashboard-section-toggle:hover .dashboard-section-chevron { color: var(--text); }
+.dashboard-section-toggle[aria-expanded="true"] .dashboard-section-chevron { transform: rotate(90deg); }
 /* "last known": the section is drawing what it was last told, not what is. */
 .dashboard-section-note { color: var(--text-muted); font-size: 9px; font-weight: 600; letter-spacing: 0.04em; text-transform: none; opacity: 0.85; }
 /* The list's chips: the model picker's option pills, at the head's height. */
@@ -387,6 +429,17 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .thread-unread { width: 6px; height: 6px; flex: none; background: var(--accent); border-radius: 999px; }
 .thread-preview { min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .thread-preview-text { min-width: 0; max-width: 55%; flex: 0 0 auto; overflow: hidden; font: inherit; line-height: inherit; text-overflow: ellipsis; white-space: nowrap; }
+/* A conversation row spends its preview line on the newest reply, and the
+   excerpt yields to everything else on the line: the project badge and the
+   tag chips keep their intrinsic width, the route badge stays pinned right by
+   its own auto margin, and the excerpt takes only the space that remains,
+   ellipsizing instead of squeezing its neighbours. The badge keeps a cap so
+   a long project name ellipsizes rather than pushing the line out, and the
+   base balance above stays untouched for search hits and automation rows. */
+.thread-item.is-conversation .thread-preview-text { max-width: none; flex: 1 1 auto; }
+.thread-item.is-conversation .thread-preview .project-badge { flex: none; max-width: 45%; }
+.thread-item.is-conversation .thread-preview .project-badge span { min-width: 0; }
+.thread-item.is-conversation .thread-preview .thread-tags { flex: none; }
 .thread-running { width: 6px; height: 6px; flex: none; align-self: center; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); animation: pulse 1.4s ease infinite; }
 .thread-load-more { min-height: 31px; margin: 8px 0 0; padding: 0 9px; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 10px; font-weight: 650; }
 .thread-load-more:hover { color: var(--text); background: var(--surface-hover); }
@@ -736,7 +789,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .context-display-trigger[data-state="last_measured"] .context-display-trigger-percent,
 .context-display-trigger[data-state="unavailable"] .context-display-trigger-percent { color: var(--text-soft); }
 .context-display-positioner { z-index: 111; }
-.context-display-popover { width: min(300px, calc(100vw - 24px)); padding: 14px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 13px; box-shadow: var(--shadow-lg); }
+.context-display-popover { width: min(300px, calc(100vw - 24px)); max-height: min(560px, calc(100dvh - 24px)); padding: 14px; overflow-y: auto; overscroll-behavior: contain; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 13px; box-shadow: var(--shadow-lg); }
 .context-display-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 12px; }
 .context-display-title { margin: 0; font-size: 12px; font-weight: 720; }
 .context-display-status { color: var(--text-soft); font-family: var(--font-mono); font-size: 8px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
@@ -748,6 +801,10 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .context-display-model code { overflow-wrap: anywhere; color: var(--text-soft); font-family: var(--font-mono); font-size: 9px; }
 .context-display-section + .context-display-section, .context-display-cost-breakdown { margin-top: 14px; }
 .context-display-section-title { margin: 0 0 8px; color: var(--text-soft); font-size: 10px; font-weight: 720; }
+.context-display-provider-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.context-display-provider-heading .context-display-section-title { margin-bottom: 0; }
+.context-display-provider-usage .provider-usage { grid-template-columns: 1fr; padding-top: 8px; }
+.context-display-provider-loading { margin: 8px 0 0; color: var(--text-muted); font-size: 10px; }
 .context-display-window { display: grid; gap: 7px; margin-bottom: 12px; }
 .context-display-window-summary { display: flex; justify-content: space-between; gap: 12px; color: var(--text-muted); font-size: 10px; }
 .context-display-percent { color: var(--accent); font-family: var(--font-mono); font-weight: 700; }
@@ -763,13 +820,11 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .header-notifications.is-enabled { color: var(--accent); background: var(--accent-soft); }
 .header-notifications.is-degraded { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
 
-.monitor-activity-facts, .process-job-facts { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12px; color: var(--muted); }
-.monitor-activity-facts { margin: 8px 0 0; }
+.process-job-facts { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12px; color: var(--muted); }
 .process-job-facts { margin: 0 0 4px; }
-.monitor-activity-facts div, .process-job-facts div { display: flex; gap: 5px; }
-.monitor-activity-facts dt, .process-job-facts dt { font-weight: 600; }
-.monitor-activity-facts dd, .process-job-facts dd { margin: 0; }
-.monitor-activity-legacy { margin: 8px 14px; color: var(--muted); font-size: 12px; }
+.process-job-facts div { display: flex; gap: 5px; }
+.process-job-facts dt { font-weight: 600; }
+.process-job-facts dd { margin: 0; }
 .connection-banner { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 7px 16px; color: var(--warning); background: color-mix(in srgb, var(--warning) 9%, var(--panel)); border-bottom: 1px solid color-mix(in srgb, var(--warning) 25%, var(--line)); font-size: 11px; text-align: center; z-index: 4; }
 .connection-pulse { width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; animation: pulse 1.5s ease infinite; }
 .thread-root { position: relative; min-height: 0; display: flex; flex: 1 1 0; flex-direction: column; overflow: hidden; }
@@ -949,7 +1004,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .cron-run-link:hover { text-decoration: underline; }
 .cron-run-state { color: var(--text-soft); text-transform: capitalize; }
 .cron-run-row.is-failed .cron-run-state, .cron-run-row.is-dropped .cron-run-state, .cron-reply-context-header.is-failed .cron-run-state, .cron-reply-context-header.is-dropped .cron-run-state { color: var(--danger); }
-.cron-run-row.is-skipped_overlap .cron-run-state, .cron-run-row.is-cancelled .cron-run-state, .cron-reply-context-header.is-skipped_overlap .cron-run-state, .cron-reply-context-header.is-cancelled .cron-run-state { color: var(--warning); }
+.cron-run-row.is-skipped_overlap .cron-run-state, .cron-run-row.is-skipped_gate .cron-run-state, .cron-run-row.is-cancelled .cron-run-state, .cron-reply-context-header.is-skipped_overlap .cron-run-state, .cron-reply-context-header.is-skipped_gate .cron-run-state, .cron-reply-context-header.is-cancelled .cron-run-state { color: var(--warning); }
 .cron-run-row time { font-variant-numeric: tabular-nums; }
 .cron-activity-button { padding: 2px 7px; border-radius: 999px; font-size: 9px; }
 .cron-reply-button { padding: 3px 9px; color: var(--accent); background: var(--accent-soft); border-radius: 999px; font-size: 9.5px; font-weight: 700; }
@@ -1053,8 +1108,9 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .composer-toolbar { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .composer-tools { min-width: 0; display: flex; flex: 0 0 auto; align-items: center; gap: 5px; }
 .composer-tool { width: 32px; height: 32px; }
-.composer-hint { flex: 0 0 auto; overflow: hidden; color: var(--text-muted); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
-.model-change-notice { min-width: 0; flex: 0 1 auto; }
+.composer-hint { color: var(--text-muted); font-size: 10px; line-height: 1.5; white-space: normal; }
+.composer-hint-status + .composer-hint-keys::before { content: "·"; margin: 0 4px; }
+.composer-model-notice { display: block; margin: 9px 9px 0; padding: 7px 10px; color: var(--text-muted); background: var(--surface-hover); border: 1px solid var(--line); border-radius: 7px; font-size: 11px; line-height: 1.45; white-space: normal; }
 .composer-actions { min-width: 0; display: flex; flex: 1 1 0; align-items: center; justify-content: flex-end; gap: 6px; }
 .composer-actions .model-controls { min-width: 0; flex: 1 1 0; gap: 3px; }
 .composer-actions .context-display-trigger { flex: none; }
@@ -1107,7 +1163,14 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .empty-orbit span { position: absolute; right: -6px; top: 8px; width: 7px; height: 7px; border-radius: 50%; background: var(--warning); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 12%, transparent); }
 .chat-empty h2 { max-width: 520px; margin: 3px 0 9px; color: var(--text); font-size: clamp(22px, 3vw, 31px); line-height: 1.18; letter-spacing: -0.025em; }
 .chat-empty p { max-width: 500px; margin: 0 0 20px; color: var(--text-muted); font-size: 13px; line-height: 1.55; }
-.thread-render-error { flex: 1; min-height: 0; }
+.thread-render-error { flex: 1; min-height: 0; overflow: auto; }
+.render-error-details { max-width: min(560px, 100%); margin-top: 18px; text-align: left; }
+.render-error-details summary { color: var(--text-muted); font-size: 12px; cursor: pointer; }
+.render-error-details summary:hover { color: var(--text); }
+.render-error-details pre { margin: 10px 0; padding: 10px 12px; color: var(--text-soft); background: var(--surface-subtle); border-radius: 10px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.render-error-details > button { min-height: 32px; padding: 0 12px; color: var(--text-soft); background: var(--surface-subtle); border-radius: 9px; font-size: 12px; cursor: pointer; }
+.render-error-details > button:hover { color: var(--text); background: var(--surface-hover); }
+.render-error-details [role="status"] { display: block; margin-top: 8px; color: var(--text-muted); font-size: 11px; }
 .initial-state, .fatal-state { width: 100%; height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; background: var(--surface); text-align: center; }
 .initial-state .brand-mark, .fatal-state .brand-mark { width: 38px; height: 38px; margin-bottom: 25px; transform: scale(1.35); filter: drop-shadow(0 5px 15px var(--accent-glow)); }
 .initial-state > span:last-child { margin-top: 11px; color: var(--text-muted); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
@@ -1155,6 +1218,9 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .cron-config-fields small { grid-column: 2; color: var(--text-muted); font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
 .provider-auth-section { display: grid; gap: 10px; padding-top: 15px; border-top: 1px solid var(--line); }
 .provider-auth-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.provider-auth-header-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.provider-auth-header-actions .secondary-button { white-space: nowrap; }
+.provider-usage-refreshing { animation: spin 800ms linear infinite; }
 .provider-auth-title-row .secondary-button { flex: none; margin: 0; }
 .provider-auth-check-disclosure, .provider-auth-check-summary { margin: -3px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 .provider-auth-list { display: grid; gap: 9px; }
@@ -1164,7 +1230,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .provider-auth-heading > b { overflow: hidden; font-family: inherit; font-size: 12px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
 .provider-auth-badges { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }
 .provider-auth-state { padding: 3px 6px; color: var(--text-muted); background: var(--surface); border-radius: 6px; font-family: inherit; font-size: 10px; font-weight: 750; line-height: 1.5; letter-spacing: .05em; text-transform: uppercase; }
-.provider-auth-state.is-ok { color: var(--accent); }
+.provider-auth-state.is-ok, .provider-auth-state.is-ok-account { color: var(--accent); }
 .provider-auth-state.is-needs-action { color: var(--warning); }
 .provider-auth-check-result { color: var(--text-muted); font-size: 10px; font-weight: 650; line-height: 1.5; }
 .provider-auth-check-result.is-passed { color: var(--accent); }
@@ -1311,6 +1377,9 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .activity-payload > span { color: var(--text-muted); font-size: 8.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .activity-payload pre { min-width: 0; max-width: 100%; max-height: 280px; margin: 0; padding: 8px 9px; overflow: auto; overscroll-behavior: contain; color: var(--text-soft); background: color-mix(in srgb, var(--app-bg) 60%, var(--surface)); border: 1px solid var(--line); border-radius: 8px; font-family: var(--font-mono); font-size: 10px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .process-job-output { overflow-anchor: none; }
+/* The quiet stand-in for a tail that has nothing in it yet: same slot as the
+   output block, without the framed box a reader would take for content. */
+.process-job-empty-output { margin: 0; color: var(--text-muted); font-size: 10.5px; line-height: 1.45; }
 .activity-error { min-width: 0; display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; margin: 0; padding: 7px 9px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent); border-radius: 8px; font-size: 10.5px; line-height: 1.45; user-select: text; }
 /* A payload the server sent only the head of. Quiet by default -- most rows
    are whole -- with the one control that fetches the rest sitting inline. */
@@ -1371,10 +1440,6 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.45; } 30% { transform: translateY(-4px); opacity: 1; } }
 
-@media (max-width: 1100px) {
-  .composer-hint { display: none; }
-}
-
 @media (max-width: 1100px) and (min-width: 901px) {
   .message-column { --column-padding: 24px; }
 }
@@ -1387,6 +1452,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .dashboard-header { min-height: 58px; padding-block: max(7px, env(safe-area-inset-top)) 7px; }
   .conversation-title { max-width: min(42vw, 340px); }
   .chat-status { display: none; }
+  /* The mobile shell has no ⌘↵: the shortcut line is noise there, and the row
+     it occupies is better spent on the transcript. A status such as
+     "Conversation archived" still shows; the row collapses to zero height when
+     only the keys remain. */
+  .composer-hint-keys { display: none; }
   .message-column { --column-padding: 18px; padding-block: 28px 16px; }
   .thread-footer { padding-inline: max(14px, env(safe-area-inset-left)) max(14px, env(safe-area-inset-right)); }
   /* One screen at a time. The Dashboard is the entrance and keeps the grid
@@ -1531,9 +1601,10 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .project-badge svg { flex: none; }
 .project-badge span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The same badge standing still inside a row that is already one target:
-   no hover, no cursor, and it gives up its width before the status text does.
-   It takes the line's own type size and leading so its baseline is the line's
-   baseline, and the glyph's bottom edge sits on that baseline too. */
+   no hover, no cursor, and -- outside a conversation row's preview line,
+   which pins it (see above) -- it gives up its width before the status text
+   does. It takes the line's own type size and leading so its baseline is the
+   line's baseline, and the glyph's bottom edge sits on that baseline too. */
 .project-badge.is-static { flex: 0 1 auto; align-items: baseline; margin: 0; padding: 0; font-size: inherit; line-height: inherit; cursor: default; }
 .project-badge.is-static:hover { background: transparent; }
 /* The folder is drawn 1.5px short of its box's bottom edge; on a baseline
@@ -1612,3 +1683,65 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .conversation-tags-trigger { min-height: 24px; }
   .tag-settings-sheet { max-width: 100%; }
 }
+
+/* A detached child's progress: the transcript's own step/payload primitives,
+   scrolling inside the card so a long run never widens or lengthens the stack.
+   The card itself supplies the hierarchy, so its rows need neither the transcript
+   rail nor the rail's indent. Let the negative margins reclaim both payload
+   insets; a 100% max-width would clamp that expansion and strand space at right.
+   Summary padding puts tool names on the metadata line's own content column. */
+.process-job-subagent-progress { max-height: min(22vh, 184px); min-width: 0; margin: 0 -8px 0 -34px; padding: 0 4px 4px 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none; overscroll-behavior: contain; border-radius: 8px; }
+.process-job-subagent-progress:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.process-job-subagent-progress > .activity-steps { margin: 0; padding: 0 0 6px; border-left: 0; }
+.process-job-subagent-note { margin: 0; padding: 2px 8px 4px; color: var(--text-muted); font-size: 9px; line-height: 1.4; }
+.process-job-subagent-progress .activity-step > summary { min-height: 28px; padding-left: 34px; }
+.process-job-subagent-progress .activity-step-tool { min-width: 68px; }
+.activity-row.is-job .process-job-live-meta { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0; margin: 0; color: var(--text-muted); font-size: 9.5px; line-height: 1.5; }
+.process-job-live-meta .route-badge { vertical-align: baseline; }
+.process-job-meta-separator { margin: 0 4px; }
+.process-job-child-profile { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.process-job-subagent-progress .activity-payload { padding: 0 8px 8px; }
+.process-job-subagent-progress .activity-payload pre { max-height: none; overflow: visible; }
+.process-job-subagent-calls { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.process-job-subagent-calls li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+.process-job-subagent-call { min-width: 0; overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.process-job-subagent-status { flex: none; font-family: var(--font-mono); font-size: 9px; }
+.process-job-subagent-calls li[data-status="failed"] .process-job-subagent-status { color: var(--danger); }
+.process-job-subagent-calls li[data-status="running"] .process-job-subagent-status { color: var(--accent); }
+
+/* Agent settings shares the project/tag sheet shell; Cron keeps its dialog. */
+.agent-settings-sheet { display: flex; gap: 12px; padding: 10px 17px max(16px, env(safe-area-inset-bottom)); max-height: 92dvh; width: 100%; background: var(--panel); border: 0; border-radius: 20px 20px 0 0; }
+.agent-settings-sheet > header, .agent-settings-sheet > footer { flex: none; padding: 0; border: 0; gap: 8px; }
+.agent-settings-sheet > header h2 { margin: 0; font-size: 14px; font-weight: 650; }
+.agent-settings-sheet .agent-settings-body { display: flex; flex-direction: column; gap: 8px; padding: 0; }
+.agent-settings-sheet .agent-settings-body h3 { font-size: 11px; font-weight: 650; }
+.agent-settings-sheet .agent-settings-body p { font-size: 10.5px; line-height: 1.45; }
+.agent-settings-sheet .agent-settings-config { overflow-wrap: anywhere; }
+.agent-settings-sheet .provider-auth-section { gap: 8px; padding-top: 10px; margin-top: 4px; }
+.agent-settings-sheet .provider-auth-list { gap: 6px; }
+.agent-settings-sheet .provider-auth-card { display: block; padding: 8px 10px; border: 0; border-radius: 12px; }
+.provider-auth-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.agent-settings-sheet .provider-auth-heading { justify-content: flex-start; gap: 6px; flex-wrap: wrap; }
+.agent-settings-sheet .provider-auth-badges { justify-content: flex-start; gap: 4px; }
+.agent-settings-sheet .provider-auth-state, .provider-usage-plan { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; font-size: 10px; font-weight: 600; line-height: 1.5; letter-spacing: 0; text-transform: none; border-radius: 10px; }
+.agent-settings-sheet .secondary-button, .agent-settings-sheet .primary-button { min-height: 28px; max-height: 28px; padding: 0 10px; border-radius: 8px; }
+.agent-settings-sheet .provider-auth-section .secondary-button, .agent-settings-sheet .provider-auth-section .primary-button { font-size: 10px; }
+.agent-settings-sheet .icon-button { width: 28px; height: 28px; min-height: 0; aspect-ratio: 1; border-radius: 8px; }
+.agent-settings-sheet .agent-settings-header-actions .icon-button { width: 36px; height: 36px; padding: 0; border-radius: 10px; flex: none; }
+.agent-settings-sheet .provider-auth-neutral-button { background: transparent; }
+.agent-settings-sheet > footer { padding-top: 8px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.provider-usage { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 10px; row-gap: 6px; padding-top: 6px; }
+.provider-usage-meta { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 10px; }
+.provider-usage-plan { color: var(--accent); background: var(--accent-soft); }
+.provider-usage-window { min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.provider-usage-label { display: flex; justify-content: space-between; gap: 4px; }
+.provider-usage-window time { color: var(--text-muted); font-size: 9px; }
+.provider-usage progress { appearance: none; width: 100%; height: 4px; overflow: hidden; border: 0; border-radius: 3px; background: var(--line-strong); }
+.provider-usage progress::-webkit-progress-bar { background: var(--line-strong); border-radius: 3px; }
+.provider-usage progress::-webkit-progress-value { background: var(--accent); border-radius: 3px; }
+.provider-usage progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
+.provider-usage-error { grid-column: 1 / -1; color: var(--warning) !important; }
+@media (min-width: 901px) {
+  .agent-settings-sheet { width: min(100%, 520px); padding: 18px 20px; max-height: calc(100dvh - 48px); border-radius: 18px; }
+}
+

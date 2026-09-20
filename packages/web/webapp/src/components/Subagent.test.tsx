@@ -44,6 +44,26 @@ describe("SubagentPart", () => {
     expect(screen.getByText("Requested High → effective Max")).toBeInTheDocument();
   });
 
+  it.each([
+    ["successful", "<subagent: researcher · ok>"],
+    ["awaiting_reply", "<subagent: researcher · awaiting_reply>"],
+  ])("never claims a %s child ran when only its pinned request is known", (_case, result) => {
+    const view = render(part({
+      ...delegation,
+      result,
+      attribution: {
+        requested: { model: "provider:primary", effort: "high" },
+        disposition: "requested",
+        transitions: [],
+        retries: [],
+      },
+    }));
+    fireEvent.click(view.container.querySelector("details.activity-row.is-subagent > summary")!);
+    expect(screen.getByText("Requested provider:primary · High — not a confirmed run")).toBeVisible();
+    expect(screen.queryByText(/Ran with provider:primary/u)).toBeNull();
+    expect(screen.getByRole("img", { name: /requested, not a confirmed run/u })).toHaveClass("is-requested");
+  });
+
   it("renders one foldable section that owns the subagent's tool calls", () => {
     const { container } = render(part(delegation));
 

@@ -1,3 +1,4 @@
+import { isProviderUsageId } from "@mono-agent/agent-contracts";
 import type { CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
@@ -189,6 +190,10 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
     next();
   });
+  app.use("/api/v1/agents/:id/provider-usage", (_req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    next();
+  });
   app.use("/api/v1", express.json({ limit: "256kb", strict: true }));
 
   app.get("/healthz", (_req, res) => {
@@ -264,6 +269,33 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     if (status === 204) res.status(status).end();
     else res.status(status).json(body);
   };
+
+  app.post("/api/v1/agents/:id/provider-usage/refresh", (req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    try {
+      exactRequestOrigin(req);
+      const provider = req.query.provider;
+      if (Object.keys(req.query).some((key) => key !== "provider") || (provider !== undefined && !isProviderUsageId(provider))
+        || req.body === null || typeof req.body !== "object" || Array.isArray(req.body) || Object.keys(req.body).length !== 0) {
+        res.status(400).json({ error: "invalid_provider_usage_refresh" }); return;
+      }
+      void trackOperation(service.providerUsage(pathParam(req.params.id), provider, true), activeOperations)
+        .then((snapshot) => res.json(snapshot)).catch(next);
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/agents/:id/provider-usage", (req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    try {
+      exactRequestOrigin(req);
+      const provider = req.query.provider;
+      if (Object.keys(req.query).some((key) => key !== "provider") || (provider !== undefined && !isProviderUsageId(provider))) {
+        res.status(400).json({ error: "invalid_provider" }); return;
+      }
+      void trackOperation(service.providerUsage(pathParam(req.params.id), provider), activeOperations)
+        .then((snapshot) => res.json(snapshot)).catch(next);
+    } catch (error) { next(error); }
+  });
 
   app.use("/api/v1/agents/:id/provider-auth", (_req, res, next) => {
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
@@ -886,7 +918,12 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   app.post("/api/v1/threads/:id/cancel", (req, res, next) => {
     const threadId = pathParam(req.params.id);
-    void trackOperation(service.cancelTurn(threadId), activeOperations)
+    const origin = req.body?.origin ?? "api";
+    if (!["user-stop", "client-disconnect", "client-reconnect", "service-shutdown", "api"].includes(origin)) {
+      next(new WebConsoleError("invalid_cancel_origin", "Unknown cancellation origin.", 400));
+      return;
+    }
+    void trackOperation(service.cancelTurn(threadId, origin), activeOperations)
       .then((thread) => res.status(202).json({ cancelled: true, thread }))
       .catch(next);
   });

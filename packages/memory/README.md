@@ -115,6 +115,43 @@ The normal write and read paths are:
 Run config-aware maintenance through `mono-agent memory <subcommand>` from the
 agent folder. The retired `memory-bujo` executable is no longer packaged.
 
+### Status-bearing local recall
+
+`MemoryDb.recall()` remains the strict compatibility API: any embedding failure
+rejects. Local callers that can surface degraded service may opt into
+`recallWithOutcome()`, which returns hits plus `retrievalMode` and a closed
+`embedding_unavailable` degradation code. Only provider request failures, an
+open embedding circuit, or an invalid provider response qualify. Caller aborts,
+dimension mismatches, SQLite/native/integrity failures, and arbitrary exceptions
+still reject.
+
+When fallback qualifies, recall reuses the lexical candidates computed before
+the provider call and scores them as one real retriever; it does not retry the
+provider or invent semantic scores. A Lite store with no embedding provider is
+normally `lexical_only` and is not degraded. Callers must keep the degradation
+visible even when no lexical hit survives their own selection policy.
+
+### Automatic direct-fact evidence
+
+The provider-free automatic selector accepts only finite direct-fact query and
+record grammars. An exact first-party report may wrap an otherwise supported
+property, choice, or work/live location when its textual reporter matches the
+query subject exactly apart from case; broader canonical name stemming is not
+used for that boundary. NFKC is used only to detect compatibility characters
+that hide unsafe quotation or punctuation, never to sanitize a report into an
+accepted form. The selector returns and renders the attributed record unchanged;
+it does not authenticate a user, resolve real identity from the name, or verify
+the proposition. Assistant, third-party, quoted, uncertain, corrected,
+coordinated, causal, conditional, negated, and conflicting evidence still
+abstains and remains available to deliberate recall. A same-property correction
+blocks automatic selection without inferring either its old or replacement value.
+Bounded scheduled-time questions require an exact event identity and a direct
+`is`/`was scheduled for|on|at` fact. Valid ASCII `HH:MM` colons are accepted
+only in supported temporal answer spans. Quoted, uncertain, attributed,
+compatibility-hidden, or control/format-bearing payloads abstain instead of
+being normalized into evidence. Distinct schedule payload representations also
+abstain rather than invoking calendar or time-zone interpretation.
+
 ### Explicit remember writes
 
 `BujoMemoryStore.remember(conversationId, text)` durably stores one explicitly
@@ -184,11 +221,31 @@ reconcile prompt states the exact action-dependent objects: `ADD` has only index
 complete replacement text. The strict parser remains authoritative and never clamps,
 rescales, fills missing fields, or coerces model values.
 
+Capture and reconciliation prompts ask the selected model to preserve material
+speaker, evidence, and preference scope; distinguish corrections of erroneous
+reports from real-world changes; and keep observed outcomes separate from causal
+guesses. This is model guidance, not factual verification: the parser enforces
+the JSON contract but cannot prove a claim, infer hidden evidence, or guarantee
+semantic fidelity.
+
 `@mono-agent/memory/bujo` also exposes a synchronous provider-free strict health
 audit. It takes a snapshot-coherent view of managed identity, SQLite and
 canonical parity, durable intake/outbox state, temporary artifacts, and runtime
-metadata. Its closed result contains no paths, filenames, ids, memory/model
-text, payloads, or raw errors:
+metadata. Direct callers and `mono-agent memory audit --strict` retain the
+default three-attempt stability budget. The agent app's periodic observer runs
+the same audit in a worker with an explicit one-attempt budget, so genuine
+concurrent mutation remains visible and waits for the next scheduled cycle
+instead of causing immediate repeated work.
+
+Canonical parity may reuse its deterministic graph projection only when the
+fingerprint of all canonical source bytes is unchanged. The audit still reads
+and fingerprints those sources and recomputes SQLite integrity and inventory,
+queues, runtime, locks, temporary artifacts, mutation markers, and parity on
+every call. A fingerprint difference always rebuilds the projection. This is an
+internal optimization and adds no public package API.
+
+The closed result contains no paths, filenames, ids, memory/model text,
+payloads, or raw errors:
 
 ```ts
 import { auditBujoMemoryHealth } from "@mono-agent/memory/bujo";
@@ -349,6 +406,7 @@ supersede or merge records, rewrite canonical memories, or call a chat model.
 | `@mono-agent/memory/search` | `createEmbeddingProvider` | Construct one Ollama, LM Studio, or OpenAI embedding provider. |
 | `@mono-agent/memory/search` | `MemorySearchError` | Handle stable embedding-search error codes without string matching. |
 | `@mono-agent/memory/store` | `openMemoryDb` | Open the low-level SQLite/FTS/vector store when the BuJo engine is not the desired abstraction. |
+| `@mono-agent/memory/store` | `RecallOutcome`, `RecallRetrievalMode`, `RecallDegradationCode` | Consume the opt-in, status-bearing result from local `recallWithOutcome()` calls. |
 
 The complete generated inventory follows. The package has no `.` entrypoint;
 each heading is an independently supported export subpath.
@@ -579,8 +637,11 @@ MemoryStoreAudit
 MemoryStoreStats
 MemoryStoreStatsOptions
 MemoryType
+RecallDegradationCode
 RecallHit
 RecallOptions
+RecallOutcome
+RecallRetrievalMode
 RecallWeights
 SimilarHit
 isCanonicalDailySourcePath
@@ -604,11 +665,11 @@ backend and does not claim local chronology.
 
 ## Related Documentation
 
-- [Memory overview and tier selection](https://mono-agent-docs.vercel.app/memory/)
-- [Write modes, durable capture, and recall](https://mono-agent-docs.vercel.app/memory/capture-and-recall/)
-- [Embeddings](https://mono-agent-docs.vercel.app/memory/embeddings/)
-- [Validation and config-aware maintenance](https://mono-agent-docs.vercel.app/memory/validation-and-cli/)
-- [Built-in versus Supermemory backends](https://mono-agent-docs.vercel.app/memory/backends-comparison/)
+- [Memory overview and tier selection](https://docs.mono-agent.dev/memory/)
+- [Write modes, durable capture, and recall](https://docs.mono-agent.dev/memory/capture-and-recall/)
+- [Embeddings](https://docs.mono-agent.dev/memory/embeddings/)
+- [Validation and config-aware maintenance](https://docs.mono-agent.dev/memory/validation-and-cli/)
+- [Built-in versus Supermemory backends](https://docs.mono-agent.dev/memory/backends-comparison/)
 
 ## Verification
 

@@ -19,11 +19,6 @@ export const BUILTIN_TOOL_NAMES = [
   "Bash",
   "Exec",
   "NodeRepl",
-  // Registered only when a monitor controller is injected (`monitors.enabled`
-  // plus a wake-capable origin); deliberately absent from DEFAULT_SAFE_TOOLS
-  // because starting a watch runs an arbitrary command.
-  "Monitor",
-  "MonitorStop",
   "WebFetch",
   "WebSearch",
   // Registered only when `subagents.enabled` is true; deliberately absent from
@@ -41,7 +36,7 @@ export const APP_TOOL_NAMES = [
   "RunHistory",
   "SessionHistory",
   "SetConversationTitle",
-  "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags",
+  "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead",
   "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject",
   "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject",
   "MemoryJournal",

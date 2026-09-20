@@ -55,6 +55,8 @@ async function fakeSrtExecutable(content = "#!/bin/sh\nexit 0\n"): Promise<strin
 
 async function fakeProofSrtExecutable(suffix: string): Promise<{ root: string; path: string }> {
   const root = await tempDir();
+  // TMPDIR may be inside an ESM worktree; the fixture intentionally uses CJS.
+  await writeFile(join(root, "package.json"), '{"type":"commonjs"}\n');
   const path = join(root, "srt");
   const script = [
     "#!/usr/bin/env node",
@@ -1033,7 +1035,10 @@ describe("srt integration contract", () => {
     expect(settings.filesystem.allowRead).toContain(dirname(await realpath(process.execPath)));
     expect(settings.filesystem.denyWrite).toContain(first.sandboxSettingsPath);
     expect((await lstat(first.sandboxSettingsPath as string)).mode & 0o077).toBe(0);
-    expect(first.args.slice(0, 2)).toEqual(["--settings", first.sandboxSettingsPath]);
+    expect(first.args).toEqual(["--settings", first.sandboxSettingsPath, "--", "node", "a.js"]);
+    const git = await engine.prepareCommand({ command: "/usr/bin/git", args: ["-c", "core.fsmonitor=false", "status"] }, policy);
+    expect(git.args).toEqual(["--settings", git.sandboxSettingsPath, "--", "/usr/bin/git", "-c", "core.fsmonitor=false", "status"]);
+    await git.cleanup?.();
     await first.cleanup?.();
     await second.cleanup?.();
     await expect(access(first.sandboxSettingsPath as string)).rejects.toMatchObject({ code: "ENOENT" });

@@ -100,10 +100,13 @@ retained text names that file directly under its header
 (`[result truncated; full result saved to: …]`) so the main agent can `Read` it.
 Without a configured artifact sink the text says the full result was not saved.
 
-**What operators see.** Every subagent tool call streams live to the TUI and web
+**What operators see.** Foreground subagent tool calls stream live to the TUI and web
 console as its own entry, named `<profile>▸<tool>` and bracketed by the
 subagent's own start/finish rows. The subagent's thinking and prose stay
 internal — only its final answer reaches the parent, through the tool result.
+Detached persistent children instead publish bounded, redacted tool progress and
+a terminal report in the web Background jobs card, with a subagent glyph and
+scrollable body; the parent Activity keeps the launch and terminal job rows.
 
 **Limits.** `maxConcurrent` (default 5) is an upper bound on simultaneous
 subagents; the provider may schedule fewer. In particular, Pi 0.85 exposes only
@@ -114,6 +117,15 @@ runaway guard, since a delegation loop can spend budget serially without ever
 hitting the concurrency cap. Each subagent gets `maxTurns` (default 100) and
 `timeoutMs` (default 5 minutes), and its timeout starts only once it actually
 begins, not while queued.
+
+Detached persistent children (`Agent` / `AgentSend` with `background: true`)
+get a foreground Bash/Exec `timeout_ms` ceiling of the smaller of their own
+process job’s remaining runtime at child-run setup and
+`subagents.commandTimeoutMs` (positive integer milliseconds, default 30 minutes).
+Their tool descriptions show that ceiling; the job deadline can stop a command
+sooner as time elapses. Interactive turns and foreground children keep the
+120-second cap. NodeRepl keeps its fixed 120-second timer. Child-owned background
+commands remain unsupported and are out of scope for this rule.
 
 **Guardrails.** A subagent is read-only unless its profile enumerates more (or,
 for one built at call time, unless its `tools` request survives the ceiling), and
@@ -147,6 +159,10 @@ id: "reviewer"})` creates an instance and runs its first turn.
 `AgentSend({id: "reviewer", message: "Now check this revision"})` resumes its own
 Pi-native durable session. The parent transcript is never seeded into the child.
 The selected model, effort, prompt, and profile are retained for that instance.
+The tool copy states that a child is stateless by default and that `persist`
+is for a child the parent will actually continue: a persistent instance holds
+its transcript and one live instance slot until it is closed, and `background`
+(which requires `persist`) is reserved for sustained work that outlives a reply.
 Current global tool denies still apply on every turn. Only MCP server names are
 retained; their configuration is resolved from the current catalog. A removed
 server or unavailable retained route causes an error rather than using stale
@@ -202,8 +218,9 @@ answers outside the retained durable session, the tool reports
 `session_continuity_lost` rather than claiming the turn was retained. Close that
 instance and create another with the context it needs.
 
-There is no cross-conversation reuse or detached
-subagent execution. Persistence grants no additional authority. Bare runtime
+There is no cross-conversation reuse. Persistent children can run detached
+with `background: true` through the host-owned ProcessJobs lane; see
+[detached persistent children](../tools/background-process-jobs.md#detached-persistent-children). Persistence grants no additional authority. Bare runtime
 hosts without a conversation registry retain stateless `Agent` and reject
 `persist`/`id` if passed directly.
 
@@ -356,9 +373,21 @@ changes do not prove cache misses, and delta/unsupported prefix comparisons rema
 unknown. Summary requests keep Pi's existing disabled-cache setting.
 
 
-Compaction is delegated to the active provider bridge rather than hand-rolled in the runtime. On the pi-native bridge, the bridge drives `AgentHarness.compact()`:
+Compaction is delegated to the active provider bridge rather than hand-rolled in the runtime. On the pi-native bridge, the bridge owns the decision in all three cases:
 
 - **Proactively** — before a turn when the running model is near its context window.
+- **Mid-run** — between completed model/tool rounds of a single turn, so a long
+  tool-using run that crosses the trigger while it is still working compacts
+  then instead of drifting until the turn ends. The check runs at Pi's own
+  durable checkpoints, which are only reached once a whole tool batch has
+  finished, and the compaction is applied inside the same run: it never starts a
+  second agent run, appends a user message, consumes queued steering input, or
+  splits a tool call from its result. The summary itself is a separate paid
+  provider request. Guards keep it cheap — at most one attempt in flight, at most one
+  evaluation per completed round, a re-check of the trigger before a summary is
+  requested, no summary at all when the retained recent messages already hold
+  nearly all of the context, and required fresh assistant progress plus
+  meaningful growth before any further attempt.
 - **Reactively** — if a turn still overflows, it compacts and re-prompts once
   only after the rebuilt context preview proves a positive reduction. A
   non-reducing compaction is cancelled before persistence and is not sent back
@@ -376,13 +405,15 @@ Every run reports `context_compaction_applied`:
 
 | Value | Meaning |
 | --- | --- |
-| `true` | Compaction fired this run. |
+| `true` | Compaction fired this run (before the request or mid-run). |
 | `false` | Enabled but not needed. |
 | `null` | Compaction disabled (or the bridge does not support it). |
 
 Pi diagnostics also report the full proactive request estimate and fixed
 overhead components on every check, plus `context_compaction_reactive_attempted`,
-`context_compaction_tokens_after`, and `context_compaction_reduced`. If the
+`context_compaction_tokens_after`, and `context_compaction_reduced`. Mid-run
+activity is reported separately as `context_compaction_midrun_armed`,
+`context_compaction_midrun_attempts` and `context_compaction_midrun_applied`. If the
 request still exceeds the primary model's window, the run is classified as
 `context_limit`; the fallback router may then try the next configured model.
 

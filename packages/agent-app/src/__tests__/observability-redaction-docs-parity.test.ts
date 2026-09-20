@@ -197,8 +197,11 @@ describe("observability redaction docs parity", () => {
   });
 
   it("keeps recorder-boundary summaries explicit about both persisted redaction passes", () => {
+    // The root README used to carry the recorder-boundary paragraph. It now
+    // links the observability docs instead of restating them, and
+    // docs/observability/artifacts-and-traces.md owns that statement (the
+    // first two rows below).
     const surfaces = [
-      ["README.md", "Local JSONL artifacts are the completed-run fallback"],
       ["docs/observability/artifacts-and-traces.md", "mono-agent is local-first about observability"],
       ["docs/observability/artifacts-and-traces.md", "- `run-<id>.events.jsonl`"],
       ["docs/observability/phoenix-and-backfill.md", "Phoenix export never changes a run's outcome"],
@@ -252,8 +255,10 @@ describe("observability redaction docs parity", () => {
   });
 
   it("keeps the exporter content-pattern scan explicitly opt-in and default-off", () => {
+    // The Phoenix export paragraph moved out of the root README and into the
+    // canonical exporter page, which is asserted here instead.
     const operatorSurfaces = [
-      paragraphContaining("README.md", "Phoenix is the recommended trace viewer"),
+      paragraphContaining("docs/observability/phoenix-and-backfill.md", "Export is **metadata-only by default**"),
       paragraphContaining("packages/observability/README.md", "Privacy default is metadata-only"),
       lineContaining("docs/observability/phoenix-and-backfill.md", "| `contentPatternRedaction` |"),
       lineContaining("docs/reference/feature-registry.md", "| `observability.phoenix-exporter` |"),

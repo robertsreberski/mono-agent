@@ -50,6 +50,7 @@ const testControlStore: CronControlStore = {
   setEnabledAction: (input) => ({ enabled: input.enabled, replayed: false }),
   markStarted: () => {},
   appendEvent: () => {},
+  recordPreflight: () => {},
   recordResult: () => {},
   getRun: () => undefined,
   getRunSummary: () => undefined,
@@ -227,6 +228,141 @@ describe("cron channel driver — run watchdog", () => {
         maxRunMs: 2_700_000,
       },
     ]);
+  });
+});
+
+describe("cron channel driver — preflight gate", () => {
+  const gatedJob = {
+    id: "gated",
+    expression: "0 9 * * *",
+    timezone: "UTC",
+    prompt: "Summarize.",
+    enabled: true,
+    preflight: [process.execPath, "-e", "process.stdout.write('{\"run\":false,\"reason\":\"no new items\"}')"],
+    preflightTimeoutMs: 9_000,
+  };
+
+  it("passes the job's gate argv and timeout to the adapter and evaluates them through the runner", async () => {
+    const captured = await startCapturingCron({
+      ...baseInput,
+      config: {
+        jobs: [gatedJob],
+        controlInspection: { status: "absent" },
+        effectiveEnabledByJobId: new Map([["gated", true]]),
+      },
+    });
+
+    expect(captured.jobs).toEqual([{
+      id: "gated",
+      enabled: true,
+      expression: "0 9 * * *",
+      timezone: "UTC",
+      prompt: "Summarize.",
+      preflight: gatedJob.preflight,
+      preflightTimeoutMs: 9_000,
+    }]);
+    await expect(captured.preflight!(firing("gated", "2026-01-01T00:00:00.000Z"), new AbortController().signal))
+      .resolves.toEqual({ outcome: "skip", reason: "no new items" });
+  });
+
+  it("stores every attempted gate record and warns only when the gate failed open", async () => {
+    const recordPreflight = vi.fn();
+    const warn = vi.fn();
+    const info = vi.fn();
+    const captured = await startCapturingCron({
+      ...baseInput,
+      logger: { warn, info },
+      config: {
+        jobs: [gatedJob],
+        controlInspection: { status: "absent" },
+        effectiveEnabledByJobId: new Map([["gated", true]]),
+      },
+    }, {
+      openControlStore: async () => ({ ...testControlStore, recordPreflight }),
+    });
+    const gatedFiring = firing("gated", "2026-01-01T00:00:00.000Z");
+
+    captured.onPreflight!(gatedFiring, {
+      outcome: "error",
+      code: "exit_nonzero",
+      reason: "preflight gate exited with code 3",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:00:00.500Z",
+    });
+    expect(recordPreflight).toHaveBeenCalledOnce();
+    expect(recordPreflight.mock.calls[0]?.[1]).toMatchObject({ outcome: "error", code: "exit_nonzero" });
+    expect(warn).toHaveBeenCalledWith(
+      "Cron preflight gate failed open; the job ran with its plain prompt.",
+      expect.objectContaining({ jobId: "gated", code: "exit_nonzero" }),
+    );
+
+    warn.mockClear();
+    captured.onPreflight!(gatedFiring, {
+      outcome: "skip",
+      reason: "no new items",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:00:00.500Z",
+    });
+    expect(recordPreflight).toHaveBeenCalledTimes(2);
+    // A deliberate gate skip is not a failure and is not logged twice: the
+    // adapter already logged it at info.
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
+  });
+
+  it("logs a gate skip at info while an overlap skip stays at warn", async () => {
+    const info = vi.fn();
+    const warn = vi.fn();
+    const captured = await startCapturingCron({
+      ...baseInput,
+      logger: { info, warn },
+      config: {
+        jobs: [gatedJob],
+        controlInspection: { status: "absent" },
+        effectiveEnabledByJobId: new Map([["gated", true]]),
+      },
+    });
+    const gatedFiring = firing("gated", "2026-01-01T00:00:00.000Z");
+
+    await captured.onResult!({
+      kind: "skipped",
+      reason: "gate",
+      cronRunId: gatedFiring.runId,
+      jobId: gatedFiring.jobId,
+      scheduledAt: gatedFiring.scheduledAt,
+      orderedAt: gatedFiring.orderedAt,
+      sequence: gatedFiring.sequence,
+      trigger: gatedFiring.trigger,
+      completedAt: "2026-01-01T00:00:01.000Z",
+      gateReason: "no new items",
+    });
+    expect(info).toHaveBeenCalledWith("Cron job finished.", expect.objectContaining({ result: expect.objectContaining({ reason: "gate" }) }));
+
+    info.mockClear();
+    await captured.onResult!({
+      kind: "skipped",
+      reason: "overlap",
+      cronRunId: gatedFiring.runId,
+      jobId: gatedFiring.jobId,
+      scheduledAt: gatedFiring.scheduledAt,
+      orderedAt: gatedFiring.orderedAt,
+      sequence: gatedFiring.sequence,
+      trigger: gatedFiring.trigger,
+      blockedByRunId: "cron:gated:earlier",
+      blockedByTrigger: "scheduled",
+    });
+    expect(warn).toHaveBeenCalledWith("Cron job finished.", expect.objectContaining({ result: expect.objectContaining({ reason: "overlap" }) }));
+    expect(info).not.toHaveBeenCalled();
+  });
+
+  it("leaves an ungated job without a gate and answers a defensive run verdict", async () => {
+    const captured = await startCapturingCron(baseInput);
+    expect(captured.jobs[0]).not.toHaveProperty("preflight");
+    expect(captured.jobs[0]).not.toHaveProperty("preflightTimeoutMs");
+    // The adapter only calls the executor for a job that declared a gate; an
+    // unexpected call still fails open instead of throwing.
+    await expect(captured.preflight!(firing("j", "2026-01-01T00:00:00.000Z"), new AbortController().signal))
+      .resolves.toEqual({ outcome: "run" });
   });
 });
 

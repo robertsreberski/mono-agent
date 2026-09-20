@@ -38,6 +38,10 @@ import type { ChannelDriver, ChannelStartInput } from "../channels.js";
 import { startContinuationService } from "../continuation-service.js";
 import { canonicalContinuationJson, continuationDigest, type ContinuationStatusSnapshot } from "../continuations.js";
 
+const builtMemoryHealthWorkerUrl = new URL("../../dist/memory-health-worker.js", import.meta.url);
+const malformedMemoryHealthWorkerUrl = new URL("./fixtures/memory-health-worker-malformed.mjs", import.meta.url);
+const oneAttemptMemoryHealthWorkerUrl = new URL("./fixtures/memory-health-worker-one-attempt.mjs", import.meta.url);
+
 let dir: string;
 
 beforeEach(async () => {
@@ -978,7 +982,13 @@ describe("startMonoAgentApp", () => {
     };
     const runtime = { run: async (): Promise<RuntimeResult> => ({ text: "ok" }) };
 
-    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      drivers: [driver],
+      runtime,
+      memoryHealthWorkerUrl: builtMemoryHealthWorkerUrl,
+    });
     try {
       const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
       expect(sources[0]?.memoryHealth).toMatchObject({
@@ -1232,16 +1242,36 @@ describe("startMonoAgentApp", () => {
     await app.stop();
   });
 
+  it("requests one stability attempt for periodic built-in auditing", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      memory: { mode: "lite", path: "./memory", writeMode: "append-host-summary" },
+    });
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      drivers: [],
+      memoryHealthWorkerUrl: oneAttemptMemoryHealthWorkerUrl,
+    });
+    try {
+      expect(app.memoryHealth).toMatchObject({ backend: "bujo", mode: "lite", status: "healthy" });
+    } finally {
+      await app.stop();
+    }
+  });
+
   it("publishes a closed health_check_failed issue when built-in auditing throws", async () => {
     await writeConfig({
       ...baseConfig(),
       memory: { mode: "lite", path: "./memory", writeMode: "append-host-summary" },
     });
-    const privateSentinel = "private audit failure /private/sentinel";
-    const auditSpy = vi.spyOn(bujoMemory, "auditBujoMemoryHealth").mockImplementation(() => {
-      throw new Error(privateSentinel);
+    const privateSentinel = "/secret";
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      drivers: [],
+      memoryHealthWorkerUrl: malformedMemoryHealthWorkerUrl,
     });
-    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
     try {
       expect(app.memoryHealth).toMatchObject({
         backend: "bujo",
@@ -1254,7 +1284,6 @@ describe("startMonoAgentApp", () => {
       expect(JSON.stringify(sources[0])).not.toContain(privateSentinel);
     } finally {
       await app.stop();
-      auditSpy.mockRestore();
     }
   });
 

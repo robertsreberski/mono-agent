@@ -284,6 +284,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.theme === undefined ? {} : { theme: args.theme }),
         ...(args.name === undefined ? {} : { name: args.name }),
         ...(args.loopback === true ? { loopback: true } : {}),
+        ...(args.shareTailnet === true ? { shareTailnet: true } : {}),
+        ...(args.json === true ? { json: true } : {}),
         ...(args.follow === true ? { follow: true } : {}),
         ...(args.lines === undefined ? {} : { lines: args.lines }),
         ...(args.all === true ? { all: true } : {}),
@@ -319,17 +321,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     case "jobs": {
       const { runJobsCommand } = await import("./jobs-command.js");
       return await runJobsCommand({
-        cwd: process.cwd(),
-        configPath: resolve(process.cwd(), args.configPath ?? "mono-agent.config.json"),
-        env: process.env,
-        positionals: args.positionals,
-        ...(args.agent === undefined ? {} : { agent: args.agent }),
-        ...(args.json === true ? { json: true } : {}),
-      });
-    }
-    case "monitors": {
-      const { runMonitorsCommand } = await import("./monitors-command.js");
-      return await runMonitorsCommand({
         cwd: process.cwd(),
         configPath: resolve(process.cwd(), args.configPath ?? "mono-agent.config.json"),
         env: process.env,

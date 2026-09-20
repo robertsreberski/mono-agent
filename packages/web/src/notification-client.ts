@@ -1,7 +1,7 @@
 import { constants as fsConstants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 
-import type { AgentReplyPart, MonitorProjection, ProcessJobProjection } from "@mono-agent/agent-contracts";
+import type { AgentReplyPart, ProcessJobProjection } from "@mono-agent/agent-contracts";
 
 import type { WebThreadNotificationTriggerKind } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
@@ -34,20 +34,9 @@ export interface DeliverWebProcessJobNotificationInput {
   readonly parts?: readonly AgentReplyPart[];
 }
 
-/** One owner-authenticated Monitor wake addressed to its existing web thread. */
-export interface DeliverWebMonitorNotificationInput {
-  readonly sourceId: string;
-  readonly triggerKind: "monitor";
-  readonly deliveryKey: string;
-  readonly threadId: string;
-  readonly monitor: MonitorProjection;
-  readonly wakePrompt: string;
-}
-
 export type DeliverWebNotificationInput =
   | DeliverWebThreadNotificationInput
-  | DeliverWebProcessJobNotificationInput
-  | DeliverWebMonitorNotificationInput;
+  | DeliverWebProcessJobNotificationInput;
 
 export interface DeliverWebNotificationOptions extends WebStatePathOptions {
   readonly fetchImpl?: typeof fetch;
@@ -83,8 +72,7 @@ export async function deliverWebNotification(
 ): Promise<DeliverWebNotificationResult> {
   const path = resolveWebStatePaths(options).notificationIngress;
   const ingress = await readIngressRecord(path);
-  const carriesWakeTurn = input.triggerKind === "monitor"
-    || (input.triggerKind === "job" && input.wakePrompt !== undefined);
+  const carriesWakeTurn = input.triggerKind === "job" && input.wakePrompt !== undefined;
   const fetchImpl = options.fetchImpl ?? (carriesWakeTurn ? fetchLongLivedHostWake : fetch);
   let response: Response;
   try {

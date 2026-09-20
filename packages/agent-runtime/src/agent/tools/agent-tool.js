@@ -217,8 +217,8 @@ function positiveInt(value, fallback) {
  * Build the `Agent` tool, or null when subagents are unavailable for this run.
  *
  * @param {RuntimeSubagentsOptions|null|undefined} subagents
- * @param {{instancesEnabled?: boolean, model?: *, effort?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
- * @param {{record: import("../../ai/types.js").RuntimeSubagentInstance, close?: boolean}} [continuation] Internal AgentSend dispatch; never model supplied.
+ * @param {{recoveryAccess?: unknown, instancesEnabled?: boolean, persistentExposure?: boolean, model?: *, effort?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
+ * @param {{record: import("../../ai/types.js").RuntimeSubagentInstance, close?: boolean, acknowledgement?: import("../../ai/types.js").RuntimeSubagentRecoveryRequest}} [continuation] Internal AgentSend dispatch; never model supplied.
  * @returns {*|null}
  */
 export function createAgentTool(subagents, context = {}, continuation) {
@@ -228,12 +228,13 @@ export function createAgentTool(subagents, context = {}, continuation) {
   if (positiveInt(subagents.depth, 0) > 0 || Number(subagents.depth || 0) > 0) return null;
 
   const instances = context.instancesEnabled === false ? undefined : subagents.instances;
+  const persistentExposure = context.instancesEnabled !== false && (context.persistentExposure ?? Boolean(instances));
   const background = instances?.reserve && instances?.releaseReservation ? subagents.backgroundSubagentController : undefined;
-  const definitions = Array.isArray(subagents.definitions) ? subagents.definitions.filter(Boolean) : [];
+  const definitions = Array.isArray(subagents.definitions) ? subagents.definitions.filter(Boolean).slice().sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0) : [];
   const maxConcurrent = positiveInt(subagents.maxConcurrent, DEFAULT_MAX_CONCURRENT);
   const maxPerTurn = positiveInt(subagents.maxPerTurn, DEFAULT_MAX_PER_TURN);
   const names = definitions.map((definition) => definition.name);
-  const models = subagents.models ?? [];
+  const models = [...(subagents.models ?? [])].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 
   const slots = slotsForOptions(subagents, maxConcurrent, context.parentRunId);
   // Budget state hangs off the shared `subagents` options object, NOT this
@@ -245,7 +246,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
 
   // The ceiling doubles as the authoring switch: null means the closed schema
   // this tool has always had, with `name` restricted to configured profiles.
-  const ceiling = inlineCeiling(subagents.inline);
+  const ceiling = inlineCeiling(subagents.inline)?.slice().sort() ?? null;
 
   const parameters = {
     type: "object",
@@ -299,11 +300,14 @@ export function createAgentTool(subagents, context = {}, continuation) {
         enum: models.map((choice) => choice.name),
         description: `Run the subagent on this model instead of inheriting yours. Choices: ${models.map((choice) => `${choice.name} → ${choice.key}`).join(", ")}.`,
       } }),
-      ...(instances ? {
-        persist: { type: "boolean", description: "Keep this subagent alive so you can continue it with AgentSend." },
+      ...(persistentExposure ? {
+        verification: { type: "object", additionalProperties: false, required: ["workdir"], properties: {
+          workdir: { type: "string", maxLength: 2048 }, reportPath: { type: "string", maxLength: 512 },
+        }, description: "Optional observation-only worktree and relative report presence target. Does not change command cwd, widen permissions, authorize work, or establish verification success." },
+        persist: { type: "boolean", description: "Keep this subagent alive so you can continue it with AgentSend. Off by default; set it only when a follow-up turn is actually expected, and close the instance when that follow-up is done." },
         id: { type: "string", pattern: INLINE_NAME_RE.source, description: "Instance id; only with persist." },
       } : {}),
-      ...(background ? { background: { type: "boolean", description: "Run a persistent child detached; this conversation wakes on completion or AskParent. Do not poll or replay." } } : {}),
+      ...(persistentExposure ? { background: { type: "boolean", description: "Run the child detached (requires persist: true); this conversation wakes on completion or AskParent. Only for sustained work that outlives a reply — a short answer you need now stays foreground. Do not poll or replay." } } : {}),
       description: {
         type: "string",
         maxLength: 80,
@@ -317,7 +321,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
   return {
     name: "Agent",
     label: "Agent",
-    description: toolDescription(subagents, definitions, ceiling, Boolean(instances)) + (instances ? "\n\nSet persist: true to retain this child’s own context across calls and parent turns. Continue it with AgentSend; close it when done." : "") + (background ? " Set background: true with persist: true to return a durable started receipt and wake this exact conversation when the child settles or asks you a question. Do not poll or replay." : ""),
+    description: toolDescription(subagents, definitions, ceiling, persistentExposure) + (persistentExposure ? "\n\nA child is stateless by default: it answers once and holds nothing afterwards, which is right for most delegations. Set persist: true only when you will actually continue this child with AgentSend — corrections, follow-up questions, a multi-step assignment — because a persistent instance keeps its transcript and one of this conversation’s live instance slots until you close it; close it as soon as the follow-up is done." : "") + (persistentExposure ? " background: true detaches the child (it currently requires persist: true) and returns a durable started receipt; this exact conversation wakes when the child settles or asks you a question. Reserve it for sustained work that outlives a reply, not for a short question whose answer you need now. Do not poll or replay." : ""),
     parameters,
     // MUST stay undefined. Agent-only batches can overlap when the offered tool
     // set contains no sequential tool. Pi 0.85 exposes only a global harness
@@ -326,7 +330,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
     executionMode: undefined,
     /**
      * @param {string} toolCallId
-     * @param {{prompt: string, name?: string, description?: string, systemPrompt?: string, tools?: ReadonlyArray<string>, effort?: string, model?: string, persist?: boolean, id?: string, background?: boolean}} params
+     * @param {{prompt: string, name?: string, description?: string, systemPrompt?: string, tools?: ReadonlyArray<string>, effort?: string, model?: string, persist?: boolean, id?: string, background?: boolean, verification?: {workdir: string, reportPath?: string}}} params
      * @param {AbortSignal} [signal]
      */
     async execute(toolCallId, params, signal) {
@@ -340,6 +344,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
       if (!instances && (params.persist !== undefined || params.id !== undefined)) {
         throw new Error("Error: persistent subagent instances are unavailable in this conversation.");
       }
+      if (params.verification !== undefined && params.persist !== true) throw new Error("Error: verification metadata requires persist: true and does not change cwd.");
       if (params.id !== undefined && params.persist !== true) throw new Error("Error: id requires persist: true.");
       if (params.persist !== undefined && typeof params.persist !== "boolean") throw new Error("Error: persist must be a boolean.");
       const authored = ceiling !== null && typeof params?.systemPrompt === "string" && params.systemPrompt.trim().length > 0;
@@ -374,6 +379,18 @@ export function createAgentTool(subagents, context = {}, continuation) {
         ...(profile.model === undefined ? {} : { model: `${profile.model.provider}:${profile.model.model}` }),
         ...(profile.effort === undefined ? {} : { effort: profile.effort }),
       };
+      // The route the child will really run on: explicit pins win, the parent's
+      // own route fills the gaps. Published on the started bookend so the row
+      // badges while running. Never recorded as an explicit request: the
+      // collector keeps it beside `requested` so completion cannot misread an
+      // inherited route as a fallback.
+      const inheritedModel = requested.model === undefined ? modelRouteString(context.model) : undefined;
+      const inheritedEffort = requested.effort === undefined ? boundedRouteString(context.effort, 64) : undefined;
+      const launch = {
+        ...requested,
+        ...(inheritedModel === undefined ? {} : { model: inheritedModel }),
+        ...(inheritedEffort === undefined ? {} : { effort: inheritedEffort }),
+      };
       const routeLabel = [requested.model, requested.effort].filter(Boolean).join("/");
 
       // The concurrency cap bounds resources, not cost: a delegation loop can
@@ -391,23 +408,29 @@ export function createAgentTool(subagents, context = {}, continuation) {
         ? instances.finish(id, outcome) : instances.finish(id, outcome, reservation);
       const createInstance = async () => {
         const { mcpServers, ...retainedProfile } = profile;
-        return await instances.create({ ...(params.id === undefined ? {} : { id: params.id }),
+        const spec = { ...(params.id === undefined ? {} : { id: params.id }),
           name: profile.name, systemPrompt: profile.systemPrompt,
-          definition: { ...retainedProfile, mcpServerNames: profile.mcpServerNames ?? Object.keys(mcpServers ?? {}), model: profile.model ?? context.model, effort: profile.effort ?? context.effort } });
+          definition: { ...retainedProfile, mcpServerNames: profile.mcpServerNames ?? Object.keys(mcpServers ?? {}), model: profile.model ?? context.model, effort: profile.effort ?? context.effort } };
+        return params.verification ? await instances.create({ ...spec, verification: params.verification }, context.recoveryAccess) : await instances.create(spec);
       };
       if (detached) {
         const retained = continuation?.record ?? await createInstance();
-        instance = await instances.reserve(retained.id, reservation);
+        instance = continuation?.acknowledgement
+          ? await instances.reserve(retained.id, reservation, continuation.acknowledgement, context.recoveryAccess)
+          : await instances.reserve(retained.id, reservation);
         try {
           const started = await background.startInternal({ kind: "internal", tool: continuation ? "AgentSend" : "Agent",
             jobId: reservation, instanceId: retained.id,
+            ...(background.managed ? { managed: { instanceIncarnation: instance.incarnation ?? "", turnToken: instance.activeTurn?.token ?? "" } } : {}),
+            // `description` is the model-authored activity label (never the prompt); it names the job card.
+            ...(typeof params.description === "string" && params.description.trim() ? { description: params.description } : {}),
             timeoutMs: positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS)),
             // The identity is host-validated; raw prompts and tool parameters never enter job metadata.
             cleanup: () => instances.releaseReservation(retained.id, reservation),
-            run: async (childSignal) => {
+            run: async (childSignal, _writeOutput, reportProgress, execution) => {
               try {
-                const result = await runTurn(childSignal);
-                return { status: result.details.subagent.status, ...(result.details.subagent.question ? { question: result.details.subagent.question } : {}), childStillBusy: result.details.subagent.childStillBusy === true,
+                const result = await runTurn(childSignal, reportProgress, execution);
+                return { answer: result.answer, status: result.details.subagent.status, ...(result.details.subagent.question ? { question: result.details.subagent.question } : {}), childStillBusy: result.details.subagent.childStillBusy === true,
                   output: JSON.stringify({ instanceId: retained.id, ...result.details.subagent,
                     answer: result.content[0].text, artifacts: result.details.tool_payload_saved_paths ?? [] }) };
               } finally { await instances.releaseReservation(retained.id, reservation); }
@@ -422,9 +445,13 @@ export function createAgentTool(subagents, context = {}, continuation) {
       }
       return await runTurn(signal);
 
-      /** @param {AbortSignal} [signal] */
-      async function runTurn(signal) {
-        if (slots.inFlight() >= maxConcurrent && !budget.warnedQueued) {
+      /**
+       * @param {AbortSignal} [signal]
+       * @param {(event: *) => void} [reportProgress]
+       * @param {{deadlineAt: number, managed?: any}} [execution]
+       */
+      async function runTurn(signal, reportProgress, execution) {
+        if (!detached && slots.inFlight() >= maxConcurrent && !budget.warnedQueued) {
           budget.warnedQueued = true;
           context.onEvent?.({
             type: "runtime_warning",
@@ -442,7 +469,9 @@ export function createAgentTool(subagents, context = {}, continuation) {
         }
         try {
           if (detached) instance = await instances.begin(instance.id, reservation);
-          else if (continuation) instance = await instances.begin(continuation.record.id);
+          else if (continuation) instance = continuation.acknowledgement
+            ? await instances.begin(continuation.record.id, undefined, continuation.acknowledgement, context.recoveryAccess)
+            : await instances.begin(continuation.record.id);
           else if (params.persist) {
             const created = await createInstance();
             instance = await instances.begin(created.id);
@@ -479,11 +508,14 @@ export function createAgentTool(subagents, context = {}, continuation) {
 
         const collector = createActivityCollector({
           requested,
+          launch,
           callId: toolCallId,
           profileName: profile.name,
           callIndex,
           ...(params.description === undefined ? {} : { label: params.description }),
-          ...(context.onEvent === undefined ? {} : { emit: context.onEvent }),
+          ...(detached
+            ? { emit: (event) => reportDetachedProgress(event, reportProgress, launch) }
+            : context.onEvent === undefined ? {} : { emit: context.onEvent }),
           // Synchronous spend is summed across router attempts. Detached spend
           // belongs only to its instance and job, even if it completes immediately.
           recordUsage: (spent) => {
@@ -502,8 +534,12 @@ export function createAgentTool(subagents, context = {}, continuation) {
         /** @type {unknown} */
         let thrown;
         let abandoned = false;
+        let recoveryUnavailable = false;
         try {
-          const running = subagents.run({
+          await execution?.managed?.started();
+          const underlying = Promise.resolve().then(() => subagents.run({
+            ...(detached && execution ? { detached: true, deadlineAt: execution.deadlineAt } : {}),
+            ...(execution?.managed ? { ownedForegroundProcesses: execution.managed.ownedForegroundProcesses, turnToken: instance?.activeTurn?.token } : {}),
             ...(instance ? { instance: { id: instance.id, sessionId: instance.sessionId, sessionsRoot: instance.sessionsRoot } } : {}),
             systemPrompt: instance?.systemPrompt ?? profile.systemPrompt,
             prompt: params.prompt,
@@ -530,15 +566,27 @@ export function createAgentTool(subagents, context = {}, continuation) {
             callIndex,
             depth: positiveInt(subagents.depth, 0) + 1,
             onEvent: collector.observe,
-          });
+          }));
+          // Observe the actual provider promise before racing reporting/deadline.
+          const running = execution?.managed ? Promise.resolve(underlying).then(async (value) => {
+            const actual = classifyOutcome({ result: value, thrown: undefined, timedOut });
+            await execution.managed.settled({ status: timedOut ? "timeout" : signal?.aborted ? "cancelled" : actual.status,
+              ...(value?.subagentContinuity ? { continuity: value.subagentContinuity } : {}),
+              ...(value?.failureKind === "session_continuity_lost" ? { failureKind: value.failureKind } : {}),
+              ...(actual.question ? { question: actual.question } : {}), usage: detachedUsage(value, collector.usage()) });
+            return value;
+          }, async (error) => {
+            await execution.managed.settled({ status: "failed", usage: detachedUsage(undefined, collector.usage()) });
+            throw error;
+          }) : underlying;
           // Never let an abandoned runner surface as an unhandled rejection.
           void Promise.resolve(running).catch(() => undefined);
           const settled = await Promise.race([running, deadline]);
-          if (settled === DEADLINE && instance) {
+          if (settled === DEADLINE && instance && !execution?.managed) {
             const pendingId = instance.id;
             // Keep the instance busy until the actual runner settles, even after the tool deadline.
             void Promise.resolve(running).then(
-              (late) => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled", answerHead: late?.text ?? "", ...(detached ? { usage: detachedUsage(late, collector.usage()) } : {}) }),
+              (late) => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled", ...(late?.failureKind === "session_continuity_lost" ? { failureKind: "session_continuity_lost" } : {}), answerHead: late?.text ?? "", ...(detached ? { usage: detachedUsage(late, collector.usage()) } : {}) }),
               () => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled", ...(detached ? { usage: detachedUsage(undefined, collector.usage()) } : {}) }),
             ).catch(() => undefined);
           }
@@ -557,14 +605,26 @@ export function createAgentTool(subagents, context = {}, continuation) {
           releaseSlot();
         }
 
+        if (instance && abandoned && !execution?.managed && instances.fence) {
+          try { await instances.fence(instance.id, { status: timedOut ? "timeout" : "cancelled" }, instance.activeTurn?.token ?? reservation); }
+          catch { recoveryUnavailable = true; } // The pre-existing active intent/lock stays held.
+        }
+        if (instance && abandoned && execution?.managed) {
+          await execution.managed.report({ status: timedOut ? "timeout" : "cancelled" });
+        }
         if (instance && !abandoned) {
           const state = classifyOutcome({ result, thrown, timedOut });
           const usage = result?.usage ?? {};
-          instance = await finishInstance(instance.id, { status: timedOut ? "timeout" : signal?.aborted ? "cancelled" : state.status,
+          const instanceOutcome = { ...(result?.subagentContinuity ? { continuity: result.subagentContinuity } : {}), ...(execution?.managed && continuation?.close && state.status === "ok" && !signal?.aborted ? { closeAfterSuccess: true } : {}), status: timedOut ? "timeout" : signal?.aborted ? "cancelled" : state.status,
+            ...(result?.failureKind === "session_continuity_lost" ? { failureKind: "session_continuity_lost" } : {}),
             answerHead: state.answer, ...(state.question ? { question: state.question } : {}), usage: detached ? detachedUsage(result, collector.usage()) : { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
               cacheRead: numberOrZero(usage.cache_read_tokens ?? usage.cacheRead ?? usage.cacheReadTokens), cacheWrite: numberOrZero(usage.cache_write_tokens ?? usage.cache_creation_tokens ?? usage.cacheWrite ?? usage.cacheWriteTokens),
-              costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total) } });
-          if (continuation?.close && state.status === "ok" && !signal?.aborted) instance = await instances.close(instance.id);
+              costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total) } };
+          if (execution?.managed) {
+            await execution.managed.report(instanceOutcome);
+            instance = await instances.get(instance.id);
+          } else instance = await finishInstance(instance.id, instanceOutcome);
+          if (!execution?.managed && continuation?.close && state.status === "ok" && !signal?.aborted) instance = context.recoveryAccess === undefined ? await instances.close(instance.id) : await instances.close(instance.id, context.recoveryAccess);
         }
         // The parent turn being cancelled is not a subagent outcome — surface it
         // as an aborted tool call the way every other built-in does. Close any
@@ -612,10 +672,11 @@ export function createAgentTool(subagents, context = {}, continuation) {
         // artifact references from (the bloat guard sets the same one), so a
         // spilled subagent result is recorded in tool history like any other.
         return {
+          ...(detached ? { answer: outcome.answer } : {}),
           content: [{ type: "text", text }],
           details: {
             tool: continuation ? "AgentSend" : "Agent",
-            subagent: { ...(detached ? { childStillBusy: abandoned, usage: detachedUsage(result, collector.usage()) } : {}), ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}), name: profile.name, callIndex, status: outcome.status, ...(outcome.question ? { question: outcome.question } : {}), toolCalls: collector.entries().length,
+            subagent: { ...(recoveryUnavailable ? { recoveryUnavailable: true } : {}), ...(detached ? { childStillBusy: abandoned, usage: detachedUsage(result, collector.usage()) } : {}), ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}), name: profile.name, callIndex, status: outcome.status, ...(outcome.question ? { question: outcome.question } : {}), toolCalls: collector.entries().length,
               ...(routeLabel ? { requested, ...(collector.attribution()?.executed === undefined ? {} : { executed: collector.attribution().executed }) } : {}),
             },
             ...(truncated ? { tool_payload_truncated: true } : {}),
@@ -754,11 +815,67 @@ function boundedRouteIndex(value) {
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
 }
 
+/** Format a host-supplied model reference the way `requested` does, or undefined when it names nothing. */
+function modelRouteString(ref) {
+  if (typeof ref === "string") return boundedRouteString(ref);
+  if (ref === null || typeof ref !== "object" || Array.isArray(ref)) return undefined;
+  const provider = typeof ref.provider === "string" ? ref.provider.trim() : "";
+  const model = typeof ref.model === "string" ? ref.model.trim() : "";
+  if (provider.length > 0 && model.length > 0) return boundedRouteString(`${provider}:${model}`);
+  return boundedRouteString(typeof ref.reference === "string" ? ref.reference : undefined);
+}
+
 function appendRouteEntry(entries, entry, routeState) {
   entries.push(entry);
   if (entries.length <= ROUTE_HISTORY_MAX_ENTRIES) return;
   entries.splice(1, entries.length - ROUTE_HISTORY_MAX_ENTRIES);
   routeState.truncated = true;
+}
+
+/** Drop all provider payloads before the private job callback, especially prompts/results.
+ * @param {*} event
+ * @param {(event: *) => void} [report]
+ * @param {{model?: string, effort?: string}} [launch] The route the child will
+ *   really run on: explicit pins completed with the inherited parent route.
+ *   Reported as the progress `requested` route so the job card badges while
+ *   running; the completed bookend's own attribution still wins.
+ */
+function reportDetachedProgress(event, report, launch = {}) {
+  if (!report) return;
+  if (event.phase === "agent_started") {
+    report({ type: "started", profile: event.subagent.name,
+      ...(event.subagent.label ? { label: event.subagent.label } : {}) });
+    if (launch.model !== undefined || launch.effort !== undefined) {
+      report({ type: "route", requested: launch });
+    }
+  } else if (event.phase === "agent_completed") {
+    const attribution = event.subagent?.attribution;
+    const routeKnown = attribution?.requested?.model !== undefined
+      || attribution?.requested?.effort !== undefined
+      || attribution?.executed?.model !== undefined
+      || attribution?.executed?.effort !== undefined
+      || attribution?.executed?.effectiveEffort !== undefined;
+    if (attribution !== undefined && routeKnown) {
+      const executedKnown = attribution.executed?.model !== undefined
+        || attribution.executed?.effort !== undefined
+        || attribution.executed?.effectiveEffort !== undefined;
+      report({ type: "route", requested: attribution.requested,
+        ...(executedKnown ? { executed: attribution.executed } : {}),
+        disposition: attribution.disposition });
+    }
+  } else if (event.phase === "started") {
+    const args = event.arguments;
+    // No prompt/message or unknown-object fallback. Redaction precedes retention in the host.
+    const summary = args && typeof args === "object" && !Array.isArray(args)
+      ? ["file_path", "path", "filePath", "pattern", "command", "query", "url", "description", "name", "executable"]
+        .map((key) => args[key]).find((value) => typeof value === "string" && value.trim()) : undefined;
+    report({ type: "tool_started", id: event.id,
+      toolName: event.name.slice(event.name.indexOf("▸") + 1),
+      ...(summary === undefined ? {} : { argsSummary: summary }) });
+  } else if (event.phase === "completed" && !event.name.endsWith("▸?")) {
+    report({ type: "tool_completed", id: event.id, failed: event.isError === true,
+      ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }) });
+  }
 }
 
 /**
@@ -776,9 +893,9 @@ function appendRouteEntry(entries, entry, routeState) {
  * answer body, so forwarding them would splice a subagent's prose into the
  * main agent's reply. Its text reaches the parent through the tool result.
  *
- * @param {{callId: string, profileName: string, callIndex: number, requested?: {model?: string, effort?: string}, label?: string, emit?: (event: *) => void, recordUsage?: (usage: {costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}) => void}} options
+ * @param {{callId: string, profileName: string, callIndex: number, requested?: {model?: string, effort?: string}, launch?: {model?: string, effort?: string}, label?: string, emit?: (event: *) => void, recordUsage?: (usage: {costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}) => void}} options
  */
-function createActivityCollector({ callId, profileName, callIndex, requested = {}, label, emit, recordUsage }) {
+function createActivityCollector({ callId, profileName, callIndex, requested = {}, launch = {}, label, emit, recordUsage }) {
   /** @type {Map<string, {name: string, args: unknown, startedAt: number, ms?: number}>} */
   const open = new Map();
   /** @type {Array<{name: string, args: unknown, ms?: number, isError: boolean}>} */
@@ -787,7 +904,11 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
   const usage = emptyUsage();
   const subagent = { id: callId, name: profileName, callIndex, ...(label === undefined ? {} : { label }) };
   let finalAttribution;
-  const routeState = { requested: { ...requested }, attempted: undefined, transitions: [], retries: [], truncated: false };
+  // `requested` is the explicit route only: call-time overrides and profile
+  // pins. `launch` completes it with the inherited parent route for display on
+  // the started bookend. The two stay separate so the completion-time
+  // disposition never verdicts an inherited route as a fallback.
+  const routeState = { requested: { ...requested }, launch: { ...launch }, attempted: undefined, transitions: [], retries: [], truncated: false };
 
   /** @param {*} event */
   const publish = (event) => {
@@ -805,11 +926,24 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
     usage: () => ({ ...usage }),
     /** Lifecycle bookends so the subagent is visible before its first tool call. */
     started() {
+      // Badge the row from the moment the delegation starts. `requested` here
+      // is the launch route, so consumers render it requested-only — never as
+      // a confirmed run — and the completed bookend replaces it. Unknown stays
+      // unknown: no launch route means no attribution, not a guessed one.
+      const launchAttribution = routeState.launch.model === undefined && routeState.launch.effort === undefined
+        ? undefined
+        : {
+            requested: { ...routeState.launch },
+            disposition: "unknown",
+            transitions: [],
+            retries: [],
+          };
       publish({
         phase: "agent_started",
         id: `agent:${callId}`,
         name: `Agent(${profileName})`,
         arguments: { name: profileName, ...(label === undefined ? {} : { description: label }) },
+        ...(launchAttribution === undefined ? {} : { subagent: { ...subagent, attribution: launchAttribution } }),
       });
     },
     /** @param {{status: string, durationMs: number, result?: *}} outcome */
@@ -817,12 +951,18 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
       // Before the bookend, so the run's own usage report can already include
       // it, and so an abandoned child still hands over whatever it spent.
       recordUsage?.(usage);
-      const executed = ["ok", "awaiting_reply"].includes(status) && result && typeof result === "object"
+      const reportedExecuted = ["ok", "awaiting_reply"].includes(status) && result && typeof result === "object"
         ? {
             ...(boundedRouteString(result.model) === undefined ? {} : { model: boundedRouteString(result.model) }),
             ...(boundedRouteString(result.effort, 64) === undefined ? {} : { effort: boundedRouteString(result.effort, 64) }),
             ...(boundedRouteString(result.effectiveEffort, 64) === undefined ? {} : { effectiveEffort: boundedRouteString(result.effectiveEffort, 64) }),
           }
+        : undefined;
+      // A successful result object is not itself route evidence. Keeping `{}`
+      // here makes consumers prefer an unknown executed route over a pinned
+      // requested route, so omit it unless at least one identifier was reported.
+      const executed = reportedExecuted !== undefined && Object.keys(reportedExecuted).length > 0
+        ? reportedExecuted
         : undefined;
       const requestedModel = routeState.requested.model;
       const fallback = routeState.transitions.length > 0

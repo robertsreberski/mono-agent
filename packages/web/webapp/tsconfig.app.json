@@ -12,6 +12,9 @@
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "bundler",
+    "paths": {
+      "@mono-agent/agent-contracts/provider-usage": ["../../agent-contracts/src/provider-usage.ts"]
+    },
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",
@@ -24,12 +27,13 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": [
-    "src",
-    "../src/mcp-app-document.ts",
-    "../src/effort-ladder.ts",
-    "../src/message-cost.ts",
-    "../src/push-preview.ts",
-    "../src/contracts.ts"
-  ]
+      "include": [
+        "src",
+        "../src/mcp-app-document.ts",
+        "../src/effort-ladder.ts",
+        "../src/message-cost.ts",
+        "../src/push-preview.ts",
+        "../src/contracts.ts",
+        "../../agent-contracts/src/provider-usage.ts"
+      ]
 }

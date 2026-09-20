@@ -194,3 +194,27 @@ export MONO_AGENT_PROVIDERS_JSON='{"ollama": {"type": "ollama"}, "piAuthPath": "
 ## Prompt-cache diagnostics
 
 `providers.piNative.promptCacheDiagnostics` (default `false`; env `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`) enables metadata-only request fingerprints in existing run artifacts. It never emits prompt text, tool arguments, raw cache keys, endpoints or credentials. See [Prompt-cache measurement](/runtime/prompt-cache-measurement/) for the artifact reader.
+
+### Anthropic cache retention
+
+`providers.piNative.cacheRetention` defaults to `"long"` (one hour); set `"short"`
+(five minutes) to opt out. Nonempty `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON,
+then the `"long"` default. Both the default and explicit values override Pi's
+separate ambient `PI_CACHE_RETENTION`, including explicit `"short"` when Pi's
+environment requests long retention.
+The runtime forwards retention only to Anthropic Messages, including child
+routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
+unsupported models receive no one-hour TTL.
+
+One-hour writes cost **2× normal input**, reads **0.1×**, versus **1.25×** for
+short-cache writes. Model support is required, and no cache hit is guaranteed.
+Metadata-only diagnostics record the requested setting and observed cache TTL;
+an ephemeral Anthropic cache control without an explicit TTL denotes five
+minutes. Evaluate the measurement gates before separately authorizing spending.
+
+The default benefits agents whose turns arrive 5–60 minutes apart. In a measured
+maintainer-console workload, 72% of Anthropic cache writes were 5–60-minute
+re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
+This is workload-specific evidence, not a billing guarantee. Agents that only
+chain turns within five minutes pay slightly more with long retention and can
+set `"short"` instead.

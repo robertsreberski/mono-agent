@@ -1,3 +1,6 @@
+import { isSubagentVerificationTarget, isSubagentVerificationObservation, type SubagentVerificationTarget, type SubagentVerificationObservation } from "./subagent-verification-observer.js";
+import { isSubagentCommandReceipts, type SubagentCommandReceipts } from "./subagent-command-receipts.js";
+import { hasSubagentObligation, hasUnresolvedSubagentOwnership, isSubagentExecutionOwnership, type SubagentExecutionOwnership } from "./subagent-execution-ownership.js";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
 import {
@@ -16,6 +19,8 @@ import { isDeepStrictEqual } from "node:util";
 import {
   isProcessJobErrorCode,
   isProcessJobState,
+  isProcessJobSubagentProgress,
+  type ProcessJobSubagentProgress,
   processJobPublicError,
   type ProcessJobErrorCode,
   type ProcessJobProjection,
@@ -87,6 +92,11 @@ export interface DurableProcessJobRecord {
   readonly kind?: "internal";
   readonly instanceId?: string;
   childStillBusy?: boolean;
+  subagentOwnership?: SubagentExecutionOwnership;
+  subagentCommandReceipts?: SubagentCommandReceipts;
+  subagentVerification?: SubagentVerificationTarget;
+  subagentObservation?: SubagentVerificationObservation;
+  subagentProgress?: ProcessJobSubagentProgress;
   subagentQuestion?: { readonly question: string; readonly options?: string[] };
   state: ProcessJobState;
   readonly summary: string;
@@ -549,7 +559,7 @@ export async function openProcessJobStore(
             || left.jobId.localeCompare(right.jobId));
         // A pending wake is still live state. Retiring its record or artifacts
         // would erase the durable delivery obligation or evidence it references.
-        const retireable = terminal.filter((record) => record.wake.state !== "pending");
+        const retireable = terminal.filter((record) => record.wake.state !== "pending" && !hasSubagentObligation(record));
         const cutoff = now.getTime() - settings.retention.maxAgeMs;
         const remove = new Set(
           retireable.filter((record) => terminalTime(record) < cutoff).map((record) => record.jobId),
@@ -568,7 +578,7 @@ export async function openProcessJobStore(
         for (const jobId of remove) artifactBytes -= artifactBytesByJob.get(jobId) ?? 0;
         for (const record of artifactRecords) {
           if (artifactBytes <= settings.retention.artifactMaxBytes) break;
-          if (record.wake.state === "pending") continue;
+          if (record.wake.state === "pending" || hasSubagentObligation(record)) continue;
           artifactBytes -= artifactBytesByJob.get(record.jobId) ?? 0;
           artifactRemovals.add(record.jobId);
           const mutable = draft.get(record.jobId);
@@ -713,7 +723,7 @@ export function projectProcessJob(record: DurableProcessJobRecord): ProcessJobPr
   return {
     schema: "mono-agent.process-job-projection.v1",
     jobId: record.jobId,
-    ...(record.kind === "internal" ? { tool: record.tool as "Agent" | "AgentSend", kind: record.kind, instanceId: record.instanceId!, childStillBusy: record.childStillBusy === true, ...(record.subagentQuestion ? { subagentQuestion: record.subagentQuestion } : {}) } : { tool: record.tool as "Exec" | "Bash" }),
+    ...(record.kind === "internal" ? { tool: record.tool as "Agent" | "AgentSend", kind: record.kind, instanceId: record.instanceId!, childStillBusy: hasUnresolvedSubagentOwnership(record), ...(record.subagentProgress ? { subagentProgress: record.subagentProgress } : {}), ...(record.subagentQuestion ? { subagentQuestion: record.subagentQuestion } : {}) } : { tool: record.tool as "Exec" | "Bash" }),
     state: record.state,
     summary: record.summary,
     origin: {
@@ -1127,7 +1137,7 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
   if (!isRecord(value)
     || !hasExactKeys(value, [
       "schemaVersion", "generation", "jobId", "tool", "state", "summary", "agentIncarnation",
-      ...["kind", "instanceId", "childStillBusy", "subagentQuestion"].filter((key) => Object.prototype.hasOwnProperty.call(value, key)),
+      ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "subagentProgress", "subagentOwnership", "subagentCommandReceipts", "subagentVerification", "subagentObservation"].filter((key) => Object.prototype.hasOwnProperty.call(value, key)),
       ...(Object.prototype.hasOwnProperty.call(value, "processIncarnation") ? ["processIncarnation"] : []),
       "pid", "pgid", "sandboxSettingsPath", "argvSummary", "cwd", "envKeys", "origin", "chainDepth",
       ...(Object.prototype.hasOwnProperty.call(value, "wakeOnCompletion") ? ["wakeOnCompletion"] : []),
@@ -1140,9 +1150,14 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
     || !isJobId(value.jobId)
     || (value.kind === "internal" ? !["Agent", "AgentSend"].includes(String(value.tool))
       || typeof value.instanceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(value.instanceId)
+      || (value.subagentVerification !== undefined && (value.kind !== "internal" || !value.subagentOwnership || !isSubagentVerificationTarget(value.subagentVerification)))
+      || (value.subagentObservation !== undefined && (value.kind !== "internal" || !value.subagentOwnership || !isSubagentVerificationObservation(value.subagentObservation)))
+      || (value.subagentCommandReceipts !== undefined && (value.kind !== "internal" || value.subagentOwnership === undefined || !isSubagentCommandReceipts(value.subagentCommandReceipts)))
+    || (value.subagentOwnership !== undefined && !isSubagentExecutionOwnership(value.subagentOwnership))
+      || (value.subagentProgress !== undefined && !isProcessJobSubagentProgress(value.subagentProgress))
       || typeof value.childStillBusy !== "boolean" || (value.subagentQuestion !== undefined && !validSubagentJobQuestion(value.subagentQuestion)) || value.pid !== null || value.pgid !== null
       || value.processIncarnation !== undefined || value.sandboxSettingsPath !== null
-      : value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined
+      : value.subagentOwnership !== undefined || value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined || value.subagentProgress !== undefined
         || (value.tool !== "Exec" && value.tool !== "Bash"))
     || !isProcessJobState(value.state)
     || !boundedString(value.summary, 8_000)
@@ -1588,4 +1603,16 @@ function validSubagentJobQuestion(value: unknown): boolean {
     && (record.options === undefined || (Array.isArray(record.options) && record.options.length >= 2 && record.options.length <= 5
       && record.options.every((option) => typeof option === "string" && option.trim().length > 0 && option.length <= 200)
       && new Set(record.options).size === record.options.length));
+}
+
+/** Optional command facts must never crowd mandatory ownership out of a record. */
+export function boundSubagentCommandReceipts(record: DurableProcessJobRecord): void {
+  const receipts = record.subagentCommandReceipts;
+  if (!receipts && !record.subagentObservation) return;
+  const bytes = (): number => Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`);
+  while (receipts?.commands.length && bytes() > MAX_RECORD_BYTES) {
+    receipts.commands.shift(); receipts.omitted = Math.min(Number.MAX_SAFE_INTEGER, receipts.omitted + 1);
+  }
+  if (bytes() > MAX_RECORD_BYTES) delete record.subagentCommandReceipts;
+  if (bytes() > MAX_RECORD_BYTES) delete record.subagentObservation;
 }

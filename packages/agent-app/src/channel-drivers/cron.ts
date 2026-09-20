@@ -2,8 +2,10 @@ import type {
   CronAdapterConfig,
   CronAdapterOptions,
   CronAdapterStartResult,
+  CronFiringIdentity,
   CronJobConfig,
   CronJobResult,
+  CronPreflightRecord,
 } from "@mono-agent/cron-adapter";
 import type { ChannelConfigViewSection, NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 
@@ -11,6 +13,7 @@ import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
 import type { ChannelDriver, MonoAgentAppLogger } from "../channels.js";
+import { runCronPreflight } from "../cron-preflight.js";
 import type { NotifyDeliveryResult } from "../proactive-notify.js";
 import {
   inspectCronControlStore,
@@ -171,6 +174,23 @@ export function createCronChannelDriver(
           });
       const adapterModule = await loadCronModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startCronAdapter;
+      // The gate's argv and bound come from the job, so the adapter only needs
+      // the executor. A job without `preflight` never reaches this callback.
+      const runPreflight = async (
+        firing: CronFiringIdentity,
+        abortSignal: AbortSignal,
+      ): Promise<Awaited<ReturnType<typeof runCronPreflight>>> => {
+        const job = jobById.get(firing.jobId);
+        if (job?.preflight === undefined) return { outcome: "run" };
+        return await runCronPreflight({
+          argv: job.preflight,
+          firing,
+          cwd: input.cwd,
+          timeoutMs: job.preflightTimeoutMs ?? adapterModule.DEFAULT_CRON_PREFLIGHT_TIMEOUT_MS,
+          abortSignal,
+          ...(input.logger === undefined ? {} : { logger: input.logger }),
+        });
+      };
       const adapter = adapterFactory({
         responder: input.responder,
         overlap: "skip",
@@ -187,17 +207,32 @@ export function createCronChannelDriver(
           ...(job.notifyConversationId === undefined ? {} : { notifyConversationId: job.notifyConversationId }),
           ...(job.model === undefined ? {} : { model: job.model }),
           ...(job.effort === undefined ? {} : { effort: job.effort }),
+          ...(job.preflight === undefined ? {} : { preflight: job.preflight }),
+          ...(job.preflightTimeoutMs === undefined ? {} : { preflightTimeoutMs: job.preflightTimeoutMs }),
         })),
         ...(store === undefined ? {} : {
           admitFiring: (firing) => store.allocateFiring(firing),
           onRunStarted: (firing, startedAt) => store.markStarted(firing, startedAt),
           onEvent: (firing, event) => store.appendEvent(firing, event),
         }),
+        preflight: runPreflight,
+        onPreflight: (firing, record) => {
+          // Durable before the result lands, so the record survives the
+          // terminal projection (PR B reads it back).
+          store?.recordPreflight(firing, record);
+          logCronPreflightRecord(input.logger, firing, record);
+        },
         onDegraded: reportDegraded,
         ...(resolveNotifyFallbackConversationId === undefined ? {} : { resolveNotifyFallbackConversationId }),
         onResult: async (result) => {
           store?.recordResult(result);
-          const level = result.kind === "failed" ? "error" : result.kind === "skipped" ? "warn" : "info";
+          // A gate skip is a deliberate no-work outcome, not a conflict: only
+          // an overlap skip stays at warn.
+          const level = result.kind === "failed"
+            ? "error"
+            : result.kind === "skipped" && result.reason === "overlap"
+              ? "warn"
+              : "info";
           const replyPartOutcomes = "replyPartOutcomes" in result ? result.replyPartOutcomes : undefined;
           const loggedResult = { ...result } as Record<string, unknown>;
           delete loggedResult.replyPartOutcomes;
@@ -258,6 +293,36 @@ export function createCronChannelDriver(
     },
   };
   return driver;
+}
+
+/**
+ * Log what happened to one attempted gate. A skip already logs at info inside
+ * the adapter, and a run needs no line; a gate that failed open is a warn
+ * because the operator asked for a deterministic decision it did not get.
+ */
+function logCronPreflightRecord(
+  logger: MonoAgentAppLogger | undefined,
+  firing: CronFiringIdentity,
+  record: CronPreflightRecord,
+): void {
+  const context = {
+    jobId: firing.jobId,
+    runId: firing.runId,
+    outcome: record.outcome,
+    ...(record.code === undefined ? {} : { code: record.code }),
+    ...(record.reason === undefined ? {} : { reason: record.reason }),
+  };
+  if (record.outcome === "error" || record.outcome === "timeout") {
+    logger?.warn?.("Cron preflight gate failed open; the job ran with its plain prompt.", context);
+    return;
+  }
+  if (record.outcome === "cancelled") {
+    logger?.warn?.("Cron preflight gate was cancelled before the responder started.", context);
+    return;
+  }
+  if (record.outcome === "overridden") {
+    logger?.info?.("Cron preflight gate declined a manual firing; the manual run proceeds with its input.", context);
+  }
 }
 
 async function deliverCronModelExhaustionFailureNotice(input: {

@@ -114,6 +114,24 @@ coordinated durable epoch; the next turn reseeds from canonical history. Fresh
 stateless Pi calls use a private in-memory repository so their stable attribution
 id cannot collide with or delete the primary's transcript.
 
+### Tool exposure versus admission
+
+Tool definitions follow the configured authority profile, not the current turn's
+controllers. User, process-job wake and cron turns keep the same
+provider-visible definitions within an unchanged profile; persistent children
+have their own profile and retain structural recursion/MCP exclusions.
+Unavailable operations remain visible but refuse before execution. Current
+availability/reasons, lineage budgets, command ceilings and
+persistent-child/recovery capabilities appear only in the latest non-authorizing
+`host_turn_context`, never in tool schemas or canonical history. Children use
+the same envelope formatter. No previous controller or tool snapshot is retained.
+
+Builtins, skill names, MCP servers and source tool names use deterministic
+code-unit ordering, including before MCP collision naming. Real configuration,
+model, output-schema or skill-catalog changes can still change definitions, as
+can third-party schema changes and explicitly warned infrastructure discovery
+failures. Stable definitions do not guarantee a provider cache hit.
+
 ## Run Lifecycle
 
 **Diagram summary:** The host calls `run()`, the runtime lazily loads one bridge,
@@ -292,11 +310,14 @@ provider exposes queue-after-turn), not durability/cost:
 
 The pi runtime is built on pi-agent-core's native `AgentHarness` (the hand-rolled
 bridge was removed once native reached parity); it owns the session and
-pi-ai-managed retry. `AgentHarness` supports native checkpoint and overflow compaction; mono-agent
-disables that path and drives its own guarded policy through a one-shot `session_before_compact` hook: before
-each turn it compares the full request estimate with an adaptive trigger, and if
-a turn still overflows it retries exactly once only after a preview verifies a
-positive reduction. Runs report `context_compaction_applied` as `true` (a
+pi-ai-managed retry. Mono-agent disables Pi's native overflow recovery but arms
+native checkpoint compaction for the main prompt. Its guarded
+`session_before_compact` hook enforces policy before each turn and between
+completed model/tool rounds. Mid-run summaries are separate paid provider
+requests inside the same agent run; savings and growth guards limit attempts.
+If a turn still overflows, bridge-owned recovery re-prompts at most once after a
+preview verifies positive reduction. Fresh compaction suppresses recovery;
+meaningful transcript growth after a mid-run cut restores eligibility. Runs report `context_compaction_applied` as `true` (a
 compaction fired), `false` (enabled but not needed), or `null` (disabled via
 `runtime.compaction.enabled: false`).
 

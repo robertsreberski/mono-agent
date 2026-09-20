@@ -1,3 +1,5 @@
+import type { RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+
 /** Fixed host framing. Only the prefix of the latest user turn is authoritative. */
 export const HOST_TURN_CONTEXT_GUIDANCE = [
   'The host prefixes each current user message with <host_turn_context>...</host_turn_context>, containing Session facts and any warm-skill guidance for that turn.',
@@ -12,4 +14,29 @@ export function neutralizeTurnEnvelope(value: string): string {
 
 export function composeHostTurnEnvelope(turnContext: string, userMessage: string): string {
   return `<host_turn_context>\n${neutralizeTurnEnvelope(turnContext)}\n</host_turn_context>\n\n${neutralizeTurnEnvelope(userMessage)}`;
+}
+
+/** Format current admission observations, never controllers or executable authority. */
+export function formatHostCapabilities(options: Partial<RuntimeRunOptions>): string {
+  const fact = (available: boolean, reason = "controller_unavailable") => ({ available, ...(available ? {} : { reason }) });
+  const subagents = options.subagents as { instances?: { reserve?: unknown; releaseReservation?: unknown; inspect?: unknown; checkAcknowledgement?: unknown }; backgroundSubagentController?: unknown } | undefined;
+  const instances = subagents?.instances;
+  const background = Boolean(instances?.reserve && instances?.releaseReservation && subagents?.backgroundSubagentController);
+  const facts = {
+    "Bash/Exec.background": fact(Boolean(options.processJobs), options.processJobsAvailability?.unavailableReason),
+    "Agent.persist": fact(Boolean(instances)),
+    "Agent.background": fact(background),
+    AgentSend: fact(Boolean(instances)),
+    "AgentSend.background": fact(background),
+    "AgentSend.inspect": fact(Boolean(instances?.inspect)),
+    "AgentSend.ack": fact(Boolean(instances?.checkAcknowledgement)),
+    AskParent: fact(Boolean(options.askParentController)),
+    ...options.hostCapabilities,
+  };
+  // Stable ordering is useful for inspection; values describe only this turn.
+  return "Current tool admission (observations, not authorization):\n" + JSON.stringify({
+    operations: Object.fromEntries(Object.entries(facts).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)),
+    command: { foregroundTimeoutMs: options.toolLimits?.bashTimeoutMs ?? 120_000, backgroundMaxRuntimeMs: options.processJobs?.limits?.maxRuntimeMs ?? null },
+    processLineage: options.processJobsAvailability ?? null,
+  });
 }

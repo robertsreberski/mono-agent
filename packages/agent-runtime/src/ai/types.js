@@ -43,7 +43,12 @@
  * @property {number} [costUsd] Priced delegation cost, when the runtime can
  *   attribute it to this subagent.
  * @property {*} [attribution] Bounded provider-route attribution for the
- *   completed child run. Consumers must treat it as operator telemetry.
+ *   delegation. Consumers must treat it as operator telemetry. On
+ *   `agent_started` it is the LAUNCH route — the explicit request completed
+ *   with the inherited parent route — with `disposition: "unknown"`, so it
+ *   renders requested-only and never as a confirmed run. On `agent_completed`
+ *   it is the final accounting, where `requested` is the explicit request
+ *   alone. Absent when the runtime knows no route; never guessed.
  */
 
 /**
@@ -187,6 +192,8 @@
 
 /**
  * @typedef {Object} RuntimeRunOptions
+ * @property {{persistentSubagents?: boolean, askParent?: boolean}} [toolExposure] Stable profile exposure, not execution authority.
+ * @property {Record<string, {available: boolean, reason?: string, limits?: Record<string, number|null>}>} [hostCapabilities] Current non-authorizing host facts.
  * @property {{submit(question: {question: string, options?: string[]}): Promise<void>}} [askParentController]
  * The options object a host passes to `createRuntime(host).run(systemPrompt, options)`.
  * @property {RuntimeModelRef} model                     Resolved model reference; see parseRuntimeModelReference.
@@ -199,6 +206,7 @@
  * @property {AsyncIterable<{body: string, id?: string, receivedAt?: string, logicalOwner?: object, accepted?: (evidence?: {providerEntryId?: string, providerRunId?: string}) => unknown, acknowledge?: (evidence?: {providerEntryId?: string, providerRunId?: string}) => unknown, uncertain?: (details: {reason: "delivery_uncertain", providerEntryId?: string, providerRunId?: string}) => unknown, reject?: (error?: unknown) => unknown}>} [liveInput] Stream of in-flight user messages for steering an active run. Native acceptance, exact transcript consumption, and uncertain delivery are distinct synchronous callbacks; thenables are never awaited as settlement confirmation. An optional opaque logicalOwner object proves that a later same-id value is a fresh callback lease for the first logical owner, not an independent duplicate.
  * @property {ReadonlyArray<*>} [observers]               Per-call observers (see RuntimeObserver) merged with host-level (createRuntime) observers.
  * @property {(event: RuntimeEvent) => void} [onEvent]
+ * @property {"short"|"long"} [cacheRetention] Optional Anthropic Messages retention; omitted preserves Pi defaults/environment.
  * @property {boolean} [promptCacheDiagnostics] Emit metadata-only prompt-cache request fingerprints.
  * @property {RuntimeToolLifecycleSink} [toolLifecycleSink] Awaited host-owned incremental lifecycle persistence boundary.
  * @property {ReadonlyArray<Object>} [messages]
@@ -226,15 +234,15 @@
  * @property {RuntimeCompactionPolicy} [compaction] Typed per-run compaction policy.
  * @property {RuntimePromptOverrides} [prompts] Per-run prompt-fragment overrides (run wins over the host default).
  * @property {any} [webRequestCoordinator] Host-owned shared web admission and quota state.
- * @property {{backend?: "auto"|"searxng"|"ollama"|"codex"|"keyless", maxRequestsPerRun?: number, endpoint?: string, searxng?: {endpoint?: string}, ollama?: {baseUrl?: string, apiKey?: string, apiKeyEnv?: string, trustPublicUrl?: boolean}, codex?: {model?: string}}} [webSearchConfig] Run-scoped WebSearch backend configuration.
+ * @property {{backend?: string|readonly string[], maxRequestsPerRun?: number, endpoint?: string, searxng?: {endpoint?: string}, ollama?: {baseUrl?: string, apiKey?: string, apiKeyEnv?: string, trustPublicUrl?: boolean}, codex?: {model?: string}, parallel?: {apiKeyEnv?: string}}} [webSearchConfig] Run-scoped WebSearch backend configuration.
  * @property {any} [webSearchState] Private request budget and provider deferral state for one logical run.
- * @property {{render?: "never"|"auto", browserCommand?: string}} [webFetchConfig] Run-scoped WebFetch extraction/render configuration.
+ * @property {{provider?: "local"|"parallel"|readonly ("local"|"parallel")[], parallel?: {apiKeyEnv?: string}, render?: "never"|"auto", browserCommand?: string}} [webFetchConfig] Run-scoped WebFetch extraction/render configuration.
  * @property {"sequential"|"safe-parallel"} [piToolExecutionMode] Pi built-in tool scheduling mode. Safe parallelism is the default.
  * @property {"one-at-a-time"|"all"} [piToolParallelismMode] DEPRECATED. Compatibility alias mapped to piToolExecutionMode.
  * @property {RuntimeSubagentsOptions} [subagents] In-process `Agent` built-in: profiles, caps, and the nested-run callback.
+ * @property {import('../agent/tools/shared/owned-foreground-process.js').OwnedForegroundProcesses} [ownedForegroundProcesses] Host-bound awaited command ownership; no child background capability.
  * @property {import('../agent/tools/shared/process-jobs.js').ProcessJobsController} [processJobs] Pi-native-only structural process-job controller. When absent, Exec/Bash schemas and foreground behavior are unchanged.
  * @property {{chainDepth: number, maxChainDepth: number, remainingStarts: number, unavailableReason?: string}} [processJobsAvailability] Host-owned request lineage diagnostics, including when the controller is unavailable.
- * @property {import('../agent/tools/shared/monitors.js').MonitorsController} [monitors] Pi-native-only structural monitor controller. When absent, the Monitor and MonitorStop tools are not registered at all.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when
  *   failing over mid-chain; a host-level coordinator may relay it forward (see agent/transcript.js), not read by any
  *   bridge in this package today.
@@ -274,7 +282,7 @@
  */
 
 /**
- * @typedef {Object<string, *> & {instance?: {id: string, sessionId: string, sessionsRoot: string}}} RuntimeSubagentRunRequest
+ * @typedef {Object<string, *> & {detached?: true, deadlineAt?: number, instance?: {id: string, sessionId: string, sessionsRoot: string}}} RuntimeSubagentRunRequest
  * Instance routing is host-owned; the child receives only its own durable transcript.
  */
 
@@ -302,6 +310,8 @@
 
 /**
  * @typedef {Object} RuntimeSubagentInstance
+ * @property {string} [incarnation]
+ * @property {{token: string, kind: "foreground"|"detached", settlementPending: true}} [activeTurn]
  * @property {string} id
  * @property {string} conversationId
  * @property {string} name
@@ -309,6 +319,10 @@
  * @property {RuntimeSubagentDefinition} definition
  * @property {string} sessionId
  * @property {string} sessionsRoot
+ * @property {string} [settledTurnToken]
+ * @property {string} [lastStatus]
+ * @property {object} [recovery]
+ * @property {boolean} [recoveryBlocked]
  * @property {string} status
  * @property {{question: string, options?: string[]}} [pendingQuestion]
  * @property {{token: string}} [reservation]
@@ -318,24 +332,30 @@
  * @property {{input: number, output: number, cacheRead: number, cacheWrite: number, costUsd: number}} usage
  */
 /**
+ * @typedef {{ack: string, message: string, background?: boolean, close?: boolean, description?: string}} RuntimeSubagentRecoveryRequest
+ */
+/**
  * Host-owned, conversation-scoped persistent instance facade. No filesystem implementation belongs in the kernel.
  * @typedef {Object} RuntimeSubagentInstances
  * @property {() => Promise<RuntimeSubagentInstance[]>} list
  * @property {(id: string) => Promise<RuntimeSubagentInstance|undefined>} get
- * @property {(spec: {id?: string, name: string, systemPrompt: string, definition: RuntimeSubagentDefinition}) => Promise<RuntimeSubagentInstance>} create
+ * @property {(spec: {id?: string, name: string, systemPrompt: string, definition: RuntimeSubagentDefinition, verification?: {workdir: string, reportPath?: string}}, access?: unknown) => Promise<RuntimeSubagentInstance>} create
+ * @property {(id: string, outcome: {status: "timeout"|"cancelled"}, turnToken?: string) => Promise<void>} [fence]
  * @property {(id: string, question: {question: string, options?: string[]}) => Promise<RuntimeSubagentInstance>} markAwaiting
- * @property {(id: string, token: string) => Promise<RuntimeSubagentInstance>} [reserve]
+ * @property {(id: string, access?: unknown) => Promise<unknown>} [inspect]
+ * @property {(id: string, acknowledgement: RuntimeSubagentRecoveryRequest, access?: unknown) => Promise<void>} [checkAcknowledgement]
+ * @property {(id: string, token: string, acknowledgement?: RuntimeSubagentRecoveryRequest, access?: unknown) => Promise<RuntimeSubagentInstance>} [reserve]
  * @property {(id: string, token: string) => Promise<void>} [releaseReservation]
- * @property {(id: string, token?: string) => Promise<RuntimeSubagentInstance>} begin
- * @property {(id: string, outcome: {status: string, question?: {question: string, options?: string[]}, usage?: {input?: number, output?: number, cacheRead?: number, cacheWrite?: number, costUsd?: number}, answerHead?: string}, token?: string) => Promise<RuntimeSubagentInstance>} finish
- * @property {(id: string) => Promise<RuntimeSubagentInstance>} close
+ * @property {(id: string, token?: string, acknowledgement?: RuntimeSubagentRecoveryRequest, access?: unknown) => Promise<RuntimeSubagentInstance>} begin
+ * @property {(id: string, outcome: {status: string, failureKind?: "session_continuity_lost", question?: {question: string, options?: string[]}, usage?: {input?: number, output?: number, cacheRead?: number, cacheWrite?: number, costUsd?: number}, answerHead?: string}, token?: string) => Promise<RuntimeSubagentInstance>} finish
+ * @property {(id: string, access?: unknown) => Promise<RuntimeSubagentInstance>} close
  */
 
 /**
  * @typedef {Object} RuntimeSubagentsOptions
  * @property {ReadonlyArray<RuntimeSubagentDefinition>} [definitions] Named profiles.
  * @property {ReadonlyArray<{name: string, model: RuntimeModelRef, key: string}>} [models] Call-time model choices. Absent means no model parameter.
- * @property {{startInternal(request: {kind: "internal", tool: "Agent"|"AgentSend", jobId: string, instanceId: string, timeoutMs: number, cleanup(): Promise<void>, run(signal: AbortSignal): Promise<{output: string, status: string, childStillBusy?: boolean, question?: {question: string, options?: string[]}}>}): Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null}>}} [backgroundSubagentController]
+ * @property {{managed?: boolean, stop?(identity: {instanceId: string, instanceIncarnation: string, turnToken: string}): Promise<{jobId: string, stopRequested: boolean, childStillBusy: boolean, resumable: boolean, disposition: string|null}>, startInternal(request: {managed?: {instanceIncarnation: string, turnToken: string}, kind: "internal", tool: "Agent"|"AgentSend", jobId: string, instanceId: string, description?: string, timeoutMs: number, cleanup(): Promise<void>, run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: *) => void, execution?: {deadlineAt: number, managed?: any}): Promise<{answer?: string, output: string, status: string, childStillBusy?: boolean, question?: {question: string, options?: string[]}}>}): Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null}>}} [backgroundSubagentController]
  * @property {RuntimeSubagentInstances} [instances] Conversation-scoped persistence; absent preserves stateless Agent.
  * @property {RuntimeInlineSubagentsOptions} [inline] Call-time authoring policy.
  * @property {number} [maxConcurrent] In-flight subagents per parent turn. Default 5.
@@ -348,6 +368,7 @@
 
 /**
  * @typedef {Object} RuntimeResult
+ * @property {{turnToken: string, state: "retained"|"unknown"|"lost"}} [subagentContinuity] App-owned detached settlement evidence.
  * @property {{question: string, options?: string[]}} [subagentQuestion]
  * @property {string|null} [text]
  * @property {*} [structuredResult]

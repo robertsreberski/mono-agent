@@ -132,11 +132,12 @@ export async function buildTurnTools(runState, {
       nodeReplController,
       webController,
       processJobsController: options.processJobs,
+      ownedForegroundProcessController: options.ownedForegroundProcesses?.forAttempt(),
       processJobsAvailability: options.processJobsAvailability,
-      monitorsController: options.monitors,
       toolExecutionMode,
       subagents: options.subagents,
       askParentController: options.askParentController,
+      toolExposure: options.toolExposure,
       // The child inherits the parent's route and workspace unless its profile
       // pins a model; the tool closure reads these to build each child request.
       subagentContext: {
@@ -290,10 +291,18 @@ export async function buildTurnHarness(runState, {
     thinkingLevel,
     systemPrompt: appendStructuredOutputInstruction(systemPrompt, outputSchema, options.prompts),
     tools,
-    streamOptions: { transport, maxRetries, maxRetryDelayMs },
+    streamOptions: { transport, maxRetries, maxRetryDelayMs,
+      ...(model.api === "anthropic-messages" && options.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
+    },
+    // Harness retries are separate from pi-ai transport retries. A health probe
+    // must not issue another request even for a retryable terminal error.
+    ...(Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0
+      ? { retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 } }
+      : {}),
     steeringMode,
     followUpMode: steeringMode,
     promptCacheDiagnostics: options.promptCacheDiagnostics,
+    cacheRetention: options.cacheRetention,
     onEvent: options.onEvent,
   });
   // MCP `CallToolResult.isError` is a successful protocol response, so pi's

@@ -1,5 +1,6 @@
-import { MessageModelMarkers } from "./ModelMarkers";
-import { MessageProjectMarkers } from "./project/ProjectIdentity";
+import { ModelMarkers } from "./ModelMarkers";
+import { isConversationMarker } from "../conversation-markers";
+import { ProjectMarkers } from "./project/ProjectIdentity";
 import { isSilentCronData } from "../cron-visibility";
 import {
   ActionBarPrimitive,
@@ -29,7 +30,6 @@ import { useDocumentVisible } from "../document-visibility";
 import type {
   AskAnswer,
   AskSnapshot,
-  CachedMonitorProjection,
   CronReplyContextPart as CronReplyContextValue,
   ToolCallArtifact,
   RunAttribution as RunAttributionValue,
@@ -947,6 +947,7 @@ export function CronRunPart({ data }: DataMessagePartProps) {
     || status === "failed"
     || status === "cancelled"
     || status === "skipped_overlap"
+    || status === "skipped_gate"
     || status === "dropped";
   const replyState = sourceId !== undefined && jobId !== undefined
     ? cronReplyState(sourceId, jobId, runId)
@@ -1194,76 +1195,6 @@ function InlineSteerPart({ data }: DataMessagePartProps) {
   );
 }
 
-const monitorStateLabel = (state: string): string => state.replaceAll("_", " ");
-
-const monitorActivityStatus = (monitors: readonly CachedMonitorProjection[]): ActivityStatus => {
-  if (monitors.some((monitor) => monitor.state === "starting" || monitor.state === "running")) return "running";
-  return monitors.some((monitor) => monitor.lastError !== null) ? "failed" : "complete";
-};
-
-/** One compact row for every Monitor wake applied to this assistant run. */
-function MonitorActivityPart({ data }: DataMessagePartProps) {
-  const payload = asRecord(data);
-  const entries = Array.isArray(payload.monitors)
-    ? payload.monitors.flatMap((raw) => {
-        const entry = asRecord(raw);
-        const projection = asRecord(entry.projection) as unknown as CachedMonitorProjection;
-        const deliveryKeys = Array.isArray(entry.deliveryKeys)
-          ? entry.deliveryKeys.filter((key): key is string => typeof key === "string")
-          : [];
-        return (projection.schema === "mono-agent.monitor-projection.v1" || projection.schema === "mono-agent.monitor-projection.v2")
-          ? [{ projection, updateCount: deliveryKeys.length }]
-          : [];
-      })
-    : [];
-  const legacyUpdateCount = typeof payload.legacyUpdateCount === "number"
-    && Number.isSafeInteger(payload.legacyUpdateCount)
-    && payload.legacyUpdateCount > 0
-    ? payload.legacyUpdateCount
-    : 0;
-  const updateCount = entries.reduce((total, entry) => total + entry.updateCount, 0) + legacyUpdateCount;
-  if (updateCount === 0) return null;
-  const projections = entries.map((entry) => entry.projection);
-  const summary = projections.length === 1
-    ? projections[0]?.description || monitorStateLabel(projections[0]?.state ?? "updated")
-    : projections.length > 1 ? `${String(projections.length)} monitors` : "Historical monitor activity";
-  return (
-    <ActivityRow
-      status={monitorActivityStatus(projections)}
-      label={updateCount === 1 ? "Monitor update" : `Monitor updates ×${String(updateCount)}`}
-      summary={summary}
-    >
-      {entries.length === 0 ? (
-        <p className="monitor-activity-legacy">Details were not retained for these earlier Monitor updates.</p>
-      ) : (
-        <div className="activity-steps">
-          {entries.map(({ projection, updateCount: count }) => (
-            <ActivityStep
-              key={projection.monitorId}
-              toolName={projection.description || "Monitor"}
-              summary={`${String(count)} ${count === 1 ? "update" : "updates"} · ${monitorStateLabel(projection.state)}`}
-              failed={projection.lastError === null ? undefined : monitorStateLabel(projection.lastError.code)}
-            >
-              <dl className="monitor-activity-facts">
-                <div><dt>State</dt><dd>{monitorStateLabel(projection.state)}</dd></div>
-                <div><dt>Observed</dt><dd>{projection.counters.linesObserved}</dd></div>
-                <div><dt>Delivered</dt><dd>{projection.counters.linesDelivered}</dd></div>
-                <div><dt>Dropped</dt><dd>{projection.counters.droppedLines}</dd></div>
-                <div><dt>Suppressed lines</dt><dd>{projection.counters.linesSuppressed ?? 0}</dd></div>
-                <div><dt>Suppressed batches</dt><dd>{projection.counters.batchesSuppressed ?? 0}</dd></div>
-                <div><dt>Follow-up wakes</dt><dd>{projection.counters.followUpWakes ?? 0}</dd></div>
-                <div><dt>Steered wakes</dt><dd>{projection.counters.steeredWakes ?? 0}</dd></div>
-                <div><dt>Unknown disposition wakes</dt><dd>{projection.counters.unknownDispositionWakes ?? projection.counters.batchesDelivered}</dd></div>
-              </dl>
-              <p>Counts reflect the host snapshot when this update was dispatched.</p>
-            </ActivityStep>
-          ))}
-        </div>
-      )}
-    </ActivityRow>
-  );
-}
-
 const asRecord = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -1358,7 +1289,6 @@ const parts = {
       "reply-attachment": ReplyAttachmentPart,
       "mcp-app": McpAppPart,
       "reply-failure": ReplyFailurePart,
-      "monitor-activity": MonitorActivityPart,
       "process-job-event": ProcessJobActivityEventPart,
     },
   },
@@ -1484,7 +1414,6 @@ function AssistantParts() {
             if (part.name === "reply-attachment") return <ReplyAttachmentPart {...part} />;
             if (part.name === "mcp-app") return <McpAppPart {...part} />;
             if (part.name === "reply-failure") return <ReplyFailurePart {...part} />;
-            if (part.name === "monitor-activity") return <MonitorActivityPart {...part} />;
             if (part.name === "process-job-event") return <ProcessJobActivityEventPart {...part} />;
             return part.dataRendererUI;
           case "indicator":
@@ -1514,20 +1443,11 @@ export function UserMessage() {
       <LiveInputStatus />
       <MessageActions label="Copy message" />
     </MessagePrimitive.Root>
-    <MessageProjectMarkers />
-    <MessageModelMarkers />
     </>
   );
 }
 
 export function AssistantMessage() {
-  const markerOnly = useAuiState((state) => state.message.content.length === 0
-    && state.message.metadata.custom?.runStatus === "complete"
-    && ((Array.isArray(state.message.metadata.custom?.projectTransitions)
-      && state.message.metadata.custom.projectTransitions.length > 0)
-      || (Array.isArray(state.message.metadata.custom?.modelTransitions)
-        && state.message.metadata.custom.modelTransitions.length > 0)));
-  if (markerOnly) return <><MessageProjectMarkers /><MessageModelMarkers /></>;
   return (
     <>
     <MessagePrimitive.Root className="message message-assistant">
@@ -1541,20 +1461,41 @@ export function AssistantMessage() {
         </div>
       </MessageGallery>
     </MessagePrimitive.Root>
-    <MessageProjectMarkers />
-    <MessageModelMarkers />
     </>
   );
 }
 
 export function SystemMessage() {
+  const marker = useAuiState((state) => {
+    const part = state.message.metadata.custom?.conversationMarker as { data?: unknown } | undefined;
+    return isConversationMarker(part?.data) ? part.data : undefined;
+  });
+  if (marker?.kind === "model") return <ModelMarkers transitions={[marker]} />;
+  if (marker?.kind === "project") return <ProjectMarkers transitions={[marker]} />;
+  if (marker?.kind === "resumed") {
+    // A rule has to survive a phone width, so it stays short: no seconds, no
+    // idle duration (the agent still gets that in its own context), and the
+    // year only when the conversation resumed in a different one.
+    const at = new Date(marker.at);
+    const label = `Resumed ${at.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      ...(at.getFullYear() === new Date().getFullYear() ? {} : { year: "numeric" }),
+    })}`;
+    return <div className="model-transition" role="note" aria-label={label} title={label}>
+      <span className="model-transition-label">
+        <Icon name="spark" size={11} />
+        <span>{label}</span>
+      </span>
+    </div>;
+  }
   return (
     <>
     <MessagePrimitive.Root className="message message-system">
       <MessagePrimitive.Parts components={parts} />
     </MessagePrimitive.Root>
-    <MessageProjectMarkers />
-    <MessageModelMarkers />
     </>
   );
 }

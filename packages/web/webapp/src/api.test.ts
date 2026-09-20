@@ -1008,3 +1008,34 @@ describe("the session byte meter", () => {
     expect(dataUsage().bytes).toBe(0);
   });
 });
+
+
+describe("manual usage refresh boundary", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("uses an explicit same-origin POST and strictly parses the usage projection", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ schema: "mono-agent.provider-usage.v1", providers: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await api.refreshProviderUsage("agent one")).toEqual({ schema: "mono-agent.provider-usage.v1", providers: [] });
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/agents/agent%20one/provider-usage/refresh", expect.objectContaining({
+      method: "POST", body: "{}", headers: expect.objectContaining({ "X-Mono-Agent-Web-Origin": window.location.origin }),
+    }));
+    fetchMock.mockResolvedValueOnce(Response.json({ schema: "mono-agent.provider-usage.v1", providers: [], account_id: "DROP" }));
+    await expect(api.refreshProviderUsage("agent one")).rejects.toThrow("Invalid provider usage projection");
+  });
+});
+
+describe("standalone Copilot projection parser", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("accepts Copilot and rejects unknown windows/providers and vendor data", async () => {
+    const copilot = { providerId: "github-copilot", label: "GitHub Copilot", plan: "Individual", fetchedAt: "2026-09-15T12:00:00.000Z", stale: false,
+      windows: [{ kind: "credits", label: "Credits", usedPercent: 42.1, periodMs: 2592000000 }] };
+    const snapshot = { schema: "mono-agent.provider-usage.v1", providers: [copilot] };
+    const fetchMock = vi.fn(async () => Response.json(snapshot)); vi.stubGlobal("fetch", fetchMock);
+    expect(await api.providerUsage("agent")).toEqual(snapshot);
+    expect(await api.refreshProviderUsage("agent")).toEqual(snapshot);
+    for (const patch of [{ providerId: "copilot" }, { token: "SECRET" }, { windows: [{ ...copilot.windows[0], kind: "spend" }] }, { windows: [{ ...copilot.windows[0], kind: "monthly", label: "Monthly" }] }]) {
+      fetchMock.mockResolvedValueOnce(Response.json({ ...snapshot, providers: [{ ...copilot, ...patch }] }));
+      await expect(api.providerUsage("agent")).rejects.toThrow("Invalid provider usage projection");
+    }
+  });
+});

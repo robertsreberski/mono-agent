@@ -13,11 +13,24 @@ import type {
 
 export type MemoryWriteMode = (typeof MEMORY_WRITE_MODES)[number];
 export type MemoryMode = (typeof MEMORY_MODES)[number];
-export type WebSearchBackend = "auto" | "searxng" | "ollama" | "codex" | "keyless";
+export type WebSearchBackend = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel" | "hound";
+export type WebFetchProvider = "local" | "parallel" | "hound";
+export interface ParallelWebConfig {
+  /** Environment variable name only; the credential is read at call time. */
+  readonly apiKeyEnv?: string;
+}
 export type WebFetchRenderMode = "never" | "auto";
 
 export interface SearxngWebSearchConfig {
   /** SearXNG must be unauthenticated loopback HTTP. */
+  readonly endpoint: string;
+}
+
+/** @deprecated Source-compatible tombstone; any endpoint setting is rejected.
+ * Hound is a built-in native provider and needs no service endpoint.
+ */
+export interface HoundWebEndpointConfig {
+  /** @deprecated Remove this setting; no external Hound service is contacted. */
   readonly endpoint: string;
 }
 
@@ -276,6 +289,8 @@ export interface MonoAgentSubagentsConfig {
   readonly maxPerTurn?: number;
   /** Default per-subagent wall clock in ms. Default 300000. */
   readonly timeoutMs?: number;
+  /** Detached child foreground Bash/Exec ceiling in ms. Default 1800000; bounded by its job deadline. */
+  readonly commandTimeoutMs?: number;
   /** Default per-subagent turn cap. Default 100. */
   readonly maxTurns?: number;
   readonly definitions?: readonly MonoAgentSubagentConfig[];
@@ -436,13 +451,16 @@ export interface MonoAgentConfig {
     readonly web?: {
       readonly coordination?: "process" | "host";
       readonly search: {
-        readonly backend: WebSearchBackend;
-        /** Hard ceiling on actual provider search requests in one logical runtime run. */
+        readonly backend: WebSearchBackend | readonly WebSearchBackend[];
+        /** Hard ceiling on answered provider searches per logical run; failed dispatches are refunded. */
         readonly maxRequestsPerRun: number;
         /** @deprecated Use searxng.endpoint. Accepted for programmatic embedders. */
         readonly endpoint?: string;
         readonly searxng?: SearxngWebSearchConfig;
         readonly ollama?: OllamaWebSearchConfig;
+        readonly parallel?: ParallelWebConfig;
+        /** @deprecated Endpoint settings are rejected: Hound search is built in. */
+        readonly hound?: HoundWebEndpointConfig;
         /** ChatGPT-subscription Codex app-server search settings. */
         readonly codex?: {
           /** Defaults to the low-cost, low-latency GPT-5.6 Luna route. */
@@ -450,6 +468,10 @@ export interface MonoAgentConfig {
         };
       };
       readonly fetch: {
+        readonly provider?: WebFetchProvider | readonly WebFetchProvider[];
+        readonly parallel?: ParallelWebConfig;
+        /** @deprecated Endpoint settings are rejected: Hound fetch is built in. */
+        readonly hound?: HoundWebEndpointConfig;
         readonly render: WebFetchRenderMode;
         readonly browserCommand: string;
       };
@@ -511,6 +533,8 @@ export interface PiNativeProviderConfig {
   readonly transport?: PiTransport;
   /** Emit metadata-only prompt-cache request fingerprints into run artifacts (default false). */
   readonly promptCacheDiagnostics?: boolean;
+  /** Anthropic Messages cache retention. Config loading defaults to long; short opts out. */
+  readonly cacheRetention?: "short" | "long";
   /** Max retry attempts for the pi provider transport (0-8; default 2). */
   readonly piMaxRetries?: number;
   /** Maximum delay between retry attempts, in milliseconds (default 60000). */

@@ -23,7 +23,6 @@ export type {
   DeliverWebNotificationInput,
   DeliverWebNotificationOptions,
   DeliverWebNotificationResult,
-  DeliverWebMonitorNotificationInput,
   DeliverWebProcessJobNotificationInput,
   DeliverWebThreadNotificationInput,
 } from "./notification-client.js";
@@ -115,7 +114,8 @@ export type {
   WebTagChangedPayload,
   WebProject,
   WebProjectColor,
-  WebProjectTransition,
+  WebConversationMarkerPart,
+  WebProjectIdentity,
   WebProjectChangedPayload,
   WebNotificationTriggerKind,
   WebThreadNotificationTriggerKind,

@@ -51,6 +51,20 @@ export interface ProcessJobActivityEvent {
   readonly durationMs?: number;
   readonly exitCode?: number;
   readonly signal?: string;
+  /**
+   * The paired launch call's arguments, folded into the started row so the
+   * launch tool-call row can stay suppressed without losing its Input.
+   *
+   * Only the conversion sets this, and only on the started phase that replaces
+   * its launch call; the projection never carries it and the terminal row never
+   * needs it. Absent on retained events that predate the fold, which still
+   * render as job facts alone.
+   */
+  readonly launchArgs?: unknown;
+  /** The launch arguments arrived as a preview; see {@link ToolCall.argsTruncated}. */
+  readonly launchArgsTruncated?: boolean;
+  /** Character length of the untruncated launch arguments, when truncated. */
+  readonly launchArgsBytes?: number;
 }
 
 export const processJobTerminalEvent = (
@@ -167,11 +181,11 @@ const partHasTranscriptPresentation = (part: MessagePart): boolean => {
       return true;
     case "steer":
       return true;
+    case "conversation-marker":
     case "cron-reply-context":
       return true;
     case "tool-call":
     case "subagent":
-    case "monitor-activity":
     case "error":
     case "attachment":
     case "mcp_app":
@@ -180,16 +194,13 @@ const partHasTranscriptPresentation = (part: MessagePart): boolean => {
   }
 };
 
-const messageHasTranscriptPresentation = (
-  message: WebMessage,
-  selectedModel: string | null | undefined,
-): boolean => {
+const messageHasTranscriptPresentation = (message: WebMessage): boolean => {
   if (message.role !== "assistant") return true;
   if (message.attachments.length > 0) return true;
   if (message.status === "failed" || message.status === "interrupted") {
     return true;
   }
-  if (shouldShowMessageRunAttribution(message.attribution, selectedModel)) return true;
+  if (shouldShowMessageRunAttribution(message.attribution, message.status)) return true;
   return message.parts.some(partHasTranscriptPresentation);
 };
 
@@ -271,12 +282,11 @@ export const orderLiveInputsAfterTheirTurn = (
 
 /**
  * Split the currently loaded conversation into assistant-ui messages and one
- * stable chronological set of background jobs. Monitor shaping deliberately
- * runs before this function so a job remains a boundary between Monitor wakes.
+ * stable chronological set of background jobs.
  */
 export const projectProcessJobPresentation = (
   messages: readonly WebMessage[],
-  options: { readonly selectedModel?: string | null; readonly threadId?: string | null } = {},
+  options: { readonly threadId?: string | null } = {},
 ): ProcessJobPresentation => {
   // The inline steer duplicates its user message; shape the transcript without
   // the duplicate before cards, events and visibility are derived from it, and
@@ -351,7 +361,7 @@ export const projectProcessJobPresentation = (
     }
 
     const projected = { ...message, parts: remainingParts };
-    if (messageHasTranscriptPresentation(projected, options.selectedModel)) {
+    if (messageHasTranscriptPresentation(projected)) {
       projectedMessages.push(projected);
     }
   }

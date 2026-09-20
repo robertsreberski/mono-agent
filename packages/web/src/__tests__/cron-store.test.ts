@@ -1223,7 +1223,7 @@ describe("silent cron projections", () => {
       expect(store.getThread(thread)).toMatchObject({ messageCount: 0, revision: before.revision + 1 });
       expect(store.getThread(thread)!.lastMessagePreview).toBeUndefined();
       expect(store.getMessage(message.id)).toBeUndefined();
-      expect(store.listMessagesPage(thread, { limit: 1 })).toEqual({ messages: [], projectTransitions: [], modelTransitions: [] });
+      expect(store.listMessagesPage(thread, { limit: 1 })).toEqual({ messages: [] });
       expect(store.searchThreads({ sourceId: "agent-one", query: "silently" }).hits).toEqual([]);
       expect(store.storedCronRuns("agent-one", "daily:brief")).toMatchObject({ runs: [expect.objectContaining({ runId: run.runId })], messages: [] });
       expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [{ ...silent, eventCount: 2 }]).changed).toBe(false);
@@ -1306,6 +1306,62 @@ describe("silent cron projections", () => {
   });
 });
 
+describe("preflight gate skips", () => {
+  async function fixture() {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]);
+    const thread = syncCronJob(store).jobs[0]!.threadId;
+    return { store, thread };
+  }
+
+  it("renders the bounded gate reason as the run state and not as a failure", async () => {
+    const { store, thread } = await fixture();
+    try {
+      const run = cronRun({
+        runId: "gate-skip",
+        sequence: 1,
+        status: "skipped_gate",
+        completedAt: "2026-08-14T10:05:01.000Z",
+        error: "no new items",
+      });
+      const messages = store.reconcileCronRuns("agent-one", "daily:brief", [run]);
+      expect(messages).toHaveLength(1);
+      expect(store.storedCronRuns("agent-one", "daily:brief").runs[0]).toMatchObject({
+        status: "skipped_gate",
+        completedAt: "2026-08-14T10:05:01.000Z",
+        error: "no new items",
+      });
+      const parts = store.getThreadDetail(thread)!.messages[0]!.parts;
+      expect(parts).toContainEqual({ type: "text", text: "no new items" });
+      expect(parts.some((part) => part.type === "error")).toBe(false);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("falls back to a plain explanation when the gate supplied no reason", async () => {
+    const { store, thread } = await fixture();
+    try {
+      const run = cronRun({
+        runId: "gate-skip-silent",
+        sequence: 2,
+        status: "skipped_gate",
+        completedAt: "2026-08-14T10:05:01.000Z",
+      });
+      store.reconcileCronRuns("agent-one", "daily:brief", [run]);
+      const parts = store.getThreadDetail(thread)!.messages[0]!.parts;
+      expect(parts).toContainEqual({
+        type: "text",
+        text: "Firing skipped by the job's preflight gate before any model turn.",
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+});
+
 describe("cron Reply operation storage", () => {
   const operationId = "11111111-1111-4111-8111-111111111111";
   const runId = "cron:daily%3Abrief:2026-09-08T10:00:00.000Z";
@@ -1326,6 +1382,24 @@ describe("cron Reply operation storage", () => {
     })]);
     return { stateDir, store };
   }
+
+  it("captures a gate skip as result text, never as a failure message", async () => {
+    const { store } = await replyFixture();
+    try {
+      const gateRunId = "run-gate-1";
+      store.reconcileCronRuns("agent-one", "daily:brief", [cronRun({
+        runId: gateRunId,
+        sequence: 10,
+        status: "skipped_gate",
+        error: "no new items",
+      })]);
+      const captured = store.captureCronReplySnapshot("agent-one", "daily:brief", gateRunId, "summary");
+      expect(captured.text).toBe("Skipped by preflight gate: no new items");
+      expect(captured.errorMessage).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
 
   it("reserves the exact summary before import and materializes one normal immutable conversation", async () => {
     const { store } = await replyFixture();

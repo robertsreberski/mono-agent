@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "corpusSha256": "2eb9734f15f48a1780dde7eba308105912fba8298b2d54015f3c9a4bc3e81a5f",
+    "baselineRevision": "4f71409f5f1dd236c76bc2bc87772af97ca7a322",
+    "candidateRevision": "1811f423265d1a5de237e9f333b30f55a00c362d"
+  },
+  "cases": [
+    {
+      "id": "user-choice-direct",
+      "query": "What deployment color did Avery select?",
+      "baselineRecord": "Avery selected cobalt as the deployment color.",
+      "candidateRecord": "Avery selected cobalt as the deployment color.",
+      "expectedBaselineSelected": true,
+      "expectedCandidateSelected": true
+    },
+    {
+      "id": "user-property-direct",
+      "query": "What is Avery's service port?",
+      "baselineRecord": "Avery's service port is 8443.",
+      "candidateRecord": "Avery reports that their service port is 8443.",
+      "expectedBaselineSelected": true,
+      "expectedCandidateSelected": true
+    },
+    {
+      "id": "user-location-direct",
+      "query": "Where does Avery work?",
+      "baselineRecord": "Avery works in Amsterdam.",
+      "candidateRecord": "Avery reports working in Amsterdam.",
+      "expectedBaselineSelected": true,
+      "expectedCandidateSelected": true
+    },
+    {
+      "id": "assistant-claim-unchecked",
+      "query": "What is Avery's phone number?",
+      "baselineRecord": "Avery's account phone number was stated as 555-0100, but it was not verified.",
+      "candidateRecord": "The assistant stated that Avery's account phone number is 555-0100 but did not check the account.",
+      "expectedBaselineSelected": false,
+      "expectedCandidateSelected": false
+    },
+    {
+      "id": "user-fact-corrected",
+      "query": "What is Avery's phone number?",
+      "baselineRecord": "Avery's phone number is 555-0199; 555-0100 was incorrect.",
+      "candidateRecord": "Avery reports that their phone number is 555-0199 and was never 555-0100.",
+      "expectedBaselineSelected": false,
+      "expectedCandidateSelected": false
+    },
+    {
+      "id": "quoted-claim-explicit",
+      "query": "What deployment color did Morgan select?",
+      "baselineRecord": "Avery quoted an unconfirmed vendor note claiming Morgan selected amber as the deployment color.",
+      "candidateRecord": "Avery reports that a pasted vendor note says Morgan selected amber as the deployment color, but Avery does not confirm it.",
+      "expectedBaselineSelected": false,
+      "expectedCandidateSelected": false
+    }
+  ]
+}

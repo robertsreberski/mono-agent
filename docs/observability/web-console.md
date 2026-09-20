@@ -33,19 +33,20 @@ mono-agent web start --theme ocean
 mono-agent web
 ```
 
-Bare `mono-agent web` is read-only: it prints service status, the usable URLs, and lifecycle help. It does not start, stop, or rewrite the service. The default listener is `0.0.0.0:5050`, so the same process is directly reachable from localhost, the trusted local network, and the machine's Tailscale address.
+Bare `mono-agent web` is read-only: it prints service status, the usable URLs, and lifecycle help. It does not start, stop, or rewrite the service. A fresh install binds `127.0.0.1:5050`; `--host <addr>` (for example `0.0.0.0`) widens the listener explicitly, and an existing managed service keeps the bind it was published with.
 
 ```bash
 mono-agent web start --theme ocean  # install/start with a distinctive shell
 mono-agent web start --name "Flockbox"  # label tabs and the installed PWA
+mono-agent web start --share-tailnet  # macOS: publish an owned Tailscale HTTPS route
 mono-agent web stop
 mono-agent web restart
-mono-agent web status
+mono-agent web status --json
 mono-agent web logs
 mono-agent web run         # foreground service, including non-macOS hosts
 ```
 
-Use `--loopback` with `start` or `run` to bind `127.0.0.1` instead. Advanced `--host` and `--port` overrides are available when `0.0.0.0:5050` is not appropriate. The lifecycle status records the effective bind, theme, console name, and any owned Tailscale route so later commands operate on the same service rather than guessing.
+`--loopback` (the fresh default) binds `127.0.0.1`, `--host <addr>` binds wider, and the bind narrows the HTTP listener only — not every way the console can be reached. A managed macOS `start`/`restart` re-verifies an existing mono-agent-owned Tailscale Serve HTTPS route and publishes one only when asked with `--share-tailnet`; the foreground `run` command never configures Serve, `stop` removes only the exact route mono-agent owns, and no mode removes an unowned Serve handler, reverse proxy, or tunnel that already points at the port. The lifecycle status records the effective bind, theme, console name, and any owned Tailscale route so later commands operate on the same service rather than guessing; `mono-agent web` prints the effective URLs, `mono-agent web status --json` prints the listener and the owned route as separate fields, and `tailscale serve status` shows the Serve route. An installed service is never re-bound to the fresh default: a stopped install's bind/port/theme/name are recovered from its LaunchAgent definition, and an unreadable definition fails closed before anything changes.
 
 ## Console identity and curated themes
 
@@ -99,9 +100,11 @@ colors. Theme choice is explicit rather than inferred from the hostname.
 The console intentionally has no application authentication or multi-user accounts. Anyone who can reach its HTTP listener can read retained conversations, upload files, cancel turns, send instructions to every discovered agent, and operate provider-authentication flows. Treat the listener as an owner-equivalent operator surface:
 
 - run it only on a trusted LAN or tailnet;
-- use `--loopback` when other devices must not reach it;
+- when other devices must not reach it, keep the foreground `mono-agent web run --loopback` and confirm nothing else publishes it; a managed `start`/`restart` re-verifies an existing owned Tailscale Serve route and publishes a new one only with `--share-tailnet`; `web stop` removes that exact owned route, and no mode removes an unowned Serve handler, reverse proxy, or tunnel that already points at the port;
 - do not publish port `5050` through a public router, tunnel, or unrestricted reverse proxy;
 - keep operating-system and Tailscale network admission controls as the access boundary.
+
+Neither the bind nor the absence of a mono-agent-owned route proves local-only access: other proxies, tunnels, or routes are not inspected. Inspect `tailscale serve status` and your own proxy configuration before relying on loopback for local-only access — this matters most for a machine that ran a managed console before. A managed `--share-tailnet` failure is reported with a nonzero exit and the healthy local console stays running; it never claims the route was published.
 
 The server rejects unexpected Host/Origin combinations and does not enable cross-origin API access, but those checks are browser request-integrity controls, not authentication. Cron mutations additionally require the addressed agent's operator API key, an explicit agent-side opt-in, a source-qualified job route, and an agent-issued confirmation; those gates do not turn the web console into a multi-user authenticated application. Plain LAN HTTP is not encrypted. Tailscale transport protects direct tailnet traffic, while Tailscale Serve provides browser-trusted HTTPS when available.
 
@@ -116,18 +119,130 @@ At startup, mono-agent inspects the existing Tailscale Serve configuration. It p
 
 ## Provider authentication
 
+Agent settings uses the same compact responsive sheet as project/tag settings:
+a bottom sheet on mobile and a centered panel on desktop. Model defaults,
+favorites, authentication, live checks and revert controls keep their existing
+behavior. Pin and close match the dashboard header: 36×36px with 10px corners,
+on desktop and coarse-touch screens. Provider text actions remain 28px high.
+
+### Subscription usage
+
+Agents with the `providerUsage` v1 capability show subscription meters under
+matching provider-auth rows, only for providers activated by this agent’s configured
+primary/fallback, agent-host memory LLM, and enabled cron/webhook model references.
+Credentials alone do not activate a provider. With Provider authentication support,
+unmatched usage is not displayed, even while auth status is loading. Operators
+advertising usage without authentication show their scoped snapshot as meter-only
+cards without auth badges or controls:
+
+| Provider | Core meters | Plan |
+| --- | --- | --- |
+| Claude (`anthropic`) | Session (5h), Weekly (7d), Fable when supplied | Not exposed by Pi; omitted |
+| Codex (`openai-codex`) | Session (5h) and/or Weekly (7d), when supplied | Pro 5x, Pro 20x, Business Premium, or the provider's plan label |
+| OpenCode Go (`opencode-go`) | Session, Weekly, Monthly | Go |
+| GitHub Copilot (`github-copilot`) | Monthly Credits on paid plans; Chat and Completions on free plans | Safe provider plan label |
+
+Numbers are vendor-reported percent used, clamped to 0–100, not estimates from
+session costs. A sole weekly Codex limit stays Weekly even when it occupies the
+primary slot. Reset countdowns include an absolute time on hover; vendor reset
+timestamps are authoritative (the nominal monthly period is 30 days). No Spark,
+Codex credits, Sonnet, extra-usage, organization billing or cost meters are included. Unsupported providers
+and absent/unusable credentials add no placeholders. Successfully mapped usage
+reads using the agent’s Pi credential provide weaker **Credential OK** evidence,
+not live inference verification. Copilot local fallback credentials never add
+authentication evidence for the agent.
+
+The agent shares one five-minute in-memory cache between console reads and the
+[ProviderUsage tool](/tools/mcp/#providerusage-subscription-quota). Opening the
+sheet loads usage independently of auth status; it polls while open and stops
+on close or agent switch. Expired data is shown as **Last known usage** during a
+coalesced refresh. Failures show **Usage unavailable** with a short safe reason,
+retaining last-good meters. Rate limits honor `Retry-After`; rejected Claude/Codex
+OAuth credentials from Pi get one refresh through the existing resolver and one retry.
+Copilot quota rejection gets one request, no OAuth refresh or retry, and the same
+five-minute failure fence for Pi OAuth, Pi API keys and local tokens.
+Claude rejection includes a re-login hint (usage requires `user:profile` scope);
+an OpenCode entitlement rejection means no Go subscription, not a bad key.
+
+**Refresh usage**, the compact text button beside **Check access**, explicitly
+reads subscription limits without running inference. Both provider actions use
+compact 10px labels at the sheet’s 28px control height, with one shared explanation. It is available only when
+the agent advertises manual refresh support. While pending it spins and disables
+conflicting authentication/check actions. It bypasses a successful cache's
+five-minute freshness and awaits the shared fetch, but never bypasses error
+backoff or `Retry-After`. Existing in-flight reads are coalesced, not duplicated.
+Failures keep last-good meters and their actual fetch time; partial or suppressed
+updates are not reported as a successful refresh of every row. Successful usage
+refresh with a Pi credential earns only **Credential OK**, unlike the model request
+made by **Check access**; local Copilot usage earns no auth badge.
+
+Manual intent uses `POST` to the same usage paths with `/refresh` appended, an
+empty JSON object, and an optional exact `provider` query filter. Discovery adds
+`refresh: true` to `capabilities.providerUsage: {version: 1}`; older agents keep
+ordinary cached reads and do not expose a misleading refresh control. A manual
+request to an unsupported agent fails explicitly rather than returning cached
+data as a successful refresh.
+
+The independent read routes are agent `${basePath}/v1/provider-usage` and console
+`/api/v1/agents/:id/provider-usage`, with an optional exact `provider` filter.
+They are no-store, use the existing owner/operator and same-origin protections,
+and return `mono-agent.provider-usage.v1`. Usage failures never block the auth
+rows. The web server never reads credentials; vendor identifiers and secrets
+are dropped on the agent host before transport. No subscription usage is
+persisted by the service, and no quota purchase/reset endpoint is called.
+
+Copilot uses the agent’s Pi `github-copilot` credential. For OAuth, quota reads
+send the underlying GitHub device-flow token in `credential.refresh`, never the
+short-lived inference token in `credential.access`. Inference access expiry or
+rotation and model catalog changes neither invoke the resolver nor invalidate
+fresh or in-flight usage. The cache identity follows the GitHub token, normalized
+host and credential source. Pi API keys are sent directly and never refreshed.
+A missing/blank OAuth refresh token, malformed host marker or non-github.com
+`enterpriseUrl` omits usage without local fallback. Pi's URL/domain normalization
+must resolve to exact `github.com`; blank/absent markers mean github.com. No
+enterprise quota endpoint is supported.
+
+Only when no Pi Copilot credential exists does discovery try local
+Copilot editor `~/.config/github-copilot/apps.json` (or older `hosts.json`), the
+active github.com token in `~/.config/gh/hosts.yml`, then bounded noninteractive
+`gh auth token --hostname github.com` for keychain retrieval. Only github.com
+entries qualify. Files and helper output/time are bounded; no environment-token
+fallback, browser cookies, prompts or credential-store writes are used. No new
+configuration is required. Usage is available even if Copilot is not an inference
+provider. Unusable Pi entries or unreadable Pi ownership never select a local
+account. GitHub token/host/source changes fence cached and in-flight usage.
+
+The read-only Copilot endpoint is `https://api.github.com/copilot_internal/user`.
+Percent used is `100 - percent_remaining`, falling back to entitlement/remaining.
+Unlimited and zero-entitlement buckets are omitted. Explicit token-based-billing
+seats without per-seat percentages show only the plan; no organization discovery,
+spend, personal Credits counts or Extra Usage are requested or projected.
+
+### Authentication and live checks
+
 For every current app-owned agent, **Agent settings** includes one compact
 provider-authentication row for each provider used by the agent's effective
 primary, fallback, memory, and enabled static trigger routes. A row says **OK**
-only after a retained real request succeeds. Static credential presence is
-**Not verified**; unusable material and a later credential rejection are
+only after a retained real inference request succeeds (`verified_by_live_request`).
+**Credential OK** (`verified_by_account_request`) means the vendor accepted the
+credential at its account/usage API; inference and model entitlement are not
+proven. Static credential presence is **Not verified**. Unusable material and a
+later credential rejection are
 **Needs action**; keyless providers are **Not applicable**. Availability,
 network, quota, and model-entitlement failures do not become false auth claims.
+Usage reads while Agent settings is open, or a `ProviderUsage` tool call, feed
+this passive evidence without extra vendor requests or spending inference quota.
+A mapped success using the agent’s Pi credential records credential acceptance; a final authentication rejection
+records **Needs action**. Entitlement, rate-limit, timeout, network, malformed
+response and unavailable outcomes add no auth evidence. Account acceptance never
+replaces live verification or clears an inference-availability warning.
 The evidence is best-effort and process-local: a restart loses check sessions
 and observations, and no provider-auth result is stored durably. Ordinary run
 evidence is fenced at provider-execution start: any target-store mutation makes
 already-running summaries and their failover attempts ineligible to verify or
 reject the replacement credential, even if post-install cleanup later fails.
+Usage fetches capture the same generation fence and publish evidence only if the
+credential identity is still retained; a credential replacement clears its proof.
 
 One **Authenticate** or **Re-authenticate** action starts a short-lived session on
 the agent host. GitHub Copilot and OpenAI Codex show Pi's native device URL and
@@ -135,8 +250,8 @@ code while the headless host polls. Anthropic shows an authorization URL and a
 field for the final localhost redirect URL or code because Pi 0.85.1 has no
 Anthropic device-code flow. API-key providers such as OpenCode-Go use masked,
 provider-owned prompts. There is no `--device-auth` CLI flag.
-The neutral recovery action remains available at its normal button size whenever
-the provider exposes a supported login method, even when the row says **OK** or
+The neutral recovery action remains available at the sheet's compact button size whenever
+the provider exposes a supported login method, even when the row says **OK**, **Credential OK**, or
 **Not verified**. Starting another valid login cancels the current session and
 begins again with a fresh session ID; a malformed or unavailable method leaves
 the current prompt usable. Live checks are separate consented operations and
@@ -152,14 +267,14 @@ callback cannot update the replacement session or auth store. The console keeps
 polling identical active snapshots; an expired retained session releases the
 local running control, while transient status-read failures remain retryable.
 
-**Run check** is one explicit section-level action for all provider rows already
+**Check access** is one explicit section-level action for all provider rows already
 displayed. It sends one tiny request to each provider's deterministically chosen
 cheapest eligible model, with no fallback or alternate-model retry, and reports
 partial results inline. A pass proves only that provider, credential, and model
 worked at the check time. Missing or incomparable prices, including multiple
 candidates when any price is unknown, make no request; a sole eligible candidate
 with unknown price is the one documented exception. Opening or polling settings
-never sends provider traffic. Clicking **Run check** may consume quota or incur a
+never sends inference requests; subscription usage reads use the cached account API. Clicking **Check access** may consume quota or incur a
 minimum charge, and Pi may refresh OAuth and atomically update the agent's auth
 store. Checks run at most two providers concurrently, time out, can be cancelled,
 and observe a one-minute cooldown.
@@ -177,8 +292,9 @@ authorization URLs, submit paste-back callbacks or API keys, and thereby bind or
 replace a real provider credential in the agent's Pi auth store. That can switch
 the account and billing identity the agent uses or disrupt its access. This is
 accepted because network reachability is deliberately treated as owner-equivalent
-authority; deployments that cannot make that assumption must use `--loopback`
-or add an authenticated network boundary before exposing the console.
+authority; deployments that cannot make that assumption must not rely on the bind
+alone — use the foreground `mono-agent web run --loopback`, or add an authenticated
+network boundary before exposing the console.
 
 Login/check sessions, URLs, codes, progress, prompts, and sanitized check results
 live only in agent/webapp memory. Responses use `Cache-Control: private,
@@ -361,9 +477,9 @@ Selecting an agent filters its conversations; each conversation is permanently b
 
 Threads use the first prompt as their initial title and can be renamed. Active threads must be archived before deletion, and archived threads can be restored. The console permits one active turn per thread while different threads and agents can run concurrently.
 
-Every turn tells the agent that it is in an interactive web console conversation and states the thread's conversation id, `web:<threadId>`, verbatim in its Session block. That id is the thread the person is already reading, not a route elsewhere, and it is disclosed so an agent can hand it to host-side tools and operator commands that bind background work to the thread — a Monitor, a process job, or a maintainer-style task record that must wake this exact conversation. Cron channels and other request-driven turns keep their existing wording and disclose nothing. See [Context assembly](/context/assembly/#session).
+Every turn tells the agent that it is in an interactive web console conversation and states the thread's conversation id, `web:<threadId>`, verbatim in its Session block. That id is the thread the person is already reading, not a route elsewhere, and it is disclosed so an agent can hand it to host-side tools and operator commands that bind background work to the thread — a process job, or a maintainer-style task record that must wake this exact conversation. Cron channels and other request-driven turns keep their existing wording and disclose nothing. See [Context assembly](/context/assembly/#session).
 
-Cron jobs and webhook endpoints can explicitly target `notifyConversationId: "web:new"` with `notify: true`. Webhook results retain one assistant-only thread per delivery. Cron results instead fold into one durable, source-qualified channel per job, with the stable route `/agents/<sourceId>/cron/<jobId>`. Opening an Automations row uses that same route and chronological feed; loading the route directly selects the Automations chip. The list shows each overview job once with its id, cadence/timezone, enabled state, last or active run, and next run. A saved overview remains readable when the agent is offline or no longer advertises cron, but is visibly a snapshot and cannot supply actionable live state; truncated overviews disclose that removed historical jobs may be omitted. The chronological feed includes scheduled/manual admission, running, queued, succeeded, failed, cancelled, overlap-skipped, and dropped states, plus artifact/session links when the agent reports them. The header opens collapsed on one line — schedule, state and next run — and expands to show schedule, timezone, state, last and next run, and health. It is a native disclosure, so its expanded state is exposed to assistive technology and driven from the keyboard by the browser, and nothing about it is persisted. The disclosure belongs to one agent's one job, so every cron channel opens collapsed, including a direct switch from one cron channel to another. It retains **Run now**, **Enable/Disable**, and the redacted **View config** surface; action controls use the existing authentication, opt-in, confirmation, idempotency, and capability gates and explain when they are unavailable. Configuration remains file/config-JSON owned, and the browser never computes next-run locally or treats stale state as actionable. The cron transcript itself remains read-only, so console interaction cannot occupy the cron job's own conversation and cause a scheduled firing to overlap.
+Cron jobs and webhook endpoints can explicitly target `notifyConversationId: "web:new"` with `notify: true`. Webhook results retain one assistant-only thread per delivery. Cron results instead fold into one durable, source-qualified channel per job, with the stable route `/agents/<sourceId>/cron/<jobId>`. Opening an Automations row uses that same route and chronological feed; loading the route directly selects the Automations chip. The list shows each overview job once with its id, cadence/timezone, enabled state, last or active run, and next run. A saved overview remains readable when the agent is offline or no longer advertises cron, but is visibly a snapshot and cannot supply actionable live state; truncated overviews disclose that removed historical jobs may be omitted. The chronological feed includes scheduled/manual admission, running, queued, succeeded, failed, cancelled, overlap-skipped, gate-skipped, and dropped states, plus artifact/session links when the agent reports them. The header opens collapsed on one line — schedule, state and next run — and expands to show schedule, timezone, state, last and next run, and health. It is a native disclosure, so its expanded state is exposed to assistive technology and driven from the keyboard by the browser, and nothing about it is persisted. The disclosure belongs to one agent's one job, so every cron channel opens collapsed, including a direct switch from one cron channel to another. It retains **Run now**, **Enable/Disable**, and the redacted **View config** surface; action controls use the existing authentication, opt-in, confirmation, idempotency, and capability gates and explain when they are unavailable. Configuration remains file/config-JSON owned, and the browser never computes next-run locally or treats stale state as actionable. The cron transcript itself remains read-only, so console interaction cannot occupy the cron job's own conversation and cause a scheduled firing to overlap.
 
 Every terminal cron row offers **Reply**. It captures the exact persisted summary
 or already-loaded detail and imports it into a separate normal conversation as
@@ -633,9 +749,14 @@ offers to reset back to the agent default. It uses a searchable model picker wit
 
 The picker is labelled **Next turn** because it is not evidence about the run
 already on screen. The conversation header carries no run attribution. Below an
-assistant message, the server-owned route marker appears for a normal run only
-when the model that ran differs from the conversation's current selection. A
-fallback warning always appears there, even when its answering model matches the
+assistant message, the server-owned route marker appears only when that run
+deviated from what was asked of it: a fallback, a recorded route transition or
+same-model retry, an effective thinking level the provider did not honour, or an
+unsettled run already attempting a different model than the requested one. The
+conversation's current selection has no say in that decision, so changing the
+model later never adds or removes a marker on an older turn; the transcript's own
+route marker records that switch where it happened. A fallback warning always
+appears there, even when its answering model matches the
 current selection, and names the requested and answering models plus the
 runtime's classified reason when one was reported. Its disclosure shows the
 bounded route chain, same-model retries, route effort, and Pi's effective thinking
@@ -651,7 +772,7 @@ settings changes never rewrite existing conversations. The layer applies only
 to interactive web-console creation: Telegram, Slack, cron, webhook, API, and
 TUI requests continue to use their own configured or request-scoped values.
 
-When a process job or Monitor event must start a standalone revival turn, it
+When a process-job event must start a standalone revival turn, it
 re-reads this conversation snapshot immediately before admission. A wake that
 can be steered into the active run instead keeps that run's existing route.
 
@@ -794,6 +915,8 @@ Web uploads use the same transport-neutral `AgentAttachment` contract and harnes
 - UTF-8 decoding for supported text files;
 - the same owner-private harness attachment persistence and model-facing attachment description.
 
+The console accepts the same MIME allowlist and canonicalizes common browser-reported aliases (for example Safari's `audio/x-m4a` for a Voice Memo) to the allowlisted type.
+
 A web turn additionally permits at most 10 files and 64 MiB in aggregate. Attachment-only turns are valid. The browser streams bytes to a staged upload with progress; it does not retain base64 copies in React state. Removing an unattached upload removes its stage, and abandoned stages are purged after 24 hours. Committed attachments remain with their conversation, including after archival.
 
 Images are shown rather than filed, and carry no chrome at all: a `png`, `jpeg`, `gif`, or `webp` attachment renders as the picture itself, with no filename, media type, size, or download button beside it. Several in one message share a single row that scrolls sideways rather than reflowing, each cropped to a common height. Selecting one opens it full size, uncropped, with paging, a counter, and a download action — that is where the whole image and its file live. Other file types keep the compact chip or card with their name and size. `svg` is never rendered inline: it is active content, so it stays a download.
@@ -811,7 +934,7 @@ index and the triggers that maintain it, backfilled from existing messages on
 first open. Schema 10 added an `origin` column to `attachments`, distinguishing a
 file the operator uploaded from the console's own durable copy of an image the
 agent generated. Schemas 11 through 17 carried per-conversation run overrides,
-the provider summary an agent advertises, Monitor wake delivery receipts, and
+the provider summary an agent advertises, host wake delivery receipts, and
 discovery presence. Schema 18 adds `messages.seq`, the per-message write counter
 a console compares against to tell the next delta from one it missed; existing
 rows start at 0, which is exactly what a browser that has never seen a delta

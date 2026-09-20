@@ -1,3 +1,4 @@
+import { ProviderUsageMeters, useProviderUsage } from "./ProviderUsageMeters";
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { useConsoleStore } from "../console-store";
@@ -95,19 +96,19 @@ export function AgentSettingsDialog({
   };
 
   return (
-    <div className="dialog-layer" role="presentation" onMouseDown={onClose}>
+    <div className="sheet-layer agent-settings-layer" role="presentation" onMouseDown={onClose}>
       <section
         ref={dialogRef}
-        className="agent-settings-dialog"
+        className="sheet agent-settings-dialog agent-settings-sheet"
         role="dialog"
         aria-modal="true"
         aria-labelledby="agent-settings-title"
         tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <header>
+        <span className="sheet-handle" aria-hidden="true" />
+        <header className="sheet-head">
           <div>
-            <span className="eyebrow">Agent settings</span>
             <h2 id="agent-settings-title">{agent.label} settings</h2>
           </div>
           <div className="agent-settings-header-actions">
@@ -177,6 +178,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   const [status, setStatus] = useState<ProviderAuthStatusSnapshot | null>(null);
   const [session, setSession] = useState<ProviderAuthSessionSnapshot | null>(null);
   const [check, setCheck] = useState<ProviderAuthCheckSessionSnapshot | null>(null);
+  const { snapshot: usage, refreshing: usageRefreshing, feedback: usageFeedback, refresh: refreshUsage } = useProviderUsage(agent, session?.state === "succeeded" ? session.id : undefined);
   const [sessionProvider, setSessionProvider] = useState<ProviderAuthProviderStatus | null>(null);
   const [methodProvider, setMethodProvider] = useState<ProviderAuthProviderStatus | null>(null);
   const [inputValue, setInputValue] = useState("");
@@ -273,9 +275,11 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
 
   useEffect(() => {
     if (agent.supportsProviderAuth !== true || agent.status === "offline") return;
+    // A completed usage read may have added passive credential evidence. This
+    // re-reads only local auth status; it never starts another vendor request.
     const controller = refresh();
     return () => controller.abort();
-  }, [sourceId, agent.generation, agent.status, agent.supportsProviderAuth]);
+  }, [sourceId, agent.generation, agent.status, agent.supportsProviderAuth, usage]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -376,7 +380,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
     };
   }, [sourceId, scopeKey, check?.id, check?.state]);
 
-  if (agent.supportsProviderAuth !== true) {
+  if (agent.supportsProviderAuth !== true && agent.supportsProviderUsage !== true) {
     return (
       <section className="provider-auth-section">
         <div><h3>Provider authentication</h3><p className="provider-auth-unavailable">Not available on this agent.</p></div>
@@ -523,7 +527,17 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   return (
     <section className="provider-auth-section">
       <div className="provider-auth-title-row">
-        <h3>Provider authentication</h3>
+        <h3>{agent.supportsProviderAuth === true ? "Provider authentication" : "Subscription usage"}</h3>
+        <div className="provider-auth-header-actions">
+        {agent.supportsProviderUsageRefresh === true && agent.supportsProviderUsage === true && (
+          <button type="button" className="secondary-button provider-auth-neutral-button" title="Refresh usage" aria-label="Refresh usage"
+            aria-describedby="provider-actions-disclosure" aria-busy={usageRefreshing}
+            disabled={agent.status === "offline" || usageRefreshing || busy || checkActive || session !== null && !terminal(session.state)}
+            onClick={() => void refreshUsage()}>
+            <Icon name="refresh" size={12} className={usageRefreshing ? "provider-usage-refreshing" : undefined} />
+            Refresh usage
+          </button>
+        )}
         {agent.supportsProviderAuthChecks === true && (
           checkActive ? (
             <button type="button" className="secondary-button provider-auth-neutral-button" aria-label="Cancel live provider checks" disabled={busy} onClick={() => void cancelCheck()}>
@@ -533,30 +547,39 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
             <button
               type="button"
               className="secondary-button provider-auth-neutral-button"
-              aria-label="Run live checks for all displayed providers"
-              aria-describedby="provider-auth-check-disclosure"
-              disabled={busy || status === null || session !== null && !terminal(session.state)}
+              aria-label="Check access"
+              aria-describedby="provider-actions-disclosure"
+              disabled={usageRefreshing || busy || status === null || session !== null && !terminal(session.state)}
               onClick={() => void startCheck()}
             >
-              Run check
+              Check access
             </button>
           )
         )}
+        </div>
       </div>
-      {agent.supportsProviderAuthChecks === true && (
-        <p id="provider-auth-check-disclosure" className="provider-auth-check-disclosure">Runs one small request per displayed provider; this may use quota or refresh OAuth.</p>
+      {(agent.supportsProviderUsageRefresh === true || agent.supportsProviderAuthChecks === true) && (
+        <p id="provider-actions-disclosure" className="provider-auth-check-disclosure">
+          {agent.supportsProviderUsageRefresh === true && "Refresh usage reads subscription limits without inference."}
+          {agent.supportsProviderUsageRefresh === true && agent.supportsProviderAuthChecks === true && " "}
+          {agent.supportsProviderAuthChecks === true && "Check access sends one small model request per configured authentication provider and may use quota or refresh OAuth."}
+        </p>
       )}
-      {status === null && authError === null && <p aria-live="polite">Loading provider status…</p>}
+      {usageFeedback !== null && <p role="status" className="provider-auth-check-disclosure">{usageFeedback}</p>}
+      {agent.supportsProviderAuth === true && status === null && authError === null && <p aria-live="polite">Loading provider status…</p>}
       <div className="provider-auth-list">
-        {status?.providers.map((provider) => {
+        {agent.supportsProviderAuth === true && status?.providers.map((provider) => {
           const actionable = provider.methods.length > 0;
           const presentation = providerAuthPresentation(provider);
           const checkResult = check?.results.find((result) => result.providerId === provider.providerId);
+          const providerUsage = usage?.providers.find((item) => item.providerId === provider.providerId);
           return (
             <article className="provider-auth-card" key={provider.providerId}>
+              <div className="provider-auth-controls">
               <div className="provider-auth-heading">
                 <b>{provider.label}</b>
                 <span className="provider-auth-badges">
+                  {providerUsage?.plan !== undefined && <span className="provider-usage-plan">{providerUsage.plan}</span>}
                   {checkResult !== undefined && (
                     <span
                       className={"provider-auth-check-result " + providerAuthCheckPresentation(checkResult).className}
@@ -571,13 +594,24 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
                 </span>
               </div>
               {actionable && (
-                <button type="button" className="secondary-button provider-auth-neutral-button" disabled={busy || checkActive} onClick={() => openFlow(provider)}>
+                <button type="button" className="secondary-button provider-auth-neutral-button" disabled={usageRefreshing || busy || checkActive} onClick={() => openFlow(provider)}>
                   {provider.state === "missing" ? "Authenticate" : "Re-authenticate"}
                 </button>
               )}
+              </div>
+              <ProviderUsageMeters usage={providerUsage} />
             </article>
           );
         })}
+        {agent.supportsProviderUsage === true && agent.supportsProviderAuth !== true && usage?.providers.map((provider) => (
+          <article className="provider-auth-card" key={provider.providerId}>
+            <div className="provider-auth-heading">
+              <b>{provider.label}</b>
+              {provider.plan !== undefined && <span className="provider-usage-plan">{provider.plan}</span>}
+            </div>
+            <ProviderUsageMeters usage={provider} />
+          </article>
+        ))}
       </div>
       {methodProvider !== null && methodProvider.methods.length > 1 && !checkActive && (
         <div className="provider-auth-flow">
@@ -667,6 +701,9 @@ function providerAuthPresentation(provider: ProviderAuthProviderStatus): {
   }
   if (provider.verification === "verified_by_live_request" && provider.lastFailure === undefined) {
     return { className: "is-ok", glyph: "✓", label: "OK" };
+  }
+  if (provider.verification === "verified_by_account_request" && provider.lastFailure === undefined) {
+    return { className: "is-ok-account", glyph: "✓", label: "Credential OK" };
   }
   return { className: "is-not-verified", glyph: "?", label: "Not verified" };
 }

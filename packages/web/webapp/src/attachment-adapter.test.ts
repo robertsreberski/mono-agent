@@ -48,11 +48,33 @@ describe("WebUploadAttachmentAdapter", () => {
     expect(inferAttachmentContentType(createFile(name))).toBe(expected);
   });
 
+  it("canonicalizes Safari's Voice Memo type to the allowlisted audio type", () => {
+    expect(inferAttachmentContentType(createFile("memo.m4a", 4, "audio/x-m4a"))).toBe("audio/mp4");
+    expect(inferAttachmentContentType(createFile("memo.m4a", 4, " Audio/X-M4A "))).toBe("audio/mp4");
+  });
+
+  it("falls back to the allowlisted type for an extension-only Voice Memo", () => {
+    expect(inferAttachmentContentType(createFile("memo.m4a"))).toBe("audio/mp4");
+  });
+
+  it("does not resolve inherited Object properties as aliases", () => {
+    expect(inferAttachmentContentType(createFile("odd.bin", 4, "constructor"))).toBe("constructor");
+  });
+
   it("advertises both MIME types and file extensions to the device picker", () => {
     const adapter = new WebUploadAttachmentAdapter(uploadLimits);
     expect(adapter.accept).toContain("text/markdown");
     expect(adapter.accept).toContain(".md");
     expect(adapter.accept).toContain(".csv");
+  });
+
+  it("still offers .m4a when the allowlist includes the canonical audio type", () => {
+    const adapter = new WebUploadAttachmentAdapter({
+      ...uploadLimits,
+      accept: [...uploadLimits.accept, "audio/mp4"],
+    });
+    expect(adapter.accept).toContain("audio/mp4");
+    expect(adapter.accept).toContain(".m4a");
   });
 
   it("serializes concurrent reservations so eleven simultaneous files cannot exceed ten", async () => {

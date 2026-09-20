@@ -374,10 +374,10 @@ It does not provide a hosted trace backend, metrics service, durable database, U
 
 ## Related Documentation
 
-- [Observability overview](https://mono-agent-docs.vercel.app/observability/)
-- [Artifacts, checkpoints, and trace registry](https://mono-agent-docs.vercel.app/observability/artifacts-and-traces/)
-- [Phoenix export and backfill](https://mono-agent-docs.vercel.app/observability/phoenix-and-backfill/)
-- [CLI command reference](https://mono-agent-docs.vercel.app/observability/cli-reference/)
+- [Observability overview](https://docs.mono-agent.dev/observability/)
+- [Artifacts, checkpoints, and trace registry](https://docs.mono-agent.dev/observability/artifacts-and-traces/)
+- [Phoenix export and backfill](https://docs.mono-agent.dev/observability/phoenix-and-backfill/)
+- [CLI command reference](https://docs.mono-agent.dev/observability/cli-reference/)
 
 ## Verification
 

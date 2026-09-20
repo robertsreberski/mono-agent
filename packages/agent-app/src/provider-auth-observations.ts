@@ -1,5 +1,5 @@
 import type { ProviderAuthProviderStatus } from "@mono-agent/agent-contracts";
-import { MAX_PROVIDER_AUTH_ITEMS } from "@mono-agent/agent-contracts";
+import { MAX_PROVIDER_AUTH_ITEMS, PROVIDER_USAGE_IDS, type ProviderUsageId } from "@mono-agent/agent-contracts";
 import type { RunSummary } from "@mono-agent/observability";
 import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
@@ -7,7 +7,9 @@ const FAILURE_TTL_MS = 24 * 60 * 60 * 1_000;
 const MAX_TRACKED_RUNS = MAX_PROVIDER_AUTH_ITEMS * 4;
 
 interface ProviderObservation {
+  /** Successful inference, stronger than account-level acceptance. */
   readonly verifiedAt?: string;
+  readonly accountVerifiedAt?: string;
   readonly failure?: NonNullable<ProviderAuthProviderStatus["lastFailure"]>;
 }
 
@@ -17,13 +19,17 @@ interface InternalProviderObservation extends ProviderObservation {
 }
 
 export interface ProviderAuthObservationTracker {
+  /** Capture before an account request; persisted credentials fence all in-flight evidence. */
+  generation(): number;
+  recordAccountSuccess(providerId: ProviderUsageId, generation: number, observedAt?: string): void;
+  recordAccountFailure(providerId: ProviderUsageId, generation: number, observedAt?: string): void;
   /** Capture the current credential generation before this run can reach a provider. */
   runStarted(runId: string): void;
   observe(summary: RunSummary): void;
   get(providerId: string): ProviderObservation | undefined;
   /** Retain observations only for the agent's current bounded used-provider set. */
   retainProviders(providerIds: readonly string[]): void;
-  /** Invalidate proof for the replaced credential while retaining only unrelated availability evidence. */
+  /** Invalidate all evidence for the replaced credential. */
   credentialPersisted(providerId: string): void;
   recordSuccess(providerId: string, model: string, observedAt?: string): void;
   recordFailure(
@@ -80,6 +86,25 @@ export function createProviderAuthObservationTracker(
     }
   };
   return {
+    generation: () => credentialGeneration,
+    recordAccountSuccess(providerId, generation, observedAt = isoNow()) {
+      if (generation !== credentialGeneration || !PROVIDER_USAGE_IDS.includes(providerId)) return;
+      const current = observations.get(providerId);
+      orderedSet(providerId, {
+        latestObservedAt: observedAt,
+        accountVerifiedAt: observedAt,
+        ...(current?.verifiedAt === undefined ? {} : { verifiedAt: current.verifiedAt }),
+        // Account acceptance says nothing about inference availability.
+        ...(current?.failure?.kind === "provider_unavailable" ? { failure: current.failure } : {}),
+      });
+    },
+    recordAccountFailure(providerId, generation, observedAt = isoNow()) {
+      if (generation !== credentialGeneration || !PROVIDER_USAGE_IDS.includes(providerId)) return;
+      orderedSet(providerId, {
+        latestObservedAt: observedAt,
+        failure: { kind: "provider_auth", message: "Provider rejected the configured credential.", observedAt },
+      });
+    },
     runStarted(runId) {
       runGenerations.delete(runId);
       runGenerations.set(runId, credentialGeneration);
@@ -114,19 +139,14 @@ export function createProviderAuthObservationTracker(
       const value = observations.get(providerId);
       if (value?.failure !== undefined
         && now() - Date.parse(value.failure.observedAt) >= FAILURE_TTL_MS) {
-        const verifiedAt = value.verifiedAt;
-        const replacement: InternalProviderObservation | undefined = verifiedAt === undefined
-          ? undefined
-          : { verifiedAt, latestObservedAt: value.latestObservedAt };
-        if (replacement === undefined) observations.delete(providerId);
+        const { failure: _failure, ...replacement } = value;
+        if (replacement.verifiedAt === undefined && replacement.accountVerifiedAt === undefined) observations.delete(providerId);
         else observations.set(providerId, replacement);
-        return verifiedAt === undefined ? undefined : { verifiedAt };
       }
-      if (value === undefined || value.verifiedAt === undefined && value.failure === undefined) return undefined;
-      return {
-        ...(value.verifiedAt === undefined ? {} : { verifiedAt: value.verifiedAt }),
-        ...(value.failure === undefined ? {} : { failure: value.failure }),
-      };
+      const retained = observations.get(providerId);
+      if (retained === undefined) return undefined;
+      const { latestObservedAt: _ordering, ...evidence } = retained;
+      return Object.keys(evidence).length === 0 ? undefined : evidence;
     },
     retainProviders(providerIds) {
       const retained = new Set(providerIds.slice(0, MAX_PROVIDER_AUTH_ITEMS));

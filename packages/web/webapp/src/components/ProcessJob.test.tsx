@@ -4,7 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api";
 import { DATA_MODE_STORAGE_KEY } from "../data-mode";
+import { backgroundSubagentJob } from "../test/background-subagent-fixtures";
+import { Icon } from "./Icon";
 import { processJob } from "../test/fixtures";
+import { RouteCapabilitiesProvider } from "./route-capabilities";
+import { ToolCallRepairProvider } from "./tool-call-repair";
 import type { ProcessJobState } from "../types";
 import {
   ProcessJobPart,
@@ -250,6 +254,27 @@ describe("ProcessJobActivityEventPart", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each(["Agent", "AgentSend", "Bash", "Exec"] as const)("uses the correct glyph for both %s lifecycle rows", (tool) => {
+    const expected = render(<Icon name={tool === "Agent" || tool === "AgentSend" ? "agent" : "terminal"} />);
+    const glyph = expected.container.querySelector("svg")!.innerHTML;
+    for (const phase of ["started", "terminal"] as const) {
+      const view = render(eventPart({
+        schema: "mono-agent.process-job-activity-event.v1",
+        id: `process-job:job-1:${phase}`,
+        toolCallId: "launch-1",
+        jobId: "job-1",
+        tool,
+        summary: "Synthetic lifecycle fixture",
+        phase,
+        state: phase === "started" ? "running" : "succeeded",
+        occurredAt: "2026-09-13T10:00:01.000Z",
+      }));
+      const row = screen.getByRole("group", { name: `${tool} job ${phase === "started" ? "started" : "succeeded"}` });
+      expect(row.querySelector(".activity-job-icon")?.innerHTML).toBe(glyph);
+      view.unmount();
+    }
+  });
+
   it("renders abnormal terminal facts and rejects malformed data", () => {
     const { rerender } = render(eventPart({
       schema: "mono-agent.process-job-activity-event.v1",
@@ -269,6 +294,100 @@ describe("ProcessJobActivityEventPart", () => {
     expect(row.querySelector(".activity-row-time")).toHaveTextContent("12.0s · exit 137 · SIGKILL");
     rerender(eventPart({ schema: "wrong" }));
     expect(screen.queryByRole("group")).toBeNull();
+  });
+
+  it("shows the folded launch arguments alongside the job facts", () => {
+    render(eventPart({
+      schema: "mono-agent.process-job-activity-event.v1",
+      id: "process-job:job-1:started",
+      toolCallId: "launch-1",
+      jobId: "job-1",
+      tool: "Agent",
+      summary: "Review the change",
+      phase: "started",
+      state: "running",
+      occurredAt: "2026-07-17T10:00:01.000Z",
+      launchArgs: { prompt: "Review the change", description: "Review the change" },
+    }));
+    const row = screen.getByRole("group", { name: "Agent job started" });
+    // The model-authored description names the row; the launch arguments wait
+    // behind the same disclosure as the job facts.
+    expect(within(row).getByText("Review the change")).toHaveClass("activity-row-summary");
+    fireEvent.click(row.querySelector("summary")!);
+    expect(screen.getByText("Input")).toBeVisible();
+    // The launch arguments render as JSON behind the disclosure, next to the
+    // job facts that were already there.
+    expect(screen.getByText(/"prompt": "Review the change"/u)).toBeVisible();
+    expect(within(row).getByText("Job")).toBeVisible();
+    expect(within(row).getByText("job-1")).toBeVisible();
+  });
+
+  it("offers a repair for a truncated launch preview", () => {
+    const repair = vi.fn(async () => true);
+    render(
+      <ToolCallRepairProvider repair={repair}>
+        {eventPart({
+          schema: "mono-agent.process-job-activity-event.v1",
+          id: "process-job:job-1:started",
+          toolCallId: "launch-1",
+          jobId: "job-1",
+          tool: "Agent",
+          summary: "Review the change",
+          phase: "started",
+          state: "running",
+          occurredAt: "2026-07-17T10:00:01.000Z",
+          launchArgs: "HEAD-",
+          launchArgsTruncated: true,
+          launchArgsBytes: 20 * 1_024,
+        })}
+      </ToolCallRepairProvider>,
+    );
+    const row = screen.getByRole("group", { name: "Agent job started" });
+    fireEvent.click(row.querySelector("summary")!);
+    expect(screen.getByText(/Preview only/u)).toBeVisible();
+    expect(screen.getByText(/20,480 chars/u)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    expect(repair).toHaveBeenCalledWith("launch-1");
+  });
+
+  it("keeps rendering retained events without launch arguments", () => {
+    render(eventPart({
+      schema: "mono-agent.process-job-activity-event.v1",
+      id: "process-job:job-1:started",
+      toolCallId: "launch-1",
+      jobId: "job-1",
+      tool: "Exec",
+      summary: "Generate the report",
+      phase: "started",
+      state: "running",
+      occurredAt: "2026-07-17T10:00:01.000Z",
+    }));
+    const row = screen.getByRole("group", { name: "Exec job started" });
+    fireEvent.click(row.querySelector("summary")!);
+    expect(screen.queryByText("Input")).toBeNull();
+    expect(within(row).getByText("job-1")).toBeVisible();
+  });
+
+  it("rejects unknown keys and orphan launch truncation flags", () => {
+    const base = {
+      schema: "mono-agent.process-job-activity-event.v1",
+      id: "process-job:job-1:started",
+      toolCallId: "launch-1",
+      jobId: "job-1",
+      tool: "Exec",
+      summary: "Generate the report",
+      phase: "started",
+      state: "running",
+      occurredAt: "2026-07-17T10:00:01.000Z",
+    };
+    const { rerender } = render(eventPart({ ...base, launchArgs: { command: "run" }, extra: true }));
+    expect(screen.queryByRole("group")).toBeNull();
+    rerender(eventPart({ ...base, launchArgsTruncated: true }));
+    expect(screen.queryByRole("group")).toBeNull();
+    rerender(eventPart({ ...base, launchArgsBytes: 12 }));
+    expect(screen.queryByRole("group")).toBeNull();
+    rerender(eventPart({ ...base, launchArgs: { command: "run" }, launchArgsTruncated: true }));
+    expect(screen.getByRole("group", { name: "Exec job started" })).toBeInTheDocument();
   });
 });
 
@@ -293,7 +412,7 @@ describe("ProcessJobPart", () => {
     expect(screen.getByText("done")).toBeVisible();
     // The card shows the job's output, never the host-local files it was spooled to.
     expect(screen.queryByText(/artifacts\/11111111-1111-4111-8111-111111111111\//u)).toBeNull();
-    expect(screen.getByText("delivered (1 attempt)")).toBeVisible();
+    expect(row.querySelector(".process-job-live-meta")).toBeNull();
     expect(screen.getByText("Output")).toBeVisible();
     expect(screen.queryByText("Output (truncated)")).toBeNull();
   });
@@ -313,10 +432,11 @@ describe("ProcessJobPart", () => {
 
     const row = screen.getByRole("group", { name: `Exec background job ${label}` });
     expect(row).toHaveClass("is-failed");
-    // The payload's State fact repeats the word; the row's tag is the one on the summary line.
+    // The row's tag is the one retained state label; the payload no longer repeats it.
     expect(within(row.querySelector("summary")!).getByText(label)).toHaveClass("failed-tag");
     expect(row.querySelector(".activity-row-time")).toHaveTextContent("12s · SIGKILL");
     expect(row.querySelector(".activity-row-time")?.textContent).not.toContain(label);
+    expect(row.querySelector(".process-job-live-meta")).toHaveTextContent("SIGKILL");
   });
 
   it("surfaces a failed wake on the row and its error in the payload", () => {
@@ -338,7 +458,7 @@ describe("ProcessJobPart", () => {
     const error = screen.getByText(/Process-job wake delivery failed/u).closest(".activity-error");
     expect(error).not.toBeNull();
     expect(error).toHaveTextContent("process_job_wake_failed");
-    expect(screen.getByText("failed (3 attempts)")).toBeVisible();
+    expect(row.querySelector(".process-job-live-meta")).toHaveTextContent("wake failed (3 attempts)");
   });
 
   it("shows receipt uncertainty without claiming a definite delivery failure", () => {
@@ -502,6 +622,35 @@ describe("ProcessJobPart", () => {
     expect(screen.getByText("partial")).toBeVisible();
     expect(screen.queryByText("Artifacts")).toBeNull();
     expect(screen.queryByText(/stdout\.log/u)).toBeNull();
+  });
+
+  it("says a running job has no output yet instead of showing an empty card", () => {
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const complete = processJob();
+    const view = render(part({
+      type: "process-job",
+      job: processJob({
+        state: "running",
+        timestamps: { ...complete.timestamps, completedAt: null },
+        wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+        output: { ...complete.output, stdoutBytes: 0, stderrBytes: 0, preview: "" },
+        exitCode: null,
+        durationMs: null,
+      }),
+    }));
+    fireEvent.click(screen.getByRole("group", { name: "Exec background job running" }).querySelector("summary")!);
+    expect(screen.getByText("No output yet.")).toBeVisible();
+    expect(view.container.querySelector(".process-job-output")).toBeNull();
+    expect(screen.queryByText("Output")).toBeNull();
+  });
+
+  it("says a settled job produced no output at all", () => {
+    render(part({
+      type: "process-job",
+      job: processJob({ output: { ...processJob().output, stdoutBytes: 0, stderrBytes: 0, preview: "" } }),
+    }));
+    fireEvent.click(screen.getByRole("group", { name: "Exec background job succeeded" }).querySelector("summary")!);
+    expect(screen.getByText("No output.")).toBeVisible();
   });
 
   it("ticks a running job once a second in server time and stops on a terminal poll", async () => {
@@ -812,7 +961,159 @@ describe("ProcessJobPart", () => {
   });
 });
 
-it("shows unresolved internal child ownership on a terminal job card", () => {
-  render(part({ type: "process-job", job: processJob({ tool: "Agent", kind: "internal", instanceId: "helper", state: "timed_out", childStillBusy: true }) }));
-  expect(screen.getByText("child still busy · awaiting actual settlement")).toBeInTheDocument();
+it.each(["queued", "starting", "running"] as const)("hides unresolved internal child ownership while %s", (state) => {
+  vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+  const base = processJob();
+  const job = processJob({ tool: "Agent", kind: "internal", instanceId: "helper", state, childStillBusy: true,
+    timestamps: { ...base.timestamps, startedAt: state === "queued" ? null : base.timestamps.startedAt, completedAt: null },
+    durationMs: null, exitCode: null, wake: { ...base.wake, state: "pending", attempts: 0, lastAttemptAt: null } });
+  render(part({ type: "process-job", job }));
+  const row = screen.getByRole("group", { name: `Agent background job ${state}` });
+  expect(within(row).queryByText("child still busy · awaiting actual settlement")).toBeNull();
+  expect(row.querySelector(".activity-row-alert")).toBeNull();
+});
+
+it.each(["succeeded", "failed", "timed_out", "cancelled", "spawn_failed", "queue_expired", "interrupted"] as const)(
+  "shows unresolved internal child ownership after %s",
+  (state) => {
+    const job = processJob({ tool: "Agent", kind: "internal", instanceId: "helper", state, childStillBusy: true });
+    render(part({ type: "process-job", job }));
+    const row = screen.getByRole("group", { name: `Agent background job ${state.replaceAll("_", " ")}` });
+    expect(row.querySelector(".activity-row-time .activity-row-alert"))
+      .toHaveTextContent("child still busy · awaiting actual settlement");
+  },
+);
+
+it.each(["external", "internal"] as const)("renders no live metadata container for a nonterminal %s job without progress", (kind) => {
+  vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+  const base = processJob();
+  const runningFields = { state: "running" as const, timestamps: { ...base.timestamps, completedAt: null },
+    durationMs: null, exitCode: null, wake: { ...base.wake, state: "pending" as const, attempts: 0, lastAttemptAt: null } };
+  const running = kind === "internal"
+    ? processJob({ ...runningFields, tool: "Agent", kind: "internal", instanceId: "helper", childStillBusy: false })
+    : processJob(runningFields);
+  const view = render(part({ type: "process-job", job: running }));
+  expect(view.container.querySelector(".process-job-live-meta")).toBeNull();
+  expect(view.container.querySelector("dl.process-job-facts")).toBeNull();
+});
+
+describe("background native subagent cards", () => {
+  it.each(["Agent", "AgentSend"] as const)("renders %s clustered progress and report, never command output", (tool) => {
+    const job = backgroundSubagentJob(true, tool);
+    const view = render(part({ job: { ...job, output: { ...job.output, preview: "PRIVATE_RAW_JSON" } } }));
+    const card = screen.getByRole("group", { name: `${tool} background job succeeded` });
+    fireEvent.click(card.querySelector("summary")!);
+    expect(screen.getByRole("region", { name: "Subagent progress" })).toBeVisible();
+    expect(screen.getByText("Bash ×6")).toBeVisible();
+    expect(screen.getByText("Read ×3")).toBeVisible();
+    expect(screen.getByText("module-6.ts, module-7.ts +1")).toBeVisible();
+    fireEvent.click(screen.getByText("Read ×3").closest("summary")!);
+    expect(screen.getByText("~/worktrees/synthetic/src/module-6.ts")).toBeVisible();
+    expect(screen.getByRole("region", { name: "Subagent report" })).toHaveTextContent("Synthetic report");
+    expect(screen.queryByText("PRIVATE_RAW_JSON")).toBeNull();
+    expect(view.container.querySelector(".process-job-output")).toBeNull();
+    // The empty-tail stand-in belongs to command output, which a subagent card
+    // never shows: its progress region is the payload.
+    expect(view.container.querySelector(".process-job-empty-output")).toBeNull();
+    const icon = render(<Icon name="agent" />);
+    expect(card.querySelector(".activity-job-icon")?.innerHTML).toBe(icon.container.querySelector("svg")?.innerHTML);
+    const meta = card.querySelector(".process-job-live-meta");
+    expect(meta).toHaveTextContent("implementer");
+    expect(meta).toHaveTextContent("45 tools, 1 failed");
+    expect(meta).toHaveTextContent("$0.01");
+    expect(meta).not.toHaveTextContent(/wake|exit|signal/iu);
+    expect(meta?.querySelector("dt")).toBeNull();
+    expect(screen.getByRole("img", { name: /Ran with anthropic:claude-sonnet-4\.5/u })).not.toHaveClass("is-requested");
+  });
+
+  it("shows requested route and one compact unlabelled metadata line while a child is running", () => {
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const view = render(part({ job: backgroundSubagentJob() }));
+    const meta = view.container.querySelector(".process-job-live-meta");
+    expect(meta).toHaveTextContent("implementer");
+    expect(meta).toHaveTextContent("45 tools, 1 failed");
+    expect(meta).not.toHaveTextContent("$");
+    expect(meta?.querySelectorAll("dt")).toHaveLength(0);
+    expect(meta?.querySelectorAll(".route-badge")).toHaveLength(1);
+    expect(screen.getByRole("img", { name: /requested, not a confirmed run/u })).toHaveClass("is-requested");
+  });
+
+  it("flags a fallback route and omits the route badge for legacy progress", () => {
+    const job = backgroundSubagentJob(true);
+    const fallback = { ...job, subagentProgress: { ...job.subagentProgress!, route: {
+      requested: { model: "anthropic:claude-sonnet-4.5", effort: "high" },
+      executed: { model: "openai-codex:gpt-5.6-sol", effort: "xhigh", effectiveEffort: "max" },
+      disposition: "fallback" as const,
+    } } };
+    const view = render(part({ job: fallback }));
+    fireEvent.click(screen.getByRole("group", { name: "Agent background job succeeded" }).querySelector("summary")!);
+    const badge = screen.getByRole("img", { name: /Fallback: anthropic:claude-sonnet-4\.5 → openai-codex:gpt-5\.6-sol/u });
+    expect(badge).toHaveClass("is-fallback");
+    expect(badge.querySelector(".route-badge-flag")).toHaveTextContent("!");
+
+    const { route: _route, costUsd: _costUsd, ...legacyProgress } = job.subagentProgress!;
+    view.unmount();
+    const legacy = render(part({ job: { ...job, subagentProgress: legacyProgress } }));
+    fireEvent.click(screen.getByRole("group", { name: "Agent background job succeeded" }).querySelector("summary")!);
+    expect(legacy.container.querySelector(".route-badge")).toBeNull();
+    expect(legacy.container.querySelector(".process-job-live-meta")).toHaveTextContent("implementer·45 tools, 1 failed");
+    expect(legacy.container.querySelector(".process-job-live-meta")).not.toHaveTextContent("$");
+  });
+
+  it("normalizes a retained empty executed route back to requested-only", () => {
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const job = backgroundSubagentJob();
+    render(part({ job: { ...job, subagentProgress: { ...job.subagentProgress!, route: {
+      requested: { model: "anthropic:claude-sonnet-4.5", effort: "high" },
+      executed: {},
+      disposition: "requested" as const,
+    } } } }));
+    const badge = screen.getByRole("img", { name: /requested, not a confirmed run/u });
+    expect(badge).toHaveClass("is-requested");
+    expect(badge).toHaveTextContent("Sonnet 4.5·high");
+    expect(badge).not.toHaveTextContent("—");
+  });
+
+  it("renders effort bars when the owning catalog knows the model's ladder, with text as the unknown-catalog fallback", () => {
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const job = backgroundSubagentJob();
+    const view = render(<RouteCapabilitiesProvider agent={null} catalogByProvider={{ anthropic: { models: [{
+      id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", provider: "anthropic", providerLabel: "Anthropic",
+      reasoning: true, effortLevels: ["low", "medium", "high"],
+    }] } }}>{part({ job })}</RouteCapabilitiesProvider>);
+    expect(view.container.querySelector(".effort-signal")).toHaveAttribute("data-levels", "3");
+    expect(view.container.querySelector(".effort-signal")).toHaveAttribute("data-filled", "3");
+    expect(view.container.querySelector(".route-badge-effort")).toBeNull();
+
+    view.rerender(part({ job }));
+    expect(view.container.querySelector(".effort-signal")).toBeNull();
+    expect(view.container.querySelector(".route-badge-effort")).toHaveTextContent("high");
+  });
+
+  it("styles retained-progress notes separately from the empty state", () => {
+    const job = backgroundSubagentJob(true);
+    const extra = Array.from({ length: 5 }, (_, index) => ({
+      ...job.subagentProgress!.recent[index]!,
+      id: `extra-${String(index)}`,
+    }));
+    render(part({ job: { ...job, subagentProgress: { ...job.subagentProgress!, toolCalls: 60,
+      recent: [...job.subagentProgress!.recent, ...extra] } } }));
+    fireEvent.click(screen.getByRole("group", { name: "Agent background job succeeded" }).querySelector("summary")!);
+    expect(screen.getByText("Showing the latest 50 of 60 calls.")).toHaveClass("process-job-subagent-note");
+  });
+
+  it("auto-opens on progress and preserves manual collapse and newer revisions", async () => {
+    const job = backgroundSubagentJob();
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const view = render(part({ job }));
+    const card = screen.getByRole("group", { name: "Agent background job running" });
+    expect(card).toHaveAttribute("open");
+    fireEvent.click(card.querySelector("summary")!);
+    view.rerender(part({ job: backgroundSubagentJob(true) }));
+    expect(card).not.toHaveAttribute("open");
+    const stale = { ...job, subagentProgress: { ...job.subagentProgress!, revision: 1, toolCalls: 0, recent: [] } };
+    expect(mergeProcessJobProjection(job, stale)).toEqual(job);
+    const { subagentProgress: _progress, ...legacy } = job;
+    expect(mergeProcessJobProjection(job, legacy)).toEqual(job);
+  });
 });

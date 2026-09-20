@@ -53,7 +53,15 @@ function renderHeaderFixture(): { readonly panel: HTMLElement; readonly header: 
   const header = document.createElement("header");
   header.className = "chat-header";
   panel.append(header);
-  document.body.append(panel);
+  const initialDocument = new DOMParser().parseFromString(indexHtml, "text/html");
+  const sampler = initialDocument.querySelector(".status-bar-surface")!;
+  const root = document.createElement("div");
+  root.id = "root";
+  const shell = document.createElement("div");
+  shell.className = "app-shell";
+  shell.append(panel);
+  root.append(shell);
+  document.body.append(sampler.cloneNode(true), root);
   return { panel, header };
 }
 
@@ -84,6 +92,33 @@ function parseComputedColor(color: string): Rgba {
 }
 
 function readHeaderPresentation(panel: HTMLElement, header: HTMLElement): HeaderPresentation {
+  const sampler = document.querySelector<HTMLElement>(".status-bar-surface")!;
+  const shell = document.querySelector<HTMLElement>(".app-shell")!;
+  const samplerStyle = getComputedStyle(sampler);
+  const samplerRect = sampler.getBoundingClientRect();
+  expect(samplerStyle.position).toBe("fixed");
+  expect(samplerStyle.top).toBe("0px");
+  expect(samplerRect.top).toBe(0);
+  expect(samplerRect.left).toBe(0);
+  expect(samplerRect.width).toBe(window.innerWidth);
+  expect(samplerRect.height).toBe(1);
+  expect(samplerStyle.pointerEvents).toBe("none");
+  expect(samplerStyle.zIndex).toBe("-1");
+  expect(sampler.inert).toBe(true);
+  expect(sampler.tabIndex).toBe(-1);
+  expect(samplerStyle.backgroundColor).toBe(getComputedStyle(shell).backgroundColor);
+  expect(samplerStyle.backgroundColor).toBe(getComputedStyle(document.body).backgroundColor);
+  expect(samplerStyle.backgroundColor).toBe(getComputedStyle(document.documentElement).backgroundColor);
+  expect(document.elementsFromPoint(10, 0)).not.toContain(sampler);
+  expect(shell.getBoundingClientRect().top).toBe(0);
+  expect(shell.getBoundingClientRect().height).toBe(window.innerHeight);
+  const shellRect = shell.getBoundingClientRect().toJSON();
+  const headerRect = header.getBoundingClientRect().toJSON();
+  sampler.remove();
+  expect(shell.getBoundingClientRect().toJSON()).toEqual(shellRect);
+  expect(header.getBoundingClientRect().toJSON()).toEqual(headerRect);
+  document.body.prepend(sampler);
+
   const panelStyle = getComputedStyle(panel);
   const headerStyle = getComputedStyle(header);
   const panelColor = parseComputedColor(panelStyle.backgroundColor);

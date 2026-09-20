@@ -1,8 +1,9 @@
 // @ts-check
 
-/** @param {{submit(question: {question: string, options?: string[]}): Promise<void>}|null} [controller] */
-export function createAskParentTool(controller = null) {
-  if (!controller) return null;
+/** @param {{submit(question: {question: string, options?: string[]}): Promise<void>}|null} [controller]
+ * @param {boolean} [exposed] */
+export function createAskParentTool(controller = null, exposed = Boolean(controller)) {
+  if (!exposed) return null;
   let submitted = false;
   return {
     name: "AskParent", label: "AskParent", executionMode: "sequential",
@@ -16,6 +17,7 @@ export function createAskParentTool(controller = null) {
     },
     /** @param {string} _id @param {{question: string, options?: string[]}} params @param {AbortSignal} [signal] */
     async execute(_id, params, signal) {
+      if (!controller) throw new Error("AskParent is unavailable this turn.");
       if (signal?.aborted) throw new Error("tool execution aborted");
       if (!params || Object.keys(params).some((key) => !["question", "options"].includes(key))
         || typeof params.question !== "string" || !params.question.trim() || params.question.length > 2000) throw new Error("AskParent question must be non-empty and at most 2000 characters.");

@@ -1,12 +1,15 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/agent-harness";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { buildSubagentsOptions, createSubagentsRuntimeExtension } from "../configured-agent.js";
 // @ts-expect-error Private runtime seam.
 import { createAgentSendTool } from "../../../agent-runtime/src/agent/tools/agent-send-tool.js";
-import { createSubagentInstanceRegistry } from "../subagent-instances.js";
+import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 import { describe, expect, it, vi } from "vitest";
 
-import type { MonoAgentConfig } from "@mono-agent/config";
+import { loadMonoAgentConfig, type MonoAgentConfig } from "@mono-agent/config";
 // Exercise the private tool-to-app seam without adding a public runtime export.
 // @ts-expect-error -- package-private JavaScript has no public declaration.
 import { createAgentTool } from "../../../agent-runtime/src/agent/tools/agent-tool.js";
@@ -17,6 +20,11 @@ const harnessMock = vi.fn((options: Record<string, unknown>) => ({
   run: vi.fn(),
   dispose: vi.fn(async () => undefined),
 }));
+const availableOwnerFenceSandboxEngine = {
+  id: "configured-owner-fence-test",
+  async isAvailable() { return true; },
+  async prepareCommand(command: unknown) { return command; },
+} as never;
 
 // The single-runtime app describes every parseable model as the Pi backend,
 // which supports skills. The skills guard below still has to fail closed for a
@@ -79,6 +87,7 @@ vi.mock("../process-jobs-root-registry.js", async (importOriginal) => ({
 }));
 
 const { createConfiguredAgentHarness } = await import("../index.js");
+const { createConfiguredAgentResponderForApp } = await import("../configured-agent.js");
 
 const PRIMARY = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } as const;
 const HAIKU = { provider: "anthropic", model: "claude-haiku-4-5", reference: "anthropic:claude-haiku-4-5" } as const;
@@ -190,11 +199,11 @@ describe("configured subagents", () => {
     expect(result).toMatchObject({ text: "child answer" });
     expect(runtime.run).toHaveBeenCalledOnce();
     const [prompt, options] = runtime.run.mock.calls[0] as unknown as [string, Record<string, unknown>];
-    expect(prompt).toBe("You research.");
+    expect(prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
     expect(options).toMatchObject({
       model: PRIMARY,
       maxTurns: 12,
-      messages: [{ role: "user", content: "find X" }],
+      messages: [{ role: "user", content: expect.stringMatching(/<host_turn_context>[\s\S]*<\/host_turn_context>\n\nfind X$/u) }],
       allowedTools: ["Read", "Grep"],
       mcpServers: {},
       subagents: { depth: 1 },
@@ -374,7 +383,7 @@ describe("subagent confinement and context inheritance", () => {
   it("stays inert when the parent disclosed no skills", async () => {
     const { prompt, options } = await runChild();
 
-    expect(prompt).toBe("You research.");
+    expect(prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
     expect(options).not.toHaveProperty("skills");
     expect(options).not.toHaveProperty("skillsRoot");
   });
@@ -384,11 +393,11 @@ describe("subagent confinement and context inheritance", () => {
     // silently omitting the tool rather than erroring, so never send one alone.
     const noRoot = await runChild({ skills: SKILLS });
     expect(noRoot.options).not.toHaveProperty("skills");
-    expect(noRoot.prompt).toBe("You research.");
+    expect(noRoot.prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
 
     const noSkills = await runChild({ skillsRoot: "/repo/skills" });
     expect(noSkills.options).not.toHaveProperty("skills");
-    expect(noSkills.prompt).toBe("You research.");
+    expect(noSkills.prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
   });
 
   it("withholds skills from a profile that denies ReadSkill, under either spelling", async () => {
@@ -399,7 +408,7 @@ describe("subagent confinement and context inheritance", () => {
         definition: { name: "researcher", disallowedTools: [denied] },
       });
       expect(options, denied).not.toHaveProperty("skills");
-      expect(prompt, denied).toBe("You research.");
+      expect(prompt, denied).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
     }
   });
 
@@ -413,7 +422,7 @@ describe("subagent confinement and context inheritance", () => {
     );
 
     expect(options).not.toHaveProperty("skills");
-    expect(prompt).toBe("You research.");
+    expect(prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
   });
 
   it("withholds skills from a profile pinned to a runtime that cannot use them", async () => {
@@ -443,7 +452,7 @@ describe("subagent confinement and context inheritance", () => {
 
     const [prompt, options] = overrideRuntime.run.mock.calls[0] as unknown as [string, Record<string, unknown>];
     expect(options).not.toHaveProperty("skills");
-    expect(prompt).toBe("You research.");
+    expect(prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
   });
 });
 
@@ -491,6 +500,116 @@ describe("in-flight subagent ceiling", () => {
   });
 });
 
+
+it("G11: configured registry callback through actual harness Session context excludes private canaries from runtime input", async () => {
+  const root = await mkdtemp(resolve(process.cwd(), "node_modules/.session-privacy-"));
+  let harness: ReturnType<typeof import("@mono-agent/agent-harness")["createAgentHarness"]> | undefined;
+  try {
+    const registryRoot = resolve(root, "PRIVATE-REGISTRY-CANARY"); const key = "beef".repeat(16);
+    const observationPath = resolve(root, "PRIVATE-OBSERVATION-CANARY"); const reportBody = "PRIVATE-REPORT-BODY-CANARY";
+    const config = monoConfig({ enabled: true, instances: { root: registryRoot } }, { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] });
+    const local = { ...config, runtime: { ...config.runtime, workspace: root }, context: { ...config.context, identityPath: resolve(root, "IDENTITY.md") },
+      artifacts: { ...config.artifacts, dir: resolve(root, "artifacts") }, traceability: { ...config.traceability, registryDir: resolve(root, "trace") } };
+    await writeFile(local.context.identityPath, "Handle the current request safely."); await writeFile(resolve(root, "report.txt"), reportBody);
+    const { runtime } = await buildSubagents(local);
+    const registry = createSubagentInstanceRegistry({ root: registryRoot, retireSession: async () => {} }); const handle = await registry.open("one");
+    const created = await handle.create({ id: "critic", name: "critic", systemPrompt: "review", definition: { name: "critic", description: "review", systemPrompt: "review" } });
+    const file = resolve(subagentConversationRoot(registryRoot, "one"), "instances.json");
+    const disk = JSON.parse(await readFile(file, "utf8"));
+    // Valid synthetic persisted private fields; no owner release is inferred.
+    disk[0].recoveryBinding.key = key; disk[0].recovery = { turnToken: randomUUID(), sequence: 1, reason: "timeout", continuity: "unknown" };
+    disk[0].verificationTarget = { workdir: observationPath, reportPath: "report.txt", device: "1", inode: "2", gitEntry: null };
+    await writeFile(file, JSON.stringify(disk));
+    const options = harnessMock.mock.calls[0]![0];
+    const actual = await vi.importActual<typeof import("@mono-agent/agent-harness")>("@mono-agent/agent-harness");
+    harness = actual.createAgentHarness(options as never);
+    await harness.run({ conversationId: "one", userMessage: "Describe available recovery without replaying.", abortSignal: new AbortController().signal });
+    expect(runtime.run).toHaveBeenCalledOnce();
+    const [prompt, runtimeOptions] = runtime.run.mock.calls[0]!;
+    const visible = JSON.stringify([prompt, runtimeOptions.messages]);
+    expect(visible).toContain(created.id); expect(visible).toContain("recovery blocked: inspect with AgentSend");
+    expect(JSON.stringify(runtimeOptions.messages)).toContain("<host_turn_context>");
+    for (const canary of [key, registryRoot, observationPath, reportBody]) expect(visible).not.toContain(canary);
+    expect(JSON.stringify(runtimeOptions)).not.toContain(key);
+    expect(JSON.stringify(runtimeOptions)).not.toContain(observationPath);
+    expect(JSON.stringify(runtimeOptions)).not.toContain("recoveryBinding");
+  } finally { await harness?.dispose?.(); await rm(root, { recursive: true, force: true }); }
+});
+
+it.each(["disabled", "failed-start", "undefined-standalone", "retained-history"])("G02/G03: configured %s ProcessJobs composition keeps an abandoned child fenced", async (mode) => {
+  const root = await mkdtemp(resolve(process.cwd(), "node_modules/.configured-owner-fence-"));
+  let responder: Awaited<ReturnType<typeof createConfiguredAgentResponderForApp>> | undefined;
+  try {
+    const instancesRoot = resolve(root, "children"); const jobsRoot = resolve(root, "jobs"); const jobId = randomUUID();
+    const moduleUrl = new URL("../../dist/subagent-instances.js", import.meta.url).href;
+    execFileSync(process.execPath, ["--input-type=module", "-e", `
+      import { createSubagentInstanceRegistry } from ${JSON.stringify(moduleUrl)};
+      const handle = await createSubagentInstanceRegistry({ root: ${JSON.stringify(instancesRoot)}, retireSession: async () => {},
+        ownerForReservation: (token) => ({ jobId: token, storeRoot: ${JSON.stringify(jobsRoot)} }) }).open("conversation");
+      const created = await handle.create({ id: "child", name: "child", systemPrompt: "Review", definition: { name: "child", description: "Review", systemPrompt: "Review" } });
+      await handle.reserve("child", ${JSON.stringify(jobId)});
+      await handle.begin("child", ${JSON.stringify(jobId)});
+      if (${JSON.stringify(mode === "retained-history")}) {
+        const publication = { identity: { storeRoot: ${JSON.stringify(jobsRoot)}, jobId: ${JSON.stringify(jobId)}, conversationId: "conversation",
+          instanceId: "child", instanceIncarnation: created.incarnation, turnToken: ${JSON.stringify(jobId)} }, sequence: 1,
+          disposition: { status: "ok", continuity: "retained" }, released: true, outcome: { status: "ok" } };
+        await handle.publishOwned("intent", publication);
+        await handle.publishOwned("confirm", publication);
+      }
+      process.exit(0);
+    `], { cwd: root, timeout: 10_000 });
+    const base = monoConfig({ enabled: true, instances: { root: instancesRoot } }, { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] });
+    const config = { ...base, runtime: { ...base.runtime, workspace: root }, context: { ...base.context, identityPath: resolve(root, "IDENTITY.md") },
+      artifacts: { ...base.artifacts, dir: resolve(root, "artifacts") }, traceability: { ...base.traceability, registryDir: resolve(root, "trace") },
+      processJobs: { enabled: mode !== "disabled" && mode !== "undefined-standalone" } } as MonoAgentConfig;
+    await writeFile(config.context.identityPath, "Keep abandoned ownership fenced.");
+    harnessMock.mockClear();
+    const runtime = { run: vi.fn(async (_prompt: string, options: Record<string, unknown>) => ({ text: "must not run", providerSessionId: options.sessionId })) };
+    const registry = { kind: "ready", agentRoot: root, registryDir: resolve(root, "roots"), manifestPath: resolve(root, "roots/registry.json"),
+      mutationLockPath: resolve(root, "roots.lock"), generation: { id: "generation", rootKeys: ["root"] },
+      roots: [{ canonicalPath: jobsRoot }], protectedRoots: [jobsRoot] } as never;
+    const hooks = mode === "undefined-standalone" ? undefined : { processJobs: { registry, service: undefined, channelId: "slack",
+      protectionPosture: { kind: mode === "disabled" ? "inactive" : "unavailable", retainedRoots: true, requiresPiNative: true,
+        suppressSyntheticSandbox: false, unsafeAllowUnprotectedState: false } } };
+    // This matrix proves retained owner fencing, not host SRT discovery. Supply
+    // the explicit available engine that production composition requires; the
+    // missing/unavailable-engine provider-zero contract has unconditional tests.
+    const responderOptions = { config, runtime: runtime as never, sandboxEngine: availableOwnerFenceSandboxEngine } as never;
+    responder = hooks
+      ? await createConfiguredAgentResponderForApp(responderOptions, hooks as never)
+      : await createConfiguredAgentResponderForApp(responderOptions, {});
+    const options = harnessMock.mock.calls[0]![0] as { runtimeOptionsForRequest(input: unknown): Promise<{ runtimeOptions?: { subagents?: unknown } }> };
+    const extension = await options.runtimeOptionsForRequest({ request: { conversationId: "conversation", metadata: { channel: "slack" } }, runId: "run", context: { sections: [] } });
+    const scoped = extension.runtimeOptions!.subagents as never;
+    await expect(createAgentSendTool(scoped).execute("send", { id: "child", message: "must not run" }))
+      .rejects.toThrow(/busy|subagent_owner_unavailable/u);
+    await expect(createAgentTool(scoped).execute("replacement", { persist: true, id: "replacement", prompt: "must not run" }))
+      .rejects.toMatchObject({ code: "subagent_owner_unavailable" });
+    expect(runtime.run).not.toHaveBeenCalled();
+  } finally { await (responder as { dispose?: () => Promise<void> } | undefined)?.dispose?.(); await rm(root, { recursive: true, force: true }); }
+});
+
+it("G02: configured no-service composition preserves a clean foreground continuation", async () => {
+  const root = await mkdtemp(resolve(process.cwd(), "node_modules/.configured-clean-continuation-"));
+  let responder: Awaited<ReturnType<typeof createConfiguredAgentResponderForApp>> | undefined;
+  try {
+    const instancesRoot = resolve(root, "children");
+    const registry = createSubagentInstanceRegistry({ root: instancesRoot, retireSession: async () => {} });
+    await (await registry.open("conversation")).create({ id: "child", name: "child", systemPrompt: "Review", definition: { name: "child", description: "Review", systemPrompt: "Review" } });
+    const base = monoConfig({ enabled: true, instances: { root: instancesRoot } }, { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] });
+    const config = { ...base, runtime: { ...base.runtime, workspace: root }, context: { ...base.context, identityPath: resolve(root, "IDENTITY.md") },
+      artifacts: { ...base.artifacts, dir: resolve(root, "artifacts") }, traceability: { ...base.traceability, registryDir: resolve(root, "trace") },
+      processJobs: { enabled: false } } as MonoAgentConfig;
+    await writeFile(config.context.identityPath, "Continue clean children without ProcessJobs.");
+    harnessMock.mockClear();
+    const runtime = { run: vi.fn(async (_prompt: string, options: Record<string, unknown>) => ({ text: "continued once", providerSessionId: options.sessionId })) };
+    responder = await createConfiguredAgentResponderForApp({ config, runtime: runtime as never } as never, {});
+    const options = harnessMock.mock.calls[0]![0] as { runtimeOptionsForRequest(input: unknown): Promise<{ runtimeOptions?: { subagents?: unknown } }> };
+    const extension = await options.runtimeOptionsForRequest({ request: { conversationId: "conversation" }, runId: "run", context: { sections: [] } });
+    const result = await createAgentSendTool(extension.runtimeOptions!.subagents as never).execute("send", { id: "child", message: "continue" });
+    expect(result.details).toMatchObject({ subagent: { status: "ok" } }); expect(runtime.run).toHaveBeenCalledOnce();
+  } finally { await (responder as { dispose?: () => Promise<void> } | undefined)?.dispose?.(); await rm(root, { recursive: true, force: true }); }
+});
 
 it("wires the Session envelope to the current conversation's live registry", async () => {
   const root = await mkdtemp(resolve(process.cwd(), ".subagent-envelope-"));
@@ -550,7 +669,7 @@ it("reapplies current denies and MCP catalog after registry/config restart while
     const resumed = await extension({ request: { conversationId: "c" }, runId: "r2" } as never);
     await createAgentSendTool(resumed.runtimeOptions!.subagents).execute("b", { id: "research", message: "next" });
     const [prompt, options] = runtime.run.mock.calls[1]!;
-    expect(prompt).toBe("You research.");
+    expect(prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
     expect(options).toMatchObject({ model: PRIMARY, effort: "high", mcpServers: { selected: { command: "new-server" } } });
     expect(options.disallowedTools).toEqual(expect.arrayContaining(["Read", "mcp__selected__danger", "Agent", "AgentSend"]));
     await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: {} }));
@@ -603,4 +722,15 @@ describe("AskParent child policy and durable controller", () => {
       expect(result.details.subagent.status).toBe(["allowed", "retry"].includes(policy) ? "awaiting_reply" : "ok");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+});
+
+
+it.each([undefined, "short", "long"] as const)("forwards resolved %s retention to parent and child routes", async (cacheRetention) => {
+  const providers = loadMonoAgentConfig({ cwd: "/repo", env: { MONO_AGENT_IDENTITY_PATH: "IDENTITY.md", MONO_AGENT_MODEL: "anthropic:claude-sonnet-4-6", MONO_AGENT_PI_CACHE_RETENTION: cacheRetention, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "true" } }).providers;
+  const config = { ...monoConfig({ enabled: true, definitions: [RESEARCHER] }), providers } as MonoAgentConfig;
+  const expectedRetention = cacheRetention ?? "long";
+  const { runtime, subagents } = await buildSubagents(config);
+  expect(harnessMock.mock.calls[0]?.[0].runtimeOptions).toMatchObject({ cacheRetention: expectedRetention });
+  await (subagents?.run as (request: unknown) => Promise<unknown>)({ systemPrompt: "You research.", prompt: "find X", definition: { name: "researcher", allowedTools: ["Read"] }, maxTurns: 1, depth: 1, abortSignal: new AbortController().signal, onEvent: () => {} });
+  expect(runtime.run.mock.calls[0]?.[1]).toMatchObject({ cacheRetention: expectedRetention, promptCacheDiagnostics: true });
 });

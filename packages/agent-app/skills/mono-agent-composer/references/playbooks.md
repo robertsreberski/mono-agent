@@ -3,7 +3,7 @@
 Condensed, offline copy of the end-to-end recipes. Each maps a persona/goal to a
 concrete `mono-agent.config.json` shape and the `init → configure → validate →
 start → smoke` flow. Mirrors the published Playbooks index
-(<https://mono-agent-docs.vercel.app/playbooks/>); this file is the
+(<https://docs.mono-agent.dev/playbooks/>); this file is the
 self-contained in-skill version so the composer can offer a matching recipe
 without fetching anything. Before hand-assembling a config in the Composition
 Flow, check whether one of these fits and adapt it. Verify every key against
@@ -11,17 +11,6 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 
 ---
 
-## Efficient command watches
-
-For repeated terminal redraws, enable `processJobs.enabled` and
-`monitors.enabled`, then use Monitor with `wake_on: "batch"`,
-`dedupe: "batch"`, and a chosen `min_wake_interval_ms`. The host clamps the
-interval to `monitors.maxWakeIntervalMs` (default/cap 300000); check the start
-receipt's effective policy. First and terminal wakes bypass the floor.
-Use `wake_on: "exit"` with default dedupe/interval for exactly one terminal
-wake and a bounded retained tail. Finite work whose final result matters still
-fits a background process job. Cancellation intentionally stops the watch;
-never automatically recreate it.
 
 ## 1. Personal Telegram assistant with BuJo memory
 **For:** an individual wanting a private assistant that remembers.
@@ -310,7 +299,7 @@ minutes.
   "tools": {
     "allowedTools": ["Read", "Glob", "Grep", "WebSearch", "WebFetch"],
     "web": {
-      "search": { "backend": "auto", "maxRequestsPerRun": 4, "ollama": { "baseUrl": "http://127.0.0.1:11434" }, "searxng": { "endpoint": "http://127.0.0.1:8088" } },
+      "search": { "backend": ["parallel", "ollama"], "maxRequestsPerRun": 4, "ollama": { "baseUrl": "http://127.0.0.1:11434" }, "searxng": { "endpoint": "http://127.0.0.1:8088" } },
       "fetch": { "render": "never", "browserCommand": "agent-browser" }
     }
   },
@@ -318,7 +307,7 @@ minutes.
 }
 ```
 
-**Steps:** configure explicit local or hosted `ollama`, or provision an operator-owned loopback SearXNG instance with JSON responses enabled → keep a named backend strict or choose `auto` for explicitly configured Ollama, configured SearXNG, ChatGPT-subscription Codex, then keyless fallback → keep the default four-request run budget → keep config render `never`, or install `agent-browser >=0.33.1` and opt into config render `auto` for SPA pages; use per-call `WebFetch` `render: "always"` only when a known page must be browser-first → `validate` → `start`.
+**Steps:** configure explicit local or hosted `ollama`, or provision an operator-owned loopback SearXNG instance with JSON responses enabled → keep a named backend strict or choose an explicit ordered array (default Parallel then local Ollama; keyless is opt-in) → keep the default four-request run budget → keep config render `never`, or install `agent-browser >=0.33.1` and opt into config render `auto` for SPA pages; use per-call `WebFetch` `render: "always"` only when a known page must be browser-first → `validate` → `start`.
 **Boundary:** local SearXNG and Ollama search are private infrastructure, not offline indexes; they contact public services and WebFetch contacts result sites. Hosted Ollama credentials are bound to the exact official origin. `localhost` permits a local companion but blocks public fetches. Rendering does not bypass authentication or access challenges.
 **Smoke:** ask for one broad query and one official-page fetch; require canonical ranked URLs, request-budget metadata, untrusted-content boundaries, bounded timing metadata without query/URL leakage, and no duplicate network work for an identical call in the run. The researcher must not sleep or retry after a cooldown.
 
@@ -329,4 +318,14 @@ route. Use `Agent` with `persist:true, background:true`, then `AgentSend` with a
 message and optional `background:true`. A durable started receipt schedules an
 exact-origin wake, including AskParent questions. Do not poll or replay; a
 terminal job with `childStillBusy:true` does not permit another send until the
-child actually settles. Restart interrupts and wakes without replay.
+child actually settles. Use `AgentSend({id, stop:true})` alone for cooperative
+stop (detached turns only, no rollback or force-kill). A `resumable:true` receipt
+permits ordinary message continuation on the same session or `close:true`;
+`stop_requested` retains ownership and blocks messages/close. Lost or unknown
+continuity requires explicit recovery, not replay. Restart interrupts and wakes
+without replay.
+Recovery acknowledgement is retained-context only and single-use. A failed
+acknowledged `close:true` continuation leaves the child and pending AskParent
+question available, while private registry I/O failures remain path-free and do
+not consume the acknowledgement. Use `mono-agent doctor` for bounded retained,
+unresolved and owner-unavailable counts; it never probes a live child.

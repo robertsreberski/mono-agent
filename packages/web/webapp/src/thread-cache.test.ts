@@ -79,6 +79,13 @@ describe("applyMessageDelta", () => {
     });
   }
 
+  it("validates marker parts on cache delta replay", () => {
+    const part = { type: "conversation-marker", kind: "resumed", at: "2026-09-16T10:00:00Z", previousMessageAt: "2026-09-16T08:00:00Z", idleMs: 7_200_000 } as const;
+    expect(applyMessageDelta(message("m1", { role: "system" }), delta({ ops: [{ op: "set", index: 0, part }] })).parts).toEqual([part]);
+    expect(readMessageDelta(delta({ ops: [{ op: "set", index: 0, part: { ...part, idleMs: 1 } }] }))).toBeUndefined();
+    expect(readMessageDelta(delta({ ops: [{ op: "set", index: 0, part }] }))).toBeDefined();
+  });
+
   it("returns a new message carrying the delta's own status, stamp and version", () => {
     const held = message("m1", { status: "running", seq: 4 });
 
@@ -1250,6 +1257,37 @@ describe("createThreadCache", () => {
     // reconnect that stales all eight must not rewrite all eight.
     expect(afterSuspicion).toBe(2);
     expect(commitCount).toBe(3);
+  });
+});
+
+describe("transcript marker paging", () => {
+  it("preserves paged-back markers and server admission order through refresh and restore", () => {
+    const cache = createThreadCache();
+    const user = message("user", { role: "user" });
+    const answer = message("answer");
+    const project = message("project-marker", { role: "system", seq: 0, parts: [{
+      type: "conversation-marker", kind: "project", at: user.createdAt,
+      before: null, after: { id: "p", name: "Project", color: "blue" },
+    }] });
+    const model = message("model-marker", { role: "system", seq: 0, parts: [{
+      type: "conversation-marker", kind: "model", at: user.createdAt,
+      before: { model: "A", effort: "high" }, after: { model: "B", effort: "high" },
+    }] });
+    cache.upsertFull({ ...detail([user, answer]), messagesNextCursor: "older" });
+    cache.prependOlder("alpha-thread", { messages: [project] });
+    // All fixture creation instants tie. The cache must trust the server's
+    // ordering rather than put a system row after its admission's user row.
+    const nextUser = message("next-user", { role: "user" });
+    const nextAnswer = message("next-answer");
+    cache.upsertFull(detail([user, answer, model, nextUser, nextAnswer]));
+    const held = cache.get("alpha-thread")!;
+    expect(held.messages.map((row) => row.id)).toEqual([
+      "project-marker", "user", "answer", "model-marker", "next-user", "next-answer",
+    ]);
+    const restored = createThreadCache();
+    restored.restore(held);
+    expect(restored.get("alpha-thread")?.messages).toEqual(held.messages);
+    expect(restored.get("alpha-thread")?.stale).toBe(true);
   });
 });
 

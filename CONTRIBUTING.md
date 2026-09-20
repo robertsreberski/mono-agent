@@ -46,6 +46,53 @@ stale is packed; `release:pack` fails closed and names the offending files when 
 It is deliberately not part of `pnpm run build` because it discards each package's
 `.tsbuildinfo` and forces a full rebuild of the graph.
 
+## Repository-wide verification
+
+Use the combined repository and golden-consumer gate when you need one final verdict:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm run verify:all
+```
+
+`pnpm run verify:all` runs the repository gate, then validates the committed
+golden consumer fixtures for `local-agent-alpha` and `local-agent-beta`. The consumer
+checks use redacted fixtures, `liveness:false`, no network probes, and no
+secrets by default.
+
+To run only the consumer fixture contracts:
+
+```bash
+pnpm run verify:consumers
+```
+
+To add a deeper read-only audit of a downstream checkout's run artifacts:
+
+```bash
+pnpm run verify:consumers -- --consumer /path/to/downstream-agent
+```
+
+Focused checks remain useful while debugging a specific failure:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm run check:architecture
+pnpm run build
+pnpm run typecheck
+pnpm test
+git diff --check
+```
+
+For package-level work:
+
+```bash
+pnpm --filter @mono-agent/agent-runtime run build
+pnpm --filter @mono-agent/agent-runtime run typecheck
+pnpm --filter @mono-agent/agent-runtime run test
+```
+
+Replace `@mono-agent/agent-runtime` with the package under test.
+
 ## Generated documentation
 
 Run only the generator for the surface you changed:
@@ -61,6 +108,7 @@ Generated regions are marked in their files. Edit the catalog, exports, or confi
 ## Pull requests
 
 - All tracked changes land through a PR.
+- File an `Unreleased` entry in `CHANGELOG.md` for every user-visible change, or opt out with a `Changelog: none` line when there is none (`skills/changelog/SKILL.md`).
 - Explain the behavior change, package boundary, verification, and any accepted risk.
 - Give every review finding a disposition: fixed, follow-up issue, or rejected with a reason.
 - Do not release, publish, deploy, or restart consumers unless the request explicitly includes that step.

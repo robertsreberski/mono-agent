@@ -1,10 +1,10 @@
+import type { OwnedForegroundProcesses } from "./owned-foreground-processes.js";
 import type {
   AgentReplyMcpAppPart,
   AgentReplyPartFailure,
   AgentToolEnvironment,
 } from "@mono-agent/agent-contracts";
 import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "./sandbox.js";
-import type { MonitorsController } from "./monitors.js";
 import type { ProcessJobsController } from "./process-jobs.js";
 
 export interface MonoRuntimeSandboxEngine {
@@ -80,6 +80,51 @@ export interface RuntimeSubagentIdentity {
   /** Provider-reported ancestry; informational only. */
   readonly agentPath?: string;
   readonly costUsd?: number;
+  /**
+   * Bounded provider-route attribution for the delegation. On `agent_started`
+   * this is the LAUNCH route — the explicit request completed with the
+   * inherited parent route — with `disposition: "unknown"`, so consumers must
+   * render it requested-only, never as a confirmed run. On `agent_completed`
+   * it is the final accounting, where `requested` is the explicit request
+   * alone. Absent when the runtime knows no route; never guessed.
+   */
+  readonly attribution?: RuntimeSubagentRouteAttribution;
+}
+
+/** Explicitly requested leg of one delegation's route, as `<provider>:<model>`. */
+export interface RuntimeSubagentRouteSelection {
+  readonly model?: string;
+  readonly effort?: string;
+}
+
+/** A route leg the provider actually ran on, with its effective effort when reported. */
+export interface RuntimeSubagentRouteExecution extends RuntimeSubagentRouteSelection {
+  readonly effectiveEffort?: string;
+}
+
+export interface RuntimeSubagentRouteTransition {
+  readonly from: string;
+  readonly to: string;
+  readonly attemptIndex?: number;
+  readonly reason?: string;
+}
+
+export interface RuntimeSubagentRouteRetry {
+  readonly model?: string;
+  readonly retryIndex?: number;
+  readonly attempts?: number;
+  readonly reason?: string;
+}
+
+/** Bounded provider-route attribution for one delegation; see `RuntimeSubagentIdentity.attribution`. */
+export interface RuntimeSubagentRouteAttribution {
+  readonly requested: RuntimeSubagentRouteSelection;
+  readonly attempted?: RuntimeSubagentRouteExecution;
+  readonly executed?: RuntimeSubagentRouteExecution;
+  readonly disposition: "requested" | "fallback" | "unknown";
+  readonly transitions: readonly RuntimeSubagentRouteTransition[];
+  readonly retries: readonly RuntimeSubagentRouteRetry[];
+  readonly truncated?: true;
 }
 
 /** Normalized subagent lifecycle/activity phases. */
@@ -203,7 +248,11 @@ function isRuntimeSubagentIdentity(value: unknown): value is RuntimeSubagentIden
     && optionalString(value, "nativeId")
     && optionalString(value, "label")
     && optionalString(value, "agentPath")
-    && optionalNumber(value, "costUsd");
+    && optionalNumber(value, "costUsd")
+    // Declared but loosely held: attribution is operator telemetry from
+    // present and future producers, so the guard admits any record shape
+    // rather than rejecting a payload this console does not know yet.
+    && optionalRecord(value, "attribution");
 }
 
 function isRuntimeSubagentActivityPhase(value: unknown): value is RuntimeSubagentActivityPhase {
@@ -224,6 +273,12 @@ function optionalString(value: Readonly<Record<string, unknown>>, key: string): 
 
 function optionalNumber(value: Readonly<Record<string, unknown>>, key: string): boolean {
   return !(key in value) || typeof value[key] === "number";
+}
+
+function optionalRecord(value: Readonly<Record<string, unknown>>, key: string): boolean {
+  const candidate = value[key];
+  return candidate === undefined
+    || (typeof candidate === "object" && candidate !== null && !Array.isArray(candidate));
 }
 
 function optionalBoolean(value: Readonly<Record<string, unknown>>, key: string): boolean {
@@ -391,6 +446,11 @@ export interface RuntimeMcpAppHost {
 }
 
 export interface RuntimeRunOptions {
+  /** Stable configured profile, never executable authority or retained controllers. */
+  readonly toolExposure?: { readonly persistentSubagents?: boolean; readonly askParent?: boolean };
+  /** Current host facts only; tools must independently enforce admission. */
+  readonly hostCapabilities?: Readonly<Record<string, { readonly available: boolean; readonly reason?: string; readonly limits?: Readonly<Record<string, number | null>> }>>;
+
   readonly askParentController?: { submit(question: { question: string; options?: string[] }): Promise<void> };
   /** Host-owned opt-in for settled durable terminal recovery. */
   readonly sessionRecovery?: { runId: string; revision: number } | undefined;
@@ -414,6 +474,8 @@ export interface RuntimeRunOptions {
   readonly toolEnvironment?: AgentToolEnvironment;
   /** Host-only Pi-native process-job controller; never model/provider visible. */
   readonly processJobs?: ProcessJobsController;
+  /** Host-scoped awaited command ownership; does not enable background tools. */
+  readonly ownedForegroundProcesses?: OwnedForegroundProcesses;
   /** Request lineage diagnostics, including when no start controller is available. */
   readonly processJobsAvailability?: {
     readonly chainDepth: number;
@@ -421,11 +483,11 @@ export interface RuntimeRunOptions {
     readonly remainingStarts: number;
     readonly unavailableReason?: "chain_depth_exhausted" | "origin_unavailable" | "wake_context_unavailable" | "tool_unavailable";
   };
-  /** Host-only Pi-native monitor controller; never model/provider visible. */
-  readonly monitors?: MonitorsController;
   readonly onEvent?: (event: RuntimeEventLike) => void;
   /** Emit metadata-only prompt-cache request fingerprints; disabled by default. */
   readonly promptCacheDiagnostics?: boolean;
+  /** Optional Anthropic Messages cache retention. Unset preserves Pi defaults/environment. */
+  readonly cacheRetention?: "short" | "long";
   /** Host-owned, incremental durable tool-lifecycle writer for this run. */
   readonly toolLifecycleSink?: RuntimeToolLifecycleSink;
   readonly effort?: string;
@@ -478,7 +540,7 @@ export interface RuntimeRunOptions {
   /** Host-owned shared web admission; never model-configurable. */
   readonly webRequestCoordinator?: {
     readonly scope: string;
-    acquire(request: { kind: "searxng" | "ollama" | "duckduckgo" | "startpage" | "codex" | "fetch"; key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
+    acquire(request: { kind: "searxng" | "ollama" | "duckduckgo" | "startpage" | "codex" | "fetch" | "parallel" | "hound" | (string & {}); key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
       readonly waitMs: number;
       complete(outcome: { status: "ok" | "rate_limited" | "unavailable" | "cancelled"; retryAfterMs?: number; retryAtMs?: number }): Promise<void | { retryAfterMs: number; retryAtMs: number }>;
     }>;
@@ -487,7 +549,7 @@ export interface RuntimeRunOptions {
   };
   /** Local-first WebSearch backend selection for this run. */
   readonly webSearchConfig?: {
-    readonly backend?: "auto" | "searxng" | "ollama" | "codex" | "keyless";
+    readonly backend?: WebSearchProviderName | readonly WebSearchProviderName[];
     readonly maxRequestsPerRun?: number;
     /** @deprecated Use searxng.endpoint. */
     readonly endpoint?: string;
@@ -498,10 +560,17 @@ export interface RuntimeRunOptions {
       readonly apiKeyEnv?: string;
       readonly trustPublicUrl?: boolean;
     };
+    readonly parallel?: { readonly apiKeyEnv?: string };
+    /** @deprecated Endpoint settings are rejected: Hound search is built in. */
+    readonly hound?: { readonly endpoint?: string };
     readonly codex?: { readonly model?: string };
   };
   /** Static WebFetch extraction and optional isolated browser-render policy. */
   readonly webFetchConfig?: {
+    readonly provider?: "local" | "parallel" | "hound" | readonly ("local" | "parallel" | "hound")[];
+    readonly parallel?: { readonly apiKeyEnv?: string };
+    /** @deprecated Endpoint settings are rejected: Hound fetch is built in. */
+    readonly hound?: { readonly endpoint?: string };
     readonly render?: "never" | "auto";
     readonly browserCommand?: string;
   };
@@ -615,3 +684,6 @@ export interface MonoRuntimeHostOptions extends RuntimeToolOptions {
   readonly approvalAlwaysAllowTools?: readonly string[];
   readonly [key: string]: unknown;
 }
+
+/** Source-level built-in web search provider names; arrays are ordered fallback chains. */
+type WebSearchProviderName = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel" | "hound";

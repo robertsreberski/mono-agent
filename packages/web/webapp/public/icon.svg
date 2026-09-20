@@ -1,22 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="mono-agent">
-  <defs>
-    <linearGradient id="surface" x1="72" y1="52" x2="438" y2="462" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#20241f"/>
-      <stop offset="1" stop-color="#0d0f0d"/>
-    </linearGradient>
-    <linearGradient id="signal" x1="151" y1="125" x2="368" y2="389" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#b9f35b"/>
-      <stop offset="1" stop-color="#76c833"/>
-    </linearGradient>
-    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
-      <feGaussianBlur stdDeviation="9"/>
-    </filter>
-  </defs>
-  <rect width="512" height="512" fill="url(#surface)"/>
-  <circle cx="256" cy="256" r="147" fill="none" stroke="#343a32" stroke-width="2"/>
-  <circle cx="256" cy="256" r="106" fill="#1b2019" stroke="#394035" stroke-width="3"/>
-  <circle cx="350" cy="161" r="20" fill="#8ed944" opacity=".2" filter="url(#glow)"/>
-  <path d="M164 286c38-8 62-32 72-72 8 38 32 62 72 72-40 9-64 33-72 73-10-40-34-64-72-73Z" fill="#96df4a"/>
-  <circle cx="326" cy="186" r="18" fill="#b9f35b"/>
-  <path d="M150 187a151 151 0 0 1 42-48M362 323a151 151 0 0 1-42 48" fill="none" stroke="#96df4a" stroke-linecap="round" stroke-width="14"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="mono-agent woven thread">
+  <rect width="512" height="512" fill="#0b0d0c"/>
+  <circle cx="256" cy="252" r="181" fill="#151b12"/>
+
+  <!-- One uninterrupted thread passes behind the inputs. -->
+  <path d="M48 362C99 351 119 228 166 238c35 8 49 64 82 49 31-15 47-63 81-49 30 12 42 40 65 10l50-60c16-19 15-44-3-60-18-17-45-16-62 2-17 18-15 43 2 60l22 21" fill="none" stroke="#6d8121" stroke-width="35" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g fill="#464a44" stroke="#666a62" stroke-opacity=".5">
+    <rect x="136" y="137" width="54" height="250" rx="27"/>
+    <rect x="229" y="137" width="54" height="250" rx="27"/>
+    <rect x="321" y="156" width="54" height="231" rx="27"/>
+  </g>
+
+  <!-- Alternating visible spans make the over-under weave legible at favicon size. -->
+  <g fill="none" stroke="#c5e748" stroke-width="34" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M48 362C99 351 119 228 166 238c11 3 21 10 31 19"/>
+    <path d="M190 253c22 17 34 47 58 34"/>
+    <path d="M283 260c15-18 29-30 46-22"/>
+    <path d="M375 267c7-3 13-9 19-19l50-60c16-19 15-44-3-60-18-17-45-16-62 2-17 18-15 43 2 60l22 21"/>
+  </g>
 </svg>

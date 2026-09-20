@@ -1,8 +1,5 @@
-import { mergeModelTransitions } from "./model-transitions";
-import { mergeProjectTransitions } from "./project-transitions";
+import { isConversationMarker } from "./conversation-markers";
 import type {
-  ModelTransition,
-  ProjectTransition,
   MessageDelta,
   MessageDeltaOp,
   MessagePart,
@@ -52,8 +49,6 @@ const MESSAGE_STATUSES: ReadonlySet<string> = new Set<WebMessage["status"]>([
 ]);
 
 export interface ThreadCacheEntry {
-  readonly projectTransitions?: readonly ProjectTransition[];
-  readonly modelTransitions?: readonly ModelTransition[];
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
   /** The keyset cursor for the next OLDER page, absent at the transcript's start. */
@@ -514,6 +509,8 @@ const isMessagePart = (value: unknown): value is MessagePart => {
   const status = (): boolean =>
     part.status === "running" || part.status === "complete" || part.status === "failed";
   switch (part.type) {
+    case "conversation-marker":
+      return isConversationMarker(part);
     case "text":
     case "reasoning":
       return text("text");
@@ -529,8 +526,6 @@ const isMessagePart = (value: unknown): value is MessagePart => {
         && (part.disposition === "steered" || part.disposition === "follow_up");
     case "steer":
       return isSteerPart(part);
-    case "monitor-activity":
-      return Array.isArray(part.monitors);
     case "cron-reply-context":
       return part.schema === "mono-agent.web.cron-reply-context.v1"
         && part.untrusted === true
@@ -805,8 +800,6 @@ export interface ThreadCache {
   readonly prependOlder: (
     threadId: string,
     page: {
-      readonly projectTransitions?: readonly ProjectTransition[];
-      readonly modelTransitions?: readonly ModelTransition[];
       readonly messages: readonly WebMessage[];
       readonly nextCursor?: string;
     },
@@ -912,8 +905,6 @@ export interface ThreadCache {
    * not call `onCommit`.
    */
   readonly restore: (entry: {
-    readonly projectTransitions?: readonly ProjectTransition[];
-    readonly modelTransitions?: readonly ModelTransition[];
     readonly thread: ThreadSummary;
     readonly messages: readonly WebMessage[];
     readonly messagesNextCursor?: string;
@@ -1105,8 +1096,6 @@ export const createThreadCache = (
           {
             thread: detail.thread,
             messages: detail.messages,
-            projectTransitions: detail.projectTransitions ?? [],
-            modelTransitions: detail.modelTransitions ?? [],
             stale,
             syncedAt: now(),
             repairedToolCallIds: new Set<string>(),
@@ -1153,8 +1142,6 @@ export const createThreadCache = (
             ? held.thread
             : newerProjection(held.thread, detail.thread),
           messages,
-          projectTransitions: mergeProjectTransitions(reset ? [] : held.projectTransitions, detail.projectTransitions),
-          modelTransitions: mergeModelTransitions(reset ? [] : held.modelTransitions, detail.modelTransitions),
           stale,
           syncedAt: now(),
           repairedToolCallIds: held.repairedToolCallIds,
@@ -1201,16 +1188,13 @@ export const createThreadCache = (
       const next = withCursor({
         ...withoutCursor,
         messages,
-        projectTransitions: mergeProjectTransitions(entry.projectTransitions, page.projectTransitions),
-        modelTransitions: mergeModelTransitions(entry.modelTransitions, page.modelTransitions),
         // Remembered by ID: this is the only thing a later windowed answer can
         // be measured against to tell paged-back history from a deletion.
         pagedInIds: older.length === 0
           ? entry.pagedInIds
           : new Set([...entry.pagedInIds, ...older.map((message) => message.id)]),
       }, page.nextCursor);
-      return messages === entry.messages && next.projectTransitions === entry.projectTransitions
-        && next.modelTransitions === entry.modelTransitions && next.messagesNextCursor === entry.messagesNextCursor
+      return messages === entry.messages && next.messagesNextCursor === entry.messagesNextCursor
         ? entry
         : next;
     })),
@@ -1337,8 +1321,6 @@ export const createThreadCache = (
         {
           thread: stored.thread,
           messages: stored.messages,
-          projectTransitions: stored.projectTransitions ?? [],
-          modelTransitions: stored.modelTransitions ?? [],
           // NOT NEGOTIABLE. Everything that happened while this tab was closed
           // is exactly what is missing here.
           stale: true,

@@ -125,6 +125,47 @@ interface DraftAnswers {
   observability: boolean;
   allowedTools: string[];
   moduleInputs: Record<string, Record<string, string>>;
+  /**
+   * Browser-first gate intent (not part of {@link WizardAnswers}). True while the
+   * optional channels/memory/observability steps belong to the current path: a
+   * preset/seed that already selects them, an accepted gate, an accepted
+   * advanced review edit, or a setup-repair session.
+   */
+  advancedRequested: boolean;
+  /**
+   * True once the operator explicitly accepted an advanced capability (gate Yes
+   * or an advanced review edit) in this run. It prevents a later "No" at the
+   * gate from wiping an already accepted edit (critique O2); a seed-only
+   * selection can still be declined.
+   */
+  advancedEverAccepted: boolean;
+}
+
+/** Advanced review-edit targets: channels, memory, capability details, observability. */
+const ADVANCED_EDIT_STEPS: ReadonlySet<number> = new Set([3, 4, 5, 8]);
+
+/** True when the draft currently carries any optional-capability selection. */
+function hasAdvancedAnswers(draft: DraftAnswers): boolean {
+  return draft.channels.length > 0 || draft.memory !== undefined || draft.observability;
+}
+
+/**
+ * Decline the optional gate: drop seeded advanced selections and their module
+ * inputs. Returns true when anything was cleared, so the caller only logs the
+ * skip when it actually skipped something.
+ */
+function clearAdvancedAnswers(draft: DraftAnswers): boolean {
+  const hadChannels = draft.channels.length > 0;
+  const hadMemory = draft.memory !== undefined;
+  for (const id of draft.channels) delete draft.moduleInputs[id];
+  draft.channels = [];
+  if (draft.memory !== undefined) {
+    delete draft.moduleInputs[draft.memory];
+    draft.memory = undefined;
+  }
+  const hadObservability = draft.observability;
+  draft.observability = false;
+  return hadChannels || hadMemory || hadObservability;
 }
 
 const SANDBOXABLE_TOOLS = new Set(["Bash", "Exec", "Write", "Edit", "NodeRepl"]);
@@ -289,10 +330,10 @@ export async function runInitWizard(ctx: WizardRunContext): Promise<WizardOutcom
 export async function runSetupRepairWizard(ctx: SetupRepairRunContext): Promise<WizardOutcome> {
   try {
     p.log.step("Repair setup choices");
-    const initialStep = ctx.initialStep ?? 8;
+    const initialStep = ctx.initialStep ?? 9;
     const result = await collectInteractiveFromSeed(ctx, ctx.answers, {
       initialStep,
-      ...(initialStep === 8 ? {} : { initialReturnToReviewStep: initialStep }),
+      ...(initialStep === 9 ? {} : { initialReturnToReviewStep: initialStep }),
       returnToCallerOnReviewBack: true,
       repairState: ctx,
     });
@@ -353,8 +394,9 @@ async function collectAnswers(ctx: WizardRunContext): Promise<CollectedAnswers> 
 }
 
 /**
- * The full custom flow: model → effort → channels → memory → per-module inputs
- * → tools → sandbox (only if code tools were chosen) → observability → summary.
+ * The full custom flow: name/Role → model → optional-capabilities gate (when
+ * declined: tools → sandbox → review; when accepted additionally: channels →
+ * memory → per-module inputs → observability) → summary.
  */
 async function collectCustom(ctx: WizardRunContext): Promise<CollectedAnswers> {
   return await collectInteractiveFromSeed(ctx, defaultAnswers({
@@ -551,18 +593,21 @@ function wizardStepHasInteractivePrompt(step: number, draft: DraftAnswers): bool
     case 0:
     case 1:
     case 2:
-    case 3:
-    case 7:
-    case 8:
-      return true;
-    case 4:
-      return [...draft.channels, ...(draft.memory === undefined ? [] : [draft.memory])]
-        .some((id) => !MANAGED_MEMORY_MODULE_IDS.has(id)
-          && findModule(id)?.inputs.some((input) => input.secret !== true) === true);
-    case 5:
-      return true;
     case 6:
+    case 9:
+      return true;
+    case 3:
+    case 4:
+      return draft.advancedRequested;
+    case 5:
+      return draft.advancedRequested
+        && [...draft.channels, ...(draft.memory === undefined ? [] : [draft.memory])]
+          .some((id) => !MANAGED_MEMORY_MODULE_IDS.has(id)
+            && findModule(id)?.inputs.some((input) => input.secret !== true) === true);
+    case 7:
       return safetyPolicyHasInteractivePrompt(draft);
+    case 8:
+      return draft.advancedRequested;
     default:
       return false;
   }
@@ -589,11 +634,15 @@ async function collectInteractiveFromSeed(
   const draft = draftFrom(seed);
   if (options.repairState !== undefined) {
     draft.credentialStates = { ...options.repairState.credentialStates };
+    // A repair session is an explicit edit of an accepted setup: keep the
+    // optional steps reachable even when the original run declined the gate.
+    draft.advancedRequested = true;
+    draft.advancedEverAccepted = true;
   }
   const modelDiscoveryCache: { result?: ModelDiscoveryResult } = {};
   let step = options.initialStep ?? 0;
   let returnToReviewAfterStep = options.initialReturnToReviewStep;
-  const finalStep = 8;
+  const finalStep = 9;
   const advanceAfter = (completedStep: number): void => {
     if (returnToReviewAfterStep === completedStep) {
       returnToReviewAfterStep = undefined;
@@ -624,6 +673,12 @@ async function collectInteractiveFromSeed(
             placeholder: "Help with work in this folder",
             validate: validateWizardAgentPurpose,
           })).trim();
+          p.note(
+            `Starting workspace: ${ctx.cwd}\n` +
+            "This folder is where the agent starts working. How far it can reach beyond it depends on the tool " +
+            "selection and sandbox choice you make next — this note does not restrict or grant access.",
+            "Workspace and access",
+          );
           advanceAfter(0);
           break;
         case 1: {
@@ -645,6 +700,39 @@ async function collectInteractiveFromSeed(
           break;
         }
         case 2: {
+          // Browser-first gate: channels/memory/observability are opt-in. The
+          // gate defaults to Yes only when the seed (preset) or an already
+          // accepted edit selected them.
+          const addOptional = await confirm({
+            message: "Add optional capabilities now? (channels, memory, observability)",
+            initialValue: draft.advancedRequested,
+          });
+          if (addOptional) {
+            draft.advancedEverAccepted = true;
+            draft.advancedRequested = true;
+            step = 3;
+          } else {
+            // Declining keeps an already accepted selection, but it must never
+            // skip mandatory consent: route through tools (6) and safety (7)
+            // before review. Observability (8) still runs when retained
+            // capabilities are part of this run, so escaping back to this gate
+            // cannot bypass the tool framing, the sandbox choice, or the
+            // default-No high-risk confirmation (review finding F1).
+            const retained = draft.advancedEverAccepted && hasAdvancedAnswers(draft);
+            if (retained) {
+              p.log.info("Keeping the optional capabilities you already selected.");
+            } else if (clearAdvancedAnswers(draft)) {
+              p.log.info(
+                "Skipped optional capabilities for now — you can add channels, memory, or observability later " +
+                "in mono-agent.config.json.",
+              );
+            }
+            draft.advancedRequested = retained;
+            step = 6;
+          }
+          break;
+        }
+        case 3: {
           const previousChannels = new Set(draft.channels);
           draft.channels = [...await multiselect({
             message: "How will you talk to this agent?",
@@ -652,7 +740,7 @@ async function collectInteractiveFromSeed(
             initialValues: draft.channels,
             required: false,
           })];
-          if (returnToReviewAfterStep === 2) {
+          if (returnToReviewAfterStep === 3) {
             await promptModuleInputs(
               draft,
               draft.channels.filter((channel) => !previousChannels.has(channel)),
@@ -660,10 +748,10 @@ async function collectInteractiveFromSeed(
             await promptTools(draft);
             await promptSafetyPolicy(draft);
           }
-          advanceAfter(2);
+          advanceAfter(3);
           break;
         }
-        case 3: {
+        case 4: {
           const previousMemory = draft.memory;
           const memory = await select({
             message: "Should the agent remember across conversations?",
@@ -681,38 +769,48 @@ async function collectInteractiveFromSeed(
           if (draft.memory !== undefined && MANAGED_MEMORY_MODULE_IDS.has(draft.memory)) {
             await promptManagedMemoryEmbeddingInputs(draft, ctx);
           } else if (
-            returnToReviewAfterStep === 3
+            returnToReviewAfterStep === 4
             && draft.memory !== undefined
             && draft.memory !== previousMemory
           ) {
             await promptModuleInputs(draft, [draft.memory]);
           }
-          advanceAfter(3);
+          advanceAfter(4);
           break;
         }
-        case 4:
+        case 5:
           if (
-            returnToReviewAfterStep === 4
+            returnToReviewAfterStep === 5
             && draft.memory !== undefined
             && MANAGED_MEMORY_MODULE_IDS.has(draft.memory)
           ) {
             await promptManagedMemoryEmbeddingInputs(draft, ctx);
           }
           await promptModuleInputs(draft);
-          advanceAfter(4);
-          break;
-        case 5:
-          await promptTools(draft);
-          if (returnToReviewAfterStep === 5) {
-            await promptSafetyPolicy(draft);
-          }
           advanceAfter(5);
           break;
         case 6:
-          await promptSafetyPolicy(draft);
+          await promptTools(draft);
+          if (returnToReviewAfterStep === 6) {
+            await promptSafetyPolicy(draft);
+          }
           advanceAfter(6);
           break;
-        case 7:
+        case 7: {
+          await promptSafetyPolicy(draft);
+          if (returnToReviewAfterStep === 7) {
+            returnToReviewAfterStep = undefined;
+            step = finalStep;
+          } else {
+            // Observability is an optional capability; the default path goes
+            // straight to review.
+            step = draft.advancedRequested ? 8 : finalStep;
+          }
+          break;
+        }
+        case 8:
+          // Phoenix export is an explicitly installed, matching-version optional
+          // extra; never offer it (or claim it is on) when the plugin is absent.
           if (isPhoenixPluginInstalled({ cwd: ctx.cwd })) {
             draft.observability = await confirm({
               message: "Export traces to Phoenix (best-effort OTLP, sensitive data excluded)?",
@@ -722,9 +820,9 @@ async function collectInteractiveFromSeed(
             p.note(`${missingPhoenixPluginMessage()} Phoenix tracing stays off in this configuration.`, "Optional Phoenix tracing");
             draft.observability = false;
           }
-          advanceAfter(7);
+          advanceAfter(8);
           break;
-        case 8: {
+        case 9: {
           const reviewed = await confirmSummary(
             draft,
             ctx,
@@ -735,8 +833,16 @@ async function collectInteractiveFromSeed(
                 },
           );
           if (reviewed.status === "edit") {
+            // Accepting an advanced edit makes the optional path part of the
+            // current run, so a later gate visit cannot drop it (O2).
+            if (ADVANCED_EDIT_STEPS.has(reviewed.step)) {
+              draft.advancedRequested = true;
+              draft.advancedEverAccepted = true;
+            }
             step = reviewed.step;
-            returnToReviewAfterStep = reviewed.step === finalStep ? undefined : reviewed.step;
+            returnToReviewAfterStep = reviewed.step === finalStep || reviewed.step === 2
+              ? undefined
+              : reviewed.step;
             break;
           }
           finalizing = true;
@@ -1366,6 +1472,7 @@ async function confirmSummary(
     `Managed SRT:  ${draft.sandbox ? "enabled" : "disabled"}`,
     ...(alwaysOn.length > 0 ? [`Always on:    ${alwaysOnDisplay(alwaysOn).join(", ")}`] : []),
     `Readiness:    ${runtimeRoutes.length} real model call(s), one per selected route; ${potentiallyBilledCalls} potentially billed`,
+    "Browser:      after setup, run mono-agent web run --loopback and open http://127.0.0.1:5050 in a second terminal",
     `Verify refs:  ${setupModelRefs.join(", ")}`,
     `Provider actions: ${providerActions.length > 0 ? providerActions.join("\n  ") : "none"}`,
     `Creates if missing (preserves existing scaffold paths): ${creates.join(", ")}`,
@@ -1406,13 +1513,17 @@ async function confirmSummary(
         options: [
           { value: "0", label: "Agent name and Role" },
           { value: "1", label: "Models and efforts" },
-          { value: "2", label: "Channels" },
-          { value: "3", label: "Memory" },
-          { value: "4", label: "Capability details" },
-          { value: "5", label: "Tools" },
-          { value: "6", label: "Route safety and sandbox" },
-          { value: "7", label: "Observability" },
-          { value: "8", label: "Return to review" },
+          ...(draft.advancedRequested
+            ? [
+                { value: "3", label: "Channels" },
+                { value: "4", label: "Memory" },
+                { value: "5", label: "Capability details" },
+              ]
+            : [{ value: "2", label: "Add optional capabilities (channels, memory, observability)" }]),
+          { value: "6", label: "Tools" },
+          { value: "7", label: "Route safety and sandbox" },
+          ...(draft.advancedRequested ? [{ value: "8", label: "Observability" }] : []),
+          { value: "9", label: "Return to review" },
         ],
         initialValue: "1",
       });
@@ -1420,7 +1531,7 @@ async function confirmSummary(
     } catch (error) {
       if (error instanceof WizardBack) {
         if (options !== undefined) throw error;
-        return { status: "edit", step: 8 };
+        return { status: "edit", step: 9 };
       }
       throw error;
     }
@@ -1448,7 +1559,7 @@ async function confirmSummary(
   } catch (error) {
     if (error instanceof WizardBack) {
       if (options !== undefined) throw error;
-      return { status: "edit", step: 8 };
+      return { status: "edit", step: 9 };
     }
     throw error;
   }
@@ -1575,6 +1686,7 @@ async function selectPiApiKeyPersistence(
   return selected;
 }
 
+
 /** Seed a mutable draft from immutable answers (defaults or a preset). */
 function draftFrom(answers: WizardAnswers): DraftAnswers {
   const moduleInputs: Record<string, Record<string, string>> = {};
@@ -1600,6 +1712,12 @@ function draftFrom(answers: WizardAnswers): DraftAnswers {
     observability: answers.observability,
     allowedTools: [...answers.allowedTools],
     moduleInputs,
+    // A preset/seed that already selects optional capabilities opens the gate
+    // at Yes; the operator can still decline it while nothing was accepted.
+    advancedRequested: answers.channels.length > 0
+      || answers.memory !== undefined
+      || answers.observability,
+    advancedEverAccepted: false,
   };
 }
 

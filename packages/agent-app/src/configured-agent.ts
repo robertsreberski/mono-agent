@@ -1,3 +1,6 @@
+import { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/agent-harness";
+import { createSubagentRecoveryAccess } from "./subagent-recovery-access.js";
+import type { OwnedForegroundProcesses } from "@mono-agent/runtime-adapter";
 import { createSubagentInstanceRegistry, isLiveSubagentInstance, persistentSubagentsEnabled, subagentInstancesRoot, type InstanceRegistryHandle } from "./subagent-instances.js";
 import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
 import {
@@ -32,7 +35,7 @@ import { setToolActivityPathRoots } from "@mono-agent/agent-contracts";
 import type { AgentResponder, MemoryStore } from "@mono-agent/agent-contracts";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { LlmComplete } from "@mono-agent/memory/bujo";
+import type { LlmComplete, LlmCompleteOptions } from "@mono-agent/memory/bujo";
 import { createCompositeRunRecorder, createJsonlRunRecorder } from "@mono-agent/observability";
 import type {
   PhoenixExporterConfig,
@@ -71,6 +74,7 @@ import {
   type AgentRootOwnership,
 } from "./agent-root-coordinator.js";
 import type { ChannelId } from "./channels.js";
+import { textFromMemoryRuntimeResult } from "./memory-llm-result.js";
 import { resolveMemoryRecallSettings } from "./memory-recall.js";
 import {
   createMemoryJournalRuntimeExtension,
@@ -103,8 +107,6 @@ import {
   resolveProcessJobsProtectionPosture,
   type ProcessJobsProtectionPosture,
 } from "./process-jobs-protection.js";
-import { createMonitorsRuntimeExtension, monitorsAvailableForRequest } from "./monitors-runtime.js";
-import type { MonitorsServiceHandle } from "./monitors-service.js";
 import {
   createProcessJobsRuntimeExtension,
   processJobsAvailableForRequest,
@@ -277,13 +279,6 @@ interface ConfiguredAgentInternalHooks {
   readonly bootstrapProcessJobs?: {
     readonly settings: ProcessJobsSettings;
     readonly stateDir?: string;
-  };
-  /** Live monitor-controller injection for this channel. */
-  readonly monitors?: {
-    readonly service: MonitorsServiceHandle | undefined;
-    readonly channelId: ChannelId | undefined;
-    readonly conversationScheme?: string | undefined;
-    readonly routesOnlyPiNative?: (metadata: Record<string, unknown> | undefined) => boolean;
   };
 }
 
@@ -710,6 +705,10 @@ function inlineSubagentCeiling(config: MonoAgentConfig): readonly string[] {
 }
 
 interface SubagentRunRequest {
+  readonly ownedForegroundProcesses?: OwnedForegroundProcesses;
+  readonly detached?: true;
+  readonly turnToken?: string;
+  readonly deadlineAt?: number;
   readonly instance?: { readonly id: string; readonly sessionId: string; readonly sessionsRoot: string };
   readonly model?: RuntimeModelReference;
   readonly effort?: string;
@@ -814,7 +813,7 @@ export function buildSubagentsOptions(
   // and a policy that only blocks one of them is not a policy.
   const skillsDeniedGlobally = isReadSkillDenied(config.tools.disallowedTools);
 
-  const run = async (request: SubagentRunRequest): Promise<RuntimeResult> => {
+  const run = async (request: SubagentRunRequest): Promise<RuntimeResult & { subagentContinuity?: { turnToken: string; state: "retained" | "unknown" | "lost" } }> => {
     // A profile model must go through `runtimeForModel`: the router overrides
     // `options.model` per chain entry, so handing a different model to the
     // shared router is silently ignored and the child would run on the chain
@@ -853,7 +852,8 @@ export function buildSubagentsOptions(
     let subagentQuestion: RuntimeResult["subagentQuestion"];
     let submitted = false;
     const currentProfileDenies = subagents.definitions?.find((profile) => profile.name === request.definition.name)?.disallowedTools ?? [];
-    const askParentController = request.instance && scope && ![...config.tools.disallowedTools, ...currentProfileDenies, ...(request.definition.disallowedTools ?? [])].includes("AskParent")
+    const askParentExposed = Boolean(request.instance) && ![...config.tools.disallowedTools, ...currentProfileDenies, ...(request.definition.disallowedTools ?? [])].includes("AskParent");
+    const askParentController = askParentExposed && scope
       ? { submit: async (question: NonNullable<RuntimeResult["subagentQuestion"]>): Promise<void> => {
         if (submitted) throw new Error("AskParent already submitted a question this turn.");
         submitted = true;
@@ -863,7 +863,24 @@ export function buildSubagentsOptions(
         }
         subagentQuestion = structuredClone(question);
       } } : undefined;
-    const result = await runtime.run(childSystemPrompt, {
+    // Snapshot the command ceiling after child setup/queueing. The owning job
+    // signal remains authoritative as its remaining runtime decreases.
+    const commandTimeoutMs = request.detached === true && Number.isFinite(request.deadlineAt)
+      ? Math.max(1, Math.min(Math.floor(request.deadlineAt! - Date.now()), subagents.commandTimeoutMs ?? 1_800_000))
+      : undefined;
+    const childCapabilityOptions = {
+      toolExposure: { askParent: askParentExposed, persistentSubagents: false, },
+      ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
+      ...(askParentController === undefined ? {} : { askParentController }),
+    };
+    const recovery = request.detached && request.instance && request.turnToken && runtime.recoverSession
+      ? { runId: request.turnToken, revision: 0 } : undefined;
+    const result = await runtime.run(`${childSystemPrompt}\n\n${HOST_TURN_CONTEXT_GUIDANCE}`, {
+      ...childCapabilityOptions,
+      ...(recovery ? { sessionRecovery: recovery } : {}),
+      ...(config.providers?.piNative?.cacheRetention === undefined ? {} : { cacheRetention: config.providers.piNative.cacheRetention }),
+      ...(config.providers?.piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: config.providers.piNative.promptCacheDiagnostics }),
+      ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
       ...(askParentController === undefined ? {} : { askParentController }),
       ...(request.instance === undefined ? {} : {
         sessionId: request.instance.sessionId,
@@ -873,7 +890,7 @@ export function buildSubagentsOptions(
         ...(config.runtime.compaction === undefined ? {} : { compaction: config.runtime.compaction }),
       }),
       model: childModel,
-      messages: [{ role: "user", content: request.prompt }],
+      messages: [{ role: "user", content: composeHostTurnEnvelope(formatHostCapabilities(childCapabilityOptions), request.prompt) }],
       maxTurns: request.maxTurns,
       ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
       // Monotonic: the child is confined by the same policy as the parent turn.
@@ -899,7 +916,7 @@ export function buildSubagentsOptions(
         : { skills: childSkills, skillsRoot: request.skillsRoot }),
       ...((request.definition.effort ?? request.effort) === undefined
         ? {} : { effort: request.definition.effort ?? request.effort }),
-      allowedTools: [...new Set([...(request.definition.allowedTools ?? DEFAULT_SUBAGENT_TOOLS), ...(askParentController ? ["AskParent"] : [])])],
+      allowedTools: [...new Set([...(request.definition.allowedTools ?? DEFAULT_SUBAGENT_TOOLS), ...(askParentExposed ? ["AskParent"] : [])])],
       disallowedTools: [...new Set([...(request.definition.disallowedTools ?? []), ...config.tools.disallowedTools, ...SUBAGENT_HARD_DENY])],
       // Only the servers this profile named. A profile that names none gets an
       // empty map, keeping the app-owned AskUser and channel-send tools
@@ -908,22 +925,36 @@ export function buildSubagentsOptions(
         ? selectMcpServers((toolPolicyInput(config).mcpServers ?? {}) as Record<string, unknown>, request.definition.mcpServerNames ?? [], request.definition.name)
         : request.definition.mcpServers ?? {},
       abortSignal: request.abortSignal,
+      ...(request.ownedForegroundProcesses ? { ownedForegroundProcesses: request.ownedForegroundProcesses } : {}),
       onEvent: request.onEvent,
       // Depth propagation is the recursion lock the kernel also enforces.
       subagents: { depth: request.depth },
     } as unknown as RuntimeRunOptions);
+    // Only the selected runtime can certify its durable tail. A matching id alone
+    // is not recovery evidence; router fallback intentionally drops the receipt.
+    let retained = false;
+    const receipt = result.providerSessionRecovery;
+    if (recovery && receipt && receipt.runId === recovery.runId && receipt.revision === 0
+      && receipt.providerSessionId === request.instance!.sessionId
+      && result.providerSessionId === request.instance!.sessionId
+      && receipt.modelKey === modelReferenceKey(childModel) && typeof receipt.tipId === "string" && receipt.tipId.length > 0) {
+      try { retained = await runtime.recoverSession!(receipt, { appliedInputIds: [] }); } catch { /* Fail closed. */ }
+    }
+    const continuity = request.turnToken ? { subagentContinuity: { turnToken: request.turnToken,
+      state: result.failureKind === "session_continuity_lost" ? "lost" as const : retained ? "retained" as const : "unknown" as const } } : {};
     // Router retries/backups deliberately withhold session ids. Do not promise
     // retained child context for an answer that was produced outside this epoch.
     if (request.instance && !result.error && !result.failureKind && !result.cancelled
       && result.providerSessionId !== request.instance.sessionId) {
-      return { ...result, failureKind: "session_continuity_lost",
+      return { ...result, ...continuity, ...(request.turnToken ? { subagentContinuity: { turnToken: request.turnToken, state: "lost" as const } } : {}), failureKind: "session_continuity_lost",
         error: "The child answered outside its persistent session (for example after retry or fallback). This turn was not retained; close the instance and create another with the context it needs." };
     }
     return subagentQuestion && !result.error && !result.failureKind && !result.cancelled
-      ? { ...result, subagentQuestion } : result;
+      ? { ...result, ...continuity, subagentQuestion } : { ...result, ...continuity };
   };
 
   return {
+    toolExposure: { persistentSubagents: persistentSubagentsEnabled(config) },
     subagents: {
       ...(scope === undefined || !persistentSubagentsEnabled(config) ? {} : { instances: scope.instances }),
       definitions,
@@ -1221,16 +1252,46 @@ async function createConfiguredAgentHarnessInternal(
           : { onUnavailable: options.onMemoryRememberUnavailable }),
       });
   const subagentDeps = { runtime, baseModel: model, ...(runtimeForModel === undefined ? {} : { runtimeForModel }) };
+  const subagentRecoveryAccess = createSubagentRecoveryAccess({
+    ...(internalHooks.processJobs?.service ? { service: internalHooks.processJobs.service } : {}),
+    privateRoots: async () => {
+      const loaded = await loadProcessJobsRootRegistryProtection(ownership.agentRoot, config.runtime.workspace);
+      if (loaded.kind === "failed") throw new Error("Subagent observation policy is unavailable.");
+      const current = await attestProcessJobsRootRegistrySnapshot(loaded, config.runtime.workspace);
+      return [...processJobsProtectionPolicyRoots(current), subagentInstancesRoot(config)];
+    },
+    hostAccess: () => ({ workspace: config.runtime.workspace, readableRoots: [...(config.tools.filesystem?.readableRoots ?? [])],
+      sandboxPolicy: mergeSandboxPolicies(harnessSandboxPolicy, clearSessionsSandboxPolicy(clearSessionsBoundaryOptions)), sandboxEngine }),
+  });
   const instanceRegistry = persistentSubagentsEnabled(config)
     ? createSubagentInstanceRegistry({
         root: subagentInstancesRoot(config),
         ...config.subagents?.instances,
+        ...subagentRecoveryAccess,
+        ...(internalHooks.processJobs?.service?.bindManagedSubagents ? {
+          ownerForReservation: (jobId: string) => ({ jobId, storeRoot: internalHooks.processJobs!.service!.settings.stateDir }),
+          resolveOwner: (identity: import("./subagent-registry-ownership.js").SubagentOwnerIdentity) => internalHooks.processJobs!.service!.resolveSubagentOwner!(identity),
+        } : {}),
+        checkOwnerIndex: async (conversationId, known) => {
+          // Only existing registered history is authoritative. Never scan/open an old root here.
+          if (processJobsRegistry.kind === "empty") return "clear";
+          const service = internalHooks.processJobs?.service;
+          if (processJobsRegistry.kind !== "ready" || !service?.checkSubagentOwnerIndex
+            || processJobsRegistry.roots.some((root) => root.canonicalPath !== service.settings.stateDir)) return "unavailable";
+          return await service.checkSubagentOwnerIndex(conversationId, known);
+        },
         retireSession: async (id, root) => {
           if (!runtime.retireDurableSession) throw new Error("Runtime cannot retire durable subagent sessions.");
           await runtime.retireDurableSession(id, root);
         },
       })
     : undefined;
+  if (instanceRegistry && internalHooks.processJobs?.service?.bindManagedSubagents) {
+    internalHooks.processJobs.service.bindManagedSubagents({ root: subagentInstancesRoot(config),
+      verify: async (identity) => await (await instanceRegistry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => await (await instanceRegistry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
+    });
+  }
   const persistentSubagents = instanceRegistry === undefined ? undefined
     : createSubagentsRuntimeExtension(config, subagentDeps, instanceRegistry);
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
@@ -1263,20 +1324,9 @@ async function createConfiguredAgentHarnessInternal(
     routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
       ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
   });
-  const monitoredRuntimeOptionsForRequest = createMonitorsRuntimeExtension({
-    next: processJobsRuntimeOptionsForRequest,
-    service: internalHooks.monitors?.service,
-    coreConfig: config,
-    channelId: internalHooks.monitors?.channelId ?? internalHooks.processJobs?.channelId,
-    conversationScheme: internalHooks.monitors?.conversationScheme
-      ?? internalHooks.processJobs?.conversationScheme,
-    routesOnlyPiNative: internalHooks.monitors?.routesOnlyPiNative
-      ?? internalHooks.processJobs?.routesOnlyPiNative
-      ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
-  });
   const toolOutputArtifactRoot = resolvePath(config.artifacts.dir, "tool-output");
   const runtimeOptionsForRequest = createToolOutputArtifactsRuntimeExtension(
-    monitoredRuntimeOptionsForRequest,
+    processJobsRuntimeOptionsForRequest,
     toolOutputArtifactRoot,
   );
   const subagents = buildSubagentsOptions(config, {
@@ -1388,7 +1438,8 @@ async function createConfiguredAgentHarnessInternal(
     ...(instanceRegistry === undefined ? {} : { subagentInstancesFor: async ({ request }: { request: AgentHarnessRequest }) =>
       (await (await instanceRegistry.open(request.conversationId)).list()).filter(isLiveSubagentInstance).slice(0, 12).map((record) => ({
         id: record.id, name: record.name, status: record.status, turns: record.turns,
-        ...(record.reservation ? { jobId: record.reservation.token } : {}),
+        ...(record.reservation || record.recoveryJobId ? { jobId: record.reservation?.token ?? record.recoveryJobId } : {}),
+        ...(record.recoveryBlocked ? { recoveryBlocked: true } : {}),
         ...(record.pendingQuestion ? { pendingQuestion: record.pendingQuestion } : {}),
         ageMs: Math.max(0, Date.now() - record.updatedAt),
         route: [record.definition.model?.reference, record.definition.effort].filter(Boolean).join("/"),
@@ -1412,17 +1463,6 @@ async function createConfiguredAgentHarnessInternal(
       channelId: internalHooks.processJobs?.channelId,
       conversationScheme: internalHooks.processJobs?.conversationScheme,
       routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
-        ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
-    }),
-    // Same predicate the monitors extension uses, for the same reason.
-    monitorsAvailable: (input) => monitorsAvailableForRequest(input, {
-      service: internalHooks.monitors?.service,
-      coreConfig: config,
-      channelId: internalHooks.monitors?.channelId ?? internalHooks.processJobs?.channelId,
-      conversationScheme: internalHooks.monitors?.conversationScheme
-        ?? internalHooks.processJobs?.conversationScheme,
-      routesOnlyPiNative: internalHooks.monitors?.routesOnlyPiNative
-        ?? internalHooks.processJobs?.routesOnlyPiNative
         ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
     }),
     ...(config.tools.mcpRequestContextServers === undefined
@@ -2312,7 +2352,7 @@ function createAgentHostMemoryLlm(options: {
   const timeoutMs = options.timeoutMs ?? 60_000;
   return {
     id: `agent-host:${referenceOf(options.model)}`,
-    async complete(prompt: string, opts?: { readonly label?: string; readonly abortSignal?: AbortSignal }): Promise<string> {
+    async complete(prompt: string, opts?: LlmCompleteOptions): Promise<string> {
       const ctrl = new AbortController();
       const abort = (): void => ctrl.abort(opts?.abortSignal?.reason);
       if (opts?.abortSignal?.aborted === true) abort();
@@ -2355,6 +2395,7 @@ function createAgentHostMemoryLlm(options: {
             allowedTools: [],
             disallowedTools: [],
             mcpServers: {},
+            ...(opts?.outputSchema === undefined ? {} : { outputSchema: opts.outputSchema }),
             ...(recorder === undefined ? {} : { onEvent: (event) => { recorder.onEvent(event); } }),
           } satisfies RuntimeRunOptions);
         } catch (error) {
@@ -2369,7 +2410,12 @@ function createAgentHostMemoryLlm(options: {
         // Record with the real outcome BEFORE textFromMemoryRuntimeResult, which throws
         // on failureKind/error; recorder.finish() classifies failed/succeeded/cancelled itself.
         await safeRecorderCall(() => recorder?.finish(result));
-        return textFromMemoryRuntimeResult(result, { timedOut, timeoutMs });
+        return textFromMemoryRuntimeResult(result, {
+          timedOut,
+          timeoutMs,
+          structuredOutputRequested: opts?.outputSchema !== undefined,
+          ...(opts?.structuredResultKey === undefined ? {} : { structuredResultKey: opts.structuredResultKey }),
+        });
       } finally {
         clearTimeout(timer);
         opts?.abortSignal?.removeEventListener("abort", abort);
@@ -2424,25 +2470,6 @@ function memoryOperationFromLabel(label: string | undefined): string | undefined
   return op.length > 0 ? op : undefined;
 }
 
-function textFromMemoryRuntimeResult(
-  result: RuntimeResult,
-  opts?: { readonly timedOut?: boolean; readonly timeoutMs?: number },
-): string {
-  if (result.cancelled === true) {
-    if (opts?.timedOut === true) {
-      throw new Error(`agent-host memory LLM timed out after ${opts.timeoutMs ?? "?"}ms (provider too slow or unavailable).`);
-    }
-    throw new Error("agent-host memory LLM run was cancelled.");
-  }
-  if (typeof result.failureKind === "string" && result.failureKind.length > 0) {
-    throw new Error(`agent-host memory LLM failed (${result.failureKind}): ${result.error ?? "unknown error"}`);
-  }
-  if (typeof result.error === "string" && result.error.length > 0) {
-    throw new Error(`agent-host memory LLM failed: ${result.error}`);
-  }
-  return typeof result.text === "string" ? result.text : "";
-}
-
 function referenceOf(model: RuntimeModelReference): string {
   return modelReferenceKey(model);
 }
@@ -2463,7 +2490,7 @@ function mergeStaticRuntimeOptions(
         merged[key] = mergeStringLists(merged[key], value);
         continue;
       }
-      if (key === "mcpServers") {
+      if (key === "mcpServers" || key === "toolExposure" || key === "hostCapabilities") {
         merged[key] = {
           ...(isRecord(merged[key]) ? merged[key] : {}),
           ...(isRecord(value) ? value : {}),
@@ -2534,6 +2561,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
       };
   if (
     piNative?.transport === undefined
+    && piNative?.cacheRetention === undefined
     && piNative?.promptCacheDiagnostics === undefined
     && piNative?.piMaxRetries === undefined
     && piNative?.maxRetryDelayMs === undefined
@@ -2546,6 +2574,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
   }
   return {
     ...(piNative?.transport === undefined ? {} : { piTransport: piNative.transport }),
+    ...(piNative?.cacheRetention === undefined ? {} : { cacheRetention: piNative.cacheRetention }),
     ...(piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: piNative.promptCacheDiagnostics }),
     ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
     ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),

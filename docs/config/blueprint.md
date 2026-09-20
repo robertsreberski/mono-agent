@@ -136,6 +136,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     // Pi-native bridge tuning (all optional).
     "piNative": {
       "transport": "auto",                // auto | sse | websocket | websocket-cached
+      // "cacheRetention": "short",      // opt out of default Anthropic 1h cache; long writes 2× / short 1.25×, reads 0.1×
       "promptCacheDiagnostics": false,     // metadata-only request fingerprints in run artifacts
       "piMaxRetries": 2,                   // 0-8; transient provider-transport retries
       "maxRetryDelayMs": 60000,            // backoff cap between retries (ms)
@@ -213,7 +214,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "mcpCallMaxTotalTimeoutMs": 2700000,   // hard per-call wall clock (45 min); no-expiry AskUser is exempt
     "web": {
       "search": {
-        "backend": "auto",                 // auto | searxng | ollama | codex | keyless
+        "backend": ["parallel", "ollama"], // name (strict) or ordered chain; keyless is opt-in
         "codex": { "model": "gpt-5.6-luna" },
         "searxng": { "endpoint": "http://127.0.0.1:8088" },
         "ollama": {                         // used only when backend is ollama

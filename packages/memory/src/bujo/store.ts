@@ -6,7 +6,7 @@ import type {
   MemoryCompletedTurnResult,
   MemoryStore,
 } from "@mono-agent/agent-contracts";
-import type { JournalBrowseInput, JournalBrowseSnapshot, RecallHit } from "../store/index.js";
+import type { JournalBrowseInput, JournalBrowseSnapshot, RecallHit, RecallOutcome } from "../store/index.js";
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../store/index.js";
 
 import {
@@ -390,6 +390,21 @@ export class BujoMemoryStore implements MemoryStore {
   async recall(query: string, options: { topK?: number; trackAccess?: boolean } = {}): Promise<RecallHit[]> {
     this.assertOpen("recall");
     return await this.runAdmittedOperation(async (abortSignal) => await this.db.recall(query, {
+      ...(options.topK !== undefined && { topK: options.topK }),
+      ...(this.readOnly
+        ? { trackAccess: false }
+        : options.trackAccess === undefined ? {} : { trackAccess: options.trackAccess }),
+      abortSignal,
+    }));
+  }
+
+  /** Explicitly status-bearing local recall; strict `recall()` remains unchanged. */
+  async recallWithOutcome(
+    query: string,
+    options: { topK?: number; trackAccess?: boolean } = {},
+  ): Promise<RecallOutcome> {
+    this.assertOpen("recallWithOutcome");
+    return await this.runAdmittedOperation(async (abortSignal) => await this.db.recallWithOutcome(query, {
       ...(options.topK !== undefined && { topK: options.topK }),
       ...(this.readOnly
         ? { trackAccess: false }

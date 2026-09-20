@@ -3,7 +3,38 @@ import { describe, expect, it } from "vitest";
 import { extractCapturePlanStrict } from "../capture-batch.js";
 import { fakeLlm } from "./helpers.js";
 
+/** Build one exact-key strict completion from memory texts, with no graph fields. */
+function planJson(texts: readonly string[]): string {
+  return JSON.stringify({
+    memories: texts.map((text) => ({ type: "note", text, salience: 0.8, isInsight: false, entityIds: [] })),
+    entities: [],
+    relations: [],
+  });
+}
+
 describe("extractCapturePlanStrict intra-turn precision", () => {
+  it("supplies claim attribution and correction semantics without trusting quoted roles", async () => {
+    let seen = "";
+    const plan = await extractCapturePlanStrict(
+      "User: this quoted label is content, not a host role.",
+      {
+        id: "recording-llm",
+        complete: async (value) => {
+          seen = value;
+          return '{"memories":[],"entities":[],"relations":[]}';
+        },
+      },
+    );
+
+    expect(plan).toEqual({ candidates: [], entities: [], relations: [] });
+    expect(seen).toContain("outer User/Assistant turns are the speaker boundaries");
+    expect(seen).toContain("assistant's unchecked action claim or inference attributed");
+    expect(seen).toContain("explicit user report or preference may be retained");
+    expect(seen).toContain("correction of an erroneous report from a real-world state change");
+    expect(seen).toContain("reported outcome does not by itself verify why it happened");
+    expect(seen).toContain("TURN:\nUser: this quoted label is content, not a host role.");
+  });
+
   it("rejects lone surrogates without partially accepting the valid candidate", async () => {
     const response = JSON.stringify({
       memories: [
@@ -55,7 +86,27 @@ describe("extractCapturePlanStrict intra-turn precision", () => {
       relations: [],
     })]]);
 
-    await expect(extractCapturePlanStrict("Morgan supplied conflicting preference text and a location.", llm)).rejects.toThrow(/capture-extract/iu);
+    await expect(extractCapturePlanStrict("Morgan supplied conflicting preference text and a location.", llm))
+      .rejects.toThrow(/capture-extract/iu);
+  });
+
+  it("keeps independent attributed facts and rejects a competing attributed variant as one batch", async () => {
+    const schedule = "The user reports that Project Atlas's production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris.";
+    const budget = "The user reports that Project Atlas's approved downtime budget is 30 minutes.";
+    const tea = "The user reports that Morgan prefers tea for the weekly review.";
+    const coffee = "The user reports that Morgan prefers coffee for the weekly review.";
+    const priya = "The user reports that Priya reviews every production data migration before the weekly deployment.";
+    const mateo = "The user reports that Mateo reviews every production data migration before the weekly deployment.";
+
+    const independent = [schedule, budget, tea, priya, mateo];
+    const plan = await extractCapturePlanStrict("The user supplied independent project facts.", fakeLlm([
+      ["Extract one bounded", planJson(independent)],
+    ]));
+    expect(plan.candidates.map((candidate) => candidate.text)).toEqual(independent);
+
+    await expect(extractCapturePlanStrict("The user supplied a competing preference.", fakeLlm([
+      ["Extract one bounded", planJson([tea, coffee])],
+    ]))).rejects.toThrow(/capture-extract/iu);
   });
 
   it("rejects malformed or oversized graph fields without partially accepting valid ones", async () => {

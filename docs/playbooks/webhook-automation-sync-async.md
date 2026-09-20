@@ -27,7 +27,7 @@ The first three are **config** coverage (the `webhook` section plus `MONO_AGENT_
 
 ## Configuration
 
-`mono-agent init` already enables the webhook channel with a single sync endpoint. The config below adds a second async endpoint and a per-endpoint `prompt`. Each endpoint needs a **unique `name` and a unique `path`**; a duplicate of either (across inline config and folder files) is a hard configuration error.
+`mono-agent init --with webhook` (or the `starter` preset) enables the webhook channel with a single sync endpoint. The config below adds a second async endpoint and a per-endpoint `prompt`. Each endpoint needs a **unique `name` and a unique `path`**; a duplicate of either (across inline config and folder files) is a hard configuration error.
 
 ```json
 {
@@ -93,7 +93,7 @@ This generic webhook feature does **not** prove that a later result belongs to t
 
 ## Steps
 
-1. `mono-agent init --model anthropic:claude-sonnet-4-6` — the webhook channel is enabled by `init` already.
+1. `mono-agent init --with webhook --model anthropic:claude-sonnet-4-6` — the webhook channel is opt-in; add it explicitly (`--with webhook`, the `starter` preset, or `webhook.enabled: true`).
 2. Add multiple endpoints in `webhook.endpoints[]` and/or `webhook/*.md` files, giving each a unique `name` AND a unique `path`.
 3. Run `mono-agent validate`, then `mono-agent start`.
 4. `curl` the sync endpoint for an immediate response body; `curl` the async endpoint for a `202` plus a status URL.

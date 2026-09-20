@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MonoAgentConfigError } from "../config.js";
 import { loadMonoAgentConfigWithSources, layerJsonOntoEnv } from "../layered-loader.js";
@@ -173,6 +173,12 @@ describe("layerJsonOntoEnv", () => {
       MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL: "false",
     });
     expect(layered.MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT).toBeUndefined();
+  });
+
+  it("rejects raw retired Hound JSON even when real env would override it", () => {
+    expect(() => layerJsonOntoEnv({ tools: { web: {
+      search: { backend: "hound", hound: { endpoint: "retired" } },
+    } } }, { MONO_AGENT_WEB_SEARCH_BACKEND: "parallel", MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT: "override" })).toThrow(/tools.web.search.hound.endpoint.*was removed/);
   });
 
   it("lets the canonical fallback env override JSON", () => {
@@ -3018,5 +3024,38 @@ describe("JSON attribution rewrites the diagnostic's subject, never the operator
 
     expect(error.message.startsWith("runtime.model ")).toBe(true);
     expect(error.message).not.toContain("MONO_AGENT_MODEL");
+  });
+});
+
+
+it("layers cache retention JSON below nonempty environment", () => {
+  const json = { providers: { piNative: { cacheRetention: "long" as const } } };
+  expect(layerJsonOntoEnv(json, {}).MONO_AGENT_PI_CACHE_RETENTION).toBe("long");
+  expect(layerJsonOntoEnv(json, { MONO_AGENT_PI_CACHE_RETENTION: "short" }).MONO_AGENT_PI_CACHE_RETENTION).toBe("short");
+  expect(layerJsonOntoEnv({}, {}).MONO_AGENT_PI_CACHE_RETENTION).toBeUndefined();
+});
+
+
+describe("retired settings compatibility", () => {
+  it("loads and ignores legacy monitors blocks with at most one warning per resolved config path", async () => {
+    const jsonPath = join(dir, "mono-agent.config.json");
+    const config = { runtime: { model: "pi:openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" } };
+    await writeFile(jsonPath, JSON.stringify(config));
+    const baseline = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await writeFile(jsonPath, JSON.stringify({ ...config, monitors: { enabled: true, maxActive: 999 } }));
+      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath })).toEqual(baseline);
+      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: `${dir}/./mono-agent.config.json` })).toEqual(baseline);
+      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath })).toEqual(baseline);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Ignoring deprecated monitors config"));
+      const secondPath = join(dir, "second.config.json");
+      await writeFile(secondPath, JSON.stringify({ ...config, monitors: { unknownNestedKey: true } }));
+      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: secondPath, warnOnDeprecatedConfig: false })).toEqual(baseline);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: secondPath })).toEqual(baseline);
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally { warn.mockRestore(); }
   });
 });

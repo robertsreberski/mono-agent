@@ -1,6 +1,6 @@
 import { ConversationTags } from "./tag/ConversationTags";
-import { ProjectBadge, StartProjectMarkers } from "./project/ProjectIdentity";
-import { ThreadPrimitive } from "@assistant-ui/react";
+import { ProjectBadge } from "./project/ProjectIdentity";
+import { ThreadPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import { Menu } from "@base-ui/react/menu";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { type ConnectionState, useConsoleStore } from "../console-store";
@@ -18,7 +18,8 @@ import { Composer } from "./Composer";
 import { CronChannelHeader } from "./CronChannelHeader";
 import { Icon } from "./Icon";
 import { ProcessJobStack } from "./ProcessJobStack";
-import { RenderErrorBoundary } from "./RenderErrorBoundary";
+import { ConversationErrorFallback, RenderErrorBoundary } from "./RenderErrorBoundary";
+import { conversationRenderContext } from "./render-error-diagnostics";
 import { useRunControls } from "./run-controls";
 
 const runLabel: Record<string, string> = {
@@ -235,10 +236,10 @@ function ConversationTitle() {
 
 export function ModelControls() {
   const {
-    usage, selectorModels, model, effort, setModel, setEffort,
+    usage, providerUsage, selectorModels, model, effort, setModel, setEffort,
     agentDefaultModel, hasRunOverride, resetRunOverride, disabled, hasSettings,
     catalogStatusByProvider, openCatalog, requestProvider, agentProviders,
-    changeNotice, showModelChangeHint,
+    showModelChangeHint,
   } = useRunControls();
   const [settingsOpen, setSettingsOpen] = useState(false);
   // `openCatalog` closes over the agent's providers and the shortlist, so its
@@ -269,6 +270,7 @@ export function ModelControls() {
           context={usage.context}
           processed={usage.processed}
           conversationCost={usage.cost}
+          providerUsage={providerUsage}
         />
       )}
       {hasSettings && (
@@ -297,11 +299,16 @@ export function ModelControls() {
           {...(hasRunOverride ? { onReset: resetRunOverride } : {})}
         />
       )}
-      {changeNotice !== null && (
-        <span className="composer-hint model-change-notice" role="status" aria-live="polite">
-          Model changed — the next reply rebuilds this conversation&apos;s context from its text history.
-        </span>
-      )}
+    </div>
+  );
+}
+
+export function ModelChangeNotice() {
+  const { changeNotice } = useRunControls();
+  if (changeNotice === null) return null;
+  return (
+    <div className="composer-model-notice" role="status" aria-live="polite">
+      Model changed — the next reply rebuilds this conversation&apos;s context from its text history.
     </div>
   );
 }
@@ -524,7 +531,10 @@ function EmptyConversation() {
 }
 
 export function Chat({ onBack }: { readonly onBack: () => void }) {
+  const aui = useAui();
   const {
+    detail,
+    loading,
     selectedAgent,
     selectedThread,
     selectedThreadId,
@@ -537,7 +547,13 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
     hasOlderMessages,
     loadOlderMessages,
   } = useConsoleStore();
-  const { viewportRef, contentRef } = useConversationBottomFollow(selectedThreadId);
+  // The external adapter follows console selection in a passive effect. Key
+  // the viewport to that adapter's snapshot, not to the earlier selection:
+  // otherwise new index-bound rows mount on the old transcript and survive
+  // into the shorter target transcript with invalid part indices.
+  const runtimeThreadId = useAuiState((state) =>
+    (state.thread.extras as { selectedThreadId?: string | null } | undefined)?.selectedThreadId ?? null);
+  const { viewportRef, contentRef } = useConversationBottomFollow(runtimeThreadId);
   const runStatus = selectedThread?.runState.status;
   const runNeedsAttention =
     runStatus === "running" ||
@@ -598,24 +614,28 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
       <RenderErrorBoundary
         scope="conversation"
         resetKey={`${selectedAgent?.sourceId ?? "none"}:${selectedThreadId ?? "new"}`}
-        fallback={({ reset }) => (
-          <div className="chat-empty thread-render-error" role="alert">
-            <span className="eyebrow">Conversation unavailable</span>
-            <h2>Something went wrong</h2>
-            <p>
-              This conversation could not be displayed. You can switch conversations or try loading it again.
-            </p>
-            <button type="button" className="primary-button" onClick={reset}>
-              Reload conversation
-            </button>
-          </div>
-        )}
+        getDiagnosticContext={() => {
+          const runtime = aui.thread().getState();
+          const item = aui.threadListItem().getState();
+          return conversationRenderContext({
+            selectedThreadId,
+            detailThreadId: detail?.thread.id ?? null,
+            runtimeAdapterThreadId: (runtime.extras as { selectedThreadId?: string | null } | undefined)?.selectedThreadId ?? null,
+            runtimeThreadId: item?.id ?? null,
+            runtimeRemoteId: item?.remoteId ?? null,
+            loading, detailLoading, selectionLoading, creatingThread,
+            runtimeLoading: runtime.isLoading,
+            messages: detail?.messages ?? [],
+            runtimeMessages: runtime.messages,
+          });
+        }}
+        fallback={(props) => <ConversationErrorFallback {...props} />}
       >
         <AskReconciliationProvider>
           <ThreadPrimitive.Root className="thread-root">
             <SelectionToolbar />
             <ThreadPrimitive.Viewport
-              key={selectedThreadId ?? "no-thread"}
+              key={runtimeThreadId ?? "no-thread"}
               ref={viewportRef}
               className="thread-viewport"
               autoScroll
@@ -631,7 +651,6 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
                     Load earlier messages
                   </button>
                 )}
-                <StartProjectMarkers />
                 <ThreadPrimitive.Messages
                   components={{
                     UserMessage,
@@ -680,6 +699,7 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
                   <Composer
                     key={composerDraftKey(selectedAgent?.sourceId ?? null, selectedThreadId) ?? "no-agent"}
                     runSettings={<ModelControls />}
+                    notice={<ModelChangeNotice />}
                   />
                 )}
               </ThreadPrimitive.ViewportFooter>

@@ -684,6 +684,35 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.failureKind).toBe("provider_auth");
   });
 
+  it("routes the supplemented opencode-go model through the run collection to provider_auth", async () => {
+    // No `piResolvedModel`/`piResolvedModels` seam: production resolution
+    // (`resolvePiRuntimeModel`) plus the real `builtinModels()` run collection
+    // (with the supplement registered) serve this turn. With no credential the
+    // run must reach the auth stage — only possible if the harness resolved
+    // `deepseek-v4.1-flash` by id inside the collection. The env is stubbed so
+    // a ambient OPENCODE_API_KEY can never turn this into a live request.
+    vi.stubEnv("OPENCODE_API_KEY", "");
+    try {
+      const result = await generatePiNativeResponse("system", {
+        model: {
+          provider: "opencode-go",
+          model: "deepseek-v4.1-flash",
+          reference: "opencode-go:deepseek-v4.1-flash",
+        },
+        messages: [{ role: "user", content: "hello" }],
+        effort: "none",
+        allowedTools: [],
+        resolvePiApiKey: async () => null,
+        piSessionsRoot: sessionsRoot,
+      });
+
+      expect(result.error).toBe("Provider is not configured: opencode-go");
+      expect(result.failureKind).toBe("provider_auth");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("dispatches stable OpenCode headers and returns the attribution id as the fresh provider session", async () => {
     const model = setup({ id: "deepseek-v4-pro" }, "opencode-go");
     const dispatchedHeaders = [];
@@ -1310,6 +1339,32 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.structuredResultSource).toBe("StructuredOutput");
   });
 
+  it("settles a terminal StructuredOutput submission successfully at maxTurns one", async () => {
+    const model = setup();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("StructuredOutput", { answer: 42 }, { id: "so-max-one" })]),
+    ]);
+
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "give structured output" }],
+      maxTurns: 1,
+      outputSchema: {
+        type: "object",
+        properties: { answer: { type: "number" } },
+        required: ["answer"],
+        additionalProperties: false,
+      },
+    }));
+
+    expect(result).toMatchObject({
+      error: null,
+      failureKind: null,
+      structuredResult: { answer: 42 },
+      structuredResultSource: "StructuredOutput",
+    });
+    expect(result.diagnostics).toMatchObject({ max_turns_hit: false, turn_count: 1 });
+  });
+
   it("forwards maxRetries to the provider stream options", async () => {
     const model = setup();
     let seenOptions = null;
@@ -1585,6 +1640,43 @@ describe("pi-native typed policy objects", () => {
       rmSync(root, { recursive: true, force: true });
     }
   }
+
+  it.each([undefined, 900_000, 30_000])("preserves the typed command budget through the real Pi harness: %s", async (bashTimeoutMs) => {
+    const root = mkdtempSync(join(tmpdir(), "pi-native-command-budget-"));
+    const timer = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const model = setup();
+      const advertised = [];
+      faux.setResponses([
+        (context) => {
+          advertised.push(...context.tools);
+          return fauxAssistantMessage([
+            fauxToolCall("Bash", { command: "echo bash", timeout_ms: 3_600_000 }, { id: "budget-bash" }),
+            fauxToolCall("Exec", { executable: process.execPath, args: ["--version"], timeout_ms: 3_600_000 }, { id: "budget-exec" }),
+          ]);
+        },
+        fauxAssistantMessage([fauxText("done")]),
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        cwd: root, toolContext: createToolContext({ workspace: root }), allowedTools: ["Bash", "Exec"],
+        messages: [{ role: "user", content: "run" }],
+        ...(bashTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs } }),
+      }));
+      expect(result.error).toBeNull();
+      expect(deprecationWarnings(result)).toEqual([]);
+      const cap = bashTimeoutMs ?? 120_000;
+      for (const name of ["Bash", "Exec"]) {
+        const tool = advertised.find((tool) => tool.name === name);
+        expect(tool.description).toContain("host_turn_context");
+        expect(tool.parameters.properties.timeout_ms.description).not.toContain(`${cap} ms`);
+        expect(tool.parameters.properties).toHaveProperty("background");
+      }
+      expect(timer.mock.calls.filter(([, ms]) => ms === cap)).toHaveLength(2);
+    } finally {
+      timer.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it("applies typed toolLimits clamps to tool params, with no deprecation warning", async () => {
     const { result, toolUse } = await grepClampRun({

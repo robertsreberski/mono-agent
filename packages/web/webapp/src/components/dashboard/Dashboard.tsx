@@ -30,9 +30,11 @@ import { flattenCatalogModels } from "../route-label";
  */
 export function Dashboard({
   onNavigate,
+  onCloseProject,
   highlightSelected = true,
 }: {
   readonly onNavigate?: () => void;
+  readonly onCloseProject?: () => void;
   readonly highlightSelected?: boolean;
 }) {
   const {
@@ -134,7 +136,14 @@ export function Dashboard({
   // An open project takes this whole slot: the desktop left column and the
   // mobile entrance screen draw the project page instead of the Dashboard.
   if (openProject !== null) {
-    return <ProjectPage project={openProject} onNavigate={onNavigate} highlightSelected={highlightSelected} />;
+    return (
+      <ProjectPage
+        project={openProject}
+        onNavigate={onNavigate}
+        onClose={onCloseProject}
+        highlightSelected={highlightSelected}
+      />
+    );
   }
 
   return (
@@ -147,20 +156,24 @@ export function Dashboard({
         label={chats ? "Search conversations" : "Search automations"}
       />
       <div className="dashboard-scroll">
-        <RunningSection
-          groups={groups}
-          expandedAgentIds={expandedAgentIds}
-          onToggleAgent={toggleAgentExpansion}
-          onOpen={openRunning}
-          {...(authoritative && activeThreads !== null
-            ? { total: activeThreads.total, truncated: activeThreads.truncated }
-            : {})}
-          authoritative={authoritative}
-          {...(catalogModels === undefined ? {} : { catalogModels })}
-          catalogSourceId={selectedAgentId ?? undefined}
-          projectsByAgent={projectsByAgent}
-        />
-        <ProjectsSection />
+        {!searching && (
+          <>
+            <RunningSection
+              groups={groups}
+              expandedAgentIds={expandedAgentIds}
+              onToggleAgent={toggleAgentExpansion}
+              onOpen={openRunning}
+              {...(authoritative && activeThreads !== null
+                ? { total: activeThreads.total, truncated: activeThreads.truncated }
+                : {})}
+              authoritative={authoritative}
+              {...(catalogModels === undefined ? {} : { catalogModels })}
+              catalogSourceId={selectedAgentId ?? undefined}
+              projectsByAgent={projectsByAgent}
+            />
+            <ProjectsSection />
+          </>
+        )}
         <RecentSection
           searching={searching}
           query={query}

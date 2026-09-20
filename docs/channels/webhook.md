@@ -5,7 +5,7 @@ sidebar:
   order: 4
 ---
 
-The webhook channel turns your agent into an HTTP endpoint: `POST` a JSON body with `text`, and the agent runs a turn. It is the zero-credential channel `mono-agent init` enables by default — a loopback smoke test you can `curl` immediately, and the integration point for automations, scripts, and other services. Coverage: **config** (`webhook` section), plus env overrides.
+The webhook channel turns your agent into an HTTP endpoint: `POST` a JSON body with `text`, and the agent runs a turn. It is the zero-credential smoke channel you enable explicitly — `mono-agent init --with webhook`, the `starter` preset, or `"webhook": { "enabled": true }` in the config — a loopback smoke test you can `curl` immediately, and the integration point for automations, scripts, and other services. The browser-first default scaffold enables no channel; the browser console discovers a running agent through its operator endpoint instead. Coverage: **config** (`webhook` section), plus env overrides.
 
 ## Quick start
 

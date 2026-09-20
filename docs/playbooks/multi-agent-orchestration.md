@@ -110,5 +110,14 @@ wait for the child. Continue it with `AgentSend` and `background:true` plus a
 message. The started receipt is durable, and the exact originating conversation
 wakes on completion, failure, interruption or AskParent. Answer an awaiting
 child with AgentSend. Do not poll or replay. A terminal `childStillBusy:true` job
-means another send must wait for actual child settlement. See
+means another send must wait for ownership resolution. Late settlement is not
+proof that a failed transcript was retained: lost/unknown continuity requires
+explicit close/create, and unavailable owners cannot be bypassed. See
 [background child lifecycle](/tools/background-process-jobs/#detached-persistent-children).
+
+For long verification inside a detached child, use foreground Bash/Exec with
+`timeout_ms`. Its ceiling is `min(remaining job runtime, subagents.commandTimeoutMs)`
+at child-run setup (command default: 30 minutes); the job deadline still applies
+throughout execution. Configure `subagents.timeoutMs` / profile timeouts and
+`processJobs.maxRuntimeMs` for the whole task too. Child-owned background commands
+remain unsupported; foreground children and NodeRepl keep their existing caps.

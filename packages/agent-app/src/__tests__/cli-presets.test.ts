@@ -301,8 +301,10 @@ describe("answersFromCli", () => {
       .toThrow("Wizard model sentinel");
   });
 
-  it("defaults to the webhook channel with no preset and no flags", () => {
-    expect(answersFromCli({}).channels).toEqual(["channel:webhook"]);
+  it("defaults to no channels (browser-first) while the starter preset keeps webhook", () => {
+    expect(answersFromCli({}).channels).toEqual([]);
+    expect(answersFromCli({ presetId: "starter" }).channels).toEqual(["channel:webhook"]);
+    expect(answersFromCli({ withChannels: ["webhook"] }).channels).toEqual(["channel:webhook"]);
   });
 });
 

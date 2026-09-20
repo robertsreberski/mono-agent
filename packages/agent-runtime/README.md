@@ -33,6 +33,13 @@ Using that field without `background: true` is invalid. Host-provided
 `processJobsAvailability` exposes lineage and exhaustion diagnostics even
 when a request has no start controller.
 
+An optional host `ownedForegroundProcesses` capability instead keeps Bash/Exec
+awaited while delegating gated process ownership and cleanup to that host. It
+carries tool-call identity through the Pi wrapper and does not enable background
+commands. The host must durably attest before releasing a target; a rejected or
+unresolved owned command never falls back to ordinary foreground execution. This
+seam alone is not a restart-recovery implementation.
+
 Create one runtime for a host, parse a model reference, and run a turn:
 
 ```js
@@ -75,15 +82,51 @@ revisions, reads only the originating tool's declared `ui://` resource, and
 receives one exact connection capability. Successful registration retains that
 existing MCP client instead of creating a client per UI call; host LRU/idle
 eviction closes the client, transport, and sandbox cleanup.
-See [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+See [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
+
+### Anthropic cache retention
+
+The config-first host resolves this default. Direct runtime API callers that
+omit the `cacheRetention` option still retain Pi defaults/environment.
+
+`providers.piNative.cacheRetention` defaults to `"long"` (one hour); set `"short"`
+(five minutes) to opt out. Nonempty `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON,
+then the `"long"` default. Both the default and explicit values override Pi's
+separate ambient `PI_CACHE_RETENTION`, including explicit `"short"` when Pi's
+environment requests long retention.
+The runtime forwards retention only to Anthropic Messages, including child
+routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
+unsupported models receive no one-hour TTL.
+
+One-hour writes cost **2× normal input**, reads **0.1×**, versus **1.25×** for
+short-cache writes. Model support is required, and no cache hit is guaranteed.
+Metadata-only diagnostics record the requested setting and observed cache TTL;
+an ephemeral Anthropic cache control without an explicit TTL denotes five
+minutes. Evaluate the measurement gates before separately authorizing spending.
+
+The default benefits agents whose turns arrive 5–60 minutes apart. In a measured
+maintainer-console workload, 72% of Anthropic cache writes were 5–60-minute
+re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
+This is workload-specific evidence, not a billing guarantee. Agents that only
+chain turns within five minutes pay slightly more with long retention and can
+set `"short"` instead.
+
 
 ## Architecture
 
-The injected Pi-native `Monitor` tool supports `wake_on: "batch" | "exit"`,
-`dedupe: "none" | "batch"`, and `min_wake_interval_ms` (defaults batch/none/0).
-The start receipt reports the host's effective policy, including interval
-clamping. Terminal delivery bypasses batch suppression and timing. A cancelled
-watch is intentionally stopped and must not be automatically recreated.
+The opt-in `hound` providers run native Node search (fixed DDG/Brave/Mojeek HTML
+engines) and HTTP-only fetch with per-request policy/admission and fail-closed
+robots. No Hound service or Python runtime is used; retired endpoint settings
+are rejected. `inspectHoundWeb()` reports local capability, not engine liveness.
+
+Local web extraction uses native Hound-derived title/stage fallback and content
+link classification, with Defuddle/Readability/Turndown as the parser equivalents.
+The default `local` fetch provider needs no Python or Hound service and gains no
+new robots.txt prerequisite. See `THIRD_PARTY_NOTICES.md` for source provenance
+and licenses. Fetch rate limits and access refusals are terminal across provider
+fallback; ordinary transient failures remain bounded.
+
+`createPiOAuthApiKeyResolver` accepts optional `{ rejectedAccessToken, signal }` for a bounded usage read: only the still-current rejected token is forced through the existing OAuth refresh inside the serialized auth-file lane. Already-replaced tokens retain normal expiry behavior. Failed or cancelled refresh writes nothing; ordinary one-argument callers are unchanged.
 
 The package validates each model reference and lazily loads the sole Pi bridge:
 
@@ -172,6 +215,31 @@ Terminal states reuse the observability taxonomy: `success` has no failure kind;
 `cancelled_signal`; `rejected`, `error`, `exit_nonzero`, and `timeout` use a
 provider-supplied known kind when available and otherwise `runtime_error`.
 
+Persistent Agent can declare observation-only `verification` metadata; it does
+not change the child cwd or authorize a command. Recovery-capable AgentSend
+supports mutually exclusive `inspect: true` and explicit message + `ack`.
+Inspection starts no provider. Consumed/conflicting acknowledgements return a
+typed non-executing response rather than replaying an execution receipt; the app
+owns current-policy inspection, continuity eligibility and durable consumption.
+
+### Tool exposure versus admission
+
+Tool definitions follow the configured authority profile, not the current turn's
+controllers. User, process-job wake and cron turns keep the same
+provider-visible definitions within an unchanged profile; persistent children
+have their own profile and retain structural recursion/MCP exclusions.
+Unavailable operations remain visible but refuse before execution. Current
+availability/reasons, lineage budgets, command ceilings and
+persistent-child/recovery capabilities appear only in the latest non-authorizing
+`host_turn_context`, never in tool schemas or canonical history. Children use
+the same envelope formatter. No previous controller or tool snapshot is retained.
+
+Builtins, skill names, MCP servers and source tool names use deterministic
+code-unit ordering, including before MCP collision naming. Real configuration,
+model, output-schema or skill-catalog changes can still change definitions, as
+can third-party schema changes and explicitly warned infrastructure discovery
+failures. Stable definitions do not guarantee a provider cache hit.
+
 ## Public API
 
 ### Start here
@@ -218,6 +286,7 @@ PiProviderAuthDescription
 PiProviderAuthInteraction
 PiProviderAuthPrompt
 PiReasoningLevel
+PiSupplementSnapshot
 ProviderCheckCode
 ProviderCheckOutcome
 RISK_TIERS
@@ -244,11 +313,13 @@ disposeAllProviderSessions
 disposeProviderSession
 generatePiNativeResponse
 getPiBuiltinModel
+getPiSupplementModel
 inferAllowlistMode
 invalidateProviderSession
 isLikelyContextTermination
 listPiBuiltinModels
 listPiBuiltinProviders
+listPiSupplementModels
 listRuntimeBridges
 loginPiOAuth
 loginPiProviderAuth
@@ -260,6 +331,7 @@ parseStoredAllowlist
 piNativeRuntimeBridge
 reasoningLevelsForPiModel
 refreshProviderSession
+registerPiSupplementModels
 renderResumeSnapshot
 resolveAgentCompactionPolicy
 resolveAllowlist
@@ -337,8 +409,6 @@ inferSkillsRoot
 
 ```text
 DEFAULT_CODEX_SEARCH_MODEL
-DEFAULT_MONITOR_TIMEOUT_MS
-MIN_MONITOR_TIMEOUT_MS
 bashToolImpl
 bashToolRun
 createWebToolController
@@ -348,14 +418,13 @@ execToolRun
 globToolImpl
 grepToolImpl
 inspectCodexSubscriptionSearch
+inspectHoundWeb
+inspectParallelWeb
 isPathAllowed
 isWorkdirAllowed
-monitorStopToolRun
-monitorToolRun
 normalizeBackgroundBashTimeoutMs
 normalizeBackgroundTimeoutMs
 normalizeBashTimeoutMs
-normalizeMonitorTimeoutMs
 normalizeProcessTimeoutMs
 performWebFetch
 performWebSearch
@@ -417,6 +486,7 @@ PiProviderAuthDescription
 PiProviderAuthInteraction
 PiProviderAuthPrompt
 PiReasoningLevel
+PiSupplementSnapshot
 ProviderCheckCode
 ProviderCheckOutcome
 RUNTIME_CAPABILITIES
@@ -437,9 +507,11 @@ disposeAllProviderSessions
 disposeProviderSession
 generatePiNativeResponse
 getPiBuiltinModel
+getPiSupplementModel
 invalidateProviderSession
 listPiBuiltinModels
 listPiBuiltinProviders
+listPiSupplementModels
 listRuntimeBridges
 loginPiOAuth
 loginPiProviderAuth
@@ -448,6 +520,7 @@ parseRuntimeModelReference
 piNativeRuntimeBridge
 reasoningLevelsForPiModel
 refreshProviderSession
+registerPiSupplementModels
 resolvePiOAuthApiKey
 resolveRuntimeBridge
 runPiProviderCheck
@@ -737,8 +810,8 @@ Per-call options (a non-exhaustive selection):
 | `skills` / `skillsRoot` | `{name, description}[]` / `string` | Skills disclosed to the run and the directory holding `<name>/SKILL.md`. |
 | `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http). |
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
-| `webSearchConfig` | `{ backend?, maxRequestsPerRun?, searxng?: { endpoint? }, ollama?: { baseUrl?, apiKey?, apiKeyEnv?, trustPublicUrl? }, codex?: { model? } }` | Run-scoped ordered WebSearch selection and a 1–20 actual-provider-request budget (default 4). `auto` uses explicitly configured Ollama, configured SearXNG, Codex, then keyless; named modes are strict. The deprecated top-level `endpoint` remains a SearXNG compatibility alias. |
-| `webFetchConfig` | `{ render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. |
+| `webSearchConfig` | `{ backend?, maxRequestsPerRun?, searxng?: { endpoint? }, hound?: { endpoint? /* deprecated; rejected */ }, ollama?: { baseUrl?, apiKey?, apiKeyEnv?, trustPublicUrl? }, codex?: { model? } }` | Run-scoped ordered WebSearch selection and a 1–20 answered-search budget (default 4), including empty answers. Failed attempts are refunded; network dispatches are capped at four times the budget. The default chain is Parallel then local Ollama; names are strict and arrays are ordered fallback chains. Keyless and Hound are opt-in; `auto` is rejected. The deprecated top-level `endpoint` remains a SearXNG compatibility alias. Hound is native Node metasearch with per-engine policy/admission and proactive robots checks; retired endpoint settings are rejected. Restricted policies gate each actual destination instead of rejecting the entire provider. |
+| `webFetchConfig` | `{ provider?, hound?: { endpoint? /* deprecated; rejected */ }, render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. The default provider is local; `parallel` selects remote extraction; `hound` selects native HTTP-only acquisition/extraction with proactive robots checks and policy checks at each redirect. Hound supports raw output and allowed headers, not browser rendering; retired endpoint settings are rejected. |
 | `piToolExecutionMode` | `"safe-parallel" \| "sequential"` | Pi built-in scheduling. Safe parallelism is the default; read-only tools may overlap only when the offered tool set contains no stateful/mutating or MCP tool. Otherwise Pi 0.85 serializes the whole batch. |
 | `maxTurns` | `number` | Hard cap on agent turns. |
 | `outputSchema` | `JSONSchema` | Requests structured JSON; see “Structured output” below. |
@@ -789,7 +862,7 @@ Pinned or overridden routes appear in the result header and `details.subagent.re
 `details.subagent.executed` records the successful child route when available.
 
 Hosts may inject a conversation-scoped `subagents.instances` facade to enable
-`Agent({persist: true, id?})` and `AgentSend({id, message?, close?})`. Continuations
+`Agent({persist: true, id?})` and `AgentSend({id, message?, close?, stop?})`. Continuations
 retain the child’s selected profile and use `sessionId`, `piSessionsRoot`, and
 `sessionKeepAlive` for true durable resume. Both tools share caps and deny child
 recursion. A persistent child's host injects `askParentController.submit(question)`
@@ -804,6 +877,10 @@ Persistent Agent/AgentSend can run detached through the app-private in-process
 ProcessJobs lane. Durable admission reserves the child; completion and AskParent
 wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
+`AgentSend({id, stop:true})` cooperatively stops managed detached work without
+starting a new turn. Only a proven `resumable:true` receipt permits ordinary
+message continuation on the same session or `close:true`; `stop_requested`
+keeps messages/close blocked. Stop neither force-kills nor undoes external effects.
 Detached usage belongs to the durable child outcome and bounded job result; it
 does not change the finalized parent run totals. Process-job deadlines retain
 timeout status in both the job and child instance, distinct from cancellation.
@@ -838,14 +915,25 @@ contract package for this boundary.
 
 `NodeRepl` uses Node's default `node:repl` evaluator, so variables, `_`, `_error`, and loaded modules persist across calls in the same run. It supports multiline input and top-level `await`, resolves workspace-installed packages, and is closed with the run. Its child is prepared through the same sandbox seam as `Exec`/`Bash` and communicates through token-authenticated, length-prefixed JSON frames on ordinary stdin/stdout; abort, the fixed 120-second timeout, child exit, or hard output overflow resets the session. It deliberately has no session ids, persistent history, terminal commands, or package-install surface.
 
-`WebSearch` uses explicit Ollama Web Search, a configured loopback SearXNG
+`WebSearch` uses Parallel MCP, explicit Ollama Web Search, a configured loopback SearXNG
 endpoint, and deterministic public fallbacks. Strict backends do not fall
-through, and `auto` tries explicitly configured Ollama → configured SearXNG →
-Codex → keyless. Hosted Ollama bearer credentials are accepted only for the
+through; ordered arrays provide fallback. The default is Parallel → local Ollama.
+Keyless is opt-in, and `auto` was removed. Hosted Ollama bearer credentials are accepted only for the
 exact official origin. Search canonicalizes and deduplicates results, trying
 supplied alternate queries only if the primary has no relevant results. Codex
 subscription search preserves a 10% allowance reserve. An optional host-injected
-coordinator shares admission and cooldowns across processes. `WebFetch`
+coordinator shares admission and cooldowns across processes. Parallel batches
+primary/alternate queries once and supports optional remote WebFetch extraction.
+WebSearch calls may request a case-insensitive ISO 3166-1 alpha-2 `country`
+localization preference. Omission requests no country/global mode where the
+provider supports one, without claiming IP-neutral ranking. Parallel treats it
+as advisory; DuckDuckGo applies its documented region token; native Hound skips
+Brave and Mojeek for that call. Providers without a reviewed per-call transport
+are skipped before dispatch and budget instead of silently ignoring it. Country
+is separate from language and does not guarantee the location of each result.
+`fetch.provider` defaults to local; Parallel cannot serve raw/header/browser
+options and reports `include_links` as an unsupported parameter. See the
+web-research guide for privacy and chain behavior. `WebFetch`
 deterministically decodes and extracts HTML, JSON, feeds, PDFs, and text locally
 with bounded redirects, bodies, headers, retries, and structured parser
 failures. Config can opt into isolated `agent-browser` rendering for sparse
@@ -862,9 +950,19 @@ to the model; children and later runs receive fresh budgets.
 
 Each normalized WebSearch result caps its title at 500 characters and its
 snippet at 4,000 characters, including a visible truncation marker directing
-the model to `WebFetch`. The ranked result body is capped at 64 KiB UTF-8;
-lower-ranked snippets shrink before whole results are omitted, while the
-control, metadata, filter, and balanced untrusted-result framing always remain.
+the model to `WebFetch`. The ranked structured results are capped at 64 KiB
+UTF-8 of entries JSON; lower-ranked snippets shrink before whole results are
+omitted. Both tools
+return a compact JSON envelope with `status` (`ok`/`partial`/`blocked`/`error`),
+a host-written `summary`, untrusted `content` or `results`, source and `coverage`
+metadata, and typed `next_actions` with schema-valid tool arguments.
+`partial` means usable but incomplete output, `blocked` means
+policy/access/budget prevents progress, and `error` means execution failure.
+Paginated or character-truncated fetch views are `partial` even when the
+requested slice was satisfied. Search snippets stay discovery leads; `WebFetch` provides evidence. `WebFetch`
+accepts an optional deterministic `focus` block filter and `include_links` for
+bounded static-HTML links; focus and link selection are post-extraction views
+that reuse the cached extraction without added requests.
 Ollama receives the caller's effective 1–10 result limit as `max_results`.
 
 Pi runs with selected skills also expose `ReadSkill`. It returns the complete
@@ -1117,15 +1215,20 @@ are evidence of payload changes, not proof of cache misses; delta/unsupported
 prefix comparisons remain unknown. Pi summary requests retain their existing
 `cacheRetention: "none"` behavior.
 
-The sole pi bridge runs on pi-agent-core's native `AgentHarness`. Pi supports native checkpoint and overflow compaction; mono-agent disables that path
-and drives guarded compaction itself: before each turn it estimates the
-running model's context usage and calls `AgentHarness.compact()` when near the window
-(proactive), and if a turn still overflows it compacts once and re-prompts exactly once
-only after a rebuilt-context preview proves positive reduction (reactive recovery).
-The bridge installs a one-shot `session_before_compact` hook around the public harness
-operation, using Pi's public `prepareCompaction()` and `compact()` primitives so the
-harness still owns phase changes, persistence, and events. Non-reducing previews and
-proactive savings below policy are cancelled before persistence.
+The sole pi bridge runs on pi-agent-core's native `AgentHarness`. Mono-agent
+keeps Pi's native overflow recovery disabled but arms its checkpoint compaction
+for the main prompt. The bridge's guarded `session_before_compact` hook decides
+whether to compact before each turn and between completed model/tool rounds,
+using Pi's public `prepareCompaction()` and `compact()` primitives. Pi still owns
+phase changes, persistence, and events. Before the prompt, the bridge invokes
+`AgentHarness.compact()`; mid-run, Pi schedules the hook inside the same agent run.
+Each summary is a separate paid provider request, guarded by projected savings,
+fresh assistant progress and meaningful growth between mid-run attempts.
+Non-reducing previews and proactive savings below policy are cancelled before
+persistence. If a turn still overflows, guarded reactive recovery compacts and
+re-prompts at most once, only after a preview proves positive reduction. A fresh
+compaction suppresses recovery, but meaningful transcript growth after a mid-run
+compaction makes recovery eligible again.
 
 The context window auto-tracks the model actually serving the request
 (`harness.getModel()`). Numeric provider limits become learned ceilings; generic
@@ -1204,16 +1307,16 @@ runtime fails closed.
 
 ## Related Documentation
 
-- [Runtime and providers](https://mono-agent-docs.vercel.app/runtime/) explains the
+- [Runtime and providers](https://docs.mono-agent.dev/runtime/) explains the
   config-first model and backend choices.
-- [Backends and model references](https://mono-agent-docs.vercel.app/runtime/backends/)
+- [Backends and model references](https://docs.mono-agent.dev/runtime/backends/)
   documents the built-in bridges and their execution modes.
-- [Programmatic approvals and structured output](https://mono-agent-docs.vercel.app/programmatic/approval-and-structured-output/)
+- [Programmatic approvals and structured output](https://docs.mono-agent.dev/programmatic/approval-and-structured-output/)
   shows the code-only host hooks.
-- [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
+- [Local-first web research](https://docs.mono-agent.dev/tools/web-research/)
   documents Ollama/SearXNG selection, extraction, retry, browser isolation, and
   sandbox policy.
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
   documents the host bridge, browser sandbox, and lifecycle limits.
 - [Architecture](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/ARCHITECTURE.md)
   and [migration guide](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/MIGRATION.md)

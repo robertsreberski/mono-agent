@@ -1,6 +1,31 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { agent } from "../../test/fixtures";
+import type { ProviderUsageSnapshot } from "../../types";
+
+const apiMock = vi.hoisted(() => ({ providerUsage: vi.fn(), refreshProviderUsage: vi.fn() }));
+vi.mock("../../api", () => ({ api: apiMock }));
 import { ContextDisplay } from "./ContextDisplay";
+
+const codexSnapshot: ProviderUsageSnapshot = {
+  schema: "mono-agent.provider-usage.v1",
+  providers: [{
+    providerId: "openai-codex",
+    label: "Codex",
+    plan: "Pro",
+    fetchedAt: "2026-09-15T12:00:00Z",
+    stale: false,
+    windows: [{
+      kind: "weekly",
+      label: "Weekly",
+      usedPercent: 42,
+      periodMs: 604_800_000,
+      resetsAt: "2026-09-16T12:00:00Z",
+    }],
+  }],
+};
+
+afterEach(() => { vi.clearAllMocks(); });
 
 describe("ContextDisplay", () => {
   it("renders exact current context and last-turn work as separate sections", async () => {
@@ -158,5 +183,74 @@ describe("ContextDisplay", () => {
     expect(trigger).not.toHaveTextContent("%");
     fireEvent.click(trigger);
     expect(await screen.findByText("Awaiting")).toBeVisible();
+  });
+
+  it("loads and renders only the active provider after the popover opens", async () => {
+    let finish!: (snapshot: ProviderUsageSnapshot) => void;
+    apiMock.providerUsage.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    render(
+      <ContextDisplay
+        context={{ status: "current", usage: { total: 20_000, contextWindow: 100_000 } }}
+        providerUsage={{
+          agent: agent("alpha", { supportsProviderUsage: true }),
+          providerId: "openai-codex",
+        }}
+      />,
+    );
+
+    expect(apiMock.providerUsage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Context usage: 20k tokens, 20%" }));
+    const loading = await screen.findByRole("region", { name: "Codex usage" });
+    expect(within(loading).getByText("Loading usage…")).toHaveRole("status");
+    expect(apiMock.providerUsage).toHaveBeenCalledExactlyOnceWith("alpha", expect.any(AbortSignal));
+
+    await act(async () => finish(codexSnapshot));
+    const provider = screen.getByRole("region", { name: "Codex usage" });
+    expect(within(provider).getByRole("heading", { name: "Codex usage" })).toBeVisible();
+    expect(within(provider).getByText("Pro")).toHaveClass("provider-usage-plan");
+    expect(within(provider).getByRole("progressbar", { name: "Codex Weekly used" })).toHaveAttribute("value", "42");
+  });
+
+  it.each([
+    ["an agent without usage support", agent("alpha"), "openai-codex"],
+    ["an unknown usage provider", agent("alpha", { supportsProviderUsage: true }), "pi"],
+  ])("omits provider usage for %s", async (_case, selectedAgent, providerId) => {
+    render(
+      <ContextDisplay
+        context={{ status: "current", usage: { total: 20_000, contextWindow: 100_000 } }}
+        providerUsage={{ agent: selectedAgent, providerId }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Context usage: 20k tokens, 20%" }));
+    const popover = await screen.findByRole("dialog", { name: "Context usage" });
+    expect(within(popover).queryByRole("region", { name: /usage$/u })).toBeNull();
+    expect(apiMock.providerUsage).not.toHaveBeenCalled();
+  });
+
+  it("keeps context visible when active-provider usage is stale and errored", async () => {
+    apiMock.providerUsage.mockResolvedValue({
+      ...codexSnapshot,
+      providers: [{
+        ...codexSnapshot.providers[0]!,
+        stale: true,
+        error: { code: "unavailable", message: "Provider usage is unavailable." },
+      }],
+    });
+    render(
+      <ContextDisplay
+        context={{ status: "current", usage: { total: 20_000, contextWindow: 100_000 } }}
+        providerUsage={{
+          agent: agent("alpha", { supportsProviderUsage: true }),
+          providerId: "openai-codex",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Context usage: 20k tokens, 20%" }));
+    expect(await screen.findByText("Last known usage")).toBeVisible();
+    expect(screen.getByText("Usage unavailable — Provider usage is unavailable.")).toBeVisible();
+    expect(screen.getByRole("progressbar", { name: "Context window used" })).toBeVisible();
+    expect(screen.getByRole("progressbar", { name: "Codex Weekly used" })).toBeVisible();
   });
 });

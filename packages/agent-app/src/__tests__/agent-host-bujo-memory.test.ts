@@ -168,6 +168,153 @@ describe("createConfiguredMemory — bujo mode", () => {
     await (store as unknown as { close(): Promise<void> }).close();
   });
 
+  it("forwards strict capture schema to the runtime and consumes only structuredResult", async () => {
+    const dir = await tempDir();
+    const memoryRoot = join(dir, "structured-memory");
+    const calls: RuntimeRunOptions[] = [];
+    const runtime = {
+      async run(_systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls.push(options);
+        return {
+          text: "this free-form fallback must not be consumed",
+          structuredResult: { memories: [], entities: [], relations: [] },
+        };
+      },
+    };
+    const store = await createConfiguredMemory(
+      bujoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        memoryRoot,
+        llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" },
+      }),
+      { memoryRuntime: runtime },
+    ) as unknown as {
+      persistCompletedTurn(input: {
+        runId: string;
+        conversationId: string;
+        summary: string;
+        captureText: string;
+      }): Promise<unknown>;
+      flush(): Promise<void>;
+      close(): Promise<void>;
+    };
+
+    await store.persistCompletedTurn({
+      runId: "structured-capture",
+      conversationId: "conv-structured",
+      summary: "Host summary.",
+      captureText: "User: Morgan keeps schema-guided memory.\nAssistant: Understood.",
+    });
+    await store.flush();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.outputSchema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: ["memories", "entities", "relations"],
+    });
+    expect(calls[0]?.maxTurns).toBe(1);
+    expect(calls[0]?.allowedTools).toEqual([]);
+    expect(calls[0]?.mcpServers).toEqual({});
+    expect(inspectCompletedTurnIntake(memoryRoot).snapshot).toMatchObject({ pending: 0, resolved: 1 });
+    await store.close();
+  });
+
+  it("projects structured reconciliation decisions back into the established strict array contract", async () => {
+    const dir = await tempDir();
+    const memoryRoot = join(dir, "structured-reconcile-memory");
+    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
+      return new Response(JSON.stringify({
+        data: body.input.map(() => ({ embedding: [1, 0, 0, 0] })),
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+    const calls: RuntimeRunOptions[] = [];
+    const runtime = {
+      async run(_systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls.push(options);
+        const prompt = String(options.messages[0]?.content ?? "");
+        if (prompt.startsWith("Extract one bounded")) {
+          return {
+            structuredResult: {
+              memories: [{
+                type: "note",
+                text: "Nadia prefers weekly status reports on Friday before 15:00 Europe/London.",
+                salience: 0.8,
+                isInsight: false,
+                entityIds: [],
+              }],
+              entities: [],
+              relations: [],
+            },
+          };
+        }
+        const targetId = /"existing":\[\{"id":"([^"]+)"/u.exec(prompt)?.[1];
+        expect(targetId).toBeDefined();
+        return { structuredResult: { decisions: [{ index: 0, action: "noop", targetId }] } };
+      },
+    };
+    const store = await createConfiguredMemory(
+      bujoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        memoryRoot,
+        embeddings: {
+          provider: "lmstudio",
+          model: "text-embedding-test",
+          endpoint: "http://localhost:1234",
+          dim: 4,
+        },
+        llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" },
+      }),
+      { memoryRuntime: runtime },
+    ) as unknown as {
+      remember(conversationId: string, text: string): Promise<unknown>;
+      persistCompletedTurn(input: {
+        runId: string;
+        conversationId: string;
+        summary: string;
+        captureText: string;
+      }): Promise<unknown>;
+      flush(): Promise<void>;
+      browseJournal(input: {
+        fromInclusive: string;
+        toExclusive: string;
+        maxEntries: number;
+        maxBytes: number;
+      }): Promise<{ records: readonly { text: string }[] }>;
+      close(): Promise<void>;
+    };
+
+    const fact = "Nadia prefers weekly status reports on Friday before 15:00 Europe/London.";
+    await store.remember("conv-structured-reconcile", fact);
+    await store.persistCompletedTurn({
+      runId: "structured-reconcile",
+      conversationId: "conv-structured-reconcile",
+      summary: `User: ${fact}`,
+      captureText: `User: ${fact}`,
+    });
+    await store.flush();
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.outputSchema).toMatchObject({
+      type: "object",
+      required: ["decisions"],
+      properties: { decisions: { type: "array", minItems: 1, maxItems: 1 } },
+    });
+    expect(calls[1]?.maxTurns).toBe(1);
+    const snapshot = await store.browseJournal({
+      fromInclusive: "2000-01-01T00:00:00.000Z",
+      toExclusive: "2100-01-01T00:00:00.000Z",
+      maxEntries: 10,
+      maxBytes: 10_000,
+    });
+    expect(snapshot.records.map((record) => record.text)).toEqual([fact]);
+    expect(inspectCompletedTurnIntake(memoryRoot).snapshot).toMatchObject({ pending: 0, resolved: 1 });
+    await store.close();
+  });
+
   it("uses LM Studio embeddings at runtime without involving the BuJo chat LLM provider", async () => {
     const dir = await tempDir();
     const fetchSpy = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {

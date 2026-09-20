@@ -126,8 +126,8 @@ or select whether sensitive data may be exported.
 
 ## Related Documentation
 
-- [Phoenix export and backfill](https://mono-agent-docs.vercel.app/observability/phoenix-and-backfill/)
-- [Observability overview](https://mono-agent-docs.vercel.app/observability/)
+- [Phoenix export and backfill](https://docs.mono-agent.dev/observability/phoenix-and-backfill/)
+- [Observability overview](https://docs.mono-agent.dev/observability/)
 
 ## Verification
 

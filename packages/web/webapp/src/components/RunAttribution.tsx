@@ -6,42 +6,96 @@ const effortLabel = (effort: string | undefined): string | undefined => {
   return effort.length === 0 ? undefined : `${effort[0]!.toUpperCase()}${effort.slice(1)}`;
 };
 
+/**
+ * Normalize effort values for comparison. Providers report the "off" thinking
+ * level as either "off" or "none"; route-label.ts presents "none" as "off",
+ * so the attribution footer should treat them as equivalent.
+ */
+const canonicalEffort = (effort: string): string => {
+  const lower = effort.toLowerCase();
+  return lower === "none" ? "off" : lower;
+};
+
 const routeLabel = (model: string | undefined, effort: string | undefined): string => {
   const effortText = effortLabel(effort);
   if (model === undefined) return effortText === undefined ? "route not reported" : effortText;
   return effortText === undefined ? model : `${model} · ${effortText}`;
 };
 
+const hasRouteEvidence = (route: {
+  readonly model?: string;
+  readonly effort?: string;
+  readonly effectiveEffort?: string;
+} | undefined): boolean => route !== undefined
+  && (route.model !== undefined || route.effort !== undefined || route.effectiveEffort !== undefined);
+
 export function runAttributionSummary(
   attribution: RunAttributionValue,
   status: RunStatus | WebMessageStatus,
 ): string {
-  const target = attribution.executed ?? attribution.attempted ?? attribution.requested;
+  const executed = hasRouteEvidence(attribution.executed) ? attribution.executed : undefined;
+  const attempted = hasRouteEvidence(attribution.attempted) ? attribution.attempted : undefined;
+  const target = executed ?? attempted ?? attribution.requested;
   if (attribution.disposition === "fallback") {
     const from = attribution.requested.model ?? attribution.transitions[0]?.from ?? "requested route";
     const to = target.model ?? attribution.transitions.at(-1)?.to ?? "fallback route";
     const reason = attribution.transitions.at(-1)?.reason ?? "reason not reported";
     return `Fallback: ${from} → ${to} · ${reason}`;
   }
-  const verb = status === "running" ? "Running with" : status === "complete" ? "Ran with" : "Tried";
-  return `${verb} ${routeLabel(target.model, target.effort)}`;
+  if (executed !== undefined) {
+    const verb = status === "running" ? "Running with" : status === "complete" ? "Ran with" : "Tried";
+    return `${verb} ${routeLabel(executed.model, executed.effort)}`;
+  }
+  if (attempted !== undefined) {
+    return `${status === "running" ? "Attempting" : "Attempted"} ${routeLabel(attempted.model, attempted.effort)}`;
+  }
+  if (hasRouteEvidence(attribution.requested)) {
+    return `Requested ${routeLabel(attribution.requested.model, attribution.requested.effort)} — not a confirmed run`;
+  }
+  return "Route not reported";
 }
 
 type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" | "interrupted";
 
+/**
+ * Only a run that DEVIATED from what was asked keeps this footer: a fallback,
+ * a recorded transition or retry, an effort the provider did not honour, or an
+ * unsettled run already attempting another model than the requested one.
+ *
+ * Running on a different model than the one the conversation is set to right
+ * now is not a deviation — the operator switched the route afterwards, and the
+ * transcript rules that switch where it happened (see {@link ModelMarkers}). So
+ * the currently selected model deliberately has no say here; an ordinary turn
+ * carries no footer however often the selection moves under it.
+ *
+ * The unsettled arm exists because the server settles `fallback` only when a
+ * run completes: while a turn is running, failed or cancelled, a route that
+ * already left the requested one is visible on the attempt alone.
+ */
 export function shouldShowMessageRunAttribution(
   attribution: RunAttributionValue | undefined,
-  selectedModel: string | null | undefined,
+  status: RunStatus | WebMessageStatus,
 ): boolean {
   if (attribution === undefined) return false;
   if (attribution.disposition === "fallback") return true;
-  const runModel = (attribution.executed ?? attribution.attempted ?? attribution.requested).model;
-  return runModel !== undefined
-    && runModel.length > 0
-    && selectedModel !== undefined
-    && selectedModel !== null
-    && selectedModel.length > 0
-    && !sameModel(runModel, selectedModel);
+  if (attribution.transitions.length > 0 || attribution.retries.length > 0) return true;
+  const run = attribution.executed ?? attribution.attempted;
+  const requestedEffort = attribution.requested.effort;
+  if (
+    run?.effectiveEffort !== undefined
+    && requestedEffort !== undefined
+    && canonicalEffort(run.effectiveEffort) !== canonicalEffort(requestedEffort)
+  ) {
+    return true;
+  }
+  const attemptedModel = run?.model;
+  const requestedModel = attribution.requested.model;
+  return status !== "complete"
+    && attemptedModel !== undefined
+    && attemptedModel.length > 0
+    && requestedModel !== undefined
+    && requestedModel.length > 0
+    && !sameModel(attemptedModel, requestedModel);
 }
 
 export function RunAttribution({
@@ -53,10 +107,12 @@ export function RunAttribution({
 }) {
   if (attribution === undefined) return null;
   const fallback = attribution.disposition === "fallback";
-  const effectiveEffort = effortLabel((attribution.executed ?? attribution.attempted)?.effectiveEffort);
+  const executed = hasRouteEvidence(attribution.executed) ? attribution.executed : undefined;
+  const attempted = hasRouteEvidence(attribution.attempted) ? attribution.attempted : undefined;
+  const effectiveEffort = effortLabel((executed ?? attempted)?.effectiveEffort);
   const requestedEffort = effortLabel(attribution.requested.effort);
   const effortChanged = effectiveEffort !== undefined
-    && (requestedEffort === undefined || effectiveEffort.toLowerCase() !== requestedEffort.toLowerCase());
+    && (requestedEffort === undefined || canonicalEffort(effectiveEffort) !== canonicalEffort(requestedEffort));
   const hasDetails = attribution.transitions.length > 0
     || attribution.retries.length > 0
     || attribution.truncated === true
@@ -82,8 +138,8 @@ export function RunAttribution({
           <summary>Routing details</summary>
           <dl>
             <div><dt>Requested</dt><dd>{routeLabel(attribution.requested.model, attribution.requested.effort)}</dd></div>
-            {attribution.attempted && <div><dt>Attempted</dt><dd>{routeLabel(attribution.attempted.model, attribution.attempted.effort)}</dd></div>}
-            {attribution.executed && <div><dt>Executed</dt><dd>{routeLabel(attribution.executed.model, attribution.executed.effort)}</dd></div>}
+            {attempted && <div><dt>Attempted</dt><dd>{routeLabel(attempted.model, attempted.effort)}</dd></div>}
+            {executed && <div><dt>Executed</dt><dd>{routeLabel(executed.model, executed.effort)}</dd></div>}
             {effectiveEffort && <div><dt>Effective effort</dt><dd>{effectiveEffort}</dd></div>}
           </dl>
           {attribution.transitions.length > 0 && (

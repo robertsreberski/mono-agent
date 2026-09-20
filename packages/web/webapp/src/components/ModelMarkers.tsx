@@ -1,5 +1,4 @@
-import { useAuiState } from "@assistant-ui/react";
-import type { ModelTransition, RouteSelection } from "../types";
+import type { ConversationMarkerPart, RouteSelection } from "../types";
 import { Icon } from "./Icon";
 import { effortFullName, effortToken, shortModelName } from "./route-label";
 
@@ -16,7 +15,8 @@ import { effortFullName, effortToken, shortModelName } from "./route-label";
  *
  * What a run ACTUALLY executed with -- a provider fallback, a lowered effort --
  * is not a route change and is not shown here; that stays on the message it
- * happened to, in its run attribution.
+ * happened to, in its run attribution. A turn that merely ran before the latest
+ * switch is told by this rule alone and carries nothing of its own.
  */
 const shortRoute = (selection: RouteSelection): string => {
   const model = selection.model === null ? "" : shortModelName(selection.model);
@@ -30,8 +30,8 @@ const fullRoute = (selection: RouteSelection): string => {
   return selection.effort === null ? model : `${model}, effort ${effortFullName(selection.effort)}`;
 };
 
-export function ModelMarkers({ transitions = [] }: { readonly transitions?: readonly ModelTransition[] }) {
-  return <>{transitions.map((transition) => {
+export function ModelMarkers({ transitions = [] }: { readonly transitions?: readonly Extract<ConversationMarkerPart, { kind: "model" }>[] }) {
+  return <>{transitions.map((transition, index) => {
     // Same model, different grade: naming the model twice would make the one
     // word that changed the hardest to find.
     const effortOnly = transition.before.model === transition.after.model;
@@ -39,11 +39,11 @@ export function ModelMarkers({ transitions = [] }: { readonly transitions?: read
     const label = `${effortOnly ? "Effort" : "Model"} changed from ${fullRoute(transition.before)} to ${fullRoute(transition.after)}`;
     return (
       <div
-        key={transition.id}
+        key={index}
         className="model-transition"
         role="note"
         aria-label={label}
-        title={`${label} · ${new Date(transition.createdAt).toLocaleString()}`}
+        title={`${label} · ${new Date(transition.at).toLocaleString()}`}
       >
         <span className="model-transition-label">
           <Icon name="spark" size={11} />
@@ -59,9 +59,4 @@ export function ModelMarkers({ transitions = [] }: { readonly transitions?: read
       </div>
     );
   })}</>;
-}
-
-export function MessageModelMarkers() {
-  const transitions = useAuiState((state) => state.message.metadata.custom?.modelTransitions) as readonly ModelTransition[] | undefined;
-  return <ModelMarkers transitions={transitions} />;
 }

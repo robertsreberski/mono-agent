@@ -3,7 +3,6 @@
 import type * as Wire from "../../src/contracts.js";
 import type {
   AgentMcpAppResource,
-  MonitorProjection,
   ChannelAskOption,
   ChannelAskQuestion,
   ChannelAskAnswer,
@@ -15,8 +14,7 @@ import type {
 export type {
   ProcessJobState,
   ProcessJobProjection,
-  MonitorState,
-  MonitorProjection,
+  ProcessJobSubagentProgress,
   ProviderAuthMethod,
   ProviderAuthProviderStatus,
   ProviderAuthStatusSnapshot,
@@ -68,11 +66,11 @@ export type CatalogModel = Wire.WebCatalogModel;
 export type StartTurnInput = Wire.StartWebTurnInput;
 export type RunActivity = Wire.WebRunActivity;
 export type RouteSelection = Wire.WebRouteSelection;
-export type ModelTransition = Wire.WebModelTransition;
 export type ProjectColor = Wire.WebProjectColor;
 export type ProjectSummary = Wire.WebProject;
-export type ProjectTransition = Wire.WebProjectTransition;
 export type ProjectChangedPayload = Wire.WebProjectChangedPayload;
+export type ConversationMarkerPart = Wire.WebConversationMarkerPart;
+export type ProjectIdentity = Wire.WebProjectIdentity;
 export type TagColor = Wire.WebTagColor;
 export type TagSummary = Wire.WebTag;
 export type CreateTagInput = Wire.CreateWebTagInput;
@@ -96,12 +94,7 @@ export type UploadLimits = Wire.WebBootstrap["limits"];
 // server fields. Keep that browser compatibility explicit and narrowly scoped.
 export type ThreadSummary = Omit<Wire.WebThread, "runModel" | "runEffort">
   & Partial<Pick<Wire.WebThread, "runModel" | "runEffort">>;
-export type WebMessage = Omit<Wire.WebMessage, "seq"> & Partial<Pick<Wire.WebMessage, "seq">> & {
-  /** Browser presentation only, attached after loading the independent sidecars. */
-  readonly projectTransitions?: readonly ProjectTransition[];
-  /** Browser presentation only, attached after loading the independent sidecars. */
-  readonly modelTransitions?: readonly ModelTransition[];
-};
+export type WebMessage = Omit<Wire.WebMessage, "seq"> & Partial<Pick<Wire.WebMessage, "seq">>;
 export type ThreadDetail = Omit<Wire.WebThreadDetail, "thread" | "messages"> & {
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
@@ -121,19 +114,6 @@ export type SubmissionReceipt = Omit<Wire.WebSubmissionReceipt, "message"> & { r
 export type CronReplyReceipt = Omit<Wire.WebCronReplyReceipt, "thread" | "messages"> & {
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
-};
-
-// Cached v1 activity predates the producer's v2 accounting fields. Keep its
-// rendering shape derived from the current contract without weakening live data.
-type MonitorV2LimitKey = "wakeOn" | "dedupe" | "minWakeIntervalMs";
-type MonitorV2CounterKey = "batchesSuppressed" | "linesSuppressed"
-  | "followUpWakes" | "steeredWakes" | "unknownDispositionWakes";
-export type CachedMonitorProjection = Omit<MonitorProjection, "schema" | "limits" | "counters"> & {
-  readonly schema: MonitorProjection["schema"] | "mono-agent.monitor-projection.v1";
-  readonly limits: Omit<MonitorProjection["limits"], MonitorV2LimitKey>
-    & Partial<Pick<MonitorProjection["limits"], MonitorV2LimitKey>>;
-  readonly counters: Omit<MonitorProjection["counters"], MonitorV2CounterKey>
-    & Partial<Pick<MonitorProjection["counters"], MonitorV2CounterKey>>;
 };
 
 /** Browser-derived states wrap the live endpoint while a refresh is in flight. */
@@ -179,3 +159,6 @@ export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
   maxTurnBytes: 64 * 1024 * 1024,
   accept: [],
 };
+
+// Provider usage meters read the producer's own subpath (types only; no runtime import).
+export type { ProviderUsage, ProviderUsageSnapshot, ProviderUsageId } from "@mono-agent/agent-contracts/provider-usage";

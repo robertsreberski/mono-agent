@@ -252,4 +252,74 @@ describe("Pi interoperability facade", () => {
     expect(notify).toHaveBeenCalledWith({ type: "progress", message: "Waiting" });
     expect(suppliedOptions.credentials).toBeDefined();
   });
+
+  describe("pi catalog supplement (ai/pi-supplement.js)", () => {
+    it("merges the supplemented model into list/get on an upstream miss", () => {
+      piMocks.getBuiltinModels.mockReturnValue([]);
+      piMocks.getBuiltinModel.mockReturnValue(undefined);
+
+      const listed = listPiBuiltinModels("opencode-go");
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({
+        id: "deepseek-v4.1-flash",
+        name: "DeepSeek V4.1 Flash",
+        provider: "opencode-go",
+      });
+      expect(piMocks.getBuiltinModels).toHaveBeenCalledWith("opencode-go");
+
+      expect(getPiBuiltinModel("opencode-go", "deepseek-v4.1-flash")).toMatchObject({
+        id: "deepseek-v4.1-flash",
+        provider: "opencode-go",
+        input: ["text", "image"],
+      });
+      expect(getPiBuiltinModel("opencode-go", "deepseek-v9-flash")).toBeUndefined();
+    });
+
+    it("prefers the upstream row when pi-ai ships the supplemented id", () => {
+      const upstream = {
+        ...rawModel,
+        id: "deepseek-v4.1-flash",
+        name: "DeepSeek V4.1 Flash (upstream)",
+        provider: "opencode-go",
+        cost: { input: 9, output: 9, cacheRead: 9, cacheWrite: 9 },
+      };
+      piMocks.getBuiltinModels.mockReturnValue([upstream]);
+      piMocks.getBuiltinModel.mockImplementation((provider, id) =>
+        id === "deepseek-v4.1-flash" ? upstream : undefined);
+
+      const listed = listPiBuiltinModels("opencode-go");
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({ id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash (upstream)" });
+
+      expect(getPiBuiltinModel("opencode-go", "deepseek-v4.1-flash")).toMatchObject({
+        name: "DeepSeek V4.1 Flash (upstream)",
+        cost: { input: 9, output: 9, cacheRead: 9, cacheWrite: 9 },
+      });
+    });
+
+    it("snapshot-clones supplemented rows like upstream ones", () => {
+      piMocks.getBuiltinModels.mockReturnValue([]);
+      piMocks.getBuiltinModel.mockReturnValue(undefined);
+
+      const listed = listPiBuiltinModels("opencode-go");
+      listed[0].cost.input = 999;
+      listed[0].input.push("video");
+      expect(listPiBuiltinModels("opencode-go")[0]).toMatchObject({
+        cost: { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 },
+        input: ["text", "image"],
+      });
+
+      const selected = getPiBuiltinModel("opencode-go", "deepseek-v4.1-flash");
+      selected.compat.supportsStore = true;
+      expect(getPiBuiltinModel("opencode-go", "deepseek-v4.1-flash")).toMatchObject({
+        compat: expect.objectContaining({ supportsStore: false }),
+      });
+    });
+
+    it("leaves unrelated providers supplement-free", () => {
+      piMocks.getBuiltinModels.mockReturnValue([rawModel]);
+      expect(listPiBuiltinModels("provider-1")).toHaveLength(1);
+      expect(listPiBuiltinModels("provider-1")[0].id).toBe("model-1");
+    });
+  });
 });

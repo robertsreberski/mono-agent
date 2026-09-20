@@ -1,12 +1,14 @@
+import { useAuiState } from "@assistant-ui/react";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { page, userEvent } from "@vitest/browser/context";
-import { StrictMode } from "react";
+import { StrictMode, useLayoutEffect, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cronChannelPath,
   SELECTED_AGENT_STORAGE_KEY,
   SELECTED_THREADS_STORAGE_KEY,
   ConsoleStoreProvider,
+  useConsoleStore,
   threadBucketKey,
 } from "./console-store";
 import { createThreadPersistence } from "./thread-persistence";
@@ -48,6 +50,17 @@ vi.mock("./api", async (importOriginal) => ({
     projectThreads: vi.fn(),
   },
 }));
+
+const renderReports = vi.hoisted(() => vi.fn());
+vi.mock("./components/RenderErrorBoundary", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./components/RenderErrorBoundary")>();
+  return {
+    ...actual,
+    RenderErrorBoundary: (props: ComponentProps<typeof actual.RenderErrorBoundary>) => (
+      <actual.RenderErrorBoundary {...props} reporter={renderReports} />
+    ),
+  };
+});
 
 vi.mock("./notifications", () => ({ NotificationBell: () => null }));
 
@@ -249,6 +262,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   cleanup();
+  expect(renderReports).not.toHaveBeenCalled();
   await persistence.clearAll();
   localStorage.clear();
   window.history.replaceState(null, "", "/");
@@ -641,5 +655,99 @@ describe("conversation switching through the real Chromium store and runtime", (
     )).toBe(false);
     await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width));
     consoleError.mockRestore();
+  });
+});
+
+// Use persisted stale transcripts and hold the read open: every intermediate
+// commit goes through the real assistant-ui providers, messages and parts.
+describe("changing cached transcript shapes", () => {
+  it.each(["shrink", "grow", "settle"] as const)("survives %s and rapid cached switches", async (shape) => {
+    await page.viewport(1280, 800);
+    const other = { ...olderAlphaThread };
+    const make = (summary: ThreadSummary, count: number): ThreadDetail => ({
+      thread: { ...summary, messageCount: count },
+      messages: Array.from({ length: count }, (_, index) => ({
+        ...detail(summary, `${summary.id} body ${index}`).messages[0]!,
+        id: `${summary.id}-${index}`,
+      })),
+    });
+    const rich = make(alphaThread, 4);
+    const running: WebMessage = {
+      ...rich.messages[3]!, status: "running",
+      parts: [
+        { type: "text", text: " " },
+        { type: "reasoning", text: "Inspecting the fixture" },
+        { type: "tool-call", toolCallId: "fixture-tool", toolName: "Read", status: "running", args: {} },
+        { type: "text", text: "Streaming fixture" },
+      ],
+    };
+    const cached = shape === "grow" ? make(alphaThread, 1) : { ...rich, messages: [...rich.messages.slice(0, 3), running] };
+    const refreshed = shape === "shrink" ? make(alphaThread, 1)
+      : shape === "grow" ? rich
+      : { ...rich, messages: [...rich.messages.slice(0, 3), {
+          ...running, seq: 1, status: "complete" as const,
+          parts: [
+            { type: "reasoning" as const, text: "." },
+            { type: "text" as const, text: "Settled fixture" },
+            { type: "tool-call" as const, toolCallId: "fixture-tool", toolName: "Read", status: "complete" as const, result: "done" },
+          ],
+        }] };
+    const empty = make(other, 0);
+    await saveHydratedShell([cached.thread, empty.thread]);
+    await persistence.save({ entries: [cached, empty].map((value) => ({
+      ...value, stale: true, syncedAt: Date.now(),
+      repairedToolCallIds: new Set<string>(), pagedInIds: new Set<string>(),
+    })) });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+      [agent("alpha", { label: "Alpha" })], [cached.thread, empty.thread], alphaThread.id,
+      { threadsSourceId: "alpha" },
+    ));
+    let resolveRefresh!: (value: ThreadDetail) => void;
+    vi.mocked(api.thread).mockImplementation((id) => id === alphaThread.id
+      ? new Promise((resolve) => { resolveRefresh = resolve; }) : Promise.resolve(empty));
+    const commits: { selected: string | null; runtime: string | null; count: number; viewport: Element | null }[] = [];
+    function ObserveCommits() {
+      const { selectedThreadId } = useConsoleStore();
+      const runtime = useAuiState((state) =>
+        (state.thread.extras as { selectedThreadId: string | null }).selectedThreadId);
+      const count = useAuiState((state) => state.thread.messages.length);
+      useLayoutEffect(() => {
+        commits.push({ selected: selectedThreadId, runtime, count, viewport: document.querySelector(".thread-viewport") });
+      });
+      return null;
+    }
+    render(<StrictMode><ConsoleStoreProvider><WebRuntimeProvider><App /><ObserveCommits /></WebRuntimeProvider></ConsoleStoreProvider></StrictMode>);
+    await screen.findByText("alpha-thread body 0");
+    await waitFor(() => expect(resolveRefresh).toBeTypeOf("function"));
+    expect(renderReports).not.toHaveBeenCalled();
+    const panel = document.querySelector(".chat-panel");
+    // Separate browser events, not one React batch: each selection commits.
+    for (let index = 0; index < 4; index += 1) {
+      await userEvent.click(screen.getByRole("button", { name: "Open Older Alpha thread" }));
+      await waitFor(() => expect(screen.queryByText("alpha-thread body 0")).toBeNull());
+      expect(renderReports).not.toHaveBeenCalled();
+      await userEvent.click(screen.getByRole("button", { name: "Open Alpha thread" }));
+      await screen.findByText("alpha-thread body 0");
+      expect(document.querySelector(".chat-panel")).toBe(panel);
+      expect(renderReports).not.toHaveBeenCalled();
+    }
+    await act(async () => resolveRefresh({ ...refreshed, thread: { ...refreshed.thread, revision: (cached.thread.revision ?? 0) + 1 } }));
+    if (shape === "settle") await screen.findByText("Settled fixture");
+    else if (shape === "grow") await screen.findByText("alpha-thread body 3");
+    else await waitFor(() => expect(screen.queryByText("Streaming fixture")).toBeNull());
+    expect(renderReports).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Open Older Alpha thread" }));
+    await waitFor(() => expect(screen.queryByText("alpha-thread body 0")).toBeNull());
+    expect(renderReports).not.toHaveBeenCalled();
+    const lagging = commits.find((commit) => commit.selected === other.id && commit.runtime === alphaThread.id);
+    expect(lagging).toBeDefined();
+    expect(lagging?.count).toBe(cached.messages.length);
+    const before = commits.find((commit) => commit.selected === alphaThread.id && commit.count === cached.messages.length);
+    // Selection does not blank or remount the old transcript. The viewport
+    // changes only with the runtime snapshot which supplies its index lookups.
+    expect(lagging?.viewport).toBe(before?.viewport);
+    const settled = commits.find((commit) => commit.runtime === other.id);
+    expect(settled?.count).toBe(0);
+    expect(settled?.viewport).not.toBe(lagging?.viewport);
   });
 });

@@ -294,6 +294,70 @@ describe("AgentHarness continuous sessions", () => {
     expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain(HISTORY_MARKER);
   });
 
+  it("does not poison continuity when post-commit session cleanup fails", async () => {
+    // Session eviction is best-effort by design (the store forgets the mapping
+    // even when provider-side dispose throws), so a throwing disposeSession
+    // must neither fail the publication nor strand a barrier behind it.
+    const identityPath = await identityFixture();
+    const appended: HistoryMessage[] = [];
+    const historyStore: ConversationHistoryStore = {
+      async load() { return []; },
+      async append(_conversationId: string, messages: readonly HistoryMessage[]) {
+        appended.push(...messages);
+      },
+    };
+    let disposeShouldThrow = false;
+    const controller = new AbortController();
+    const fake = createSessionFakeRuntime(async (_prompt, _options, call) => {
+      if (call === 2) {
+        controller.abort(new Error("cancel the second turn"));
+        return { text: "late answer", providerSessionId: "ps-cancelled" };
+      }
+      return { text: call === 1 ? "first answer" : "third answer", providerSessionId: call === 1 ? "ps-warm" : "ps-fresh" };
+    });
+    const innerDispose = fake.runtime.disposeSession.bind(fake.runtime);
+    fake.runtime.disposeSession = async (providerSessionId: string): Promise<boolean> => {
+      if (disposeShouldThrow) throw new Error("dispose unavailable");
+      return await innerDispose(providerSessionId);
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore,
+      session,
+    });
+
+    await expect(harness.run(request("conv-cleanup-failure", "first"))).resolves.toMatchObject({ text: "first answer" });
+    disposeShouldThrow = true;
+    // The second turn is cancelled while ps-warm is held; its account commits
+    // and the post-commit eviction swallows the dispose failure.
+    await expect(harness.run({
+      conversationId: "conv-cleanup-failure",
+      userMessage: "cancel me",
+      abortSignal: controller.signal,
+    })).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+    expect(appended).toHaveLength(4);
+    expect(fake.invalidatedSessions).toEqual(expect.arrayContaining(["ps-warm", "ps-cancelled"]));
+    disposeShouldThrow = false;
+    // No barrier was stranded: the next turn proceeds cold on the reseed
+    // marker without republishing the already-committed account.
+    const boundaries: RuntimeEventLike[] = [];
+    const third = await harness.run({
+      conversationId: "conv-cleanup-failure",
+      userMessage: "third",
+      abortSignal: new AbortController().signal,
+      onEvent: (event) => { boundaries.push(event); },
+    });
+    expect(third.text).toBe("third answer");
+    expect(appended).toHaveLength(6);
+    expect(appended.filter((message) => message.content.includes("cancelled_turn_data"))).toHaveLength(1);
+    expect(fake.calls[2]?.options.sessionId).not.toBe("ps-warm");
+    expect(boundaries.filter((event) =>
+      event.type === "session_boundary" && (event as { reason?: string }).reason === "cancelled_turn_reseed",
+    )).toHaveLength(1);
+  });
+
   it("invalidates a warm provider session when recorder preparation fails before history commit", async () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 20 });
@@ -1792,6 +1856,7 @@ describe("coordinated terminal recovery", () => {
     return { fake, retired, native, prefixes, receipts, historyStore, events, runtime,
       cancel() { controller.abort(new Error("injected cancel")); },
       rejectCommit() { failCommit = true; },
+      healCommit() { failCommit = false; },
       rejectSidecar() { failSidecar = true; },
       before(next: typeof beforeTerminal) { beforeTerminal = next; },
       transform(next: typeof resultTransform) { resultTransform = next; },
@@ -1865,6 +1930,20 @@ describe("coordinated terminal recovery", () => {
       await f.run("provider_unavailable", "second failure");
       expect(f.receipts).toHaveLength(1);
       expect(f.retired).toContain(f.fake.calls[0]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+
+  it("recovers a routed cancelled result with a single owned cancelled attempt", async () => {
+    const f = await fixture();
+    try {
+      f.transform((result) => result.cancelled ? { ...result, failureKind: null,
+        failoverHistory: [{ model, failureKind: "cancelled" }] } : result);
+      await f.run("cancelled", "cancel");
+      await f.run("provider_unavailable", "failure budget still available");
+      await f.run("success", "next");
+      expect(f.receipts).toHaveLength(2);
+      expect(new Set(f.fake.calls.map((call) => call.options.sessionId)).size).toBe(1);
+      expect(f.events.filter((event) => event.warning_kind === "terminal_recovery_skipped")).toEqual([]);
     } finally { await f.close(); }
   });
 
@@ -2060,15 +2139,60 @@ describe("coordinated terminal recovery", () => {
     } finally { await f.close(); }
   });
 
-  it("keeps the publication barrier closed when canonical commit fails after native recovery", async () => {
+  it("republishes the barrier account when canonical commit recovers after native recovery", async () => {
     const f = await fixture();
     try {
+      // The republish takes the conservative exclusive-turn path rather than
+      // the provider-turn path, so fault both commits to prove the retryable
+      // residual error before healing.
+      const support = f.historyStore.contextImport;
+      if (support === undefined) throw new Error("expected context import support");
+      const beginExclusiveTurn = support.beginExclusiveTurn.bind(support);
+      let failExclusiveCommit = true;
+      support.beginExclusiveTurn = async (conversationId: string) => {
+        const turn = await beginExclusiveTurn(conversationId);
+        const prepareCommit = turn.prepareCommit.bind(turn);
+        return {
+          ...turn,
+          prepareCommit: async (messages: readonly HistoryMessage[]) => {
+            const commit = await prepareCommit(messages);
+            const innerCommit = commit.append.commit.bind(commit.append);
+            return {
+              ...commit,
+              append: {
+                ...commit.append,
+                commit: async () => {
+                  if (failExclusiveCommit) throw new Error("injected exclusive commit failure");
+                  await innerCommit();
+                },
+              },
+            };
+          },
+        };
+      };
       f.rejectCommit();
       expect((await f.run("cancelled", "cancelled ask")).failure?.kind).toBe("cancelled");
       expect(f.receipts).toHaveLength(1);
       expect(f.fake.retiredSessions).toEqual(expect.arrayContaining([expect.objectContaining({ providerSessionId: f.fake.calls[0]!.options.sessionId })]));
-      expect((await f.run("success", "blocked successor")).failure).toBeDefined();
+      // Both stores are still down: the next turn retries the publication once
+      // and reports the retryable residual error instead of running the provider.
+      const blocked = await f.run("success", "blocked successor");
+      expect(blocked.failure).toMatchObject({
+        kind: "cancellation_continuity_unavailable",
+        message: expect.stringContaining("retry"),
+      });
+      expect(blocked.failure?.details).toMatchObject({ cause: { name: "Error", message: "injected exclusive commit failure" } });
       expect(f.fake.calls).toHaveLength(1);
+      // Once the stores recover, the following turn republishes the account
+      // without re-attempting recovery, then runs cold on the rotated epoch.
+      f.healCommit();
+      failExclusiveCommit = false;
+      await expect(f.run("success", "healed successor")).resolves.toMatchObject({ text: "native answer" });
+      expect(f.fake.calls).toHaveLength(2);
+      expect(f.receipts).toHaveLength(1);
+      const history = await f.historyStore.load("recovery");
+      expect(history.filter((message) => message.content === "cancelled ask")).toHaveLength(1);
+      expect(f.fake.calls[1]!.options.sessionId).not.toBe(f.fake.calls[0]!.options.sessionId);
     } finally { await f.close(); }
   });
 

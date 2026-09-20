@@ -50,10 +50,19 @@ describe("console project tools", () => {
   it("does not authorize metadata without owner authentication or a writable interactive source", async () => {
     const createClient = vi.fn().mockRejectedValue(new Error("unavailable"));
     const extension = createConsoleProjectsRuntimeExtension({ sourceId: "configured", policy: { allowedTools: ["*"], disallowedTools: [] }, createClient });
-    expect((await extension(request())).runtimeOptions).toEqual({});
     const forged = request();
-    expect((await extension({ ...forged, request: { ...forged.request, conversationId: "web:other" } })).runtimeOptions).toEqual({});
-    expect((await extension({ ...forged, request: { ...forged.request, metadata: { source: "cron" } } })).runtimeOptions).toEqual({});
+    for (const input of [request(), { ...forged, request: { ...forged.request, conversationId: "web:other" } }, { ...forged, request: { ...forged.request, metadata: { source: "cron" } } }]) {
+      const bound = await extension(input);
+      const servers = bound.runtimeOptions?.mcpServers as Record<string, { url: string }>;
+      const client = new Client({ name: "console-refusal", version: "1.0.0" });
+      try {
+        await client.connect(new StreamableHTTPClientTransport(new URL(servers["mono-agent-console-projects"]!.url)) as never);
+        expect((await client.listTools()).tools).toHaveLength(Object.keys(CONSOLE_PROJECT_SCHEMAS).length);
+        const result = await client.callTool({ name: "CreateProject", arguments: { name: "Refused" } });
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toBeUndefined();
+      } finally { await client.close(); await bound.cleanup?.(); }
+    }
     expect(createClient).toHaveBeenCalledTimes(1);
   });
 });
@@ -87,5 +96,21 @@ it("registers the five strict tag schemas and validates the independent palette 
     expect((await client.callTool({ name: "ListTags", arguments: {} })).structuredContent).toEqual({ tags: [] });
     expect((await client.callTool({ name: "UpdateConversationTags", arguments: { tagIds: ["x"] } })).isError).toBe(true);
     expect(call).toHaveBeenCalledTimes(1);
+    call.mockResolvedValueOnce({ conversationId: "thread", readRevision: 3 });
+    expect((await client.callTool({ name: "MarkConversationRead", arguments: {} })).structuredContent)
+      .toEqual({ conversationId: "thread", readRevision: 3 });
+    expect(call).toHaveBeenLastCalledWith(expect.objectContaining({ tool: "MarkConversationRead", args: {} }));
   } finally { await client.close(); await bound.cleanup?.(); }
+});
+
+
+it("declares MarkConversationRead with strict optional conversation identity and tool policy", () => {
+  const schemas = CONSOLE_PROJECT_SCHEMAS;
+  expect(schemas.MarkConversationRead.safeParse({}).success).toBe(true);
+  expect(schemas.MarkConversationRead.safeParse({ conversationId: "conversation" }).success).toBe(true);
+  for (const args of [{ conversationId: "" }, { conversationId: null }, { all: true }, { sourceId: "foreign" }]) {
+    expect(schemas.MarkConversationRead.safeParse(args).success).toBe(false);
+  }
+  expect(isConsoleProjectToolAllowed("MarkConversationRead", { allowedTools: ["MarkConversationRead"] })).toBe(true);
+  expect(isConsoleProjectToolAllowed("MarkConversationRead", { allowedTools: ["*"], disallowedTools: ["MarkConversationRead"] })).toBe(false);
 });

@@ -289,6 +289,8 @@ export interface AgentHarnessSessionOptions {
   readonly idleTimeoutMs: number;
   /** Provider settlement window after cancellation or failure. Defaults to 1,000 ms. */
   readonly terminalRecoverySettlementMs?: number;
+  /** Total continuity wait budget, including republish. Defaults to 30,000 ms; integer 1–2,147,483,647. */
+  readonly turnContinuityPublicationWaitMs?: number;
   /**
    * Overrides backend capability detection (monoRuntimeSupportsSessionResume)
    * — primarily for tests and custom runtimes.
@@ -495,15 +497,6 @@ export interface AgentHarnessOptions {
   readonly subagentInstancesFor?: (input: { readonly request: AgentHarnessRequest; readonly runId: string }) => Promise<NonNullable<import("./harness/session-context.js").SessionContextCapabilities["subagentInstances"]>>;
   readonly backgroundSubagentsAvailable?: (input: { readonly request: AgentHarnessRequest; readonly runId: string }) => boolean;
   readonly backgroundProcessJobsAvailable?: (
-    input: { readonly request: AgentHarnessRequest; readonly runId: string },
-  ) => boolean;
-  /**
-   * Whether this turn will carry the `Monitor`/`MonitorStop` tools. Answered by
-   * the same host predicate that injects the controller, for the same reason:
-   * a session block that offers a watch the model cannot start is worse than
-   * one that says nothing.
-   */
-  readonly monitorsAvailable?: (
     input: { readonly request: AgentHarnessRequest; readonly runId: string },
   ) => boolean;
   /** Best-effort enrichment applied only to the assistant history entry. */

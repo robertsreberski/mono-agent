@@ -15,7 +15,7 @@ import {
 import { WebStore } from "../store.js";
 import { prepareWebStatePaths } from "../state-paths.js";
 import * as migrationsModule from "../store-migrations.js";
-import { fakeMonitor, temporaryRoot } from "./helpers.js";
+import { temporaryRoot } from "./helpers.js";
 import { seedLegacyStorage, seedLegacySilentCron } from "./fixtures/storage-layouts.js";
 
 const roots: string[] = [];
@@ -45,7 +45,7 @@ async function seeded(version: number, sequenced17 = false): Promise<string> {
 }
 
 function schema(database: DatabaseSync): unknown {
-  const tables = ["tags", "thread_tags", "pending_project_memberships", "project_transitions", "console_tool_operations", "agents", "threads", "projects", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
+  const tables = ["tags", "thread_tags", "pending_project_memberships", "console_tool_operations", "agents", "threads", "projects", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
   return tables.map((table) => ({
     table,
     // ALTER appends columns, so physical column ordinal is not a shape claim.
@@ -59,6 +59,93 @@ const historical = [...Array.from({ length: 21 }, (_, version) => ({ version, se
   { version: 17, sequenced17: true }];
 
 describe("web storage migration history", () => {
+  it("upgrades schema 30 without inventing an origin for old turns and retains new origins on reopen", async () => {
+    const stateDir = await seeded(18);
+    (await WebStore.open({ stateDir })).close();
+    const legacy = new DatabaseSync(join(stateDir, "state.sqlite"));
+    legacy.exec("ALTER TABLE turns DROP COLUMN cancel_origin; PRAGMA user_version = 30");
+    legacy.close();
+    (await WebStore.open({ stateDir })).close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      expect(database.prepare("SELECT cancel_origin FROM turns").all()).toEqual(expect.arrayContaining([expect.objectContaining({ cancel_origin: null })]));
+      database.exec("UPDATE turns SET cancel_origin = 'user-stop'");
+      expect(() => database.exec("UPDATE turns SET cancel_origin = 'escape'")).toThrow();
+    } finally { database.close(); }
+    (await WebStore.open({ stateDir })).close();
+    const reopened = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try { expect(reopened.prepare("SELECT cancel_origin FROM turns").all()).toEqual(expect.arrayContaining([expect.objectContaining({ cancel_origin: "user-stop" })])); }
+    finally { reopened.close(); }
+  });
+
+  it("upgrades schema 29 with an unset read watermark and asserts its current-version shape", async () => {
+    const stateDir = await seeded(18);
+    const current = await WebStore.open({ stateDir });
+    current.close();
+    const legacy = new DatabaseSync(join(stateDir, "state.sqlite"));
+    legacy.exec("ALTER TABLE threads DROP COLUMN read_revision; UPDATE threads SET revision = 7; PRAGMA user_version = 29");
+    legacy.close();
+    const migrated = await WebStore.open({ stateDir });
+    try { expect(migrated.getThread("fixture-thread")).toMatchObject({ revision: 7, readRevision: 0 }); }
+    finally { migrated.close(); }
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
+      expect(() => database.exec("UPDATE threads SET read_revision = -1")).toThrow();
+      expect(() => database.exec("UPDATE threads SET read_revision = revision + 1")).toThrow();
+      database.exec("UPDATE threads SET read_revision = revision; UPDATE threads SET revision = revision + 1");
+      expect(database.prepare("SELECT revision, read_revision FROM threads WHERE id = 'fixture-thread'").get())
+        .toMatchObject({ revision: 8, read_revision: 7 });
+      expect(() => database.exec("UPDATE threads SET revision = read_revision - 1")).toThrow();
+      database.exec("ALTER TABLE threads DROP COLUMN read_revision; ALTER TABLE threads ADD COLUMN read_revision TEXT");
+      expect(() => validateWebStorageShape(database)).toThrowError(expect.objectContaining({ code: "storage_corrupt" }));
+    } finally { database.close(); }
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
+  });
+
+  it("rolls back the watermark migration when an existing revision cannot satisfy its default", async () => {
+    const stateDir = await seeded(18);
+    const store = await WebStore.open({ stateDir });
+    store.close();
+    const legacy = new DatabaseSync(join(stateDir, "state.sqlite"));
+    legacy.exec("ALTER TABLE threads DROP COLUMN read_revision; UPDATE threads SET revision = -1; PRAGMA user_version = 29");
+    legacy.close();
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({
+      code: "storage_corrupt", message: "Web storage migration 30 (conversation-read-watermark) failed.",
+    });
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 29 });
+      expect(database.prepare("PRAGMA table_info(threads)").all().some((column) => column.name === "read_revision")).toBe(false);
+      expect(database.prepare("SELECT revision FROM threads WHERE id = 'fixture-thread'").get()).toMatchObject({ revision: -1 });
+    } finally { database.close(); }
+  });
+
+  it("rejects a current-schema watermark column missing its revision upper bound", async () => {
+    const stateDir = await seeded(18);
+    const store = await WebStore.open({ stateDir });
+    store.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      database.exec(`ALTER TABLE threads DROP COLUMN read_revision;
+        ALTER TABLE threads ADD COLUMN read_revision INTEGER NOT NULL DEFAULT 0 CHECK (read_revision >= 0)`);
+      expect(() => validateWebStorageShape(database)).toThrowError(expect.objectContaining({ code: "storage_corrupt" }));
+    } finally { database.close(); }
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
+  });
+
+  it("rejects retained watermarks beyond the conversation revision even when the current DDL is intact", async () => {
+    const stateDir = await seeded(18);
+    const store = await WebStore.open({ stateDir });
+    store.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      database.exec("PRAGMA ignore_check_constraints = ON; UPDATE threads SET read_revision = revision + 1; PRAGMA ignore_check_constraints = OFF");
+      expect(() => validateWebStorageShape(database)).toThrowError(expect.objectContaining({ code: "storage_corrupt" }));
+    } finally { database.close(); }
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
+  });
+
   it.each(historical)("preserves real layout $version (sequenced17=$sequenced17) and reopens", async ({ version, sequenced17 }) => {
     const stateDir = await seeded(version, sequenced17);
     const freshDir = await seeded(0);
@@ -118,7 +205,7 @@ describe("web storage migration history", () => {
 
   it("retains an existing Monitor projection during legacy FK repair and a repeated eligible open", async () => {
     const stateDir = await seeded(13);
-    const projection = JSON.stringify(fakeMonitor({ monitorId: "fixture-monitor", conversationId: "web:fixture-thread" }));
+    const projection = JSON.stringify({ legacy: "opaque retained projection" });
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     database.exec("ALTER TABLE monitor_wake_deliveries ADD COLUMN projection_json TEXT");
     database.prepare("UPDATE monitor_wake_deliveries SET projection_json = ?").run(projection);
@@ -406,8 +493,8 @@ describe("web storage migration history", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 29 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(29);
+  it("is immutable and derives schema 32 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(32);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);
@@ -506,7 +593,7 @@ describe("migration 19 silent history", () => {
 
 
 describe("conversation tags migration", () => {
-  it("upgrades a real v27 database to v29, preserves content, validates shape, and reopens", async () => {
+  it("upgrades a real v27 database to the current schema, preserves content, validates shape, and reopens", async () => {
     const stateDir = await seeded(0);
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     database.exec(await readFile(new URL("./fixtures/storage-v27.sql", import.meta.url), "utf8"));
@@ -519,10 +606,14 @@ describe("conversation tags migration", () => {
       expect(thread.tagIds).toEqual(attempt === 0 ? [] : [store.listTags("v27-agent")[0]!.id]);
       expect(store.getThreadDetail(thread.id)?.messages.map((message) => message.parts)).toContainEqual([{ type: "text", text: "Retained question" }]);
       expect(store.listProjects("v27-agent")[0]?.name).toBe("Retained project");
+      expect(store.getThreadDetail(thread.id)?.messages.flatMap((m) => m.parts).some((p) => p.type === "conversation-marker")).toBe(false);
+      const migrated = new DatabaseSync(join(stateDir, "state.sqlite"));
+      expect(migrated.prepare("SELECT name FROM sqlite_master WHERE name IN ('project_transitions', 'model_transitions')").all()).toEqual([]);
+      migrated.close();
       if (attempt === 0) store.patchThread(thread.id, { tagIds: [store.createTag({ sourceId: "v27-agent", name: "planning", color: "green" }).id] });
       store.close();
       const inspected = new DatabaseSync(join(stateDir, "state.sqlite"));
-      expect(inspected.prepare("PRAGMA user_version").get()).toEqual({ user_version: 29 });
+      expect(inspected.prepare("PRAGMA user_version").get()).toEqual({ user_version: WEB_STORAGE_SCHEMA_VERSION });
       expect(() => validateWebStorageShape(inspected)).not.toThrow();
       expect((inspected.prepare("PRAGMA index_info(thread_tags_by_tag)").all() as Array<{ name: string }>).map((row) => row.name)).toEqual(["tag_id", "thread_id"]);
       expect(inspected.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });

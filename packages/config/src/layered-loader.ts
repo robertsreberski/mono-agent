@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import { assertNoRetiredMonoAgentConfigJson, readMonoAgentConfigJson } from "./json-source.js";
 import type {
   MonoAgentConfigJson,
@@ -18,7 +20,11 @@ export interface LoadMonoAgentConfigWithSourcesInput {
    * env always wins for fields present in both layers.
    */
   readonly jsonPath?: string;
+  /** Disable deprecation prose for callers that produce structured diagnostics. */
+  readonly warnOnDeprecatedConfig?: boolean;
 }
+
+const warnedDeprecatedConfigPaths = new Set<string>();
 
 /**
  * Layered loader: JSON file provides defaults, env vars override.
@@ -37,6 +43,12 @@ export async function loadMonoAgentConfigWithSources(
   const jsonLayer = input.jsonPath === undefined
     ? {}
     : (await readMonoAgentConfigJson(input.jsonPath)).json;
+  const configPath = input.jsonPath === undefined ? undefined : resolve(input.jsonPath);
+  if (configPath !== undefined && input.warnOnDeprecatedConfig !== false
+    && Object.hasOwn(jsonLayer, "monitors") && !warnedDeprecatedConfigPaths.has(configPath)) {
+    warnedDeprecatedConfigPaths.add(configPath);
+    console.warn("[mono-agent] Ignoring deprecated monitors config: monitors were removed. Use background process jobs for finite work.");
+  }
   // Validate raw JSON before flattening it into the string-only env surface.
   // String(...) coercion is intentional for valid numeric/boolean settings,
   // but must never make arrays or other malformed nested values look valid.
@@ -73,6 +85,9 @@ const JSON_RUNTIME_SOURCES: readonly {
   { env: "MONO_AGENT_MODEL", path: "runtime.model", read: (json) => json.runtime?.model },
   { env: "MONO_AGENT_FALLBACKS_JSON", path: "runtime.fallbacks", read: (json) => json.runtime?.fallbacks },
   { env: "MONO_AGENT_SUBAGENTS_JSON", path: "subagents", read: (json) => json.subagents },
+  { env: "MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV", path: "tools.web.search.parallel.apiKeyEnv", read: (json) => json.tools?.web?.search?.parallel?.apiKeyEnv },
+  { env: "MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV", path: "tools.web.fetch.parallel.apiKeyEnv", read: (json) => json.tools?.web?.fetch?.parallel?.apiKeyEnv },
+  { env: "MONO_AGENT_WEB_FETCH_PROVIDER", path: "tools.web.fetch.provider", read: (json) => json.tools?.web?.fetch?.provider },
   { env: "MONO_AGENT_WEB_SEARCH_BACKEND", path: "tools.web.search.backend", read: (json) => json.tools?.web?.search?.backend },
   { env: "MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN", path: "tools.web.search.maxRequestsPerRun", read: (json) => json.tools?.web?.search?.maxRequestsPerRun },
   { env: "MONO_AGENT_WEB_SEARCH_ENDPOINT", path: "tools.web.search.endpoint", read: (json) => json.tools?.web?.search?.endpoint },
@@ -766,6 +781,9 @@ export function layerJsonOntoEnv(
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
   assertNoRetiredMonoAgentConfigJson(json);
+  for (const key of ["MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT", "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT"]) {
+    if (env[key] !== undefined) throw new MonoAgentConfigError("invalid_env", `${key} was removed: Hound is built in. Remove the endpoint setting.`, { env: key });
+  }
   validateJsonRuntimeCompaction(json);
   const fromJson: Record<string, string | undefined> = {};
   if (json.agent?.name !== undefined) {
@@ -998,7 +1016,7 @@ export function layerJsonOntoEnv(
     fromJson.MONO_AGENT_WEB_COORDINATION = json.tools.web.coordination;
   }
   if (json.tools?.web?.search?.backend !== undefined) {
-    fromJson.MONO_AGENT_WEB_SEARCH_BACKEND = json.tools.web.search.backend;
+    fromJson.MONO_AGENT_WEB_SEARCH_BACKEND = typeof json.tools.web.search.backend === "string" ? json.tools.web.search.backend : JSON.stringify(json.tools.web.search.backend);
   }
   if (json.tools?.web?.search?.maxRequestsPerRun !== undefined) {
     fromJson.MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN = String(json.tools.web.search.maxRequestsPerRun);
@@ -1008,6 +1026,10 @@ export function layerJsonOntoEnv(
   }
   if (json.tools?.web?.search?.searxng?.endpoint !== undefined) {
     fromJson.MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT = json.tools.web.search.searxng.endpoint;
+  }
+
+  if (json.tools?.web?.search?.ollama !== undefined) {
+    fromJson.MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL = json.tools.web.search.ollama.baseUrl ?? "http://127.0.0.1:11434";
   }
   if (json.tools?.web?.search?.ollama?.baseUrl !== undefined) {
     fromJson.MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL = json.tools.web.search.ollama.baseUrl;
@@ -1020,6 +1042,15 @@ export function layerJsonOntoEnv(
   }
   if (json.tools?.web?.search?.codex?.model !== undefined) {
     fromJson.MONO_AGENT_WEB_SEARCH_CODEX_MODEL = json.tools.web.search.codex.model;
+  }
+  if (json.tools?.web?.search?.parallel?.apiKeyEnv !== undefined) {
+    fromJson.MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV = json.tools.web.search.parallel.apiKeyEnv;
+  }
+  if (json.tools?.web?.fetch?.parallel?.apiKeyEnv !== undefined) {
+    fromJson.MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV = json.tools.web.fetch.parallel.apiKeyEnv;
+  }
+  if (json.tools?.web?.fetch?.provider !== undefined) {
+    fromJson.MONO_AGENT_WEB_FETCH_PROVIDER = typeof json.tools.web.fetch.provider === "string" ? json.tools.web.fetch.provider : JSON.stringify(json.tools.web.fetch.provider);
   }
   if (json.tools?.web?.fetch?.render !== undefined) {
     fromJson.MONO_AGENT_WEB_FETCH_RENDER = json.tools.web.fetch.render;
@@ -1118,6 +1149,9 @@ export function layerJsonOntoEnv(
       throwInvalidJsonValue("providers.piNative.promptCacheDiagnostics", "a boolean");
     }
     fromJson.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS = String(json.providers.piNative.promptCacheDiagnostics);
+  }
+  if (json.providers?.piNative?.cacheRetention !== undefined) {
+    fromJson.MONO_AGENT_PI_CACHE_RETENTION = String(json.providers.piNative.cacheRetention);
   }
   if (json.providers?.piNative?.piMaxRetries !== undefined) {
     fromJson.MONO_AGENT_PI_MAX_RETRIES = String(json.providers.piNative.piMaxRetries);

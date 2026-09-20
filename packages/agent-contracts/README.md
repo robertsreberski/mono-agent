@@ -28,11 +28,6 @@ channel-driver, process-job projection, provider-auth projection, and memory con
 small dependency-free helpers for settings JSON, JSON-to-env mapping, safe
 network binding, bearer tokens, attachments, and stream framing.
 
-Monitor projections use v2 policy and suppression/delivery counters.
-`parseMonitorProjection` also accepts historical v1 projections, supplying
-compatible policy defaults and classifying historical delivered batches as
-unknown wake dispositions. New v2 records are validated strictly.
-
 ## Install / Usage
 
 Process-job projections distinguish terminal wake outcomes: `delivered`,
@@ -93,7 +88,7 @@ represent a part default to concise human fallback; machine and verbatim
 adapters pass `unsupportedPartFallback: "none"` so reply text is not mutated.
 Artifact/app bytes and HTML remain behind responder authorization methods rather
 than entering stream frames. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 Machine destinations project unsupported parts through the shared
 `AgentReplyPartDeliveryOutcome` contract. `sanitizeReplyPartDeliveryOutcomes()`
@@ -125,12 +120,14 @@ The arrays embedded directly in adapter responses are additive unversioned
 fields. A2A and cron's private durable SQLite copy wrap the same array as
 `{ "schemaVersion": 1, "replyPartOutcomes": [...] }`. Exact adapter field and
 projection names are documented in
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/#machine-delivery-outcome-wire-contract).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/#machine-delivery-outcome-wire-contract).
 Cron detail projections retain all 20 records. Compact cron summaries retain
 the first eight in stable part order so a maximum 100-run page remains below
 the operator response ceiling.
 
 ## Architecture
+
+`provider-usage.ts` defines the strict `mono-agent.provider-usage.v1` subscription projection, at most four providers (Claude, Codex, OpenCode Go and GitHub Copilot), at most three core percent windows per provider, fixed errors and read-only `ProviderUsageOperator`. Copilot alone admits Credits/Chat/Completions window kinds; existing provider rules stay unchanged. It carries no credentials or vendor account identifiers. Provider-auth status distinguishes additive `verified_by_account_request` (vendor account API accepted the credential, not inference or model entitlement) from stronger `verified_by_live_request`; `lastFailure.model` is optional for account-level rejection.
 
 ### Data flow
 
@@ -244,6 +241,7 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/agent-contracts`**
 
 ```text
+AGENT_ATTACHMENT_MIME_ALIASES
 AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES
 AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES
 AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES
@@ -381,7 +379,6 @@ MAX_INFO_BODY_BYTES
 MAX_INFO_PROVIDER_ID_BYTES
 MAX_INFO_PROVIDER_ITEMS
 MAX_INFO_PROVIDER_LABEL_BYTES
-MAX_MONITOR_OUTSTANDING_LIFECYCLES
 MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES
 MAX_PROVIDER_AUTH_BODY_BYTES
 MAX_PROVIDER_AUTH_INPUT_BYTES
@@ -394,9 +391,6 @@ MAX_PROVIDER_AUTH_USAGES
 MCP_APPS_EXTENSION_ID
 MCP_APP_RESOURCE_MIME_TYPE
 MCP_APP_SUPPORTED_VERSIONS
-MONITOR_ERROR_CODES
-MONITOR_PUBLIC_ERROR_MESSAGES
-MONITOR_STATES
 MemoryBlock
 MemoryCompletedTurn
 MemoryCompletedTurnAdmissionStatus
@@ -404,16 +398,6 @@ MemoryCompletedTurnResult
 MemoryLoadOptions
 MemoryStore
 MessageRef
-MonitorErrorCode
-MonitorOperator
-MonitorProjection
-MonitorProjectionCounters
-MonitorProjectionError
-MonitorProjectionLimits
-MonitorProjectionOrigin
-MonitorProjectionTimestamps
-MonitorState
-MonitorWakeDeliveryInput
 NOTHING_TO_REPORT_SENTINEL
 NotifyDeliveryContext
 NotifyDeliveryResult
@@ -425,6 +409,10 @@ PROCESS_JOB_STATES
 PROVIDER_AUTH_CHECK_SCHEMA
 PROVIDER_AUTH_SESSION_SCHEMA
 PROVIDER_AUTH_STATUS_SCHEMA
+PROVIDER_USAGE_ERRORS
+PROVIDER_USAGE_IDS
+PROVIDER_USAGE_LABELS
+PROVIDER_USAGE_SCHEMA
 ProcessJobErrorCode
 ProcessJobOperator
 ProcessJobProjection
@@ -435,6 +423,8 @@ ProcessJobProjectionOutput
 ProcessJobProjectionTimestamps
 ProcessJobProjectionWake
 ProcessJobState
+ProcessJobSubagentProgress
+ProcessJobSubagentRoute
 ProcessJobWakeDeliveryInput
 ProcessJobWakeDeliveryResult
 ProcessJobWakeDisposition
@@ -463,6 +453,12 @@ ProviderAuthStrategy
 ProviderAuthType
 ProviderAuthUsage
 ProviderAuthVerification
+ProviderUsage
+ProviderUsageErrorCode
+ProviderUsageId
+ProviderUsageOperator
+ProviderUsageSnapshot
+ProviderUsageWindow
 ReadSettingsJsonResult
 RedactedSecretValue
 ResilientAgentMessageStream
@@ -470,7 +466,6 @@ ResilientMessageStream
 ResilientMessageStreamLogger
 ResilientMessageStreamOptions
 RunningChannel
-RunningMonitorChannel
 RunningProcessJobChannel
 SUBAGENT_TOOL_SEPARATOR
 SecretSafeLogSink
@@ -490,6 +485,7 @@ assertMatchingReplyAttachment
 assertSafeBind
 bearerTokensEqual
 buildStreamingTailPreview
+canonicalizeAgentAttachmentMimeType
 classifyNotifySuppression
 close
 closeServerBounded
@@ -510,18 +506,17 @@ isChannelUserCancelReason
 isCodedError
 isDeliverableConversation
 isLoopbackHost
-isMonitorErrorCode
-isMonitorState
 isProcessJobErrorCode
 isProcessJobState
+isProcessJobSubagentProgress
+isProcessJobSubagentRoute
+isProviderUsageId
 isSafePrototypeInstance
 isSubagentLaunchToolName
-isTerminalMonitorState
 isTerminalProviderAuthSessionState
 isWildcardHost
 layerJsonOntoEnv
 listen
-monitorPublicError
 normalizeHostForBind
 normalizeOptionalString
 normalizeTrailing
@@ -531,8 +526,6 @@ parseCronOperatorOverview
 parseCronOperatorRunDetail
 parseCronOperatorRunPage
 parseCronOperatorRunSummary
-parseMonitorProjection
-parseMonitorProjections
 parseProcessJobProjection
 parseProcessJobProjections
 parseProviderAuthCheckSessionSnapshot
@@ -541,6 +534,7 @@ parseProviderAuthSessionInput
 parseProviderAuthSessionSnapshot
 parseProviderAuthSessionStartInput
 parseProviderAuthStatusSnapshot
+parseProviderUsageSnapshot
 processJobPublicError
 readAuthorizationBearer
 readBoolean
@@ -568,12 +562,33 @@ unsupportedReplyPartDeliveryOutcomes
 writeSettingsJson
 ```
 
+**`@mono-agent/agent-contracts/provider-usage`**
+
+```text
+PROVIDER_USAGE_ERRORS
+PROVIDER_USAGE_IDS
+PROVIDER_USAGE_LABELS
+PROVIDER_USAGE_SCHEMA
+ProviderUsage
+ProviderUsageErrorCode
+ProviderUsageId
+ProviderUsageOperator
+ProviderUsageSnapshot
+ProviderUsageWindow
+isProviderUsageId
+parseProviderUsageSnapshot
+```
+
 <!-- public-api-inventory:end -->
 
 Persistent Agent/AgentSend can run detached through the app-private in-process
 ProcessJobs lane. Durable admission reserves the child; completion and AskParent
 wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
+`AgentSend({id, stop:true})` cooperatively stops managed detached work without
+starting a new turn. Only a proven `resumable:true` receipt permits ordinary
+message continuation on the same session or `close:true`; `stop_requested`
+keeps messages/close blocked. Stop neither force-kills nor undoes external effects.
 See [background subagents](../../docs/tools/background-process-jobs.md#detached-persistent-children).
 
 Process-job projection v1 is a local owner API deployed lockstep with its operator
@@ -581,6 +596,14 @@ clients. New readers continue to accept old external Exec/Bash stored records
 without a `kind` field. Mixed-version network clients are not promised compatibility
 with internal Agent/AgentSend projections, whose discriminant and instance identity
 are required.
+
+The browser-safe `@mono-agent/agent-contracts/provider-usage` entrypoint exposes
+the same strict parser and usage DTOs without the Node-only root helpers.
+`ProviderUsageOperator.snapshot()` retains its cached-read contract. Optional
+`refresh()` awaits shared account-usage work, bypassing successful freshness but
+not error backoff. Capability-aware hosts expose it separately; snapshot-only
+implementations remain valid. Both return the same strictly parsed, secret-free
+`mono-agent.provider-usage.v1` projection, without changing inference evidence.
 
 ## Dependency Boundary
 
@@ -592,10 +615,10 @@ It does not normalize transport messages, run model providers, build prompts, pe
 
 ## Related Documentation
 
-- [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/)
-- [Custom channel drivers](https://mono-agent-docs.vercel.app/programmatic/custom-channels/)
-- [Runtime, tools, and guard boundaries](https://mono-agent-docs.vercel.app/runtime/tools-and-guards/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+- [Programmatic composition](https://docs.mono-agent.dev/programmatic/)
+- [Custom channel drivers](https://docs.mono-agent.dev/programmatic/custom-channels/)
+- [Runtime, tools, and guard boundaries](https://docs.mono-agent.dev/runtime/tools-and-guards/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-contracts)
 
 ## Verification

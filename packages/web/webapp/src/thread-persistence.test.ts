@@ -145,6 +145,32 @@ describe("createThreadPersistence", () => {
     debug.mockRestore();
   });
 
+  it("round-trips marker rows and ignores legacy sidecars while discarding their validator", async () => {
+    const marker = { ...message("marker", [{ type: "conversation-marker", kind: "resumed", at: "2026-09-16T10:00:00Z", previousMessageAt: "2026-09-16T08:00:00Z", idleMs: 7_200_000 }]), role: "system" as const, seq: 0 };
+    const store = createThreadPersistence();
+    await store.save({ entries: [entry("alpha-thread", { messages: [marker], etag: "old-validator" })] });
+    expect((await store.hydrate())?.threads[0]?.messages).toEqual([marker]);
+    await new Promise<void>((resolve, reject) => {
+      const open = indexedDB.open(PERSISTENCE_DB_NAME, PERSISTENCE_DB_VERSION);
+      open.onsuccess = () => {
+        const db = open.result;
+        const tx = db.transaction("threads", "readwrite");
+        const table = tx.objectStore("threads");
+        const get = table.get("alpha-thread");
+        get.onsuccess = () => table.put({ ...get.result, projectTransitions: [{ obsolete: true }], modelTransitions: [] });
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+      open.onerror = () => reject(open.error);
+    });
+    const held = (await createThreadPersistence().hydrate())?.threads[0];
+    expect(held?.messages).toEqual([marker]);
+    expect(held).not.toHaveProperty("projectTransitions");
+    expect(held).not.toHaveProperty("modelTransitions");
+    expect(held).not.toHaveProperty("etag");
+    store.close();
+  });
+
   it("hands back the conversations it was given, with their cursors and validators", async () => {
     const writer = createThreadPersistence({ now: () => 1_000 });
     await writer.save({

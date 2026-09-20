@@ -14,10 +14,11 @@ const GENERIC_LINK_LABELS = new Set([
 ]);
 
 const PACKAGE_ADJACENT_DOCS = new Set(["ARCHITECTURE.md", "MIGRATION.md"]);
-const FIRST_PARTY_DOCUMENTATION_HOST = "mono-agent-docs.vercel.app";
+const FIRST_PARTY_DOCUMENTATION_HOST = "docs.mono-agent.dev";
 const FIRST_PARTY_GITHUB_PATH = /^\/robertsreberski\/mono-agent\/(blob|tree)\/main\/(.+)$/u;
 const OBSOLETE_DOCUMENTATION_HOSTS = new Map([
-  ["mono-agent.dev", "mono-agent-docs.vercel.app"],
+  ["mono-agent.dev", "docs.mono-agent.dev"],
+  ["mono-agent-docs.vercel.app", "docs.mono-agent.dev"],
 ]);
 
 export function collectPublicMarkdownFiles(root) {
@@ -136,6 +137,8 @@ export function checkMarkdownDocument({ file, text }) {
 function obsoleteDocumentationHost(destination) {
   try {
     const url = new URL(destination);
+    // The apex now serves marketing, not documentation routes.
+    if (url.hostname === "mono-agent.dev" && ["/", "/privacy", "/privacy/"].includes(url.pathname)) return undefined;
     const replacement = OBSOLETE_DOCUMENTATION_HOSTS.get(url.hostname);
     return replacement === undefined ? undefined : { host: url.hostname, replacement };
   } catch {

@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StartTurnInput, WebMessage } from "./types";
-import { agent, attachment, monitor, processJob, thread, uploadLimits } from "./test/fixtures";
+import { agent, attachment, processJob, thread, uploadLimits } from "./test/fixtures";
 
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
 
@@ -169,11 +169,11 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(composer.getState().text).toBe("must stay local");
   });
 
-  it("hides legacy silent cron rows while coalescing Monitor activity and keeping rich cron content", async () => {
+  it("hides legacy silent cron rows while keeping activity and rich cron content", async () => {
     const wake = (id: string): WebMessage => ({
       id, threadId: idleThread.id, turnId: `turn-${id}`, role: "assistant", status: "complete",
       createdAt: "2026-07-17T10:00:00.000Z", updatedAt: "2026-07-17T10:00:00.000Z", attachments: [],
-      parts: [{ type: "monitor-activity", monitors: [{ projection: monitor(), deliveryKeys: [] }] }],
+      parts: [{ type: "reasoning", text: "Checking" }],
     });
     const silent: WebMessage = { ...wake("silent"), parts: [
       { type: "text", text: "Completed silently (no message was reported)." },
@@ -184,8 +184,8 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
       detail: { thread: idleThread, messages: [wake("first"), wake("second"), silent, rich] },
     });
     const view = await renderRuntime();
-    expect(view.runtime.thread.getState().messages.map((message) => message.id)).toEqual(["second", "rich"]);
-    expect(view.runtime.thread.getState().messages[1]?.content).toContainEqual({ type: "text", text: "Delivered content" });
+    expect(view.runtime.thread.getState().messages.map((message) => message.id)).toEqual(["first", "second", "rich"]);
+    expect(view.runtime.thread.getState().messages[2]?.content).toContainEqual({ type: "text", text: "Delivered content" });
   });
 
   it("omits an empty settled wake row while retaining activity and running turns", async () => {
@@ -277,7 +277,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     );
     const view = render(tree());
     await waitFor(() => expect(runtime?.thread.getState().messages[0]?.content?.map((part) => part.type))
-      .toEqual(["tool-call", "data"]));
+      .toEqual(["data"]));
     expect(presentation?.jobs).toHaveLength(1);
 
     storeMock.current = createStore(vi.fn(), {
@@ -285,7 +285,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     });
     view.rerender(tree());
     await waitFor(() => expect(runtime?.thread.getState().messages[0]?.content?.map((part) => part.type))
-      .toEqual(["tool-call", "data", "data"]));
+      .toEqual(["data", "data"]));
     expect(runtime?.thread.getState().messages[0]?.id).toBe("origin");
     expect(presentation?.jobs).toHaveLength(1);
   });
@@ -580,7 +580,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(runtime.thread.composer.getState().text).toBe("");
   });
 
-  it("submits a live follow-up from Enter while preserving Shift+Enter", async () => {
+  it("submits a live follow-up from Ctrl+Enter while preserving plain and Shift+Enter", async () => {
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
     const sendLiveInput = vi.fn().mockResolvedValue(undefined);
     const runningThread = thread("thread", "agent", {
@@ -601,6 +601,8 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(runtime.thread.composer.getState().text).toBe("Use Enter");
 
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+    expect(sendTurn).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter", ctrlKey: true });
     await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
       expect.objectContaining({ text: "Use Enter" }),
       expect.any(Function),
@@ -764,7 +766,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(sendTurn).not.toHaveBeenCalled();
   });
 
-  it("does not mount a zero-result $ picker that would capture normal Enter submission", async () => {
+  it("does not mount a zero-result $ picker that would capture Ctrl+Enter submission", async () => {
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
     storeMock.current = createStore(sendTurn, {
       skillRegistry: {
@@ -783,7 +785,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
 
     fireEvent.change(input, { target: { value: "$20" } });
     expect(screen.queryByRole("listbox", { name: "Skills" })).not.toBeInTheDocument();
-    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter", ctrlKey: true });
 
     await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
       expect.objectContaining({ text: "$20" }),
@@ -991,7 +993,7 @@ describe("what the composer is holding, for anything that would destroy it", () 
 
     fireEvent.change(input, { target: { value: "half a thought" } });
     await waitFor(() => expect(hasUnsentComposerDraft()).toBe(true));
-    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter", ctrlKey: true });
 
     await waitFor(() => expect(sendTurn).toHaveBeenCalled());
     await waitFor(() => expect(hasUnsentComposerDraft()).toBe(false));

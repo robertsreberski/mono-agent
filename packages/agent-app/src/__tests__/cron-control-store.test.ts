@@ -538,6 +538,7 @@ describe("cron control store", () => {
 
     const legacy = new DatabaseSync(databasePath);
     legacy.exec("ALTER TABLE cron_runs DROP COLUMN reply_part_outcomes_json");
+    legacy.exec("ALTER TABLE cron_runs DROP COLUMN preflight_json");
     legacy.close();
 
     expect(await inspectCronControlStore(cwd)).toMatchObject({ status: "ready" });
@@ -546,9 +547,115 @@ describe("cron control store", () => {
     expect(reopened.getRun(firing.runId)).toMatchObject({ status: "succeeded", text: "legacy text" });
     expect(reopened.getRun(firing.runId)).not.toHaveProperty("replyPartOutcomes");
     const upgraded = new DatabaseSync(reopened.paths.database, { readOnly: true });
-    expect((upgraded.prepare("PRAGMA table_info(cron_runs)").all() as Array<{ name: string }>)
-      .some((column) => column.name === "reply_part_outcomes_json")).toBe(true);
+    const upgradedColumns = (upgraded.prepare("PRAGMA table_info(cron_runs)").all() as Array<{ name: string }>)
+      .map((column) => column.name);
+    expect(upgradedColumns).toContain("reply_part_outcomes_json");
+    expect(upgradedColumns).toContain("preflight_json");
     upgraded.close();
+  });
+
+  it("persists one bounded preflight record per attempted gate across the terminal result", async () => {
+    const { store } = await fixture();
+    const firing = store.allocateFiring({
+      jobId: "gated",
+      scheduledAt: "2026-08-14T10:00:00.000Z",
+      observedAt: "2026-08-14T10:00:00.000Z",
+      trigger: "scheduled",
+    });
+    store.recordPreflight(firing, {
+      outcome: "skip",
+      reason: "no new items",
+      inputBytes: 12,
+      startedAt: "2026-08-14T10:00:00.500Z",
+      completedAt: "2026-08-14T10:00:00.750Z",
+    });
+    store.recordResult({
+      kind: "skipped",
+      reason: "gate",
+      cronRunId: firing.runId,
+      jobId: firing.jobId,
+      scheduledAt: firing.scheduledAt,
+      orderedAt: firing.orderedAt,
+      sequence: firing.sequence,
+      trigger: firing.trigger,
+      completedAt: "2026-08-14T10:00:00.800Z",
+      gateReason: "no new items",
+    });
+
+    // The terminal projection is a deliberate, non-failure skip with the real
+    // completion time and no invented start.
+    expect(store.getRunSummary(firing.runId)).toMatchObject({
+      status: "skipped_gate",
+      completedAt: "2026-08-14T10:00:00.800Z",
+      error: "no new items",
+    });
+    expect(store.getRunSummary(firing.runId)).not.toHaveProperty("startedAt");
+
+    const database = new DatabaseSync(store.paths.database, { readOnly: true });
+    const row = database.prepare("SELECT preflight_json FROM cron_runs WHERE run_id = ?").get(firing.runId) as
+      | { preflight_json: string | null }
+      | undefined;
+    database.close();
+    expect(JSON.parse(row?.preflight_json ?? "null")).toEqual({
+      outcome: "skip",
+      reason: "no new items",
+      inputBytes: 12,
+      startedAt: "2026-08-14T10:00:00.500Z",
+      completedAt: "2026-08-14T10:00:00.750Z",
+    });
+  });
+
+  it("records a gate error that fell open without overwriting the run's own failure", async () => {
+    const { store } = await fixture();
+    const firing = store.allocateFiring({
+      jobId: "gated-error",
+      scheduledAt: "2026-08-14T10:00:00.000Z",
+      observedAt: "2026-08-14T10:00:00.000Z",
+      trigger: "scheduled",
+    });
+    store.recordPreflight(firing, {
+      outcome: "error",
+      code: "exit_nonzero",
+      reason: "preflight gate exited with code 3",
+      startedAt: "2026-08-14T10:00:00.500Z",
+      completedAt: "2026-08-14T10:00:00.750Z",
+    });
+    store.recordResult(succeeded(firing, "ran anyway"));
+
+    const database = new DatabaseSync(store.paths.database, { readOnly: true });
+    const row = database.prepare("SELECT preflight_json FROM cron_runs WHERE run_id = ?").get(firing.runId) as
+      | { preflight_json: string | null }
+      | undefined;
+    database.close();
+    expect(JSON.parse(row?.preflight_json ?? "null")).toMatchObject({
+      outcome: "error",
+      code: "exit_nonzero",
+    });
+    expect(store.getRunSummary(firing.runId)).toMatchObject({ status: "succeeded", text: "ran anyway" });
+  });
+
+  it("records a preflight cancellation that never started the responder", async () => {
+    const { store } = await fixture();
+    const firing = store.allocateFiring({
+      jobId: "gated-cancel",
+      scheduledAt: "2026-08-14T10:00:00.000Z",
+      observedAt: "2026-08-14T10:00:00.000Z",
+      trigger: "scheduled",
+    });
+    store.recordResult({
+      kind: "cancelled",
+      cronRunId: firing.runId,
+      jobId: firing.jobId,
+      scheduledAt: firing.scheduledAt,
+      orderedAt: firing.orderedAt,
+      sequence: firing.sequence,
+      trigger: firing.trigger,
+      completedAt: "2026-08-14T10:00:01.000Z",
+      error: "Cron firing was cancelled during preflight before the responder started.",
+    });
+
+    expect(store.getRunSummary(firing.runId)).toMatchObject({ status: "cancelled" });
+    expect(store.getRunSummary(firing.runId)).not.toHaveProperty("startedAt");
   });
 
   it("rejects malformed, oversized, and invalid current-schema outcome envelopes before projection", async () => {

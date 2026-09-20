@@ -103,6 +103,18 @@ export const RETIRED_CONFIG_FIELDS = [
     envMessage: "`MONO_AGENT_PERMISSION_MODE` was removed because the Pi runtime never enforced it. Remove the variable from your environment and `.env`; configure `sandbox` for enforced tool isolation.",
   },
   {
+    path: "tools.web.search.hound.endpoint",
+    env: "MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT",
+    message: "`tools.web.search.hound.endpoint` was removed: Hound is built in. Delete the endpoint setting; no external Hound service is contacted.",
+    envMessage: "`MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT` was removed: Hound is built in. Remove the variable.",
+  },
+  {
+    path: "tools.web.fetch.hound.endpoint",
+    env: "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT",
+    message: "`tools.web.fetch.hound.endpoint` was removed: Hound is built in. Delete the endpoint setting; no external Hound service is contacted.",
+    envMessage: "`MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT` was removed: Hound is built in. Remove the variable.",
+  },
+  {
     path: "runtime.executionMode",
     env: "MONO_AGENT_EXECUTION_MODE",
     message: "`runtime.executionMode` was removed; mono-agent runs only the Pi runtime (SDK). Delete the key.",
@@ -231,12 +243,10 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     input.env.MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
     "MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS",
   );
-  const webSearchBackend = readChoice<WebSearchBackend>(
-    input.env.MONO_AGENT_WEB_SEARCH_BACKEND,
-    "MONO_AGENT_WEB_SEARCH_BACKEND",
-    ["auto", "searxng", "ollama", "codex", "keyless"],
-    "auto",
-    invalidEnv,
+  const webSearchBackend = readWebProviderSelection<WebSearchBackend>(
+    input.env.MONO_AGENT_WEB_SEARCH_BACKEND, "MONO_AGENT_WEB_SEARCH_BACKEND",
+    ["searxng", "ollama", "codex", "keyless", "duckduckgo", "startpage", "parallel", "hound"],
+    ["parallel", "ollama"], input.env,
   );
   const legacyWebSearchEndpoint = readWebSearchEndpoint(
     input.env.MONO_AGENT_WEB_SEARCH_ENDPOINT,
@@ -267,13 +277,21 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     invalidEnv,
     { min: 1, max: 20 },
   );
-  if (webSearchBackend === "searxng" && webSearchEndpoint === undefined) {
+  if (selectedWebProvider(webSearchBackend, "searxng") && webSearchEndpoint === undefined) {
     throw new MonoAgentConfigError(
       "invalid_env",
       "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT (or legacy MONO_AGENT_WEB_SEARCH_ENDPOINT) is required when MONO_AGENT_WEB_SEARCH_BACKEND=searxng.",
       { env: "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT" },
     );
   }
+  const webSearchParallel = readParallelWebConfig(input.env, "MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV");
+  const webFetchParallel = readParallelWebConfig(input.env, "MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV");
+  for (const source of ["MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT", "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT"]) {
+    if (input.env[source] !== undefined) throw new MonoAgentConfigError("invalid_env", `${source} was removed: Hound is built in. Remove the endpoint setting; no external Hound service is contacted.`, { env: source });
+  }
+  const webFetchProvider = readWebProviderSelection<"local" | "parallel" | "hound">(
+    input.env.MONO_AGENT_WEB_FETCH_PROVIDER, "MONO_AGENT_WEB_FETCH_PROVIDER", ["local", "parallel", "hound"], "local", input.env,
+  );
   const webFetchRender = readChoice<WebFetchRenderMode>(
     input.env.MONO_AGENT_WEB_FETCH_RENDER,
     "MONO_AGENT_WEB_FETCH_RENDER",
@@ -281,6 +299,9 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     "never",
     invalidEnv,
   );
+  if (webFetchRender === "auto" && !selectedWebProvider(webFetchProvider, "local")) {
+    throw new MonoAgentConfigError("invalid_env", 'tools.web.fetch.render "auto" requires the local fetch provider.', { env: "MONO_AGENT_WEB_FETCH_PROVIDER" });
+  }
   const webBrowserCommand = readWebBrowserCommand(input.env.MONO_AGENT_WEB_BROWSER_COMMAND);
   const fileToolReadableRoots = readFileToolRoots(
     input.env.MONO_AGENT_FILE_TOOL_READABLE_ROOTS,
@@ -317,12 +338,15 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
       coordination: readChoice(input.env.MONO_AGENT_WEB_COORDINATION, "MONO_AGENT_WEB_COORDINATION", ["process", "host"] as const, "process", invalidEnv),
       search: {
         backend: webSearchBackend,
+        ...(webSearchParallel === undefined ? {} : { parallel: webSearchParallel }),
         maxRequestsPerRun: webSearchMaxRequestsPerRun,
         ...(webSearchEndpoint === undefined ? {} : { searxng: { endpoint: webSearchEndpoint } }),
         ...(webSearchOllama === undefined ? {} : { ollama: webSearchOllama }),
         codex: { model: webSearchCodexModel },
       },
       fetch: {
+        provider: webFetchProvider,
+        ...(webFetchParallel === undefined ? {} : { parallel: webFetchParallel }),
         render: webFetchRender,
         browserCommand: webBrowserCommand,
       },
@@ -497,7 +521,7 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
     ollama: configuredOllamaSearch,
     codex: configuredCodexSearch,
     ...searchWithoutSecrets
-  } = configuredSearch ?? { backend: "auto" as const, maxRequestsPerRun: 4 };
+  } = configuredSearch ?? { backend: ["parallel", "ollama"] as const, maxRequestsPerRun: 4 };
   const redacted: RedactedMonoAgentConfig = {
     ...(config.agent === undefined ? {} : { agent: { ...config.agent } }),
     runtime: { ...config.runtime },
@@ -738,6 +762,7 @@ function readSubagentsConfig(
     ...(record.maxConcurrent === undefined ? {} : { maxConcurrent: readSubagentInteger(record.maxConcurrent, "maxConcurrent", 1, 10) }),
     ...(record.maxPerTurn === undefined ? {} : { maxPerTurn: readSubagentInteger(record.maxPerTurn, "maxPerTurn", 1, 200) }),
     ...(record.timeoutMs === undefined ? {} : { timeoutMs: readSubagentInteger(record.timeoutMs, "timeoutMs", 1_000, 3_600_000) }),
+    ...(record.commandTimeoutMs === undefined ? {} : { commandTimeoutMs: readSubagentInteger(record.commandTimeoutMs, "commandTimeoutMs", 1, Number.MAX_SAFE_INTEGER) }),
     ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, "maxTurns", 1, 200) }),
     ...(definitions === undefined ? {} : { definitions }),
     ...(models === undefined ? {} : { models }),
@@ -1058,17 +1083,18 @@ function readWebSearchEndpoint(raw: string | undefined, source: string): string 
   }
 }
 
+
 const DEFAULT_OLLAMA_WEB_SEARCH_BASE_URL = "http://127.0.0.1:11434";
 const OFFICIAL_OLLAMA_ORIGIN = "https://ollama.com";
 
 function readOllamaWebSearchConfig(
   env: Record<string, string | undefined>,
-  backend: WebSearchBackend,
+  backend: WebSearchBackend | readonly WebSearchBackend[],
 ): NonNullable<NonNullable<MonoAgentConfig["tools"]["web"]>["search"]["ollama"]> | undefined {
   const baseUrlRaw = normalizeOptionalString(env.MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL);
   const apiKeyEnv = normalizeOptionalString(env.MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV);
   const trustRaw = normalizeOptionalString(env.MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL);
-  if (backend !== "ollama" && baseUrlRaw === undefined && apiKeyEnv === undefined && trustRaw === undefined) {
+  if (!selectedWebProvider(backend, "ollama") && baseUrlRaw === undefined && apiKeyEnv === undefined && trustRaw === undefined) {
     return undefined;
   }
 
@@ -2298,7 +2324,10 @@ function readProviderPiNative(value: unknown): Readonly<Record<string, unknown>>
   if (record.promptCacheDiagnostics !== undefined && typeof record.promptCacheDiagnostics !== "boolean") {
     throw new MonoAgentConfigError("invalid_env", "providers.piNative.promptCacheDiagnostics must be a boolean.");
   }
-  const allowed = new Set(["transport", "promptCacheDiagnostics", "piMaxRetries", "maxRetryDelayMs", "piSessionsRoot"]);
+  if (record.cacheRetention !== undefined && !["short", "long"].includes(record.cacheRetention as string)) {
+    throw new MonoAgentConfigError("invalid_env", "providers.piNative.cacheRetention must be short or long.");
+  }
+  const allowed = new Set(["transport", "cacheRetention", "promptCacheDiagnostics", "piMaxRetries", "maxRetryDelayMs", "piSessionsRoot"]);
   const unknownKeys = Object.keys(record).filter((key) => !allowed.has(key)).sort();
   if (unknownKeys.length > 0) {
     throw new MonoAgentConfigError("invalid_env", `${source} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`, {
@@ -2321,6 +2350,7 @@ function layerProviderReservedValuesOntoEnv(
     ["transport", "MONO_AGENT_PI_TRANSPORT"],
     ["promptCacheDiagnostics", "MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS"],
     ["piMaxRetries", "MONO_AGENT_PI_MAX_RETRIES"],
+    ["cacheRetention", "MONO_AGENT_PI_CACHE_RETENTION"],
     ["maxRetryDelayMs", "MONO_AGENT_MAX_RETRY_DELAY_MS"],
     ["piSessionsRoot", "MONO_AGENT_PI_SESSIONS_ROOT"],
   ] as const;
@@ -2436,17 +2466,7 @@ function readConcurrencyConfig(env: Record<string, string | undefined>): MonoAge
 function readPiNativeProviderConfig(
   env: Record<string, string | undefined>,
   cwd: string,
-): PiNativeProviderConfig | undefined {
-  const hasAny = [
-    env.MONO_AGENT_PI_TRANSPORT,
-    env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS,
-    env.MONO_AGENT_PI_MAX_RETRIES,
-    env.MONO_AGENT_MAX_RETRY_DELAY_MS,
-    env.MONO_AGENT_PI_SESSIONS_ROOT,
-  ].some((value) => normalizeOptionalString(value) !== undefined);
-  if (!hasAny) {
-    return undefined;
-  }
+): PiNativeProviderConfig {
   const transport = normalizeOptionalString(env.MONO_AGENT_PI_TRANSPORT) === undefined
     ? undefined
     : readChoice<PiTransport>(
@@ -2459,12 +2479,16 @@ function readPiNativeProviderConfig(
   const promptCacheDiagnostics = normalizeOptionalString(env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS) === undefined
     ? undefined
     : readBoolean(env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS, "MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS", false, invalidEnv);
+  const cacheRetention = readChoice<"short" | "long">(
+    env.MONO_AGENT_PI_CACHE_RETENTION, "MONO_AGENT_PI_CACHE_RETENTION", ["short", "long"], "long", invalidEnv,
+  );
   const piMaxRetries = readOptionalInteger(env.MONO_AGENT_PI_MAX_RETRIES, "MONO_AGENT_PI_MAX_RETRIES", { min: 0, max: 8 });
   const maxRetryDelayMs = readOptionalInteger(env.MONO_AGENT_MAX_RETRY_DELAY_MS, "MONO_AGENT_MAX_RETRY_DELAY_MS", { min: 100, max: 3_600_000 });
   const piSessionsRoot = readOptionalPath(env.MONO_AGENT_PI_SESSIONS_ROOT, cwd);
   return {
     ...(transport === undefined ? {} : { transport }),
     ...(promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics }),
+    cacheRetention,
     ...(piMaxRetries === undefined ? {} : { piMaxRetries }),
     ...(maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs }),
     ...(piSessionsRoot === undefined ? {} : { piSessionsRoot }),
@@ -2611,4 +2635,47 @@ function normalizeCwd(value: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function selectedWebProvider(selection: string | readonly string[], name: string): boolean {
+  return typeof selection === "string" ? selection === name : selection.includes(name);
+}
+
+function readWebProviderSelection<T extends string>(
+  raw: string | undefined, source: string, names: readonly T[], fallback: T | readonly T[],
+  env: Record<string, string | undefined>,
+): T | readonly T[] {
+  if (raw === undefined) return fallback;
+  const value = raw.trim();
+  if (value === "auto" && source === "MONO_AGENT_WEB_SEARCH_BACKEND") {
+    const previous = [
+      ...([env.MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL, env.MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV, env.MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL].some((v) => v !== undefined) ? ["ollama"] : []),
+      ...(env.MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT || env.MONO_AGENT_WEB_SEARCH_ENDPOINT ? ["searxng"] : []),
+      "codex", "keyless",
+    ];
+    throw new MonoAgentConfigError("invalid_env", `tools.web.search.backend "auto" was removed; use ${JSON.stringify(previous)} (the previous auto order for this configuration)`, { env: source });
+  }
+  let selection: unknown;
+  try { selection = value.startsWith("[") ? JSON.parse(value) : value.includes(",") ? value.split(",").map((name) => name.trim()) : value; }
+  catch { selection = null; }
+  const list = Array.isArray(selection) ? selection : [selection];
+  if (!list.length || list.some((name) => typeof name !== "string" || !names.includes(name as T))) {
+    throw new MonoAgentConfigError("invalid_env", `${source} must be one provider or a non-empty ordered chain of: ${names.join(", ")}.`, { env: source });
+  }
+  if (new Set(list).size !== list.length) {
+    throw new MonoAgentConfigError("invalid_env", `${source} contains duplicate provider names.`, { env: source });
+  }
+  return selection as T | readonly T[];
+}
+
+function readParallelWebConfig(env: Record<string, string | undefined>, source: string): { readonly apiKeyEnv: string } | undefined {
+  if (env[source] === undefined) return undefined;
+  const name = env[source]?.trim() ?? "";
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
+    throw new MonoAgentConfigError("invalid_env", `${source} must name an environment variable.`, { env: source });
+  }
+  if (!env[name]?.trim()) {
+    throw new MonoAgentConfigError("invalid_env", `${source} names a missing or empty credential variable.`, { env: source });
+  }
+  return { apiKeyEnv: name };
 }

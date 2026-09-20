@@ -19,6 +19,8 @@ export {
   PROCESS_JOB_STATES,
   isProcessJobErrorCode,
   isProcessJobState,
+  isProcessJobSubagentProgress,
+  isProcessJobSubagentRoute,
   parseProcessJobProjection,
   parseProcessJobProjections,
   processJobPublicError,
@@ -34,31 +36,10 @@ export type {
   ProcessJobProjectionTimestamps,
   ProcessJobProjectionWake,
   ProcessJobState,
+  ProcessJobSubagentProgress,
+  ProcessJobSubagentRoute,
   ProcessJobWakeState,
 } from "./process-jobs.js";
-export {
-  MAX_MONITOR_OUTSTANDING_LIFECYCLES,
-  MONITOR_ERROR_CODES,
-  MONITOR_PUBLIC_ERROR_MESSAGES,
-  MONITOR_STATES,
-  isMonitorErrorCode,
-  isMonitorState,
-  isTerminalMonitorState,
-  monitorPublicError,
-  parseMonitorProjection,
-  parseMonitorProjections,
-} from "./monitors.js";
-export type {
-  MonitorErrorCode,
-  MonitorOperator,
-  MonitorProjection,
-  MonitorProjectionCounters,
-  MonitorProjectionError,
-  MonitorProjectionLimits,
-  MonitorProjectionOrigin,
-  MonitorProjectionTimestamps,
-  MonitorState,
-} from "./monitors.js";
 export type {
   MemoryBlock,
   MemoryCompletedTurn,
@@ -219,6 +200,46 @@ export const DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST: readonly string[] = [
 /** Classify an allowed MIME type into the runtime's two attachment kinds. */
 export function agentAttachmentKindFromMimeType(mimeType: string): AgentAttachment["kind"] {
   return mimeType.trim().toLowerCase().startsWith("image/") ? "image" : "document";
+}
+
+/**
+ * Vendor or legacy aliases for {@link DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST}.
+ * Browsers and OS pickers report non-canonical types for the same container
+ * (Safari reports a Voice Memo `.m4a` file as `audio/x-m4a`), so alias keys
+ * map to the canonical allowlisted type transports already accept.
+ */
+export const AGENT_ATTACHMENT_MIME_ALIASES: Readonly<Record<string, string>> = {
+  "audio/x-m4a": "audio/mp4",
+  "audio/m4a": "audio/mp4",
+  "audio/x-mp4": "audio/mp4",
+  "audio/mp3": "audio/mpeg",
+  "audio/x-mp3": "audio/mpeg",
+  "audio/mpeg3": "audio/mpeg",
+  "audio/x-mpeg-3": "audio/mpeg",
+  "audio/x-wav": "audio/wav",
+  "audio/wave": "audio/wav",
+  "audio/vnd.wave": "audio/wav",
+  "audio/x-pn-wav": "audio/wav",
+  "audio/x-aac": "audio/aac",
+  "audio/x-flac": "audio/flac",
+  "audio/x-ogg": "audio/ogg",
+  "audio/vorbis": "audio/ogg",
+};
+
+/**
+ * Canonicalize a caller-reported attachment MIME type to the allowlisted form.
+ * Browsers and OS pickers report non-canonical types for the same container,
+ * so a known vendor or legacy alias maps to its canonical allowlisted type.
+ * Unknown types return unchanged (trimmed and lowercased), leaving admission
+ * to {@link DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST}.
+ */
+export function canonicalizeAgentAttachmentMimeType(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  // Own-property check only: a caller-reported type such as `constructor`
+  // would otherwise resolve against Object.prototype and return a function.
+  return Object.hasOwn(AGENT_ATTACHMENT_MIME_ALIASES, normalized)
+    ? AGENT_ATTACHMENT_MIME_ALIASES[normalized] ?? normalized
+    : normalized;
 }
 
 /**
@@ -1131,8 +1152,6 @@ export type {
   NotifyDestination,
   HostWakeDeliveryResult,
   HostWakeDisposition,
-  MonitorWakeDeliveryInput,
-  RunningMonitorChannel,
   ProcessJobWakeDeliveryInput,
   ProcessJobWakeDeliveryResult,
   ProcessJobWakeDisposition,
@@ -1238,3 +1257,5 @@ export type {
   CronOperatorRunTrigger,
   CronOperatorRunTruncatedField,
 } from "./cron-operator-wire.js";
+
+export * from "./provider-usage.js";

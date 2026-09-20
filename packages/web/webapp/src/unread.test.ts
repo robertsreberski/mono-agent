@@ -12,6 +12,30 @@ const at = (id: string, revision: number, sourceId = "alpha") =>
   thread(id, sourceId, { revision });
 
 describe("createUnreadMarker", () => {
+  it.each([4, 6])("adopts a server watermark %i at or beyond the revision, until later activity", (readRevision) => {
+    const marker = createUnreadMarker();
+    marker.note([at("one", 1)]);
+    const summary = { ...at("one", 4), readRevision };
+    expect(marker.unread(summary)).toBe(true);
+    expect(marker.adoptReadWatermarks([summary])).toBe(true);
+    expect([...marker.unreadIds([summary])]).toEqual([]);
+    expect(marker.adoptReadWatermarks([summary])).toBe(false);
+    expect(marker.unread(at("one", readRevision + 1))).toBe(true);
+  });
+
+  it("never regresses local reads or unseeds first sight with a stale server watermark", () => {
+    const marker = createUnreadMarker();
+    const fresh = { ...at("one", 8), readRevision: 2 };
+    expect(marker.adoptReadWatermarks([fresh])).toBe(false);
+    marker.note([fresh]);
+    expect(marker.adoptReadWatermarks([fresh])).toBe(false);
+    expect(marker.unread(fresh)).toBe(false);
+    marker.see(at("one", 10));
+    expect(marker.adoptReadWatermarks([{ ...fresh, readRevision: 9 }])).toBe(false);
+    expect(marker.see(fresh)).toBe(false);
+    expect(marker.entries()).toEqual([{ id: "one", revision: 10 }]);
+  });
+
   it("never calls a conversation it has never seen unread", () => {
     const marker = createUnreadMarker();
     const fresh = at("one", 7);

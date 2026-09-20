@@ -1,11 +1,12 @@
 // @ts-check
+import { markdownToText, collapseDocumentText } from "./web-markdown-text.js";
+export { markdownToText } from "./web-markdown-text.js";
 
-import { Readability } from "@mozilla/readability";
-import { Defuddle as parseDefuddle } from "defuddle/node";
 import { XMLValidator } from "fast-xml-parser";
-import { DOMParser, parseHTML } from "linkedom";
-import TurndownService from "turndown";
+import { DOMParser } from "linkedom";
 import { extractText as extractPdfText, getDocumentProxy } from "unpdf";
+import { extractHoundHtml } from "./hound-local/extract.js";
+export { extractHtmlLinks, MAX_WEB_FETCH_LINKS, MAX_WEB_FETCH_LINK_URL_CHARS, MAX_WEB_FETCH_LINK_TEXT_CHARS } from "./hound-local/links.js";
 
 export const MAX_STRUCTURED_DOCUMENT_BYTES = 8 * 1024 * 1024;
 const MARKDOWN_MIME_TYPES = new Set([
@@ -105,46 +106,8 @@ async function extractPdf(bytes) {
 }
 
 async function extractHtml(html, url, format) {
-  let title = "";
-  let markdown = "";
-  const failures = [];
-  try {
-    let { document } = parseHTML(html);
-    if (!document.body?.innerHTML?.trim() && html.trim()) {
-      ({ document } = parseHTML(`<html><body>${html}</body></html>`));
-    }
-    sanitizeDocumentLinks(document, url);
-    const parsed = await parseDefuddle(/** @type {any} */ (document), url, {
-      markdown: true, separateMarkdown: true, useAsync: false,
-    });
-    title = String(parsed.title || "").trim();
-    markdown = String(parsed.contentMarkdown || parsed.content || "").trim();
-    if (meaningfulCharacters(markdown) > 0) return finishHtml(markdown, title, format, "defuddle", failures);
-    failures.push("defuddle");
-  } catch { failures.push("defuddle"); }
-
-  try {
-    const { document } = parseHTML(html);
-    sanitizeDocumentLinks(document, url);
-    const article = new Readability(/** @type {any} */ (document)).parse();
-    if (article) {
-      title ||= String(article.title || "").trim();
-      markdown = htmlToMarkdown(article.content || "", url);
-      if (meaningfulCharacters(markdown) > 0) return finishHtml(markdown, title, format, "readability", failures);
-    }
-    failures.push("readability");
-  } catch { failures.push("readability"); }
-
-  try {
-    const { document } = parseHTML(html);
-    title ||= collapseWhitespace(document.querySelector("title")?.textContent);
-    for (const node of document.querySelectorAll("script,style,noscript,template,nav")) node.remove();
-    sanitizeDocumentLinks(document, url);
-    markdown = turndown().turndown(document.body?.innerHTML || "").trim();
-    if (meaningfulCharacters(markdown) > 0) return finishHtml(markdown, title, format, "body", failures);
-    failures.push("body");
-  } catch { failures.push("body"); }
-  throw extractionError("extraction_failed", `HTML extraction failed after ${failures.join(", ")}.`, { parserFailures: failures });
+  const extracted = await extractHoundHtml(html, url);
+  return finishHtml(extracted.markdown, extracted.title, format, extracted.stage, extracted.failures);
 }
 
 function finishHtml(markdown, title, format, stage, failures) {
@@ -181,31 +144,6 @@ function extractXml(xml, format, url) {
   return { body, readableText: markdownToText(body), title: "", extractionStage: "xml", parserFailureCount: 0, parserFailures: [] };
 }
 
-function htmlToMarkdown(value, url) {
-  const { document } = parseHTML(String(value || ""));
-  sanitizeDocumentLinks(document, url);
-  return turndown().turndown(document.body?.innerHTML || "").trim();
-}
-
-function turndown() {
-  const service = new TurndownService({ bulletListMarker: "-", codeBlockStyle: "fenced", emDelimiter: "_", strongDelimiter: "**" });
-  service.addRule("tablesAsText", {
-    filter: ["table"],
-    replacement(_content, node) {
-      return `\n\n${[...node.querySelectorAll("tr")].map((row) => [...row.querySelectorAll("th,td")].map((cell) => collapseWhitespace(cell.textContent)).join(" | ")).filter(Boolean).join("\n")}\n\n`;
-    },
-  });
-  return service;
-}
-
-function sanitizeDocumentLinks(document, baseUrl) {
-  for (const node of document.querySelectorAll("a[href],img[src]")) {
-    const attribute = node.tagName?.toLowerCase() === "a" ? "href" : "src";
-    const safe = safeUrl(node.getAttribute(attribute), baseUrl);
-    if (safe) node.setAttribute(attribute, safe);
-    else node.removeAttribute(attribute);
-  }
-}
 
 function safeUrl(value, base) {
   if (typeof value !== "string" || !value.trim()) return "";
@@ -270,110 +208,6 @@ export function shouldAutoRender(readableText, html) {
 
 function meaningfulCharacters(value) { return markdownToText(value).replace(/\s/gu, "").length; }
 
-export function markdownToText(value) {
-  const source = String(value || "").replace(/\r\n?/gu, "\n");
-  const { text, codeBlocks } = protectFencedCode(source);
-  let output = collapseDocumentText(text
-    .replace(/!\[([^\]]*)\]\([^)]*\)/gu, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/gu, "$1")
-    .replace(/^ {0,3}(?:[*_-][ \t]*){3,}$/gmu, "")
-    .replace(/^ {0,3}#{1,6}[ \t]+/gmu, "")
-    .replace(/^ {0,3}>[ \t]+/gmu, "")
-    .replace(/^ {0,3}[*+-][ \t]+/gmu, "")
-    .replace(/~~(?=\S)([^~\n]*?\S)~~/gu, "$1")
-    .replace(/\*\*(?=\S)([^*\n]*?\S)\*\*/gu, "$1")
-    .replace(/__(?=\S)([^_\n]*?\S)__/gu, "$1")
-    .replace(/(?<!\*)\*(?=\S)([^*\n]*?\S)\*(?!\*)/gu, "$1")
-    .replace(/(?<![\p{L}\p{N}_])_(?=\S)([^_\n]*?\S)_(?![\p{L}\p{N}_])/gu, "$1")
-    .replace(/`([^`\n]+)`/gu, "$1"));
-  for (const block of codeBlocks) output = output.replace(block.token, block.body);
-  return output;
-}
-
-function protectFencedCode(value) {
-  const lines = value.split("\n");
-  const output = [];
-  const codeBlocks = [];
-  let fence;
-  let code = [];
-  for (const line of lines) {
-    if (fence !== undefined) {
-      const containerContent = stripFenceContainer(line, fence, fence.containerIndent);
-      const closing = containerContent.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/u)?.[1];
-      if (closing !== undefined && closing[0] === fence.marker[0] && closing.length >= fence.marker.length) {
-        const token = uniqueCodeToken(value, codeBlocks.length);
-        codeBlocks.push({ token, body: code.join("\n") });
-        output.push(token);
-        fence = undefined;
-        code = [];
-      } else {
-        code.push(stripFenceContainer(line, fence, fence.contentIndent));
-      }
-      continue;
-    }
-    const opening = readFenceOpening(line);
-    if (opening !== undefined) {
-      fence = opening;
-      continue;
-    }
-    output.push(line);
-  }
-  if (fence !== undefined) {
-    const token = uniqueCodeToken(value, codeBlocks.length);
-    codeBlocks.push({ token, body: code.join("\n") });
-    output.push(token);
-  }
-  return { text: output.join("\n"), codeBlocks };
-}
-
-function readFenceOpening(line) {
-  let candidate = line;
-  let quoteDepth = 0;
-  for (;;) {
-    const quote = candidate.match(/^ {0,3}>[ \t]?/u)?.[0];
-    if (quote === undefined) break;
-    quoteDepth += 1;
-    candidate = candidate.slice(quote.length);
-  }
-  const list = candidate.match(/^ {0,3}(?:[*+-]|\d{1,9}[.)])[ \t]+/u)?.[0];
-  const listIndent = list?.length ?? 0;
-  if (list !== undefined) candidate = candidate.slice(list.length);
-  const indentation = candidate.match(/^ {0,3}/u)?.[0].length ?? 0;
-  candidate = candidate.slice(indentation);
-  const match = candidate.match(/^(`{3,}|~{3,})([^\n]*)$/u);
-  if (match === null || (match[1][0] === "`" && match[2].includes("`"))) return undefined;
-  return {
-    marker: match[1],
-    quoteDepth,
-    containerIndent: listIndent,
-    contentIndent: listIndent + indentation,
-  };
-}
-
-function stripFenceContainer(line, fence, indentation) {
-  let candidate = line;
-  for (let depth = 0; depth < fence.quoteDepth; depth += 1) {
-    const quote = candidate.match(/^ {0,3}>[ \t]?/u)?.[0];
-    if (quote === undefined) return line;
-    candidate = candidate.slice(quote.length);
-  }
-  let remainingIndent = indentation;
-  while (remainingIndent > 0 && candidate.startsWith(" ")) {
-    candidate = candidate.slice(1);
-    remainingIndent -= 1;
-  }
-  return candidate;
-}
-
-function uniqueCodeToken(source, index) {
-  let token = `\u0000MONOAGENTFENCE${index}\u0000`;
-  while (source.includes(token)) token = `\u0000${token}\u0000`;
-  return token;
-}
-
-function collapseDocumentText(value) {
-  return String(value || "").replace(/\r/gu, "").replace(/[ \t]+\n/gu, "\n").replace(/\n{3,}/gu, "\n\n").replace(/[ \t]{2,}/gu, " ").trim();
-}
 function collapseWhitespace(value) { return String(value || "").replace(/\s+/gu, " ").trim(); }
 function escapeMarkdownLabel(value) { return collapseWhitespace(value).replace(/[[\]\\]/gu, "\\$&"); }
 function extractionError(code, message, details = {}) { return Object.assign(new Error(message), { code, ...details }); }

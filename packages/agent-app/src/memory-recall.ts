@@ -41,27 +41,40 @@ export type {
 
 export const MEMORY_RECALL_MCP_SERVER_NAME = "mono-agent-memory";
 
+export interface MemoryRecallHit {
+  readonly score: number;
+  readonly record: {
+    readonly id: string;
+    readonly text: string;
+    readonly type?: MemoryType;
+    readonly status?: MemoryStatus;
+    readonly isInsight?: boolean;
+  };
+}
+
+export interface MemoryRecallOutcome {
+  readonly hits: readonly MemoryRecallHit[];
+  readonly retrievalMode: "hybrid" | "lexical_only";
+  readonly degradation?: { readonly code: "embedding_unavailable" };
+}
+
 /** Read-only recall surface the MCP server formats. Both backend stores satisfy it structurally. */
 export interface RecallCapableStore {
   recall(
     query: string,
     options?: { readonly topK?: number; readonly trackAccess?: boolean },
-  ): Promise<readonly {
-    readonly score: number;
-    readonly record: {
-      readonly id: string;
-      readonly text: string;
-      readonly type?: MemoryType;
-      readonly status?: MemoryStatus;
-      readonly isInsight?: boolean;
-    };
-  }[]>;
+  ): Promise<readonly MemoryRecallHit[]>;
+  /** Optional local capability. Array-only backends keep their strict behavior. */
+  recallWithOutcome?(
+    query: string,
+    options?: { readonly topK?: number; readonly trackAccess?: boolean },
+  ): Promise<MemoryRecallOutcome>;
   /** Optional deterministic one-hop expansion, used only by the explicit tool. */
   expandGraph?(
     query: string,
-    directHits: Awaited<ReturnType<RecallCapableStore["recall"]>>,
+    directHits: readonly MemoryRecallHit[],
     options?: { readonly topK?: number },
-  ): Awaited<ReturnType<RecallCapableStore["recall"]>> | Promise<Awaited<ReturnType<RecallCapableStore["recall"]>>>;
+  ): readonly MemoryRecallHit[] | Promise<readonly MemoryRecallHit[]>;
   /** Explicit capability check for stores whose graph method is tier-dependent. */
   supportsGraphExpansion?(): boolean;
   /** Record only the final hits actually served by the tool. */
@@ -184,18 +197,28 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         };
       }
       const topK = clampLimit(args.limit, 8);
-      let hits: Awaited<ReturnType<RecallCapableStore["recall"]>>;
+      let hits: readonly MemoryRecallHit[];
+      let degradation: MemoryRecallOutcome["degradation"];
       try {
         const graphEnabled = store.expandGraph !== undefined && store.supportsGraphExpansion?.() !== false;
-        const direct = await store.recall(args.query, {
-          topK: graphEnabled ? 50 : topK,
-          // The bundled recall process opens the active generation read-only.
-          // Never ask a store to mutate access telemetry on this path.
-          trackAccess: false,
-        });
+        const direct = store.recallWithOutcome === undefined
+          ? {
+              hits: await store.recall(args.query, {
+                topK: graphEnabled ? 50 : topK,
+                trackAccess: false,
+              }),
+              retrievalMode: "hybrid" as const,
+            }
+          : await store.recallWithOutcome(args.query, {
+              topK: graphEnabled ? 50 : topK,
+              // The bundled recall process opens the active generation read-only.
+              // Never ask a store to mutate access telemetry on this path.
+              trackAccess: false,
+            });
+        degradation = direct.degradation;
         hits = !graphEnabled || store.expandGraph === undefined
-          ? direct.slice(0, topK)
-          : await store.expandGraph(args.query, direct, { topK });
+          ? direct.hits.slice(0, topK)
+          : await store.expandGraph(args.query, direct.hits, { topK });
         // Record only the final served set. Read-only BuJo recall stores make
         // this a no-op; shared writable stores retain their access telemetry.
         store.recordAccess?.(hits.map((hit) => hit.record.id));
@@ -206,12 +229,21 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
           structuredContent: { hits: [], degraded: true, reason },
         };
       }
+      const degraded = degradation?.code === "embedding_unavailable";
       if (hits.length === 0) {
         const guidance = "If this request is to pick up, continue, or recover interrupted work and RunHistory is available, call RunHistory with {} first. Do not keep rephrasing MemoryRecall queries for exact prior-run evidence.";
+        const text = degraded
+          ? `Memory recall is degraded: semantic retrieval is unavailable and lexical-only search returned no matches. ${guidance}`
+          : `No memories matched "${args.query}". ${guidance}`;
         return {
-          content: [{ type: "text", text: `No memories matched "${args.query}". ${guidance}` }],
+          content: [{ type: "text", text }],
           structuredContent: {
             hits: [],
+            ...(degraded ? {
+              degraded: true,
+              retrievalMode: "lexical_only" as const,
+              degradation: { code: "embedding_unavailable" as const },
+            } : {}),
             navigation: {
               guidance,
               relatedTools: [{
@@ -223,14 +255,51 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
           },
         };
       }
-      const text = hits.map((hit) => `${hit.score.toFixed(3)}  ${hit.record.text}`).join("\n");
+      const hitText = hits
+        .map((hit) => `${hit.score.toFixed(3)}  ${lifecyclePrefix(hit)}${hit.record.text}`)
+        .join("\n");
+      const text = degraded
+        ? `Memory recall is degraded: showing lexical-only matches because semantic retrieval is unavailable.\n${hitText}`
+        : hitText;
       return {
         content: [{ type: "text", text }],
-        structuredContent: { hits: hits.map((hit) => ({ id: hit.record.id, score: hit.score, text: hit.record.text })) },
+        structuredContent: {
+          hits: hits.map((hit) => ({
+            id: hit.record.id,
+            score: hit.score,
+            text: hit.record.text,
+            // Optional on the hit contract: a remote backend that supplies
+            // neither keeps exactly its previous result shape.
+            ...(hit.record.type === undefined ? {} : { type: hit.record.type }),
+            ...(hit.record.status === undefined ? {} : { status: hit.record.status }),
+          })),
+          ...(degraded ? {
+            degraded: true,
+            retrievalMode: "lexical_only" as const,
+            degradation: { code: "embedding_unavailable" as const },
+          } : {}),
+        },
       };
     },
   );
   return server;
+}
+
+/**
+ * Concise lifecycle marker for one rendered hit.
+ *
+ * Recall surfaces `done`, `scheduled` and `migrated` records alongside open
+ * ones, so text alone lets a completed or deferred item read as a current
+ * fact — the same misrepresentation the automatic recall block avoids by
+ * rendering a status-bearing bullet marker (`memory/src/bujo/recall.ts`).
+ *
+ * Only a non-open state is labelled. An ordinary open record renders exactly as
+ * before, so the common case costs no extra tokens, and a backend that supplies
+ * no status keeps its previous output byte-for-byte.
+ */
+function lifecyclePrefix(hit: MemoryRecallHit): string {
+  const status = hit.record.status;
+  return status === undefined || status === "open" ? "" : `[${status}] `;
 }
 
 function clampLimit(limit: number | undefined, fallback: number): number {

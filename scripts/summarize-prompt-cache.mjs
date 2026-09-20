@@ -29,6 +29,93 @@ const fingerprintDifference = (before, after) => {
   return null; // Equal observed prefix, truncation, and appended tails prove no miss.
 };
 
+const textMetadata = (value) => typeof value === "string" && value.length > 0 ? value : null;
+const timestamp = (value) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
+const gapBucket = (gap) => gap === null ? "unknown" : gap < 0 ? "overlap" : gap < 300_000 ? "<5m" : gap < 3_600_000 ? "5–60m" : ">=60m";
+const emptyRequest = () => ({ requestId: null, costUsd: null, input: null, cacheRead: null, cacheWrite: null, output: null });
+const sumKnown = (rows, field) => {
+  const values = rows.map((row) => row[field]).filter((value) => value !== null && value !== undefined);
+  return { value: values.length ? values.reduce((sum, value) => sum + value, 0) : null, availableCount: values.length };
+};
+const messageEvidence = (request) => ({
+  inputInterpretation: request?.inputInterpretation ?? "unavailable",
+  logicalInputInterpretation: request?.logicalInputInterpretation ?? "unavailable",
+  inputInterpretationSource: request?.inputInterpretationSource ?? "unavailable",
+  messageCount: count(request?.messageCount),
+  observedFingerprintCount: Array.isArray(request?.messageFingerprints) ? request.messageFingerprints.length : null,
+  truncated: typeof request?.messageFingerprintsTruncated === "boolean" ? request.messageFingerprintsTruncated : null,
+});
+
+function consecutiveFirstRequests(runs, since) {
+  const previousRuns = new Map();
+  const pairs = [];
+  const excluded = {};
+  const groups = new Map();
+  for (const run of runs) {
+    const previousRun = previousRuns.get(run.conversationId);
+    previousRuns.set(run.conversationId, run);
+    if (since !== undefined && Date.parse(run.startedAt) < Date.parse(since)) continue;
+    const first = run.analysisRequests[0];
+    const last = previousRun?.analysisRequests.at(-1);
+    const end = timestamp(previousRun?.endedAt);
+    const idleGapMs = end === null ? null : Date.parse(run.startedAt) - end;
+    const reasons = [];
+    if (!previousRun) reasons.push("missing_baseline");
+    if (!first) reasons.push("missing_first_request");
+    if (previousRun && !last) reasons.push("missing_previous_request");
+    if (previousRun && first && last) {
+      if (![first.model, first.api, last.model, last.api].every((value) => value && value !== "unknown")) reasons.push("missing_model_api");
+      else if (first.model !== last.model || first.api !== last.api) reasons.push("model_api_changed");
+      if (!run.providerSessionId || !previousRun.providerSessionId) reasons.push("missing_provider_session");
+      else if (run.providerSessionId !== previousRun.providerSessionId) reasons.push("provider_session_changed");
+    }
+    if (idleGapMs !== null && idleGapMs < 0) reasons.push("overlap");
+    for (const reason of reasons) excluded[reason] = (excluded[reason] ?? 0) + 1;
+    const toolsChanged = first?.supported === true && last?.supported === true ? changed(last.toolsFingerprint, first.toolsFingerprint) : null;
+    const observed = Array.isArray(first?.observedCacheTtls) && first.observedCacheTtls.length ? first.observedCacheTtls.join("+") : "unknown";
+    const retention = `requested=${first?.requestedCacheRetention ?? "unknown"};observed=${observed}`;
+    const tokens = Object.fromEntries(tokenFields.map((key) => [key, count(first?.[key])]));
+    const pair = {
+      conversationId: run.conversationId, runId: run.runId, previousRunId: previousRun?.runId ?? null,
+      firstRequestId: first?.requestId ?? null, previousLastRequestId: last?.requestId ?? null,
+      model: first?.model ?? null, api: first?.api ?? null,
+      comparable: reasons.length === 0, exclusionReasons: reasons,
+      idleGapMs, idleGap: gapBucket(idleGapMs), retention,
+      tools: toolsChanged === null ? "unknown" : toolsChanged ? "changed" : "stable",
+      systemChanged: changed(last?.systemFingerprint, first?.systemFingerprint),
+      firstChangedMessageIndex: fingerprintDifference(last, first),
+      messageEvidence: { previous: messageEvidence(last), current: messageEvidence(first) },
+      tokens, uncachedInput: tokens.input === null || tokens.cacheWrite === null ? null : tokens.input + tokens.cacheWrite,
+      cacheHitRatio: reasons.length ? null : ratio(tokens),
+      firstRequestCostUsd: count(first?.costUsd), runCostUsd: run.runCostUsd,
+    };
+    pairs.push(pair);
+    // Resets, overlaps and absent baselines are evidence gaps, not hits/misses.
+    if (!pair.comparable) continue;
+    const key = JSON.stringify([pair.model, pair.api, pair.tools, pair.idleGap, retention]);
+    const group = groups.get(key) ?? [];
+    group.push(pair); groups.set(key, group);
+  }
+  const cohorts = [...groups.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, rows]) => {
+    const [first] = rows;
+    const tokens = Object.fromEntries(tokenFields.map((key) => [key, sumKnown(rows.map((row) => row.tokens), key).value]));
+    const tokenCoverage = Object.fromEntries(tokenFields.map((key) => [key, sumKnown(rows.map((row) => row.tokens), key).availableCount]));
+    const complete = rows.filter((row) => [row.tokens.input, row.tokens.cacheRead, row.tokens.cacheWrite].every(Number.isFinite));
+    const hitTokens = totalUsage(complete.map((row) => row.tokens));
+    const cost = sumKnown(rows, "firstRequestCostUsd"); const runCost = sumKnown(rows, "runCostUsd");
+    return {
+      model: first.model, api: first.api, tools: first.tools, idleGap: first.idleGap, retention: first.retention,
+      pairCount: rows.length, tokens, tokenCoverage,
+      uncachedInput: sumKnown(rows, "uncachedInput").value,
+      uncachedInputAvailableCount: sumKnown(rows, "uncachedInput").availableCount,
+      cacheHitRatio: complete.length ? ratio(hitTokens) : null, cacheHitRatioAvailableCount: complete.length,
+      firstRequestCostUsd: cost.value, firstRequestCostAvailableCount: cost.availableCount,
+      runCostUsd: runCost.value, runCostAvailableCount: runCost.availableCount,
+    };
+  });
+  return { pairs, excluded, coverage: { runCount: pairs.length, comparablePairCount: pairs.filter((pair) => pair.comparable).length, excludedRunCount: pairs.filter((pair) => !pair.comparable).length }, cohorts };
+}
+
 export async function summarizePromptCache({ artifactsDir = ".mono-agent/artifacts", conversation, since } = {}) {
   if (since !== undefined && (typeof since !== "string" || !/^\d{4}-\d{2}-\d{2}T/u.test(since) || !Number.isFinite(Date.parse(since)))) {
     throw new Error("--since must be an ISO timestamp.");
@@ -37,6 +124,7 @@ export async function summarizePromptCache({ artifactsDir = ".mono-agent/artifac
   const names = (await readdir(directory)).filter((name) => name.endsWith(".events.jsonl")).sort();
   const runs = [];
   const warnings = [];
+  const analysisRuns = [];
   for (const name of names) {
     let summary;
     try {
@@ -53,13 +141,19 @@ export async function summarizePromptCache({ artifactsDir = ".mono-agent/artifac
     const requests = [];
     const operations = new Map();
     let current;
+    let runCostUsd = null;
+    const analysisRequests = [];
+    const byRequestId = new Map();
+    const usageSnapshots = new Map();
     const lines = (await readFile(resolve(directory, name), "utf8")).split("\n");
     for (let index = 0; index < lines.length; index += 1) {
       if (!lines[index].trim()) continue;
       let event;
       try { event = JSON.parse(lines[index]); }
       catch { throw new Error(`Invalid JSON in ${name}:${index + 1}; retry after the artifact write completes.`); }
-      if (event?.type === "context_compaction") {
+      if (event?.type === "cost_accumulated") {
+        runCostUsd = count(event.cumulativeUsd);
+      } else if (event?.type === "context_compaction") {
         if (typeof event.operationId !== "string") continue;
         const accounting = event.accounting ?? {};
         operations.set(event.operationId, {
@@ -81,6 +175,11 @@ export async function summarizePromptCache({ artifactsDir = ".mono-agent/artifac
         current = {
           requestOrdinal: event.requestOrdinal,
           requestId: event.requestId ?? null, phase: "assistant", costUsd: null,
+          model: textMetadata(event.model), api: textMetadata(event.api),
+          messageCount: count(event.messageCount),
+          messageFingerprintsTruncated: typeof event.messageFingerprintsTruncated === "boolean" ? event.messageFingerprintsTruncated : null,
+          requestedCacheRetention: ["short", "long", "unset"].includes(event.requestedCacheRetention) ? event.requestedCacheRetention : null,
+          observedCacheTtls: Array.isArray(event.observedCacheTtls) ? [...new Set(event.observedCacheTtls.filter((ttl) => ["5m", "1h"].includes(ttl)))].sort() : null,
           messageFingerprints: event.messageFingerprints ?? null,
           supported: event.supported === true,
           toolsFingerprint: event.toolDefinitionsFingerprint ?? null,
@@ -94,15 +193,28 @@ export async function summarizePromptCache({ artifactsDir = ".mono-agent/artifac
         };
         current.firstChangedMessageIndex = fingerprintDifference(previous, current);
         requests.push(current);
-      } else if (event?.type === "context_usage" && current && event.phase !== "summary") {
+        const existing = current.requestId && byRequestId.get(current.requestId);
+        if (existing) { Object.assign(existing, current); current = existing; requests[requests.length - 1] = existing; }
+        else { analysisRequests.push(current); if (current.requestId) byRequestId.set(current.requestId, current); }
+      } else if (event?.type === "context_usage" && event.phase !== "summary") {
         // Like the benchmark, keep the latest usage snapshot for this request;
         // snapshots are not additive and must not inflate token totals.
         const target = event.requestId ? requests.find((request) => request.requestId === event.requestId) : current;
-        if (!target) continue;
         const tokens = event.tokens ?? {};
-        Object.assign(target, { costUsd: count("providerCostUsd" in event ? event.providerCostUsd : event.costUsd), input: count(tokens.input), cacheRead: count(tokens.cacheRead), cacheWrite: count(tokens.cacheCreation), output: count(tokens.output) });
+        const snapshot = { costUsd: count("providerCostUsd" in event ? event.providerCostUsd : event.costUsd), input: count(tokens.input), cacheRead: count(tokens.cacheRead), cacheWrite: count(tokens.cacheCreation), output: count(tokens.output) };
+        if (target) Object.assign(target, snapshot);
+        if (event.requestId) {
+          usageSnapshots.set(event.requestId, snapshot);
+          if (!byRequestId.has(event.requestId)) {
+            const unknown = { ...emptyRequest(), requestId: event.requestId };
+            byRequestId.set(event.requestId, unknown); analysisRequests.push(unknown);
+          }
+        }
       }
     }
+    for (const [id, snapshot] of usageSnapshots) Object.assign(byRequestId.get(id), snapshot);
+    analysisRuns.push({ runId: summary.runId, conversationId: summary.conversationId, startedAt: summary.startedAt,
+      endedAt: summary.endedAt ?? null, providerSessionId: textMetadata(summary.providerSessionId), runCostUsd, analysisRequests });
     runs.push({ runId: summary.runId, conversationId: summary.conversationId, startedAt: summary.startedAt, requestCount: requests.length, requests, compactions: [...operations.values()], totals: totalUsage(requests) });
   }
   runs.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt) || a.runId.localeCompare(b.runId));
@@ -122,7 +234,8 @@ export async function summarizePromptCache({ artifactsDir = ".mono-agent/artifac
   const requests = selected.flatMap((run) => run.requests);
   const summaryRequests = selected.flatMap((run) => run.compactions.flatMap((operation) => operation.accountingAvailable
     ? operation.requests : [{ input: null, output: null, cacheRead: null, cacheWrite: null, costUsd: null }]));
-  return { summaryTotals: totalUsage(summaryRequests), assistantCostUsd: totalCost(requests), summaryCostUsd: totalCost(summaryRequests), runs: selected, requestCount: requests.length, totals: totalUsage(requests), warnings };
+  analysisRuns.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt) || (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0));
+  return { consecutiveFirstRequests: consecutiveFirstRequests(analysisRuns, since), summaryTotals: totalUsage(summaryRequests), assistantCostUsd: totalCost(requests), summaryCostUsd: totalCost(summaryRequests), runs: selected, requestCount: requests.length, totals: totalUsage(requests), warnings };
 }
 
 export function formatPromptCache(report) {
@@ -141,6 +254,11 @@ export function formatPromptCache(report) {
   lines.push(`Cost USD: assistant=${value(report.assistantCostUsd)}; summary=${value(report.summaryCostUsd)}`);
   lines.push(`TOTAL requests=${report.requestCount}: ${usage(report.totals)}; weighted hit=${hit(report.totals.cacheHitRatio)}`,
     "? = unavailable or no comparison baseline. Fingerprint changes indicate payload changes, not proof of a cache miss.");
+  if (report.consecutiveFirstRequests) {
+    const analysis = report.consecutiveFirstRequests;
+    lines.push("", `Consecutive first requests: comparable=${analysis.coverage.comparablePairCount}; excluded=${analysis.coverage.excludedRunCount}; exclusions=${JSON.stringify(analysis.excluded)}`);
+    for (const cohort of analysis.cohorts) lines.push(`${cohort.model} (${cohort.api}) | tools=${cohort.tools} | gap=${cohort.idleGap} | ${cohort.retention} | pairs=${cohort.pairCount} | weighted hit=${hit(cohort.cacheHitRatio)} (coverage ${cohort.cacheHitRatioAvailableCount}/${cohort.pairCount}) | first-request USD=${value(cohort.firstRequestCostUsd)} (${cohort.firstRequestCostAvailableCount}/${cohort.pairCount}) | run USD=${value(cohort.runCostUsd)} (${cohort.runCostAvailableCount}/${cohort.pairCount})`);
+  }
   for (const warning of report.warnings) lines.push(`Warning: ${warning}`);
   return lines.join("\n");
 }

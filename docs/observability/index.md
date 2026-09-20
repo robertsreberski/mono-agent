@@ -100,7 +100,7 @@ mono-agent web start
 mono-agent web               # read-only status + exact URLs
 ```
 
-The default bind is `0.0.0.0:5050`, making LAN and tailnet access the normal path; `--loopback` narrows it to this computer. There is no application login, so network reachability is authority to operate the agents. Keep the service on a trusted LAN/tailnet and do not expose it publicly. See the [web console guide](/observability/web-console/) for lifecycle, Tailscale HTTPS, security, conversations, archive/reset behavior, and attachments.
+A fresh install binds `127.0.0.1:5050`; `--host <addr>` explicitly widens the listener to the LAN or tailnet, and the foreground `run` command never manages a proxy route. That is not a local-only guarantee by itself, and widening is never implicit: managed macOS `start`/`restart` re-verify an existing mono-agent-owned Tailscale Serve HTTPS route and publish a new one only with `--share-tailnet`, while other proxies, tunnels, and routes are not inspected. There is no application login, so network reachability is authority to operate the agents. Keep the service on a trusted LAN/tailnet and do not expose it publicly. See the [web console guide](/observability/web-console/) for lifecycle, Tailscale HTTPS, security, conversations, archive/reset behavior, and attachments.
 
 ## Related
 

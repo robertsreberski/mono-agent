@@ -4,10 +4,13 @@ import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "re
 import { api } from "../api";
 import { currentDataMode } from "../data-mode";
 import { useDocumentVisible } from "../document-visibility";
+import { useToolCallRepair } from "./tool-call-repair";
 import type { MessagePart, ProcessJobProjection, ProcessJobState } from "../types";
 import type { ProcessJobActivityEvent } from "../process-job-presentation";
-import { ActivityRow, type ActivityStatus } from "./ActivityRow";
+import { formatUsd } from "../usage";
+import { ActivityPayload, ActivityRow, truncationProps, type ActivityStatus } from "./ActivityRow";
 import { ActivityElapsed, type ActivityTiming } from "./assistant-ui/ActivityElapsed";
+import { ProcessJobMetaLine, ProcessJobSubagentProgress } from "./ProcessJobSubagentProgress";
 import { formatToolDuration } from "./duration";
 
 export const TERMINAL_PROCESS_JOB_STATES: ReadonlySet<ProcessJobState> = new Set<ProcessJobState>([
@@ -61,6 +64,7 @@ const immutableProcessJobIdentityMatches = (
 ): boolean => current.schema === next.schema
   && current.jobId === next.jobId
   && current.tool === next.tool
+  && (current.kind !== "internal" || next.kind !== "internal" || current.instanceId === next.instanceId)
   && current.summary === next.summary
   && current.origin.conversationId === next.origin.conversationId
   && current.origin.channel === next.origin.channel
@@ -120,6 +124,9 @@ export const mergeProcessJobProjection = (
 
   const merged: ProcessJobProjection = {
     ...next,
+    ...(current.kind === "internal" && next.kind === "internal" && current.subagentProgress
+      && (next.subagentProgress === undefined || current.subagentProgress.revision > next.subagentProgress.revision)
+      ? { subagentProgress: current.subagentProgress } : {}),
     timestamps: {
       ...next.timestamps,
       startedAt: preserveFact(current.timestamps.startedAt, next.timestamps.startedAt),
@@ -192,8 +199,19 @@ const activityEvent = (value: unknown): ProcessJobActivityEvent | undefined => {
   const allowed = [
     "schema", "id", "toolCallId", "jobId", "tool", "summary", "phase", "state",
     "occurredAt", "durationMs", "exitCode", "signal",
+    "launchArgs", "launchArgsTruncated", "launchArgsBytes",
   ];
   const required = allowed.slice(0, 8);
+  // Launch arguments are tool-defined content, so the envelope stays strict
+  // while the args value itself only has to survive a JSON round trip.
+  const launchArgsUnserializable = (): boolean => {
+    if (!Object.prototype.hasOwnProperty.call(record, "launchArgs")) return false;
+    try {
+      return JSON.stringify(record.launchArgs) === undefined;
+    } catch {
+      return true;
+    }
+  };
   try {
     if (!required.every((key) => Object.prototype.hasOwnProperty.call(record, key))
       || Object.keys(record).some((key) => !allowed.includes(key))
@@ -215,7 +233,17 @@ const activityEvent = (value: unknown): ProcessJobActivityEvent | undefined => {
       || (record.durationMs !== undefined
         && (typeof record.durationMs !== "number" || !Number.isFinite(record.durationMs) || record.durationMs < 0))
       || (record.exitCode !== undefined && !Number.isSafeInteger(record.exitCode))
-      || (record.signal !== undefined && typeof record.signal !== "string")) return undefined;
+      || (record.signal !== undefined && typeof record.signal !== "string")
+      || launchArgsUnserializable()
+      // Truncation flags without the preview they describe would offer a repair
+      // for an Input the row never shows.
+      || (Object.prototype.hasOwnProperty.call(record, "launchArgsTruncated")
+        && (record.launchArgsTruncated !== true
+          || !Object.prototype.hasOwnProperty.call(record, "launchArgs")))
+      || (Object.prototype.hasOwnProperty.call(record, "launchArgsBytes")
+        && (!Number.isSafeInteger(record.launchArgsBytes)
+          || Number(record.launchArgsBytes) < 0
+          || !Object.prototype.hasOwnProperty.call(record, "launchArgs")))) return undefined;
     return record as unknown as ProcessJobActivityEvent;
   } catch {
     return undefined;
@@ -226,9 +254,14 @@ const eventTime = (value: string | undefined, key?: string): ReactNode => value 
   ? undefined
   : <time key={key} dateTime={value}>{new Date(value).toLocaleString()}</time>;
 
-/** A persisted-card-derived lifecycle fact; deliberately no hooks, API calls, or live clock. */
+/**
+ * A persisted-card-derived lifecycle fact. It never polls and owns no clock;
+ * the one context it reads is the repair control for a folded launch preview,
+ * the same control the suppressed tool-call row would have offered.
+ */
 export function ProcessJobActivityEventPart({ data }: DataMessagePartProps) {
   const event = activityEvent(data);
+  const repairToolCall = useToolCallRepair();
   if (event === undefined) return null;
   const terminal = event.phase === "terminal";
   const stateLabel = processJobStateLabel(event.state);
@@ -240,9 +273,15 @@ export function ProcessJobActivityEventPart({ data }: DataMessagePartProps) {
         ...(event.signal === undefined ? [] : [event.signal]),
       ])
     : eventTime(event.occurredAt);
+  // The folded launch call's Input, with the same preview notice and repair the
+  // tool row carried. The model-authored description already names the row, so
+  // only the arguments move here. Absent on retained events that predate the
+  // fold, which keep rendering as job facts alone.
+  const hasLaunchArgs = event.launchArgs !== undefined;
   return (
     <ActivityRow
       variant="job"
+      jobIcon={event.tool === "Agent" || event.tool === "AgentSend" ? "agent" : "terminal"}
       status={terminal && TERMINAL_PROCESS_JOB_STATES.has(event.state)
         && event.state !== "succeeded" ? "failed" : "complete"}
       label={`${event.tool} job ${terminal ? stateLabel : "started"}`}
@@ -250,6 +289,20 @@ export function ProcessJobActivityEventPart({ data }: DataMessagePartProps) {
       duration={meta}
       ariaLabel={`${event.tool} job ${terminal ? stateLabel : "started"}`}
     >
+      {hasLaunchArgs && (
+        <ActivityPayload
+          args={event.launchArgs}
+          indented
+          {...truncationProps(
+            {
+              ...(event.launchArgsTruncated === true ? { argsTruncated: true as const } : {}),
+              ...(event.launchArgsBytes === undefined ? {} : { argsBytes: event.launchArgsBytes }),
+            },
+            event.toolCallId,
+            repairToolCall,
+          )}
+        />
+      )}
       <div className="activity-payload is-indented process-job-event">
         <dl className="process-job-facts">
           <div><dt>Job</dt><dd>{event.jobId}</dd></div>
@@ -297,20 +350,22 @@ const joinMeta = (items: readonly ReactNode[]): ReactNode =>
 
 /**
  * What the time slot says: the state word (unless the tag already says it), the
- * elapsed or final duration, how the process ended, and a failed wake — the one
- * wake outcome an operator has to act on.
+ * elapsed or final duration, how the process ended, unresolved terminal child
+ * ownership, and wake outcomes an operator has to act on.
  */
 const processJobMeta = (job: ProcessJobProjection, terminal: boolean): ReactNode => {
   const timing = processJobTiming(job);
   const exit = processJobExitLabel(job);
   const items: ReactNode[] = [];
-  if (job.kind === "internal" && job.childStillBusy) items.push(<span key="child-busy" className="activity-row-alert">child still busy · awaiting actual settlement</span>);
   if (processJobStatus(job.state) !== "failed") items.push(processJobStateLabel(job.state));
   // A settled job with no finish stamp has nothing honest to show; leave the slot out.
   if (timing !== undefined && (!terminal || timing.finishedAt !== undefined)) {
     items.push(<ActivityElapsed key="elapsed" timing={timing} live={!terminal} />);
   }
   if (exit !== undefined) items.push(exit);
+  if (terminal && job.kind === "internal" && job.childStillBusy) {
+    items.push(<span key="child-busy" className="activity-row-alert">child still busy · awaiting actual settlement</span>);
+  }
   // Its own element: a phone-width row lets the meta wrap, and this is the one
   // token that must neither split across lines nor be the part that clips.
   if (terminal && job.wake.state === "failed") {
@@ -354,6 +409,7 @@ export function ProcessJobCard({
   const followOutput = useRef(true);
   const threadId = initial === undefined ? undefined : processJobThreadId(initial);
   const jobId = initial?.jobId;
+  const progress = live?.kind === "internal" ? live.subagentProgress : undefined;
   const terminal = live === undefined || TERMINAL_PROCESS_JOB_STATES.has(live.state);
   /**
    * When the store last handed this card a projection that SAID something new.
@@ -393,10 +449,10 @@ export function ProcessJobCard({
   }, [live, onProjectionChange]);
 
   useEffect(() => {
-    if (live?.state !== "running" || live.output.preview.length === 0 || autoOpened.current) return;
+    if (live?.state !== "running" || (live.output.preview.length === 0 && !progress?.toolCalls) || autoOpened.current) return;
     autoOpened.current = true;
     if (!manuallyCollapsed.current) setOpen(true);
-  }, [live?.output.preview, live?.state]);
+  }, [live?.output.preview, live?.state, progress?.toolCalls]);
 
   useLayoutEffect(() => {
     const output = outputRef.current;
@@ -476,12 +532,25 @@ export function ProcessJobCard({
     : undefined;
   const status = processJobStatus(live.state);
   const stateLabel = processJobStateLabel(live.state);
+  const supplements: ReactNode[] = [];
+  if (terminal && progress !== undefined && typeof progress.costUsd === "number"
+    && Number.isFinite(progress.costUsd) && progress.costUsd > 0) {
+    supplements.push(<span key="cost">{formatUsd(progress.costUsd)}</span>);
+  }
+  if (terminal && (live.wake.attempts > 1 || ["failed", "unknown", "suppressed"].includes(live.wake.state))) {
+    supplements.push(<span key="wake">wake {wakeLabel(live.wake)}</span>);
+  }
+  const exit = processJobExitLabel(live);
+  if (terminal && exit !== undefined && (live.exitCode !== 0 || live.signal !== null)) {
+    supplements.push(<span key="exit">{exit}</span>);
+  }
   // The card shows the job's output, not where the host spooled it: the artifact
   // paths are host-local files an operator in the console cannot open, and they
   // pushed the one section worth reading off a phone screen.
   return (
     <ActivityRow
       variant="job"
+      jobIcon={live.kind === "internal" ? "agent" : "terminal"}
       status={status}
       label={`${live.tool} job`}
       summary={live.summary}
@@ -495,13 +564,12 @@ export function ProcessJobCard({
       ariaLabel={`${live.tool} background job ${stateLabel}`}
     >
       <div className="activity-payload is-indented">
-        <dl className="process-job-facts">
-          <div><dt>State</dt><dd>{stateLabel}</dd></div>
-          {live.exitCode !== null && <div><dt>Exit</dt><dd>{live.exitCode}</dd></div>}
-          {live.signal !== null && <div><dt>Signal</dt><dd>{live.signal}</dd></div>}
-          <div><dt>Wake</dt><dd>{wakeLabel(live.wake)}</dd></div>
-        </dl>
-        {live.output.preview.length > 0 && (
+        <ProcessJobMetaLine
+          progress={live.kind === "internal" ? progress : undefined}
+          status={status}
+          supplements={supplements}
+        />
+        {live.kind === "internal" ? <ProcessJobSubagentProgress key={live.jobId} progress={progress} open={open} /> : live.output.preview.length > 0 ? (
           <>
             <span>Output{live.output.truncated ? " (truncated)" : ""}</span>
             <pre
@@ -513,6 +581,14 @@ export function ProcessJobCard({
               }}
             >{live.output.preview}</pre>
           </>
+        ) : (
+          // An expanded card that shows nothing at all reads as a broken tail.
+          // A command whose output is buffered, redirected or piped through
+          // something like `tail` genuinely emits nothing until it ends, so the
+          // card says which of the two it is instead of leaving an empty box.
+          <p className="process-job-empty-output">
+            {terminal ? "No output." : "No output yet."}
+          </p>
         )}
         {live.lastError !== null && (
           <p className="activity-error"><strong>{live.lastError.code}</strong> {live.lastError.message}</p>

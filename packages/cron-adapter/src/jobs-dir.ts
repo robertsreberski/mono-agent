@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { normalizeOptionalString, readBoolean } from "@mono-agent/agent-contracts";
 
+import { parseCronPreflightArgvJson, parseCronPreflightTimeoutMs } from "./preflight.js";
 import { CronAdapterError } from "./scheduler.js";
 import type { CronJobConfig } from "./config.js";
 
@@ -98,6 +99,20 @@ export function parseCronJobMarkdown(fileName: string, content: string): CronJob
   );
   const model = normalizeOptionalString(meta.model);
   const effort = normalizeOptionalString(meta.effort);
+  // Frontmatter is flat `key: value` only, so a preflight is authored as a
+  // single-line JSON array; no shell string is ever split into arguments.
+  const preflight = meta.preflight === undefined
+    ? undefined
+    : parseCronPreflightArgvJson(
+        normalizeOptionalString(meta.preflight) ?? "",
+        `${fileName} frontmatter \`preflight\``,
+        { file: fileName },
+      );
+  const preflightTimeoutMs = parseCronPreflightTimeoutMs(
+    meta.preflightTimeoutMs,
+    `${fileName} frontmatter \`preflightTimeoutMs\``,
+    { file: fileName },
+  );
 
   return {
     id,
@@ -112,6 +127,8 @@ export function parseCronJobMarkdown(fileName: string, content: string): CronJob
     ...(notifyFailureCooldownHours === undefined ? {} : { notifyFailureCooldownHours }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
+    ...(preflight === undefined ? {} : { preflight }),
+    ...(preflightTimeoutMs === undefined ? {} : { preflightTimeoutMs }),
   };
 }
 

@@ -227,6 +227,15 @@ The agent performs targeted durable-memory search through the read-only `MemoryR
 
 `MemoryRecall` runs **no chat LLM** — recall is embeddings + full-text search only. Durable writes stay in-app on the agent-host LLM via [per-turn capture](#capture--per-turn-intelligent-capture-bujo); recall just reads.
 
+Recall returns live records, which includes completed, scheduled, and migrated
+items — not only open ones. Terminal `dropped`/`invalidated` records stay
+excluded. So that a finished or deferred item cannot read as a current fact, a
+result whose status is not `open` is prefixed with that status, for example
+`0.800  [done] Ship the 0.9 release.`; an ordinary open record is rendered
+exactly as before. Structured results carry `type` and `status` alongside `id`,
+`score`, and `text` whenever the backend supplies them — a remote backend that
+reports neither keeps its previous result shape unchanged.
+
 Questions about the active chat are intentionally not durable-memory queries. For
 unqualified prompts such as `What did you send in the last message?`, `What was your
 previous reply?`, or `What happened in this conversation?`, automatic recall injects
@@ -282,7 +291,25 @@ Recall fuses two retrievers and re-ranks the result:
 - **BM25 keyword (FTS)** over the markdown entries.
 - **Vector similarity** over the configured embeddings.
 - Results are combined with **Reciprocal Rank Fusion (RRF)** and evidence strength; salience/insight are small tie-breakers. `lastAccessedAt` and access counts are telemetry only and never affect ranking.
-- Automatic recall treats raw embedding similarity as ranking evidence, not a calibrated probability: it first considers the `0.65` absolute / `77%` top-relative score band, then applies a deterministic direct-fact gate to a bounded candidate window. The gate admits only canonical, unambiguous shapes: an explicitly named possessive property (`Morgan's phone number is ...`), a direct choice (`Morgan selected ... as the deployment color`), a direct event date/time, or a direct work/live location. Coordination, reported or ditransitive speech, negation/unknown values, actor/relationship questions, subordinate clauses, and multi-hop evidence abstain. Those records remain available through the default-on `MemoryRecall` tool, where the model can inspect separate results and provenance instead of receiving a fabricated binding. The gate adds no embedding or chat-model call, works across provider score scales, injects nothing for unsupported questions, and remains capped at five hits / 8 KB. Deliberate tool calls may inspect more results (up to the requested limit).
+- Automatic recall treats raw embedding similarity as ranking evidence, not a calibrated probability: it first considers the `0.65` absolute / `77%` top-relative score band, then applies a deterministic direct-fact gate to a bounded candidate window. The gate admits only canonical, unambiguous shapes: an explicitly named possessive property (`Morgan's phone number is ...`), a direct choice (`Morgan selected ... as the deployment color`), a scope-qualified choice (`What color did Mira select for the Velin launch?` answered by `Mira selected cobalt as the color for the Velin launch.`), a direct event date/time, or a direct work/live location. A scope is not a property: a record that only says `Mira selected cobalt for the Velin launch` never states that cobalt is the *color* and still abstains. Scope identity is compared conservatively, so `Project A`/`Project B`, `launch 1`/`launch 2`, `Bora Bora`/`Bora` and `A-team`/`-team` stay distinct. Only case, whitespace, Unicode compatibility forms and a single *standalone* leading article are normalized; an article merges only when followed by whitespace or by nothing, so an identifying prefix such as `A-team` survives. Compatibility normalization (NFKC) is the same folding the query already receives before the gate and the backend cache, so it also treats `release²` and `release2` as one scope. When the bounded candidate window holds contradictory values for the same subject, property and scope, automatic recall abstains entirely rather than injecting both or letting retrieval score pick a winner. Three finite first-party forms may preserve an explicit report around an otherwise supported property, choice, or work/live location, such as `Avery reports that their service port is 8443` or `Avery reports working in Amsterdam`. The textual reporter must equal the query subject exactly apart from case; the broader canonical-name stemming used by legacy direct facts is not used at this attributed boundary. NFKC is applied only as a safety check for compatibility characters that conceal quotation, separators, or punctuation, never to sanitize such text into an admissible report, and the original qualified sentence is injected unchanged. This is query-to-evidence matching: it does not authenticate that Avery is the current user, establish identity from a same-name match, or verify the reported proposition. Conflicting canonical/attributed or attributed/attributed values abstain before score slicing. A matching same-property correction blocks automatic selection even when its leading value equals a canonical record; the selector does not infer either the old or replacement value. Coordination, all other reported or ditransitive speech, assistant/third-party/quoted claims, uncertainty, correction, negation/unknown values, causal or conditional clauses, actor/relationship questions, subordinate clauses, and multi-hop evidence abstain. Those records remain available through the default-on `MemoryRecall` tool, where the model can inspect separate results and provenance instead of receiving a fabricated binding. The gate adds no embedding or chat-model call, works across provider score scales, injects nothing for unsupported questions, and remains capped at five hits / 8 KB. Deliberate tool calls may inspect more results (up to the requested limit).
+
+Scheduled temporal questions are one bounded copular-time form. For example,
+`When is the Project Atlas production migration scheduled?` can use a direct
+record such as `Project Atlas production migration is scheduled for 20 November
+2026 at 08:30 Europe/Paris.` The event identity remains exact apart from case,
+whitespace, Unicode compatibility forms, and a standalone leading article;
+project words, one-character tokens, digits, punctuation, order, and repetition
+remain significant. Clock colons are accepted only as valid ASCII `HH:MM` tokens
+in a supported temporal answer, not in generic properties, choices, or
+locations. Quoted, uncertain, attributed, or control/format-bearing schedule
+payloads abstain. NFKC safety discovery applies the same forbidden-language
+policy to compatibility-folded text, but never converts an unsupported clock or
+separator into accepted syntax. Automatic recall abstains when the retrieved
+cohort contains two scheduled payloads that
+are not textually identical after case, whitespace, and Unicode compatibility
+normalization. It deliberately does not equate alternate date formats or
+date-only and date-time values; use `MemoryRecall` to inspect those raw
+candidates instead.
 
 You can exercise the same hybrid scoring config-aware from the agent folder with `mono-agent memory search`:
 

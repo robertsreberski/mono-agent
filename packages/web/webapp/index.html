@@ -16,22 +16,35 @@
       distinguishable on the same home screen. A constant here would name them
       both "mono-agent". iOS 16.4+ takes the name from the manifest.
 
-      The status bar stays `default` rather than `black-translucent` on purpose:
-      content remains below the system-owned strip while the light/dark
-      `theme-color` pair requests the same color as the header. The layout keeps
-      `viewport-fit=cover` and protects each top edge with
-      `env(safe-area-inset-top)`; native glyph contrast and final strip painting
-      still depend on the installed iOS version and require device verification.
+      The status bar is `black-translucent`, so the console -- not the system --
+      paints the band behind the clock. Under `default` that band is drawn above
+      the web layer and is unreachable from the document: WebKit 301994 reports
+      it as an opaque strip whose color is sampled once and then cached until the
+      app is relaunched, so a theme change leaves a mismatched bar that no CSS
+      here can repair. `black-translucent` extends the document under the strip
+      instead, and every top edge already reserves `env(safe-area-inset-top)`
+      (`.chat-header`, `.dashboard-header`, `.project-header`) on top of
+      `viewport-fit=cover`, so the header's own surface is what shows through.
+
+      Two caveats this cannot fix from here. iOS reads this meta at INSTALL time
+      (WebKit 316008): an already-installed console keeps its old strip until it
+      is removed from the Home Screen and added again. And the same versions that
+      regressed 301994 can report `env(safe-area-inset-top)` as 0; the top edges
+      keep a `max(10px, ...)` floor so a 0 inset degrades to a tight header
+      rather than a title under the clock. Glyph contrast follows the system
+      appearance, which is also what the console's own light/dark themes follow.
     -->
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>mono-agent</title>
   </head>
   <body>
+    <!-- Real paint target for installed iOS status-bar sampling; survives React loading/errors. -->
+    <div class="status-bar-surface" aria-hidden="true" inert></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -1,4 +1,5 @@
 import { persistentSubagentsEnabled, subagentInstancesRoot } from "./subagent-instances.js";
+import { inspectHoundWeb, inspectParallelWeb } from "@mono-agent/agent-runtime/agent/tools/index.js";
 import { inspectWebControl } from "./web-request-coordinator.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
@@ -13,7 +14,6 @@ import { promisify } from "node:util";
 // is built from `getBuiltinProviders()`, which is exactly the catalog set.
 import {
   type BuiltinProvider as PiBuiltinProvider,
-  getBuiltinModels as getPiBuiltinModels,
   getBuiltinProviders as getPiBuiltinProviders,
 } from "@earendil-works/pi-ai/providers/all";
 import { validateCronExpression } from "@mono-agent/cron-adapter";
@@ -51,6 +51,7 @@ import {
   sanitizeModelReferenceText,
 } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+import { getPiBuiltinModel } from "@mono-agent/agent-runtime";
 
 import {
   isAppCoreConfigError,
@@ -93,6 +94,11 @@ import {
 } from "./continuation-store-types.js";
 import { CONTINUATION_STATES, continuationDigest, type ContinuationState } from "./continuations.js";
 import { isProcessJobState, PROCESS_JOB_STATES } from "@mono-agent/agent-contracts";
+import {
+  hasSubagentObligation,
+  hasUnresolvedSubagentOwnership,
+  isSubagentExecutionOwnership,
+} from "./subagent-execution-ownership.js";
 import { loadProcessJobsSettings } from "./process-jobs-config.js";
 import {
   attestProcessJobsRootRegistrySnapshot,
@@ -230,7 +236,8 @@ export async function validateMonoAgentFolder(
 
   let coreConfig: MonoAgentConfig | undefined;
   try {
-    coreConfig = await loadAppCoreConfig(options);
+    // Validation returns structured diagnostics; do not emit loader prose.
+    coreConfig = await loadAppCoreConfig(options, { warnOnDeprecatedConfig: false });
     sections.push({ id: "core", label: "Core config", status: "ok", details: [`Loaded ${options.configPath}.`] });
   } catch (error) {
     if (!isAppCoreConfigError(error)) {
@@ -697,9 +704,13 @@ function piModelResolutionIssue(
     return undefined;
   }
 
+  // pi-supplement: validate against the runtime's supplement-aware facade, not
+  // pi-ai directly, so a supplemented model (see agent-runtime's
+  // ai/pi-supplement.js) validates exactly like a pi builtin. Unknown refs
+  // still fail with the same diagnostic.
   if (
     isPiBuiltinProvider(model.provider)
-    && getPiBuiltinModels(model.provider).some((candidate) => candidate.id === model.model)
+    && getPiBuiltinModel(model.provider, model.model) !== undefined
   ) {
     return undefined;
   }
@@ -1892,11 +1903,6 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
 
 const MIN_AGENT_BROWSER_VERSION = [0, 33, 1] as const;
 
-function formatSearchBackendChain(backends: string[]): string {
-  if (backends.length <= 1) return backends[0] ?? "none";
-  return `${backends.slice(0, -1).join(", ")}, then ${backends.at(-1)}`;
-}
-
 async function webToolsSection(
   config: MonoAgentConfig,
   input: ValidateMonoAgentFolderOptions,
@@ -1904,7 +1910,7 @@ async function webToolsSection(
 ): Promise<ValidationSection> {
   const web = config.tools.web;
   const search: NonNullable<MonoAgentConfig["tools"]["web"]>["search"] = web?.search ?? {
-    backend: "auto" as const,
+    backend: ["parallel", "ollama"] as const,
     maxRequestsPerRun: 4,
     codex: { model: "gpt-5.6-luna" },
   };
@@ -1926,23 +1932,12 @@ async function webToolsSection(
   }
 
   const searxngEndpoint = search.searxng?.endpoint ?? search.endpoint;
-  const autoEligibleBackends = [
-    ...(search.ollama === undefined ? [] : ["configured Ollama"]),
-    ...(searxngEndpoint === undefined ? [] : ["configured SearXNG"]),
-    "Codex",
-    "keyless",
-  ];
-  const autoAfterOllama = formatSearchBackendChain(autoEligibleBackends.slice(1));
+  const chain = typeof search.backend === "string" ? [search.backend] : search.backend;
+  const chained = typeof search.backend !== "string";
+  const fallback = chained ? `Ordered chain: ${chain.join(" → ")}. Unavailable providers advance to the next entry.` : "Strict provider selection has no fallback.";
+  details.push(fallback);
   if (searxngEndpoint === undefined) {
-    details.push(search.backend === "keyless"
-      ? "SearXNG is not configured; keyless search is enabled."
-      : search.backend === "codex"
-        ? "SearXNG is not configured; strict Codex subscription search is enabled."
-        : search.backend === "searxng"
-          ? "SearXNG is not configured."
-          : search.ollama === undefined
-            ? "SearXNG is not configured; auto mode starts with Codex subscription search, then keyless search."
-            : "SearXNG is not configured; auto mode uses configured Ollama, then Codex subscription search, then keyless search.");
+    details.push("SearXNG is not configured.");
   } else {
     details.push(`SearXNG endpoint: ${searxngEndpoint}.`);
     if (!liveness) {
@@ -1955,44 +1950,37 @@ async function webToolsSection(
         status = "waiting";
         details.push(
           `[WARN] SearXNG JSON search probe failed (${probe.reason}). ` +
-          (search.backend === "auto"
-            ? "Start the local companion or fix tools.web.search.searxng.endpoint; auto mode can still fall back to Codex subscription search, then keyless search."
+          (chained
+            ? `Start the local companion or fix tools.web.search.searxng.endpoint. ${fallback}`
             : "Start the local companion or fix tools.web.search.searxng.endpoint; strict SearXNG mode has no fallback."),
         );
       }
     }
   }
 
-  if (search.backend === "ollama" || (search.backend === "auto" && search.ollama !== undefined)) {
+  if (chain.includes("ollama")) {
     const ollama = search.ollama;
     if (ollama === undefined) {
       status = "waiting";
       details.push("[WARN] Ollama Web Search is selected but its resolved configuration is missing.");
-    } else if (!liveness) {
-      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : `Auto mode advances to ${autoAfterOllama} when Ollama is unavailable.`}`);
-      details.push("Ollama Web Search liveness was not probed.");
+    } else if (!liveness || chained) {
+      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : fallback}`);
+      details.push(chained ? "Ollama Web Search readiness is checked lazily when the chain reaches it." : "Ollama Web Search liveness was not probed.");
     } else {
-      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : `Auto mode advances to ${autoAfterOllama} when Ollama is unavailable.`}`);
+      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : fallback}`);
       const probe = await probeOllamaWebSearch(ollama);
       if (probe.ok) details.push("Ollama Web Search JSON probe succeeded.");
       else {
         status = "waiting";
-        details.push(`[WARN] Ollama Web Search probe failed (${probe.reason}). ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : `Auto mode can still advance to ${autoAfterOllama}.`}`);
+        details.push(`[WARN] Ollama Web Search probe failed (${probe.reason}). ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : fallback}`);
       }
     }
   } else if (search.ollama !== undefined) {
     details.push(`Ollama Web Search is configured but inactive because backend ${search.backend} is strict.`);
   }
 
-  if (search.backend === "auto") {
-    const codexModel = search.codex?.model ?? "gpt-5.6-luna";
-    const beforeCodex = autoEligibleBackends.slice(0, autoEligibleBackends.indexOf("Codex"));
-    const codexPosition = beforeCodex.length === 0
-      ? "as the first eligible backend"
-      : `after ${formatSearchBackendChain(beforeCodex)}`;
-    details.push(
-      `Codex subscription fallback model: ${codexModel}; readiness is checked lazily when auto mode reaches it ${codexPosition}.`,
-    );
+  if (chained && chain.includes("codex")) {
+    details.push(`Codex subscription fallback model: ${search.codex?.model ?? "gpt-5.6-luna"}; readiness is checked lazily when the chain reaches it.`);
   } else if (search.backend === "codex") {
     const codexModel = search.codex?.model ?? "gpt-5.6-luna";
     details.push(`Codex subscription search model: ${codexModel}.`);
@@ -2010,6 +1998,34 @@ async function webToolsSection(
         );
       }
     }
+  }
+
+  const fetchProviders = typeof fetchConfig.provider === "string" ? [fetchConfig.provider] : fetchConfig.provider ?? ["local"];
+  if (chain.includes("parallel") || fetchProviders.includes("parallel")) {
+    const parallelConfigs = [
+      ...(chain.includes("parallel") ? [{ label: "search", settings: search.parallel, strict: !chained }] : []),
+      ...(fetchProviders.includes("parallel") ? [{ label: "fetch", settings: fetchConfig.parallel, strict: fetchProviders.length === 1 }] : []),
+    ];
+    for (const entry of parallelConfigs) {
+      details.push(`Parallel ${entry.label}: ${entry.settings?.apiKeyEnv ? "apiKeyEnv configured" : "anonymous access"}.`);
+      if (!liveness || !entry.strict) {
+        details.push(`Parallel ${entry.label} tools/list was not probed; readiness is checked on use.`);
+      } else {
+        const probe = await inspectParallelWeb({ config: entry.settings,
+          sandbox: { networkAllowsUrl: networkPolicyAllowsUrl }, policy: config.sandbox });
+        if (!probe.ok) status = "waiting";
+        details.push(probe.ok ? "Parallel tools/list advertises web_search and web_fetch (extraction not exercised)."
+          : `[WARN] Parallel tools/list unavailable (${probe.reason}).`);
+      }
+    }
+  }
+
+  details.push(`WebFetch provider: ${JSON.stringify(fetchConfig.provider ?? "local")}.`);
+  if (chain.includes("hound") || fetchProviders.includes("hound")) {
+    const probe = await inspectHoundWeb();
+    if (!probe.ok) status = "waiting";
+    details.push("Hound is a built-in Node provider; no endpoint or Python service is required.");
+    details.push(probe.ok ? "Hound local capability is available (public engines and extraction not probed)." : "[WARN] Hound local capability is unavailable.");
   }
 
   details.push(`WebFetch browser rendering: ${fetchConfig.render}.`);
@@ -2411,6 +2427,7 @@ async function inspectProcessJobState(cwd: string, stateDir: string): Promise<{
   }
   if (names.length > 10_000) return { status: "error", details: ["Process-job record count exceeds the compiled inspection bound of 10000."] };
   const counts = Object.fromEntries(PROCESS_JOB_STATES.map((state) => [state, 0])) as Record<string, number>;
+  const childOwnership = { retained: 0, unresolved: 0, ownerUnavailable: 0 };
   for (const name of names) {
     const path = join(recordsPath, name);
     try {
@@ -2424,6 +2441,21 @@ async function inspectProcessJobState(cwd: string, stateDir: string): Promise<{
         throw new Error("record identity or state is invalid");
       }
       counts[raw.state] = (counts[raw.state] ?? 0) + 1;
+      if (raw.subagentOwnership !== undefined && !isSubagentExecutionOwnership(raw.subagentOwnership)) {
+        throw new Error("record child ownership is invalid");
+      }
+      if (raw.subagentOwnership !== undefined && raw.kind !== "internal") {
+        throw new Error("record child ownership kind is invalid");
+      }
+      if (raw.kind === "internal") {
+        const ownership = isSubagentExecutionOwnership(raw.subagentOwnership) ? raw.subagentOwnership : undefined;
+        const record = { kind: "internal" as const, childStillBusy: raw.childStillBusy === true, ...(ownership ? { subagentOwnership: ownership } : {}) };
+        if (hasSubagentObligation(record)) childOwnership.retained++;
+        if (hasUnresolvedSubagentOwnership(record)) {
+          childOwnership.unresolved++;
+          if (!ownership || ownership.owner.settlement === "unknown") childOwnership.ownerUnavailable++;
+        }
+      }
     } catch (error) {
       return { status: "error", details: [`Process-job record ${name} is unsafe or malformed: ${continuationReason(error)}`] };
     }
@@ -2433,6 +2465,7 @@ async function inspectProcessJobState(cwd: string, stateDir: string): Promise<{
     details: [
       `Local records: ${String(names.length)}.`,
       `States: ${PROCESS_JOB_STATES.map((state) => `${state}=${String(counts[state] ?? 0)}`).join(", ")}.`,
+      `Persistent child ownership: retained=${String(childOwnership.retained)}, unresolved=${String(childOwnership.unresolved)}, owner-unavailable=${String(childOwnership.ownerUnavailable)}.`,
     ],
   };
 }

@@ -1,28 +1,48 @@
 # mono-agent
 
-This repository is a config-first pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime` as the single shipped runtime implementation layer, while sandboxing, communication adapters, skills, memory, observability, and operator surfaces stay modular. `@mono-agent/agent-app` composes them from one shareable config file so an agent can be built, validated, and moved as configuration instead of host glue.
+**An AI companion you can shape, run, and embed.**
 
-## Documentation
+Use the workspace to work with your agent. Use the framework to build it into your own application. Choose cloud or local models, give the agent a role and tools, and compose its behavior in `mono-agent.config.json` rather than maintaining a custom host.
 
-Full documentation and end-to-end playbooks: **<https://mono-agent-docs.vercel.app/>** (authored as markdown under [`docs/`](./docs/), built with Astro Starlight in [`website/`](./website/) and deployed on Vercel — see [`website/README.md`](./website/README.md) for the build/sync/deploy workflow and version-pin notes). Start with the [package directory](https://mono-agent-docs.vercel.app/reference/packages/) when you need to find the owner of a capability. [`docs/reference/feature-registry.md`](./docs/reference/feature-registry.md) remains the canonical feature reference, and [`docs/playbooks/`](./docs/playbooks/) holds copy-paste recipes for every channel and memory tier.
+This is the technical next step from the [Mono Agent website](https://mono-agent.dev/): how the pieces fit, how to run them, and where to extend them. For technical users who want to configure and operate their own agent—not a zero-setup hosted assistant.
 
-Maintainers should begin with [`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`CONTRIBUTING.md`](./CONTRIBUTING.md). Security boundaries, vulnerability reporting, and the manual local-secret cleanup checklist live in [`SECURITY.md`](./SECURITY.md).
+[Get started](#quickstart-an-agent-folder-from-one-config-file) · [Build on it](#embed-the-agent) · [Documentation](https://docs.mono-agent.dev/) · [Safety](#safety-and-privacy)
+
+<picture>
+  <source media="(max-width: 640px)" srcset="./docs/assets/mono-agent-workspace-mobile.png" />
+  <img src="./docs/assets/mono-agent-workspace.png" alt="Conceptual overview: your folder supplies role, files and knowledge; mono-agent.config.json composes the agent; the workspace lets you organize, delegate and inspect. Choose cloud or local models and extend with channels, memory, skills and MCP." />
+</picture>
+
+*One agent, from folder to workspace. A conceptual diagram, not a runtime screenshot. Model and tool requests go to the services you configure; local-first does not mean local-only.*
+
+## Why build with Mono Agent?
+
+- **A companion shaped around your work.** Define its role and context, select tools and skills, and add optional memory. Use it to research, write, work in a repository, or carry out a recurring task.
+- **Your models, not a fixed provider.** Select supported subscription/API routes or local models. Configure fallbacks where useful; provider availability and credentials still determine whether a request succeeds.
+- **Actions, not just answers.** Agents can inspect files, run commands, use MCP tools, and delegate focused work to persistent subagents. Keep follow-up conversations and inspect retained execution evidence after an interruption.
+- **A workspace and a framework.** Start in the browser; later embed a configured responder or compose a lower-level harness in TypeScript. You choose how much infrastructure to own.
+
+Projects and tags help organize the browser workspace, with project context available to member conversations. They support the workflow; the agent itself is not tied to the browser. Configured channels include Telegram, Slack, webhooks, an OpenAI-compatible endpoint, and cron. Each channel has its own conversation history.
+
+## Release status
+
+The published baseline checked on 2026-09-20 is **`create-mono-agent@0.22.0`**. Projects, tags and persistent subagents are included in that release. This README also follows current source, so use the [versioned release notes](https://github.com/robertsreberski/mono-agent/releases/tag/v0.22.0) when evaluating an installed version. The [older release comparison](./docs/reference/release-status.md) currently records the 0.21.1 boundary, not the latest npm baseline.
 
 ## Quickstart: An Agent Folder From One Config File
 
-Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — can become a running agent from one `mono-agent.config.json`. You need Node.js 24.15.0 or newer and credentials for the model you choose.
+Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — can become a running agent from one `mono-agent.config.json`. You need Node.js 24.15.0 or newer and credentials for the model you choose; a local provider such as Ollama works too.
 
-Choose the wall-clock path up front: flags or non-TTY input use the fast scaffold-only path (unless explicit `--auth` adds provider setup) and never claim readiness. Bare `mono-agent init` on a TTY makes one real no-tool model call per selected route before committing the scaffold, with timeouts of 90s for each cloud route and 240s for each local route.
+Guided setup is authentic and not instant: it signs you in to the provider you choose and makes one real model request for every selected route to prove the route answers. That can take several minutes and counts as usage on your account. Running with flags, `--yes`, or without a TTY skips all of it and writes the scaffold only; add `--auth` if you want provider setup on that automated path too. [Setup details](#setup-details) list the exact deadlines, flags, and files.
+
+
 
 ### 1. Install the CLI
-
-Install the convenience package to put `mono-agent` on your `PATH`:
 
 ```bash
 npm i -g create-mono-agent
 ```
 
-The scoped `@mono-agent/agent-app` package provides the same CLI. For one-shot scaffolding with no global install, use `npm create mono-agent@latest init`. See [Install & Prerequisites](./docs/getting-started/install.md) for those alternatives and the unreleased-source workflow.
+`create-mono-agent` puts the natural `mono-agent` command on your `PATH`. It needs Node.js 24.15.0 or newer and no pnpm. Prefer a one-shot scaffold or a pinned install? [Install & prerequisites](./docs/getting-started/install.md) covers `npm create`, `npm exec`, the scoped package, and building from source.
 
 ### 2. Create the agent folder
 
@@ -32,377 +52,101 @@ cd my-agent
 mono-agent init
 ```
 
-Bare `init` on a TTY opens the guided wizard: name the agent, write its Role, choose a model and capabilities, review the result, and complete any provider setup. On macOS, a successful guided run proves the selected routes, starts the background agent, and prints the manual edit → `validate` → `restart` → ordinary `tui` workflow. Any flag or non-TTY invocation is scaffold-only; on other platforms, continue with the start instructions below.
+Bare `init` on a terminal is the guided wizard: name the agent, write its Role, choose models and capabilities, and complete any provider setup. It proves each selected route before it calls the folder ready, and on macOS it also starts the agent. Any flag, or a non-TTY run, writes the scaffold only and makes no readiness claim — then validate and start it yourself.
 
-The complete wizard, non-interactive flags, generated files, and provider-specific setup are documented in [Your First Agent](./docs/getting-started/quickstart.md).
-
-### 3. Validate and start
-
-Check the generated config:
+### 3. Validate and start the agent
 
 ```bash
 mono-agent validate
+mono-agent start                  # background service on macOS and Linux
+mono-agent status                 # confirm the running instance
 ```
 
-If guided macOS init already started the agent, confirm it is live:
+If guided init already started the agent, `status` confirms it in place of `start`; on Linux, guided setup prints this start step for you to run yourself. Without a usable service manager, run `mono-agent start --foreground` and keep that terminal open.
+
+### 4. Open the web workspace
+
+Run the browser console in its own terminal, bound to this computer, and open the URL it prints:
 
 ```bash
-mono-agent status
+mono-agent web run --loopback
 ```
 
-Otherwise start the scaffold now. On macOS this backgrounds the process; elsewhere keep the foreground command running in Terminal 1:
+Open <http://127.0.0.1:5050>, choose the running agent, and start a conversation. Conversations and in-flight turns live in the service, so refreshing or closing a tab does not abort the work — but keep this terminal open. If you started the agent with `--foreground` too, that is a second terminal.
 
-```bash
-mono-agent start                  # macOS
-# or:
-mono-agent start --foreground     # Linux and other platforms
+Want the console to keep running in the background? `mono-agent web start` installs it as a service instead, bound to the same loopback listener; widen it explicitly with `--host`. On macOS, managed startup re-verifies an existing mono-agent-owned Tailscale Serve route and publishes a new one only with `--share-tailnet`, and other proxies and routes are not inspected — so neither the bind nor the absence of an owned route makes a console local. There is still no application login, so anyone who can reach it can operate the discovered agents. `web run` never configures Serve and never removes a route; only `web stop` removes the exact route mono-agent owns. [Install & prerequisites](./docs/getting-started/install.md#run-the-browser-console) covers both modes and how to check the effective URLs.
+
+The same agent is also reachable from the terminal console and, once you enable them, from channels. [Your first agent](./docs/getting-started/quickstart.md) walks the wizard branches, the scriptable webhook smoke request, and the per-platform start paths; [Setup security and managed runtime](./docs/reference/setup-security.md) documents the managed-start and secret-persistence trust model behind them.
+
+## Setup details
+
+Bare `mono-agent init` on a terminal is the guided wizard. It asks for the agent name and the exact Role destined for `IDENTITY.md` → `## Role`, searches the provider catalogs, and then proves every selected route with one disposable no-tool model call, sequentially, with timeouts of 90s for each cloud route and 240s for each local route. An interrupted preflight can resume the routes that already passed under the same non-secret plan fingerprint. On macOS the **Agent ready** gate additionally starts the managed background agent and proves its live snapshot before printing the handoff; on Linux the same route and configuration checks run, and then `init` prints a **Manual start required** handoff instead of installing the systemd user service for you.
+
+Passing any flag, `--yes`, or running without a TTY skips the wizard: `init` writes the scaffold only, runs no readiness proof, starts no process, and never labels the result ready. `--auth` adds provider setup to that automated path. The flags, the files a scaffold writes, the full generated config, and the guided secret handling are documented in [Your first agent](./docs/getting-started/quickstart.md#setup-details-guided-init-flags-and-files).
+
+## Make it yours
+
+The blueprint composes these capabilities; identity, skills, MCP definitions, credentials, and live state remain separate. Edit `mono-agent.config.json` (and `IDENTITY.md`), then apply the change: a background service loads it with `mono-agent validate` followed by `mono-agent restart` (and `mono-agent status` confirms the result), while a foreground agent is stopped with Ctrl-C in the terminal that owns it, validated, and started again with `mono-agent start --foreground`. `restart` and `status` target the managed background instance, not a foreground process. Either way the running agent keeps serving the old config until it restarts, and the console is a separate process you can leave running. Start with the defaults, then add what you need:
+
+- **Models and fallbacks** — `runtime.model` takes any `<provider>:<model>` ref; add ordered `runtime.fallbacks` and per-route effort. Local providers use `providers.local`. Start with [Runtime & providers](./docs/runtime/index.md).
+- **Tools and safety** — the tool surface is allow-all by default; narrow it with `tools.allowedTools`, or go chat-only with `[]`. [Tool policy](./docs/tools/policy.md) and the [sandbox](./docs/tools/sandbox.md) are the two separate controls.
+- **Skills and MCP** — select `SKILL.md` instruction sets for the context, and attach MCP servers for extra tools. See [Selected skills](./docs/context/skills.md) and [MCP servers](./docs/tools/mcp.md).
+- **Channels** — turn on a transport with its `enabled` flag and keep its credentials in `.env`: [Telegram](./docs/channels/telegram.md), [Slack](./docs/channels/slack.md), [webhook](./docs/channels/webhook.md), [OpenAI-compatible API](./docs/channels/openai-api.md), [cron](./docs/channels/cron.md), and plugin channels such as [A2A](./docs/channels/a2a.md) or [WhatsApp](./docs/channels/whatsapp.md). Each channel keeps its own conversation history.
+- **Memory (optional)** — tiered capture and recall, from a simple journal to semantic recall with local embeddings; the external Supermemory backend is an explicitly installed plugin. See [Memory](./docs/memory/index.md) and [Backends compared](./docs/memory/backends-comparison.md).
+- **Presets and the wizard** — `mono-agent presets list` shows the built-in answer sets, and `mono-agent init --preset <id> --yes` scaffolds one non-interactively: [Presets & capability modules](./docs/reference/presets.md).
+- **A composer skill for authoring** — the bundled `mono-agent-composer` skill walks an agent through building a folder with the same flow; `mono-agent install-skill` installs it and pairs the docs MCP companion: [Documentation MCP](./docs/tools/documentation-mcp.md).
+
+## Embed the agent
+
+Keep the workspace for interactive work, or compose the agent into your own Node.js application. These are real package entry points, not a browser automation layer:
+
+| Entry point | What you own |
+| --- | --- |
+| `startMonoAgentApp` | A full configured host with channels and lifecycle; Mono handles the app composition. |
+| `createConfiguredAgentResponder` | Your transport/server; Mono composes the configured responder, without starting channels or the web console. |
+| `createAgentHarness` / `createAgentResponder` | The runtime, context, memory, history and other dependencies you choose to supply. |
+
+For an existing agent folder, a configured responder starts with:
+
+```ts
+import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
+import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
+
+const config = await loadMonoAgentConfigWithSources({
+  env: process.env,
+  cwd: process.cwd(),
+  jsonPath: "./mono-agent.config.json",
+});
+const responder = await createConfiguredAgentResponder({
+  config,
+  cwd: process.cwd(),
+});
 ```
 
-`start` prints one status line per channel. Copy the loopback webhook invoke URL it prints; the default scaffold enables that credential-free smoke channel.
+This is a composition excerpt, not a complete server: install matching package versions and provide your own transport/lifecycle. See [Composition & custom runtimes](./docs/programmatic/composition.md) for entry-point boundaries, examples and custom runtime injection, or [Build a channel](./docs/programmatic/custom-channels.md) for an adapter.
 
-### 4. Send the first request
+## Inspect the work, not just the answer
 
-In Terminal 2, set `PORT` to the port from the printed invoke URL:
+The browser exposes model changes, tool activity and retained results. `RunHistory` reads settled runs; `SessionHistory` reads separately retained tool invocations and results. Curated memory is a different source.
 
-```bash
-PORT=3000 # Replace 3000 with the printed port.
-curl -s "http://127.0.0.1:${PORT}/webhook/invoke" \
-  -H 'content-type: application/json' \
-  -d '{"text": "Say hello and tell me what you are."}'
-```
+Records are bounded and can be incomplete. Inspecting an interrupted run does not automatically resume it, or prove a command is safe to repeat. See [Run artifacts & traces](./docs/observability/artifacts-and-traces.md) for retention and redaction limits.
 
-A reply proves the runtime, model, identity, and webhook channel are wired together. Provider authentication or local-model availability still determines whether the model can answer; failures are reported honestly rather than replaced with a fake reply.
+## Safety and privacy
 
-For the low-level trust model behind guided secret persistence and managed macOS startup, see [Setup security and managed runtime](./docs/reference/setup-security.md). For command details and recovery paths, see the [CLI reference](./docs/observability/cli-reference.md).
+mono-agent is local-first and single-owner by default, and two defaults deserve attention before anything is network-reachable:
 
-## Presets & the setup wizard
+- **The web console has no application login.** A fresh current-source install binds `127.0.0.1:5050` and publishes a mono-agent-owned Tailscale route only with `--share-tailnet`; the older `0.21.1` release binds a managed console wide and claims a macOS Serve route automatically, so on that release the compatible local-first path is the foreground `mono-agent web run --loopback` ([release status](./docs/reference/release-status.md)). Widening is explicit (`--host <addr>`), the foreground console touches no proxy configuration, and other proxies, tunnels, and routes are never inspected or removed. Anyone who can reach the console operates the discovered agents and can complete provider sign-in, so read [the console's security boundary](./docs/observability/web-console.md#security-boundary-trusted-network-no-login) before widening the bind or publishing a route.
+- **Tools are allow-all by default and the sandbox is opt-in.** A fresh agent can run shell commands, read and write files, and fetch pages unless you narrow `tools.allowedTools`. The native sandbox confines Pi-owned commands to declared roots with a deny-by-default network policy and fails closed when no usable engine exists, so a command fails instead of silently running unsandboxed.
 
-`mono-agent init` composes an agent from **capability modules** (channels, built-in memory tiers, sandbox, observability) and walks you through the tool allowlist so the agent can actually do something. **Presets** are saved answer-sets for five built-in shapes — `starter` (webhook smoke agent), `telegram-assistant` (BuJo memory), `slack-bot`, `local-private` (Ollama), and `code-sandbox`. Optional packages such as Supermemory ship their own setup skill instead of making an unavailable service look built in. Each core preset prints its generated config with secrets externalized to `.env.example`, and mirrors a copy-paste playbook in [`docs/playbooks/`](./docs/playbooks/):
+Secrets belong in an owner-only `.env` or the provider's auth store, never in JSON or chat; guided setup fails closed rather than guessing where a secret may be written. Read [SECURITY.md](./SECURITY.md) for the trust boundaries, [Setup security and managed runtime](./docs/reference/setup-security.md) for the managed-runtime and secret-persistence contracts, and [Run artifacts & traces](./docs/observability/artifacts-and-traces.md) for what is recorded locally and how redaction is bounded.
 
-```bash
-mono-agent presets list
-mono-agent presets show telegram-assistant
-mono-agent init --preset telegram-assistant --yes
-```
+## Documentation
 
-The `code-sandbox` preset uses Pi plus `sandbox.mode: "native"`. On macOS, `mono-agent sandbox setup` installs the exact pinned SRT dependency tree into a private per-user cache; it never changes `PATH`, global npm packages, or system packages. The installed tree must match an independently pinned digest, so a locally rewritten marker cannot bless different bytes. Choosing managed SRT in guided setup always runs that idempotent managed install/verification, even when a compatible external `srt` is already on `PATH`. `sandbox status` inspects the install and `sandbox check` proves allowed workspace access, protected/out-of-root denial, localhost access, and non-allowlisted-domain denial. Runtime launches revalidate a present managed tree and fail closed on corruption or when no effective engine exists. A compatible external `srt` remains a fallback only when the managed install is absent, never when a managed install is corrupt; its canonical absolute file identity and content are pinned after the functional proof and rechecked before use.
-
-The old `mono-agent recipes …` / `--recipe <id>` surface was removed — use `mono-agent presets …` / `--preset <id>` instead (the removed commands now exit with a replacement message). See [`docs/reference/presets.md`](./docs/reference/presets.md) for the presets, capability modules, tools/no-tools guardrail, and migration map, and [`docs/reference/deprecations.md`](./docs/reference/deprecations.md) for the canonical deadline and permanent-compatibility decisions.
-
-## Skill-Based Composition Guide
-
-The repo includes a composer skill that walks an agent (in mono-agent itself, Claude Code, or another harness that reads `SKILL.md` files) through constructing an agent folder with the flow above:
-
-- Skill: [`packages/agent-app/skills/mono-agent-composer/SKILL.md`](./packages/agent-app/skills/mono-agent-composer/SKILL.md)
-- References: [`packages/agent-app/skills/mono-agent-composer/references/`](./packages/agent-app/skills/mono-agent-composer/references/)
-
-The skill asks discovery questions (runtime + backup models, channels incl. crons and webhooks, skills, MCP, memory strategy incl. semantic search, sandbox, observability), maps each answer to config keys, then runs `mono-agent init` → `validate` → `start` and a channel-matched smoke test. [`docs/reference/feature-registry.md`](./docs/reference/feature-registry.md) is the source of truth mapping every framework feature to its config/CLI/programmatic surface; the skill ships a condensed copy as `references/feature-coverage.md`. Its version-matched [`@mono-agent/docs-mcp`](./docs/tools/documentation-mcp.md) companion gives coding harnesses semantic and exact-identifier search over the full public docs plus those authoritative references. The skill ships with `@mono-agent/agent-app`; install and pair it for Claude Code and Codex with:
-
-```bash
-mono-agent install-skill   # copies the skill and pairs mono-agent-docs for available CLIs
-```
-
-Use `--no-docs-mcp` only for an intentional file-only install. An unmanaged MCP
-entry named `mono-agent-docs` is never overwritten, including with `--force`.
-
-This authoring-oriented composer is not auto-selected inside generated agents. New agents instead select the narrower `mono-agent-memory` project skill with index disclosure. Check or safely refresh its managed copy with `mono-agent install-skill --project --check` / `--update`; the updater also retires an exact manifest-owned legacy `mono-agent-configure` copy. Canonical non-symlink parent checks, an owner lock, compare-and-swap activation, and guarded rollback never write outside the agent or overwrite modified/concurrently edited copies.
-
-To use it as a selected mono-agent skill instead, point `context.skillsRoot` at `./packages/agent-app/skills` and add `mono-agent-composer` to `context.selectedSkills`.
-
-## Always-on web console
-
-Start the browser operator console once, then open it from this computer, the local network, or Tailscale:
-
-```bash
-mono-agent web start --theme ocean
-mono-agent web                 # status and exact URLs; does not start or change anything
-```
-
-It binds `0.0.0.0:5050` by default, auto-discovers running agents, and keeps separate persistent conversations for each selected agent. The header, tab title, and installed PWA use the operating-system hostname. Pick `evergreen` (default), `ocean`, `plum`, or `terracotta` with `--theme`; managed restarts retain that selection and `web status` reports it. The console has no application login: anyone who can reach the port can operate the discovered agents and see retained conversations, so expose it only on a trusted LAN or tailnet. When Tailscale Serve is available it adds an HTTPS route without replacing an existing handler; otherwise direct LAN/Tailscale HTTP remains available. Use `--loopback` when the service must stay on this computer.
-
-Each assistant run records the requested, attempted, and answering model separately. A provider fallback is shown at the message and in the conversation header with its classified reason when available; the model picker is explicitly the choice for the next turn.
-
-Attachments come from the browser device's native file picker, not a browser over the host filesystem. The web transport uses the same `AgentAttachment` contract, MIME allowlist, 20 MiB per-file limit, image/document classification, text decoding, and harness persistence as Telegram; each turn additionally allows at most 10 files and 64 MiB total. See the [web console guide](./docs/observability/web-console.md) for lifecycle, security, retention, and current scope. The `mono-agent sessions` Session Recorder command was removed; use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console).
-
-Replies can also carry generated files and MCP Apps without embedding local paths, capability URLs, or payload bytes in the message stream. Slack and Telegram confirm native file uploads before suppressing a safe human fallback; machine and verbatim transports leave answer text unchanged. The web console provides integrity-checked downloads and a confirmation-gated, double-frame sandbox for supported Pi-native MCP Apps. See [Reply files and MCP Apps](./docs/tools/rich-replies.md) for route support, limits, retention, and the browser security boundary.
-
-Use the header bell to enable durable Web Push for completed responses, `AskUser` questions, and terminal failures. The server stores its VAPID identity, browser subscriptions, and retry outbox under the owner-private web state; notification previews are plain-text, redacted, and bounded. The web service is self-hosted, while encrypted delivery uses the browser vendor's standards-mandated push service. On iPhone or iPad, open the console over HTTPS and add it to the Home Screen first.
-
-## Package Architecture
-
-Package categories are catalog metadata, documentation, and architecture-guard inputs. Core packages live under `packages/<package-name>` and optional **plugin-tier** extras live under `extras/<package-name>`. Both use `@mono-agent/<package-name>` names and both are `publishable: true` (released together on the npm lockstep tag); the extras are marked `tier: "plugin"` and are loaded only through explicit composition, `channels.plugins[]`, an explicitly selected backend, or companion MCP pairing.
-
-See the generated [`PACKAGES.md`](./PACKAGES.md) dependency graph and directory for the exact current package set, static workspace edges, npm pages, and authoritative package READMEs. The same directory is published in the [website reference](https://mono-agent-docs.vercel.app/reference/packages/).
-
-Before adding new capability surface area, use the [`Capability ladder`](./docs/reference/capability-ladder.md) to decide whether the work belongs in an existing package, config/skills, a new package, an MCP tool boundary, or a shared core contract.
-
-The catalog groups packages by ownership boundary:
-
-- `app` composes the config-first host and CLI.
-- `communication` owns channel-specific ingress, delivery, authentication, and transport policy.
-- `execution` assembles one request and optional collaborator tools.
-- `runtime` owns provider bridges and the sandboxed runtime facade.
-- `core` defines adapter-neutral contracts and configuration.
-- `context` owns optional memory and documentation retrieval.
-- `observability` records and reads run artifacts and exports traces.
-- `operator-surface` presents local terminal and browser experiences without hosting the agent runtime.
-
-## Dependency Direction
-
-```text
-Static manifest dependencies (abridged; see PACKAGES.md for every edge)
-
-@mono-agent/agent-app
-  ├─ config + agent-contracts
-  ├─ agent-harness
-  ├─ runtime-adapter ── agent-runtime
-  ├─ memory + observability
-  ├─ built-in channel adapters
-  ├─ operator-adapter
-  └─ tui + web
-
-agent-harness ── agent-contracts + runtime-adapter + observability
-tui / web ── agent-contracts + config + observability
-
-Runtime-only composition (not manifest dependency edges)
-
-tui / web ── HTTP operator protocol ──> operator-adapter
-agent-app ── channels.plugins[] ──> a2a-adapter / whatsapp-adapter / messenger-adapter
-agent-app ── selected memory backend ──> memory-supermemory
-custom host ── request-scoped extension ──> agent-orchestrator
-authoring harness ── explicit MCP companion ──> docs-mcp
-```
-
-Rules for future packages:
-
-- New publishable packages live under `packages/<package-name>` and publish as `@mono-agent/<package-name>`.
-- Optional plugin-tier add-ons may live under `extras/<package-name>` when cataloged with `publishable: true` and `tier: "plugin"` (published in the lockstep but outside the core app closure).
-- Add every workspace package to `scripts/package-catalog.mjs` with category, responsibility, and allowed dependency categories.
-- Communication packages use `*-adapter` naming and must not depend on other adapters, the harness, or operator surfaces.
-- Core config stays adapter-neutral; adapter credentials and allowlists live with the adapter package.
-- Operator surfaces register field groups from other packages; they do not hardcode adapter settings.
-
-## Host Traceability
-
-The workspace now has a local host traceability path. Each running host registers an `agent-runtime.trace-source.v1` manifest in a registry directory such as `~/.mono-agent/trace-sources`; each manifest points at that source's artifact directory, where run summaries and event JSONL files remain. `mono-agent status` reads the registry, marks stale sources when their heartbeat ages out, and aggregates recent runs across sources by `(sourceId, runId)` so duplicate run ids do not collide.
-
-This is local-first. It is not a LangSmith dependency, database, or cloud collector.
-
-Phoenix is the recommended trace viewer for local development. When an `observability.exporters` entry (currently the `phoenix` preset) is configured, the host additively exports each run lifecycle to Phoenix's OTLP HTTP traces endpoint as binary protobuf (`application/x-protobuf`) via the explicitly installed, matching-version `@mono-agent/observability-phoenix` package. Spans use OpenInference semantics (AGENT/LLM/TOOL/CHAIN kinds with input/output) and land in a named project (`projectName`, defaulting to the trace source label/id). Export is best-effort and bounded by a timeout — it never changes the run outcome and never suppresses JSONL writes. Raw prompts, reasoning, and tool I/O are metadata-only by default (`includeSensitiveData: false`). Setting `includeSensitiveData: true` exports those payloads: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned by default. Set `contentPatternRedaction: true` to replace a closed set of high-confidence OpenAI, GitHub, AWS, and Slack credential shapes in retained outbound text. Strings are capped, and the scan remains defense in depth rather than a substitute for trusting the collector.
-
-Local JSONL artifacts are the completed-run fallback only after the terminal write succeeds; before then the on-disk record is only the start snapshot. At `start()`, the recorder independently replaces an empty events file and a `running` summary, then buffers later events in RAM after sensitive-key redaction, a closed high-confidence credential-shape scan, and a 4,096-byte default cap per string. Terminal `finish()`/`fail()` independently replaces that bounded events snapshot first and the summary second. A crash before terminal persistence can lose buffered events, and stale reconciliation can report only the data already on disk; the artifacts are not an in-flight, full-payload, or crash-safe source of truth.
-
-`mono-agent start`, `mono-agent status`, and `mono-agent validate` report the configured exporter endpoint (validate POSTs an empty protobuf to confirm Phoenix will accept exports, not just that the port is open). Use `mono-agent backfill --all` to retroactively export already-recorded runs with their historical timestamps; deterministic per-run ids make re-exports idempotent.
-
-## A2A Inter-Agent Discovery
-
-`@mono-agent/a2a-adapter` exposes a Mono responder over the A2A v1 protocol using the pinned `@a2a-js/sdk@1.0.0-alpha.0`. Provider mode serves the public Agent Card at `/.well-known/agent-card.json` and message/task endpoints under `/a2a/json-rpc` and `/a2a/rest`. Consumer mode discovers direct Agent Card URLs and sends text messages to remote agents.
-
-The A2A adapter remains deliberately text/task only: no central registry, gRPC hosting, push notifications, signed cards, file exchange, or adapter-owned delegation policy. Dynamic collaborator selection is composed above A2A by `@mono-agent/agent-orchestrator`. Provider binds to loopback by default; non-loopback bind or advertised public URLs require explicit config and should be deployed behind HTTPS with bearer auth.
-
-## Local Providers
-
-Hosts can pass local OpenAI-compatible providers into `@mono-agent/agent-runtime` through the Pi adapter. Ollama is the primary supported local path:
-
-```json
-{
-  "runtime": {
-    "model": "ollama:qwen3:8b",
-    "workspace": "."
-  },
-  "providers": {
-    "local": [
-      { "id": "ollama", "type": "ollama", "baseUrl": "http://localhost:11434", "enabled": true }
-    ]
-  }
-}
-```
-
-Run Ollama locally and pull the model first, for example `ollama pull qwen3:8b`. Standard local Ollama needs no provider API key. LM Studio and other OpenAI-compatible local gateways use the same `providers.local` shape with `type: "lmstudio"` or `type: "openai_compat"`; public URLs must be explicitly trusted and use HTTPS. `runtime.maxTurns` is optional; omit it or set `0` for unlimited runs, or set `1`-`100` for a hard cap.
-
-Built-in Pi credentialed providers use the Pi auth file instead of
-`providers.local`. Core config defaults `providers.piAuthPath` to
-`~/.pi/agent/auth.json` and exposes `MONO_AGENT_PI_AUTH_PATH` for hosts that keep
-credentials elsewhere. Subscription/account-backed providers include
-`openai-codex:*`, `anthropic:*`, `github-copilot:*`, and
-`opencode-go:*`. OpenAI-Codex, Anthropic, and GitHub Copilot use Pi
-OAuth/account flows where supported; OpenCode-Go uses an API key (`OPENCODE_API_KEY`)
-that guided setup can save into the Pi auth store. Recover a Pi OAuth provider
-with `mono-agent auth login <provider>`. Anthropic keeps the localhost callback
-active while accepting a pasted final redirect URL; Pi validates its code and
-OAuth state before exchange. Standalone OpenCode-Go login prompts for
-the key with masked TTY input; on a headless host, opt in to redirected input:
-
-```bash
-printf '%s\n' "$OPENCODE_API_KEY" | mono-agent auth login opencode-go --api-key-stdin
-```
-
-The command never copies an ambient key implicitly. It uses the configured auth path
-(`--pi-auth-path` → `MONO_AGENT_PI_AUTH_PATH` → `providers.piAuthPath` → default),
-validates the requested credential and unchanged siblings in the app-owned
-terminal wrapper's staged Pi OAuth output, then promotes it under a durable lock with owner-only, pathname
-no-clobber semantics. The canonical parent must be current-user-owned and not
-group/world-writable; source, staged, and recovery credential inodes must also be
-current-user-owned with exactly the expected link identity. An owned existing
-store may start read-permissive (for example `0644`) and is tightened to `0600`,
-but group/world-writable, foreign-owned, or multiply linked stores fail closed.
-Pathname races remain at the target. A claimed-inode write
-detected after install is retained at the reported recovery path; a
-non-cooperative open-descriptor write after the final check is outside the POSIX
-guarantee. Malformed/unsafe output, concurrent changes, Windows persistence, and
-auth paths inside Git worktrees fail closed without silently discarding detected bytes.
-
-## Development Verification
-
-Use the combined repository and golden-consumer gate when you need one final
-verdict:
-
-```bash
-pnpm install --frozen-lockfile
-pnpm run verify:all
-```
-
-`pnpm run verify:all` runs the repository gate, then validates the committed
-golden consumer fixtures for `local-agent-alpha` and `local-agent-beta`. The consumer
-checks use redacted fixtures, `liveness:false`, no network probes, and no
-secrets by default.
-
-To run only the consumer fixture contracts:
-
-```bash
-pnpm run verify:consumers
-```
-
-To add a deeper read-only audit of a downstream checkout's run artifacts:
-
-```bash
-pnpm run verify:consumers -- --consumer /path/to/downstream-agent
-```
-
-Focused checks remain useful while debugging a specific failure:
-
-```bash
-pnpm install --frozen-lockfile
-pnpm run check:architecture
-pnpm run build
-pnpm run typecheck
-pnpm test
-git diff --check
-```
-
-For package-level work:
-
-```bash
-pnpm --filter @mono-agent/agent-runtime run build
-pnpm --filter @mono-agent/agent-runtime run typecheck
-pnpm --filter @mono-agent/agent-runtime run test
-```
-
-Replace `@mono-agent/agent-runtime` with the package under test.
-
-## Safety Model
-
-- No secrets, `.env*`, OAuth files, provider keys, OpenAI API adapter keys, Telegram tokens, WhatsApp auth state, or transcripts are committed.
-- Interactive secret persistence fails closed unless the canonical agent directory is current-user-owned and not group/world-writable, `.env`/`.gitignore` are current-user single-link regular paths, `.env` is untracked valid dotenv text, exact ignore rules are protected from group/world writes, and promotion can prove owner-only permissions plus pathname no-clobber identity. Windows gets manual instructions instead of an automatic secret write.
-- Settings JSON is local, schema-validated, and written with restrictive file permissions where the settings helper writes it.
-- Secret fields are redacted in diagnostics and status output.
-- Tool policy is allow-all by default (omit `tools.allowedTools`, or include `"*"` in the list, for every tool). Narrow it with an explicit list, or go chat-only with `[]`. Unsupported policies fail before provider startup. See the [runtime enforcement table](./docs/tools/policy.md). The programmatic harness safety net with no policy is fail-closed (`failClosedToolPolicy()`).
-- Mono-agent sandbox policy is explicit and fail-closed for Pi-owned commands. Every route is Pi-native, so the `srt` contract — mono-agent roots, deny-write globs, and network policy — applies uniformly; validation and runtime reject a route that cannot represent it.
-- Memory writes are host-owned and optional.
-- Fixtures and fake runtimes are for tests only, not product-runtime substitutes.
-
-## Layered Workflow
-
-**Diagram summary:** The app composes adapter-neutral config, request execution, runtime bridges, optional context and observability, communication adapters, and operator surfaces; arrows show the intended high-level dependency direction.
-
-```mermaid
-flowchart TB
-  Host["Config-first app host<br/>mono-agent CLI or custom host"]
-
-  subgraph Surfaces["Operator-surface choices"]
-    Tui["@mono-agent/tui<br/>Terminal chat + read-only config"]
-  end
-
-  subgraph Communication["Communication adapter choices"]
-    A2A["@mono-agent/a2a-adapter<br/>extra plugin: Agent Card discovery + text tasks"]
-    Cron["@mono-agent/cron-adapter<br/>Scheduled invocations"]
-    OpenAIApi["@mono-agent/openai-api-adapter<br/>OpenAI Chat Completions"]
-    Slack["@mono-agent/slack-adapter<br/>Socket Mode + Web API"]
-    Telegram["@mono-agent/telegram-adapter<br/>Bot API + long polling"]
-    Webhook["@mono-agent/webhook-adapter<br/>HTTP sync/async invocation"]
-    WhatsApp["@mono-agent/whatsapp-adapter<br/>extra plugin: Baileys socket + group trigger policy"]
-    Messenger["@mono-agent/messenger-adapter<br/>extra plugin: Meta webhook + Send API"]
-  end
-
-  subgraph Core["Core contracts and config"]
-    Contracts["@mono-agent/agent-contracts<br/>request/response/stream/settings helpers"]
-    Config["@mono-agent/config<br/>core runtime/context settings"]
-  end
-
-  subgraph PromptContext["Context layer"]
-    Memory["@mono-agent/memory<br/>./store SQLite, ./search embeddings, ./bujo engine"]
-    MemorySupermemory["@mono-agent/memory-supermemory<br/>extra plugin: Supermemory-backed store"]
-  end
-
-  subgraph AppLayer["App layer"]
-    AgentApp["@mono-agent/agent-app<br/>config to channels + responder"]
-  end
-
-  subgraph Execution["Execution layer"]
-    Harness["@mono-agent/agent-harness<br/>request to runtime run<br/>context + skills + tool policy"]
-    Orchestrator["@mono-agent/agent-orchestrator<br/>extra: collaborator MCP tool"]
-    Observability["@mono-agent/observability<br/>JSONL events + summaries + trace registry"]
-  end
-
-  subgraph Runtime["Pi runtime"]
-    RuntimeAdapter["@mono-agent/runtime-adapter<br/>model refs + sandbox policy"]
-    AgentRuntime["@mono-agent/agent-runtime<br/>Pi implementation"]
-    PiSdk["Pi providers<br/>&lt;provider&gt;:&lt;model&gt;"]
-  end
-
-  Host -. optional .-> Tui
-  Host --> Telegram
-  Host -. plugin .-> A2A
-  Host --> Webhook
-  Host --> OpenAIApi
-  Host --> Cron
-  Host -. optional package .-> Slack
-  Host -. plugin .-> WhatsApp
-  Host -. plugin .-> Messenger
-  Host -. runtime extension .-> Orchestrator
-  Host --> Config
-  Host --> AgentApp
-
-  Tui --> Contracts
-  Tui --> Config
-  Telegram --> Contracts
-  A2A --> Contracts
-  Cron --> Contracts
-  OpenAIApi --> Contracts
-  Slack --> Contracts
-  Webhook --> Contracts
-  WhatsApp --> Contracts
-  Messenger --> Contracts
-
-  Orchestrator --> Contracts
-  Orchestrator -.->|runtime extension| Harness
-  AgentApp --> Config
-  AgentApp --> Harness
-  AgentApp --> Memory
-  AgentApp -. optional backend .-> MemorySupermemory
-  AgentApp --> RuntimeAdapter
-  AgentApp --> Observability
-  Config --> Contracts
-  Config --> RuntimeAdapter
-  Harness --> Contracts
-  MemorySupermemory --> Contracts
-  Harness --> RuntimeAdapter
-  Harness --> Observability
-
-  RuntimeAdapter --> AgentRuntime
-  RuntimeAdapter --> Contracts
-  AgentRuntime --> PiSdk
-```
+- **Documentation site** — <https://docs.mono-agent.dev/> renders everything under [`docs/`](./docs/): getting started, configuration, runtime, channels, memory, tools, programmatic use, playbooks, and reference material.
+- **Marketing site** — [`marketing/`](./marketing/) holds the standalone static site source for [mono-agent.dev](https://mono-agent.dev/). See its README for setup and the separate Vercel hosting configuration.
+- **Architecture and packages** — [`ARCHITECTURE.md`](./ARCHITECTURE.md) maps the system and where changes belong; [`PACKAGES.md`](./PACKAGES.md) is the generated package directory and dependency graph.
+- **Contributing** — [`CONTRIBUTING.md`](./CONTRIBUTING.md) covers the workspace setup, verification lane, and pull-request expectations. The repository requires Node.js 24.15.0 or newer and pins its own pnpm (currently `11.18.0`, engine range `>=10.16.0`).
+- **Support and reporting** — security reports follow [`SECURITY.md`](./SECURITY.md); issues and questions belong in the [repository issue tracker](https://github.com/robertsreberski/mono-agent/issues).
 
 ## License
 

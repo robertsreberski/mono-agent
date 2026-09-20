@@ -954,6 +954,27 @@ describe("SlackAdapter", () => {
     expect(api.postMessageCalls).toHaveLength(1);
   });
 
+  it("keeps the child-busy warning off a running job whose child is still working", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({ api, allowAllChannels: true, responder: responderFrom(async () => ({ text: "unused" })) });
+    const internal: ProcessJobProjection = { ...processJobProjection("queued"), kind: "internal", tool: "Agent",
+      instanceId: "helper", childStillBusy: true };
+    await adapter.updateProcessJob("C1", "171.5", internal);
+    await adapter.updateProcessJob("C1", "171.5", { ...internal, state: "running" });
+    const texts = [
+      String(api.postMessageCalls[0]?.text),
+      ...api.updateCalls.map((call) => String(call.text)),
+    ];
+    expect(texts).toHaveLength(2);
+    for (const text of texts) {
+      expect(text).toContain("Instance: helper");
+      expect(text).not.toContain("childStillBusy:true");
+    }
+
+    await adapter.updateProcessJob("C1", "171.5", { ...internal, state: "timed_out" });
+    expect(String(api.updateCalls.at(-1)!.text)).toContain("childStillBusy:true");
+  });
+
   it("does not republish an original terminal card after the former 256-entry eviction pressure", async () => {
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({

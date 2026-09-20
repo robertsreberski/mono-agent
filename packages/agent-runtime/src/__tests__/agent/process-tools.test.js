@@ -30,12 +30,12 @@ afterEach(() => {
 });
 
 describe("Exec", () => {
-  it("reports the exhausted request budget even without a background controller", () => {
+  it("does not place an exhausted request budget in tool definitions", () => {
     for (const tool of getPiBuiltinTools(["Exec", "Bash"], { ctx,
       processJobsAvailability: { chainDepth: 32, maxChainDepth: 32, remainingStarts: 0, unavailableReason: "chain_depth_exhausted" },
     })) {
-      expect(tool.parameters.properties).not.toHaveProperty("background");
-      expect(tool.parameters.properties.description.description).toContain("chainDepth=32, maxChainDepth=32, remainingStarts=0, unavailableReason=chain_depth_exhausted");
+      expect(tool.parameters.properties).toHaveProperty("background");
+      expect(tool.parameters.properties.description.description).not.toContain("chainDepth");
     }
   });
 
@@ -54,11 +54,11 @@ describe("Exec", () => {
       expect((await run({ ...params, background: true }, options(workspace))).outcome.code).toBe("background_unsupported");
     },
   );
-  it("keeps the disabled schema byte-identical and injects background only with a controller", () => {
+  it("keeps definitions byte-identical with and without a controller", () => {
     const withoutController = getPiBuiltinTools(["Exec", "Bash"], { ctx });
     const baseline = Object.fromEntries(withoutController.map((tool) => [tool.name, JSON.stringify(tool.parameters)]));
-    expect(JSON.parse(baseline.Exec).properties).not.toHaveProperty("background");
-    expect(JSON.parse(baseline.Bash).properties).not.toHaveProperty("background");
+    expect(JSON.parse(baseline.Exec).properties).toHaveProperty("background");
+    expect(JSON.parse(baseline.Bash).properties).toHaveProperty("background");
 
     const withController = getPiBuiltinTools(["Exec", "Bash"], { ctx,
       processJobsController: { start: vi.fn() },
@@ -68,7 +68,7 @@ describe("Exec", () => {
     expect(withController.find((tool) => tool.name === "Bash").parameters.properties.background)
       .toEqual(expect.objectContaining({ type: "boolean" }));
     expect(withController.find((tool) => tool.name === "Exec").parameters.properties.background.description)
-      .toContain("Do not use for commands that daemonize");
+      .toContain("Do not daemonize");
     for (const name of ["Exec", "Bash"]) {
       expect(withController.find((tool) => tool.name === name).parameters.properties.description)
         .toEqual(expect.objectContaining({ type: "string" }));
@@ -76,6 +76,7 @@ describe("Exec", () => {
         .toContain("Always provide this when background=true");
     }
 
+    expect(Object.fromEntries(withController.map((tool) => [tool.name, JSON.stringify(tool.parameters)]))).toEqual(baseline);
     const disabledAgain = getPiBuiltinTools(["Exec", "Bash"], { ctx });
     expect(Object.fromEntries(disabledAgain.map((tool) => [tool.name, JSON.stringify(tool.parameters)]))).toEqual(baseline);
   });
@@ -338,7 +339,7 @@ describe("Exec", () => {
       executable: process.execPath,
       args: ["--eval", "require('node:fs').writeFileSync(process.argv[1], 'started')", marker],
       background: true,
-    }, { ctx, ...options(workspace), processJobsController: controller });
+    }, { ...options(workspace), processJobsController: controller });
     await terminal;
     expect(existsSync(marker)).toBe(true);
   });
@@ -363,7 +364,7 @@ describe("Exec", () => {
         executable: process.execPath,
         args: ["--eval", `process.stdout.write(process.env.${key} ?? 'missing')`],
         background: true,
-      }, { ctx, ...options(workspace), processJobsController: controller });
+      }, { ...options(workspace), processJobsController: controller });
       await expect(terminal).resolves.toMatchObject({ stdout: "value-at-handoff" });
     } finally {
       if (previous === undefined) delete process.env[key];
@@ -428,7 +429,7 @@ describe("Exec", () => {
       executable: process.execPath,
       args: ["--eval", target, marker],
       background: true,
-    }, { ctx, ...options(workspace), processJobsController: controller });
+    }, { ...options(workspace), processJobsController: controller });
 
     expect(existsSync(marker)).toBe(false);
     await terminal;
@@ -811,10 +812,10 @@ describe("Exec", () => {
   it("preserves foreground behavior with an injected controller and narrows explicit background limits", async () => {
     const workspace = tempWorkspace();
     const controller = { start: vi.fn(async (request) => ({ jobId: "pj_limits", state: "queued", startedAt: null })) };
-    const foreground = await execToolRun({ executable: process.execPath, args: ["--eval", "process.stdout.write('same')"] }, { ctx, ...options(workspace) });
+    const foreground = await execToolRun({ executable: process.execPath, args: ["--eval", "process.stdout.write('same')"] }, options(workspace));
     const injectedForeground = await execToolRun(
       { executable: process.execPath, args: ["--eval", "process.stdout.write('same')"] },
-      { ctx, ...options(workspace), processJobsController: controller },
+      { ...options(workspace), processJobsController: controller },
     );
     expect({ ...injectedForeground, outcome: { ...injectedForeground.outcome, durationMs: 0 } })
       .toEqual({ ...foreground, outcome: { ...foreground.outcome, durationMs: 0 } });
@@ -975,7 +976,7 @@ describe("Exec", () => {
     const clean = await execToolRun({
       executable: process.execPath,
       args: ["--eval", "process.stdout.write(process.env.MULTICA_TASK_ID ?? 'absent')"],
-    }, { ctx, ...options(workspace) });
+    }, options(workspace));
     expect(clean.text).toBe("absent");
   });
   it("passes argv literally without shell expansion", async () => {
@@ -985,7 +986,7 @@ describe("Exec", () => {
     const result = await execToolRun({
       executable: process.execPath,
       args: ["--eval", "process.stdout.write(process.argv[1])", literal],
-    }, { ctx, ...options(workspace) });
+    }, options(workspace));
 
     expect(result).toMatchObject({
       error: false,
@@ -1000,7 +1001,7 @@ describe("Exec", () => {
     const failed = await execToolRun({
       executable: process.execPath,
       args: ["--eval", "process.stdout.write('out'); process.stderr.write('err'); process.exit(7)"],
-    }, { ctx, ...options(workspace) });
+    }, options(workspace));
     expect(failed.text).toContain("Exit code 7");
     expect(failed.text).toContain("out");
     expect(failed.text).toContain("err");
@@ -1015,7 +1016,7 @@ describe("Exec", () => {
       // Long enough for Node to boot and flush its line on a loaded CI runner, still far below the
       // child's 5s sleep so the timeout is what ends it. At 50ms this raced Node's own startup.
       timeout_ms: 1000,
-    }, { ctx, ...options(workspace) });
+    }, options(workspace));
     expect(timedOut.text).toContain("before-timeout");
     expect(timedOut).toMatchObject({
       error: true,
@@ -1143,7 +1144,7 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
       // Same startup race as the Exec case above: the assertion needs the child's line, so the
       // budget must clear Node's boot time while staying well under the 5s sleep.
       timeout_ms: 1000,
-    }, { ctx, ...options(workspace) });
+    }, options(workspace));
 
     expect(result.text).toContain("started");
     expect(result).toMatchObject({
@@ -1167,7 +1168,7 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
     try {
       const result = await bashToolRun({
         command: "if type mono_agent_parent_fn >/dev/null 2>&1; then exit 9; fi; printf clean",
-      }, { ctx, ...options(workspace) });
+      }, options(workspace));
       expect(result).toMatchObject({ error: false, outcome: { code: "ok" } });
       expect(result.text).toBe("clean");
     } finally {
@@ -1268,6 +1269,33 @@ async function within(promise, timeoutMs) {
     if (timer !== undefined) clearTimeout(timer);
   }
 }
+
+// Inspect the real process runner's timer without spending minutes in a test.
+describe("per-run foreground command ceilings", () => {
+  for (const [name, run, params] of [
+    ["Bash", bashToolRun, { command: `"${process.execPath}" --version` }],
+    ["Exec", execToolRun, { executable: process.execPath, args: ["--version"] }],
+  ]) {
+    it.each([undefined, 900_000, 5_000])(`${name} direct and Pi execution use the same ceiling %s`, async (bashTimeoutMs) => {
+      const workspace = tempWorkspace();
+      const toolLimits = bashTimeoutMs === undefined ? {} : { bashTimeoutMs };
+      const cap = bashTimeoutMs ?? 120_000;
+      const timer = vi.spyOn(globalThis, "setTimeout");
+      const tool = getPiBuiltinTools([name], { ...options(workspace), toolLimits }).find((t) => t.name === name);
+      expect(tool.description).toContain("host_turn_context");
+      expect(tool.parameters.properties.timeout_ms.description).not.toContain(`${cap} ms`);
+      expect(tool.parameters.properties).toHaveProperty("background");
+      for (const timeout_ms of [undefined, 3_600_000]) {
+        timer.mockClear();
+        expect((await run({ ...params, timeout_ms }, { ...options(workspace), toolLimits })).outcome.status).toBe("ok");
+        expect(timer.mock.calls.some(([, ms]) => ms === cap)).toBe(true);
+        timer.mockClear();
+        await tool.execute("ceiling", { ...params, timeout_ms });
+        expect(timer.mock.calls.some(([, ms]) => ms === cap)).toBe(true);
+      }
+    });
+  }
+});
 
 // Each test file binds its direct tool calls to an explicit context.
 const ctx = createToolContext();

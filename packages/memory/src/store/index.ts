@@ -24,8 +24,11 @@ export type {
   MemoryStoreAudit,
   MemoryStoreStatsOptions,
   MemoryType,
+  RecallDegradationCode,
   RecallHit,
   RecallOptions,
+  RecallOutcome,
+  RecallRetrievalMode,
   RecallWeights,
   SimilarHit,
 } from "./types.js";

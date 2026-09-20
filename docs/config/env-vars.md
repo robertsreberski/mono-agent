@@ -97,6 +97,7 @@ MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS=4
 | `MONO_AGENT_PI_AUTH_PATH` | `providers.piAuthPath` | Pi credential file; a non-empty value wins over JSON and loses only to `auth login --pi-auth-path`. Default `~/.pi/agent/auth.json`; `~` expands to home and relative paths resolve from the agent/invocation working directory. |
 | `MONO_AGENT_PI_TRANSPORT` | `providers.piNative.transport` | Preferred Pi transport: `auto` (default), `sse`, `websocket`, or `websocket-cached`; unsupported providers ignore it. |
 | `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS` | `providers.piNative.promptCacheDiagnostics` | Metadata-only prompt-cache request fingerprints in run artifacts; default false. Never prompt text, tool arguments, cache keys, endpoints or credentials. |
+| `MONO_AGENT_PI_CACHE_RETENTION` | `providers.piNative.cacheRetention` | Short/long Anthropic retention (default long); env wins over JSON, then long. Short opts out; both default and explicit values override ambient PI_CACHE_RETENTION. Model support required; long writes 2× input, reads 0.1×; short writes 1.25×. No guaranteed hit. |
 | `MONO_AGENT_PI_MAX_RETRIES` | `providers.piNative.piMaxRetries` | Pi-native transport retries, 0-8, default 2. |
 | `MONO_AGENT_MAX_RETRY_DELAY_MS` | `providers.piNative.maxRetryDelayMs` | Default 60000. |
 | `MONO_AGENT_PI_SESSIONS_ROOT` | `providers.piNative.piSessionsRoot` | Durable JSONL session storage (e.g. `.mono-agent/sessions`); unset = in-memory. |
@@ -173,16 +174,25 @@ They are tolerated so stale environments do not break startup, but they are igno
 | `MONO_AGENT_CONTINUATION_SERVERS` | `tools.continuationServers` | Comma-separated stdio or loopback-HTTP MCP server names that receive trusted request-bound continuation claim capabilities. See [durable continuations](/tools/durable-continuations/). |
 | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | `tools.mcpCallTimeoutMs` | Inactivity timeout per MCP tool call; tool progress notifications reset it. Default 120000. |
 | `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | `tools.mcpCallMaxTotalTimeoutMs` | Hard wall clock per MCP tool call that progress cannot extend. Default 2700000 (45 min). An AskUser configured with no automatic expiry is narrowly exempt. |
-| `MONO_AGENT_WEB_SEARCH_BACKEND` | `tools.web.search.backend` | `auto` (default), strict `searxng`, strict `ollama`, strict `codex`, or `keyless`. Auto tries explicitly configured Ollama → configured SearXNG → ChatGPT-subscription Codex → keyless. Without an Ollama block, existing SearXNG/Codex/keyless behavior is unchanged. |
-| `MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN` | `tools.web.search.maxRequestsPerRun` | Hard limit on actual provider search requests in one logical run; integer 1–20, default 4. Cache hits, coalesced followers, cooldown skips, and quota skips consume no request. |
-| `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` | `tools.web.search.searxng.endpoint` | Canonical unauthenticated loopback HTTP SearXNG base URL; required by strict `searxng`. |
+| `MONO_AGENT_WEB_SEARCH_BACKEND` | `tools.web.search.backend` | One strict provider or comma-separated ordered chain. Default `parallel,ollama` (Parallel then local Ollama); names: `parallel`, `ollama`, `searxng`, `codex`, `keyless`, `duckduckgo`, `startpage`, `hound`. Keyless and Hound are opt-in. `auto` is rejected with the previous explicit order. |
+| `MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN` | `tools.web.search.maxRequestsPerRun` | Hard limit on answered provider searches (including empty answers) in one logical run; integer 1–20, default 4. Failed attempts are refunded; cache hits, coalesced followers, cooldown skips, and quota skips consume no request. Network dispatches have a separate ceiling of four times this limit. |
+| `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` | `tools.web.search.searxng.endpoint` | Canonical unauthenticated loopback HTTP SearXNG base URL; required whenever a selection includes `searxng`. |
 | `MONO_AGENT_WEB_SEARCH_ENDPOINT` | `tools.web.search.endpoint` | Compatibility alias for the canonical SearXNG endpoint variable. Existing config remains valid; prefer the provider-specific name. |
-| `MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL` | `tools.web.search.ollama.baseUrl` | Ollama origin; strict Ollama defaults to `http://127.0.0.1:11434`. Hosted search accepts exact `https://ollama.com`; custom public origins require HTTPS plus explicit trust. |
+| `MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL` | `tools.web.search.ollama.baseUrl` | Ollama origin; Ollama, including in a chain, defaults to `http://127.0.0.1:11434`. Hosted search accepts exact `https://ollama.com`; custom public origins require HTTPS plus explicit trust. |
 | `MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV` | `tools.web.search.ollama.apiKeyEnv` | Explicit environment-variable name for hosted Ollama auth. Required only for exact `https://ollama.com`; rejected for every other origin. |
 | `MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL` | `tools.web.search.ollama.trustPublicUrl` | Explicit `true` acknowledgement for an unauthenticated custom public HTTPS Ollama origin. Never authorizes hosted credentials there. |
 | `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | `tools.web.search.codex.model` | Codex app-server subscription-search model; default `gpt-5.6-luna`. |
+| `MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV` | `tools.web.search.parallel.apiKeyEnv` | Optional credential variable name; omitted means anonymous, missing named value is an error. Read at call time. |
+| `MONO_AGENT_WEB_FETCH_PROVIDER` | `tools.web.fetch.provider` | Strict `local` (default), `parallel`, `hound`, or comma-separated ordered chain such as `local,parallel`. |
+| `MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV` | `tools.web.fetch.parallel.apiKeyEnv` | Optional credential variable name for Parallel extraction; omitted means anonymous. |
 | `MONO_AGENT_WEB_FETCH_RENDER` | `tools.web.fetch.render` | `never` (default and capability disabled) or `auto` (static-first isolated browser fallback). |
 | `MONO_AGENT_WEB_BROWSER_COMMAND` | `tools.web.fetch.browserCommand` | Direct `agent-browser` executable name/path. Default `agent-browser`; shell fragments are not evaluated. |
+
+Hound is built in and requires no endpoint. Remove the retired
+`MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT` and `MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT`
+variables (including empty values); their presence is a migration error, even
+when Hound is unselected. See [native Hound](../tools/web-research.md#native-hound-opt-in).
+
 
 ### Durable continuations
 
@@ -435,4 +445,6 @@ The A2A provider is loaded through `channels.plugins[]` with `package: "@mono-ag
 | `MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS` | `cron.notifyFailureCooldownHours` | Single-job cooldown, in hours, for all-models-failed error notices on `notify: true` cron jobs; default `6`. |
 | `MONO_AGENT_CRON_MODEL` | `cron.model` | Runtime model override for the default single job. |
 | `MONO_AGENT_CRON_EFFORT` | `cron.effort` | Reasoning-effort override for the default single job, subject to model support. |
+| `MONO_AGENT_CRON_PREFLIGHT_JSON` | `cron.preflight` | Explicit argv array (one-line JSON) evaluated before the model responder for the default single job; `{"run":false}` ends the firing as `skipped_gate`, and every gate failure fails open. |
+| `MONO_AGENT_CRON_PREFLIGHT_TIMEOUT_MS` | `cron.preflightTimeoutMs` | Bound, in milliseconds, for one preflight evaluation before it is killed and fails open; default `5000`, max `60000`, separate from `maxRunMs`. |
 | `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. Folder and config jobs merge; duplicate ids error. See [cron channel configuration](/channels/cron/). |

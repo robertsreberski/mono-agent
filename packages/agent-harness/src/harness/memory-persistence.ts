@@ -22,7 +22,7 @@ export async function buildSuccessfulTurn(
   readonly messages: readonly HistoryMessage[];
   readonly userMemoryText: string;
 }> {
-    const userLiveInputs = liveInputs.filter((input) => !input.deliveryKey?.startsWith("monitor:"));
+    const userLiveInputs = liveInputs;
     const capturedAt = options.now?.().toISOString() ?? new Date().toISOString();
     let assistantHistoryText = assistantText;
     try {

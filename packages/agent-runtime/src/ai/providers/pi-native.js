@@ -35,6 +35,7 @@ import { closePiMcpClients } from "../../agent/tools/pi-bridge.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
 import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "./pi-models.js";
+import { registerPiSupplementModels } from "../pi-supplement.js";
 import {
   textFromContent,
   thinkingFromContent,
@@ -74,6 +75,7 @@ import {
   runProactiveCompaction,
   runReactiveCompaction,
 } from "./pi-native/compaction-driver.js";
+import { armMidRunCompaction } from "./pi-native/mid-run-compaction.js";
 import {
   activateTurnHarness,
   buildTurnHarness,
@@ -217,6 +219,13 @@ function buildRunModels(runtime, options, runtimeWarnings, providerAttributionSe
           ? {}
           : { authContext: options.providerCheckAuthContext }),
       });
+      // pi-supplement: the pi-agent-core drive path re-resolves the run's model
+      // by id inside THIS collection (`lane.models.getModel(provider, modelId)`),
+      // so a supplemented row must be registered here, not just returned by
+      // `resolvePiRuntimeModel`. Upstream ids already in the collection are left
+      // untouched (upstream wins). The `piResolvedModels` seam above stays
+      // verbatim and never receives supplements.
+      registerPiSupplementModels(models);
     }
   }
   return withProviderCheckOutputCap(
@@ -238,8 +247,9 @@ const PROVIDER_CHECK_REQUEST_METHODS = new Set([
 /**
  * Pi's Agent resolves the transport model through `Models` again, so capping
  * only the model handed to the harness does not constrain the actual provider
- * request. Bind the same cap at the dispatcher boundary used by every request
- * path. This wrapper is activated only for explicit provider checks.
+ * request or the intended output limit used to classify length stops. Cap both
+ * re-resolution and dispatch, leaving the shared model collection unchanged.
+ * This wrapper is activated only for explicit provider checks.
  *
  * @param {import("@earendil-works/pi-ai").Models} models
  * @param {unknown} requestedCap
@@ -248,21 +258,22 @@ const PROVIDER_CHECK_REQUEST_METHODS = new Set([
 function withProviderCheckOutputCap(models, requestedCap) {
   const cap = Number(requestedCap);
   if (!Number.isSafeInteger(cap) || cap <= 0) return models;
+  const capped = (model) => {
+    if (model === undefined) return model;
+    const current = Number(model.maxTokens);
+    return { ...model, maxTokens: Number.isFinite(current) && current > 0 ? Math.min(current, cap) : cap };
+  };
   const wrappers = new Map();
   return /** @type {import("@earendil-works/pi-ai").Models} */ (new Proxy(models, {
     get(target, property) {
       const value = Reflect.get(target, property, target);
       if (typeof property !== "string" || typeof value !== "function") return value;
+      if (property === "getModel") return (...args) => capped(value.apply(target, args));
       if (!PROVIDER_CHECK_REQUEST_METHODS.has(property)) return value.bind(target);
       let wrapper = wrappers.get(property);
       if (wrapper === undefined) {
         wrapper = (model, ...args) => {
-          const current = Number(model?.maxTokens);
-          const cappedModel = {
-            ...model,
-            maxTokens: Number.isFinite(current) && current > 0 ? Math.min(current, cap) : cap,
-          };
-          return value.call(target, cappedModel, ...args);
+          return value.call(target, capped(model), ...args);
         };
         wrappers.set(property, wrapper);
       }
@@ -351,6 +362,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   let mcpClients = [];
   let closeRunTools = async () => {};
   let harness = null;
+  /** @type {null | {disarm: () => Promise<void>}} */
+  let midRunCompaction = null;
   // The ONE explicit runState the extracted modules (stream subscriber, session
   // lifecycle, compaction driver, turn runner, result builder) read/write.
   // Reassignable scalars/refs live here so a module can rebind them (an
@@ -368,6 +381,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     toolResultsSeen: 0,
     lastToolName: null,
     maxTurnsHit: false,
+    toolExecutionsThisTurn: 0,
+    toolFailureThisTurn: false,
+    structuredOutputCompletedThisTurn: false,
     // Populated by the StructuredOutput tool callback (built in the turn runner);
     // read by the finalization retry predicate and the result assembly.
     structuredResult: null,
@@ -381,13 +397,19 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // Auto-compaction sub-state. The policy is (re)computed at the decision
     // point against the model actually serving the request; these flags track
     // whether a compaction fired so the run reports context_compaction_applied
-    // honestly and never double-compacts.
+    // honestly and suppresses redundant fresh compactions.
     compaction: {
       applied: false,
       reactiveAttempted: false,
       compactedThisRun: false,
+      lastMidRunCompaction: null,
       policy: null,
       diagnostics: {},
+      // Usage of this run's own transcript that a mid-run compaction summarized
+      // away. Those tokens were billed to this run, so they are added back to
+      // the sliced transcript usage (see mid-run-compaction.js).
+      carriedUsage: null,
+      carriedUsageMeasured: false,
     },
     session: null,
     // Fresh stateless calls own a private repo, even when attribution matches a
@@ -451,14 +473,14 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     }
     emitCaptured(events, options.onEvent, event);
   };
-  // Exec and Monitor both run a command a host configured Bash's risk tier for.
-  // Leaving either unmapped would let the same shell command take a lower
+  // Exec runs a command a host configured Bash's risk tier for.
+  // Leaving it unmapped would let the same shell command take a lower
   // approval tier simply by being started through a different tool.
   const bashRiskTier = options.toolRiskTiers?.Bash;
   const approvalRiskTiers = {
     ...(options.toolRiskTiers || {}),
     ...(bashRiskTier !== undefined
-      ? Object.fromEntries(["Exec", "Monitor"]
+      ? Object.fromEntries(["Exec"]
         .filter((name) => options.toolRiskTiers?.[name] === undefined)
         .map((name) => [name, bashRiskTier]))
       : {}),
@@ -536,8 +558,15 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     const effectiveThinkingLevel = thinkingLevelForEffort(options.effort || "medium", capabilities);
     const reference = resolved.reference || `${resolved.provider}:${resolved.model}`;
 
-    // One canonical clamp path consumes the typed policy inputs directly.
-    const toolLimits = resolveAgentCompactionPolicy(options, runtime.model);
+    // One canonical clamp path consumes the typed policy inputs directly. The
+    // deprecated flat `settings` bag is gone; hosts pass typed toolLimits and
+    // compaction, and the per-run execution budget main added is overlaid here so
+    // direct and Pi execution share one foreground ceiling.
+    const toolLimits = {
+      ...resolveAgentCompactionPolicy(options, runtime.model),
+      // This per-run execution budget has no legacy settings equivalent.
+      ...(options.toolLimits?.bashTimeoutMs === undefined ? {} : { bashTimeoutMs: options.toolLimits.bashTimeoutMs }),
+    };
     const toolExecution = resolvePiToolExecutionMode(options);
     for (const warning of toolExecution.warnings) {
       runtimeWarnings.push(warning);
@@ -674,6 +703,21 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       runtimeWarnings,
     });
 
+    // Mid-run compaction: the proactive check above fires at most once, before
+    // the request. Inside one long prompt the transcript keeps growing, so arm
+    // Pi's own checkpoint compaction for the lifetime of this prompt with the
+    // bridge's guarded session_before_compact decision installed. Pi captures
+    // the lane's compaction settings into the operation at accept time, so this
+    // must happen BEFORE harness.prompt(); the same-operation compaction never
+    // starts a second run and so cannot disturb the live-input epoch below.
+    midRunCompaction = await armMidRunCompaction(runState, {
+      harness,
+      options,
+      reference,
+      onEvent,
+      runtimeWarnings,
+    });
+
     // Arm the main-prompt epoch after proactive compaction so compaction and
     // transcript seeding cannot be mistaken for live-input consumption.
     runState.recoveryBaselineTipId = await runState.session.getLeafId();
@@ -715,12 +759,20 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       liveInputEpoch.finish(promptResult.operationId);
     } finally {
       // Stop joins unresolved native enqueue and reconciles every returned
-      // entry before the exact-operation subscription is removed.
-      try { await liveInput.stop(); } finally {
-        runState.recoveryInputIds = liveInputEpoch.consumedInputIds();
-        liveInputEpoch.close();
+      // entry before the exact-operation subscription is removed. Mid-run
+      // compaction is disarmed last so a compaction settled during teardown is
+      // still accounted for, and so the harness returns to its
+      // compaction-disabled default before any later prompt on this run.
+      try {
+        try { await liveInput.stop(); } finally {
+          runState.recoveryInputIds = liveInputEpoch.consumedInputIds();
+          liveInputEpoch.close();
+        }
+      } finally {
+        await midRunCompaction.disarm();
       }
     }
+
 
     runState.externalAbort ||= !!options.abortSignal?.aborted;
 
@@ -784,7 +836,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     const { runTranscript, lastAssistant, stopReason, finalText, finalThinking } = state;
     const runAssistantCount = state.assistantMessages.length;
 
-    const ownUsage = usageFromMessages(runTranscript);
+    // Run-owned usage survives a mid-run compaction: the compaction collapses
+    // part of this run's own transcript into a summary, so the usage of the
+    // messages it removed is carried forward (and the baseline re-anchored) by
+    // the mid-run controller instead of being silently lost here.
+    const ownUsage = usageFromMessages(runTranscript, runState.compaction.carriedUsage);
     // Priced from this agent's own tokens: it is the fallback for a run the
     // provider did not price, and only these tokens are this model's.
     const estimatedCost = estimateCost({
@@ -955,7 +1011,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       providerSessionId,
       runtimeWarnings,
       capabilitiesUsed,
-      usageMeasured: hasMeasuredUsage(runTranscript),
+      usageMeasured: hasMeasuredUsage(runTranscript) || runState.compaction.carriedUsageMeasured === true,
       structuredResult: runState.structuredResult,
       effectiveEffort: providerEffectiveEffort,
     }), ...(providerSessionRecovery ? { providerSessionRecovery } : {}) };
@@ -995,6 +1051,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       effectiveEffort: harness?.getThinkingLevel?.(),
     });
   } finally {
+    // Safety net for a throw between arming and the prompt: disarm is
+    // idempotent, and it must run before the harness closes so the session's
+    // compaction settings are restored while they still can be.
+    try { await midRunCompaction?.disarm(); } catch { /* best-effort */ }
     try { await harness?.close?.(); } catch { /* best-effort */ }
     if (runState.sessionEntry) runState.sessionEntry.busy = false;
     if (runState.registeredSessionEntry) runState.registeredSessionEntry.busy = false;

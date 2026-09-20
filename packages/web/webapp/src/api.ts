@@ -1,3 +1,4 @@
+import { parseProviderUsageSnapshot } from "@mono-agent/agent-contracts/provider-usage";
 import type { TagSummary, TagColor, ProjectColor } from "./types";
 import type {
   ActiveThreads,
@@ -720,6 +721,16 @@ export const api = {
     return result.agent;
   },
 
+  providerUsage: (sourceId: string, signal?: AbortSignal) => request<unknown>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-usage`,
+    { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, ...(signal === undefined ? {} : { signal }) },
+  ).then(parseProviderUsageSnapshot),
+
+  refreshProviderUsage: (sourceId: string, signal?: AbortSignal) => request<unknown>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-usage/refresh`,
+    { method: "POST", body: "{}", headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, ...(signal === undefined ? {} : { signal }) },
+  ).then(parseProviderUsageSnapshot),
+
   providerAuthStatus: (
     sourceId: string,
     signal?: AbortSignal,
@@ -921,10 +932,10 @@ export const api = {
       { method: "POST", body: JSON.stringify({ text }) },
     ),
 
-  cancelTurn: async (threadId: string) =>
+  cancelTurn: async (threadId: string, origin: "user-stop" | "api" = "api") =>
     request<{ cancelled: true; thread: ThreadSummary }>(
       `/api/v1/threads/${encodeURIComponent(threadId)}/cancel`,
-      { method: "POST" },
+      { method: "POST", body: JSON.stringify({ origin }) },
     ),
 
   pendingAsk: async (threadId: string, signal?: AbortSignal) => {

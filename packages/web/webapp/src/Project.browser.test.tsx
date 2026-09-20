@@ -218,7 +218,7 @@ describe.each([
   it("shows dashboard tag chips with a bounded overflow count", async () => {
     await page.viewport(width, height);
     const tags = ["planning", "implementing", "reviewing", "ready to merge", "merged"].map((name, i) => tag(`tag-${String(i)}`, "alpha", { name, color: i % 2 === 0 ? "blue" : "green" }));
-    const rows = [{ ...first, runState: { status: "complete" as const }, lastMessagePreview: "Do not show this excerpt", tagIds: tags.map((item) => item.id) }, { ...second, tagIds: [tags[0]!.id] }];
+    const rows = [{ ...first, runState: { status: "complete" as const }, lastMessagePreview: "A settled reply beside the chips", tagIds: tags.map((item) => item.id) }, { ...second, tagIds: [tags[0]!.id] }];
     storeMock.current = dashboardStore({ threads: rows, visibleThreads: rows, tagsByAgent: { alpha: tags } });
     render(<WebRuntimeProvider><Dashboard highlightSelected={false} /></WebRuntimeProvider>);
     expect(await screen.findByText("+2")).toBeVisible();
@@ -229,8 +229,9 @@ describe.each([
       expect(line.getBoundingClientRect().top).toBeLessThan(preview.getBoundingClientRect().bottom);
     }
     expect(document.querySelectorAll(".thread-preview .tag-chip")).toHaveLength(4);
-    expect(screen.getByText("Completed")).toBeVisible();
-    expect(screen.queryByText("Do not show this excerpt")).toBeNull();
+    expect(screen.queryByText("Completed")).toBeNull();
+    // The settled slot carries the newest reply; the chips keep their own line space beside it.
+    expect(screen.getByText("A settled reply beside the chips")).toBeVisible();
     expect(getComputedStyle(document.querySelector(".dashboard-footer")!).borderTopWidth).toBe("0px");
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
     await capture(`tags-dashboard-chips-${label}`);
@@ -372,5 +373,77 @@ describe.each([
     expect(await screen.findByRole("menuitem", { name: "Web console" })).toBeInTheDocument();
     await capture(`project-picker-${label}`);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  });
+});
+
+describe("conversation rows with reply excerpts", () => {
+  it("gives a long excerpt only the space the badge and chips leave behind", async () => {
+    // A long settled reply with ragged whitespace: the row collapses it to
+    // one line and ellipsizes it, instead of squeezing its neighbours.
+    const longExcerpt = `Rebuilt the checkout queue\n  so deploys drain in order,\n  retries logged  ${"x".repeat(90)}`;
+    const collapsed = `Rebuilt the checkout queue so deploys drain in order, retries logged ${"x".repeat(90)}`;
+    const tags = [
+      tag("planning", "alpha", { name: "planning", color: "blue" }),
+      tag("review", "alpha", { name: "review", color: "green" }),
+    ];
+    const withExcerpt = { ...first, title: "Queue rebuild", runState: { status: "complete" as const },
+      lastMessagePreview: longExcerpt, tagIds: tags.map((item) => item.id) };
+    const tagsOnly = { ...second, title: "Tag gardening", projectId: null,
+      runState: { status: "complete" as const }, tagIds: [tags[0]!.id] };
+    const bare = thread("bare-row", "alpha", { title: "Bare row", projectId: null,
+      runState: { status: "complete" as const } });
+    const rows = [withExcerpt, tagsOnly, bare];
+    storeMock.current = dashboardStore({ threads: rows, visibleThreads: rows,
+      tagsByAgent: { alpha: tags } });
+    render(
+      <WebRuntimeProvider>
+        <Dashboard highlightSelected={false} />
+      </WebRuntimeProvider>,
+    );
+
+    const row = await screen.findByRole("button", { name: "Open Queue rebuild, in project Web console" });
+    const preview = row.querySelector(".thread-preview-text")!;
+    expect(preview.textContent).toBe(collapsed);
+    expect(preview).toHaveAttribute("title", collapsed);
+    const previewStyle = getComputedStyle(preview);
+    expect(previewStyle.textOverflow).toBe("ellipsis");
+    expect(previewStyle.overflow).toBe("hidden");
+    expect(previewStyle.whiteSpace).toBe("nowrap");
+    expect(previewStyle.flexGrow).toBe("1");
+    // Badge and chips keep their intrinsic width beside the excerpt.
+    const badge = row.querySelector(".project-badge")!;
+    expect(getComputedStyle(badge).flexShrink).toBe("0");
+    expect(getComputedStyle(row.querySelector(".thread-tags")!).flexShrink).toBe("0");
+    expect(row.querySelector(".thread-tags .tag-separator")).not.toBeNull();
+
+    // Tags alone read without a dangling separator; neither needs no tags line.
+    const tagsRow = await screen.findByRole("button", { name: "Open Tag gardening" });
+    expect(tagsRow.querySelector(".thread-preview-text")?.textContent).toBe("");
+    expect(tagsRow.querySelector(".thread-tags")).not.toBeNull();
+    expect(tagsRow.querySelector(".thread-tags .tag-separator")).toBeNull();
+    const bareRow = await screen.findByRole("button", { name: "Open Bare row" });
+    expect(bareRow.querySelector(".thread-tags")).toBeNull();
+
+    for (const [label, width, height] of [["mobile", 390, 844], ["desktop", 1440, 900]] as const) {
+      await page.viewport(width, height);
+      // The excerpt truncates instead of pushing its neighbours out of the row.
+      const line = row.querySelector(".thread-preview")!;
+      const lineBox = line.getBoundingClientRect();
+      if (label === "mobile") {
+        // A phone leaves no room for the whole reply: it ellipsizes.
+        expect(preview.scrollWidth).toBeGreaterThan(preview.clientWidth);
+      } else {
+        // A desktop fits a server-capped reply in full; nothing is cut.
+        expect(preview.scrollWidth).toBeLessThanOrEqual(preview.clientWidth);
+        expect(preview.clientWidth).toBeGreaterThan(0);
+      }
+      for (const element of [badge, ...row.querySelectorAll(".thread-tags .tag-chip")]) {
+        const box = element.getBoundingClientRect();
+        expect(box.width).toBeGreaterThan(0);
+        expect(box.right).toBeLessThanOrEqual(lineBox.right + 1);
+      }
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+      await capture(`conversation-row-excerpt-${label}`);
+    }
   });
 });

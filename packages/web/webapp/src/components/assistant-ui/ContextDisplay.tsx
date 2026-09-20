@@ -1,9 +1,12 @@
 "use client";
 
+import { isProviderUsageId, PROVIDER_USAGE_LABELS } from "@mono-agent/agent-contracts/provider-usage";
 import { Popover } from "@base-ui/react/popover";
-import type { CSSProperties, ReactNode } from "react";
+import { type CSSProperties, type ReactNode, useState } from "react";
+import type { AgentSummary, ProviderUsageId } from "../../types";
 import { formatUsd, type ConsoleContextProjection } from "../../usage";
 import { Icon } from "../Icon";
+import { ProviderUsageMeters, useProviderUsage } from "../ProviderUsageMeters";
 
 export interface ContextDisplayUsage {
   readonly input?: number;
@@ -18,6 +21,10 @@ export interface ContextDisplayProps {
   readonly context: ConsoleContextProjection;
   readonly processed?: ContextDisplayUsage;
   readonly conversationCost?: number;
+  readonly providerUsage?: {
+    readonly agent: AgentSummary;
+    readonly providerId: string;
+  };
   readonly className?: string;
 }
 
@@ -100,12 +107,39 @@ function SectionTitle({ children }: { readonly children: ReactNode }) {
   return <h3 className="context-display-section-title">{children}</h3>;
 }
 
+function ProviderUsageSection({
+  agent,
+  providerId,
+}: {
+  readonly agent: AgentSummary;
+  readonly providerId: ProviderUsageId;
+}) {
+  const { snapshot, loading } = useProviderUsage(agent);
+  const usage = snapshot?.providers.find((provider) => provider.providerId === providerId);
+  const label = usage?.label ?? PROVIDER_USAGE_LABELS[providerId];
+
+  if (!loading && usage === undefined) return null;
+  return (
+    <section className="context-display-section context-display-provider-usage" aria-label={`${label} usage`}>
+      <div className="context-display-provider-heading">
+        <SectionTitle>{label} usage</SectionTitle>
+        {usage?.plan !== undefined && <span className="provider-usage-plan">{usage.plan}</span>}
+      </div>
+      {loading
+        ? <p className="context-display-provider-loading" role="status">Loading usage…</p>
+        : <ProviderUsageMeters usage={usage} />}
+    </section>
+  );
+}
+
 export function ContextDisplay({
   context,
   processed,
   conversationCost,
+  providerUsage,
   className,
 }: ContextDisplayProps) {
+  const [open, setOpen] = useState(false);
   const usage = context.usage;
   const totalTokens = tokenCount(usage?.total);
   const cost = knownCost(conversationCost);
@@ -139,9 +173,15 @@ export function ContextDisplay({
       ? "Latest provider measurement"
       : "Last measured";
   const sectionAriaLabel = sectionTitle;
+  const availableProviderUsage = providerUsage !== undefined
+    && providerUsage.agent.supportsProviderUsage === true
+    && providerUsage.agent.status !== "offline"
+    && isProviderUsageId(providerUsage.providerId)
+    ? { agent: providerUsage.agent, providerId: providerUsage.providerId }
+    : undefined;
 
   return (
-    <Popover.Root>
+    <Popover.Root open={open} onOpenChange={setOpen}>
       {/* The toolbar shares one narrow row with the model selector on a phone,
           so the trigger carries the single number worth glancing at. Tokens,
           state, and cost are a tap away in the popup, and the aria-label keeps
@@ -211,6 +251,14 @@ export function ContextDisplay({
                 )}
                 <Breakdown usage={usage} total={totalTokens} />
               </section>
+            )}
+
+            {open && availableProviderUsage !== undefined && (
+              <ProviderUsageSection
+                key={`${availableProviderUsage.agent.sourceId}:${availableProviderUsage.agent.generation ?? "unknown"}:${availableProviderUsage.providerId}`}
+                agent={availableProviderUsage.agent}
+                providerId={availableProviderUsage.providerId}
+              />
             )}
 
             {processed !== undefined && (

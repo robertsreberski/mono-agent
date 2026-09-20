@@ -1,3 +1,4 @@
+import type { WebCancelOrigin } from "./contracts.js";
 import { CONSOLE_READ_TOOL_NAMES, executeConsoleTool, type ConsoleToolScope, type ConsoleToolOperation, type ConsoleToolCommit } from "./console-tools.js";
 import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, readdir, unlink } from "node:fs/promises";
@@ -5,7 +6,7 @@ import { resolve } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 
-import { normalizeMonitorTerminalReply, hasMonitorReplyContent, monitorReplyText } from "./monitor-reply.js";
+import { normalizeWakeTerminalReply, hasWakeReplyContent, wakeReplyText } from "./wake-reply.js";
 
 import {
   AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE,
@@ -15,11 +16,9 @@ import {
   classifyNotifySuppression,
   NOTHING_TO_REPORT_SENTINEL,
   type AgentReplyPart,
-  parseMonitorProjection,
   parseProcessJobProjection,
   type AgentStreamEvent,
   type AgentStreamWireFrame,
-  type MonitorProjection,
   type ProcessJobProjection,
   type ProcessJobState,
 } from "@mono-agent/agent-contracts";
@@ -28,6 +27,7 @@ import {
   WEB_ACTIVE_THREAD_LIMIT,
   WEB_MAX_FILES_PER_TURN,
   WEB_MAX_LIVE_INPUTS_PER_THREAD,
+  WEB_MAX_TURN_TEXT_CHARACTERS,
   WEB_MAX_TURN_ATTACHMENT_BYTES,
   type WebAgentProvider,
   type WebAgentRunSettings,
@@ -48,8 +48,7 @@ import {
   type WebMessagePage,
   type WebProject,
   type WebProjectColor,
-  type WebProjectTransition,
-  type WebModelTransition,
+  type WebConversationMarkerPart,
   type WebRouteSelection,
   type WebThreadNotificationTriggerKind,
   type WebQuote,
@@ -74,7 +73,8 @@ import {
 } from "./contracts.js";
 import { formatCronReplyContext, type CronReplySnapshotCandidate } from "./cron-reply-context.js";
 import type { WebTag, CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
-import type { ProjectContextSource } from "./project-context.js";
+import { withProjectContext, formatQuotedTurn, type ProjectContextSource } from "./project-context.js";
+import { isConversationMarker } from "./conversation-markers.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
@@ -151,6 +151,7 @@ export interface PatchStoredProjectInput {
 }
 
 interface ThreadRow {
+  read_revision: number;
   id: string;
   source_id: string;
   project_id: string | null;
@@ -355,8 +356,6 @@ interface PriorOutcomeRow {
   /** `turns.rowid`, so the candidate read can break a shared start stamp. */
   ordinal: number;
   has_user: number;
-  /** Whether a completed host-owned Monitor delivery claims this turn. */
-  claimed: number;
 }
 
 interface TurnRow {
@@ -374,6 +373,7 @@ interface TurnRow {
   finished_at: string | null;
   error_code: string | null;
   error_message: string | null;
+  cancel_origin: WebCancelOrigin | null;
 }
 
 interface LiveInputRow {
@@ -515,9 +515,7 @@ export interface ClaimedWebPushDelivery {
 /**
  * The searchable text of one message row, derived in SQL so the index cannot
  * drift from `parts_json`: every write path in this store goes through the
- * triggers below rather than remembering to maintain a second copy. Legacy
- * Monitor history gets an association-verified projection repair at open; its
- * canonical parts remain untouched.
+ * triggers below rather than remembering to maintain a second copy.
  *
  * Only `text` parts are indexed. Reasoning is the agent's working-out and tool
  * payloads are machine JSON; both would drown a search of what was actually
@@ -714,11 +712,6 @@ export type ProcessJobWakeReservation =
   | { readonly kind: "completed"; readonly disposition: "steered" | "follow_up" }
   | { readonly kind: "uncertain" };
 
-export type MonitorWakeReservation =
-  | { readonly kind: "new" }
-  | { readonly kind: "completed"; readonly disposition: "steered" | "follow_up" }
-  | { readonly kind: "uncertain" };
-
 export interface StoredLiveInput {
   readonly id: string;
   readonly threadId: string;
@@ -910,7 +903,6 @@ export class WebStore {
       // After recovery, so anything the recovery settled is already indexed by
       // its own trigger and this only sweeps what genuinely stayed running.
       store.reindexUnsettledMessages();
-      store.reindexLegacyMonitorMessages();
       return store;
     } catch (error) {
       store.close();
@@ -1676,9 +1668,13 @@ export class WebStore {
         snapshotKind,
         capturedAt: this.now(),
         run,
-        text: run.text ?? "",
+        // A gate skip is not a failure: its bounded reason rides in `error` on
+        // the wire, so surface it as result text rather than a failure message.
+        text: run.status === "skipped_gate"
+          ? `Skipped by preflight gate${run.error === undefined ? "" : `: ${run.error}`}`
+          : run.text ?? "",
         ...(run.failureKind === undefined ? {} : { errorCode: run.failureKind }),
-        ...(run.error === undefined ? {} : { errorMessage: run.error }),
+        ...(run.error === undefined || run.status === "skipped_gate" ? {} : { errorMessage: run.error }),
         sourceFieldsTruncated: run.fieldsTruncated ?? [],
         sourceTruncationKnown: true,
       };
@@ -2134,7 +2130,7 @@ export class WebStore {
 
   /** Append or update exactly one retained card for a web-origin process job. */
   upsertProcessJobCard(input: UpsertWebProcessJobCardInput): UpsertWebProcessJobCardResult {
-    const projection = parseProcessJobProjection(input.processJob);
+    let projection = parseProcessJobProjection(input.processJob);
     const thread = this.requireThread(input.threadId);
     if (thread.sourceId !== input.sourceId) {
       throw new WebConsoleError("invalid_notification", "The process job does not belong to this agent thread.", 409);
@@ -2155,7 +2151,7 @@ export class WebStore {
       SELECT * FROM process_job_cards WHERE source_id = ? AND job_id = ?
     `).get(input.sourceId, projection.jobId) as unknown as ProcessJobCardRow | undefined;
     const projectionJson = JSON.stringify(projection);
-    const projectionSha256 = createHash("sha256").update(projectionJson).digest("hex");
+    let projectionSha256 = createHash("sha256").update(projectionJson).digest("hex");
     const now = this.now();
     if (existing === undefined) {
       const messageId = randomUUID();
@@ -2218,6 +2214,11 @@ export class WebStore {
       throw new WebConsoleError("storage_corrupt", "A retained process-job card has invalid content.", 500);
     }
     assertProcessJobCardTransition(priorPart.job, projection);
+    if (priorPart.job.kind === "internal" && projection.kind === "internal" && priorPart.job.subagentProgress
+      && (projection.subagentProgress === undefined || projection.subagentProgress.revision < priorPart.job.subagentProgress.revision)) {
+      projection = { ...projection, subagentProgress: priorPart.job.subagentProgress };
+      projectionSha256 = createHash("sha256").update(JSON.stringify(projection)).digest("hex");
+    }
     const hasPriorWakeResponse = existing.response_text !== null || priorReplyParts.length > 0;
     if (hasPriorWakeResponse
       && input.responseText !== undefined
@@ -2337,9 +2338,9 @@ export class WebStore {
       const turn = this.requireTurn(input.turnId);
       if (turn.status === "complete" && this.hasProcessJobTurnAssociation(input.turnId)) {
         const message = this.requireMessage(turn.assistant_message_id);
-        const normalized = normalizeMonitorTerminalReply(message.parts, true);
+        const normalized = normalizeWakeTerminalReply(message.parts, true);
         if (normalized.changed) this.writeMessageParts(message.id, normalized.parts, this.now());
-        this.repairMonitorResponsePush(input.turnId, normalized.parts);
+        this.repairWakeResponsePush(input.turnId, normalized.parts);
         return normalized.changed ? this.requireMessage(message.id) : undefined;
       }
     }
@@ -2390,162 +2391,11 @@ export class WebStore {
     return result.changes === 1;
   }
 
-  /** Durably claim one Monitor wake before touching the operator. */
-  reserveMonitorWake(input: {
-    readonly sourceId: string;
-    readonly threadId: string;
-    readonly monitorId: string;
-    readonly deliveryKey: string;
-    readonly payloadSha256: string;
-    readonly monitor: MonitorProjection;
-  }): MonitorWakeReservation {
-    const monitor = parseMonitorProjection(input.monitor);
-    if (monitor.monitorId !== input.monitorId) {
-      throw new WebConsoleError("invalid_notification", "The Monitor projection does not match its delivery identity.", 409);
-    }
-    const thread = this.database.prepare("SELECT source_id, archived_at, trigger_kind FROM threads WHERE id = ?")
-      .get(input.threadId) as unknown as {
-        source_id: string;
-        archived_at: string | null;
-        trigger_kind: string | null;
-      } | undefined;
-    if (thread === undefined || thread.source_id !== input.sourceId) {
-      throw new WebConsoleError("invalid_notification", "The Monitor wake does not match its web thread.", 409);
-    }
-    if (thread.archived_at !== null || thread.trigger_kind !== null) {
-      throw new WebConsoleError("thread_archived", "The Monitor wake destination is not an active web conversation.", 409);
-    }
-    const existing = this.database.prepare(`
-      SELECT monitor_id, thread_id, payload_sha256, state, disposition
-      FROM monitor_wake_deliveries WHERE source_id = ? AND delivery_key = ?
-    `).get(input.sourceId, input.deliveryKey) as unknown as {
-      monitor_id: string;
-      thread_id: string | null;
-      payload_sha256: string;
-      state: "accepted" | "completed";
-      disposition: "steered" | "follow_up" | null;
-    } | undefined;
-    if (existing !== undefined) {
-      if (existing.monitor_id !== input.monitorId
-        || existing.thread_id !== input.threadId
-        || existing.payload_sha256 !== input.payloadSha256) {
-        throw new WebConsoleError(
-          "notification_idempotency_conflict",
-          "The Monitor delivery key was already used for a different wake.",
-          409,
-        );
-      }
-      if (existing.state === "completed"
-        && (existing.disposition === "steered" || existing.disposition === "follow_up")) {
-        return { kind: "completed", disposition: existing.disposition };
-      }
-      return { kind: "uncertain" };
-    }
-    this.database.prepare(`
-      INSERT INTO monitor_wake_deliveries (
-        source_id, monitor_id, delivery_key, thread_id, payload_sha256, projection_json,
-        state, disposition, turn_id, created_at, completed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'accepted', NULL, NULL, ?, NULL)
-    `).run(
-      input.sourceId,
-      input.monitorId,
-      input.deliveryKey,
-      input.threadId,
-      input.payloadSha256,
-      JSON.stringify(monitor),
-      this.now(),
-    );
-    return { kind: "new" };
-  }
-
-  /** Hold terminal pushes while this exact turn's steering receipt is unresolved. */
-  setMonitorWakeSteeringTurn(sourceId: string, deliveryKey: string, turnId: string, pending: boolean): void {
-    const turn = this.requireTurn(turnId);
-    const changed = this.database.prepare(`
-      UPDATE monitor_wake_deliveries SET turn_id = ?
-      WHERE source_id = ? AND delivery_key = ? AND thread_id = ? AND state = 'accepted'
-    `).run(pending ? turnId : null, sourceId, deliveryKey, turn.thread_id);
-    if (changed.changes !== 1) {
-      throw new WebConsoleError("notification_reservation_lost", "The Monitor steering reservation was lost.", 409);
-    }
-  }
-
-  completeMonitorWake(input: {
-    readonly sourceId: string;
-    readonly monitorId: string;
-    readonly deliveryKey: string;
-    readonly disposition: "steered" | "follow_up";
-    readonly turnId?: string;
-  }): WebMessage | undefined {
-    let messageId: string | undefined;
-    this.transaction(() => {
-      const result = this.database.prepare(`
-        UPDATE monitor_wake_deliveries
-        SET state = 'completed', disposition = ?, turn_id = ?, completed_at = ?
-        WHERE source_id = ? AND monitor_id = ? AND delivery_key = ? AND state = 'accepted'
-      `).run(
-        input.disposition,
-        input.turnId ?? null,
-        this.now(),
-        input.sourceId,
-        input.monitorId,
-        input.deliveryKey,
-      );
-      if (result.changes !== 1) {
-        throw new WebConsoleError("notification_reservation_lost", "The Monitor wake reservation was lost.", 409);
-      }
-      if (input.turnId === undefined) return;
-      const turn = this.requireTurn(input.turnId);
-      const reservation = this.database.prepare(`
-        SELECT thread_id, projection_json FROM monitor_wake_deliveries
-        WHERE source_id = ? AND monitor_id = ? AND delivery_key = ?
-      `).get(input.sourceId, input.monitorId, input.deliveryKey) as unknown as {
-        thread_id: string | null;
-        projection_json: string | null;
-      } | undefined;
-      if (reservation?.thread_id !== turn.thread_id) {
-        throw new WebConsoleError("monitor_origin_mismatch", "The Monitor activity does not belong to this turn.", 409);
-      }
-      if (reservation.projection_json === null) return;
-      let projection: MonitorProjection;
-      try {
-        projection = parseMonitorProjection(JSON.parse(reservation.projection_json) as unknown);
-        if (projection.monitorId !== input.monitorId) throw new TypeError("Monitor identity mismatch.");
-      } catch {
-        throw new WebConsoleError("storage_corrupt", "A retained Monitor wake projection is invalid.", 500);
-      }
-      const message = this.requireMessage(turn.assistant_message_id);
-      const raw = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?")
-        .get(message.id) as unknown as { parts_json: string };
-      const original = parseParts(raw.parts_json);
-      const normalized = turn.status === "complete" ? normalizeMonitorTerminalReply(original) : { parts: original, changed: false };
-      const parts = normalized.parts;
-      const activityChanged = upsertMonitorActivity(parts, projection, input.deliveryKey);
-      if (turn.status === "complete") this.repairMonitorResponsePush(input.turnId, parts);
-      if (!activityChanged && !normalized.changed) return;
-      this.writeMessageParts(message.id, parts, this.now());
-      messageId = message.id;
-    });
-    return messageId === undefined ? undefined : this.requireMessage(messageId);
-  }
-
-  private hasMonitorTurnAssociation(turnId: string, deliveryKey?: string): boolean {
-    const rows = this.database.prepare(`
-      SELECT deliveries.delivery_key FROM monitor_wake_deliveries AS deliveries
-      JOIN turns ON turns.id = ? AND turns.thread_id = deliveries.thread_id
-      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = deliveries.source_id
-      WHERE (deliveries.state = 'completed' AND deliveries.turn_id = turns.id
-        AND deliveries.disposition IN ('steered', 'follow_up'))
-        OR (deliveries.state = 'accepted' AND deliveries.delivery_key = ?)
-    `).all(turnId, deliveryKey ?? null);
-    return rows.length > 0;
-  }
-
-  private repairMonitorResponsePush(turnId: string, parts: readonly WebMessagePart[]): void {
+  private repairWakeResponsePush(turnId: string, parts: readonly WebMessagePart[]): void {
     const key = `turn:${turnId}:terminal`;
-    if (hasMonitorReplyContent(parts)) {
+    if (hasWakeReplyContent(parts)) {
       this.database.prepare("UPDATE push_events SET body = ? WHERE logical_key = ? AND kind = 'response.ready'")
-        .run(webPushPreview(monitorReplyText(parts)), key);
+        .run(webPushPreview(wakeReplyText(parts)), key);
     } else {
       const now = this.now();
       this.database.prepare(`
@@ -2554,28 +2404,6 @@ export class WebStore {
           SELECT id FROM push_events WHERE logical_key = ? AND kind = 'response.ready'
         )
       `).run(now, now, key);
-    }
-  }
-
-  /** Resolve only an exact Monitor live-input receipt belonging to this turn. */
-  private monitorWakeProjection(turnId: string, deliveryKey: string): MonitorProjection | undefined {
-    const row = this.database.prepare(`
-      SELECT deliveries.monitor_id, deliveries.projection_json
-      FROM monitor_wake_deliveries AS deliveries
-      JOIN turns ON turns.id = ? AND turns.thread_id = deliveries.thread_id
-      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = deliveries.source_id
-      WHERE deliveries.delivery_key = ?
-    `).get(turnId, deliveryKey) as unknown as {
-      monitor_id: string;
-      projection_json: string | null;
-    } | undefined;
-    if (row === undefined || row.projection_json === null) return undefined;
-    try {
-      const projection = parseMonitorProjection(JSON.parse(row.projection_json) as unknown);
-      if (projection.monitorId !== row.monitor_id) throw new TypeError("Monitor identity mismatch.");
-      return projection;
-    } catch {
-      throw new WebConsoleError("storage_corrupt", "A retained Monitor wake projection is invalid.", 500);
     }
   }
 
@@ -2637,18 +2465,6 @@ export class WebStore {
     ).get(legacy.message_id) as unknown as { parts_json: string; created_at: string } | undefined;
     if (row === undefined) return undefined;
     return steerMarkerFromUserParts(inputId, legacy.message_id, parseParts(row.parts_json), legacy.created_at);
-  }
-
-  /** Release a Monitor reservation only before any operator delivery begins. */
-  abandonMonitorWake(input: {
-    readonly sourceId: string;
-    readonly monitorId: string;
-    readonly deliveryKey: string;
-  }): void {
-    this.database.prepare(`
-      DELETE FROM monitor_wake_deliveries
-      WHERE source_id = ? AND monitor_id = ? AND delivery_key = ? AND state = 'accepted'
-    `).run(input.sourceId, input.monitorId, input.deliveryKey);
   }
 
   /**
@@ -2738,7 +2554,7 @@ export class WebStore {
       `).run(id, sourceId, projectId, `web:${id}`, now, now, model, effort);
       this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, 1, 'created', ?)")
         .run(id, now);
-      if (projectId !== null) this.applyProjectMembership(id, null, projectId, now);
+      if (projectId !== null) this.applyProjectMembership(id, null, projectId);
       this.setSetting("current_thread_id", id);
     });
     return this.requireThread(id);
@@ -3012,8 +2828,6 @@ export class WebStore {
     return {
       thread,
       messages: page.messages,
-      projectTransitions: page.projectTransitions ?? [],
-      modelTransitions: page.modelTransitions ?? [],
       ...(page.nextCursor === undefined ? {} : { messagesNextCursor: page.nextCursor }),
     };
   }
@@ -3072,8 +2886,6 @@ export class WebStore {
     const oldest = pageRows[0];
     return {
       messages: pageRows.map((row) => this.mapMessage(row)),
-      projectTransitions: this.projectTransitions(resolved, { anchors: pageRows.map((row) => row.id), includeStart: !hasMore }),
-      modelTransitions: this.modelTransitions(resolved, { anchors: pageRows.map((row) => row.id), includeStart: !hasMore }),
       ...(hasMore && oldest !== undefined
         ? {
             nextCursor: encodeCursor({
@@ -3369,7 +3181,7 @@ export class WebStore {
         throw new WebConsoleError("project_busy", "Wait for active and pending conversation turns before deleting this project.", 409);
       }
       for (const memberId of members) {
-        this.applyProjectMembership(memberId, id, null, now);
+        this.applyProjectMembership(memberId, id, null);
         this.database.prepare("UPDATE threads SET revision = revision + 1 WHERE id = ?").run(memberId);
       }
       for (const memberId of members) this.recordThreadRevision(memberId, "project_changed", now);
@@ -3438,6 +3250,13 @@ export class WebStore {
     });
   }
 
+  /** A read signal is not conversation activity: neither recency nor transcript revisions move. */
+  markConversationRead(threadId: string): number {
+    this.requireThread(threadId);
+    this.database.prepare("UPDATE threads SET read_revision = revision WHERE id = ?").run(threadId);
+    return this.requireThread(threadId).revision;
+  }
+
   private pendingProjectDto(threadId: string): Pick<WebThread, "pendingProject"> {
     const row = this.database.prepare("SELECT project_id, turn_id FROM pending_project_memberships WHERE thread_id = ?")
       .get(threadId) as { project_id: string | null; turn_id: string } | undefined;
@@ -3449,7 +3268,7 @@ export class WebStore {
       .get(threadId) as { id: string } | undefined;
     if (before === after || active === undefined) {
       this.database.prepare("DELETE FROM pending_project_memberships WHERE thread_id = ?").run(threadId);
-      if (before !== after) this.applyProjectMembership(threadId, before, after, now);
+      if (before !== after) this.applyProjectMembership(threadId, before, after);
       return;
     }
     this.database.prepare(`INSERT INTO pending_project_memberships(thread_id, project_id, turn_id) VALUES (?, ?, ?)
@@ -3462,42 +3281,92 @@ export class WebStore {
     if (pending === undefined || (turnId !== undefined && pending.turnId !== turnId)) return;
     if (this.database.prepare("SELECT 1 FROM turns WHERE thread_id = ? AND status = 'running'").get(threadId)) return;
     const before = this.requireThread(threadId).projectId;
-    this.applyProjectMembership(threadId, before, pending.projectId, now, pending.turnId);
+    this.applyProjectMembership(threadId, before, pending.projectId);
     this.database.prepare("DELETE FROM pending_project_memberships WHERE thread_id = ?").run(threadId);
   }
 
-  private applyProjectMembership(threadId: string, before: string | null, after: string | null, now: string, turnId?: string): void {
+  private applyProjectMembership(threadId: string, before: string | null, after: string | null): void {
     if (before === after) return;
-    this.recordProjectTransition(threadId, before, after, now, turnId);
+    this.recordProjectMarker(threadId, before, after);
     this.database.prepare("UPDATE threads SET project_id = ? WHERE id = ?").run(after, threadId);
     for (const id of [before, after]) if (id !== null) {
       this.database.prepare("UPDATE projects SET revision = revision + 1 WHERE id = ?").run(id);
     }
   }
 
-  private recordProjectTransition(threadId: string, before: string | null, after: string | null, now: string, turnId?: string): void {
-    const identity = (id: string | null): WebProjectTransition["before"] => {
+  private recordProjectMarker(threadId: string, before: string | null, after: string | null): void {
+    const identity = (id: string | null) => {
       if (id === null) return null;
       const project = this.requireProject(id);
       return { id, name: project.name, color: project.color };
     };
-    const anchor = turnId === undefined
-      ? this.database.prepare(`SELECT messages.id, messages.turn_id FROM messages
-          LEFT JOIN turns ON turns.id = messages.turn_id
-          WHERE messages.thread_id = ? AND (turns.status IS NULL OR turns.status <> 'running')
-            AND NOT EXISTS (SELECT 1 FROM live_inputs WHERE message_id = messages.id)
-          ORDER BY messages.rowid DESC LIMIT 1`).get(threadId) as { id: string; turn_id: string | null } | undefined
-      : { id: this.requireTurn(turnId).assistant_message_id, turn_id: turnId };
-    this.database.prepare(`INSERT INTO project_transitions
-      (thread_id, after_message_id, turn_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(threadId, anchor?.id ?? null, anchor?.turn_id ?? null, JSON.stringify(identity(before)), JSON.stringify(identity(after)), now);
+    this.insertMarker(threadId, null, this.projectTurnAdmissionTime(threadId), {
+      type: "conversation-marker", kind: "project", at: this.now(), before: identity(before), after: identity(after),
+    });
   }
+
+  private insertMarker(threadId: string, turnId: string | null, createdAt: string, marker: WebConversationMarkerPart): void {
+    const id = randomUUID();
+    this.database.prepare(`INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+      VALUES (?, ?, ?, 'system', ?, ?, ?, 'complete')`)
+      .run(id, threadId, turnId, serializeParts([marker]), createdAt, createdAt);
+    this.pendingMarkers.push({ threadId, messageId: id, updatedAt: createdAt });
+  }
+
+  private recordResumeMarker(threadId: string, turnId: string, createdAt: string): void {
+    const previous = this.database.prepare(`SELECT m.created_at FROM messages m WHERE m.thread_id = ?
+      AND ${visibleMessageSql("m")} AND NOT (${markerMessageSql("m")})
+      AND (m.turn_id IS NULL OR m.turn_id <> ?)
+      ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1`).get(threadId, turnId) as { created_at: string } | undefined;
+    const at = this.now();
+    const idleMs = previous === undefined ? 0 : Date.parse(at) - Date.parse(previous.created_at);
+    if (previous !== undefined && idleMs > 3_600_000) this.insertMarker(threadId, turnId, createdAt, {
+      type: "conversation-marker", kind: "resumed", at, previousMessageAt: previous.created_at, idleMs,
+    });
+  }
+
+  private captureConversationMarkers(turnId: string, threadId: string, text: string, validateLimit = true): void {
+    // All admission markers rank before the virtual user boundary. Unbound
+    // markers have monotonic instants, so strictly newer groups are the window.
+    const previous = this.database.prepare(`SELECT started_at FROM turns
+      WHERE thread_id = ? AND id <> ? AND dispatch_started_at IS NOT NULL
+      ORDER BY started_at DESC, rowid DESC LIMIT 1`).get(threadId, turnId) as { started_at: string } | undefined;
+    const rows = this.database.prepare(`SELECT m.parts_json FROM messages m LEFT JOIN turns t ON t.id = m.turn_id
+      WHERE m.thread_id = ? AND ${markerMessageSql("m")}
+      AND (? IS NULL OR COALESCE(t.started_at, m.created_at) > ?)
+      ORDER BY COALESCE(t.started_at, m.created_at), ${messageRoleRankSql("m")}, m.created_at, m.rowid`)
+      .all(threadId, previous?.started_at ?? null, previous?.started_at ?? null) as Array<{ parts_json: string }>;
+    const markers = rows.flatMap((row) => parseParts(row.parts_json).filter(isConversationMarker));
+    this.database.prepare("UPDATE turns SET conversation_markers_json = ? WHERE id = ?").run(JSON.stringify(markers), turnId);
+    if (validateLimit && withProjectContext(text, this.projectContextForThread(threadId), markers).length > WEB_MAX_TURN_TEXT_CHARACTERS) {
+      throw new WebConsoleError("turn_text_too_large", "The message and its conversation context exceed the turn text limit.", 413);
+    }
+  }
+
+  conversationMarkersForTurn(turnId: string): readonly WebConversationMarkerPart[] {
+    const row = this.database.prepare("SELECT conversation_markers_json FROM turns WHERE id = ?").get(turnId) as { conversation_markers_json: string | null } | undefined;
+    if (row?.conversation_markers_json == null) return [];
+    const markers: unknown = JSON.parse(row.conversation_markers_json);
+    if (!Array.isArray(markers) || !markers.every(isConversationMarker)) throw new WebConsoleError("storage_corrupt", "Invalid turn marker snapshot.", 500);
+    return markers;
+  }
+
+  markTurnDispatchStarted(turnId: string): void {
+    this.database.prepare("UPDATE turns SET dispatch_started_at = COALESCE(dispatch_started_at, ?) WHERE id = ?").run(this.now(), turnId);
+  }
+
+  /** Observers run only after the outer transaction commits and its depth clears. */
+  onConversationMarker: ((marker: { threadId: string; messageId: string; updatedAt: string }) => void) | undefined;
+  private pendingMarkers: Array<{ threadId: string; messageId: string; updatedAt: string }> = [];
 
   /** Keep causal turn groups ordered when the wall clock ties or moves backwards. */
   private projectTurnAdmissionTime(threadId: string): string {
     const now = this.now();
-    const previous = this.database.prepare("SELECT MAX(started_at) AS latest FROM turns WHERE thread_id = ?")
-      .get(threadId) as { latest: string | null };
+    const previous = this.database.prepare(`SELECT MAX(at) AS latest FROM (
+      SELECT started_at AS at FROM turns WHERE thread_id = ?
+      UNION ALL SELECT created_at AS at FROM messages WHERE thread_id = ? AND turn_id IS NULL
+    )`)
+      .get(threadId, threadId) as { latest: string | null };
     return previous.latest !== null && previous.latest >= now
       ? new Date(Date.parse(previous.latest) + 1).toISOString() : now;
   }
@@ -3514,15 +3383,6 @@ export class WebStore {
     this.database.prepare("UPDATE turns SET project_context_json = ? WHERE id = ?").run(JSON.stringify({ name: row?.name ?? "", context: row?.context ?? "", tags: this.tagNamesForThread(threadId) }), turnId);
   }
 
-  projectTransitions(threadId: string, page?: { readonly anchors: readonly string[]; readonly includeStart: boolean }): WebProjectTransition[] {
-    return (this.database.prepare(`SELECT * FROM project_transitions WHERE thread_id = ?
-        ${page === undefined ? "" : "AND (after_message_id IN (SELECT value FROM json_each(?)) OR (? = 1 AND after_message_id IS NULL))"} ORDER BY id`)
-      .all(this.resolveThreadId(threadId), ...(page === undefined ? [] : [JSON.stringify(page.anchors), page.includeStart ? 1 : 0])) as Array<{ id: number; after_message_id: string | null; turn_id: string | null; before_json: string; after_json: string; created_at: string }>).map((row) => ({
-        id: row.id, afterMessageId: row.after_message_id, turnId: row.turn_id,
-        before: JSON.parse(row.before_json), after: JSON.parse(row.after_json), createdAt: row.created_at,
-      }));
-  }
-
   /**
    * Record a change of the conversation's selected route at the boundary where
    * it takes effect, for the turn `turnId` that was just admitted.
@@ -3536,13 +3396,12 @@ export class WebStore {
    * the agent's own default is reported the same way as a picker change --
    * because the route the next turn runs on is what actually changed.
    *
-   * Called inside the admitting transaction, after that turn's own messages
-   * exist: the anchor is the newest settled message NOT part of this turn, so
-   * the rule renders between the two turns. Nothing is recorded when either
+   * Called inside the admitting transaction. A marker ranks before its user
+   * row, independently of insertion order. Nothing is recorded when either
    * side is unresolved, when this is the first routed turn (it establishes the
    * baseline rather than changing anything), or when no message precedes it.
    */
-  private recordModelTransition(threadId: string, turnId: string, now: string): void {
+  private recordModelMarker(threadId: string, turnId: string, now: string): void {
     type RouteRow = { requested_model: string | null; requested_effort: string | null };
     const selection = (row: RouteRow): WebRouteSelection =>
       ({ model: row.requested_model, effort: row.requested_effort });
@@ -3563,27 +3422,15 @@ export class WebStore {
     const effortChanged = previous.requested_effort !== null && current.requested_effort !== null
       && previous.requested_effort !== current.requested_effort;
     if (!modelChanged && !effortChanged) return;
-    const anchor = this.database.prepare(`SELECT messages.id FROM messages
-        LEFT JOIN turns ON turns.id = messages.turn_id
-        WHERE messages.thread_id = ? AND (messages.turn_id IS NULL OR messages.turn_id <> ?)
-          AND (turns.status IS NULL OR turns.status <> 'running')
-          AND ${visibleMessageSql("messages")}
-          AND NOT EXISTS (SELECT 1 FROM live_inputs WHERE message_id = messages.id)
-        ORDER BY messages.rowid DESC LIMIT 1`)
-      .get(threadId, turnId) as { id: string } | undefined;
+    const anchor = this.database.prepare(`SELECT 1 FROM messages m LEFT JOIN turns t ON t.id = m.turn_id
+      WHERE m.thread_id = ? AND (m.turn_id IS NULL OR m.turn_id <> ?)
+      AND (t.status IS NULL OR t.status <> 'running') AND ${visibleMessageSql("m")}
+      AND NOT (${markerMessageSql("m")})
+      AND NOT EXISTS (SELECT 1 FROM live_inputs WHERE message_id = m.id) LIMIT 1`).get(threadId, turnId);
     if (anchor === undefined) return;
-    this.database.prepare(`INSERT INTO model_transitions
-      (thread_id, after_message_id, turn_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(threadId, anchor.id, turnId, JSON.stringify(selection(previous)), JSON.stringify(selection(current)), now);
-  }
-
-  modelTransitions(threadId: string, page?: { readonly anchors: readonly string[]; readonly includeStart: boolean }): WebModelTransition[] {
-    return (this.database.prepare(`SELECT * FROM model_transitions WHERE thread_id = ?
-        ${page === undefined ? "" : "AND (after_message_id IN (SELECT value FROM json_each(?)) OR (? = 1 AND after_message_id IS NULL))"} ORDER BY id`)
-      .all(this.resolveThreadId(threadId), ...(page === undefined ? [] : [JSON.stringify(page.anchors), page.includeStart ? 1 : 0])) as Array<{ id: number; after_message_id: string | null; turn_id: string | null; before_json: string; after_json: string; created_at: string }>).map((row) => ({
-        id: row.id, afterMessageId: row.after_message_id, turnId: row.turn_id,
-        before: JSON.parse(row.before_json), after: JSON.parse(row.after_json), createdAt: row.created_at,
-      }));
+    this.insertMarker(threadId, turnId, now, {
+      type: "conversation-marker", kind: "model", at: this.now(), before: selection(previous), after: selection(current),
+    });
   }
 
   private getProjectRow(id: string): ProjectRow | undefined {
@@ -3725,11 +3572,10 @@ export class WebStore {
           UNION ALL SELECT 1 FROM web_submissions WHERE thread_id = ?
           UNION ALL SELECT 1 FROM cron_reply_operations WHERE thread_id = ? AND state = 'completed'
           UNION ALL SELECT 1 FROM process_job_wake_deliveries WHERE thread_id = ?
-          UNION ALL SELECT 1 FROM monitor_wake_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM notification_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM push_events WHERE thread_id = ?
           LIMIT 1
-        `).get(id, id, id, id, id, id, id, id, id, id) !== undefined;
+        `).get(id, id, id, id, id, id, id, id, id) !== undefined;
         if (hasContent) {
           throw new WebConsoleError(
             "thread_not_empty",
@@ -3985,9 +3831,10 @@ export class WebStore {
     const turnId = randomUUID();
     const userMessageId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.projectTurnAdmissionTime(threadId);
+    let now = this.projectTurnAdmissionTime(threadId);
     this.transaction(() => {
       this.applyPendingProjectMembership(threadId, now);
+      now = this.projectTurnAdmissionTime(threadId);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -4037,7 +3884,9 @@ export class WebStore {
         WHERE id = ?
       `).run(title, now, threadId);
       this.captureProjectContext(turnId, threadId);
-      this.recordModelTransition(threadId, turnId, now);
+      this.recordModelMarker(threadId, turnId, now);
+      this.recordResumeMarker(threadId, turnId, now);
+      this.captureConversationMarkers(turnId, threadId, input.quote === undefined ? input.text : formatQuotedTurn(input.quote.text, input.text));
       this.recordThreadRevision(threadId, "turn_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -4058,7 +3907,7 @@ export class WebStore {
   beginAssistantTurn(input: {
     readonly threadId: string;
     readonly prompt: string;
-    /** Monitor output stays memory-only; callers may retain only a non-secret marker. */
+    /** Host wake prompts stay memory-only; callers may retain only a non-secret marker. */
     readonly storedPrompt?: string;
     readonly model?: string;
     readonly effort?: string;
@@ -4088,7 +3937,7 @@ export class WebStore {
     }
     const turnId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.projectTurnAdmissionTime(threadId);
+    let now = this.projectTurnAdmissionTime(threadId);
     if (input.processJobWake !== undefined) {
       const card = this.database.prepare(`
         SELECT 1 FROM process_job_cards AS cards
@@ -4109,6 +3958,7 @@ export class WebStore {
       : [{ type: "process-job-wake", ...input.processJobWake }];
     this.transaction(() => {
       this.applyPendingProjectMembership(threadId, now);
+      now = this.projectTurnAdmissionTime(threadId);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -4136,7 +3986,8 @@ export class WebStore {
         "UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?",
       ).run(now, threadId);
       this.captureProjectContext(turnId, threadId);
-      this.recordModelTransition(threadId, turnId, now);
+      this.recordModelMarker(threadId, turnId, now);
+      this.captureConversationMarkers(turnId, threadId, input.prompt);
       this.recordThreadRevision(threadId, "background_follow_up_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -4403,10 +4254,11 @@ export class WebStore {
     if (!thread.canSend || thread.archivedAt !== null) return undefined;
     const turnId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.projectTurnAdmissionTime(threadId);
+    let now = this.projectTurnAdmissionTime(threadId);
     const userMessage = this.requireRawParts(row.message_id);
     this.transaction(() => {
       this.applyPendingProjectMembership(threadId, now);
+      now = this.projectTurnAdmissionTime(threadId);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -4427,7 +4279,10 @@ export class WebStore {
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, threadId);
       this.captureProjectContext(turnId, threadId);
-      this.recordModelTransition(threadId, turnId, now);
+      this.recordModelMarker(threadId, turnId, now);
+      // Already accepted queue entries settle on the existing before-dispatch
+      // failure path instead of rolling back forever at the head of the queue.
+      this.captureConversationMarkers(turnId, threadId, row.text, false);
       this.recordThreadRevision(threadId, "turn_started", now);
     });
     return {
@@ -4472,7 +4327,6 @@ export class WebStore {
           applyEvent(
             parts,
             frame.event,
-            (deliveryKey) => this.monitorWakeProjection(turnId, deliveryKey),
             (deliveryKey) => this.processJobWakeForTurn(turnId, deliveryKey),
             (inputId) => this.steerForTurn(turnId, inputId),
           );
@@ -4585,7 +4439,7 @@ export class WebStore {
     finalText?: string,
     metadata?: Readonly<Record<string, unknown>>,
     replyParts?: readonly AgentReplyPart[],
-    options: { readonly suppressResponsePush?: boolean; readonly monitorWakeDeliveryKey?: string } = {},
+    options: { readonly suppressResponsePush?: boolean; readonly hostWakeDeliveryKey?: string } = {},
   ): StoredTurnFinish {
     const runtime = runtimeMetadata(metadata);
     return this.finishTurn(
@@ -4597,11 +4451,12 @@ export class WebStore {
       runtime,
       replyParts,
       options.suppressResponsePush === true,
-      options.monitorWakeDeliveryKey,
+      options.hostWakeDeliveryKey,
     );
   }
 
   failTurn(turnId: string, error: { readonly message: string; readonly code?: string; readonly cancelled?: boolean }): StoredTurnFinish {
+    if (error.cancelled === true) this.recordCancelOrigin(turnId, "api");
     return this.finishTurn(
       turnId,
       error.cancelled === true ? "cancelled" : "failed",
@@ -4614,6 +4469,11 @@ export class WebStore {
 
   interruptTurn(turnId: string, message = "The web service stopped before this turn completed."): StoredTurnFinish {
     return this.finishTurn(turnId, "interrupted", undefined, "interrupted", message, undefined);
+  }
+
+  recordCancelOrigin(turnId: string, origin: WebCancelOrigin): void {
+    this.database.prepare("UPDATE turns SET cancel_origin = COALESCE(cancel_origin, ?) WHERE id = ? AND status = 'running'")
+      .run(origin, turnId);
   }
 
   activeTurn(threadId: string): { readonly id: string; readonly conversationId: string } | undefined {
@@ -4884,11 +4744,6 @@ export class WebStore {
         JOIN push_events e ON e.id = d.event_id
         JOIN push_subscriptions s ON s.id = d.subscription_id
         WHERE d.status = 'pending' AND d.next_attempt_at <= ? AND e.expires_at > ? AND s.state = 'active'
-          AND NOT EXISTS (
-            SELECT 1 FROM monitor_wake_deliveries m
-            WHERE e.kind = 'response.ready' AND m.state = 'accepted' AND m.turn_id IS NOT NULL
-              AND e.logical_key = 'turn:' || m.turn_id || ':terminal'
-          )
           AND NOT EXISTS (
             SELECT 1 FROM process_job_wake_deliveries j
             WHERE e.kind = 'response.ready' AND j.state = 'accepted' AND j.turn_id IS NOT NULL
@@ -5723,19 +5578,6 @@ export class WebStore {
         throw new WebConsoleError("storage_corrupt", `Message ${message.id} contains invalid persisted parts.`, 500);
       }
     }
-    const monitorProjections = this.database.prepare(`
-      SELECT monitor_id, projection_json
-      FROM monitor_wake_deliveries
-      WHERE projection_json IS NOT NULL
-    `).all() as unknown as Array<{ monitor_id: string; projection_json: string }>;
-    for (const row of monitorProjections) {
-      try {
-        const projection = parseMonitorProjection(JSON.parse(row.projection_json) as unknown);
-        if (projection.monitorId !== row.monitor_id) throw new TypeError("Monitor identity mismatch.");
-      } catch {
-        throw new WebConsoleError("storage_corrupt", "A retained Monitor wake projection is invalid.", 500);
-      }
-    }
   }
 
   /**
@@ -5747,45 +5589,6 @@ export class WebStore {
     this.transaction(() => {
       this.database.exec(MESSAGE_SEARCH_UNSETTLED_SQL);
     });
-  }
-
-  /** Repair only the derived search projection of verified legacy Monitor replies.
-   * New completions already normalize before the ordinary indexing triggers run.
-   * Page by rowid so opening a large retained history does not materialize it all.
-   */
-  private reindexLegacyMonitorMessages(): void {
-    const select = this.database.prepare(`
-      SELECT m.rowid AS row_id, m.parts_json FROM messages m
-      JOIN turns ON turns.id = m.turn_id AND turns.thread_id = m.thread_id
-      JOIN threads ON threads.id = m.thread_id
-      WHERE m.rowid > ? AND m.role = 'assistant' AND m.status = 'complete'
-        AND EXISTS (
-          SELECT 1 FROM monitor_wake_deliveries d
-          WHERE d.turn_id = turns.id AND d.thread_id = turns.thread_id
-            AND d.source_id = threads.source_id AND d.state = 'completed'
-            AND d.disposition IN ('steered', 'follow_up')
-        )
-      ORDER BY m.rowid LIMIT 100
-    `);
-    const remove = this.database.prepare("DELETE FROM message_search WHERE rowid = ?");
-    const insert = this.database.prepare(`
-      INSERT INTO message_search(rowid, body)
-      SELECT ?, (${messageSearchBody("m")}) FROM (SELECT ? AS parts_json) m
-    `);
-    let after = 0;
-    while (true) {
-      const rows = select.all(after) as unknown as Array<{ row_id: number; parts_json: string }>;
-      if (rows.length === 0) return;
-      this.transaction(() => {
-        for (const row of rows) {
-          const normalized = normalizeMonitorTerminalReply(parseParts(row.parts_json));
-          if (!normalized.changed) continue;
-          remove.run(row.row_id);
-          insert.run(row.row_id, serializeParts(normalized.parts));
-        }
-      });
-      after = rows[rows.length - 1]!.row_id;
-    }
   }
 
   private recoverInterruptedTurns(): void {
@@ -5875,7 +5678,7 @@ export class WebStore {
     runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string },
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
-    monitorWakeDeliveryKey?: string,
+    hostWakeDeliveryKey?: string,
   ): StoredTurnFinish {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") {
@@ -5890,7 +5693,7 @@ export class WebStore {
       runtime,
       replyParts,
       suppressResponsePush,
-      monitorWakeDeliveryKey,
+      hostWakeDeliveryKey,
     ));
     return {
       ...this.requireThreadDetail(turn.thread_id),
@@ -5907,7 +5710,7 @@ export class WebStore {
     runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string },
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
-    monitorWakeDeliveryKey?: string,
+    hostWakeDeliveryKey?: string,
   ): StoredMessageWrite | undefined {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") return undefined;
@@ -5918,18 +5721,10 @@ export class WebStore {
     if (errorMessage !== undefined) {
       parts.push({ type: "error", ...(errorCode === undefined ? {} : { code: errorCode }), message: errorMessage });
     }
-    const monitorAssociated = status === "complete" && this.hasMonitorTurnAssociation(turnId, monitorWakeDeliveryKey);
-    const processJobAssociated = status === "complete" && this.hasProcessJobTurnAssociation(turnId, monitorWakeDeliveryKey);
+    const processJobAssociated = status === "complete" && this.hasProcessJobTurnAssociation(turnId, hostWakeDeliveryKey);
     if (processJobAssociated) {
-      parts = normalizeMonitorTerminalReply(parts, true).parts;
-      suppressResponsePush = !hasMonitorReplyContent(parts);
-    }
-    if (monitorAssociated) {
-      const normalized = normalizeMonitorTerminalReply(parts);
-      parts = normalized.parts;
-      // A suppressed callback may still have streamed the sentinel. Preserve a
-      // preceding answer and rich output even when its terminal reply was empty.
-      suppressResponsePush = !hasMonitorReplyContent(parts);
+      parts = normalizeWakeTerminalReply(parts, true).parts;
+      suppressResponsePush = !hasWakeReplyContent(parts);
     }
     const now = this.now();
     const thread = this.requireThread(turn.thread_id);
@@ -5975,7 +5770,7 @@ export class WebStore {
             : "run.failed";
       const label = agent?.label ?? "mono-agent";
       const body = status === "complete"
-        ? monitorAssociated ? monitorReplyText(parts) : parts.filter((part): part is Extract<WebMessagePart, { type: "text" }> => part.type === "text")
+        ? parts.filter((part): part is Extract<WebMessagePart, { type: "text" }> => part.type === "text")
           .map((part) => part.text)
           .join(" ")
         : status === "cancelled"
@@ -6057,6 +5852,7 @@ export class WebStore {
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         revision: row.revision,
+        readRevision: row.read_revision,
         ...(row.trigger_kind === "cron"
           ? {
               trigger: {
@@ -6094,7 +5890,7 @@ export class WebStore {
    * Only the two paths a console watches live -- streaming frames and the write
    * that settles a turn -- go on to build a {@link WebMessageDelta} from this.
    * Every other caller (a live-input transition, restart recovery, and the
-   * notification, cron-run, process-job and Monitor reconciliations) bumps the
+   * notification, cron-run, process-job reconciliations) bumps the
    * version without describing the change: those writes reach the browser as an
    * invalidation it answers by re-reading the message, and the new `seq` is what
    * tells it the re-read is newer than the delta stream it was applying.
@@ -6191,10 +5987,7 @@ export class WebStore {
     const attachments = this.database
       .prepare("SELECT * FROM attachments WHERE message_id = ? AND origin = 'upload' ORDER BY created_at, id")
       .all(row.id) as unknown as AttachmentRow[];
-    const rawParts = parseParts(row.parts_json);
-    const storedParts = row.role === "assistant" && row.status === "complete" && row.turn_id !== null
-      && this.hasMonitorTurnAssociation(row.turn_id)
-      ? normalizeMonitorTerminalReply(rawParts).parts : rawParts;
+    const storedParts = parseParts(row.parts_json);
     const quote = quoteFromParts(storedParts);
     const liveInputStatus = liveInputStatusFromParts(storedParts);
     const role = normalizeRole(row.role);
@@ -6264,6 +6057,7 @@ export class WebStore {
         };
       states.set(row.thread_id, {
         id: row.id,
+        ...(row.cancel_origin == null ? {} : { cancelOrigin: row.cancel_origin }),
         status,
         startedAt: row.started_at,
         ...(lastOutcome === undefined ? {} : { lastOutcome }),
@@ -6282,98 +6076,26 @@ export class WebStore {
     return states;
   }
 
-  /**
-   * The prior meaningful outcome of each settled conversation, by thread id.
-   *
-   * Successful assistant-only turns without visible reply content are host
-   * no-ops, not a new conversation outcome. Keep their real run state while
-   * projecting the prior meaningful outcome for status priority. Derive this
-   * from retained provenance/normalized parts so old stores need no migration.
-   * Match hasMonitorReplyContent without loading transcript bodies into lists.
-   *
-   * Two statements, whatever the listing holds and however deep its silence
-   * runs. Only a turn a completed Monitor delivery claims can be a no-op, and
-   * the candidate read knows which those are: it returns, for every thread at
-   * once, each candidate down to and including the first one nothing can
-   * silence. A second statement reads the parts of the claimed ones. Legacy
-   * rows keep their raw sentinel bytes and normalize only on read, so that
-   * read is the one place a silent turn is told apart from an answer.
-   */
+  /** Prior meaningful outcomes, excluding silent assistant-only turns in SQL. */
   private priorOutcomes(latest: readonly TurnRow[]): Map<string, PriorOutcomeRow> {
     const threadIds = [...new Set(latest.map((row) => row.thread_id))];
     if (threadIds.length === 0) return new Map();
     const candidates = this.priorOutcomeCandidates(threadIds);
-    const noOps = this.monitorNoOpTurnIds(candidates);
     const outcomes = new Map<string, PriorOutcomeRow>();
     for (const candidate of candidates) {
-      if (!outcomes.has(candidate.thread_id) && !noOps.has(candidate.id)) {
+      if (!outcomes.has(candidate.thread_id)) {
         outcomes.set(candidate.thread_id, candidate);
       }
     }
     return outcomes;
   }
 
-  /**
-   * Every candidate of these threads that could still be the outcome, newest
-   * first within each thread.
-   *
-   * A candidate with a user message, an unsuccessful one, or one no Monitor
-   * delivery claims settles its thread on the spot; the read stops at it and
-   * carries only the claimed assistant-only completions above it, which are the
-   * only rows whose parts have to be asked.
-   */
+  /** Settled candidates ordered newest first within each thread. */
   private priorOutcomeCandidates(threadIds: readonly string[]): PriorOutcomeRow[] {
     return this.database.prepare(`
-      SELECT thread_id, id, status, finished_at, assistant_message_id, started_at, ordinal, has_user, claimed
-      FROM (
-        SELECT r.*, MIN(CASE WHEN r.settles THEN r.rn END) OVER (PARTITION BY r.thread_id) AS settled_rn
-        FROM (
-          SELECT c.*,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY c.thread_id ORDER BY c.started_at DESC, c.ordinal DESC
-                 ) AS rn,
-                 (c.status <> 'complete' OR c.has_user = 1 OR c.claimed = 0) AS settles
-          FROM (${priorOutcomeCandidateSql()}) c
-        ) r
-      ) WHERE settled_rn IS NULL OR rn <= settled_rn
-      ORDER BY thread_id, rn
+      SELECT * FROM (${priorOutcomeCandidateSql()})
+      ORDER BY thread_id, started_at DESC, ordinal DESC
     `).all(JSON.stringify(threadIds), OUTCOME_TEXT_TRIM) as unknown as PriorOutcomeRow[];
-  }
-
-  /**
-   * Which of these candidates are Monitor no-ops, in one statement.
-   *
-   * Legacy Monitor rows retain raw sentinel bytes and normalize only on read, so
-   * the answer needs their parts -- but only for the candidates a host-owned
-   * delivery actually claims, which is a small fraction of any listing. Nothing
-   * here materializes a transcript or rewrites history to derive sidebar status.
-   */
-  private monitorNoOpTurnIds(candidates: readonly PriorOutcomeRow[]): Set<string> {
-    const claimed = candidates.filter((row) => row.status === "complete" && row.has_user === 0 && row.claimed === 1);
-    const parts = this.messageParts(claimed.map((row) => row.assistant_message_id));
-    return new Set(claimed.flatMap((row) => hasMonitorReplyContent(
-      normalizeMonitorTerminalReply(parts.get(row.assistant_message_id) ?? []).parts,
-    ) ? [] : [row.id]));
-  }
-
-  /**
-   * Which of these turns a host-owned Monitor delivery claims, in one statement.
-   *
-   * The batched readers never resolve an in-flight receipt by delivery key --
-   * that is {@link WebStore.hasMonitorTurnAssociation}'s single-turn question --
-   * so this asks only about deliveries that completed by steering or following
-   * up.
-   */
-  private monitorAssociatedTurnIds(turnIds: readonly string[]): Set<string> {
-    if (turnIds.length === 0) return new Set();
-    const rows = this.database.prepare(`
-      SELECT DISTINCT turns.id AS id FROM monitor_wake_deliveries AS deliveries
-      JOIN turns ON turns.id IN (SELECT value FROM json_each(?)) AND turns.thread_id = deliveries.thread_id
-      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = deliveries.source_id
-      WHERE deliveries.state = 'completed' AND deliveries.turn_id = turns.id
-        AND deliveries.disposition IN ('steered', 'follow_up')
-    `).all(JSON.stringify(turnIds)) as unknown as Array<{ id: string }>;
-    return new Set(rows.map((row) => row.id));
   }
 
   /** The stored parts of these messages, by message id, in one statement. */
@@ -6405,9 +6127,7 @@ export class WebStore {
    *
    * Only the prose is wanted, so this reads the rows themselves rather than
    * mapping whole messages: a preview never needed a listing to fetch every
-   * conversation's attachments, turn row and finish stamp. The one thing a raw
-   * row does not already say is whether a settled assistant reply was a Monitor
-   * no-op, and that is asked about all of them at once.
+   * conversation's attachments, turn row and finish stamp.
    */
   private lastMessagePreviews(threadIds: readonly string[]): Map<string, string> {
     const rows = this.database.prepare(`
@@ -6416,16 +6136,12 @@ export class WebStore {
           PARTITION BY m.thread_id ORDER BY m.created_at DESC, m.rowid DESC
         ) AS rn
         FROM messages m
-        WHERE m.thread_id IN (SELECT value FROM json_each(?)) AND ${visibleMessageSql("m")}
+        WHERE m.thread_id IN (SELECT value FROM json_each(?)) AND ${visibleMessageSql("m")} AND NOT (${markerMessageSql("m")})
       ) WHERE rn = 1
     `).all(JSON.stringify(threadIds)) as unknown as MessageRow[];
-    const monitor = this.monitorAssociatedTurnIds(rows.flatMap((row) =>
-      row.role === "assistant" && row.status === "complete" && row.turn_id !== null ? [row.turn_id] : []));
     const previews = new Map<string, string>();
     for (const row of rows) {
-      const stored = parseParts(row.parts_json);
-      const parts = row.turn_id !== null && monitor.has(row.turn_id)
-        ? normalizeMonitorTerminalReply(stored).parts : stored;
+      const parts = parseParts(row.parts_json);
       const text = parts
         .flatMap((part) => part.type === "text" ? [part.text]
           : part.type === "process-job" && part.responseText !== undefined ? [part.responseText] : [])
@@ -6789,16 +6505,21 @@ export class WebStore {
     if (this.transactionDepth > 0) return operation();
     this.database.exec("BEGIN IMMEDIATE");
     this.transactionDepth += 1;
+    let result: T;
     try {
-      const result = operation();
+      result = operation();
       this.database.exec("COMMIT");
-      return result;
     } catch (error) {
+      this.pendingMarkers = [];
       this.database.exec("ROLLBACK");
       throw error;
     } finally {
       this.transactionDepth -= 1;
     }
+    const markers = this.pendingMarkers;
+    this.pendingMarkers = [];
+    for (const marker of markers) this.onConversationMarker?.(marker);
+    return result;
   }
 
   private now(): string {
@@ -6920,20 +6641,13 @@ function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
  *
  * The predicate is the cheap half of the question: it excludes a successful
  * assistant-only turn with no visible reply content without reading any
- * transcript. Whether the visible content it did find is a Monitor sentinel is
- * the expensive half, and only the rows this returns are ever asked.
+ * transcript.
  */
 function priorOutcomeCandidateSql(): string {
   return `
     SELECT t.thread_id, t.id, t.status, t.finished_at, t.assistant_message_id,
            t.started_at, t.rowid AS ordinal,
-           EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user') AS has_user,
-           EXISTS (
-             SELECT 1 FROM monitor_wake_deliveries d
-             JOIN threads th ON th.id = t.thread_id AND th.source_id = d.source_id
-             WHERE d.thread_id = t.thread_id AND d.turn_id = t.id AND d.state = 'completed'
-               AND d.disposition IN ('steered', 'follow_up')
-           ) AS claimed
+           EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user') AS has_user
     FROM turns t
     WHERE t.thread_id IN (SELECT value FROM json_each(?)) AND t.status <> 'running' AND (
       t.status <> 'complete'
@@ -6953,7 +6667,7 @@ function priorOutcomeCandidateSql(): string {
 function threadSelectSql(suffix: string): string {
   return `
     SELECT t.id, t.source_id, t.project_id, p.name AS project_name,
-           t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
+           t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision, t.read_revision,
            t.run_model, t.run_effort,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
            CASE WHEN t.trigger_kind = 'cron' THEN 0
@@ -7070,6 +6784,7 @@ function isTerminalCronRun(status: WebCronRun["status"]): boolean {
     || status === "failed"
     || status === "cancelled"
     || status === "skipped_overlap"
+    || status === "skipped_gate"
     || status === "dropped";
 }
 
@@ -7096,7 +6811,7 @@ function hasMeaningfulCronContent(parts: readonly WebMessagePart[]): boolean {
     ? !isSyntheticCronStateText(part.text) && classifyNotifySuppression(part.text) === "none"
     : part.type === "attachment" || part.type === "error" || part.type === "mcp_app"
       || part.type === "failure" || part.type === "process-job" || part.type === "process-job-wake"
-      || part.type === "monitor-activity");
+      );
 }
 
 function cronRunParts(
@@ -7140,7 +6855,7 @@ function cronRunParts(
     ? [...retained]
     : retained.filter((part) => part.type === "text" || part.type === "error" || part.type === "attachment"
       || part.type === "mcp_app" || part.type === "failure" || part.type === "process-job"
-      || part.type === "process-job-wake" || part.type === "monitor-activity");
+      || part.type === "process-job-wake");
   for (const event of run.projection === "detail" ? run.events : []) applyEvent(parts, event);
   const preserveLoadedText = run.projection === "summary"
     && run.fieldsTruncated?.includes("text") === true
@@ -7156,11 +6871,13 @@ function cronRunParts(
   if (!hasText) {
     const stateText = run.status === "succeeded"
       ? "Completed silently (no message was reported)."
-      : run.status === "skipped_overlap"
-        ? run.blockedByTrigger === "manual"
-          ? "Scheduled firing skipped because an operator-started manual run was still in flight."
-          : "Firing skipped because the previous run was still in flight."
-        : run.status === "queued"
+      : run.status === "skipped_gate"
+        ? run.error ?? "Firing skipped by the job's preflight gate before any model turn."
+        : run.status === "skipped_overlap"
+          ? run.blockedByTrigger === "manual"
+            ? "Scheduled firing skipped because an operator-started manual run was still in flight."
+            : "Firing skipped because the previous run was still in flight."
+          : run.status === "queued"
           ? `Queued behind an active run${run.queueDepth === undefined ? "." : ` (position ${String(run.queueDepth)}).`}`
           : run.status === "dropped"
             ? "Dropped because the pending-run queue was full."
@@ -7173,7 +6890,10 @@ function cronRunParts(
                   : "Run is in progress.";
     parts.push({ type: "text", text: stateText });
   }
+  // A gate skip's `error` is its bounded reason, already shown as the state
+  // text; presenting it again as a failure would misreport a deliberate skip.
   if (!preserveLoadedError
+    && run.status !== "skipped_gate"
     && run.error !== undefined
     && !parts.some((part) => part.type === "error" && part.message === run.error)) {
     parts.push({
@@ -7293,7 +7013,8 @@ function parseStoredCronRun(serialized: string): WebCronRunSummary {
     || typeof run.orderedAt !== "string"
     || !Number.isSafeInteger(run.sequence)
     || (run.trigger !== "scheduled" && run.trigger !== "manual")
-    || !["admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "dropped"]
+    || !["admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "skipped_gate",
+      "dropped"]
       .includes(String(run.status))
     || !Number.isSafeInteger(run.eventCount)
     || Number(run.eventCount) < 0) {
@@ -7302,8 +7023,13 @@ function parseStoredCronRun(serialized: string): WebCronRunSummary {
   return run as WebCronRunSummary;
 }
 
+function markerMessageSql(alias: string): string {
+  return `COALESCE(json_extract(${alias}.parts_json, '$[0].type') = 'conversation-marker', 0)`;
+}
+
 function messageRoleRankSql(messageAlias: string): string {
-  return `CASE WHEN ${messageAlias}.turn_id IS NOT NULL AND ${messageAlias}.role = 'user' THEN 0
+  return `CASE WHEN ${markerMessageSql(messageAlias)} THEN -1
+    WHEN ${messageAlias}.turn_id IS NOT NULL AND ${messageAlias}.role = 'user' THEN 0
     WHEN ${messageAlias}.turn_id IS NOT NULL AND ${messageAlias}.role = 'system' THEN 1
     WHEN ${messageAlias}.turn_id IS NOT NULL THEN 2 ELSE 3 END`;
 }
@@ -7472,8 +7198,6 @@ export function toWebAttachment(attachment: StoredAttachment): WebAttachment {
     ...(attachment.uploaded ? { contentUrl: `/api/v1/uploads/${encodeURIComponent(attachment.id)}/content` } : {}),
   };
 }
-
-type MonitorWakeProjectionResolver = (deliveryKey: string) => MonitorProjection | undefined;
 type ProcessJobWakeResolver = (deliveryKey: string) => {
   readonly jobId: string;
   readonly deliveryKey: string;
@@ -7487,26 +7211,9 @@ type SteerMarker = {
 };
 type SteerResolver = (inputId: string) => SteerMarker | undefined;
 
-function appliedMonitorWake(
-  event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
-  resolveMonitorWake: MonitorWakeProjectionResolver | undefined,
-): { readonly deliveryKey: string; readonly projection: MonitorProjection } | undefined {
-  if (resolveMonitorWake === undefined
-    || event.metadata?.liveInput !== true
-    || event.metadata?.synthetic !== true
-    || typeof event.metadata.inputId !== "string") {
-    return undefined;
-  }
-  const projection = resolveMonitorWake(event.metadata.inputId);
-  return projection === undefined
-    ? undefined
-    : { deliveryKey: event.metadata.inputId, projection };
-}
-
 function applyEvent(
   parts: WebMessagePart[],
   event: AgentStreamEvent,
-  resolveMonitorWake?: MonitorWakeProjectionResolver,
   resolveProcessJobWake?: ProcessJobWakeResolver,
   resolveSteer?: SteerResolver,
 ): void {
@@ -7515,19 +7222,21 @@ function applyEvent(
     return;
   }
   if (event.type === "tool_call_started") {
-    if (appliedMonitorWake(event, resolveMonitorWake) !== undefined) return;
     if (appliedProcessJobWake(event, resolveProcessJobWake) !== undefined) return;
     if (appliedSteer(event, resolveSteer) !== undefined) return;
     const historyUpdate = canonicalEventHistoryUpdate(event.history);
     const subagent = subagentOf(event);
     if (subagent !== undefined) {
+      if (hasDetachedSubagentReceipt(parts, subagent.id)) return;
       const group = ensureSubagentPart(parts, subagent);
       // The bookend only announces the subagent; the group it belongs to is the
-      // whole of its contribution here.
+      // whole of its contribution here. Its launch attribution badges the row
+      // while running; the closing bookend replaces it with the executed route.
       if (event.metadata?.subagentLifecycle === true) {
         replaceSubagentPart(parts, withEventHistoryUpdate({
           ...group,
           ...(event.arguments === undefined ? {} : { args: event.arguments }),
+          ...(subagent.attribution === undefined ? {} : { attribution: subagent.attribution }),
         }, historyUpdate));
         return;
       }
@@ -7559,11 +7268,6 @@ function applyEvent(
     return;
   }
   if (event.type === "tool_call_completed") {
-    const monitorWake = appliedMonitorWake(event, resolveMonitorWake);
-    if (monitorWake !== undefined) {
-      upsertMonitorActivity(parts, monitorWake.projection, monitorWake.deliveryKey);
-      return;
-    }
     const processJobWake = appliedProcessJobWake(event, resolveProcessJobWake);
     if (processJobWake !== undefined) {
       if (!parts.some((part) => part.type === "process-job-wake"
@@ -7584,6 +7288,7 @@ function applyEvent(
     const executionMs = canonicalExecutionMs(event.executionMs);
     const subagent = subagentOf(event);
     if (subagent !== undefined) {
+      if (hasDetachedSubagentReceipt(parts, subagent.id)) return;
       const group = ensureSubagentPart(parts, subagent);
       if (event.metadata?.subagentLifecycle === true) {
         replaceSubagentPart(parts, withEventHistoryUpdate({
@@ -7657,7 +7362,7 @@ function appliedProcessJobWake(
 /**
  * A human steer the run consumed: like the wake interceptors above, but the
  * marker carries the operator's own full text instead of compact activity.
- * Runs last so Monitor and process-job wakes keep their purpose-built rows.
+ * Runs last so process-job wakes keep their purpose-built rows.
  */
 function appliedSteer(
   event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
@@ -7683,38 +7388,6 @@ function validSteerReceivedAt(value: unknown): string | undefined {
     && !/[\u0000-\u001f\u007f]/u.test(value)
     ? value
     : undefined;
-}
-
-type MonitorActivityPart = Extract<WebMessagePart, { readonly type: "monitor-activity" }>;
-
-function upsertMonitorActivity(
-  parts: WebMessagePart[],
-  projection: MonitorProjection,
-  deliveryKey: string,
-): boolean {
-  const index = parts.findIndex((part) => part.type === "monitor-activity");
-  const previous = index < 0 ? undefined : parts[index] as MonitorActivityPart;
-  const monitors = previous?.monitors ?? [];
-  const monitorIndex = monitors.findIndex((entry) => entry.projection.monitorId === projection.monitorId);
-  const prior = monitorIndex < 0 ? undefined : monitors[monitorIndex];
-  // The stream receipt and the durable delivery settlement can race. Once an
-  // exact key is present, settlement is bookkeeping only: replacing its newer
-  // projection with the reservation's older snapshot would make the activity
-  // row move backwards and emit a duplicate invalidation.
-  if (prior?.deliveryKeys.includes(deliveryKey) === true) return false;
-  const deliveryKeys = prior === undefined ? [deliveryKey] : [...prior.deliveryKeys, deliveryKey];
-  const entry = { projection, deliveryKeys };
-  const nextMonitors = monitorIndex < 0
-    ? [...monitors, entry]
-    : monitors.map((value, at) => at === monitorIndex ? entry : value);
-  const next: MonitorActivityPart = { type: "monitor-activity", monitors: nextMonitors };
-  if (index < 0) {
-    parts.push(next);
-    return true;
-  }
-  if (isDeepStrictEqual(previous, next)) return false;
-  parts[index] = next;
-  return true;
 }
 
 function contextCompactionOperationId(value: unknown): string | undefined {
@@ -7786,6 +7459,24 @@ function withEventHistoryUpdate<T extends WebToolCall | SubagentPart>(
  * the operator wire, so a malformed payload must fall through to an ordinary
  * tool-call part instead of keying a group on a non-string.
  */
+/** Late child stream events cannot replace a canonical detached launch receipt. */
+function hasDetachedSubagentReceipt(parts: readonly WebMessagePart[], id: string): boolean {
+  const part = parts.find((candidate) => candidate.type === "tool-call" && candidate.toolCallId === id);
+  if (part?.type !== "tool-call" || (part.toolName !== "Agent" && part.toolName !== "AgentSend")) return false;
+  const value = part.structuredResult;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const receipt = value as Record<string, unknown>;
+  const required = ["schema", "jobId", "tool", "state", "startedAt"];
+  if (!required.every((key) => Object.hasOwn(receipt, key))
+    || Object.keys(receipt).some((key) => ![...required, "maxRuntimeMs"].includes(key))
+    || receipt.schema !== "mono-agent.process-job-start-receipt.v1" || receipt.tool !== part.toolName
+    || typeof receipt.jobId !== "string" || !receipt.jobId.trim() || receipt.jobId.length > 256
+    || !["queued", "starting", "running"].includes(String(receipt.state))
+    || (Object.hasOwn(receipt, "maxRuntimeMs") && (!Number.isSafeInteger(receipt.maxRuntimeMs) || Number(receipt.maxRuntimeMs) <= 0))) return false;
+  return receipt.startedAt === null || (typeof receipt.startedAt === "string"
+    && Number.isFinite(Date.parse(receipt.startedAt)) && new Date(receipt.startedAt).toISOString() === receipt.startedAt);
+}
+
 function subagentOf(
   event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
 ): {
@@ -7916,15 +7607,20 @@ function upsertToolCall(
 }
 
 /**
- * Whether a stored part marks a semantic boundary between streamed text runs.
- * Most telemetry remains invisible; compaction and the content-free assistant
- * message marker intentionally keep adjacent provider responses separate.
+ * Whether a stored part marks a semantic boundary for a streamed run of
+ * `appending`. Most telemetry remains invisible; compaction and the
+ * content-free assistant message marker intentionally keep adjacent provider
+ * responses separate.
  */
-function separatesStreamedText(part: WebMessagePart): boolean {
-  // A Monitor acknowledgement may arrive while the provider is still flushing
-  // the preceding message's final text delta. Its compact activity row must not
-  // split that word; the explicit message boundary below separates responses.
-  if (part.type === "monitor-activity") return false;
+function separatesStreamedText(part: WebMessagePart, appending: "text" | "reasoning"): boolean {
+  // A thought is working-out inside one answer, not a message boundary: prose
+  // that resumes after it belongs to the text run in front of it, so the
+  // reader sees the whole sentence and then the thought row instead of one
+  // sentence rendered as two blocks split mid-word. The relation stays
+  // asymmetric on purpose: prose between two thoughts still separates them,
+  // so distinct thoughts cannot merge into one reasoning part and lose their
+  // chronology.
+  if (appending === "text" && part.type === "reasoning") return false;
   if (part.type !== "telemetry") return true;
   const event = part.data;
   if (event === null || typeof event !== "object" || Array.isArray(event)) return false;
@@ -7945,13 +7641,14 @@ function separatesStreamedText(part: WebMessagePart): boolean {
  * console renders every text part as its own markdown block, so a sentence
  * visibly broke in half. Skipping the parts the console never renders keeps
  * prose in one run, while a real tool call or delegation, which IS rendered,
- * still separates the text on either side of it.
+ * still separates the text on either side of it. A thought, though rendered,
+ * does not: it rides inside the one answer it interrupts.
  */
 function appendTextPart(parts: WebMessagePart[], type: "text" | "reasoning", delta: string): void {
   for (let index = parts.length - 1; index >= 0; index -= 1) {
     const part = parts[index];
     if (part === undefined) break;
-    if (!separatesStreamedText(part)) continue;
+    if (!separatesStreamedText(part, type)) continue;
     if (part.type !== type) break;
     parts[index] = { type, text: `${part.text}${delta}` };
     return;
@@ -7962,9 +7659,9 @@ function appendTextPart(parts: WebMessagePart[], type: "text" | "reasoning", del
 /**
  * Text parts on either side of one of these came from DIFFERENT assistant
  * messages: a tool call ends the message that requested it, so prose written
- * after the result belongs to the next one. Reasoning does not — a single
- * message can carry `thinking, text, thinking, text`, which `appendTextPart`
- * splits into two text parts even though the provider reports one answer.
+ * after the result belongs to the next one. Reasoning does not end one — a
+ * single message can carry `thinking, text, thinking, text` as one answer —
+ * so it never separates the trailing run the final text owns.
  */
 function separatesAssistantMessages(part: WebMessagePart): boolean {
   return part.type === "tool-call" || part.type === "subagent" || part.type === "error";
@@ -8469,14 +8166,17 @@ function parseParts(value: string): WebMessagePart[] {
   } catch {
     throw new WebConsoleError("storage_corrupt", "Persisted message parts are not valid JSON.", 500);
   }
+  // monitor-activity parts were written by versions before monitors were removed;
+  // they are dropped on read so retained conversations stay loadable.
+  // If ordinary recovery later rewrites the message, they are also dropped from
+  // storage. This is accepted because retired activity can no longer render.
   const parts = Array.isArray(parsed)
-    ? parsed.map(canonicalizePersistedPartHistory)
+    ? parsed.filter((part: unknown) => !(typeof part === "object" && part !== null
+      && !Array.isArray(part) && (part as Record<string, unknown>).type === "monitor-activity"))
+      .map(canonicalizePersistedPartHistory)
     : parsed;
   if (!Array.isArray(parts) || !parts.every(isWebMessagePart)) {
     throw new WebConsoleError("storage_corrupt", "Persisted message parts have an invalid shape.", 500);
-  }
-  if (parts.filter((part) => part.type === "monitor-activity").length > 1) {
-    throw new WebConsoleError("storage_corrupt", "Persisted Monitor activity is duplicated.", 500);
   }
   const wakeKeys = parts.flatMap((part) => part.type === "process-job-wake" ? [part.deliveryKey] : []);
   if (new Set(wakeKeys).size !== wakeKeys.length) {
@@ -8782,6 +8482,7 @@ function hasOnlyKeys(value: Readonly<Record<string, unknown>>, allowed: Readonly
 function isWebMessagePart(value: unknown): value is WebMessagePart {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const part = value as Record<string, unknown>;
+  if (part.type === "conversation-marker") return isConversationMarker(part);
   if (part.type === "text" || part.type === "reasoning") return typeof part.text === "string";
   if (part.type === "tool-call") return isWebToolCall(part);
   if (part.type === "subagent") {
@@ -8846,48 +8547,6 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && (record.text as string).trim().length > 0
       && typeof record.messageId === "string"
       && validRichId(record.messageId);
-  }
-  if (part.type === "monitor-activity") {
-    if (!hasOnlyKeys(part, new Set(["type", "monitors"]))
-      || !Array.isArray(part.monitors)
-      || part.monitors.length === 0
-      || part.monitors.length > AGENT_LIVE_INPUT_MAX_MESSAGES) {
-      return false;
-    }
-    const monitorIds = new Set<string>();
-    let deliveryCount = 0;
-    for (const raw of part.monitors) {
-      if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
-      const entry = raw as Record<string, unknown>;
-      if (!hasOnlyKeys(entry, new Set(["projection", "deliveryKeys"])) || !Array.isArray(entry.deliveryKeys)) {
-        return false;
-      }
-      let projection: MonitorProjection;
-      try {
-        projection = parseMonitorProjection(entry.projection);
-      } catch {
-        return false;
-      }
-      if (monitorIds.has(projection.monitorId)
-        || entry.deliveryKeys.length === 0
-        || entry.deliveryKeys.length > AGENT_LIVE_INPUT_MAX_MESSAGES) {
-        return false;
-      }
-      monitorIds.add(projection.monitorId);
-      const keys = new Set<string>();
-      for (const key of entry.deliveryKeys) {
-        if (typeof key !== "string"
-          || key.length === 0
-          || key.length > 1_024
-          || /[\u0000-\u001f\u007f]/u.test(key)
-          || keys.has(key)) {
-          return false;
-        }
-        keys.add(key);
-      }
-      deliveryCount += entry.deliveryKeys.length;
-    }
-    return deliveryCount <= AGENT_LIVE_INPUT_MAX_MESSAGES;
   }
   if (part.type === "telemetry") return typeof part.event === "string";
   if (part.type === "error") return typeof part.message === "string" && (part.code === undefined || typeof part.code === "string");
@@ -8974,6 +8633,7 @@ function assertProcessJobCardTransition(
   next: ProcessJobProjection,
 ): void {
   if (previous.tool !== next.tool
+    || (previous.kind === "internal" && next.kind === "internal" && previous.instanceId !== next.instanceId)
     || previous.summary !== next.summary
     || previous.origin.conversationId !== next.origin.conversationId
     || previous.origin.channel !== next.origin.channel

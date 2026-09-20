@@ -1,10 +1,11 @@
+import { createAgentProviderUsage } from "./provider-usage-scope.js";
+import { createProviderUsageService } from "./provider-usage.js";
 // Internal host implementation; `app.ts` remains the stable public facade.
 import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
   AgentResponder,
-  MonitorProjection,
   NotifyDeliveryContext,
   ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
@@ -43,6 +44,7 @@ import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import { createSeenNotifyDestinationCache } from "./seen-conversations.js";
+import { MemoryHealthWorkerClient } from "./memory-health-worker-client.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
 import { reasonOf, sandboxStatusFromState } from "./app-controller-utils.js";
@@ -54,11 +56,8 @@ import * as maintenanceOperations from "./app-controller-maintenance.js";
 import * as channelsOperations from "./app-controller-channels.js";
 import * as responderOperations from "./app-controller-responder.js";
 import * as memoryOperations from "./app-controller-memory.js";
-import * as monitorsOperations from "./app-controller-monitors.js";
 import * as processJobsOperations from "./app-controller-process-jobs.js";
 import { assertUniqueProcessJobChannelSchemes } from "./process-job-channel-routing.js";
-import type { MonitorsServiceHandle } from "./monitors-service.js";
-import type { MonitorsSettings } from "./monitors-config.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import {
   acquireAgentRootOwnership,
@@ -116,6 +115,10 @@ export interface MonoAgentAppOptions {
   readonly traceDefaults?: AppTraceDefaults;
   /** Secret-free proof of the durable files/environment observed by this worker. */
   readonly backgroundSnapshot?: BackgroundSnapshot;
+  /** Test seam for exercising the isolated memory-health worker transport. */
+  readonly memoryHealthWorkerUrl?: URL;
+  /** Test seam for exercising the isolated memory-health request deadline. */
+  readonly memoryHealthWorkerTimeoutMs?: number;
 }
 
 /**
@@ -142,9 +145,6 @@ export interface MonoAgentApp {
   listProcessJobs?(): Promise<readonly ProcessJobProjection[]>;
   getProcessJob?(id: string): Promise<ProcessJobProjection | undefined>;
   cancelProcessJob?(id: string): Promise<ProcessJobProjection>;
-  listMonitors?(): Promise<readonly MonitorProjection[]>;
-  getMonitor?(id: string): Promise<MonitorProjection | undefined>;
-  cancelMonitor?(id: string): Promise<MonitorProjection>;
   resolveContinuationDelivery?(
     id: string,
     outcome: { readonly kind: "delivered"; readonly deliveryId?: string } | { readonly kind: "not_delivered" } | { readonly kind: "dead_lettered" },
@@ -212,13 +212,14 @@ async function startMonoAgentAppInternal(
       ...(options.sandboxEngine === undefined ? {} : { sandboxEngine: options.sandboxEngine }),
       ...(options.traceDefaults === undefined ? {} : { traceDefaults: options.traceDefaults }),
       ...(options.backgroundSnapshot === undefined ? {} : { backgroundSnapshot: options.backgroundSnapshot }),
+      ...(options.memoryHealthWorkerUrl === undefined ? {} : { memoryHealthWorkerUrl: options.memoryHealthWorkerUrl }),
+      ...(options.memoryHealthWorkerTimeoutMs === undefined ? {} : { memoryHealthWorkerTimeoutMs: options.memoryHealthWorkerTimeoutMs }),
       trustedRuntimeReadRoots,
     });
     const startedController = controller;
 
     const processJobsPreparationStartedAt = performance.now();
     await startedController.prepareProcessJobsProtection("startup:prepare");
-    await startedController.prepareMonitors();
     const processJobsPreparationDuration = performance.now() - processJobsPreparationStartedAt;
     await measure("sandbox", () => startedController.refreshSandboxStatus("startup"));
     await measure("traceability", () => startedController.startTraceability("startup"));
@@ -226,7 +227,6 @@ async function startMonoAgentAppInternal(
       await startedController.startExporters("startup");
       await startedController.startContinuationServiceIfConfigured("startup");
       await startedController.startProcessJobsIfConfigured("startup");
-      await startedController.startMonitorsIfConfigured();
     });
     startupPhases.services = roundedMilliseconds(
       (startupPhases.services ?? 0) + processJobsPreparationDuration,
@@ -236,7 +236,6 @@ async function startMonoAgentAppInternal(
       () => Promise.all(drivers.map((driver) => startedController.startChannelIfConfigured(driver.id, "startup"))),
     );
     await startedController.activateProcessJobWakes();
-    await startedController.activateMonitorWakes();
     await measure("memoryRituals", () => startedController.startMemoryRitualsIfConfigured("startup"));
     const memoryHealthStartedAt = performance.now();
     await startedController.refreshMemoryHealthAfterLifecycle("startup-complete", () => {
@@ -283,6 +282,8 @@ interface MonoAgentAppControllerInput {
   readonly sandboxEngine?: SandboxEngine;
   readonly traceDefaults?: AppTraceDefaults;
   readonly backgroundSnapshot?: BackgroundSnapshot;
+  readonly memoryHealthWorkerUrl?: URL;
+  readonly memoryHealthWorkerTimeoutMs?: number;
   readonly trustedRuntimeReadRoots: readonly string[];
 }
 
@@ -347,6 +348,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   /** One bounded forced refresh reserved by a due timer tick. */
   memoryHealthRefreshDue = false;
   memoryHealthGeneration = 0;
+  readonly memoryHealthWorker: MemoryHealthWorkerClient;
   /** Durable trace fact published only after the full current lifecycle completes. */
   startupCompleted = false;
   startupTimingValue: {
@@ -391,15 +393,6 @@ export class MonoAgentAppController implements MonoAgentApp {
   processJobsService: ProcessJobsServiceHandle | undefined;
   processJobsServiceStart: Promise<ProcessJobsServiceHandle | undefined> | undefined;
   processJobsServiceStartFlight: symbol | undefined;
-  monitorsService: MonitorsServiceHandle | undefined;
-  monitorsServiceStart: Promise<MonitorsServiceHandle | undefined> | undefined;
-  monitorsServiceStartFlight: symbol | undefined;
-  monitorsSettings: MonitorsSettings | undefined;
-  monitorsDegradation: { readonly reason: string } | undefined;
-
-  get monitorsStateDir(): string | undefined {
-    return this.monitorsService?.stateDir;
-  }
   /** Configured private root; retained even when the durable store cannot open. */
   processJobsStateDir: string | undefined;
   processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
@@ -413,6 +406,22 @@ export class MonoAgentAppController implements MonoAgentApp {
   } | undefined;
   /** One bounded scan cache for artifact-derived native-notify destinations. */
   readonly seenNotifyDestinations = createSeenNotifyDestinationCache();
+  /** Shared by operator reads and every channel; no request-scoped vendor caches. */
+  private readonly providerUsageServices = new Map<string, ReturnType<typeof createProviderUsageService>>();
+  providerUsageFor(config: MonoAgentConfig) {
+    const path = config.providers?.piAuthPath ?? "";
+    let service = this.providerUsageServices.get(path);
+    if (service === undefined) {
+      service = createProviderUsageService({ ...(path ? { path } : {}), outcomes: this.providerAuthObservations });
+      this.providerUsageServices.set(path, service);
+    }
+    return createAgentProviderUsage({
+      config,
+      drivers: this.drivers,
+      input: { cwd: this.cwd, configPath: this.configReadPath, env: this.env },
+      service,
+    });
+  }
   /** Process-local proof/failure cache shared by every responder and auth status. */
   readonly providerAuthObservations = createProviderAuthObservationTracker();
 
@@ -429,6 +438,10 @@ export class MonoAgentAppController implements MonoAgentApp {
     this.sandboxEngine = input.sandboxEngine;
     this.traceDefaults = input.traceDefaults;
     this.backgroundSnapshot = input.backgroundSnapshot;
+    this.memoryHealthWorker = new MemoryHealthWorkerClient({
+      ...(input.memoryHealthWorkerUrl === undefined ? {} : { workerUrl: input.memoryHealthWorkerUrl }),
+      ...(input.memoryHealthWorkerTimeoutMs === undefined ? {} : { timeoutMs: input.memoryHealthWorkerTimeoutMs }),
+    });
     this.trustedRuntimeReadRoots = [...input.trustedRuntimeReadRoots];
     for (const driver of input.drivers) {
       this.statuses.set(driver.id, {
@@ -518,19 +531,6 @@ export class MonoAgentAppController implements MonoAgentApp {
   async cancelProcessJob(id: string): Promise<ProcessJobProjection> {
     if (this.processJobsService === undefined) throw new Error("Process-job controller is not running.");
     return await this.processJobsService.cancel(id);
-  }
-
-  async listMonitors(): Promise<readonly MonitorProjection[]> {
-    return await this.monitorsService?.list() ?? [];
-  }
-
-  async getMonitor(id: string): Promise<MonitorProjection | undefined> {
-    return await this.monitorsService?.get(id);
-  }
-
-  async cancelMonitor(id: string): Promise<MonitorProjection> {
-    if (this.monitorsService === undefined) throw new Error("Monitor controller is not running.");
-    return await this.monitorsService.cancel(id);
   }
 
   async resolveContinuationDelivery(
@@ -638,22 +638,6 @@ export class MonoAgentAppController implements MonoAgentApp {
     return processJobsOperations.stopProcessJobsService(this);
   }
 
-  async prepareMonitors(): Promise<void> {
-    return monitorsOperations.prepareMonitors(this);
-  }
-
-  async startMonitorsIfConfigured(): Promise<void> {
-    return monitorsOperations.startMonitorsIfConfigured(this);
-  }
-
-  async activateMonitorWakes(): Promise<void> {
-    return monitorsOperations.activateMonitorWakes(this);
-  }
-
-  async stopMonitorsService(): Promise<void> {
-    return monitorsOperations.stopMonitorsService(this);
-  }
-
   requireContinuationService(): ContinuationServiceHandle { return continuationOperations.requireContinuationService(this); }
 
   async synthesizeContinuation(input: ContinuationSynthesisInput): Promise<{ readonly text: string; readonly actionable?: boolean }> { return continuationOperations.synthesizeContinuation(this, input); }
@@ -675,6 +659,8 @@ export class MonoAgentAppController implements MonoAgentApp {
   ): Promise<ContinuationHistoryRecordResult> { return continuationOperations.recordContinuationHistory(this, conversationId, text, deliveryKey); }
 
   async stop(): Promise<void> {
+    for (const service of this.providerUsageServices.values()) service.stop();
+    this.providerUsageServices.clear();
     try {
       await lifecycleOperations.stop(this);
     } finally {

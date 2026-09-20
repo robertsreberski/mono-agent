@@ -399,8 +399,11 @@ describe("Chat conversation viewport in Chromium", () => {
 
     storeMock.current = chatStore(secondThread, null, true);
     rerender(chatTree());
+    // The viewport follows the runtime adapter's own transcript, which the
+    // external store installs in a passive effect, so the replacement lands on
+    // the commit after the selection changes rather than synchronously with it.
+    await waitFor(() => expect(getViewport(container)).not.toBe(firstViewport));
     const secondViewport = getViewport(container);
-    expect(secondViewport).not.toBe(firstViewport);
     await waitForMessages(container, 0);
     await waitForFrames();
 

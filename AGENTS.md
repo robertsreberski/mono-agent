@@ -27,6 +27,7 @@ This repository is a config-first agent framework built from npm packages under 
 
 - The user's request is the execution contract. Do not infer an issue workflow, post issue checkpoints, or expand the requested release/deployment targets unless the user explicitly asks.
 - All changes land through a PR; never commit directly to `main`.
+- File an `Unreleased` entry in `CHANGELOG.md` for every user-visible change; see `skills/changelog/SKILL.md`.
 - The normal `main` checkout is the clean live source for the local mono-agent CLI and Personal Agent. Keep it usable and make tracked changes only in isolated worktrees (see `skills/worktree-feature`).
 - Start with the single skill that best matches the requested outcome. Add another skill only when the requested scope crosses that skill's boundary; a release does not imply deployment, deployment does not imply a full-fleet audit, and docs do not imply a website build unless those surfaces changed.
 - Select verification from the diff's risk, using `verify-green`: docs/skills/process changes use their focused contract checks; ordinary package changes use focused build/test/typecheck plus one broad CI gate; security, storage, lifecycle, provider-routing, delivery, and public-boundary changes add one local full gate and one matching smoke scenario.

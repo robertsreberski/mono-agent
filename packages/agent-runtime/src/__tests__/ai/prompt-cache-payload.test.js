@@ -5,14 +5,21 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createModels, fauxProvider } from '@earendil-works/pi-ai';
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-responses';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentHarness, createInMemoryHistoryStore, createToolPolicy } from '../../../../agent-harness/src/index.ts';
+import { loadMonoAgentConfig } from '../../../../config/src/index.ts';
 import { generatePiNativeResponse } from '../../ai/providers/pi-native.js';
 import { disposeProviderSession } from '../../ai/runtime/sessions.js';
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+
+// Direct tool construction in this file binds one explicit context.
+const ctx = createToolContext();
 
 const roots = [];
 const sessions = new Set();
 afterEach(async () => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   await Promise.all([...sessions].map((id) => disposeProviderSession(id)));
   sessions.clear();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -152,4 +159,165 @@ it.each(['anthropic-messages', 'openai-responses'])('serializes a recovered nati
   expect(calls).toHaveLength(1); expect(results).toHaveLength(1);
   expect(api === 'anthropic-messages' ? results[0].tool_use_id : results[0].call_id)
     .toBe(api === 'anthropic-messages' ? calls[0].id : calls[0].call_id);
+});
+
+
+it.each(['anthropic-messages', 'openai-responses'])('keeps actual %s tool arrays byte-identical across admission changes within each profile', async (api) => {
+  const { getPiBuiltinTools } = await import('../../agent/tools/pi-bridge.js');
+  const { composeHostTurnEnvelope, formatHostCapabilities } = await import('../../../../agent-harness/src/context/turn-envelope.ts');
+  const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
+  const model = { ...fauxProvider({ provider: 'wire-fixture', models: [{ id: 'fixture' }] }).getModel(), api, baseUrl: 'https://fixture.invalid/v1' };
+  const processJobs = { start: async () => { throw new Error('must not start'); }, limits: { maxRuntimeMs: 10000 } };
+  const instances = { reserve: () => {}, releaseReservation: () => {}, inspect: () => {}, checkAcknowledgement: () => {} };
+  const parent = { run: async () => { throw new Error('must not run'); }, instances };
+  for (const profile of ['parent', 'persistent-child']) {
+    const exposure = { persistentSubagents: profile === 'parent', askParent: profile === 'persistent-child' };
+    let baseline;
+    const envelopes = new Set();
+    for (const [index, kind] of ['user', 'job-wake', 'cron', 'child-continuation', 'exhausted-lineage', 'absent-controller'].entries()) {
+      const admitted = index < 3;
+      const subagents = profile === 'parent' ? { ...parent, ...(admitted ? { backgroundSubagentController: {} } : {}), ...(index === 6 ? { instances: undefined } : {}) } : { depth: 1 };
+      const options = {
+        toolExposure: exposure, subagents,
+        processJobs: admitted ? processJobs : undefined,
+        askParentController: profile === 'persistent-child' && admitted ? { submit: async () => {} } : undefined,
+        toolLimits: { bashTimeoutMs: 120000 - index * 1000 },
+        processJobsAvailability: { chainDepth: index, maxChainDepth: 4, remainingStarts: Math.max(0, 4 - index), ...(index >= 4 ? { unavailableReason: 'chain_depth_exhausted' } : {}) },
+      };
+      const tools = getPiBuiltinTools(['Bash', 'Exec', 'Agent', 'AgentSend', 'AskParent'], {
+        ...options, ctx, processJobsController: options.processJobs,
+      });
+      if (profile === 'persistent-child') expect(tools.map((tool) => tool.name)).toEqual(['AskParent', 'Bash', 'Exec']);
+      const envelope = composeHostTurnEnvelope(formatHostCapabilities(options), kind);
+      envelopes.add(envelope);
+      let payload;
+      await send(model, { systemPrompt: 'fixed', tools, messages: [{ role: 'user', content: envelope, timestamp: 1 }] }, {
+        apiKey: 'synthetic-test-value', maxRetries: 0,
+        fetch: async (_url, init) => {
+          payload = JSON.parse(init.body);
+          return new Response(JSON.stringify({ error: { message: 'intercepted', type: 'test_error' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+        },
+      }).result();
+      expect(payload).toBeDefined();
+      const bytes = JSON.stringify(payload.tools);
+      baseline ??= bytes;
+      expect(bytes, `${profile}/${kind}`).toBe(baseline);
+    }
+    expect(envelopes.size).toBe(6);
+  }
+});
+
+
+it.each([
+  ['anthropic-messages', 'long', true, '1h'],
+  ['anthropic-messages', 'long', false, '5m'],
+  ['anthropic-messages', 'short', true, '5m'],
+  ['anthropic-messages', undefined, true, '1h'],
+  ['anthropic-messages', undefined, undefined, '1h'],
+  ['anthropic-messages', undefined, false, '5m'],
+  ['openai-responses', undefined, true, null],
+  ['openai-responses', 'long', true, null],
+])('retention %s/%s (supported=%s) preserves Pi compatibility and stream-option boundaries', async (api, cacheRetention, supported, ttl) => {
+  vi.stubEnv('PI_CACHE_RETENTION', cacheRetention === 'short' ? 'long' : 'short');
+  const resolvedRetention = loadMonoAgentConfig({ cwd: '/repo', env: { MONO_AGENT_IDENTITY_PATH: "IDENTITY.md", MONO_AGENT_MODEL: 'anthropic:claude-sonnet-4-6', MONO_AGENT_PI_CACHE_RETENTION: cacheRetention } }).providers.piNative.cacheRetention;
+  const { AgentHarness } = await import('@earendil-works/pi-agent-core');
+  const create = vi.spyOn(AgentHarness, 'create');
+  const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
+  const base = fauxProvider({ provider: 'retention-fixture', models: [{ id: 'fixture' }] });
+  const model = { ...base.getModel(), api, baseUrl: 'https://fixture.invalid/v1', compat: { supportsLongCacheRetention: supported } };
+  const models = createModels(); const payloads = []; const streamOptions = []; const events = [];
+  models.setProvider({ ...base.provider, getModels: () => [model], streamSimple: (selected, context, options) => {
+    streamOptions.push(options);
+    return send(selected, context, { ...options, apiKey: 'synthetic-test-value', maxRetries: 0,
+      fetch: async (_url, init) => {
+        payloads.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ error: { message: 'intercepted', type: 'test_error' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+      },
+    });
+  } });
+  await generatePiNativeResponse('stable', { model: { provider: 'retention-fixture', model: 'fixture', reference: 'retention-fixture:fixture' },
+    piResolvedModel: model, piResolvedModels: models, messages: [{ role: 'user', content: 'test' }], allowedTools: ['Read'],
+    cacheRetention: resolvedRetention, promptCacheDiagnostics: true, onEvent: (event) => events.push(event),
+  });
+  expect(payloads).toHaveLength(1);
+  if (api === 'anthropic-messages') expect(streamOptions[0].cacheRetention).toBe(resolvedRetention);
+  else {
+    expect(create.mock.calls[0][0].streamOptions).not.toHaveProperty('cacheRetention');
+    // Pi itself materializes an undefined option in its downstream projection.
+    expect(streamOptions[0].cacheRetention).toBeUndefined();
+  }
+  const diagnostic = events.find((event) => event.type === 'prompt_cache_diagnostic');
+  expect(diagnostic).toMatchObject({ requestedCacheRetention: resolvedRetention, observedCacheTtls: ttl ? [ttl] : [] });
+  if (ttl === '1h') expect(JSON.stringify(payloads[0])).toContain('"ttl":"1h"');
+  else expect(JSON.stringify(payloads[0])).not.toContain('"ttl":"1h"');
+});
+
+it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MCP and builtin %s definitions stable on real request-scoped endpoints', async (api) => {
+  const { getPiBuiltinTools, initPiMcpTools, closePiMcpClients } = await import('../../agent/tools/pi-bridge.js');
+  const { createSetConversationTitleRuntimeExtension } = await import('../../../../agent-app/src/conversation-title.ts');
+  const { createConsoleProjectsRuntimeExtension } = await import('../../../../agent-app/src/console-projects.ts');
+  const { createMemoryRememberRuntimeExtension } = await import('../../../../agent-app/src/memory-remember.ts');
+  const { createAdapterSendToolsServer } = await import('../../../../agent-app/src/adapter-send-tools.ts');
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
+  const { composeRuntimeOptionExtensions } = await import('../../../../agent-app/src/runtime-option-extensions.ts');
+  const { composeHostTurnEnvelope, formatHostCapabilities } = await import('../../../../agent-harness/src/context/turn-envelope.ts');
+  const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
+  const model = { ...fauxProvider({ provider: 'app-wire-fixture', models: [{ id: 'fixture' }] }).getModel(), api, baseUrl: 'https://fixture.invalid/v1' };
+  const mutations = vi.fn(); const bridgeFetch = vi.fn();
+  let baseline; const envelopes = new Set();
+  for (const [index, kind] of ['user', 'job-wake', 'cron', 'exhausted-lineage', 'absent-controller'].entries()) {
+    const interactive = ['user', 'exhausted-lineage'].includes(kind);
+    const web = { threadId: 'thread', turnId: `turn-${index}`, conversationTitle: { schema: 1, writable: true }, consoleProjects: { schema: 1 },
+      ...(['job-wake'].includes(kind) ? { trigger: kind } : {}) };
+    const metadata = kind === 'cron' ? { source: 'cron' } : kind === 'absent-controller' ? { source: 'web' } : { source: 'web', web };
+    const input = { request: { conversationId: 'web:thread', userMessage: kind, abortSignal: new AbortController().signal, metadata }, runId: `run-${index}`, context: {} };
+    const store = { supportsRemember: () => interactive, remember: mutations };
+    const adapterServer = await createAdapterSendToolsServer({ askUser: {
+        bridgeUrl: 'http://127.0.0.1:1', bridgeToken: 'synthetic-test-value', timeoutMs: interactive ? null : 1000,
+        // Wake turns retain AskUser's existing admission; only missing target refuses.
+        ...(kind === 'absent-controller' ? {} : { producerConversationId: 'web:thread', interactionConversationId: 'web:thread' }),
+      } }, {}, undefined, { fetchImpl: bridgeFetch });
+    const adapterClient = new Client({ name: "wire-fixture", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await adapterServer.connect(serverTransport); await adapterClient.connect(clientTransport);
+    const adapterTools = (await adapterClient.listTools()).tools.map(({ name, description, inputSchema }) => ({ name, description, parameters: inputSchema }));
+    const extension = composeRuntimeOptionExtensions([
+      createSetConversationTitleRuntimeExtension(),
+      createConsoleProjectsRuntimeExtension({ sourceId: 'fixture', policy: { allowedTools: ['*'], disallowedTools: [] }, createClient: async () => mutations }),
+      createMemoryRememberRuntimeExtension(store),
+    ]);
+    const bound = await extension(input);
+    const runOptions = { ...bound.runtimeOptions, toolLimits: { bashTimeoutMs: 120000 - index * 1000 },
+      processJobsAvailability: { chainDepth: index, maxChainDepth: 4, remainingStarts: Math.max(0, 4 - index), ...(index >= 4 ? { unavailableReason: 'chain_depth_exhausted' } : {}) } };
+    const builtins = getPiBuiltinTools(['Bash', 'Exec', 'Read'], { ctx, toolLimits: runOptions.toolLimits });
+    const mcp = await initPiMcpTools(runOptions.mcpServers, new Set(builtins.map((tool) => tool.name)), { ctx });
+    try {
+      expect(mcp.warnings).toEqual([]);
+      if (!interactive) {
+        for (const [name, args] of [['SetConversationTitle', { title: 'No mutation' }], ['CreateProject', { name: 'No mutation' }], ['Remember', { text: 'Must not be persisted.' }]]) {
+          const result = await mcp.tools.find((tool) => tool.name === name).execute('refused', args);
+          expect(result.details.mcp_result_is_error, name).toBe(true);
+          if (name === "Remember") expect(result.details.raw?.structuredContent).toMatchObject({ stored: false });
+          else expect(result.details.raw?.structuredContent).toBeUndefined();
+        }
+      }
+      if (kind === 'absent-controller') {
+        const result = await adapterClient.callTool({ name: 'AskUser', arguments: { questions: [{ header: 'Question', question: 'Proceed?', options: [{ label: 'Yes', description: 'Proceed' }, { label: 'No', description: 'Stop' }] }] } });
+        expect(result.isError).toBe(true);
+      }
+      const envelope = composeHostTurnEnvelope(formatHostCapabilities(runOptions), kind); envelopes.add(envelope);
+      let payload;
+      await send(model, { systemPrompt: 'fixed', tools: [...builtins, ...mcp.tools, ...adapterTools], messages: [{ role: 'user', content: envelope, timestamp: 1 }] }, {
+        apiKey: 'synthetic-test-value', maxRetries: 0, fetch: async (_url, init) => {
+          payload = JSON.parse(init.body);
+          return new Response(JSON.stringify({ error: { message: 'intercepted', type: 'test_error' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+        },
+      }).result();
+      expect(payload).toBeDefined(); const bytes = JSON.stringify(payload.tools); baseline ??= bytes;
+      expect(bytes, kind).toBe(baseline);
+      expect(bytes).toContain('SetConversationTitle'); expect(bytes).toContain('Remember'); expect(bytes).toContain('AskUser'); expect(bytes).toContain('CreateProject');
+    } finally { await closePiMcpClients(mcp.clients); await bound.cleanup?.(); await adapterClient.close(); await adapterServer.close(); }
+  }
+  expect(envelopes.size).toBe(5); expect(mutations).not.toHaveBeenCalled(); expect(bridgeFetch).not.toHaveBeenCalled();
 });

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 import { composeProjectPrefix, neutraliseProjectContext, withProjectContext } from "../project-context.js";
@@ -50,4 +51,47 @@ it("quotes individual tag names so commas and quotes stay unambiguous", () => {
   expect(withProjectContext("Work", { name: "", context: "", tags: ["a, b", 'say "yes"'] })).toBe(
     '<conversation_tags>"a, b", "say \\"yes\\""</conversation_tags>\n\nWork',
   );
+});
+
+describe("conversation marker dispatch prefix", () => {
+  it.each([
+    ["Europe/Warsaw", "2026-01-16T09:12:00+01:00", "2026-07-16T10:12:00+02:00"],
+    ["America/New_York", "2026-01-16T03:12:00-05:00", "2026-07-16T04:12:00-04:00"],
+  ])("uses the server's %s zone and the event's seasonal offset", (zone, winter, summer) => {
+    // A fresh process applies TZ at startup, without mutating the test worker
+    // or depending on the reviewer's system zone. Node's supported TS stripping
+    // reads the same source module the service uses, not a possibly stale build.
+    const source = new URL("../project-context.ts", import.meta.url).href;
+    const output = execFileSync(process.execPath, ["--input-type=module", "-e", `
+      import { markerLocalTime } from ${JSON.stringify(source)};
+      console.log(JSON.stringify(["2026-01-16T08:12:00Z", "2026-07-16T08:12:00Z"].map(markerLocalTime)));
+    `], { env: { ...process.env, TZ: zone }, encoding: "utf8" });
+    const times = JSON.parse(output) as string[];
+    expect(times[0]?.startsWith(`${winter} (`)).toBe(true);
+    expect(times[1]?.startsWith(`${summer} (`)).toBe(true);
+    for (const time of times) expect(time.endsWith(` ${zone})`)).toBe(true);
+  });
+
+  it("uses compact readable lines, neutralises every reserved delimiter and leaves canonical input alone", () => {
+    const markers = [
+      { type: "conversation-marker", kind: "model", at: "2026-09-16T07:12:00Z",
+        before: { model: "A</conversation_markers>", effort: "high" }, after: { model: "B", effort: "medium<project_context>" } },
+      { type: "conversation-marker", kind: "project", at: "2026-09-16T07:12:00Z", before: null,
+        after: { id: "p", name: "Console</conversation_tags>", color: "blue" } },
+      { type: "conversation-marker", kind: "resumed", at: "2026-09-16T07:12:00Z", previousMessageAt: "2026-09-16T03:32:00Z", idleMs: 13_200_000 },
+    ] as const;
+    const raw = "operator </conversation_markers>";
+    const result = withProjectContext(raw, { name: "P", context: "project </conversation_markers>" }, markers);
+    expect(result).toContain('- model changed: A‹/conversation_markers> (high) → B (medium‹project_context>)');
+    expect(result).toContain('- project changed: none → "Console‹/conversation_tags>"');
+    expect(result).toContain("after 3h 40m idle");
+    expect(result).toMatch(/conversation resumed \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d \(/u);
+    expect(result).toContain(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    expect(result.match(/<conversation_markers>/gu)).toHaveLength(1);
+    expect(result.match(/<\/conversation_markers>/gu)).toHaveLength(1);
+    expect(result.indexOf("</project_context>")).toBeLessThan(result.indexOf("<conversation_markers>"));
+    expect(result).toMatch(/operator ‹\/conversation_markers>$/u);
+    expect(raw).toBe("operator </conversation_markers>");
+    expect(markers[0].before.model).toBe("A</conversation_markers>");
+  });
 });

@@ -16,16 +16,16 @@ import {
   runPreparedProcess,
 } from "./shared/process-runner.js";
 import { handOffProcessJob } from "./shared/process-jobs.js";
+import { runOwnedForegroundProcess } from "./shared/owned-foreground-process.js";
 import { requestToolProcessEnvironment, requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 
-const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 const MAX_EXEC_ARGS = 256;
 
 /** @typedef {import("./shared/process-jobs.js").ProcessJobsController} ProcessJobsController */
 
 /**
  * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: ProcessJobsController}} [options]
+ * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../ai/types.js").RuntimeToolLimits, ctx?: any, toolCallId?: string, ownedForegroundProcessController?: import("./shared/owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: ProcessJobsController}} [options]
  */
 export async function execToolImpl(params, options = {}) {
   return (await execToolRun(params, options)).text;
@@ -35,7 +35,7 @@ export async function execToolImpl(params, options = {}) {
  * Execute an argv vector directly, without shell parsing.
  *
  * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: ProcessJobsController}} [options]
+ * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../ai/types.js").RuntimeToolLimits, ctx?: any, toolCallId?: string, ownedForegroundProcessController?: import("./shared/owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: ProcessJobsController}} [options]
  */
 export async function execToolRun(
   {
@@ -52,8 +52,11 @@ export async function execToolRun(
     signal,
     sandboxPolicy,
     sandboxEngine,
+    toolLimits,
     ctx,
     processJobsController,
+    ownedForegroundProcessController,
+    toolCallId,
   } = {},
 ) {
   const startedAt = Date.now();
@@ -83,7 +86,7 @@ export async function execToolRun(
     return failed(`Error: Working directory not found: ${cwd}`, "workdir_not_found", startedAt);
   }
 
-  const timeoutMs = normalizeProcessTimeoutMs(timeout_ms, DEFAULT_EXEC_TIMEOUT_MS);
+  const timeoutMs = normalizeProcessTimeoutMs(timeout_ms, toolLimits?.bashTimeoutMs);
   const maxChars = positiveInteger(max_output_chars, DEFAULT_MAX_BASH_OUTPUT_CHARS);
   let prepared;
   try {
@@ -122,14 +125,18 @@ export async function execToolRun(
   let result;
   let cleanupError;
   try {
-    result = await runPreparedProcess(prepared, {
-      timeoutMs,
-      signal,
-      maxBufferBytes: DEFAULT_PROCESS_BUFFER_BYTES,
-    });
+    result = ownedForegroundProcessController
+      ? await runOwnedForegroundProcess({ controller: ownedForegroundProcessController,
+        tool: "Exec", callId: toolCallId, prepared, timeoutMs, signal })
+      : await runPreparedProcess(prepared, { timeoutMs, signal, maxBufferBytes: DEFAULT_PROCESS_BUFFER_BYTES });
+  } catch (error) {
+    if (!ownedForegroundProcessController) throw error;
+    return failed("Error: Owned foreground command could not be completed safely.", "owned_process_unavailable", startedAt);
   } finally {
     try {
-      await prepared.cleanup?.();
+      // The owned lane keeps cleanup authority, including after rejection or an
+      // unresolved process-group exit. Never clean its sandbox from the tool.
+      if (!ownedForegroundProcessController) await prepared.cleanup?.();
     } catch (error) {
       cleanupError = error;
     }

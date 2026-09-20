@@ -2,7 +2,7 @@ import {
   ThreadListItemPrimitive,
   useAuiState,
 } from "@assistant-ui/react";
-import { threadPresentation } from "../../thread-presentation";
+import { threadPresentation, threadRowExcerpt } from "../../thread-presentation";
 import type { AgentSummary, CatalogModel, ProjectColor, ThreadSummary } from "../../types";
 import { Icon } from "../Icon";
 import { TagChip } from "../tag/TagChip";
@@ -59,6 +59,12 @@ export function ThreadListItem({
   );
   const isActive = selected && highlightSelected;
   const presentation = threadPresentation(thread);
+  // A settled success leaves the status slot empty; the row spends it on the
+  // newest reply instead. Anything the status line still says keeps its place,
+  // so the excerpt below is either the status text or the excerpt, never both.
+  const previewText = presentation.text === ""
+    ? threadRowExcerpt(thread) ?? ""
+    : presentation.text;
   const kind = dashboardThreadKind(thread);
   // Current settings for THIS conversation: its overrides, else its own
   // agent's config defaults. A span, so the row keeps its one navigation
@@ -72,7 +78,7 @@ export function ThreadListItem({
     : dashboardKindLabel(kind);
   return (
     <ThreadListItemPrimitive.Root
-      className={`thread-item${isActive ? " is-active" : ""}`}
+      className={`thread-item is-conversation${isActive ? " is-active" : ""}`}
     >
       <ThreadListItemPrimitive.Trigger
         className="thread-trigger"
@@ -95,11 +101,16 @@ export function ThreadListItem({
           <span className="thread-preview">
             {presentation.active && <i className="thread-running" role="img" aria-label={presentation.text} />}
             {project !== undefined && <ProjectTag name={project.name} color={project.color} />}
-            <span className="thread-preview-text" title={presentation.text}>
-              {presentation.text}
+            <span className="thread-preview-text" title={previewText}>
+              {previewText}
             </span>
             {tags.length > 0 && <span className="thread-tags" aria-label="Conversation tags">
-              <span className="tag-separator" aria-hidden="true">·</span>
+              {/* The separator needs something to separate from: with no
+                  project and no excerpt it would dangle at the line's start,
+                  the way the chat header hides its own leading separator. */}
+              {(previewText !== "" || project !== undefined) && (
+                <span className="tag-separator" aria-hidden="true">·</span>
+              )}
               {tags.slice(0, 3).map((tag) => <TagChip key={tag.id} tag={tag} />)}
               {tags.length > 3 && <span className="tag-overflow" aria-label={`${String(tags.length - 3)} more tags`}>+{tags.length - 3}</span>}
             </span>}

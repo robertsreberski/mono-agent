@@ -168,8 +168,12 @@ commit, the harness seals the accepted partial assistant/tool prefix, releases
 the conversation lane, and runs one bounded continuity finalizer. A
 per-conversation barrier prevents the next turn from assembling context until
 that finalizer publishes the 48 KiB account and either recovers or retires the provider epoch.
+The wait lasts until the publication settles and is cancellable: aborting the
+waiting turn returns the standard cancelled response and leaves the barrier
+installed for the next waiter. Recorder/exporter finalization runs after the
+publication and never delays the next turn.
 Cancellation closes the mailbox and rejects the live caller immediately; the
-publication barrier allows up to 1,000 ms by default for the provider to settle before
+publication still allows up to 1,000 ms by default for the provider to settle before
 choosing retirement. Recovery itself completes its persistence transaction
 before the barrier opens. Late text and tool
 events from that call are quarantined. Cancellation retains its typed host abort
@@ -177,7 +181,15 @@ reason. Failure records trusted host settlement fields and keeps raw
 runtime/provider code and detail only as bounded, redacted untrusted evidence.
 Isolated proactive/continuation runs remain outside shared history, and a queued
 request cancelled before admission publishes no account. If publication fails,
-later turns fail closed with the outcome-specific continuity error. Hosts may override the window with
+the next turn (or reset) republishes the already-built account once through a
+fresh transaction that never re-begins a provider turn or re-attempts recovery;
+a still-failing store reports the outcome-specific continuity error carrying a
+redacted cause, and the following message retries again. A waiter parked longer
+than 5,000 ms emits one `turn_continuity_publication_slow` runtime warning with
+the conversation id, the previous outcome, and the elapsed milliseconds; the
+warning never changes the wait. Resetting the conversation after a failed
+publication discards the unpublished account and clears the barrier once the
+reset itself succeeds. Hosts may override the window with
 `AgentHarnessOptions.session.terminalRecoverySettlementMs`, a positive safe integer,
 or the top-level `terminalRecoverySettlementMs` option of
 `createConfiguredAgentHarness`. Tests may use a longer window; this is not a
@@ -231,7 +243,24 @@ Env vars: `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`, `MONO_AGENT_PI_TRANSPORT`, `
 
 ### Durable sessions and restart
 
-With the configured app's default history store, setting `piSessionsRoot` persists Pi sessions to JSONL and enables history-coordinated resume after restart. Before provider execution, the store publishes and fsyncs a separate owner-only dirty fence while holding a cross-process conversation lock from a fixed 16-shard table. The fixed table bounds lock files while safely serializing shard collisions; legacy per-conversation lock files are honored in place during migration. The fence does not replace, count as, or prune canonical history. A successful provider result is eligible for reuse only when it returns the exact epoch-derived id and the runtime affirmatively fsyncs both its JSONL file and parent directory. The history messages, clean provider epoch, and incremented transcript revision then publish in one atomic replacement before the fence is cleared.
+With the configured app's default history store, setting `piSessionsRoot` persists Pi sessions to JSONL and enables history-coordinated resume after restart. Before provider execution, the store publishes and fsyncs a separate owner-only dirty fence while holding cross-process logical/exact owner rows in the fixed 16-file claim registry. Physical shard collisions do not serialize unrelated provider turns or their cancellation publication; existing legacy per-conversation lock files are still honored in place. The fence does not replace, count as, or prune canonical history. A successful provider result is eligible for reuse only when it returns the exact epoch-derived id and the runtime affirmatively fsyncs both its JSONL file and parent directory. The history messages, clean provider epoch, and incremented transcript revision then publish in one atomic replacement before the fence is cleared.
+
+Concurrent writers sharing a history directory must use v0.20.0 or later and
+participate in the logical/exact claim protocol. Stop all pre-v0.20.0 writers
+before sharing that directory with an upgraded writer. This is a supported
+co-owner boundary, **not** a technical fence that rejects old binaries. Claim-aware
+older writers may still hold physical shard transactions; upgraded writers share
+their exact-key claims without waiting on unrelated shard transactions. Existing
+model-binding schema restrictions still apply independently.
+
+The root SQLite lock still serializes retention accounting, active-marker and
+dirty-fence maintenance, and history publication; it is not held across provider
+execution. Fail-closed provider retirement during root maintenance can still delay
+other mutations. Claim rows are deleted on settlement or reclaimed only after
+owner death, never stolen on a timer. The bounded registry and existing 16
+conversation-shard files remain in place; no per-conversation lock files are
+created, and no possibly-open lock inode is unlinked. Storage growth and claim
+capacity limits are unchanged.
 
 If the process dies after provider mutation but before that clean commit, the fence remains. The next same-conversation run retires the exact fenced JSONL, rotates to a new random epoch, and replays canonical history. An unrelated mutation also reclaims inactive fences as retirement journals: provider deletion and directory fsync complete before the fence is removed. If canonical epoch/revision proves that history commit succeeded and only fence cleanup crashed, maintenance preserves the valid transcript and removes only the stale fence. Beginning and aborting a fresh conversation cannot evict an older successful conversation because fences are bounded separately. Missing/v1 records, failed sync, retention that removes a record, and `appendVerbatimTurn` host-only deliveries retire and rotate provider state for the same reason.
 
@@ -263,7 +292,8 @@ without the capability retain retirement. Clear-sessions, retention removal,
 host-only appends, model changes and unreconciled dirty fences still reseed.
 If retirement races an abort-ignoring provider, the late result cleans only its
 captured old id, including any recreated headerless JSONL. Retirement uncertainty
-fails the publication barrier closed.
+keeps the publication barrier closed until a later turn republishes the lost
+retirement (or a reset discards it).
 
 Each clean record also carries the durable provider transcript revision. A process saves that revision with its warm handle. If another process commits the same epoch first, the revision mismatch forces the stale process-local handle to close and reopen the current JSONL (or rebuild from canonical history) before it can omit history. The same strict refresh runs for an unconfirmed durable resume when a newly constructed harness has no local mapping, preventing a module-global provider registry from reviving older process memory. Cross-process serialization therefore protects both disk writes and in-memory provider state.
 
@@ -276,11 +306,12 @@ Canonical context import is a separate optional v1 contract; `append` or
 two-message provenance/assistant batch fits every retention and staging quota,
 and when durable provider state is explicitly absent or exact retirement is
 fail-closed. The default store serializes import with Send in continuous,
-per-message, and sessions-disabled modes. The new non-provider path holds only
-logical/exact claims during provider execution, then briefly acquires the
-physical shard to verify an opaque history version and publish. The existing
-durable-provider transaction still holds that shard for the full turn; this
-known same-shard blocking behavior is unchanged.
+per-message, and sessions-disabled modes. Both non-provider and durable-provider
+turns retain logical/exact keyed claims during runtime execution, without holding
+a physical shard transaction. Non-provider commits verify an opaque history
+version under those claims; publication uses the root lock. Unrelated physical
+shard collisions do not serialize turns, though root-locked maintenance and
+fail-closed retirement can still delay publication.
 
 An exact retained provenance/assistant pair is the bounded retry receipt. A
 same-key/same-text retry returns `duplicate`, including after a later Send while
@@ -327,9 +358,10 @@ is retained on disk, while an in-flight task is not automatically restarted.
 `AskParent` persists a pending question under the turn lock before its terminating
 tool result returns. `Agent`/`AgentSend` expose it as successful `awaiting_reply`;
 the parent answers through ordinary `AgentSend` in the same durable transcript.
-Failed replies preserve the pending question, successful replies clear it, and
-another question replaces it. Idle expiry includes awaiting children but never
-interrupts a running child. `restart --clear-sessions` purges
+Failed replies preserve the pending question and a minimal recovery fence;
+they are not permission to retry the same transcript. Successful replies clear
+the question, and another question replaces it. Idle expiry includes clean
+awaiting children but never interrupts a running or recovery-fenced child. `restart --clear-sessions` purges
 this configured root with other conversation state and reports removed registry
 and child-session file counts, even when no other store existed. See
 [persistent subagent configuration](./tools-and-guards.md#persistent-subagents)
@@ -339,5 +371,32 @@ Detached persistent child turns hold their own runtime generation lease after th
 parent returns. Their queued reservation prevents duplicate admission. After an
 unresolved timeout/cancellation, the reporting job may be terminal with
 `childStillBusy:true` while the child still owns its lock and lease. Only actual
-settlement or process death releases that ownership; a late result cannot emit a
-second wake. See [detached persistent children](/tools/background-process-jobs/#detached-persistent-children).
+settlement can release the provider lease; process death alone does not prove
+command-group cleanup. A late result cannot emit a second wake or make unknown
+continuity resumable. Registry incarnations and turn intents prevent abandoned
+locks from silently authorizing a successor. Unresolved linked owners require
+their registered service; disabled, failed or missing owners fail closed. See [detached persistent children](/tools/background-process-jobs/#detached-persistent-children).
+
+### Anthropic cache retention
+
+`providers.piNative.cacheRetention` defaults to `"long"` (one hour); set `"short"`
+(five minutes) to opt out. Nonempty `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON,
+then the `"long"` default. Both the default and explicit values override Pi's
+separate ambient `PI_CACHE_RETENTION`, including explicit `"short"` when Pi's
+environment requests long retention.
+The runtime forwards retention only to Anthropic Messages, including child
+routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
+unsupported models receive no one-hour TTL.
+
+One-hour writes cost **2× normal input**, reads **0.1×**, versus **1.25×** for
+short-cache writes. Model support is required, and no cache hit is guaranteed.
+Metadata-only diagnostics record the requested setting and observed cache TTL;
+an ephemeral Anthropic cache control without an explicit TTL denotes five
+minutes. Evaluate the measurement gates before separately authorizing spending.
+
+The default benefits agents whose turns arrive 5–60 minutes apart. In a measured
+maintainer-console workload, 72% of Anthropic cache writes were 5–60-minute
+re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
+This is workload-specific evidence, not a billing guarantee. Agents that only
+chain turns within five minutes pay slightly more with long retention and can
+set `"short"` instead.

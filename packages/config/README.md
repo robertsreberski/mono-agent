@@ -46,7 +46,7 @@ A non-empty environment value overrides its mapped JSON field. Blank values are
 normally ignored; the legacy `MONO_AGENT_FALLBACK_MODELS=""` clear operation is
 the deliberate exception. Not every nested JSON field has an environment
 counterpart, so use the [environment variable
-map](https://mono-agent-docs.vercel.app/config/env-vars/) rather than assuming a
+map](https://docs.mono-agent.dev/config/env-vars/) rather than assuming a
 blanket override. A missing or empty JSON file contributes an empty layer.
 
 ### Agent identity and runtime routes
@@ -183,7 +183,7 @@ The resolved `tools.web` block configures the managed Pi `WebSearch` and
   "tools": {
     "web": {
       "search": {
-        "backend": "auto",
+        "backend": ["parallel", "ollama"],
         "maxRequestsPerRun": 4,
         "searxng": { "endpoint": "http://127.0.0.1:8088" },
         "ollama": { "baseUrl": "http://127.0.0.1:11434" },
@@ -198,16 +198,25 @@ The resolved `tools.web` block configures the managed Pi `WebSearch` and
 }
 ```
 
-Search backend values are `auto`, strict `searxng`, strict `ollama`, strict
-`codex`, and `keyless`. Auto tries explicitly configured Ollama, configured
-local SearXNG, ChatGPT-subscription Codex search, then the keyless chain. Without
-an Ollama block, existing SearXNG/Codex/keyless behavior is unchanged. SearXNG
-endpoints are deliberately limited to unauthenticated loopback HTTP URLs. The
+Search selects one strict provider or a non-empty ordered array. The default is
+`["parallel", "ollama"]`; local Ollama requires no block. `searxng`, `codex`,
+`keyless`, `duckduckgo`, `startpage`, and `hound` are opt-in. Removed `auto`
+configurations fail with their previous explicit order. SearXNG
+endpoints are deliberately limited to unauthenticated loopback HTTP URLs. Hound runs locally in Node without a service endpoint. Remove retired
+`search.hound.endpoint` and `fetch.hound.endpoint` settings and their environment
+variables; their presence is a migration error. The
 legacy `search.endpoint` spelling remains a compatibility alias for
 `search.searxng.endpoint`. Ollama defaults to the loopback host; the exact
 official `https://ollama.com` origin requires an API key named by `apiKeyEnv`,
 while other public origins require HTTPS plus `trustPublicUrl` and cannot
 receive that credential.
+`fetch.provider` is `"local"` by default; `"parallel"`, `"hound"`, or an ordered
+array selects explicit extraction providers. Parallel is remote and cannot
+serve raw bodies, custom headers, or browser rendering. Hound is local HTTP-only
+extraction with proactive robots checks; it supports raw bodies and allowed
+headers, but not browser rendering.
+Optional search/fetch `parallel.apiKeyEnv` fields name a
+credential variable; omit them for anonymous Parallel access.
 Fetch rendering config is `never` by default (browser capability disabled) or
 `auto` to authorize isolated `agent-browser` use. With config `auto`, an
 individual WebFetch call may use `render: "always"` for a strict browser-first
@@ -222,6 +231,9 @@ Environment overrides are
 `MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV`,
 `MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL`,
 `MONO_AGENT_WEB_SEARCH_CODEX_MODEL`,
+`MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT`,
+`MONO_AGENT_WEB_FETCH_PROVIDER`,
+`MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT`,
 `MONO_AGENT_WEB_FETCH_RENDER`, and
 `MONO_AGENT_WEB_BROWSER_COMMAND`.
 
@@ -287,6 +299,31 @@ MONO_AGENT_SANDBOX_FALLBACK=fail-closed
 ```
 
 Enforced network modes are `none`, `localhost`, and `allowlist`. `allowlist` reads comma-separated domains from `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST`. `all`, bare `*`, and IPv6 literals are rejected because pinned SRT 0.0.64 cannot enforce them exactly. Migrate an existing native `network.mode: "all"` config to `none`, `localhost`, or an explicit allowlist; if unrestricted shell networking is intentional, set `sandbox.mode: "off"` and remove the network policy. Unsafe host-process fallback requires both `MONO_AGENT_SANDBOX_FALLBACK=unsafe-host-process` and `MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS=true`.
+
+### Anthropic cache retention
+
+`providers.piNative.cacheRetention` defaults to `"long"` (one hour); set `"short"`
+(five minutes) to opt out. Nonempty `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON,
+then the `"long"` default. Both the default and explicit values override Pi's
+separate ambient `PI_CACHE_RETENTION`, including explicit `"short"` when Pi's
+environment requests long retention.
+The runtime forwards retention only to Anthropic Messages, including child
+routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
+unsupported models receive no one-hour TTL.
+
+One-hour writes cost **2× normal input**, reads **0.1×**, versus **1.25×** for
+short-cache writes. Model support is required, and no cache hit is guaranteed.
+Metadata-only diagnostics record the requested setting and observed cache TTL;
+an ephemeral Anthropic cache control without an explicit TTL denotes five
+minutes. Evaluate the measurement gates before separately authorizing spending.
+
+The default benefits agents whose turns arrive 5–60 minutes apart. In a measured
+maintainer-console workload, 72% of Anthropic cache writes were 5–60-minute
+re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
+This is workload-specific evidence, not a billing guarantee. Agents that only
+chain turns within five minutes pay slightly more with long retention and can
+set `"short"` instead.
+
 
 ## Architecture
 
@@ -428,16 +465,16 @@ It does not load Telegram, WhatsApp, Slack, or other adapter-specific credential
 Opt in to metadata-only prompt-cache request fingerprints with
 `providers.piNative.promptCacheDiagnostics` (default `false`) or
 `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`. The offline reader is documented in
-[Prompt-cache measurement](https://mono-agent-docs.vercel.app/runtime/prompt-cache-measurement/).
+[Prompt-cache measurement](https://docs.mono-agent.dev/runtime/prompt-cache-measurement/).
 
 ## Related Documentation
 
-- [Configuration overview](https://mono-agent-docs.vercel.app/config/)
-- [Complete configuration blueprint](https://mono-agent-docs.vercel.app/config/blueprint/)
-- [Environment variable map](https://mono-agent-docs.vercel.app/config/env-vars/)
-- [Generated field reference](https://mono-agent-docs.vercel.app/config/reference/)
-- [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
-- [Runtime and provider configuration](https://mono-agent-docs.vercel.app/runtime/)
+- [Configuration overview](https://docs.mono-agent.dev/config/)
+- [Complete configuration blueprint](https://docs.mono-agent.dev/config/blueprint/)
+- [Environment variable map](https://docs.mono-agent.dev/config/env-vars/)
+- [Generated field reference](https://docs.mono-agent.dev/config/reference/)
+- [Local-first web research](https://docs.mono-agent.dev/tools/web-research/)
+- [Runtime and provider configuration](https://docs.mono-agent.dev/runtime/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/config)
 
 ## Verification

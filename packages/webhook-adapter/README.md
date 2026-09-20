@@ -309,10 +309,10 @@ rate limiting, and reverse-proxy policy remain host responsibilities.
 
 ## Related Documentation
 
-- [Webhook channel guide](https://mono-agent-docs.vercel.app/channels/webhook/)
-- [Webhook sync/async playbook](https://mono-agent-docs.vercel.app/playbooks/webhook-automation-sync-async/)
-- [Delivery and send tools](https://mono-agent-docs.vercel.app/channels/delivery-and-send-tools/)
-- [Custom channel adapters](https://mono-agent-docs.vercel.app/programmatic/custom-channels/)
+- [Webhook channel guide](https://docs.mono-agent.dev/channels/webhook/)
+- [Webhook sync/async playbook](https://docs.mono-agent.dev/playbooks/webhook-automation-sync-async/)
+- [Delivery and send tools](https://docs.mono-agent.dev/channels/delivery-and-send-tools/)
+- [Custom channel adapters](https://docs.mono-agent.dev/programmatic/custom-channels/)
 
 ## Verification
 

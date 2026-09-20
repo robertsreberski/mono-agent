@@ -22,6 +22,138 @@ optional side paths
 
 The exact workspace graph and package ownership descriptions are generated in [`PACKAGES.md`](./PACKAGES.md). The rules are enforced by `pnpm run check:architecture`.
 
+## Layered composition map
+
+**Diagram summary:** The app composes adapter-neutral config, request execution, runtime bridges, optional context and observability, communication adapters, and operator surfaces; arrows show the intended high-level dependency direction.
+
+```mermaid
+flowchart TB
+  Host["Config-first app host<br/>mono-agent CLI or custom host"]
+
+  subgraph Surfaces["Operator-surface choices"]
+    Tui["@mono-agent/tui<br/>Terminal chat + read-only config"]
+    Web["@mono-agent/web<br/>Always-on browser console"]
+  end
+
+  subgraph Communication["Communication adapter choices"]
+    A2A["@mono-agent/a2a-adapter<br/>extra plugin: Agent Card discovery + text tasks"]
+    Cron["@mono-agent/cron-adapter<br/>Scheduled invocations"]
+    OpenAIApi["@mono-agent/openai-api-adapter<br/>OpenAI Chat Completions"]
+    Slack["@mono-agent/slack-adapter<br/>Socket Mode + Web API"]
+    Telegram["@mono-agent/telegram-adapter<br/>Bot API + long polling"]
+    Webhook["@mono-agent/webhook-adapter<br/>HTTP sync/async invocation"]
+    WhatsApp["@mono-agent/whatsapp-adapter<br/>extra plugin: Baileys socket + group trigger policy"]
+    Messenger["@mono-agent/messenger-adapter<br/>extra plugin: Meta webhook + Send API"]
+  end
+
+  subgraph Core["Core contracts and config"]
+    Contracts["@mono-agent/agent-contracts<br/>request/response/stream/settings helpers"]
+    Config["@mono-agent/config<br/>core runtime/context settings"]
+  end
+
+  subgraph PromptContext["Context layer"]
+    Memory["@mono-agent/memory<br/>./store SQLite, ./search embeddings, ./bujo engine"]
+    MemorySupermemory["@mono-agent/memory-supermemory<br/>extra plugin: Supermemory-backed store"]
+  end
+
+  subgraph AppLayer["App layer"]
+    AgentApp["@mono-agent/agent-app<br/>config to channels + responder"]
+  end
+
+  subgraph Execution["Execution layer"]
+    Harness["@mono-agent/agent-harness<br/>request to runtime run<br/>context + skills + tool policy"]
+    Orchestrator["@mono-agent/agent-orchestrator<br/>extra: collaborator MCP tool"]
+    Observability["@mono-agent/observability<br/>JSONL events + summaries + trace registry"]
+  end
+
+  subgraph Runtime["Pi runtime"]
+    RuntimeAdapter["@mono-agent/runtime-adapter<br/>model refs + sandbox policy"]
+    AgentRuntime["@mono-agent/agent-runtime<br/>Pi implementation"]
+    PiSdk["Pi providers<br/>&lt;provider&gt;:&lt;model&gt;"]
+  end
+
+  Host -. optional .-> Tui
+  Host -. optional .-> Web
+  Host --> Telegram
+  Host -. plugin .-> A2A
+  Host --> Webhook
+  Host --> OpenAIApi
+  Host --> Cron
+  Host -. optional package .-> Slack
+  Host -. plugin .-> WhatsApp
+  Host -. plugin .-> Messenger
+  Host -. runtime extension .-> Orchestrator
+  Host --> Config
+  Host --> AgentApp
+
+  Tui --> Contracts
+  Tui --> Config
+  Web --> Contracts
+  Web --> Config
+  Telegram --> Contracts
+  A2A --> Contracts
+  Cron --> Contracts
+  OpenAIApi --> Contracts
+  Slack --> Contracts
+  Webhook --> Contracts
+  WhatsApp --> Contracts
+  Messenger --> Contracts
+
+  Orchestrator --> Contracts
+  Orchestrator -.->|runtime extension| Harness
+  AgentApp --> Config
+  AgentApp --> Harness
+  AgentApp --> Memory
+  AgentApp -. optional backend .-> MemorySupermemory
+  AgentApp --> RuntimeAdapter
+  AgentApp --> Observability
+  Config --> Contracts
+  Config --> RuntimeAdapter
+  Harness --> Contracts
+  MemorySupermemory --> Contracts
+  Harness --> RuntimeAdapter
+  Harness --> Observability
+
+  RuntimeAdapter --> AgentRuntime
+  RuntimeAdapter --> Contracts
+  AgentRuntime --> PiSdk
+```
+
+## Dependency direction
+
+```text
+Static manifest dependencies (abridged; see PACKAGES.md for every edge)
+
+@mono-agent/agent-app
+  ├─ config + agent-contracts
+  ├─ agent-harness
+  ├─ runtime-adapter ── agent-runtime
+  ├─ memory + observability
+  ├─ built-in channel adapters
+  ├─ operator-adapter
+  └─ tui + web
+
+agent-harness ── agent-contracts + runtime-adapter + observability
+tui / web ── agent-contracts + config + observability
+
+Runtime-only composition (not manifest dependency edges)
+
+tui / web ── HTTP operator protocol ──> operator-adapter
+agent-app ── channels.plugins[] ──> a2a-adapter / whatsapp-adapter / messenger-adapter
+agent-app ── selected memory backend ──> memory-supermemory
+custom host ── request-scoped extension ──> agent-orchestrator
+authoring harness ── explicit MCP companion ──> docs-mcp
+```
+
+Rules for future packages:
+
+- New publishable packages live under `packages/<package-name>` and publish as `@mono-agent/<package-name>`.
+- Optional plugin-tier add-ons may live under `extras/<package-name>` when cataloged with `publishable: true` and `tier: "plugin"` (published in the lockstep but outside the core app closure).
+- Add every workspace package to `scripts/package-catalog.mjs` with category, responsibility, and allowed dependency categories.
+- Communication packages use `*-adapter` naming and must not depend on other adapters, the harness, or operator surfaces.
+- Core config stays adapter-neutral; adapter credentials and allowlists live with the adapter package.
+- Operator surfaces register field groups from other packages; they do not hardcode adapter settings.
+
 ## Where changes belong
 
 | Change | Primary owner |

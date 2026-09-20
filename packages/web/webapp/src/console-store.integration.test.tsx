@@ -250,8 +250,8 @@ const deafIndexedDb = (): IDBFactory => ({
   }) as unknown as IDBOpenDBRequest,
 }) as unknown as IDBFactory;
 
-/** A real open, answered late. */
-const slowIndexedDb = (delayMs: number): IDBFactory => ({
+/** A real open, answered late or held until the test explicitly releases it. */
+const slowIndexedDb = (delay: number | Promise<void>): IDBFactory => ({
   open: (name: string, version?: number) => {
     const inner = version === undefined
       ? realIndexedDb.open(name)
@@ -267,12 +267,16 @@ const slowIndexedDb = (delayMs: number): IDBFactory => ({
       proxy.result = inner.result;
       (proxy.onupgradeneeded as ((value: Event) => void) | null)?.(event);
     };
+    const answer = (callback: () => void) => {
+      if (typeof delay === "number") setTimeout(callback, delay);
+      else void delay.then(callback);
+    };
     inner.onsuccess = () => {
       proxy.result = inner.result;
-      setTimeout(() => (proxy.onsuccess as (() => void) | null)?.(), delayMs);
+      answer(() => (proxy.onsuccess as (() => void) | null)?.());
     };
     inner.onerror = () => {
-      setTimeout(() => (proxy.onerror as (() => void) | null)?.(), delayMs);
+      answer(() => (proxy.onerror as (() => void) | null)?.());
     };
     return proxy as unknown as IDBOpenDBRequest;
   },
@@ -486,15 +490,17 @@ describe("ConsoleStoreProvider integration", () => {
       );
 
       expect(await screen.findByText("Alpha first second answer")).toBeInTheDocument();
-      expect(screen.getByText("Ran with provider/other")).toBeInTheDocument();
+      // The first answer ran on a model the agent is no longer set to; only the
+      // fallback turn carries attribution.
+      expect(screen.queryByText("Ran with provider/other")).not.toBeInTheDocument();
       expect(screen.getByText("Fallback: provider/requested → provider/alpha · overloaded")).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Open Alpha second" }));
       expect(await screen.findByText("Alpha second second answer")).toBeInTheDocument();
-      expect(screen.getByText("Ran with provider/other")).toBeInTheDocument();
+      expect(screen.queryByText("Ran with provider/other")).not.toBeInTheDocument();
       expect(screen.getByText("Fallback: provider/requested → provider/alpha · overloaded")).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Beta, online" }));
       expect(await screen.findByText("Beta first second answer")).toBeInTheDocument();
-      expect(screen.getByText("Ran with provider/other")).toBeInTheDocument();
+      expect(screen.queryByText("Ran with provider/other")).not.toBeInTheDocument();
       expect(screen.getByText("Fallback: provider/requested → provider/beta · overloaded")).toBeInTheDocument();
 
       expect(uncaught).not.toHaveBeenCalled();
@@ -5172,13 +5178,13 @@ describe("ConsoleStoreProvider integration", () => {
       } };
       emit("thread.changed", { threadId: other.id, payload: { thread: complete } });
       await waitFor(() => expect(threadPresentation(row())).toEqual({
-        text: "Completed", active: false,
+        text: "", active: false,
       }));
       emit("threads.changed", { threadId: other.id, payload: { thread: running } });
       emit("thread.changed", { threadId: other.id, payload: { thread: running } });
       await quiet();
       expect(row().revision).toBe(3);
-      expect(threadPresentation(row())).toEqual({ text: "Completed", active: false });
+      expect(threadPresentation(row())).toEqual({ text: "", active: false });
       expect(store.current.selectedThreadId).toBe(selected.id);
       expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
       expect(api.threads).not.toHaveBeenCalled();
@@ -7391,7 +7397,7 @@ describe("ConsoleStoreProvider integration", () => {
       // The events that would have said what changed are exactly the ones a gap
       // loses, and no listing summary can stand in for them: `writeMessageParts`
       // moves a transcript without touching the conversation row at all -- a
-      // Monitor wake, every mid-turn flush -- so a page reporting an unchanged
+      // Every mid-turn flush -- so a page reporting an unchanged
       // summary is silent about writes this console actually missed. Everything
       // held is suspect, and each conversation pays a CONDITIONAL read when it
       // is opened.
@@ -7948,7 +7954,7 @@ describe("ConsoleStoreProvider integration", () => {
       await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
       await waitFor(() => expect(store.current.threads.find((item) => item.id === beta.id)?.revision).toBe(3));
       expect(threadPresentation(store.current.threads.find((item) => item.id === beta.id)!))
-        .toEqual({ text: "Completed", active: false });
+        .toEqual({ text: "", active: false });
     });
 
     it("repairs a device-restored idle row after the first stream subscribes", async () => {
@@ -8551,6 +8557,51 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.detail?.messages.map((item) => item.id)).toEqual(["m2"]);
       expect(store.current.visibleThreads.map((item) => item.id)).toEqual([alpha.id]);
       expect(vi.mocked(api.threadIfChanged)).not.toHaveBeenCalled();
+    });
+
+    it("persists an adopted read watermark after discarding late hydration and keeps it on offline reopen", async () => {
+      const oldEntry = entry(alpha, [kept("old", "last visit")]);
+      await previousVisit({ entries: [oldEntry], listing: [alpha, beta], openedOn: alpha.id });
+      await deviceStore.save({ entries: [oldEntry], seen: [{ id: beta.id, revision: 1 }] });
+      let releaseHydration!: () => void;
+      const hydrationGate = new Promise<void>((resolve) => { releaseHydration = resolve; });
+      vi.stubGlobal("indexedDB", slowIndexedDb(hydrationGate));
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(agents, [alpha, beta], alpha.id));
+      vi.mocked(api.thread).mockResolvedValue({ thread: alpha, messages: [kept("new", "from the server")] });
+      // No later fleet response may accidentally pay the deferred persistence debt.
+      vi.mocked(api.activeThreads).mockImplementation(() => new Promise(() => undefined));
+      try {
+        const store = openConsole();
+        await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true), {
+          timeout: HYDRATION_DEADLINE_MS + 3_000,
+        });
+        const updated = { ...beta, revision: 2 };
+        emit("thread.changed", { threadId: beta.id, payload: { thread: updated } });
+        await waitFor(() => expect(store.current.unreadThreadIds.has(beta.id)).toBe(true));
+        emit("thread.changed", { threadId: beta.id, payload: { thread: { ...updated, readRevision: 2 } } });
+        await waitFor(() => expect(store.current.unreadThreadIds.has(beta.id)).toBe(false));
+        // The signal arrived before persistence was enabled. The late hydration
+        // must flush current memory, not restore the old transcript or seen map.
+        expect((await deviceStore.hydrate())?.seen).toContainEqual({ id: beta.id, revision: 1 });
+        await act(async () => { releaseHydration(); });
+        await waitFor(async () => {
+          expect((await deviceStore.hydrate())?.seen).toContainEqual({ id: beta.id, revision: 2 });
+        }, { timeout: PERSIST_DEBOUNCE_MS + 2_000 });
+        expect(store.current.detail?.messages.map((message) => message.id)).toEqual(["new"]);
+        cleanupDom();
+
+        vi.stubGlobal("indexedDB", realIndexedDb);
+        vi.mocked(api.bootstrap).mockRejectedValue(new Error("Offline"));
+        vi.mocked(api.thread).mockRejectedValue(new Error("Offline"));
+        vi.mocked(api.threadIfChanged).mockRejectedValue(new Error("Offline"));
+        const reopened = openConsole();
+        await waitFor(() => expect(reopened.current.error).not.toBeNull());
+        expect(reopened.current.hasServerSnapshot).toBe(false);
+        expect(reopened.current.detail?.messages.map((message) => message.id)).toEqual(["new"]);
+        expect(reopened.current.visibleThreads.find((item) => item.id === beta.id)?.revision).toBe(2);
+        expect(reopened.current.unreadThreadIds.has(beta.id)).toBe(false);
+        expect((await deviceStore.hydrate())?.seen).toContainEqual({ id: beta.id, revision: 2 });
+      } finally { releaseHydration(); }
     });
 
     it("keeps the device's copy on screen when the snapshot fails and the device is slow", async () => {
@@ -9454,6 +9505,37 @@ describe("ConsoleStoreProvider integration", () => {
       expect([...store.current.unreadCountByAgent]).toEqual([["alpha", 1]]);
     });
 
+    it("adopts an equal-revision server read event without opening the conversation", async () => {
+      const store = await renderStore();
+      const updated = moved(two);
+      emit("thread.changed", { threadId: two.id, payload: { thread: updated } });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([two.id]));
+      emit("thread.changed", { threadId: two.id, payload: { thread: { ...updated, readRevision: updated.revision } } });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([]));
+      expect(store.current.selectedThreadId).toBe(one.id);
+      // A delayed pre-mark summary cannot undo the explicit signal.
+      emit("thread.changed", { threadId: two.id, payload: { thread: updated } });
+      await act(async () => { await Promise.resolve(); });
+      expect([...store.current.unreadThreadIds]).toEqual([]);
+      emit("thread.changed", { threadId: two.id, payload: { thread: { ...moved(updated), readRevision: updated.revision } } });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([two.id]));
+    });
+
+    it("keeps a listing read watermark when equal-revision detail has not heard it", async () => {
+      const store = await renderStore();
+      const updated = moved(one);
+      emit("thread.changed", { threadId: one.id, payload: { thread: updated } });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([one.id]));
+      vi.mocked(api.activeThreads).mockResolvedValue({
+        threads: [{ ...updated, readRevision: updated.revision }],
+        total: 1, truncated: false, runningCounts: { alpha: 1 },
+      });
+      emit("thread.changed", { threadId: one.id, payload: { thread: updated } });
+      await waitFor(() => expect(store.current.activeThreads?.threads[0]?.readRevision).toBe(updated.revision));
+      expect(store.current.detail?.thread.readRevision).toBeUndefined();
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([]));
+    });
+
     it("clears the marker only while the conversation is actually on screen", async () => {
       const store = await renderStore();
       await waitFor(() => expect(store.current.selectedThreadId).toBe(one.id));
@@ -9590,7 +9672,7 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.selectedThreadId).toBe(imported.id);
       expect(store.current.navigationDestination).toBe("chats");
       expect(store.current.visibleThreads.some((candidate) => candidate.id === imported.id)).toBe(true);
-      expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages, projectTransitions: [], modelTransitions: [] });
+      expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages });
       expect(window.location.pathname).toBe("/");
       expect(readComposerDraft("alpha", imported.id)).toBe("");
       expect(store.current.composerFocusThreadId).toBe(imported.id);
@@ -9792,43 +9874,18 @@ describe("ConsoleStoreProvider integration", () => {
     return renderStore();
   }
 
-  it("repairs transition sidecars on effective membership change but not pending intent", async () => {
+  it("repairs new marker rows from message hints independently of held user messages", async () => {
     const initial = detail(member);
     vi.mocked(api.thread).mockResolvedValue(initial);
     const store = await renderProjectStore();
     await waitFor(() => expect(store.current.detail?.thread.id).toBe(member.id));
-    const reads = vi.mocked(api.thread).mock.calls.length;
-    const pending = { ...member, revision: member.revision + 1, pendingProject: { projectId: null, turnId: "active" } };
-    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", at: "2026-09-12T00:00:00Z", payload: { thread: pending } }));
-    await waitFor(() => expect(store.current.detail?.thread.pendingProject).toEqual(pending.pendingProject));
-    expect(api.thread).toHaveBeenCalledTimes(reads);
-    const moved = { ...member, revision: member.revision + 2, projectId: null };
-    const transition = { id: 1, afterMessageId: initial.messages[0]?.id ?? null, turnId: null,
-      before: { id: webProject.id, name: webProject.name, color: "default" as const }, after: null, createdAt: "2026-09-12T00:00:01Z" };
-    vi.mocked(api.thread).mockResolvedValue({ ...initial, thread: moved, projectTransitions: [transition] });
-    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", at: "2026-09-12T00:00:01Z", payload: { thread: moved } }));
-    await waitFor(() => expect(store.current.detail?.projectTransitions).toEqual([transition]));
-  });
-
-  it("delivers a route-change sidecar with the read that follows the send", async () => {
-    // The picker's own write says nothing about the transcript: the marker is
-    // written when the next turn is admitted, and the read `sendTurn` already
-    // issues is what carries it. No new event, no extra request.
-    const initial = detail(member);
-    vi.mocked(api.thread).mockResolvedValue(initial);
-    const store = await renderProjectStore();
-    await waitFor(() => expect(store.current.detail?.thread.id).toBe(member.id));
-    expect(store.current.detail?.modelTransitions).toEqual([]);
-    const transition = {
-      id: 1, afterMessageId: initial.messages[0]?.id ?? null, turnId: "turn-next",
-      before: { model: "provider/sol", effort: "low" },
-      after: { model: "provider/astra", effort: "high" },
-      createdAt: "2026-09-12T00:00:02Z",
-    };
-    vi.mocked(api.startTurn).mockResolvedValue({ thread: member, turn: { id: "turn-next", status: "running" } });
-    vi.mocked(api.thread).mockResolvedValue({ ...initial, modelTransitions: [transition] });
-    await act(async () => { await store.current.sendTurn({ text: "go" }); });
-    await waitFor(() => expect(store.current.detail?.modelTransitions).toEqual([transition]));
+    const marker = { ...initial.messages[0]!, id: "project-marker", role: "system" as const,
+      parts: [{ type: "conversation-marker" as const, kind: "project" as const,
+        before: { id: webProject.id, name: webProject.name, color: "default" as const }, after: null, at: "2026-09-12T00:00:01Z" }] };
+    vi.mocked(api.thread).mockResolvedValue({ ...initial, messages: [...initial.messages, marker] });
+    act(() => FakeEventSource.latest?.emit("message.changed", { version: 1, type: "message.changed", threadId: member.id,
+      at: "2026-09-12T00:00:01Z", payload: { messageId: marker.id, updatedAt: marker.updatedAt } }));
+    await waitFor(() => expect(store.current.detail?.messages.some((m) => m.id === marker.id)).toBe(true));
   });
 
   it("seeds one agent's projects from bootstrap and lists the next agent on switch", async () => {

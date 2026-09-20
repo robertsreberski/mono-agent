@@ -339,7 +339,7 @@ interface ConsoleStoreValue {
     input: StartTurnInput,
     onThreadResolved?: (threadId: string) => void,
   ) => Promise<void>;
-  readonly cancelTurn: () => Promise<void>;
+  readonly cancelTurn: (origin?: "user-stop" | "api") => Promise<void>;
   readonly setShowArchived: (show: boolean) => void;
   readonly setShowOfflineAgents: (show: boolean) => void;
   readonly setModel: (model: string) => void;
@@ -549,15 +549,10 @@ const mergeThreads = (
  * to the same `messages` array it did last time, which is what assistant-ui
  * short-circuits its whole store update on.
  */
-const NO_SIDECARS = Object.freeze([]) as readonly never[];
 
 const projectDetail = (entry: ThreadCacheEntry): ThreadDetail => ({
   thread: entry.thread,
   messages: entry.messages,
-  // One shared empty array, so a conversation with no sidecars projects to the
-  // same identity every time and `publishDetail` below can compare them.
-  projectTransitions: entry.projectTransitions ?? NO_SIDECARS,
-  modelTransitions: entry.modelTransitions ?? NO_SIDECARS,
   ...(entry.messagesNextCursor === undefined
     ? {}
     : { messagesNextCursor: entry.messagesNextCursor }),
@@ -2573,15 +2568,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setDetail(null);
       return;
     }
-    // The sidecars are compared too: a transition arrives on a read that
-    // changed neither the summary nor a single message -- the marker IS the
-    // only new thing in that answer -- and comparing only those two published
-    // the transcript without it until the next unrelated write.
     setDetail((current) => (current !== null
       && current.thread === entry.thread
       && current.messages === entry.messages
-      && current.projectTransitions === (entry.projectTransitions ?? NO_SIDECARS)
-      && current.modelTransitions === (entry.modelTransitions ?? NO_SIDECARS)
       && current.messagesNextCursor === entry.messagesNextCursor)
       ? current
       : projectDetail(entry));
@@ -2637,6 +2626,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // Whatever came back, the device store may now be written: a flush from
       // here on can only delete rows this tab genuinely stopped holding.
       persistReadyRef.current = true;
+      // A server read signal may have arrived while writes were gated. Pay
+      // that debt even when the late snapshot below is discarded: the existing
+      // scheduler writes current memory and refuses work after teardown.
+      if (seenDirtyRef.current) schedulePersistRef.current();
       if (restored === null) return;
       // TOO LATE: the SERVER has spoken. Everything below would put a
       // last-visit transcript over one the server just gave -- `restore`
@@ -2660,8 +2653,6 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         cache.restore({
           thread: stored.thread,
           messages: stored.messages,
-          projectTransitions: stored.projectTransitions ?? [],
-          modelTransitions: stored.modelTransitions ?? [],
           ...(stored.messagesNextCursor === undefined
             ? {}
             : { messagesNextCursor: stored.messagesNextCursor }),
@@ -3799,7 +3790,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * the gap lost, so NOTHING it is keeping can say it is current -- and there
    * is no cheaper evidence available. A listing summary cannot stand in for it:
    * `writeMessageParts` moves a transcript without touching the conversation
-   * row at all (a Monitor wake, every mid-turn flush), so a page that reports
+   * row at all (every mid-turn flush), so a page that reports
    * an unchanged summary is silent about writes the console actually missed.
    *
    * So: everything held is suspect, and each conversation pays when it is
@@ -3865,7 +3856,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * The answer to every gap: a delta whose base is not the version held, a
    * `message.changed` naming a message this tab already has, a replay these
    * parts cannot mean. Four assistant-row write paths -- notification
-   * reconciliation, cron-run reconciliation, the process-job card, Monitor
+   * reconciliation, cron-run reconciliation, the process-job card,
    * activity -- bump a message's version with NO delta and arrive as a hint, so
    * the mismatch is the ordinary, intended signal rather than an error.
    *
@@ -5121,13 +5112,23 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * an entry the device restored carries the revision of the last visit, and
    * seeding from it would make a conversation that moved since then read.
    */
+  const observedActiveThreads = activeThreads?.threads;
+  const observedDetailThread = detail?.thread;
   const observedThreads = useMemo(() => {
     const byId = new Map<string, ThreadSummary>();
-    for (const thread of threads) byId.set(thread.id, thread);
-    for (const thread of activeThreads?.threads ?? []) byId.set(thread.id, thread);
-    if (detail !== null) byId.set(detail.thread.id, detail.thread);
+    const observe = (thread: ThreadSummary) => {
+      const watermark = byId.get(thread.id)?.readRevision;
+      // Detail still owns the displayed summary, but a stale detail must not
+      // hide a stronger explicit read signal already carried by the listing.
+      byId.set(thread.id, watermark !== undefined && watermark > (thread.readRevision ?? 0)
+        ? { ...thread, readRevision: watermark }
+        : thread);
+    };
+    for (const thread of threads) observe(thread);
+    for (const thread of observedActiveThreads ?? []) observe(thread);
+    if (observedDetailThread !== undefined) observe(observedDetailThread);
     return [...byId.values()];
-  }, [activeThreads, detail, threads]);
+  }, [observedActiveThreads, observedDetailThread, threads]);
   /**
    * Which conversations have moved since this device saw them, recomputed
    * whenever the console is told about any of them.
@@ -5140,6 +5141,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * having looked at one of them again.
    */
   useEffect(() => {
+    if (!mountedRef.current) return;
     const marker = unreadRef.current;
     // First sight seeds, and only seeds: a fresh console where the whole fleet
     // is unread is a console whose unread marker means nothing.
@@ -5148,6 +5150,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       const selected = observedThreads.find((thread) => thread.id === selectedThreadId);
       if (selected !== undefined) moved = marker.see(selected) || moved;
     }
+    // The device is still the reader. Only this explicit server signal may
+    // clear another device's dot, and it never lowers local memory. First
+    // sight seeds before adoption; observed summaries retain the highest signal.
+    moved = marker.adoptReadWatermarks(observedThreads) || moved;
     const unread = marker.unreadIds(observedThreads);
     setUnreadThreadIds((current) => sameThreadIds(current, unread) ? current : unread);
     const counts = unreadCountsBySource(observedThreads, unread);
@@ -5263,8 +5269,6 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // window rather than dropping the pages the operator scrolled to.
       threadCacheRef.current.prependOlder(current.thread.id, {
         messages: page.messages,
-        projectTransitions: page.projectTransitions ?? [],
-        modelTransitions: page.modelTransitions ?? [],
         ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
       });
       publishDetail(current.thread.id);
@@ -7042,10 +7046,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     ],
   );
 
-  const cancelTurn = useCallback(async () => {
+  const cancelTurn = useCallback(async (origin: "user-stop" | "api" = "user-stop") => {
     if (!selectedThreadId) return;
     try {
-      const result = await api.cancelTurn(selectedThreadId);
+      const result = await api.cancelTurn(selectedThreadId, origin);
       if (threadCacheRef.current.patchThread(result.thread.id, result.thread)) {
         publishDetail(result.thread.id);
       }

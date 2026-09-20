@@ -9,6 +9,7 @@ import {
 } from "./app-controller-utils.js";
 import type { MonoAgentAppLogger } from "./channels.js";
 import type { TraceSourceHandle } from "@mono-agent/observability";
+import type { MemoryHealthWorkerClient } from "./memory-health-worker-client.js";
 
 export interface MemoryHealthControllerPort {
   readonly env: Record<string, string | undefined>;
@@ -25,6 +26,7 @@ export interface MemoryHealthControllerPort {
   memoryHealthLastCompletedAtMs: number | undefined;
   memoryHealthRefreshDue: boolean;
   memoryHealthGeneration: number;
+  readonly memoryHealthWorker: MemoryHealthWorkerClient;
   startupCompleted: boolean;
   startupTimingValue: {
     readonly durationMs: number;
@@ -88,11 +90,17 @@ export function refreshMemoryHealthSnapshot(controller: MemoryHealthControllerPo
 }
 
 export async function computeMemoryHealth(controller: MemoryHealthControllerPort): Promise<TraceSourceMemoryHealth> {
+  // Capture before the asynchronous config load so invalidation can fence a
+  // delayed read before it creates or sends work to an obsolete worker.
+  const generation = controller.memoryHealthGeneration;
   let config: MonoAgentConfig;
   try {
     config = await loadAppCoreConfig({ env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath });
   } catch {
     return unknownNoMemoryHealth();
+  }
+  if (controller.stopped || generation !== controller.memoryHealthGeneration) {
+    return controller.memoryHealthValue;
   }
   const memory = config.memory;
   if (memory === undefined) {
@@ -110,10 +118,10 @@ export async function computeMemoryHealth(controller: MemoryHealthControllerPort
     };
   }
   try {
-    const { auditBujoMemoryHealth } = await import("@mono-agent/memory/bujo");
-    return traceMemoryHealthFromBujo(auditBujoMemoryHealth({
+    return traceMemoryHealthFromBujo(await controller.memoryHealthWorker.audit({
       root: memory.path,
       mode: memory.mode,
+      maxStabilityAttempts: 1,
       ...(memory.embeddings === undefined
         ? {}
         : {
@@ -202,6 +210,7 @@ export function invalidateMemoryHealthRefresh(controller: MemoryHealthController
   controller.memoryHealthRefreshLoopActive = false;
   controller.clearMemoryHealthRefreshTimer();
   controller.memoryHealthGeneration += 1;
+  controller.memoryHealthWorker.invalidate();
   controller.memoryHealthRefreshInFlight = undefined;
   controller.memoryHealthLastCompletedAtMs = undefined;
   controller.memoryHealthRefreshDue = false;

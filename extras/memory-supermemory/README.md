@@ -196,10 +196,10 @@ server-side). It does not run BuJo scheduled consolidation and ignores `mode`/`e
 
 ## Related Documentation
 
-- [Built-in versus Supermemory backends](https://mono-agent-docs.vercel.app/memory/backends-comparison/)
-- [Write modes, durable capture, and recall](https://mono-agent-docs.vercel.app/memory/capture-and-recall/)
-- [Memory validation and CLI maintenance](https://mono-agent-docs.vercel.app/memory/validation-and-cli/)
-- [Memory configuration environment variables](https://mono-agent-docs.vercel.app/config/env-vars/#memory)
+- [Built-in versus Supermemory backends](https://docs.mono-agent.dev/memory/backends-comparison/)
+- [Write modes, durable capture, and recall](https://docs.mono-agent.dev/memory/capture-and-recall/)
+- [Memory validation and CLI maintenance](https://docs.mono-agent.dev/memory/validation-and-cli/)
+- [Memory configuration environment variables](https://docs.mono-agent.dev/config/env-vars/#memory)
 
 ## Verification
 

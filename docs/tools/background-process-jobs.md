@@ -304,8 +304,11 @@ workspace/home paths remain hidden.
 
 The agent is told when to reach for this and what not to do afterwards in three
 places, all gated on the same availability check as the schema itself: the
-`background` field description steers it toward work that outlives a reply and
-away from anything whose output is needed to answer now; the start result leads
+`background` field description states that foreground is the default, that a
+background job costs an extra turn and defers the answer, that only work
+expected to exceed the foreground ceiling or to keep running after the reply
+belongs there, and that a restart of the agent interrupts every job (so
+backgrounding is not a way to run something "while replying"); the start result leads
 with a line saying the conversation is woken on completion, so the agent must
 not poll, sleep, or re-run the command to check; and the session block of the
 system prompt repeats both alongside the daemonize prohibition and the fact that
@@ -557,7 +560,7 @@ The command refuses remote endpoints, derives an independent owner capability
 from the selected agent's private store, and exits `1` with
 `agent_unreachable` when the agent cannot be reached. Misuse exits `2`.
 
-Successful background `Exec`/`Bash` completions carry a bounded versioned start
+Successful background `Exec`/`Bash` and persistent `Agent`/`AgentSend` launches carry a bounded versioned start
 receipt in their machine-readable tool result. The receipt records the exact job
 id, tool, admission state, and real start stamp when one exists; the human result
 text is not an identity source. The web console uses that causal receipt only
@@ -598,8 +601,12 @@ completion response.
 `mono-agent validate` / `doctor` reports whether the feature is disabled or
 unsupported on Windows, then inspects only bounded local record counts and
 owner-only modes, including any quarantined transaction count and the bounded
-runtime health marker. It does not probe or mutate the live controller and
-never creates a missing store.
+runtime health marker. For valid internal child records it also reports path-free
+retained-ownership, unresolved-ownership, and owner-unavailable counts. The
+owner-unavailable count is the conservative subset whose persisted owner is
+unknown (including legacy busy records without structured ownership); it is not
+a live process probe. Doctor does not expose job ids, registry roots, or command
+paths, does not mutate the live controller, and never creates a missing store.
 
 ### Detached persistent children
 
@@ -610,6 +617,40 @@ continues the same child transcript. Both require the ordinary Agent/AgentSend
 policy. Close-only calls remain synchronous. Bare runtime hosts need a supplied
 background controller; unsupported calls fail clearly.
 
+In the web console, detached launches keep their receipt in the parent's Activity,
+which shows `Agent job started` / `Agent job succeeded` (or the actual terminal
+state); `AgentSend` uses the corresponding label. The child no longer streams
+foreground-style subagent rows into the parent response. Its Background jobs
+card uses the subagent glyph and a height-bounded scroll region with clustered
+tool calls, running/complete/failed status, durations, and a plain-text terminal
+report. State, Wake, and terminal facts remain on the card. Scrolling upward
+holds the reading position through later progress and report arrival.
+
+Progress is separate from stdout and from the parent's completion-wake output.
+The host retains at most 50 recent calls plus total/failed counts, redacts short
+argument summaries before persistence, and coalesces progress writes every
+250 ms. No prompts or tool result bodies enter progress. Identity/name fields
+and argument summaries are byte-bounded; the report is a redacted head of at
+most 8,000 UTF-8 bytes, explicitly marked when truncated. The original terminal
+output JSON and wake behavior are unchanged.
+
+Old records without progress remain readable and show that progress is
+unavailable. Upgrade host and console together: the optional internal-only
+`subagentProgress` field is strictly validated, and older binaries can reject
+populated records or projections. This adds no new state directory or web
+SQLite migration; ordinary process-job retention still owns the data.
+
+Detached children can run long **foreground** Bash/Exec commands: `timeout_ms`
+is capped at the smaller of the owning job's remaining runtime at child-run
+setup and `subagents.commandTimeoutMs` (positive integer milliseconds; default
+`1800000`, or 30 minutes). Tool descriptions report this effective ceiling;
+the job's abort signal still stops commands when its deadline arrives, including
+commands started later in the turn. Raising the command ceiling does not extend
+`subagents.timeoutMs`, profile timeouts, or `processJobs.maxRuntimeMs`.
+Interactive turns and foreground children retain the 120-second cap, and
+NodeRepl retains its fixed 120-second timer. Child-owned background commands
+remain unsupported and are explicitly out of scope.
+
 The child runs inside the owning host, using the existing process-job admission,
 queue, runtime/output limits, lineage, lifecycle card and exact-origin wake.
 A queued child is reserved before the receipt returns, so another send or close
@@ -618,12 +659,155 @@ Completion, failure and AskParent deliver one terminal wake; AskParent preserves
 `awaiting_reply` and its structured question for a later AgentSend. Do not poll or
 replay a started job. Message plus close closes only after a successful answer.
 
-Timeout/cancellation requests abort and waits through the Agent grace period.
+### Parent stop and resume
+
+Use `AgentSend({id, stop: true})` to cooperatively stop a queued or running
+managed detached child. An optional `description` string of at most 80 characters
+is accepted and ignored: stop creates no job to label. Stop is exclusive with
+message, close, background, inspect and ack (even explicitly false values).
+It invokes no new provider turn (`executed:false`) and accepts no job id. Foreground children are
+not stoppable through this operation. Stop never force-kills an in-process
+provider or rolls back filesystem/network effects.
+
+Invalid requests return a JSON error receipt with a human-readable `message`,
+`stopRequested:false` and `executed:false`, before instance lookup:
+
+- `subagent_stop_not_requested`: `stop` must be exactly `true`.
+- `subagent_stop_invalid_id`: `id` must be a string of 1–40 lowercase letters,
+  digits or hyphens, starting with a letter or digit.
+- `subagent_stop_invalid_request`: `description` must be a string of at most
+  80 characters.
+- `subagent_stop_unexpected_parameters`: only `id`, `stop` and `description`
+  are accepted; the message lists unexpected keys in sorted order.
+
+The operation waits at most six seconds, including storage work:
+
+- `stopped`, `resumable:true`: the matched job, provider, owned commands and
+  registry publication have settled, and native session continuity is certified.
+- `already_idle`, `resumable:true`: no stop was needed; ordinary continuation is
+  admissible.
+- `stop_requested`, `childStillBusy:true`, `resumable:false`: cancellation was
+  accepted, but settlement remains unproven. Ownership and capacity remain held.
+  Ordinary messages and close remain blocked; do not poll or replay the job.
+
+Only after a resumable receipt, use `AgentSend({id, message: "Continue"})`
+(optionally `background:true`) to resume the same warm instance and prior
+context, or `AgentSend({id, close:true})` to retire it. A queued stop charges no
+turn; a begun stopped turn charges one. Completion winning the race keeps its
+actual disposition, and pending AskParent questions survive stopping.
+
+Lost or unproven continuity returns `subagent_stop_recovery_required`, not a
+resumable receipt. Unsupported ownership/storage returns
+`subagent_stop_unavailable`; uncertain cancellation acceptance is reported as
+`stopRequested:"unknown"`. A stale captured turn is refused. These errors never
+authorize bypassing recovery fences. Intentional, certified parent stops do not
+require a failure acknowledgement; unrelated timeout, cancellation and failure
+recovery rules below are unchanged.
+
+Timeout/cancellation requests abort and wait through the Agent grace period.
 If execution remains unresolved, the terminal job reports `childStillBusy:true`.
 The instance stays busy and retains its turn lock and independent runtime
-protection lease until actual settlement or process death. A late settlement
-updates only the instance and never sends another wake or changes the terminal
-job. The retained card describes the terminal observation; Session context shows
+protection lease until actual settlement. Process death alone does not prove
+that command descendants exited. A late settlement never sends another wake or
+changes the terminal outcome, and leaves a recovery fence when session continuity
+is unknown. Do not send a new message merely because the running lock disappeared. The retained card describes the terminal observation; Session context shows
 the current instance state. Service shutdown does not wait indefinitely for an
 abandoned child. Restart interrupts stored work and wakes its origin without
 replaying it; pending questions survive recovery.
+
+Persistent registry failures retain a minimal typed reason and turn identity.
+Lost or unknown continuity requires explicit close/create after ownership is
+resolved, not an implicit retry of unretained prose. Foreground persistent turns
+retain the ordinary command timeout and do not gain durable command ownership.
+Unresolved ownership or registry publication pins terminal records and their
+artifacts independently of wake delivery, age, and admission limits. Legacy
+`childStillBusy:true` is conservative unknown evidence, not proof of cleanup.
+A disabled service or an unavailable retained-root index cannot authorize new
+persistent instances around forgotten work. Do not delete ownership records to
+bypass this fence. Older runtimes reject records containing the new ownership or
+registry-intent fields; stripping those fields is not a safe downgrade. Existing
+legacy command cleanup cannot be retroactively proven from an interrupted job.
+
+For managed detached turns, Bash/Exec still returns its ordinary awaited tool
+result. The host persists preparation and PID/group incarnation before releasing
+the gated target, and borrows the existing child job slot rather than scheduling
+a second job. Overlapping commands and repeated host call identities reject
+without execution; no rejected owner falls back to an untracked command. Registry
+reservation identity is verified before admission. The provider's actual promise
+settlement is observed before the reporting race; reporting timeout cannot erase
+an unresolved lease or command. Clean instance release waits for terminal job
+publication, not merely provider return. A lost registry-confirmation receipt
+keeps continuation/close/reuse fenced until the registered owner confirms the
+same publication sequence. Private owner roots and publication receipts are not
+included in instance handle results.
+
+The private store retains at most 32 command receipts (12 KiB aggregate), with an
+omitted count under pressure. These contain actual tool/cwd/budget/exit/signal,
+timeout/cancel/truncation and cleanup measurements, never raw argv, environment,
+stdout, provider answer or a fabricated "checks passed" verdict. Optional facts
+are trimmed before they can exceed the job's real serialized-record budget;
+mandatory ownership and the non-evicting call ledger are never trimmed for them.
+Crash recovery can add positive group-cleanup evidence while leaving the exit
+unobserved. It cannot turn OS cleanup or a matching command label into successful
+verification. These private receipts do not widen ProcessJob/wake projections.
+
+### Explicit child recovery inspection and acknowledgement
+
+`AgentSend({id, inspect: true})` is separate from message/close/background/ack
+requests and invokes no provider. It can perform one bounded owner reconciliation
+pass, then returns held/unavailable or current-policy-authorized recovery facts.
+After independently verifying the work, a retained-only acknowledgement may be
+submitted with a message; recovery of a detached job requires `background: true`.
+The same token and request semantics return `subagent_recovery_already_consumed`
+without execution, even while the first continuation is busy. Changed semantics
+return conflict. Consumption and the new reservation are durable before admission.
+A requested `close:true` retires the child only after that acknowledged
+continuation succeeds. If it fails, any pending AskParent question and the child
+instance remain available for explicit recovery; repeating the consumed request
+does not execute it again.
+A proven rejected admission retains a not-started disposition; ambiguous absence
+never authorizes retry. Lost/unknown continuity cannot be acknowledged back into
+retained context: resolve ownership, then explicitly close/create instead.
+
+The configured foreground persistent path currently classifies failures as
+`lost` (a native response outside the selected session) or `unknown` (including
+late timeout settlement). It does not establish a retained failure epoch eligible
+for acknowledgement. While the original runtime is unresolved, inspection is
+`held` and close/continuation remain blocked. After settlement, authorized
+inspection reports `structured_job_recovery_unavailable` with the minimal registry
+fence, not a ProcessJob, command checkpoint or acknowledgement token. Explicitly
+close the instance and create another with the necessary context. A late answer
+or existing JSONL file does not upgrade unknown continuity. Ordinary successful
+foreground continuation and AskParent replies still resume their retained session
+without a recovery acknowledgement.
+
+For a managed detached failure explicitly classified as retained, an accepted
+acknowledgement resumes the same durable session; it does not replay the failed
+request or authorize a new provider epoch. Inspection and duplicate consumed
+acknowledgements invoke no provider and append no continuation message.
+
+Persistent Agent's optional `verification: {workdir, reportPath?}` declares only
+an observation target. It changes neither command cwd nor policy/approval.
+Current readable/protected roots are checked at admission, capture and disclosure;
+linked common Git metadata outside those roots is not implicitly authorized.
+Fixed Git probes require an available read-only sandbox, disable external helper
+paths and never fall back to host execution. The host selects root-installed native
+Git: `/Library/Developer/CommandLineTools/usr/bin/git` on macOS and `/usr/bin/git`
+on Linux. It checks canonical secure ancestry, ownership, executable format and
+identity before/after probes; it never consults model-supplied paths or `PATH`,
+executes macOS's `/usr/bin/git` bootstrap shim, installs tooling or changes the
+active developer directory. Missing/redirected/untrusted tooling or an unsupported
+platform yields `observation_unavailable`. Existing sandbox runtime-read allowances
+for the executable do not grant repository/private-root read authority; explicit
+protection of the selected executable denies observation before preparation.
+The prepared native command must preserve the selected executable and exact
+declared observation cwd. Repository config includes are unsupported and fail
+closed before status, preventing an included file from changing helper policy
+between probes. Status ignores all initialized submodules, so nested repository
+changes are outside the observation and nested clean filters are not executed.
+Unsupported alternates, denied paths, replaced roots,
+changed Git metadata/executable identity/HEAD and unavailable sandboxing produce
+typed gaps. Report metadata records only a relative path and presence, never
+content or a hash.
+Command facts and observations remain bounded; foreground-only recovery is marked
+`structured_job_recovery_unavailable`, not presented as a durable command job.

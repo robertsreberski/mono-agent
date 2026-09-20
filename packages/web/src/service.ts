@@ -1,3 +1,5 @@
+import type { ProviderUsageId, ProviderUsageSnapshot } from "@mono-agent/agent-contracts";
+import type { WebCancelOrigin } from "./contracts.js";
 import type { ConsoleToolScope, ConsoleToolOperation } from "./console-tools.js";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
@@ -8,6 +10,7 @@ import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
+  canonicalizeAgentAttachmentMimeType,
   type AgentReplyPart,
   createChannelUserCancelReason,
   isChannelUserCancelReason,
@@ -19,7 +22,6 @@ import {
   type ChannelAskAnswer,
   type ChannelAskSnapshot,
   type ChannelAskSubmissionResult,
-  type MonitorProjection,
   processJobPublicError,
   type ProcessJobProjection,
   type ProviderAuthSessionInput,
@@ -100,7 +102,7 @@ import {
 import { conversationTitleFromFrame } from "./conversation-title.js";
 import { parseCronReplyContext } from "./cron-reply-context.js";
 import type { WebTag, CreateWebTagInput, PatchWebTagInput, WebTagChangedPayload } from "./contracts.js";
-import { withProjectContext, type ProjectContextSource } from "./project-context.js";
+import { formatQuotedTurn, withProjectContext, type ProjectContextSource } from "./project-context.js";
 import {
   advertisedEffortLevels,
   effectiveModelForAgent,
@@ -146,6 +148,19 @@ import {
 const DEFAULT_DISCOVERY_INTERVAL_MS = 5_000;
 const DEFAULT_PURGE_INTERVAL_MS = 60 * 60 * 1_000;
 const INFO_TIMEOUT_MS = 2_500;
+/**
+ * Consecutive inconclusive presence samples tolerated before a discovered
+ * agent is reported offline. ONE missed probe is not evidence of a dead agent:
+ * the operator's info route is a synchronous handler, so a probe that runs out
+ * `INFO_TIMEOUT_MS` was queued behind a blocked event loop -- a busy agent --
+ * while the same route answers an idle agent in well under a millisecond. A
+ * running manifest can likewise omit its operator endpoint for one publication,
+ * and one failed registry walk is not an authoritative empty fleet.
+ * Tolerating a few samples costs about 15s at the discovery interval, and the
+ * trace heartbeat's own 30s staleness is the independent backstop that still
+ * reports an agent which is genuinely gone.
+ */
+export const PROBE_FAILURE_TOLERANCE = 3;
 /**
  * How rarely a still-connected agent is re-asked about the job cards this
  * console still draws as running. Reconnecting is the event that matters; this
@@ -446,15 +461,6 @@ function nameWholePayloads(part: WebToolCallPart | WebSubagentPart): WebToolCall
   };
 }
 
-function formatQuotedTurn(quote: string, text: string): string {
-  const blockquote = quote
-    .trim()
-    .split(/\r?\n/u)
-    .map((line) => `> ${line}`)
-    .join("\n");
-  return `Quoted context:\n${blockquote}\n\n${text}`;
-}
-
 function assertTurnTextWithinLimit(operatorText: string): void {
   if (operatorText.length <= WEB_MAX_TURN_TEXT_CHARACTERS) return;
   throw new WebConsoleError(
@@ -462,28 +468,6 @@ function assertTurnTextWithinLimit(operatorText: string): void {
     `The message and quote may contain at most ${WEB_MAX_TURN_TEXT_CHARACTERS} characters after formatting.`,
     413,
   );
-}
-
-function assertMonitorWakeAddress(input: DeliverWebMonitorNotificationInput): void {
-  const originConversation = input.monitor.origin.conversationId.split("#", 1)[0];
-  const expectedDeliveryKey = `monitor:${input.monitor.monitorId}:${String(input.monitor.counters.seq)}`;
-  if (input.monitor.origin.channel !== "web"
-    || originConversation !== `web:${input.threadId}`
-    || input.deliveryKey !== expectedDeliveryKey) {
-    throw new WebConsoleError(
-      "invalid_notification",
-      "The Monitor wake origin or delivery key does not match its web destination.",
-      409,
-    );
-  }
-}
-
-function monitorWakePayloadSha256(monitor: MonitorProjection, wakePrompt: string): string {
-  return createHash("sha256")
-    .update(canonicalJson(monitor))
-    .update("\0")
-    .update(wakePrompt)
-    .digest("hex");
 }
 
 function canonicalJson(value: unknown): string {
@@ -508,6 +492,13 @@ export interface CreateWebServiceOptions extends WebStatePathOptions, DiscoverOp
   readonly logger?: WebServiceLogger;
   readonly clock?: () => Date;
   readonly discoveryIntervalMs?: number;
+  /**
+   * Consecutive inconclusive presence samples tolerated before a discovered
+   * agent is reported offline. This covers failed operator probes, temporarily
+   * absent endpoint metadata, and registry discovery failures. Test/embedding
+   * override; production uses `PROBE_FAILURE_TOLERANCE`.
+   */
+  readonly probeFailureTolerance?: number;
   readonly purgeIntervalMs?: number;
   readonly discoverImpl?: (options: DiscoverOperatorAgentsOptions) => Promise<readonly DiscoveredOperatorAgent[]>;
   /** Test/embedding override; production defaults to one 64 MiB weighted attachment turn. */
@@ -542,6 +533,7 @@ type HostWakeReceipt = NonNullable<DeliverWebNotificationResult["delivery"]>;
 interface AgentConnection {
   readonly client: OperatorClient;
   readonly info: OperatorInfo;
+  /** Process plus endpoint identity; unlike a summary generation, an endpoint move retires this client. */
   readonly generation: string;
 }
 
@@ -575,19 +567,9 @@ export interface DeliverWebProcessJobNotificationInput {
   readonly parts?: readonly AgentReplyPart[];
 }
 
-export interface DeliverWebMonitorNotificationInput {
-  readonly sourceId: string;
-  readonly triggerKind: "monitor";
-  readonly deliveryKey: string;
-  readonly threadId: string;
-  readonly monitor: MonitorProjection;
-  readonly wakePrompt: string;
-}
-
 export type DeliverWebNotificationInput =
   | DeliverWebThreadNotificationInput
-  | DeliverWebProcessJobNotificationInput
-  | DeliverWebMonitorNotificationInput;
+  | DeliverWebProcessJobNotificationInput;
 
 export interface DeliverWebNotificationResult {
   readonly thread?: WebThread;
@@ -671,6 +653,21 @@ export class WebService {
    * `refreshAgentsOnce` can tell that provider authentication itself moved.
    */
   private projectedCapabilities = new Map<string, string>();
+  /**
+   * Source id -> consecutive failed probe or missing-endpoint samples for that
+   * agent's CURRENT process generation. One failed sample can be a blocked event
+   * loop or transient channel-status publication rather than a dead agent, so it
+   * is the COUNT that reaches `PROBE_FAILURE_TOLERANCE` and makes it evidence of
+   * anything. Keyed by process generation, so endpoint churn keeps one budget
+   * while a restart can neither inherit the previous process's failures nor hide
+   * behind them.
+   */
+  private readonly probeFailures = new Map<string, { readonly generation: string; readonly count: number }>();
+  /**
+   * Consecutive failed registry walks. A successful walk resets this fleet-wide
+   * counter even when individual operator probes in that result fail.
+   */
+  private discoveryFailures = 0;
   /** Bounded catalog-admitted model refs per agent, seeded from `modelOptions`
    *  and appended to by every proxied `/v1/models` page. Admission is `has`,
    *  metadata is `get`. Map preserves insertion order, so evicting the oldest
@@ -714,6 +711,7 @@ export class WebService {
     replyAccessKey: Buffer,
   ) {
     this.store = store;
+    store.onConversationMarker = ({ threadId, messageId, updatedAt }) => this.emit("message.changed", threadId, { messageId, updatedAt });
     this.lease = lease;
     this.options = options;
     this.pushIdentity = pushIdentity;
@@ -872,10 +870,12 @@ export class WebService {
     const connection = this.connections.get(agent.sourceId);
     const providerAuth = connection?.info.supportsProviderAuth === true;
     const providerAuthChecks = connection?.info.supportsProviderAuthChecks === true;
-    if (!providerAuth) return agent;
+    const providerUsage = connection?.info.supportsProviderUsage === true;
     return {
       ...agent,
-      supportsProviderAuth: true,
+      ...(providerAuth ? { supportsProviderAuth: true as const } : {}),
+      ...(providerUsage ? { supportsProviderUsage: true as const } : {}),
+      ...(providerUsage && connection?.info.supportsProviderUsageRefresh === true ? { supportsProviderUsageRefresh: true as const } : {}),
       ...(providerAuthChecks ? { supportsProviderAuthChecks: true as const } : {}),
     };
   }
@@ -887,6 +887,8 @@ export class WebService {
   private projectedCapabilitySignature(agent: WebAgentSummary): string {
     const projected = this.decorateProjectedCapabilities(agent);
     return [
+      projected.supportsProviderUsage === true ? "providerUsage" : "",
+      projected.supportsProviderUsageRefresh === true ? "providerUsageRefresh" : "",
       projected.supportsProviderAuth === true ? "providerAuth" : "",
       projected.supportsProviderAuthChecks === true ? "providerAuthChecks" : "",
     ].join("|");
@@ -926,7 +928,7 @@ export class WebService {
     if (this.stopped || !this.consoleToolTurns.has(scope.turnId) || active?.turnId !== scope.turnId
       || active.controller.signal.aborted || thread?.sourceId !== scope.sourceId || thread.archivedAt !== null
       || thread.trigger !== undefined || this.store.activeTurn(scope.threadId)?.id !== scope.turnId) {
-      throw new WebConsoleError("console_tool_revoked", "The originating interactive turn is no longer writable.", 403);
+      throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
     }
   }
 
@@ -1719,6 +1721,17 @@ export class WebService {
     return page;
   }
 
+  async providerUsage(sourceId: string, provider?: ProviderUsageId, refresh = false): Promise<ProviderUsageSnapshot> {
+    if (this.store.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const connection = this.connections.get(sourceId);
+    if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    if (connection.info.supportsProviderUsage !== true) throw new WebConsoleError("provider_usage_unavailable", "This agent does not expose provider usage.", 409);
+    if (refresh && connection.info.supportsProviderUsageRefresh !== true) throw new WebConsoleError("provider_usage_refresh_unavailable", "This agent does not support manual usage refresh.", 409);
+    const snapshot = await (refresh ? connection.client.refreshProviderUsage(provider, AbortSignal.timeout(15_000)) : connection.client.providerUsage(provider, AbortSignal.timeout(15_000)));
+    if (this.connections.get(sourceId)?.generation !== connection.generation) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
+    return snapshot;
+  }
+
   async providerAuthStatus(sourceId: string): Promise<ProviderAuthStatusSnapshot> {
     return await this.providerAuthCall(sourceId, async (connection) =>
       await connection.client.providerAuthStatus(AbortSignal.timeout(INFO_TIMEOUT_MS)));
@@ -1818,35 +1831,11 @@ export class WebService {
     if (this.stopped) {
       throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
     }
-    // Monitor wakes are addressed to a retained thread, so they must reach the
-    // wake-specific retry/abandon path even after discovery has removed the
-    // source from the picker. New source-scoped deliveries still refresh before
-    // the store decides whether the agent exists.
-    if (input.triggerKind !== "monitor" && this.store.getAgent(input.sourceId) === undefined) {
+    if (this.store.getAgent(input.sourceId) === undefined) {
       await this.refreshAgents();
     }
     if (this.stopped) {
       throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
-    }
-    if (input.triggerKind === "monitor") {
-      assertMonitorWakeAddress(input);
-      const thread = this.store.getThread(input.threadId);
-      if (thread === undefined || thread.sourceId !== input.sourceId) {
-        return {
-          duplicate: true,
-          tombstoned: true,
-          delivery: { delivered: false, code: "monitor_origin_mismatch", retryable: false },
-        };
-      }
-      if (thread.archivedAt !== null || thread.trigger !== undefined) {
-        return {
-          thread,
-          duplicate: false,
-          delivery: { delivered: false, code: "monitor_wake_failed", retryable: false },
-        };
-      }
-      const result = await this.deliverMonitorWake(input);
-      return { thread, duplicate: result.duplicate, delivery: result.receipt };
     }
     if (input.triggerKind === "job") {
       // Destructured off: the card's message id is how this service addresses
@@ -1946,7 +1935,7 @@ export class WebService {
       ...(requestedModel === undefined ? {} : { requestedModel }),
       ...(requestedEffort === undefined ? {} : { requestedEffort }),
     });
-    this.launchTurn(started, connection.client, operatorText);
+    this.launchTurn(started, connection.client, quotedText);
     // The operator's own row, inserted by `beginTurn` and announced by nothing
     // else. A console that did not issue this turn holds neither it nor the
     // assistant row the deltas are about to describe, and it no longer answers
@@ -2051,7 +2040,7 @@ export class WebService {
     });
 
     if (claimed.created && started !== undefined) {
-      this.launchTurn(started, connection.client, operatorText);
+      this.launchTurn(started, connection.client, quotedText);
       this.emit("message.changed", threadId, { messageId: started.userMessageId, updatedAt: started.thread.updatedAt });
       this.emit("turn.changed", threadId, { turn: started.thread.runState });
       this.emitThread("threads.changed", { thread: started.thread });
@@ -2132,7 +2121,7 @@ export class WebService {
     return { message: reserved.message, disposition: "pending" };
   }
 
-  async cancelTurn(threadId: string): Promise<WebThread> {
+  async cancelTurn(threadId: string, origin: WebCancelOrigin = "api"): Promise<WebThread> {
     const resolved = this.store.getThread(threadId)?.id;
     if (resolved === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     threadId = resolved;
@@ -2140,6 +2129,7 @@ export class WebService {
     const stored = this.store.activeTurn(threadId);
     if (stored === undefined) throw new WebConsoleError("no_active_turn", "This conversation has no active turn.", 409);
     this.consoleToolTurns.delete(stored.id);
+    this.store.recordCancelOrigin(stored.id, origin);
     const reason = createChannelUserCancelReason("Web");
     const liveInputs = [...this.activeLiveInputs.entries()]
       .filter(([, input]) => input.threadId === threadId);
@@ -2163,9 +2153,10 @@ export class WebService {
 
   createUpload(input: CreateWebUploadInput): WebAttachment {
     const name = normalizeFilename(input.name);
-    const contentType = normalizeMime(input.contentType);
+    const reportedType = normalizeMime(input.contentType);
+    const contentType = canonicalizeAgentAttachmentMimeType(reportedType);
     if (!this.allowlist.has(contentType)) {
-      throw new WebConsoleError("unsupported_attachment_type", `Attachments of type ${contentType} are not allowed.`, 415);
+      throw new WebConsoleError("unsupported_attachment_type", `Attachments of type ${reportedType} are not allowed.`, 415);
     }
     if (input.sizeBytes !== undefined && (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes < 0)) {
       throw new WebConsoleError("invalid_attachment_size", "Attachment size must be a non-negative integer.", 400);
@@ -2284,9 +2275,13 @@ export class WebService {
     const activeHostWakes = [...this.activeHostWakes.values()];
     const trackedIds = new Set(active.map((turn) => turn.turnId));
     for (const turnId of this.store.listActiveTurnIds()) {
-      if (!trackedIds.has(turnId)) this.store.interruptTurn(turnId);
+      if (!trackedIds.has(turnId)) {
+        this.store.recordCancelOrigin(turnId, "service-shutdown");
+        this.store.interruptTurn(turnId);
+      }
     }
     for (const turn of active) {
+      this.store.recordCancelOrigin(turn.turnId, "service-shutdown");
       this.store.interruptTurn(turn.turnId);
       turn.controller.abort(new WebTurnCancellation("shutdown", "Web service is stopping."));
     }
@@ -2333,8 +2328,14 @@ export class WebService {
         ...(started.thread.runState.model === undefined ? {} : { model: started.thread.runState.model }),
         ...(started.thread.runState.effort === undefined ? {} : { effort: started.thread.runState.effort }),
       };
-      const consoleTools = hostWakeDeliveryKey === undefined && started.thread.trigger === undefined;
+      // A host wake (process-job completion) runs an ordinary live turn
+      // on an ordinary conversation, so it carries the same turn-bound console
+      // capability as a typed turn: an agent reacting to finished background work
+      // is exactly when filing or moving the conversation is useful. Cron and
+      // webhook channels stay excluded here and in `assertConsoleToolTurn`.
+      const consoleTools = started.thread.trigger === undefined;
       if (consoleTools) this.consoleToolTurns.add(started.turnId);
+      this.store.markTurnDispatchStarted(started.turnId);
       const response = await client.turn({
         conversationId: started.conversationId,
         text: operatorText,
@@ -2361,17 +2362,13 @@ export class WebService {
         ...(onAdmitted === undefined ? {} : { onAdmitted }),
       });
       await coalescer.flush();
-      const silentMonitorWake = hostWakeDeliveryKey?.startsWith("monitor:") === true
-        && (response.finalText === undefined || response.finalText.length === 0)
-        && (response.parts === undefined || response.parts.length === 0);
       const detail = this.store.completeTurn(
         started.turnId,
         response.finalText,
         response.metadata,
         response.parts,
         {
-          suppressResponsePush: silentMonitorWake,
-          ...(hostWakeDeliveryKey === undefined ? {} : { monitorWakeDeliveryKey: hostWakeDeliveryKey }),
+          ...(hostWakeDeliveryKey === undefined ? {} : { hostWakeDeliveryKey }),
         },
       );
       this.emitMessageWrite(started.thread.id, detail.write);
@@ -2421,6 +2418,7 @@ export class WebService {
     operatorText: string,
     hostWakeDeliveryKey?: string,
   ): { readonly completion: Promise<void>; readonly admitted: Promise<boolean> } {
+    operatorText = withProjectContext(operatorText, this.projectContextForThread(started.thread.id), this.store.conversationMarkersForTurn(started.turnId));
     const threadId = started.thread.id;
     const controller = new AbortController();
     let resolveAdmitted!: (admitted: boolean) => void;
@@ -2584,7 +2582,7 @@ export class WebService {
         if (started === undefined) return;
         // Resolved anew: the queued text was stored unprefixed, and the
         // membership or context may have changed while it waited.
-        const operatorText = this.withProjectPrefix(threadId, started.text);
+        const operatorText = withProjectContext(started.text, this.projectContextForThread(threadId), this.store.conversationMarkersForTurn(started.turnId));
         if (operatorText.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
           // Never dispatch an over-limit turn, and never throw into the void
           // drain: the promoted turn settles on the launch-failure path, which
@@ -2592,7 +2590,7 @@ export class WebService {
           this.failTurnBeforeDispatch(threadId, started.turnId, operatorText.length);
           continue;
         }
-        this.launchTurn(started, connection.client, operatorText);
+        this.launchTurn(started, connection.client, started.text);
         // BOTH rows. `promoteNextQueuedLiveInput` rewrites the queued operator
         // message (its live-input status becomes "applied") as well as opening
         // the assistant row, and a console that heard only about the second was
@@ -2822,7 +2820,7 @@ export class WebService {
       const { completion, admitted } = this.launchTurn(
         started,
         refreshedConnection.client,
-        followUpText,
+        input.wakePrompt,
         input.deliveryKey,
       );
       // Receipt ownership moves to the durable turn below. The turn remains
@@ -2891,211 +2889,6 @@ export class WebService {
       if (this.activeHostWakes.get(activeKey) === delivery) {
         this.activeHostWakes.delete(activeKey);
       }
-      this.releaseHostWakeReservation(input.threadId);
-    }
-  }
-
-  private async deliverMonitorWake(
-    input: DeliverWebMonitorNotificationInput,
-  ): Promise<{ readonly receipt: HostWakeReceipt; readonly duplicate: boolean }> {
-    const activeKey = `${input.sourceId}\0${input.deliveryKey}`;
-    const reservation = this.store.reserveMonitorWake({
-      sourceId: input.sourceId,
-      threadId: input.threadId,
-      monitorId: input.monitor.monitorId,
-      deliveryKey: input.deliveryKey,
-      payloadSha256: monitorWakePayloadSha256(input.monitor, input.wakePrompt),
-      monitor: input.monitor,
-    });
-    if (reservation.kind === "completed") {
-      return {
-        receipt: { delivered: true, disposition: reservation.disposition },
-        duplicate: true,
-      };
-    }
-    if (reservation.kind === "uncertain") {
-      const existing = this.activeHostWakes.get(activeKey);
-      if (existing !== undefined) return { receipt: await existing, duplicate: true };
-      return {
-        receipt: {
-          delivered: false,
-          code: "monitor_wake_ambiguous",
-          retryable: false,
-          ambiguous: true,
-        },
-        duplicate: true,
-      };
-    }
-
-    this.retainHostWakeReservation(input.threadId);
-    const previous = this.hostWakeTails.get(input.threadId) ?? Promise.resolve();
-    const delivery = previous.catch(() => undefined).then(async (): Promise<HostWakeReceipt> => {
-      const abandon = (): void => this.store.abandonMonitorWake({
-        sourceId: input.sourceId,
-        monitorId: input.monitor.monitorId,
-        deliveryKey: input.deliveryKey,
-      });
-      let connection = this.connections.get(input.sourceId);
-      if (connection === undefined) {
-        try {
-          await this.refreshAgents();
-        } catch (error) {
-          abandon();
-          this.options.logger?.debug?.("Web Monitor destination refresh failed before delivery.", {
-            threadId: input.threadId,
-            monitorId: input.monitor.monitorId,
-            error: errorMessage(error),
-          });
-          return { delivered: false, code: "destination_channel_unavailable", retryable: true };
-        }
-        connection = this.connections.get(input.sourceId);
-      }
-      if (this.stopped || connection === undefined) {
-        abandon();
-        return { delivered: false, code: "destination_channel_unavailable", retryable: true };
-      }
-      const destination = this.store.getThread(input.threadId);
-      if (destination === undefined
-        || destination.sourceId !== input.sourceId
-        || destination.archivedAt !== null
-        || destination.trigger !== undefined) {
-        abandon();
-        return { delivered: false, code: "monitor_origin_mismatch", retryable: false };
-      }
-      const active = this.activeTurns.get(input.threadId);
-      // Steered operator-facing with the member prefix, like every other
-      // dispatch. An oversized composition skips steering for the normal
-      // follow-up below; the stored `[Monitor wake]` text is untouched.
-      const steeredText = this.withProjectPrefix(input.threadId, input.wakePrompt);
-      if (active !== undefined
-        && connection.info.supportsLiveInput
-        && steeredText.length <= AGENT_LIVE_INPUT_MAX_CHARACTERS) {
-        try {
-          this.store.setMonitorWakeSteeringTurn(input.sourceId, input.deliveryKey, active.turnId, true);
-          const settlement = await active.client.liveInput({
-            conversationId: `web:${input.threadId}`,
-            id: input.deliveryKey,
-            text: steeredText,
-            receivedAt: new Date().toISOString(),
-            deliveryKey: input.deliveryKey,
-            signal: AbortSignal.timeout(10 * 60 * 1_000),
-          });
-          if (settlement.status === "applied") {
-            const message = this.store.completeMonitorWake({
-              sourceId: input.sourceId,
-              monitorId: input.monitor.monitorId,
-              deliveryKey: input.deliveryKey,
-              disposition: "steered",
-              turnId: active.turnId,
-            });
-            if (message !== undefined) {
-              this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
-            }
-            return { delivered: true, disposition: "steered" };
-          }
-          if (settlement.status !== "requeue" && settlement.status !== "unavailable") {
-            return {
-              delivered: false,
-              code: "monitor_wake_ambiguous",
-              retryable: false,
-              ambiguous: true,
-            };
-          }
-          this.store.setMonitorWakeSteeringTurn(input.sourceId, input.deliveryKey, active.turnId, false);
-        } catch (error) {
-          this.options.logger?.warn?.("Web Monitor steering outcome is unknown; automatic fallback is suppressed.", {
-            threadId: input.threadId,
-            monitorId: input.monitor.monitorId,
-            error: errorMessage(error),
-          });
-          return {
-            delivered: false,
-            code: "monitor_wake_ambiguous",
-            retryable: false,
-            ambiguous: true,
-          };
-        }
-      }
-
-      if (active !== undefined) await active.completion;
-      if (this.stopped) {
-        abandon();
-        return { delivered: false, code: "destination_channel_unavailable", retryable: true };
-      }
-      const refreshedConnection = this.connections.get(input.sourceId);
-      if (refreshedConnection === undefined) {
-        abandon();
-        return { delivered: false, code: "destination_channel_unavailable", retryable: true };
-      }
-      // Bounded before any turn exists, like the process-job follow-up: no
-      // operator call, and abandoned so a later redelivery can still proceed.
-      const followUpText = this.withProjectPrefix(input.threadId, input.wakePrompt);
-      if (followUpText.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
-        abandon();
-        return { delivered: false, code: "monitor_wake_failed", retryable: false };
-      }
-      let started;
-      try {
-        const selection = this.resolveTurnSelection(input.threadId);
-        started = this.store.beginAssistantTurn({
-          threadId: input.threadId,
-          prompt: input.wakePrompt,
-          storedPrompt: "[Monitor wake]",
-          ...(selection.model === undefined ? {} : { model: selection.model }),
-          ...(selection.effort === undefined ? {} : { effort: selection.effort }),
-          ...(selection.requestedModel === undefined ? {} : { requestedModel: selection.requestedModel }),
-          ...(selection.requestedEffort === undefined ? {} : { requestedEffort: selection.requestedEffort }),
-        });
-      } catch (error) {
-        abandon();
-        return {
-          delivered: false,
-          code: errorCode(error) ?? "monitor_wake_failed",
-          retryable: false,
-        };
-      }
-      const { completion } = this.launchTurn(
-        started,
-        refreshedConnection.client,
-        followUpText,
-        input.deliveryKey,
-      );
-      this.emit("message.changed", input.threadId, {
-        messageId: started.assistantMessageId,
-        updatedAt: started.thread.updatedAt,
-      });
-      this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
-      this.emitThread("threads.changed", { thread: started.thread });
-      this.refreshMemberProject(started.thread);
-      await completion;
-      if (this.store.turnStatus(started.turnId) !== "complete") {
-        return {
-          delivered: false,
-          code: "monitor_wake_failed",
-          retryable: false,
-          ambiguous: true,
-        };
-      }
-      const message = this.store.completeMonitorWake({
-        sourceId: input.sourceId,
-        monitorId: input.monitor.monitorId,
-        deliveryKey: input.deliveryKey,
-        disposition: "follow_up",
-        turnId: started.turnId,
-      });
-      if (message !== undefined) {
-        this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
-      }
-      return { delivered: true, disposition: "follow_up" };
-    });
-    const tail = delivery.then(() => undefined, () => undefined);
-    this.hostWakeTails.set(input.threadId, tail);
-    this.activeHostWakes.set(activeKey, delivery);
-    try {
-      return { receipt: await delivery, duplicate: false };
-    } finally {
-      if (this.hostWakeTails.get(input.threadId) === tail) this.hostWakeTails.delete(input.threadId);
-      if (this.activeHostWakes.get(activeKey) === delivery) this.activeHostWakes.delete(activeKey);
       this.releaseHostWakeReservation(input.threadId);
     }
   }
@@ -3376,42 +3169,81 @@ export class WebService {
       });
     } catch (error) {
       this.options.logger?.warn?.("Web agent discovery failed.", { error: errorMessage(error) });
-      const changed = this.store.markDiscoveredAgentsOffline();
+      this.discoveryFailures += 1;
+      const tolerance = this.options.probeFailureTolerance ?? PROBE_FAILURE_TOLERANCE;
+      const changed = this.discoveryFailures >= tolerance
+        ? this.store.markDiscoveredAgentsOffline()
+        : false;
+
+      // A failed registry walk says nothing about whether the process behind a
+      // source id restarted or moved. Keep its last summary below the tolerance,
+      // but never hand out a client whose endpoint/process binding discovery
+      // could not re-establish: sending through that stale authority is less safe
+      // than temporarily refusing an operation. Capabilities derived from those
+      // clients disappear in the same pass and are announced independently of
+      // whether the retained summary itself changed.
       this.connections = new Map();
-      // The live connection that backs the projection is gone, so provider
-      // authentication is unavailable now.
-      // Clearing it here is what makes the recovery a transition worth
-      // announcing rather than a no-op against a stale map. It is belt and
-      // braces today: this projected capability implies a live connection, which
-      // implies a row that was not offline, so `markDiscoveredAgentsOffline`
-      // returns true and the failure is announced anyway.
-      this.projectedCapabilities = new Map();
-      if (changed) this.emit("agents.changed");
+      const projected = new Map(
+        this.store.listAgents().map((summary) => [
+          summary.sourceId,
+          this.projectedCapabilitySignature(summary),
+        ] as const),
+      );
+      const capabilityChanged = projected.size !== this.projectedCapabilities.size
+        || [...projected].some(([sourceId, signature]) =>
+          this.projectedCapabilities.get(sourceId) !== signature);
+      this.projectedCapabilities = projected;
+      if (changed || capabilityChanged) this.emit("agents.changed");
       return;
     }
+    this.discoveryFailures = 0;
 
     const nextConnections = new Map<string, AgentConnection>();
-    // What the cache is allowed to survive: the same process, at the same
-    // endpoint, since the same start. Anything else is a new generation whose
-    // catalog the previous one cannot speak for.
+    // Summary/catalog identity belongs to the process, not the endpoint string:
+    // live metadata can temporarily omit or move that endpoint without replacing
+    // the process that supplied the summary. Connections below carry the stricter
+    // endpoint-bearing identity so a client can never survive such a move.
     const generations = new Map(discovered.map((agent) => [
       agent.source.sourceId,
       agentGeneration(agent),
     ]));
     this.reconcileModelCatalogCache(generations);
+    this.reconcileProbeFailures(generations);
+    const tolerance = this.options.probeFailureTolerance ?? PROBE_FAILURE_TOLERANCE;
     const summaries = await Promise.all(discovered.map(async (agent): Promise<WebAgentSummary> => {
       const generation = generations.get(agent.source.sourceId)!;
-      if (agent.baseUrl === undefined) return offlineSummary(agent, generation);
+      // A terminal manifest is authoritative, unlike a missing channel field in
+      // an otherwise-running process. It must not spend a tolerance window or
+      // preserve either the previous summary or connection.
+      if (agent.source.status !== "running") {
+        this.probeFailures.delete(agent.source.sourceId);
+        return offlineSummary(agent, generation);
+      }
+      if (agent.baseUrl === undefined) {
+        const failures = this.recordProbeFailure(agent.source.sourceId, generation);
+        return this.retainSummaryAfterPresenceFailure(
+          agent,
+          generation,
+          undefined,
+          failures,
+          tolerance,
+          nextConnections,
+        ) ?? offlineSummary(agent, generation);
+      }
+      const connectionGeneration = agentConnectionGeneration(agent, agent.baseUrl);
       const client = new OperatorClient({
         baseUrl: agent.baseUrl,
         ...(agent.apiKey === undefined ? {} : { apiKey: agent.apiKey }),
         ...(agent.processJobsBearer === undefined ? {} : { processJobsBearer: agent.processJobsBearer }),
-        ...(agent.monitorsBearer === undefined ? {} : { monitorsBearer: agent.monitorsBearer }),
         ...(this.options.fetchImpl === undefined ? {} : { fetchImpl: this.options.fetchImpl }),
       });
       try {
         const info = await client.info(AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]));
-        nextConnections.set(agent.source.sourceId, { client, info, generation });
+        // A probe that answered is the evidence the counter exists to require,
+        // so the next failure starts a fresh count rather than resuming one
+        // from a stall that this pass has just disproved.
+        this.probeFailures.delete(agent.source.sourceId);
+        nextConnections.set(agent.source.sourceId, { client, info, generation: connectionGeneration });
         this.seedModelCatalogFromOptions(agent.source.sourceId, generation, info.modelOptions);
         await this.restorePersistedModelAdmission(
           client,
@@ -3445,7 +3277,15 @@ export class WebService {
           sourceId: agent.source.sourceId,
           error: errorMessage(error),
         });
-        return offlineSummary(agent, generation);
+        const failures = this.recordProbeFailure(agent.source.sourceId, generation);
+        return this.retainSummaryAfterPresenceFailure(
+          agent,
+          generation,
+          connectionGeneration,
+          failures,
+          tolerance,
+          nextConnections,
+        ) ?? offlineSummary(agent, generation);
       }
     }));
     const previousConnections = this.connections;
@@ -3491,6 +3331,68 @@ export class WebService {
     await this.reconcileDueProcessJobCards(previousConnections, nextConnections, signal);
     for (const threadId of this.store.queuedLiveInputThreadIds()) {
       void this.drainQueuedLiveInputs(threadId);
+    }
+  }
+
+  /**
+   * Preserve the last summary for an inconclusive presence sample, but only for
+   * the same process and only below the shared tolerance. A failed info request
+   * can be a busy event loop, and a missing endpoint can be one transient
+   * channel-status publication; neither single sample replaces the process that
+   * supplied the summary. The trace heartbeat's 30s staleness still independently
+   * projects `degraded`, while exhausting this shorter budget projects `offline`.
+   *
+   * Summary identity deliberately excludes the endpoint. Connection identity
+   * does not: a changed or absent endpoint never inherits the previous client,
+   * even while the process's non-offline summary is retained.
+   */
+  private retainSummaryAfterPresenceFailure(
+    agent: DiscoveredOperatorAgent,
+    generation: string,
+    connectionGeneration: string | undefined,
+    failures: number,
+    tolerance: number,
+    nextConnections: Map<string, AgentConnection>,
+  ): WebAgentSummary | undefined {
+    if (failures >= tolerance) return undefined;
+    const sourceId = agent.source.sourceId;
+    const previous = this.store.getAgent(sourceId);
+    if (previous === undefined
+      || previous.generation !== generation
+      || previous.status === "offline") return undefined;
+    const connection = this.connections.get(sourceId);
+    if (connectionGeneration !== undefined
+      && connection !== undefined
+      && connection.generation === connectionGeneration) {
+      nextConnections.set(sourceId, connection);
+    }
+    return previous;
+  }
+
+  /**
+   * Count one more consecutive failed-probe or missing-endpoint sample for
+   * `sourceId`'s current generation and return the running total. The process
+   * generation is compared here,
+   * not only in the sweep below, so the count can never be inherited: a count
+   * earned by one process must not spend another process's tolerance.
+   */
+  private recordProbeFailure(sourceId: string, generation: string): number {
+    const seen = this.probeFailures.get(sourceId);
+    const count = seen !== undefined && seen.generation === generation ? seen.count + 1 : 1;
+    this.probeFailures.set(sourceId, { generation, count });
+    return count;
+  }
+
+  /**
+   * Bind failure counts to the agents discovery still reports, and to the
+   * generations those agents are on now -- the same sweep
+   * `reconcileModelCatalogCache` makes, for the same reason. A replaced
+   * generation starts from zero failures, and a departed source id takes its
+   * count with it instead of accumulating for the life of the process.
+   */
+  private reconcileProbeFailures(generations: ReadonlyMap<string, string>): void {
+    for (const [sourceId, seen] of this.probeFailures) {
+      if (generations.get(sourceId) !== seen.generation) this.probeFailures.delete(sourceId);
     }
   }
 
@@ -4693,42 +4595,39 @@ export class WeightedTurnBudget {
 
 /**
  * The identity of the agent PROCESS behind a source id. `sourceId` is stable
- * across restarts by design, so it cannot scope anything the running process
- * told us: a reconfigured agent restarts at a new endpoint, with a new pid and
- * a new `startedAt`, and advertises a different catalog under the same id.
- * Deliberately excludes `updatedAt`, which every heartbeat moves.
+ * across restarts by design, so the pid and `startedAt` scope everything the
+ * running process told us. The operator endpoint is deliberately excluded: one
+ * live process can republish it after a transient channel-status omission or a
+ * port move, and neither event invalidates its retained summary or model catalog.
+ * `updatedAt` is excluded because every heartbeat moves it.
  *
- * This is what the model catalog cache is scoped to -- and, since the browser
- * caches the same `/v1/models` pages and had nothing generation-shaped to
- * watch, what `WebAgentSummary.generation` carries to it.
+ * This is what the model catalog cache, probe-failure budget, and
+ * `WebAgentSummary.generation` are scoped to. A separate endpoint-bearing digest
+ * below fences cached clients, because endpoint churn is harmless to a summary
+ * but must always retire an `OperatorClient` bound to the old address.
  *
- * Hashed because it now goes on the wire: the raw form names the agent's
- * operator endpoint and pid, and the console has no reason to hand those to a
- * page. The token only has to be stable while one process lives and different
- * once it is replaced, which a digest of those three fields is.
- *
- * Length-prefixed rather than `|`-joined. A separator that can occur inside a
- * field is not a separator: two different accepted tuples whose parts happen to
- * contain the delimiter flatten to the same string and hash to the same token,
- * and two distinct processes sharing a generation is precisely the state the
- * token exists to make impossible. Nothing first-party produces such a tuple
- * today, which is why this is robustness rather than a live defect --- but a
- * digest whose only defence is what its inputs happen to look like is one
- * unrelated change away from being wrong.
- *
- * Hashed as UTF-16 code units for the same reason the prefix replaced the
- * delimiter. UTF-8 has no encoding for an unpaired surrogate, so a lone high
- * surrogate and a lone low surrogate both became the replacement character and
- * two different one-character fields -- identically length-prefixed -- hashed
- * alike. `utf16le` is a lossless transcription of exactly the code units the
- * length prefix counts, so what is hashed is what was measured.
+ * Hashed because the token goes on the wire and the console has no reason to
+ * expose a pid. Parts are length-prefixed rather than concatenated or joined by
+ * a delimiter, and hashed as UTF-16 code units: that preserves the exact tuple
+ * even for accepted strings containing separators or unpaired surrogates.
  */
 export function agentGeneration(agent: DiscoveredOperatorAgent): string {
-  const parts = [
-    agent.baseUrl ?? "",
+  return agentIdentityDigest([
     String(agent.source.pid ?? ""),
     agent.source.startedAt,
-  ];
+  ]);
+}
+
+/** The stricter process-plus-endpoint identity carried only by cached clients. */
+function agentConnectionGeneration(agent: DiscoveredOperatorAgent, baseUrl: string): string {
+  return agentIdentityDigest([
+    baseUrl,
+    String(agent.source.pid ?? ""),
+    agent.source.startedAt,
+  ]);
+}
+
+function agentIdentityDigest(parts: readonly string[]): string {
   return createHash("sha256")
     .update(parts.map((part) => `${String(part.length)}:${part}`).join(""), "utf16le")
     .digest("hex")

@@ -102,12 +102,14 @@ How the endpoint is discovered: the running channel's summary (`baseUrl`) is fol
 
 - A console conversation uses its own `conversationId`, so it runs concurrently with every other channel; reusing an existing id (e.g. a Telegram conversation's) is possible and queues behind that conversation's in-flight turn.
 - Context import and an explicit Send for the same conversation are ordered
-  across processes. Non-provider turns hold logical/exact claims during runtime
-  and acquire the physical shard only for the short commit. Durable-provider
-  turns retain their existing behavior of holding the physical shard transaction
-  for the provider turn, so an unrelated same-shard operation can still wait in
-  that mode. Cancellation and failure release or transfer the same owner; there
-  is no unlocked append fallback.
+  across processes. Non-provider and durable-provider turns retain logical/exact
+  keyed claims during runtime; neither holds a physical shard transaction.
+  Publication uses the root lock, so unrelated shard collisions do not serialize
+  turns, but root-locked maintenance and fail-closed retirement can still delay
+  publication. Cancellation and failure release or transfer the same owner;
+  there is no unlocked append fallback. Shared-root writers must be claim-aware
+  (v0.20.0 or later); stop older writers before sharing the directory. This is a
+  support boundary, not a technical fence against old binaries.
 - Loopback-only by default; binding further requires `allowNonLoopback` **and** should always pair with `apiKey`. Remember this endpoint streams tool arguments and results: the event-frame cap reduces oversized payloads but is not a redaction boundary, so this remains an operator surface by design.
 
 ## Related

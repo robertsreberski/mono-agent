@@ -76,9 +76,7 @@ Its bounded mailbox delivers follow-ups only when the selected backend supports
 native steering. Native queue acceptance and exact owned-operation transcript
 consumption are separate. Applied human follow-ups and ProcessJob wakes are
 then recorded as ordered user history and included in memory persistence.
-Host-owned Monitor inputs, identified by their `monitor:` delivery key, are
-applied to the provider run but excluded from canonical user history and memory
-persistence. The responder
+The responder
 correlates the acknowledgement to the pending input and emits one completed
 synthetic tool lifecycle; human follow-ups use
 `↪️ Steered: “<safe preview>”`, while consumers correlate host-owned receipts by
@@ -112,6 +110,13 @@ Unhinted interrupted-work recovery retains the `RunHistory {}` first step.
 Continuous provider sessions bind to the requested primary model. Repeated overrides stay warm; a model change retires the old owner's session and reseeds a new epoch from canonical history. `createSessionRuntimeResolver`, `SessionRuntimeResolver`, and `ProviderSessionHandle` preserve runtime ownership across cleanup paths; `ProviderSessionTurnBinding` is the durable coordinator's input. Without a runtime factory, all keys use the shared runtime with the effective per-run model.
 
 The built-in history store persists `providerSession.modelKey` and a strict version-4 recovery fence. Legacy unbound records load but take one cold reseed; older binaries reject newly bound records. Custom coordinators must advertise `providerSessionModelBinding: "v1"` to enable durable override sessions. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
+
+Durable provider turns hold exact-key logical/session claims rather than lifetime
+physical shard transactions, so an unrelated shard collision cannot block turn
+admission or cancellation publication. Concurrent history writers must be
+claim-aware (v0.20.0 or later); stop older writers before sharing the directory.
+This compatibility floor is not enforced against old binaries. Root maintenance
+and existing per-conversation legacy locks retain their safety boundaries.
 
 The harness is the request-to-runtime composition boundary:
 
@@ -168,6 +173,10 @@ The harness is the request-to-runtime composition boundary:
 | `src/live-session.ts` / `src/sessions.ts` | Queue-after-turn coordination and provider-session lifecycle |
 | `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history, including positive atomic v1 context import and non-provider exclusive turns |
 | `src/tool-history-*.ts` | Secure sidecar schema, single-writer worker/ownership, incremental lifecycle persistence, recovery, bounded read/query, and cold projection |
+
+Persistent-child Session guidance surfaces a blocked-recovery marker and safe
+job identity, not private owner roots, verification paths or acknowledgement
+binding material. It directs inspection before continuation and prohibits replay.
 
 ## Public API
 
@@ -250,6 +259,7 @@ DurableHistoryStoreOptions
 DurableHistoryStoreStats
 ExternalRunSummary
 FileContextInput
+HOST_TURN_CONTEXT_GUIDANCE
 HistoryMessage
 InMemoryHistoryStoreOptions
 LiveInputMailbox
@@ -315,6 +325,7 @@ assistantTextFromRuntimeEvent
 buildAgentContext
 buildSkillIndex
 classifyContinuationMcpServerTransport
+composeHostTurnEnvelope
 createAgentHarness
 createAgentResponder
 createDurableHistoryStore
@@ -327,6 +338,7 @@ createSkillsCache
 createToolHistoryArtifactSink
 createToolPolicy
 failClosedToolPolicy
+formatHostCapabilities
 isProcessAlive
 isReadSkillCompatibleName
 isStdioMcpServerSpec
@@ -384,7 +396,18 @@ Eligible coordinated durable Pi turns retain their epoch after validated native
 settlement; the canonical revision advances once. Recovery adds no Pi message.
 Pi filters interrupted prose/reasoning and retains completed native tools and the
 cancelled user input. Cancellation permits 1,000 ms by default for provider settlement while
-the caller and mailbox close immediately. Hosts may override the window through
+the caller and mailbox close immediately. The next same-conversation turn waits
+until the previous terminal account is published (cancellable; recorder/exporter
+finalization never delays it) and republishes a rejected account once before
+reporting the retryable continuity error. A wait past 5,000 ms emits a
+`turn_continuity_publication_slow` warning with elapsed time, repeated every
+15,000 ms up to 12 warnings per wait. After 30,000 ms total by default (including
+any republish attempt), the waiter fails with the retryable continuity error.
+Hosts expecting slow storage can increase `session.turnContinuityPublicationWaitMs`
+(an integer from 1 through 2,147,483,647 milliseconds), for example to 180,000 ms. The
+pending publication remains the owner: no later turn can resume or append, and
+reset also fails closed until it settles. A late successful publication allows
+the next retry to proceed. Hosts may override the provider-settlement window through
 `session.terminalRecoverySettlementMs` (a positive safe integer); the two-process
 smoke uses a longer window to tolerate loaded runners. Unsafe or unsettled tails retire and
 reseed. A process-local budget allows one failed-turn recovery per epoch; user
@@ -404,7 +427,7 @@ but cannot reconstruct a canonical account from process-local observations.
 Daily-rollover reset claims its normalized logical id as a namespaced opaque
 digest in a fixed 16-file, cross-process owner registry from bucket discovery
 through every physical bucket reset. Appends take the same logical claim before
-their physical-conversation lock, so reset cannot miss a newly created bucket or
+any physical-conversation mutation, so reset cannot miss a newly created bucket or
 leave a post-reset append in a bucket it already cleared. Rollover-shaped
 physical ids also take a namespaced exact-id claim. A date-shaped logical reset
 anchors that same exact-id claim before discovery, preserving the contract for
@@ -534,11 +557,11 @@ It does not poll chats, serve UI, parse host settings files, own provider creden
 
 ## Related Documentation
 
-- [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/composition/)
+- [Programmatic composition](https://docs.mono-agent.dev/programmatic/composition/)
   explains when to use the harness instead of `agent-app`.
-- [Sessions and concurrency](https://mono-agent-docs.vercel.app/runtime/sessions-concurrency/)
+- [Sessions and concurrency](https://docs.mono-agent.dev/runtime/sessions-concurrency/)
   documents queue-after-turn, admission, execution bounds, and durable Pi sessions.
-- [Tool policy](https://mono-agent-docs.vercel.app/tools/policy/) covers the fail-closed tool
+- [Tool policy](https://docs.mono-agent.dev/tools/policy/) covers the fail-closed tool
   boundary passed into this package.
 - [`@mono-agent/runtime-adapter`](https://github.com/robertsreberski/mono-agent/tree/main/packages/runtime-adapter)
   owns the runtime contract consumed here.

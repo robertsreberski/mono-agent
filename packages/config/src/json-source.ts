@@ -85,6 +85,8 @@ export type MonoAgentProviderJson = Omit<MonoAgentLocalProviderJson, "id">;
 type MonoAgentPiNativeProviderJson = {
   readonly transport?: PiTransport;
   readonly promptCacheDiagnostics?: boolean;
+  /** Anthropic Messages cache retention. Config loading defaults to long; short opts out. */
+  readonly cacheRetention?: "short" | "long";
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;
   readonly piSessionsRoot?: string;
@@ -179,6 +181,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly enabled?: boolean;
     readonly maxConcurrent?: number;
     readonly maxPerTurn?: number;
+    readonly commandTimeoutMs?: number;
     readonly timeoutMs?: number;
     readonly maxTurns?: number;
     /**
@@ -249,11 +252,16 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly web?: {
       readonly coordination?: "process" | "host";
       readonly search?: {
-        readonly backend?: string;
+        readonly backend?: string | readonly string[];
+        readonly parallel?: { readonly apiKeyEnv?: string };
         readonly maxRequestsPerRun?: number;
         /** Compatibility alias for tools.web.search.searxng.endpoint. */
         readonly endpoint?: string;
         readonly searxng?: {
+          readonly endpoint?: string;
+        };
+        /** @deprecated Endpoint tombstone; presence is rejected before layering. */
+        readonly hound?: {
           readonly endpoint?: string;
         };
         readonly ollama?: {
@@ -266,6 +274,12 @@ export interface MonoAgentConfigJson extends SettingsJson {
         };
       };
       readonly fetch?: {
+        readonly provider?: string | readonly string[];
+        readonly parallel?: { readonly apiKeyEnv?: string };
+        /** @deprecated Endpoint tombstone; presence is rejected before layering. */
+        readonly hound?: {
+          readonly endpoint?: string;
+        };
         readonly render?: string;
         readonly browserCommand?: string;
       };

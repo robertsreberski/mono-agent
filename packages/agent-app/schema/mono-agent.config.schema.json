@@ -281,7 +281,7 @@
       ]
     },
     "subagents": {
-      "description": "Subagent profiles the Agent tool can deploy, plus its caps. instances enables conversation-scoped persistent children when subagents are enabled and effective tool policy allows both Agent and AgentSend: root defaults to <artifacts.dir>/../subagents, maxPerConversation is 1–32 (default 8), idleTtlMs is 60000–604800000 (default 86400000), and maxTurns is 1–500 (default 60). Agent persist:true creates a child; AgentSend resumes or closes it. Persistent children automatically receive AskParent unless global/profile policy denies it; it durably saves a question and returns successful awaiting_reply. Answer through ordinary AgentSend in the same session. Disabling instances preserves stateless Agent. models is an operator allow-list of model reference strings or {name?, model} objects; an omitted name uses the canonical reference. Explicit names must be lowercase kebab-case (1-40 characters), unique, and distinct from profile names and general-purpose; duplicate models are rejected. Agent accepts model from that list and effort on every call shape. Each value resolves as call-time override, profile pin, parent effective value, then base/runtime default. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected. The agent may also author a specialized subagent at call time unless inline.enabled is false; inline.allowedTools caps what an authored subagent may request, defaulting to the parent agent's own built-ins. maxConcurrent is a ceiling, not a scheduling guarantee: Pi 0.85 serializes all tool calls when any stateful/mutating or MCP tool is offered.",
+      "description": "Subagent profiles the Agent tool can deploy, plus its caps. instances enables conversation-scoped persistent children when subagents are enabled and effective tool policy allows both Agent and AgentSend: root defaults to <artifacts.dir>/../subagents, maxPerConversation is 1–32 (default 8), idleTtlMs is 60000–604800000 (default 86400000), and maxTurns is 1–500 (default 60). Agent persist:true creates a child; AgentSend resumes or closes it. Persistent children automatically receive AskParent unless global/profile policy denies it; it durably saves a question and returns successful awaiting_reply. Answer through ordinary AgentSend in the same session. Disabling instances preserves stateless Agent. commandTimeoutMs (positive integer milliseconds, default 1800000) is the foreground Bash/Exec ceiling for detached persistent children, clamped to their process job's remaining runtime; interactive turns and foreground children keep the 120 s default. models is an operator allow-list of model reference strings or {name?, model} objects; an omitted name uses the canonical reference. Explicit names must be lowercase kebab-case (1-40 characters), unique, and distinct from profile names and general-purpose; duplicate models are rejected. Agent accepts model from that list and effort on every call shape. Each value resolves as call-time override, profile pin, parent effective value, then base/runtime default. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected. The agent may also author a specialized subagent at call time unless inline.enabled is false; inline.allowedTools caps what an authored subagent may request, defaulting to the parent agent's own built-ins. maxConcurrent is a ceiling, not a scheduling guarantee: Pi 0.85 serializes all tool calls when any stateful/mutating or MCP tool is offered.",
       "examples": [
         {
           "enabled": true,
@@ -1185,22 +1185,54 @@
               "additionalProperties": false,
               "properties": {
                 "backend": {
-                  "description": "WebSearch backend: auto uses explicitly configured Ollama, configured local SearXNG, ChatGPT-subscription Codex search, then keyless fallbacks. searxng, ollama, codex, and keyless are strict.",
+                  "description": "WebSearch provider name (strict) or non-empty ordered chain. Default [parallel, ollama] uses anonymous Parallel then local Ollama. Keyless engines are opt-in. auto was removed; the config error prints the previous explicit order.",
                   "examples": [
-                    "auto"
+                    "parallel,ollama"
                   ],
-                  "type": "string",
-                  "default": "auto",
-                  "enum": [
-                    "auto",
-                    "searxng",
-                    "ollama",
-                    "codex",
-                    "keyless"
+                  "type": [
+                    "string",
+                    "array"
+                  ],
+                  "default": [
+                    "parallel",
+                    "ollama"
+                  ],
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "searxng",
+                        "ollama",
+                        "codex",
+                        "keyless",
+                        "duckduckgo",
+                        "startpage",
+                        "parallel",
+                        "hound"
+                      ]
+                    },
+                    {
+                      "type": "array",
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "searxng",
+                          "ollama",
+                          "codex",
+                          "keyless",
+                          "duckduckgo",
+                          "startpage",
+                          "parallel",
+                          "hound"
+                        ]
+                      }
+                    }
                   ]
                 },
                 "maxRequestsPerRun": {
-                  "description": "Hard ceiling from 1 to 20 on actual provider search requests in one logical runtime run; cache hits, coalesced followers, cooldown skips, and quota skips consume no request. Default 4.",
+                  "description": "Hard ceiling from 1 to 20 on answered provider searches in one logical runtime run, including empty answers; failures are refunded. Cache hits, coalesced followers, cooldown skips, and quota skips consume no request. A separate dispatch ceiling is four times this limit. Default 4.",
                   "examples": [
                     4
                   ],
@@ -1234,7 +1266,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "baseUrl": {
-                      "description": "Ollama origin. Defaults to local http://127.0.0.1:11434 in strict Ollama mode. Hosted search is exactly https://ollama.com; custom public origins require HTTPS and trustPublicUrl=true.",
+                      "description": "Ollama origin. Defaults to local http://127.0.0.1:11434 when Ollama is selected, including in a chain. Hosted search is exactly https://ollama.com; custom public origins require HTTPS and trustPublicUrl=true.",
                       "examples": [
                         "https://ollama.com"
                       ],
@@ -1271,6 +1303,19 @@
                       "default": "gpt-5.6-luna"
                     }
                   }
+                },
+                "parallel": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "apiKeyEnv": {
+                      "description": "Secret value for tools.web.search.parallel.apiKeyEnv; prefer the env override.",
+                      "examples": [
+                        "example"
+                      ],
+                      "type": "string"
+                    }
+                  }
                 }
               }
             },
@@ -1278,6 +1323,53 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
+                "parallel": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "apiKeyEnv": {
+                      "description": "Secret value for tools.web.fetch.parallel.apiKeyEnv; prefer the env override.",
+                      "examples": [
+                        "example"
+                      ],
+                      "type": "string"
+                    }
+                  }
+                },
+                "provider": {
+                  "description": "WebFetch provider name or ordered chain: local (default), parallel, hound. Parallel cannot serve raw format, custom headers, or browser rendering. Hound is built-in HTTP-only local acquisition/extraction with proactive robots checks; it supports raw format and allowed headers but not browser rendering.",
+                  "examples": [
+                    "local"
+                  ],
+                  "type": [
+                    "string",
+                    "array"
+                  ],
+                  "default": "local",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "local",
+                        "parallel",
+                        "hound"
+                      ]
+                    },
+                    {
+                      "type": "array",
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "local",
+                          "parallel",
+                          "hound"
+                        ]
+                      }
+                    }
+                  ]
+                },
                 "render": {
                   "description": "Browser-render capability for sparse JavaScript pages. never forces every call to static extraction; auto permits an isolated agent-browser session when needed.",
                   "examples": [
@@ -1683,6 +1775,18 @@
               "type": "boolean",
               "default": false
             },
+            "cacheRetention": {
+              "description": "Anthropic Messages cache retention (short or long; default long). Short opts out. MONO_AGENT env > JSON > long; resolved values override ambient PI_CACHE_RETENTION. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.",
+              "examples": [
+                "long"
+              ],
+              "type": "string",
+              "default": "long",
+              "enum": [
+                "short",
+                "long"
+              ]
+            },
             "piMaxRetries": {
               "description": "Configures piNative.piMaxRetries for the providers section.",
               "examples": [
@@ -1876,100 +1980,6 @@
               "minimum": 1,
               "maximum": 1073741824,
               "default": 268435456
-            }
-          }
-        }
-      }
-    },
-    "monitors": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "default": false
-        },
-        "maxActive": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 32,
-          "default": 8
-        },
-        "maxActivePerConversation": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 8,
-          "default": 2
-        },
-        "maxRuntimeMs": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 3600000,
-          "default": 3600000
-        },
-        "persistentMaxRuntimeMs": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 86400000,
-          "default": 86400000
-        },
-        "coalesceMs": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 5000,
-          "default": 200
-        },
-        "maxBatchLines": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 2000,
-          "default": 200
-        },
-        "maxBatchBytes": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 1048576,
-          "default": 65536
-        },
-        "maxLineBytes": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65536,
-          "default": 4096
-        },
-        "maxWakeIntervalMs": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 300000,
-          "default": 300000
-        },
-        "maxChainDepth": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 64,
-          "default": 4
-        },
-        "rateLimit": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "windowMs": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 60000,
-              "default": 1000
-            },
-            "maxLinesPerWindow": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 20000,
-              "default": 200
-            },
-            "sustainedWindows": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 60,
-              "default": 5
             }
           }
         }
@@ -2320,6 +2330,19 @@
               "effort": {
                 "type": "string",
                 "minLength": 1
+              },
+              "preflight": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "preflightTimeoutMs": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60000
               }
             }
           }
@@ -2419,6 +2442,31 @@
             "example"
           ],
           "type": "string"
+        },
+        "preflight": {
+          "description": "Explicit argv evaluated before the model responder. `{\"run\":false}` ends the firing as skipped_gate with no model turn; `{\"run\":true,\"input\":\"…\"}` runs the job with the input appended to its prompt. Any failure (non-zero exit, signal, timeout, malformed verdict) fails open with the plain prompt. Never a shell line.",
+          "examples": [
+            [
+              "node",
+              "scripts/check-queue.mjs"
+            ]
+          ],
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "preflightTimeoutMs": {
+          "description": "Wall-clock bound for one preflight evaluation before it is killed and fails open. Positive integer milliseconds, default 5000, capped at 60000; separate from maxRunMs.",
+          "examples": [
+            5000
+          ],
+          "type": "integer",
+          "default": 5000,
+          "minimum": 1,
+          "maximum": 60000
         }
       }
     },
@@ -3282,6 +3330,11 @@
           }
         }
       }
+    },
+    "monitors": {
+      "type": "object",
+      "deprecated": true,
+      "description": "Deprecated and ignored. Monitors were removed; use background process jobs for finite work."
     }
   }
 }

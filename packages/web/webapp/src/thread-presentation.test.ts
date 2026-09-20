@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { thread } from "./test/fixtures";
-import { threadPresentation } from "./thread-presentation";
+import { threadPresentation, threadRowExcerpt } from "./thread-presentation";
 import type { JobActivity, ThreadSummary } from "./types";
 
 const present = (overrides: Partial<ThreadSummary> = {}) =>
@@ -14,7 +14,7 @@ describe("conversation status presentation", () => {
   it("distinguishes no meaningful outcome from missing historical metadata", () => {
     const base = { runState: { status: "complete" as const, finishedAt: later },
       jobActivity: jobs({ latestTerminal: { state: "failed" as const, completedAt: ended } }) };
-    expect(present(base)).toEqual({ text: "Completed", active: false });
+    expect(present(base)).toEqual({ text: "", active: false });
     expect(present({ ...base, runState: { ...base.runState, lastOutcome: null } }))
       .toEqual({ text: "Background job failed", active: false });
     expect(present({ runState: { status: "complete", finishedAt: later,
@@ -76,29 +76,29 @@ describe("conversation status presentation", () => {
     })).toEqual({ text, active: false });
   });
 
-  it("lets a newer successful follow-up supersede an older job failure", () => {
+  it("omits idle status when a newer successful follow-up supersedes an older job failure", () => {
     expect(present({
       runState: { status: "complete", finishedAt: later },
       lastMessagePreview: "Recovered successfully",
       jobActivity: jobs({ latestTerminal: { state: "failed", completedAt: ended } }),
-    })).toEqual({ text: "Completed", active: false });
+    })).toEqual({ text: "", active: false });
   });
 
-  it("shows Completed rather than a completed job reply", () => {
+  it("omits idle status rather than a completed job reply", () => {
     expect(present({
       runState: { status: "failed", finishedAt: ended },
       lastMessagePreview: "Older message",
       jobActivity: jobs({ latestTerminal: {
         state: "succeeded", completedAt: later, replyPreview: "Worker results",
       } }),
-    })).toEqual({ text: "Completed", active: false });
+    })).toEqual({ text: "", active: false });
   });
 
-  it("uses Completed for a textless job instead of reusing an older reply", () => {
+  it("omits idle status for a textless job instead of reusing an older reply", () => {
     expect(present({
       lastMessagePreview: "An earlier prompt",
       jobActivity: jobs({ latestTerminal: { state: "succeeded", completedAt: later } }),
-    })).toEqual({ text: "Completed", active: false });
+    })).toEqual({ text: "", active: false });
   });
 
   it("compares completion instants and gives the foreground reply a timestamp tie", () => {
@@ -106,7 +106,7 @@ describe("conversation status presentation", () => {
       runState: { status: "complete", finishedAt: "2026-09-07T12:00:00.000+02:00" },
       lastMessagePreview: "Final answer",
       jobActivity: jobs({ latestTerminal: { state: "failed", completedAt: ended } }),
-    })).toEqual({ text: "Completed", active: false });
+    })).toEqual({ text: "", active: false });
   });
 
   it("uses meaningful fallbacks without job metadata, including older cached summaries", () => {
@@ -114,8 +114,62 @@ describe("conversation status presentation", () => {
     expect(present({ messageCount: 2, lastMessagePreview: "Private prompt excerpt" })).toEqual({ text: "No reply yet", active: false });
     expect(present({ runState: { status: "running" } })).toEqual({ text: "Working…", active: true });
     expect(present({ runState: { status: "complete" }, messageCount: 2 }))
-      .toEqual({ text: "Completed", active: false });
+      .toEqual({ text: "", active: false });
     expect(present({ runState: { status: "complete" }, lastMessagePreview: "Answer" }))
-      .toEqual({ text: "Completed", active: false });
+      .toEqual({ text: "", active: false });
+  });
+});
+
+describe("conversation row excerpts", () => {
+  const excerpt = (overrides: Partial<ThreadSummary> = {}) =>
+    threadRowExcerpt(thread("test", "agent", overrides));
+
+  it("shows the newest reply exactly where the status line stays empty", () => {
+    expect(excerpt({ runState: { status: "complete" }, lastMessagePreview: "Done and dusted." }))
+      .toBe("Done and dusted.");
+    // A settled background success speaks through the same slot, and through
+    // the foreground preview rather than the job card's own words.
+    expect(excerpt({
+      runState: { status: "complete", finishedAt: ended },
+      lastMessagePreview: "Older answer",
+      jobActivity: jobs({ latestTerminal: { state: "succeeded", completedAt: later,
+        replyPreview: "Worker results" } }),
+    })).toBe("Older answer");
+  });
+
+  it("collapses the preview to one line and treats blank as absent", () => {
+    expect(excerpt({ runState: { status: "complete" },
+      lastMessagePreview: "  First line\n\tsecond   line  " }))
+      .toBe("First line second line");
+    expect(excerpt({ runState: { status: "complete" } })).toBeUndefined();
+    expect(excerpt({ runState: { status: "complete" }, lastMessagePreview: "   \n  " }))
+      .toBeUndefined();
+  });
+
+  it.each(["failed", "cancelled", "interrupted"] as const)(
+    "keeps the %s word instead of an excerpt", (status) => {
+      expect(excerpt({ runState: { status }, messageCount: 8,
+        lastMessagePreview: "An older answer" })).toBeUndefined();
+    },
+  );
+
+  it("never talks over work the status line still describes", () => {
+    expect(excerpt({ runState: { status: "running" }, lastMessagePreview: "Older answer" }))
+      .toBeUndefined();
+    for (const state of ["queued", "starting", "running"] as const) {
+      expect(excerpt({ runState: { status: "complete" }, lastMessagePreview: "Older answer",
+        jobActivity: jobs({ [state]: 1 }) })).toBeUndefined();
+    }
+    expect(excerpt({
+      runState: { status: "complete", finishedAt: ended },
+      lastMessagePreview: "Older answer",
+      jobActivity: jobs({ latestTerminal: { state: "failed", completedAt: later } }),
+    })).toBeUndefined();
+  });
+
+  it("stays out of the rows that never settled on a success", () => {
+    expect(excerpt()).toBeUndefined();
+    expect(excerpt({ messageCount: 2, lastMessagePreview: "Private prompt excerpt" }))
+      .toBeUndefined();
   });
 });

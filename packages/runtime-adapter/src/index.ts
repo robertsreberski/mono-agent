@@ -37,17 +37,6 @@ export {
 } from "./runtime-helpers.js";
 export { parseMcpServers } from "./mcp-servers.js";
 export type { NormalizedMcpServer, NormalizedMcpTransport } from "./mcp-servers.js";
-export { bridgeMonitorsController } from "./monitors.js";
-export type {
-  MonitorControllerLimits,
-  MonitorLaunchOptions,
-  MonitorProcessHandle,
-  MonitorProcessResult,
-  MonitorStartRequest,
-  MonitorStartResult,
-  MonitorStopResult,
-  MonitorsController,
-} from "./monitors.js";
 export { bridgeProcessJobsController } from "./process-jobs.js";
 export type {
   ProcessJobLaunchOptions,
@@ -165,6 +154,11 @@ export type {
   RuntimeSubagentActivityEvent,
   RuntimeSubagentActivityPhase,
   RuntimeSubagentIdentity,
+  RuntimeSubagentRouteAttribution,
+  RuntimeSubagentRouteExecution,
+  RuntimeSubagentRouteRetry,
+  RuntimeSubagentRouteSelection,
+  RuntimeSubagentRouteTransition,
   RuntimeToolLifecycleEvent,
   RuntimeToolLifecyclePersistence,
   RuntimeToolLifecycleSink,
@@ -172,3 +166,6 @@ export type {
   RuntimeToolLimits,
   RuntimeToolOptions,
 } from "./types.js";
+
+export { bridgeOwnedForegroundProcesses } from "./owned-foreground-processes.js";
+export type { OwnedForegroundProcessRequest, OwnedForegroundProcessController, OwnedForegroundProcesses } from "./owned-foreground-processes.js";

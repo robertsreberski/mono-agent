@@ -139,6 +139,7 @@ export interface AdapterSendToolsRuntimeExtension {
   readonly runtimeOptions: {
     readonly mcpServers: Record<string, unknown>;
     readonly mcpCallNoTotalTimeoutTools?: readonly string[];
+    readonly hostCapabilities?: import("@mono-agent/runtime-adapter").RuntimeRunOptions["hostCapabilities"];
   };
   readonly cleanup: () => Promise<void>;
   readonly settleCleanup?: () => Promise<void>;
@@ -458,6 +459,11 @@ export function createAdapterSendToolsRuntimeExtension(
       : undefined;
     return {
       runtimeOptions: {
+        ...(allowedTools.includes("AskUser") ? { hostCapabilities: { AskUser: {
+          available: hasConversation && Boolean(context?.interactionConversationId) && Boolean(interaction),
+          ...(!hasConversation || !context?.interactionConversationId || !interaction ? { reason: "bridge_or_target_unavailable" } : {}),
+          limits: { timeoutMs: interaction?.timeoutMs ?? null },
+        } } } : {}),
         ...(interaction?.timeoutMs === null && allowedTools.includes("AskUser")
           ? { mcpCallNoTotalTimeoutTools: [`${ADAPTER_SEND_TOOLS_MCP_SERVER_NAME}:AskUser`] }
           : {}),
@@ -551,21 +557,9 @@ export async function createAdapterSendToolsServer(
       );
     }
   }
-  // AskUser needs a target conversation; the parent app process resolves the
-  // settings without one (for tool-name gating) and must not register the tool.
-  if (
-    settings.askUser?.producerConversationId !== undefined
-    && settings.askUser.interactionConversationId !== undefined
-  ) {
-    registerAskUserTool(
-      server,
-      {
-        ...settings.askUser,
-        producerConversationId: settings.askUser.producerConversationId,
-        interactionConversationId: settings.askUser.interactionConversationId,
-      },
-      options.fetchImpl ?? globalThis.fetch,
-    );
+  // Target availability is checked before any bridge request, not in the schema.
+  if (settings.askUser !== undefined) {
+    registerAskUserTool(server, settings.askUser, options.fetchImpl ?? globalThis.fetch);
   }
 
   return server;
@@ -576,10 +570,7 @@ const ASK_USER_POLL_WAIT_MS = 20_000;
 
 function registerAskUserTool(
   server: McpServer,
-  settings: AskUserToolSettings & {
-    readonly producerConversationId: string;
-    readonly interactionConversationId: string;
-  },
+  settings: AskUserToolSettings,
   fetchImpl: typeof fetch,
 ): void {
   server.registerTool(
@@ -588,9 +579,7 @@ function registerAskUserTool(
       title: "Ask the user and wait",
       description:
         "Ask 1–5 related questions and WAIT for the user to answer them in the current conversation. Each question must offer 2–3 concise options with descriptions; the UI also permits a custom reply. Use multiSelect only when several choices may be combined. Put long decision context or a draft in message. A second concurrent AskUser call fails. "
-        + (settings.timeoutMs === null
-          ? "This interaction has no automatic expiry; keep waiting until the user answers or cancels."
-          : "If the wait expires, finish gracefully using the returned partial answers and state any assumptions."),
+        + "The current host timeout policy controls expiry. Keep waiting until the user answers, cancels, or the wait expires; on expiry finish gracefully with partial answers and state assumptions.",
       inputSchema: {
         message: z.string().min(1).max(4_096).optional().describe("Optional context or draft shown above the questions."),
         questions: z.array(z.object({
@@ -605,6 +594,9 @@ function registerAskUserTool(
       },
     },
     async (args, extra) => {
+      if (!settings.producerConversationId || !settings.interactionConversationId || !settings.bridgeUrl || !settings.bridgeToken) {
+        return { isError: true, content: [{ type: "text" as const, text: "AskUser is unavailable: the current bridge or target is missing." }] };
+      }
       const created = await askBridgeRequest(settings, fetchImpl, "POST", "/v1/asks", {
         conversationId: settings.interactionConversationId,
         producerConversationId: settings.producerConversationId,

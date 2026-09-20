@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from "vitest";
 import { createAgentTool, SUBAGENT_HARD_DENY } from "../../agent/tools/agent-tool.js";
 import { createAgentSendTool } from "../../agent/tools/agent-send-tool.js";
 import { getPiBuiltinTools } from "../../agent/tools/pi-bridge.js";
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+
+const ctx = createToolContext();
 
 function setup(overrides = {}) {
   const records = new Map();
@@ -140,7 +143,7 @@ describe("persistent Agent and AgentSend", () => {
     [["Agent"], [], false], [["*"], ["AgentSend"], false], [["*"], [], true],
   ])("gates persistence at the effective pi tool boundary: %j/%j", async (allowed, denied, enabled) => {
     const { options } = setup();
-    const tools = getPiBuiltinTools(allowed, { disallowedTools: denied, subagents: options });
+    const tools = getPiBuiltinTools(allowed, { ctx, disallowedTools: denied, subagents: options });
     const agent = tools.find((tool) => tool.name === "Agent");
     expect(agent.parameters.properties.persist !== undefined).toBe(enabled);
     expect(tools.some((tool) => tool.name === "AgentSend")).toBe(enabled);
@@ -150,7 +153,7 @@ describe("persistent Agent and AgentSend", () => {
     }
   });
   it("registers AgentSend next to Agent only with a registry", () => {
-    const names = (subagents) => getPiBuiltinTools(undefined, { subagents }).map((tool) => tool.name);
+    const names = (subagents) => getPiBuiltinTools(undefined, { ctx, subagents }).map((tool) => tool.name);
     expect(names(setup().options)).toContain("AgentSend");
     expect(names({ run: vi.fn() })).not.toContain("AgentSend");
   });
@@ -171,4 +174,137 @@ it("closes an awaiting instance without running an answer, but keeps a new quest
   expect(result.details.subagent).toMatchObject({ status: "awaiting_reply", question: { question: "Another?" } });
   expect(second.instances.finish).toHaveBeenLastCalledWith("critic", expect.objectContaining({ status: "awaiting_reply", question: { question: "Another?" } }));
   expect(second.instances.close).not.toHaveBeenCalled();
+});
+
+describe("AgentSend recovery boundary", () => {
+  it("passes only host access to inspection and never invokes a provider", async () => {
+    const f = setup(); const recoveryAccess = { host: true };
+    f.instances.inspect = vi.fn(async () => ({ schema: "mono-agent.subagent-recovery.v1", status: "held" }));
+    const send = createAgentSendTool(f.options, { recoveryAccess });
+    const result = await send.execute("inspect", { id: "helper", inspect: true });
+    expect(result.details).toMatchObject({ executed: false, recovery: { status: "held" } });
+    expect(f.instances.inspect).toHaveBeenCalledWith("helper", recoveryAccess);
+    expect(f.instances.get).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it.each([{ message: "next" }, { close: false }, { background: false }, { ack: "token" }, { description: "purpose" }])(
+    "rejects mixed inspection semantics %j without execution", async (extra) => {
+      const f = setup(); f.instances.inspect = vi.fn();
+      await expect(createAgentSendTool(f.options).execute("inspect", { id: "helper", inspect: true, ...extra })).rejects.toThrow("inspect must be used alone");
+      expect(f.instances.inspect).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["subagent_recovery_already_consumed", "subagent_recovery_ack_conflict", "subagent_recovery_ack_stale"])(
+    "returns typed %s before busy lookup and never replays a receipt", async (code) => {
+      const f = setup(); f.instances.checkAcknowledgement = vi.fn(async () => { throw Object.assign(new Error(code), { code }); });
+      const request = { id: "helper", ack: "token", message: "exact bytes ", background: true, close: false, description: "purpose" };
+      const result = await createAgentSendTool(f.options).execute("ack", request);
+      expect(result.details).toEqual({ tool: "AgentSend", recovery: { code }, executed: false });
+      expect(f.instances.checkAcknowledgement).toHaveBeenCalledWith("helper", { ack: "token", message: "exact bytes ", background: true, close: false, description: "purpose" }, undefined);
+      expect(f.instances.get).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
+    },
+  );
+});
+
+
+it("keeps optional continuation definitions stable and refuses unavailable operations before instance access", async () => {
+  const { options, instances } = setup();
+  const context = { persistentExposure: true };
+  const unavailable = createAgentSendTool({ run: options.run }, context);
+  const current = createAgentSendTool(options, context);
+  const capable = createAgentSendTool({ ...options, instances: { ...instances, reserve: vi.fn(), releaseReservation: vi.fn(), inspect: vi.fn(), checkAcknowledgement: vi.fn() }, backgroundSubagentController: {} }, context);
+  const definition = ({ name, description, parameters }) => JSON.stringify({ name, description, parameters });
+  expect(definition(current)).toBe(definition(unavailable)); expect(definition(capable)).toBe(definition(current));
+  await expect(unavailable.execute("no", { id: "x", message: "work" })).rejects.toThrow(/unavailable/);
+  await expect(current.execute("no", { id: "x", message: "work", background: true })).rejects.toThrow(/unavailable/);
+  await expect(current.execute("no", { id: "x", inspect: true })).rejects.toThrow(/unavailable/);
+  expect(instances.get).not.toHaveBeenCalled(); expect(options.run).not.toHaveBeenCalled();
+});
+
+
+describe("AgentSend stop", () => {
+  it.each([
+    [{ message: "next" }, "message"], [{ close: false }, "close"], [{ background: false }, "background"],
+    [{ inspect: false }, "inspect"], [{ ack: "token" }, "ack"], [{ jobId: "arbitrary" }, "jobId"],
+    [{ message: "next", ack: "token" }, "ack, message"],
+  ])("stop rejects unexpected parameters before instance access: %j", async (extra, keys) => {
+    const f = setup();
+    const result = await f.send.execute("stop", { id: "helper", stop: true, ...extra });
+    const stop = { code: "subagent_stop_unexpected_parameters", instanceId: "helper", jobId: null, stopRequested: false,
+      message: `stop takes only id and optional description (unexpected: ${keys}).` };
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: JSON.stringify(stop) }],
+      details: { tool: "AgentSend", executed: false, stop } });
+    expect(f.instances.get).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it.each([
+    ...[false, undefined, null, "true", 1].map((stop) => [{ stop }, "subagent_stop_not_requested", "stop must be exactly true."]),
+    ...[undefined, null, 1, "", "Helper", "-helper", "has space", "a".repeat(41)].map((id) => [{ id }, "subagent_stop_invalid_id",
+      "id must be a string matching ^[a-z0-9][a-z0-9-]{0,39}$ (1-40 lowercase letters, digits or hyphens, starting with a letter or digit)."]),
+    ...[null, 1, "a".repeat(81)].map((description) => [{ description }, "subagent_stop_invalid_request",
+      "description must be a string of at most 80 characters."]),
+  ])("stop explains invalid declared parameters before instance access: %j", async (extra, code, message) => {
+    const f = setup();
+    const params = { id: "helper", stop: true, ...extra };
+    const result = await f.send.execute("stop", params);
+    const stop = { code, instanceId: typeof params.id === "string" ? params.id : null, jobId: null, stopRequested: false, message };
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: JSON.stringify(stop) }],
+      details: { tool: "AgentSend", executed: false, stop } });
+    expect(f.instances.get).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it.each([undefined, "stop", "", "a".repeat(80)])("accepts and ignores description on the real stop path: %j", async (description) => {
+    const stop = vi.fn();
+    const f = setup({ backgroundSubagentController: { stop } });
+    const plainMissing = await f.send.execute("plain", { id: "helper", stop: true });
+    const describedMissing = await f.send.execute("described", { id: "helper", stop: true, description });
+    expect(describedMissing).toEqual(plainMissing);
+    expect(describedMissing.details.stop.code).toBe("subagent_stop_instance_not_found");
+    f.records.set("helper", { id: "helper", status: "idle", turns: 1, lastStatus: "ok" });
+    const plainIdle = await f.send.execute("plain", { id: "helper", stop: true });
+    const describedIdle = await f.send.execute("described", { id: "helper", stop: true, description });
+    expect(describedIdle).toEqual(plainIdle);
+    expect(describedIdle.details.stop.status).toBe("already_idle");
+    expect(f.instances.get).toHaveBeenCalledTimes(4);
+    expect(f.instances.get).toHaveBeenCalledWith("helper");
+    expect(stop).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it("stop unavailable does not execute", async () => {
+    const f = setup();
+    const result = await f.send.execute("stop", { id: "helper", stop: true });
+    expect(result.details).toEqual({ tool: "AgentSend", executed: false, stop: { code: "subagent_stop_unavailable", instanceId: "helper", jobId: null, stopRequested: false } });
+    expect(result.isError).toBe(true); expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it.each([{}, { description: "stop" }])("resolves only the captured active turn and returns bounded busy evidence: %j", async (extra) => {
+    const stop = vi.fn(async () => ({ jobId: "owned-token", stopRequested: true, childStillBusy: true, resumable: false, disposition: "cancelled" }));
+    const f = setup({ backgroundSubagentController: { stop } });
+    f.records.set("helper", { id: "helper", incarnation: "epoch", status: "running", turns: 1, activeTurn: { kind: "detached", token: "owned-token" } });
+    const result = await f.send.execute("stop", { id: "helper", stop: true, ...extra });
+    expect(f.instances.get).toHaveBeenCalledWith("helper");
+    expect(stop).toHaveBeenCalledWith({ instanceId: "helper", instanceIncarnation: "epoch", turnToken: "owned-token" });
+    expect(result.details).toEqual({ tool: "AgentSend", executed: false, stop: { instanceId: "helper", jobId: "owned-token", status: "stop_requested", instanceStatus: "running", turns: 1, disposition: "cancelled", stopRequested: true, childStillBusy: true, resumable: false } });
+    expect(JSON.parse(result.content[0].text)).toEqual(result.details.stop);
+    expect(f.options.run).not.toHaveBeenCalled();
+    await expect(f.send.execute("message", { id: "helper", message: "next" })).rejects.toThrow("busy");
+    await expect(f.send.execute("close", { id: "helper", close: true })).rejects.toThrow("busy");
+  });
+  it.each([false, true])("accepts only the exact settled turn certificate (successor=%s)", async (successor) => {
+    const f = setup();
+    f.records.set("helper", { id: "helper", incarnation: "epoch", status: "running", turns: 0, activeTurn: { kind: "detached", token: "owned-token" } });
+    f.options.backgroundSubagentController = { stop: async () => {
+      f.records.set("helper", { id: "helper", incarnation: "epoch", status: "idle", turns: 1, settledTurnToken: successor ? "successor" : "owned-token" });
+      return { jobId: "owned-token", stopRequested: true, childStillBusy: false, resumable: true, disposition: "cancelled" };
+    } };
+    const result = await createAgentSendTool(f.options).execute("stop", { id: "helper", stop: true });
+    if (successor) expect(result).toMatchObject({ isError: true, details: { stop: { code: "subagent_stale_turn" } } });
+    else expect(result.details).toEqual({ tool: "AgentSend", executed: false, stop: { instanceId: "helper", jobId: "owned-token", status: "stopped", instanceStatus: "idle", turns: 1, disposition: "cancelled", stopRequested: true, childStillBusy: false, resumable: true } });
+    expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it("bounds controller/storage hangs without claiming acceptance", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = setup({ backgroundSubagentController: { stop: vi.fn(() => new Promise(() => {})) } });
+      f.records.set("helper", { id: "helper", incarnation: "epoch", status: "running", turns: 1, activeTurn: { kind: "detached", token: "owned-token" } });
+      const result = f.send.execute("stop", { id: "helper", stop: true });
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(await result).toMatchObject({ isError: true, details: { stop: { code: "subagent_stop_unavailable", stopRequested: "unknown" } } });
+    } finally { vi.useRealTimers(); }
+  });
 });

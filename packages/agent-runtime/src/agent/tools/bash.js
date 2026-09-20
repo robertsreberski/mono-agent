@@ -16,6 +16,7 @@ import {
 } from "./shared/process-runner.js";
 import { cleanBashEnvironment } from "./shared/bash-environment.js";
 import { handOffProcessJob } from "./shared/process-jobs.js";
+import { runOwnedForegroundProcess } from "./shared/owned-foreground-process.js";
 import { requestToolProcessEnvironment, requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
@@ -72,7 +73,7 @@ export function normalizeBackgroundBashTimeoutMs(value) {
  * Compatibility wrapper retained for direct callers and tests.
  *
  * @param {{command: string, description?: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: import("./shared/process-jobs.js").ProcessJobsController}} [options]
+ * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../ai/types.js").RuntimeToolLimits, ctx?: any, toolCallId?: string, ownedForegroundProcessController?: import("./shared/owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: import("./shared/process-jobs.js").ProcessJobsController}} [options]
  */
 export async function bashToolImpl(params, options = {}) {
   return (await bashToolRun(params, options)).text;
@@ -82,7 +83,7 @@ export async function bashToolImpl(params, options = {}) {
  * Structured Bash execution used by the Pi bridge.
  *
  * @param {{command: string, description?: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: import("./shared/process-jobs.js").ProcessJobsController}} [options]
+ * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../ai/types.js").RuntimeToolLimits, ctx?: any, toolCallId?: string, ownedForegroundProcessController?: import("./shared/owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: import("./shared/process-jobs.js").ProcessJobsController}} [options]
  */
 export async function bashToolRun(
   {
@@ -99,8 +100,11 @@ export async function bashToolRun(
     signal,
     sandboxPolicy,
     sandboxEngine,
+    toolLimits,
     ctx,
     processJobsController,
+    ownedForegroundProcessController,
+    toolCallId,
   } = {},
 ) {
   const startedAt = Date.now();
@@ -134,8 +138,8 @@ export async function bashToolRun(
   const maxChars = finitePositiveInteger(max_output_chars, DEFAULT_MAX_BASH_OUTPUT_CHARS);
   const legacyTimeoutUsed = timeout_ms === undefined && timeout !== undefined;
   const timeoutMs = timeout_ms === undefined
-    ? normalizeBashTimeoutMs(timeout, DEFAULT_BASH_TIMEOUT_MS)
-    : normalizeProcessTimeoutMs(timeout_ms, DEFAULT_BASH_TIMEOUT_MS);
+    ? normalizeBashTimeoutMs(timeout, toolLimits?.bashTimeoutMs)
+    : normalizeProcessTimeoutMs(timeout_ms, toolLimits?.bashTimeoutMs);
   let prepared;
   try {
     prepared = await sandbox.prepareCommand({
@@ -178,14 +182,18 @@ export async function bashToolRun(
   let result;
   let cleanupError;
   try {
-    result = await runPreparedProcess(prepared, {
-      timeoutMs,
-      signal,
-      maxBufferBytes: DEFAULT_PROCESS_BUFFER_BYTES,
-    });
+    result = ownedForegroundProcessController
+      ? await runOwnedForegroundProcess({ controller: ownedForegroundProcessController,
+        tool: "Bash", callId: toolCallId, prepared, timeoutMs, signal })
+      : await runPreparedProcess(prepared, { timeoutMs, signal, maxBufferBytes: DEFAULT_PROCESS_BUFFER_BYTES });
+  } catch (error) {
+    if (!ownedForegroundProcessController) throw error;
+    return failed("Error: Owned foreground command could not be completed safely.", "owned_process_unavailable", startedAt);
   } finally {
     try {
-      await prepared.cleanup?.();
+      // The owned lane keeps cleanup authority, including after rejection or an
+      // unresolved process-group exit. Never clean its sandbox from the tool.
+      if (!ownedForegroundProcessController) await prepared.cleanup?.();
     } catch (error) {
       cleanupError = error;
     }

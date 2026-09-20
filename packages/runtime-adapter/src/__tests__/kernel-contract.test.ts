@@ -69,7 +69,8 @@ type RuntimeRunComparableKeys =
   | "toolLimits"
   | "compaction"
   | "prompts"
-  | "processJobs";
+  | "processJobs"
+  | "ownedForegroundProcesses";
 type RuntimeRunComparableOptions = Pick<RuntimeRunOptions, RuntimeRunComparableKeys>;
 type KnownKeys<T> = {
   [K in keyof T]: string extends K
@@ -266,6 +267,26 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
       subagent: { ...event.subagent, callIndex: "0" },
     })).toBe(false);
     expect(isRuntimeSubagentActivityEvent({ ...event, role: "system" })).toBe(false);
+
+    // Attribution rides the identity: a launch route on agent_started and the
+    // final accounting on agent_completed both narrow; a non-record never does.
+    const launch = {
+      ...event,
+      subagent: {
+        ...event.subagent,
+        attribution: {
+          requested: { model: "anthropic:parent", effort: "xhigh" },
+          disposition: "unknown",
+          transitions: [],
+          retries: [],
+        },
+      },
+    } satisfies RuntimeSubagentActivityEvent;
+    expect(isRuntimeSubagentActivityEvent(launch)).toBe(true);
+    expect(isRuntimeSubagentActivityEvent({
+      ...event,
+      subagent: { ...event.subagent, attribution: "anthropic:parent" },
+    })).toBe(false);
 
     const narrowEvent = (candidate: RuntimeEventLike): void => {
       if (isRuntimeSubagentActivityEvent(candidate)) {

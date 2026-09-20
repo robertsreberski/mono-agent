@@ -113,6 +113,10 @@ export function createProcessJobsRuntimeExtension(
               : !hasAllowedProcessTool(options.coreConfig) ? "tool_unavailable" as const : undefined;
         runtimeOptions = {
           ...runtimeOptions,
+          hostCapabilities: {
+            ...(runtimeOptions.hostCapabilities as Record<string, unknown> | undefined),
+            "Bash/Exec.background": { available: unavailableReason === undefined, ...(unavailableReason ? { reason: unavailableReason } : {}), limits: { maxRuntimeMs: options.service.settings.maxRuntimeMs } },
+          },
           processJobsAvailability: {
             chainDepth,
             maxChainDepth,

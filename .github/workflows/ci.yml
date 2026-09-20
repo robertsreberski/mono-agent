@@ -28,8 +28,14 @@ jobs:
         node-version: ["24.18.0"]
 
     steps:
+      # Full history and tags: the changelog gate diffs the PR against its base
+      # and checks every reachable tag. A shallow checkout would make both
+      # sub-checks no-op silently.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: "0"
+          fetch-tags: "true"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -82,6 +88,13 @@ jobs:
 
       - name: Check documentation quality
         run: pnpm run check:docs
+
+      - name: Check changelog
+        env:
+          CHANGELOG_BASE_REF: ${{ github.event.pull_request.base.sha }}
+          CHANGELOG_PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          CHANGELOG_PR_BODY: ${{ github.event.pull_request.body }}
+        run: pnpm run check:changelog
 
       - name: Validate release package graph
         run: pnpm run release:validate -- --tag "${{ steps.release-smoke.outputs.tag }}"
@@ -155,6 +168,47 @@ jobs:
 
       - name: Audit every built page for accessibility
         run: pnpm run test:a11y
+
+  marketing:
+    name: Marketing
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # marketing/ is an isolated pnpm workspace (own lockfile) holding the
+    # standalone static site for the prospective mono-agent.dev. Gate its
+    # build, SEO contracts, and rendered accessibility independently from the
+    # package verification lane. Runs in parallel with `verify` so its browser
+    # setup does not lengthen the package matrix.
+    defaults:
+      run:
+        working-directory: marketing
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@11.18.0
+
+      - name: Install marketing dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Build marketing site (astro build -> check-links)
+        run: pnpm run build
+
+      - name: Test marketing contracts against the build
+        run: pnpm run test:unit
+
+      - name: Audit the built page for accessibility and responsiveness
+        run: pnpm run test:browser
 
   webapp-browser:
     name: Webapp browser
@@ -232,6 +286,7 @@ jobs:
     needs:
       - verify
       - website
+      - marketing
       - webapp-browser
       - release-dry-run
     runs-on: ubuntu-latest
@@ -243,6 +298,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           VERIFY_RESULT: ${{ needs.verify.result }}
           WEBSITE_RESULT: ${{ needs.website.result }}
+          MARKETING_RESULT: ${{ needs.marketing.result }}
           WEBAPP_BROWSER_RESULT: ${{ needs.webapp-browser.result }}
           RELEASE_DRY_RUN_RESULT: ${{ needs.release-dry-run.result }}
         run: |
@@ -252,11 +308,12 @@ jobs:
             echo
             echo "- Package matrix: $VERIFY_RESULT"
             echo "- Website: $WEBSITE_RESULT"
+            echo "- Marketing: $MARKETING_RESULT"
             echo "- Webapp browser: $WEBAPP_BROWSER_RESULT"
             echo "- Release dry run: $RELEASE_DRY_RUN_RESULT"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [[ "$VERIFY_RESULT" != "success" || "$WEBSITE_RESULT" != "success" || "$WEBAPP_BROWSER_RESULT" != "success" ]]; then
+          if [[ "$VERIFY_RESULT" != "success" || "$WEBSITE_RESULT" != "success" || "$MARKETING_RESULT" != "success" || "$WEBAPP_BROWSER_RESULT" != "success" ]]; then
             echo "CI VERDICT: FAILED"
             exit 1
           fi

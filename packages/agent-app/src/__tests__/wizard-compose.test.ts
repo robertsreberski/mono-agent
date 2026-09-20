@@ -294,8 +294,8 @@ describe("wizard composer — per-preset invariants", () => {
   });
 });
 
-describe("wizard composer — default parity with today's scaffold", () => {
-  it("matches the init.ts default template except tools.allowedTools", () => {
+describe("wizard composer — browser-first default", () => {
+  it("matches the init.ts skeleton with no channel by default and allow-all tools", () => {
     const plan = composeWizardPlan(defaultAnswers(), { dirBasename: "acme", skillsRootExists: false });
     const config = plan.configJson;
 
@@ -305,13 +305,24 @@ describe("wizard composer — default parity with today's scaffold", () => {
     expect(config.context?.selectedSkills).toEqual(["mono-agent-memory"]);
     expect(config.context?.skillsRoot).toBe("./skills");
     expect(config.context?.skillDisclosure).toBe("index");
-    expect((config as Record<string, { enabled?: boolean }>).webhook?.enabled).toBe(true);
+    // Browser-first default: no channel, no webhook smoke block.
+    expect(config).not.toHaveProperty("webhook");
+    expect(plan.validateExpectations.some((expectation) => expectation.sectionId === "channel:webhook")).toBe(false);
     expect(config.artifacts?.retention?.maxCount).toBe(50000);
     expect(config.agent?.name).toBe("Acme");
     expect(config.traceability?.sourceLabel).toBe("Acme");
     expect(config).not.toHaveProperty("memory");
     // The one intentional difference from today's scaffold — the default is now allow-all:
     expect(config.tools?.allowedTools).toEqual(["*"]);
+  });
+
+  it("keeps the starter preset's explicit webhook smoke channel", () => {
+    const starter = PRESET_CATALOG.find((preset) => preset.id === "starter");
+    expect(starter).toBeDefined();
+    const plan = composeWizardPlan(presetAnswers(starter!), CTX);
+    expect((plan.configJson as Record<string, { enabled?: boolean }>).webhook?.enabled).toBe(true);
+    expect(plan.validateExpectations.some((expectation) => expectation.sectionId === "channel:webhook"))
+      .toBe(true);
   });
 
   it("humanizes the folder default and applies an authored name to trace and A2A metadata", () => {

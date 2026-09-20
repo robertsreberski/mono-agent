@@ -2,6 +2,7 @@ import { relative } from "node:path";
 
 import type { MemoryDb, MemoryRecord, SimilarHit } from "../store/index.js";
 
+import { isRememberedMemoryId } from "./canonical-lookup.js";
 import {
   replayCaptureIntent,
   writeCaptureIntent,
@@ -339,6 +340,21 @@ function planBatchAction(
     case "noop":
       return planNoop(decision, deps);
     case "update":
+      // An explicitly remembered bullet is content-addressed: its id is
+      // `RM-<sha256(text)>` and `isRememberedMemoryId` treats that pairing as a
+      // self-verifying provenance claim. Merging new wording into it in place
+      // would leave the id asserting a hash of text it no longer holds, and a
+      // later `remember()` of the ORIGINAL fact would then match that id and
+      // report a false duplicate — silently discarding the user's fact.
+      //
+      // An update is a refinement, not a contradiction, so this must not invent
+      // a supersession either: that would mark the remembered fact invalidated
+      // and hide it from recall. Keep the remembered evidence exactly as it is
+      // and record the refinement as its own memory (threaded to its
+      // neighbour by the shared ADD path).
+      if (isRememberedUpdateTarget(decision, deps)) {
+        return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+      }
       return planUpdate(candidate, decision, deps);
     case "supersede":
       return planSupersede(candidate, decision, deps);
@@ -409,6 +425,15 @@ function planNoop(
   };
 }
 
+/**
+ * True when an UPDATE decision points at a bullet whose id is the content hash
+ * of its own current text — the self-verifying identity minted by `remember()`.
+ */
+function isRememberedUpdateTarget(decision: Classification, deps: ReconcileDeps): boolean {
+  const target = deps.db.get(decision.targetId ?? "");
+  return target !== undefined && isRememberedMemoryId(target.id, target.text);
+}
+
 function planUpdate(
   candidate: CandidateMemory,
   decision: Classification,
@@ -418,6 +443,15 @@ function planUpdate(
   const target = deps.db.get(targetId);
   if (target === undefined || target.source.file === undefined) {
     throw new Error(`memory-reconcile: update target "${targetId}" is unavailable.`);
+  }
+  // Defence in depth: the dispatcher already routes remembered targets to ADD.
+  // Any future caller that reaches an in-place rewrite of a content-addressed
+  // bullet must fail loudly here rather than silently break its identity.
+  if (isRememberedMemoryId(target.id, target.text)) {
+    throw new Error(
+      `memory-reconcile: refusing to rewrite remembered memory "${targetId}" in place; `
+      + "its id is the content hash of its own text.",
+    );
   }
   const before = requireCanonicalTarget(deps.root, target.source.file, targetId);
   const mergedText = decision.text ?? candidate.text;
@@ -504,6 +538,60 @@ function withPreparedVector(
   };
 }
 
+function strictReconciliationOutputSchema(
+  indexes: readonly number[],
+  neighbours: readonly (readonly SimilarHit[])[],
+): Readonly<Record<string, unknown>> {
+  const variants = indexes.flatMap((index) => {
+    const indexSchema = { type: "integer", const: index } as const;
+    const targetIds = [...new Set((neighbours[index] ?? []).map((hit) => hit.record.id))];
+    const targetSchema = { type: "string", enum: targetIds } as const;
+    const replacementSchema = {
+      type: "string",
+      minLength: 1,
+      maxLength: MAX_RECONCILIATION_TEXT_CODE_POINTS,
+    } as const;
+    return [
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["index", "action"],
+        properties: { index: indexSchema, action: { const: "add" } },
+      },
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["index", "action", "targetId"],
+        properties: { index: indexSchema, action: { const: "noop" }, targetId: targetSchema },
+      },
+      ...(["update", "supersede"] as const).map((action) => ({
+        type: "object",
+        additionalProperties: false,
+        required: ["index", "action", "targetId", "text"],
+        properties: {
+          index: indexSchema,
+          action: { const: action },
+          targetId: targetSchema,
+          text: replacementSchema,
+        },
+      })),
+    ];
+  });
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["decisions"],
+    properties: {
+      decisions: {
+        type: "array",
+        minItems: indexes.length,
+        maxItems: indexes.length,
+        items: { oneOf: variants },
+      },
+    },
+  };
+}
+
 async function classifyBatch(
   candidates: readonly CandidateMemory[],
   neighbours: readonly (readonly SimilarHit[])[],
@@ -519,12 +607,16 @@ async function classifyBatch(
       text: hit.record.text,
     })),
   }));
+  const strictOutput = deps.strictModelOutput === true;
   let raw: string;
   try {
     raw = await deps.llm.complete(
-      `Classify each candidate against only its supplied existing memories. Return ONLY one exact JSON array with one object per offered index.
+      `Classify each candidate against only its supplied existing memories. Return ONLY one exact JSON array with one decision per offered index.
+${strictOutput
+  ? 'When a schema-guided StructuredOutput tool is available, submit that same array in the exact object {"decisions":[...]} required by the tool; do not print a second copy.'
+  : ""}
 
-Use exactly one of these object shapes:
+Use exactly one of these decision object shapes:
 - add: {"index":N,"action":"add"}
 - noop: {"index":N,"action":"noop","targetId":"existing-id"}
 - update: {"index":N,"action":"update","targetId":"existing-id","text":"complete merged memory"}
@@ -532,6 +624,9 @@ Use exactly one of these object shapes:
 
 Rules:
 - add means genuinely new; noop means duplicate; update means refinement; supersede means contradiction.
+- Compare the meaning as well as the topic: speaker attribution, stated scope, evidence limits, and correction-versus-state-change qualification are durable information.
+- Replacement text must not turn an attributed or unchecked claim into an unqualified fact, turn an observed outcome into causal proof, or turn correction of an erroneous report into a former real-world state. Preserve an explicit rename or other real state change as history when material.
+- An explicit user report or preference may remain useful without outside proof; preserve its speaker and scope rather than discarding it for being unverified.
 - Preserve every input index exactly once. N is the exact JSON integer from that input item.
 - For noop, update, and supersede, targetId is REQUIRED and copied byte-for-byte from that candidate's existing[].id. add MUST omit targetId.
 - A targetId may be selected by at most one decision in the whole batch.
@@ -543,6 +638,9 @@ INPUT:
 ${JSON.stringify(input)}`,
       {
         label: "capture:reconcile-batch",
+        ...(strictOutput
+          ? { outputSchema: strictReconciliationOutputSchema(indexes, neighbours), structuredResultKey: "decisions" }
+          : {}),
         ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
       },
     );
@@ -706,6 +804,9 @@ a duplicate, a refinement, or a contradiction. Return ONLY JSON:
 - noop: an exact duplicate of an existing memory (no change needed).
 - update: refines/merges an existing memory; set targetId and text to the merged sentence.
 - supersede: contradicts/replaces an existing memory; set targetId and text to the new sentence.
+- Compare speaker attribution, stated scope, evidence limits, and correction-versus-state-change meaning, not just topic similarity.
+- Merged or replacement text must not promote an attributed or unchecked claim to fact, infer a cause from an observed outcome, or describe an erroneous report as a former real-world state. Preserve an explicit rename or other real state change as history when material.
+- Explicit user reports and preferences may remain useful without outside proof; preserve their speaker and scope.
 
 CANDIDATE: type=${candidate.type} text="${candidate.text}"
 

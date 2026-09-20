@@ -67,7 +67,7 @@ Equivalent environment overrides exist for headless deploys:
 | `tools.mcpConfigPath` | `MONO_AGENT_MCP_CONFIG_PATH` |
 | `tools.continuationServers` | `MONO_AGENT_CONTINUATION_SERVERS` |
 | `tools.web.search.backend` / `.maxRequestsPerRun` / `.searxng.endpoint` / `.ollama.*` / `.codex.model` | `MONO_AGENT_WEB_SEARCH_BACKEND` / `MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN` / `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` / `MONO_AGENT_WEB_SEARCH_OLLAMA_*` / `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` |
-| `tools.web.fetch.render` / `.browserCommand` | `MONO_AGENT_WEB_FETCH_RENDER` / `MONO_AGENT_WEB_BROWSER_COMMAND` |
+| `tools.web.fetch.provider` / `.render` / `.browserCommand` | `MONO_AGENT_WEB_FETCH_PROVIDER` / `MONO_AGENT_WEB_FETCH_RENDER` / `MONO_AGENT_WEB_BROWSER_COMMAND` |
 | `sandbox.mode` | `MONO_AGENT_SANDBOX_MODE` |
 | `sandbox.network.mode` / `.allowlist` | `MONO_AGENT_SANDBOX_NETWORK` / `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` |
 | `sandbox.fallback` | `MONO_AGENT_SANDBOX_FALLBACK` |
@@ -101,7 +101,6 @@ approximated.
 - **[Reply files and MCP Apps](/tools/rich-replies/)** — opaque file publication, native Slack/Telegram delivery, browser sandboxing, limits, retention, and fallback policy.
 - **[Documentation MCP companion](/tools/documentation-mcp/)** — offline semantic and exact-identifier search for the composer and other MCP clients.
 - **[Background process jobs](/tools/background-process-jobs/)** — opt-in durable ownership, bounded output, exact-thread wake, cancellation, and restart recovery for Pi-native Exec/Bash.
-- **[Monitors](/tools/monitors/)** — opt-in streaming watches that wake the originating conversation per batch of events, with coalescing, backpressure, rate-limit stop, and restart recovery.
 - **[Durable continuations](/tools/durable-continuations/)** — trusted claim capabilities, immutable later results, tool-free synthesis, native delivery, and recovery.
 - **[Sandbox](/tools/sandbox/)** — native srt confinement, filesystem scopes, network modes, and the fail-closed vs unsafe-host-process fallback.
 

@@ -2436,6 +2436,54 @@ describe("web HTTP server", () => {
     }
   });
 
+  it("round-trips transcript markers over HTTP and two SSE connections with one-row paging", async () => {
+    let time = Date.parse("2026-09-16T08:00:00Z");
+    const dispatches: Record<string, unknown>[] = [];
+    const { baseUrl } = await start({ clock: () => new Date(time), fetchImpl: operatorFetch({ onTurn(body) { dispatches.push(body); } }) });
+    const threadId = await createThread(baseUrl, "agent-one");
+    await settleTurn(baseUrl, threadId, "first");
+    const streams = await Promise.all([`?thread=${threadId}`, ""].map(async (query) => {
+      const response = await fetch(`${baseUrl}/api/v1/events${query}`);
+      const reader = response.body!.getReader();
+      const next = sseEventReader(reader);
+      expect(await next()).toMatchObject({ type: "ready" });
+      return { reader, next };
+    }));
+    try {
+      time += 7_200_000;
+      const created = await json(await fetch(`${baseUrl}/api/v1/projects`, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sourceId: "agent-one", name: "Wire markers" }) }));
+      const projectId = (created.project as { id: string }).id;
+      expect((await fetch(`${baseUrl}/api/v1/threads/${threadId}`, { method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, model: "provider/fallback" }) })).status).toBe(200);
+      const detail = await settleTurn(baseUrl, threadId, "second");
+      const rows = wireMessages(detail);
+      const markers = rows.filter((m) => m.parts[0]?.type === "conversation-marker");
+      expect(markers.map((m) => m.parts[0]?.kind)).toEqual(["project", "model", "resumed"]);
+      expect(detail).not.toHaveProperty("projectTransitions");
+      expect(detail).not.toHaveProperty("modelTransitions");
+      for (const stream of streams) {
+        const ids = new Set<string>();
+        for (let count = 0; count < 50 && !markers.every((m) => ids.has(m.id)); count += 1) {
+          const event = await stream.next();
+          if (event.type === "message.changed") ids.add((event.payload as { messageId: string }).messageId);
+        }
+        for (const marker of markers) expect(ids.has(marker.id)).toBe(true);
+      }
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages?limit=1${cursor === undefined ? "" : `&before=${encodeURIComponent(cursor)}`}`));
+        ids.unshift(...wireMessages(page).map((m) => m.id));
+        cursor = page.nextCursor as string | undefined;
+      } while (cursor !== undefined);
+      expect(ids).toEqual(rows.map((m) => m.id));
+      expect(dispatches[1]?.text).toContain("<conversation_markers>");
+      expect(dispatches[1]?.text).toContain("conversation resumed");
+      expect(dispatches[1]?.text).toMatch(/\n\nsecond$/u);
+    } finally { await Promise.all(streams.map((s) => s.reader.cancel())); }
+  });
+
   it("streams content for the conversation a console subscribed to and hints for everything else", async () => {
     const lines = [
       JSON.stringify({ kind: "append", delta: "hello " }),
@@ -3437,4 +3485,38 @@ describe("conversation tags HTTP", () => {
     expect((await fetch(`${baseUrl}/api/v1/tags/${tag.id}`, { method: "DELETE" })).status).toBe(204);
     expect((await fetch(`${baseUrl}/api/v1/tags/${tag.id}`, { method: "DELETE" })).status).toBe(404);
   });
+});
+
+
+it.each([undefined, "user-stop", "client-disconnect", "client-reconnect", "service-shutdown"])("round-trips cancel origin %s through HTTP and SQLite", async (origin) => {
+  const { baseUrl, handle } = await start({
+    fetchImpl: (async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/v1/turns")) return new Promise<Response>((_resolve, reject) => {
+        if (init?.signal?.aborted) reject(init.signal.reason);
+        else init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+      return operatorFetch()(input, init);
+    }) as typeof fetch,
+  });
+  const id = await createThread(baseUrl, "agent-one");
+  const started = await fetch(`${baseUrl}/api/v1/threads/${id}/turns`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "wait" }),
+  });
+  expect(started.status).toBe(202);
+  const invalid = await fetch(`${baseUrl}/api/v1/threads/${id}/cancel`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ origin: "escape" }),
+  });
+  expect(invalid.status).toBe(400);
+  const response = await fetch(`${baseUrl}/api/v1/threads/${id}/cancel`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(origin === undefined ? {} : { origin }),
+  });
+  expect(response.status).toBe(202);
+  await waitFor(async () => {
+    const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${id}`));
+    return (detail.thread as { runState: { status: string } }).runState.status === "cancelled";
+  });
+  const database = new DatabaseSync(join(handle.stateDir, "state.sqlite"), { readOnly: true });
+  try { expect(database.prepare("SELECT cancel_origin FROM turns WHERE thread_id = ?").get(id)).toEqual({ cancel_origin: origin ?? "api" }); }
+  finally { database.close(); }
 });

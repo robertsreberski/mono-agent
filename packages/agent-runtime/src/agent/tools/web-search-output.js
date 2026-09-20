@@ -2,10 +2,10 @@
 
 export const WEB_SEARCH_TITLE_MAX_CHARS = 500;
 export const WEB_SEARCH_SNIPPET_MAX_CHARS = 4_000;
+// Bounds the structured result entries JSON (UTF-8 bytes of JSON.stringify(entries)).
+// Envelope framing (summary, coverage, next actions) stays outside this allocation.
 export const WEB_SEARCH_BODY_MAX_BYTES = 64 * 1024;
 export const WEB_SEARCH_SNIPPET_TRUNCATION_MARKER = "[snippet truncated; use WebFetch for full source]";
-
-const RESULT_OMISSION_MARKER = "[additional search results omitted by WebSearch output bound]";
 
 /** @param {unknown} value */
 function collapseWhitespace(value) {
@@ -66,11 +66,6 @@ function boundTitle(value) {
   };
 }
 
-/** @param {unknown} value */
-function escapeMarkdownLabel(value) {
-  return collapseWhitespace(value).replace(/[[\]\\]/gu, "\\$&");
-}
-
 /**
  * @param {string} value
  * @param {number} maxBytes
@@ -87,11 +82,20 @@ function truncateSnippetToBytes(value, maxBytes) {
 }
 
 /**
- * @param {Array<{title?: unknown, url?: unknown, snippet?: unknown, snippetTruncated?: boolean}>} results
+ * Bound ranked results directly by the UTF-8 bytes of their structured JSON.
+ * Titles stay capped at 500 characters, snippets at 4,000 characters, URLs are
+ * never truncated, and result order is preserved: lower-ranked snippets shrink
+ * first, then whole trailing results are omitted. JSON measurement includes
+ * escaping and multibyte expansion, so quoted, backslashed, and astral content
+ * is budgeted truthfully.
+ *
+ * @param {Array<{title?: unknown, url?: unknown, snippet?: unknown, snippetTruncated?: boolean, publishDate?: string}>} results
  * @param {{maxBytes?: number}} [options]
  */
-export function renderBoundedWebSearchBody(results, { maxBytes = WEB_SEARCH_BODY_MAX_BYTES } = {}) {
-  const normalized = results.map((result, index) => {
+export function boundWebSearchEntries(results, { maxBytes = WEB_SEARCH_BODY_MAX_BYTES } = {}) {
+  const budget = Math.max(0, Math.floor(maxBytes));
+  const markerBytes = Buffer.byteLength(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER, "utf8");
+  const normalized = results.map((result) => {
     const url = String(result?.url || "");
     const title = boundTitle(result?.title || url);
     const snippet = boundWebSearchSnippet(result?.snippet);
@@ -99,67 +103,102 @@ export function renderBoundedWebSearchBody(results, { maxBytes = WEB_SEARCH_BODY
     const text = snippetTruncated && !snippet.text.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER)
       ? boundWebSearchSnippet(`${snippet.text} ${WEB_SEARCH_SNIPPET_TRUNCATION_MARKER}`).text
       : snippet.text;
+    const published = /^\d{4}-\d{2}-\d{2}$/u.test(result?.publishDate) ? result.publishDate : undefined;
     return {
-      core: `${index + 1}. [${escapeMarkdownLabel(title.text || url)}](${url})`,
-      snippet: text,
       truncated: title.truncated || snippetTruncated,
+      title: title.text || url,
+      url,
+      ...(published === undefined ? {} : { published }),
+      snippet: text,
     };
   });
 
   if (normalized.length === 0) {
-    return { body: "No results.", renderedResultCount: 0, truncated: false };
+    return { entries: [], resultCount: 0, truncated: false, omittedCount: 0 };
   }
 
-  let selected = normalized.slice();
-  let omittedResults = 0;
-  const omissionBody = () => omittedResults > 0
-    ? `${RESULT_OMISSION_MARKER} (${omittedResults})`
-    : "";
-  const minimumSnippet = (entry) => entry.snippet
-    ? `\n   ${WEB_SEARCH_SNIPPET_TRUNCATION_MARKER}`
-    : "";
-  const minimumBody = () => [
-    ...selected.map((entry) => `${entry.core}${minimumSnippet(entry)}`),
-    ...(omittedResults > 0 ? [omissionBody()] : []),
-  ].join("\n\n");
+  /** @param {{title: string, url: string, published?: string, snippet: string}} entry @param {string} snippet */
+  const toOutput = (entry, snippet) => ({
+    title: entry.title,
+    url: entry.url,
+    ...(entry.published === undefined ? {} : { published: entry.published }),
+    snippet,
+  });
+  const minimalSnippet = (snippet) => !snippet
+    ? ""
+    : truncateSnippetToBytes(snippet, markerBytes);
 
-  while (selected.length > 0 && Buffer.byteLength(minimumBody(), "utf8") > maxBytes) {
-    selected.pop();
-    omittedResults += 1;
+  // Omit whole trailing results (never slice a URL) while even the minimal
+  // snippet-per-entry JSON exceeds the budget.
+  let normalizedSelected = normalized.slice();
+  let omittedCount = 0;
+  while (normalizedSelected.length > 0) {
+    const minimal = normalizedSelected.map((entry) => minimalSnippet(entry.snippet));
+    const size = Buffer.byteLength(JSON.stringify(
+      normalizedSelected.map((entry, index) => toOutput(entry, minimal[index])),
+    ), "utf8");
+    if (size <= budget) break;
+    normalizedSelected.pop();
+    omittedCount += 1;
   }
-  if (selected.length === 0) {
+  if (normalizedSelected.length === 0) {
     return {
-      body: sliceUtf8(omissionBody() || RESULT_OMISSION_MARKER, maxBytes),
-      renderedResultCount: 0,
+      entries: [],
+      resultCount: 0,
       truncated: true,
+      omittedCount: normalized.length,
     };
   }
 
-  const minimum = minimumBody();
-  let remaining = Math.max(0, maxBytes - Buffer.byteLength(minimum, "utf8"));
-  let truncated = omittedResults > 0 || selected.some((entry) => entry.truncated);
-  const rendered = [];
-  for (const entry of selected) {
-    if (!entry.snippet) {
-      rendered.push(entry.core);
+  // Expand snippets in rank order, always reserving the minimal JSON for the
+  // entries that have not been expanded yet. Measurement uses the encoded JSON
+  // so escapes and multibyte sequences count toward the bound; only snippets
+  // shrink, URLs and titles keep their character-bound values intact.
+  const finalSnippets = normalizedSelected.map((entry) => minimalSnippet(entry.snippet));
+  const measuredBytes = (snippets) => Buffer.byteLength(JSON.stringify(
+    normalizedSelected.map((entry, trialIndex) => toOutput(entry, snippets[trialIndex])),
+  ), "utf8");
+  let truncated = omittedCount > 0 || normalizedSelected.some((entry) => entry.truncated);
+  for (let index = 0; index < normalizedSelected.length; index += 1) {
+    const desired = normalizedSelected[index].snippet;
+    if (!desired || finalSnippets[index] === desired) continue;
+    const floor = minimalSnippet(desired);
+    const floorBytes = Buffer.byteLength(floor, "utf8");
+    const desiredBytes = Buffer.byteLength(desired, "utf8");
+    const fullTrial = finalSnippets.slice();
+    fullTrial[index] = desired;
+    if (measuredBytes(fullTrial) <= budget) {
+      finalSnippets[index] = desired;
       continue;
     }
-    const prefix = "\n   ";
-    const minimumTextBytes = Buffer.byteLength(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER, "utf8");
-    const desiredBytes = Buffer.byteLength(entry.snippet, "utf8");
-    const extraNeeded = Math.max(0, desiredBytes - minimumTextBytes);
-    const granted = Math.min(remaining, extraNeeded);
-    remaining -= granted;
-    const snippetBudget = minimumTextBytes + granted;
-    const snippet = truncateSnippetToBytes(entry.snippet, snippetBudget);
-    if (snippet !== entry.snippet) truncated = true;
-    rendered.push(`${entry.core}${prefix}${snippet}`);
+    // Binary-search the largest raw snippet budget whose full serialized entry
+    // still fits. The floor is the hard minimum: highly escapable content
+    // (quotes/backslashes) can make JSON overflow far larger than the raw
+    // deficit, so subtracting the overflow from raw bytes overshoots to empty.
+    let best = floor;
+    let low = floorBytes;
+    let high = desiredBytes;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const candidate = truncateSnippetToBytes(desired, mid);
+      const trial = finalSnippets.slice();
+      trial[index] = candidate;
+      if (measuredBytes(trial) <= budget) {
+        best = candidate;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    finalSnippets[index] = best;
+    if (finalSnippets[index] !== desired) truncated = true;
   }
-  if (omittedResults > 0) rendered.push(omissionBody());
-  const body = rendered.join("\n\n");
+
+  const entries = normalizedSelected.map((entry, index) => toOutput(entry, finalSnippets[index]));
   return {
-    body,
-    renderedResultCount: selected.length,
+    entries,
+    resultCount: normalizedSelected.length,
     truncated,
+    omittedCount,
   };
 }

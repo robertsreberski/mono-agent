@@ -113,8 +113,9 @@ export function normalizeFailoverHistory(value: unknown): FailoverAttempt[] | un
  * raw failure kind.
  */
 export function renderFailoverHistory(history: readonly FailoverAttempt[] | undefined): string | undefined {
-  if (history === undefined || history.length === 0) return undefined;
-  return history
+  const failures = history?.filter((attempt) => attempt.failureKind !== "cancelled" && attempt.failureKind !== "cancelled_user");
+  if (failures === undefined || failures.length === 0) return undefined;
+  return failures
     .map((attempt) => {
       const label = attempt.model ?? "(unknown model)";
       const reason = attempt.subkind ?? attempt.failureKind ?? "failed";
@@ -161,7 +162,7 @@ function failureDetailAttributes(summary: RunSummary, ctx: RunExportContext): Sp
       ctx,
     );
   }
-  const failover = summary.failoverHistory;
+  const failover = summary.failoverHistory?.filter((attempt) => attempt.failureKind !== "cancelled" && attempt.failureKind !== "cancelled_user");
   if (failover !== undefined && failover.length > 0) {
     attrs["mono.agent.failover.count"] = failover.length;
     const detail = renderFailoverHistory(failover);

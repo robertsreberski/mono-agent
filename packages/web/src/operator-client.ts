@@ -1,3 +1,4 @@
+import { parseProviderUsageSnapshot, type ProviderUsageId, type ProviderUsageSnapshot } from "@mono-agent/agent-contracts";
 import {
   AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
   AGENT_CONTEXT_IMPORT_VERSION,
@@ -123,8 +124,6 @@ export interface OperatorConnection {
   readonly apiKey?: string;
   /** Independent owner-only bearer for process-job routes. */
   readonly processJobsBearer?: string;
-  /** Independent owner-only bearer for Monitor wake callbacks. */
-  readonly monitorsBearer?: string;
 }
 
 export interface OperatorInfo {
@@ -158,6 +157,8 @@ export interface OperatorInfo {
   readonly cron?: { readonly read: true; readonly actions: boolean };
   readonly supportsJobs?: boolean;
   readonly supportsProviderAuth?: true;
+  readonly supportsProviderUsage?: true;
+  readonly supportsProviderUsageRefresh?: true;
   readonly supportsProviderAuthChecks?: true;
 }
 
@@ -203,7 +204,6 @@ export class OperatorClient {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly processJobsBearer: string | undefined;
-  private readonly monitorsBearer: string | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly turnFetchImpl: typeof fetch;
 
@@ -214,7 +214,6 @@ export class OperatorClient {
     this.baseUrl = options.baseUrl.replace(/\/+$/u, "");
     this.apiKey = options.apiKey;
     this.processJobsBearer = options.processJobsBearer;
-    this.monitorsBearer = options.monitorsBearer;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.turnFetchImpl = options.fetchImpl ?? fetchLongLivedTurn;
   }
@@ -268,11 +267,29 @@ export class OperatorClient {
       ...(mcpApps === undefined ? {} : { mcpApps }),
       ...(cron?.read === true ? { cron: { read: true, actions: cron.actions === true } } : {}),
       ...(capabilities?.jobs === true ? { supportsJobs: true } : {}),
+      ...(record(capabilities?.providerUsage)?.version === 1 ? {
+        supportsProviderUsage: true,
+        ...(record(capabilities?.providerUsage)?.refresh === true ? { supportsProviderUsageRefresh: true } : {}),
+      } : {}),
       ...(record(capabilities?.providerAuth)?.version === 1 ? { supportsProviderAuth: true } : {}),
       ...(record(record(capabilities?.providerAuth)?.checks)?.version === 1
         ? { supportsProviderAuthChecks: true }
         : {}),
     };
+  }
+
+  async providerUsage(provider?: ProviderUsageId, signal?: AbortSignal): Promise<ProviderUsageSnapshot> {
+    const response = await this.request(`${this.baseUrl}/v1/provider-usage${provider === undefined ? "" : `?provider=${encodeURIComponent(provider)}`}`, {
+      headers: this.headers(false), ...(signal === undefined ? {} : { signal }),
+    });
+    return parseProviderUsageSnapshot(JSON.parse(await readBoundedBody(response, 128 * 1024, "operator_provider_usage_too_large")));
+  }
+
+  async refreshProviderUsage(provider?: ProviderUsageId, signal?: AbortSignal): Promise<ProviderUsageSnapshot> {
+    const response = await this.request(`${this.baseUrl}/v1/provider-usage/refresh${provider === undefined ? "" : `?provider=${encodeURIComponent(provider)}`}`, {
+      method: "POST", headers: this.headers(true), body: "{}", ...(signal === undefined ? {} : { signal }),
+    });
+    return parseProviderUsageSnapshot(JSON.parse(await readBoundedBody(response, 128 * 1024, "operator_provider_usage_too_large")));
   }
 
   async providerAuthStatus(signal?: AbortSignal): Promise<ProviderAuthStatusSnapshot> {
@@ -374,7 +391,7 @@ export class OperatorClient {
       `${this.baseUrl}/v1/turns`,
       {
         method: "POST",
-        headers: { ...this.headers(true), ...this.monitorWakeHeaders(input.processJobWakeDeliveryKey) },
+        headers: this.headers(true),
         signal: input.signal,
         body: JSON.stringify({
           conversationId: input.conversationId,
@@ -440,7 +457,7 @@ export class OperatorClient {
       `${this.baseUrl}/v1/conversations/${encodeURIComponent(input.conversationId)}/live-input`,
       {
         method: "POST",
-        headers: { ...this.headers(true), ...this.monitorWakeHeaders(input.deliveryKey) },
+        headers: this.headers(true),
         ...(input.signal === undefined ? {} : { signal: input.signal }),
         body: JSON.stringify({
           id: input.id,
@@ -865,14 +882,6 @@ export class OperatorClient {
     }
     const parsed = JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_cron_too_large")) as unknown;
     return parseCronMutation(parsed);
-  }
-
-  private monitorWakeHeaders(deliveryKey: string | undefined): Record<string, string> {
-    if (deliveryKey?.trim().startsWith("monitor:") !== true) return {};
-    if (this.monitorsBearer === undefined) {
-      throw new WebConsoleError("monitors_unavailable", "Owner Monitor credentials are unavailable for this agent.", 409);
-    }
-    return { "x-mono-agent-monitor-wake-authorization": `Bearer ${this.monitorsBearer}` };
   }
 
   private processJobHeaders(): Record<string, string> {

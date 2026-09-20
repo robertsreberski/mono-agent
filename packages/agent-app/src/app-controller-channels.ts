@@ -1,3 +1,4 @@
+import type { ProviderUsageOperator } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { AgentResponder, NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 
@@ -23,7 +24,6 @@ import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import type { NotifyDestination } from "./notify-destinations.js";
-import type { MonitorsServiceHandle } from "./monitors-service.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import { createProviderAuthObservationTracker, type ProviderAuthObservationTracker } from "./provider-auth-observations.js";
 import { createProviderAuthOperator } from "./provider-auth-operator.js";
@@ -47,12 +47,10 @@ export interface ChannelsControllerPort {
   readonly stopped: boolean;
   readonly traceabilityStatusValue: TraceabilityStatus;
   readonly processJobsService: ProcessJobsServiceHandle | undefined;
-  readonly monitorsService: MonitorsServiceHandle | undefined;
-  /** Protected state root the monitor service actually opened, when it is live. */
-  readonly monitorsStateDir: string | undefined;
   readonly processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   readonly providerAuthObservations?: ProviderAuthObservationTracker;
+  providerUsageFor?(config: MonoAgentConfig): ProviderUsageOperator;
   setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
   rememberSelectedSkills(coreConfig: MonoAgentConfig): void;
   ensureInteractionBridge(coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined>;
@@ -277,8 +275,8 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       driver,
       channelStartInput,
       controller.processJobsService,
-      controller.monitorsService,
       providerAuth,
+      controller.providerUsageFor?.(coreConfig),
     );
     const runningChannel = await (appOwnedTuiStart ?? driver.start(channelStartInput));
     if (!isCurrentGeneration()) {
@@ -295,29 +293,12 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
     const protectionSummary = protectionStatus === undefined
       ? {}
       : { processJobsProtection: protectionStatus };
-    // Monitors share the process-job state root, so the operator surface only
-    // has to advertise that the controller is live; `monitors list` reads the
-    // directory from the process-job entry.
-    const monitorsSummary = controller.monitorsService === undefined
-      ? {}
-      : {
-          monitors: {
-            // The state root is republished here rather than only under
-            // `processJobs`: the two services start independently, and a
-            // degraded process-job start must not make a live monitor
-            // controller look unreachable to `mono-agent monitors`.
-            stateDir: controller.monitorsStateDir,
-            maxActive: controller.monitorsService.settings.maxActive,
-            maxActivePerConversation: controller.monitorsService.settings.maxActivePerConversation,
-          },
-        };
     const summary = driver.id !== "tui"
       ? runningChannel.summary
       : controller.processJobsService !== undefined
         ? {
             ...runningChannel.summary,
             ...protectionSummary,
-            ...monitorsSummary,
             processJobs: {
               stateDir: controller.processJobsService.settings.stateDir,
               health: controller.processJobsService.health.state,
@@ -325,11 +306,10 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
             },
           }
         : controller.processJobsDegradation === undefined
-          ? { ...runningChannel.summary, ...protectionSummary, ...monitorsSummary }
+          ? { ...runningChannel.summary, ...protectionSummary }
           : {
               ...runningChannel.summary,
               ...protectionSummary,
-              ...monitorsSummary,
               processJobsDegraded: controller.processJobsDegradation,
             };
     controller.running.set(driver.id, {

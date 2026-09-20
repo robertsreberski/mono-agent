@@ -1,7 +1,8 @@
+import type { ProviderUsageOperator } from "@mono-agent/agent-contracts";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import type { AgentMessageStream, MonitorOperator, ProcessJobOperator, ProviderAuthOperator } from "@mono-agent/agent-contracts";
+import type { AgentMessageStream, ProcessJobOperator, ProviderAuthOperator } from "@mono-agent/agent-contracts";
 import { MAX_INFO_BODY_BYTES, MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/agent-contracts";
 import { resolveConfiguredProviders } from "@mono-agent/config";
 
@@ -284,8 +285,8 @@ interface AppOwnedTuiChannelDriver extends ChannelDriver<TuiAdapterConfig> {
   [APP_OWNED_TUI_START](
     input: ChannelStartInput<TuiAdapterConfig>,
     processJobs: ProcessJobOperator | undefined,
-    monitors: MonitorOperator | undefined,
     providerAuth: ProviderAuthOperator | undefined,
+    providerUsage?: ProviderUsageOperator,
   ): Promise<RunningChannel>;
 }
 
@@ -300,15 +301,15 @@ export function startAppOwnedTuiChannel(
   driver: ChannelDriver,
   input: ChannelStartInput<unknown>,
   processJobs: ProcessJobOperator | undefined,
-  monitors: MonitorOperator | undefined,
   providerAuth: ProviderAuthOperator | undefined,
+  providerUsage?: ProviderUsageOperator,
 ): Promise<RunningChannel> | undefined {
   if (!appOwnedTuiDrivers.has(driver)) return undefined;
   return (driver as AppOwnedTuiChannelDriver)[APP_OWNED_TUI_START](
     input as ChannelStartInput<TuiAdapterConfig>,
     processJobs,
-    monitors,
     providerAuth,
+    providerUsage,
   );
 }
 
@@ -342,7 +343,7 @@ export function createTuiChannelDriver(
     async start(input) {
       return await this[APP_OWNED_TUI_START](input, undefined, undefined, undefined);
     },
-    async [APP_OWNED_TUI_START](input, processJobs, monitors, providerAuth) {
+    async [APP_OWNED_TUI_START](input, processJobs, providerAuth, providerUsage) {
       const adapterModule = await loadTuiModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
       const deliverNotification = overrides.deliverNotification ?? deliverWebNotification;
@@ -545,13 +546,11 @@ export function createTuiChannelDriver(
           ? {}
           : { requestToolEnvironment: input.config.requestToolEnvironment }),
         responder: input.responder,
-        ...(monitors === undefined
-          ? {}
-          : { monitors, monitorsBearer: monitors.operatorToken }),
         ...(processJobs === undefined
           ? {}
           : { processJobs, processJobsBearer: processJobs.operatorToken }),
         ...(providerAuth === undefined ? {} : { providerAuth }),
+        ...(providerUsage === undefined ? {} : { providerUsage }),
         ...(input.interaction === undefined ? {} : { interaction: input.interaction }),
         ...(cronOperator?.configured === true ? { cron: cronOperator } : {}),
         info: buildInfo,
@@ -668,78 +667,6 @@ export function createTuiChannelDriver(
               ...(receipt.delivered ? { code: "delivered" } : {}),
               channelId: "tui",
               ...(receipt.delivered ? { historyRecorded: true } : {}),
-            };
-          },
-        },
-        monitors: {
-          wake: async ({ conversationId, text, deliveryKey, monitor }) => {
-            const threadId = webThreadId(conversationId);
-            const expectedConversationId = baseConversationId(monitor.origin.conversationId);
-            const expectedDeliveryKey = `monitor:${monitor.monitorId}:${String(monitor.counters.seq)}`;
-            if (monitor.origin.channel !== "web"
-              || conversationId !== expectedConversationId
-              || threadId === undefined
-              || deliveryKey !== expectedDeliveryKey) {
-              return {
-                delivered: false,
-                code: "monitor_origin_mismatch",
-                reason: "The monitor origin does not match the web destination.",
-                retryable: false,
-              };
-            }
-            if (input.sourceId === undefined) {
-              return {
-                delivered: false,
-                code: "destination_channel_unavailable",
-                reason: "The web monitor destination is unavailable.",
-                retryable: true,
-                channelId: "tui",
-              };
-            }
-            let delivered;
-            try {
-              delivered = await deliverNotification({
-                sourceId: input.sourceId,
-                triggerKind: "monitor",
-                deliveryKey,
-                threadId,
-                monitor,
-                wakePrompt: text,
-              });
-            } catch (error) {
-              if (webConsoleErrorCode(error) === "notification_ingress_unavailable") {
-                return {
-                  delivered: false,
-                  code: "destination_channel_unavailable",
-                  reason: "The web console notification ingress is unavailable.",
-                  retryable: true,
-                  channelId: "tui",
-                };
-              }
-              return {
-                delivered: false,
-                code: "monitor_wake_failed",
-                reason: error instanceof Error ? error.message : String(error),
-                retryable: false,
-                ambiguous: true,
-                channelId: "tui",
-              };
-            }
-            const receipt = delivered.delivery;
-            if (receipt === undefined) {
-              return {
-                delivered: false,
-                code: "monitor_wake_failed",
-                reason: "The web console returned no Monitor wake receipt.",
-                retryable: false,
-                ambiguous: true,
-                channelId: "tui",
-              };
-            }
-            return {
-              ...receipt,
-              ...(receipt.delivered ? { code: "delivered", historyRecorded: true } : {}),
-              channelId: "tui",
             };
           },
         },

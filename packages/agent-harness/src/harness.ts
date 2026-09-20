@@ -86,6 +86,7 @@ import { sessionEventFromRecord, withSessionBoundaryTimestamp } from "./harness/
 import { createSessionRuntimeResolver, sessionModelKey, type ProviderSessionHandle, type SessionRuntimeResolver } from "./session-runtime.js";
 import { retireRunResultSession } from "./harness/session-retirement.js";
 import { validateOptions, validateRequest } from "./harness/validation.js";
+import { errorToDetails } from "./harness/value-utils.js";
 import { appendVerbatimHistoryTurn } from "./harness/verbatim-history.js";
 import { eligibleContextImport, importHarnessContext } from "./harness/context-import.js";
 import { assertConversationHistoryVersion } from "./sessions.js";
@@ -94,7 +95,15 @@ export { AgentHarnessError };
 export { requestOverridesModel, runSourceFromRequest };
 
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
-const TURN_CONTINUITY_PUBLICATION_WAIT_MS = 5_000;
+// Warn before failing the waiter closed; the publication itself keeps ownership.
+const TURN_CONTINUITY_PUBLICATION_SLOW_WARNING_MS = 5_000;
+const TURN_CONTINUITY_PUBLICATION_WARNING_INTERVAL_MS = 15_000;
+const TURN_CONTINUITY_PUBLICATION_MAX_WARNINGS = 12;
+const TURN_CONTINUITY_PUBLICATION_WAIT_TIMEOUT_MS = 30_000;
+
+// Distinguish an in-flight publication from a rejected one: reset may discard
+// the latter, but must never race the former's eventual history mutation.
+class TurnContinuityPublicationTimeoutError extends AgentHarnessError {}
 const SHUTDOWN_DRAIN_WARNING =
   "Agent shutdown timed out while draining active runs; provider sessions and tool-history persistence were forcibly released.";
 
@@ -105,7 +114,12 @@ interface MonoAgentHarnessInternalOptions {
 
 interface TurnContinuityPublicationBarrier {
   readonly outcome: TurnContinuityOutcome;
+  /** Durable-account publication only; recorder/exporter finalization is outside. */
   readonly publication: Promise<void>;
+  /** Conservative re-append of the already-built account; never re-begins a provider turn. */
+  readonly republish: () => Promise<void>;
+  /** Shared in-flight republish so concurrent waiters trigger exactly one attempt. */
+  republishPromise: Promise<void> | undefined;
 }
 
 export class MonoAgentHarness implements AgentHarness {
@@ -200,7 +214,15 @@ export class MonoAgentHarness implements AgentHarness {
       throw new TypeError("conversationId must be a non-empty string.");
     }
     const normalized = conversationId.trim();
-    await this.waitForTurnContinuityPublication(normalized);
+    try {
+      await this.waitForTurnContinuityPublication(normalized);
+    } catch (error) {
+      if (error instanceof TurnContinuityPublicationTimeoutError) throw error;
+      // A rejected publication (including a failed republish attempt) does not
+      // block a reset: the reset below discards the unpublished account. The
+      // barrier is cleared only after the reset itself succeeds, so a failing
+      // reset keeps the barrier and the invariant holds.
+    }
     this.pendingTerminalReseeds.delete(normalized);
     const historyStore = this.options.historyStore;
     const logicalConversationId = this.options.toolHistory?.logicalConversationId(normalized) ?? normalized;
@@ -228,6 +250,10 @@ export class MonoAgentHarness implements AgentHarness {
     if (logicalConversationId === normalized) await historyStore?.reset?.(normalized);
     else await historyStore?.resetLogicalConversation?.(logicalConversationId);
     await this.options.toolHistory?.writer.resetConversation(logicalConversationId);
+    // The reset discarded every store the unpublished account could resume on
+    // top of, so the rejected barrier is cleared. Any earlier throw skips this
+    // and the barrier stays installed.
+    this.turnContinuityPublicationBarriers.delete(normalized);
     // Identity/soul are already read per turn. Clearing the skill cache forces
     // installed skill metadata and content to be re-read on the next turn too.
     this.skillsCache.clear();
@@ -333,7 +359,11 @@ export class MonoAgentHarness implements AgentHarness {
     await recorder.start?.();
 
     try {
-      await this.waitForTurnContinuityPublication(request.conversationId);
+      await this.waitForTurnContinuityPublication(request.conversationId, {
+        abortSignal: request.abortSignal,
+        recorder,
+        ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
+      });
     } catch (error) {
       const failure = failureFromThrownError(error, false);
       const summary = await safeRecorderFail(recorder, error);
@@ -458,6 +488,12 @@ export class MonoAgentHarness implements AgentHarness {
     let toolHistoryFinished = false;
     let continuitySummary: RunSummary | undefined;
     let continuityPromise: Promise<void> | undefined;
+    // The already-built terminal account, retained so a later waiter can
+    // republish it exactly once if the first publication attempt fails.
+    let continuityMessages: readonly import("./context/index.js").HistoryMessage[] | undefined;
+    // Set immediately after the account commit/append succeeds. A republish
+    // with this flag must never append again — only redo retirement/reseed.
+    let accountCommitted = false;
     let historyMutation = Promise.resolve();
     let sealedPersistText = persistText;
     let sealedLiveInputs: ReturnType<LiveInputMailbox["applied"]> = [];
@@ -576,6 +612,9 @@ export class MonoAgentHarness implements AgentHarness {
       let continuityAppend: PreparedHistoryAppend | undefined;
       const providerHistoryOwnsContinuity = providerHistoryTurn !== undefined;
       const exclusiveHistoryOwnsContinuity = exclusiveHistoryTurn !== undefined;
+      // The account is built once here; a republish reuses these exact
+      // messages and never rebuilds them.
+      continuityMessages = messages;
       try {
         if (providerHistoryTurn !== undefined) {
           continuityAppend = await providerHistoryTurn.prepareCommit(messages, { providerSessionSynced: recovered });
@@ -596,6 +635,7 @@ export class MonoAgentHarness implements AgentHarness {
         }
         if (continuityAppend !== undefined) await continuityAppend.commit();
         else await this.options.historyStore?.append(request.conversationId, messages);
+        accountCommitted = true;
       } catch (error) {
         await continuityAppend?.abort().catch(() => undefined);
         if (recovered) await retireSessions(sessionRecord, coordinatedProviderSessionId);
@@ -634,9 +674,77 @@ export class MonoAgentHarness implements AgentHarness {
         }
       }
     };
-    const finalizeTurnContinuity = async (): Promise<void> => {
+    // Conservative republish of the previous terminal account, run by the next
+    // waiter (turn or reset) when the first publication attempt rejected. It
+    // never re-begins a provider turn and never re-attempts recoverSession:
+    // the plain append path rotates the epoch and the failed turn's dirty
+    // fence forces retirement on the next provider turn, so the outcome is
+    // always retire + reseed. When the account was already committed it must
+    // not append again — only the lost retirement/reseed is redone.
+    const republishTurnContinuity = async (): Promise<void> => {
+      const claim = continuityClaim;
+      if (claim === undefined) throw new Error("Turn continuity publication has no terminal claim.");
+      const retireStaleSessions = async (): Promise<void> => {
+        await retireSessions(
+          sessionRecord,
+          ...providerAttemptSessionIds.keys(),
+          coordinatedProviderSessionId,
+          runtimeResult?.providerSessionId,
+        );
+        if (this.sessionsEnabled()) this.pendingTerminalReseeds.set(request.conversationId, claim.outcome);
+      };
+      if (accountCommitted) {
+        await retireStaleSessions();
+        return;
+      }
+      // Release any still-held store claim so the fresh append below cannot
+      // deadlock on the failed attempt's lease. All three aborts are idempotent.
+      await providerHistoryTurn?.abort().catch(() => undefined);
+      providerHistoryTurn = undefined;
+      await exclusiveHistoryTurn?.abort().catch(() => undefined);
+      exclusiveHistoryTurn = undefined;
+      await preparedHistoryAppend?.abort().catch(() => undefined);
+      preparedHistoryAppend = undefined;
+      const republishMessages = continuityMessages;
+      if (republishMessages === undefined) throw new Error("Turn continuity account is missing; cannot republish.");
+      const contextImportSupport = eligibleContextImport(this.options);
+      if (exclusiveHistoryRequired && contextImportSupport === undefined) {
+        throw new Error("The required exclusive history turn was not acquired; unlocked continuity append is forbidden.");
+      }
+      let republishedAppend: PreparedHistoryAppend | undefined;
       try {
-        await publishTurnContinuity();
+        if (contextImportSupport !== undefined) {
+          const exclusiveTurn = await contextImportSupport.beginExclusiveTurn(request.conversationId);
+          try {
+            const exclusiveCommit = await exclusiveTurn.prepareCommit(republishMessages);
+            republishedAppend = exclusiveCommit.append;
+            assertConversationHistoryVersion(exclusiveCommit.committedHistoryVersion);
+            committedHistoryVersion = exclusiveCommit.committedHistoryVersion;
+          } catch (error) {
+            await exclusiveTurn.abort().catch(() => undefined);
+            throw error;
+          }
+        } else {
+          republishedAppend = await this.options.historyStore?.prepareAppend?.(
+            request.conversationId,
+            republishMessages,
+          );
+        }
+        if (republishedAppend !== undefined) await republishedAppend.commit();
+        else await this.options.historyStore?.append(request.conversationId, republishMessages);
+      } catch (error) {
+        await republishedAppend?.abort().catch(() => undefined);
+        throw error;
+      }
+      accountCommitted = true;
+      await retireStaleSessions();
+    };
+    // Recorder/exporter finalization is deliberately outside the publication
+    // barrier: no later turn depends on it. The owning turn still drains it
+    // through continuityPromise before settling its own response.
+    const finalizeTurnContinuity = async (publication: Promise<void>): Promise<void> => {
+      try {
+        await publication;
       } finally {
         continuitySummary = await continuityClaim?.recorderFinalizer();
       }
@@ -657,8 +765,9 @@ export class MonoAgentHarness implements AgentHarness {
       }
       leavePending();
       turnContinuityCollector.seal(claim.outcome);
-      continuityPromise = finalizeTurnContinuity();
-      this.registerTurnContinuityPublication(request.conversationId, claim.outcome, continuityPromise);
+      const publication = publishTurnContinuity();
+      continuityPromise = finalizeTurnContinuity(publication);
+      this.registerTurnContinuityPublication(request.conversationId, claim.outcome, publication, republishTurnContinuity);
       return true;
     };
     const onCancellation = (reason: CancelledTurnReason): void => {
@@ -679,8 +788,8 @@ export class MonoAgentHarness implements AgentHarness {
       try {
         await continuityPromise;
       } catch {
-        // The failed publication remains installed as a fail-closed barrier for
-        // later turns. The request that caused it keeps its original settlement.
+        // A failed publication stays installed so a later turn or reset can
+        // republish it. The request that caused it keeps its original settlement.
       }
       return {
         metadata: responseMetadata(runId, request, context, continuitySummary, terminalRecoveryWarnings.length === 0 ? runtimeResult : {
@@ -783,11 +892,10 @@ export class MonoAgentHarness implements AgentHarness {
         && contextImportSupport !== undefined
       ) {
         exclusiveHistoryRequired = true;
-        // The new non-provider owner holds only logical/exact claims during the
-        // model call. Its physical SQLite shard transaction is acquired later,
-        // for the short version-check + staged-commit boundary. The existing
-        // durable-provider path above intentionally retains its older long-held
-        // shard transaction behavior.
+        // Like durable provider turns, non-provider turns hold exact-key
+        // logical/exact claims, not a shared physical shard transaction, across
+        // the model call. Root transactions cover only history maintenance and
+        // publication, never provider execution.
         const beginMutation = (async () => {
           const acquired = await contextImportSupport.beginExclusiveTurn(request.conversationId);
           try {
@@ -1528,45 +1636,166 @@ export class MonoAgentHarness implements AgentHarness {
     conversationId: string,
     outcome: TurnContinuityOutcome,
     publication: Promise<void>,
+    republish: () => Promise<void>,
   ): void {
-    this.turnContinuityPublicationBarriers.set(conversationId, { outcome, publication });
+    const barrier: TurnContinuityPublicationBarrier = { outcome, publication, republish, republishPromise: undefined };
+    this.turnContinuityPublicationBarriers.set(conversationId, barrier);
     void publication.then(() => {
-      if (this.turnContinuityPublicationBarriers.get(conversationId)?.publication === publication) {
+      if (this.turnContinuityPublicationBarriers.get(conversationId) === barrier) {
         this.turnContinuityPublicationBarriers.delete(conversationId);
       }
     }, () => {
-      // Retain the rejected barrier. Later turns fail closed until the owning
-      // history/storage problem is repaired or the harness is replaced.
+      // Retain the rejected barrier. The next waiter republishes the account
+      // once through the shared republish; until that succeeds, later waiters
+      // fail closed with a retryable continuity error instead of resuming or
+      // appending on top of an unwritten account.
     });
   }
 
-  private async waitForTurnContinuityPublication(conversationId: string): Promise<void> {
-    const barrier = this.turnContinuityPublicationBarriers.get(conversationId);
-    if (barrier === undefined) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        barrier.publication,
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new Error("turn continuity publication wait elapsed")),
-            TURN_CONTINUITY_PUBLICATION_WAIT_MS,
-          );
-        }),
-      ]);
-    } catch {
-      if (barrier.outcome === "cancelled") {
-        throw new AgentHarnessError(
-          "cancellation_continuity_unavailable",
-          "The previous cancelled turn could not be published safely; retry after the conversation store recovers.",
-        );
-      }
-      throw new AgentHarnessError(
-        "failure_continuity_unavailable",
-        "The previous failed turn could not be published safely; retry after the conversation store recovers.",
+  private republishTurnContinuityPublication(conversationId: string): Promise<void> {
+    const entry = this.turnContinuityPublicationBarriers.get(conversationId);
+    if (entry === undefined) return Promise.resolve();
+    if (entry.republishPromise !== undefined) return entry.republishPromise;
+    const attempt = (async (): Promise<void> => {
+      await entry.republish();
+    })();
+    entry.republishPromise = attempt;
+    void attempt.then(
+      () => {
+        if (this.turnContinuityPublicationBarriers.get(conversationId) === entry) {
+          this.turnContinuityPublicationBarriers.delete(conversationId);
+        }
+      },
+      () => {
+        // Keep the rejected barrier so the following waiter retries with a
+        // fresh attempt; release the shared promise for that retry.
+        if (this.turnContinuityPublicationBarriers.get(conversationId) === entry) {
+          entry.republishPromise = undefined;
+        }
+      },
+    );
+    return attempt;
+  }
+
+  private turnContinuityUnavailableError(outcome: TurnContinuityOutcome, cause: unknown, timedOut = false): AgentHarnessError {
+    // Redaction-safe cause: only the error name/message cross into the
+    // response, never raw credentials or full store payloads.
+    const details = { cause: errorToDetails(cause) };
+    const ContinuityError = timedOut ? TurnContinuityPublicationTimeoutError : AgentHarnessError;
+    if (outcome === "cancelled") {
+      return new ContinuityError(
+        "cancellation_continuity_unavailable",
+        "The previous cancelled turn still could not be published. Send the next message to retry, or start a new session to recover the conversation.",
+        details,
       );
+    }
+    return new ContinuityError(
+      "failure_continuity_unavailable",
+      "The previous failed turn still could not be published. Send the next message to retry, or start a new session to recover the conversation.",
+      details,
+    );
+  }
+
+  private async awaitAbortablePublication(
+    publication: Promise<void>,
+    deadline: number,
+    timeoutError: AgentHarnessError,
+    abortSignal?: AbortSignal,
+  ): Promise<void> {
+    if (abortSignal?.aborted) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    try {
+      return await new Promise<void>((resolve, reject) => {
+        // Resolve on abort so the caller takes its standard cancelled path.
+        // Neither abort nor timeout settles/removes the publication barrier.
+        onAbort = resolve;
+        timer = setTimeout(() => reject(timeoutError), Math.max(0, deadline - Date.now()));
+        publication.then(resolve, reject);
+        abortSignal?.addEventListener("abort", onAbort, { once: true });
+        if (abortSignal?.aborted) onAbort();
+      });
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+      if (onAbort !== undefined) abortSignal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  private async waitForTurnContinuityPublication(
+    conversationId: string,
+    options?: {
+      readonly abortSignal?: AbortSignal;
+      readonly recorder?: { onEvent(event: RuntimeEventLike): void };
+      readonly onEvent?: (event: RuntimeEventLike) => void;
+    },
+  ): Promise<void> {
+    const entry = this.turnContinuityPublicationBarriers.get(conversationId);
+    if (entry === undefined) return;
+    const abortSignal = options?.abortSignal;
+    // An already-aborted waiter returns immediately so the caller produces its
+    // standard cancelled response without waiting.
+    if (abortSignal?.aborted) return;
+    const outcome = entry.outcome;
+    // Rate- and count-bounded diagnostics keep a long configured wait visible
+    // without creating an unbounded stream or changing publication ownership.
+    const startedAt = Date.now();
+    const waitMs = this.options.session?.turnContinuityPublicationWaitMs ?? TURN_CONTINUITY_PUBLICATION_WAIT_TIMEOUT_MS;
+    const deadline = startedAt + waitMs;
+    const timeoutError = this.turnContinuityUnavailableError(outcome,
+      new Error(`Turn continuity publication is still pending after ${waitMs} ms.`), true);
+    let warningCount = 0;
+    let slowTimer: ReturnType<typeof setTimeout>;
+    const emitSlowWarning = (): void => {
+      warningCount += 1;
+      const elapsedMs = Date.now() - startedAt;
+      const warning: RuntimeEventLike = {
+        type: "runtime_warning",
+        warning_kind: "turn_continuity_publication_slow",
+        source: "harness",
+        conversationId,
+        outcome,
+        elapsedMs,
+        message: `Turn continuity publication is still pending after ${elapsedMs} ms for conversation "${conversationId}" (${outcome} account); the next turn is waiting for the previous account to publish.`,
+      };
+      const sinks: Array<(event: RuntimeEventLike) => void> = [];
+      if (options?.recorder !== undefined) sinks.push((event) => options.recorder?.onEvent(event));
+      if (options?.onEvent !== undefined) sinks.push(options.onEvent);
+      if (sinks.length === 0) {
+        for (const sink of this.activeRunWarningSinks) sinks.push(sink);
+      }
+      for (const sink of sinks) {
+        try {
+          sink(warning);
+        } catch {
+          // Slow-wait diagnostics are best-effort and must never change the wait.
+        }
+      }
+      if (warningCount < TURN_CONTINUITY_PUBLICATION_MAX_WARNINGS) {
+        slowTimer = setTimeout(emitSlowWarning, TURN_CONTINUITY_PUBLICATION_WARNING_INTERVAL_MS);
+      }
+    };
+    slowTimer = setTimeout(emitSlowWarning, TURN_CONTINUITY_PUBLICATION_SLOW_WARNING_MS);
+    try {
+      try {
+        await this.awaitAbortablePublication(entry.publication, deadline, timeoutError, abortSignal);
+      } catch (error) {
+        if (abortSignal?.aborted) return;
+        // A timed-out publication is still live. Republishing it could append
+        // twice or race its provider retirement; leave its barrier installed.
+        if (error === timeoutError) throw error;
+        // The first publication attempt failed. Retry once through the shared
+        // republish before failing closed; concurrent waiters share one attempt
+        // and a still-failing store is retried again by the following waiter.
+        try {
+          await this.awaitAbortablePublication(this.republishTurnContinuityPublication(conversationId), deadline, timeoutError, abortSignal);
+        } catch (error) {
+          if (abortSignal?.aborted) return;
+          if (error === timeoutError) throw error;
+          throw this.turnContinuityUnavailableError(outcome, error);
+        }
+      }
+    } finally {
+      clearTimeout(slowTimer);
     }
   }
 

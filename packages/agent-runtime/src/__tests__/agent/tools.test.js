@@ -438,7 +438,8 @@ describe("ai tool helpers", () => {
   it("rejects non-http WebFetch URLs before calling fetch", async () => {
     const result = await webFetchToolImpl({ url: "file:///etc/passwd" }, { ctx });
 
-    expect(result).toBe("Error: WebFetch only supports http(s) URLs.");
+    expect(JSON.parse(result)).toMatchObject({ tool: "WebFetch", status: "error", code: "unsupported_protocol" });
+    expect(JSON.parse(result).summary).toBe("Error: WebFetch only supports http(s) URLs.");
   });
 
   it("retries a transient WebFetch error and returns the eventual success", async () => {
@@ -489,7 +490,8 @@ describe("ai tool helpers", () => {
     };
     try {
       const result = await webFetchToolImpl({ url: "https://example.com" }, { ctx, retryDelaysMs: [0, 0] });
-      expect(result).toBe("Error fetching URL: certificate has expired");
+      expect(JSON.parse(result)).toMatchObject({ tool: "WebFetch", status: "error", code: "request_failed" });
+      expect(JSON.parse(result).summary).toBe("Error fetching URL: certificate has expired");
       expect(calls).toBe(1);
     } finally {
       globalThis.fetch = originalFetch;

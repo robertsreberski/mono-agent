@@ -265,7 +265,7 @@ are deduplicated by file integrity plus chat/reply target.
 
 This path is separate from model-invoked `TelegramSendFile`: reply files use the
 shared response-part contract and host authorization. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 ## Architecture
 
@@ -451,11 +451,11 @@ It does not build prompts, run models, store memory, serve UI, manage provider c
 
 ## Related Documentation
 
-- [Telegram channel guide](https://mono-agent-docs.vercel.app/channels/telegram/)
-- [Telegram personal-assistant playbook](https://mono-agent-docs.vercel.app/playbooks/telegram-personal-assistant-bujo/)
-- [Delivery and send tools](https://mono-agent-docs.vercel.app/channels/delivery-and-send-tools/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
-- [Custom channel adapters](https://mono-agent-docs.vercel.app/programmatic/custom-channels/)
+- [Telegram channel guide](https://docs.mono-agent.dev/channels/telegram/)
+- [Telegram personal-assistant playbook](https://docs.mono-agent.dev/playbooks/telegram-personal-assistant-bujo/)
+- [Delivery and send tools](https://docs.mono-agent.dev/channels/delivery-and-send-tools/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
+- [Custom channel adapters](https://docs.mono-agent.dev/programmatic/custom-channels/)
 
 ## Verification
 

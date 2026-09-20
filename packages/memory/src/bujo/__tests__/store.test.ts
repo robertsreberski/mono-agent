@@ -5,6 +5,7 @@ import { join, relative } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
+import { MemorySearchError } from "../../search/index.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 import { writeCaptureIntent } from "../capture-outbox.js";
 import { createBujoMemoryStore } from "../store.js";
@@ -34,6 +35,37 @@ describe("BujoMemoryStore — tier derivation", () => {
     expect(parseDailyFile(readFileSync(dailyFilePath(root, now), "utf8")).bullets.map(({ text }) => text)).toContain("some text");
 
     await store.close();
+  });
+
+  it("read-only local recall preserves lexical hits and status during an eligible embedding outage", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-recall-fallback-"));
+    const healthy = fakeEmbeddings(64);
+    let failure: Error | undefined;
+    let calls = 0;
+    const embeddings = {
+      id: healthy.id,
+      async embed(texts: readonly string[]) {
+        calls += 1;
+        if (failure !== undefined) throw failure;
+        return await healthy.embed(texts);
+      },
+    };
+    const writable = createBujoMemoryStore({ root, embeddings, dim: 64 });
+    await writable.remember("s1", "Morgan selected cobalt as the launch color.");
+    await writable.close();
+
+    const readOnly = createBujoMemoryStore({ root, embeddings, dim: 64, readOnly: true });
+    failure = new MemorySearchError("embedding_request_failed", "private provider detail");
+    calls = 0;
+    const outcome = await readOnly.recallWithOutcome("launch color cobalt");
+
+    expect(outcome).toMatchObject({
+      retrievalMode: "lexical_only",
+      degradation: { code: "embedding_unavailable" },
+      hits: [expect.objectContaining({ record: expect.objectContaining({ text: expect.stringContaining("cobalt") }) })],
+    });
+    expect(calls).toBe(1);
+    await readOnly.close();
   });
 
   it("journal tier: embeddings + no llm → tier() === 'journal'; completed-turn summary and recall work", async () => {
@@ -638,6 +670,83 @@ function recordingLlm(order: string[], opts: { throwOnText?: string } = {}): Llm
 }
 
 describe("BujoMemoryStore lifecycle", () => {
+  it.each([
+    ["late success", false],
+    ["late eligible provider rejection", true],
+  ] as const)(
+    "keeps shutdown abort authoritative for recallWithOutcome after %s",
+    async (_caseName, rejectProvider) => {
+      const root = tmpRoot();
+      const stableEmbeddings: EmbeddingProvider = {
+        id: "outcome-read-close-race:64",
+        embed: async (texts) => await fakeEmbeddings(64).embed(texts),
+      };
+      const dbPath = join(root, "memory.db");
+      const seed = openMemoryDb({ path: dbPath, embeddings: stableEmbeddings, dim: 64 });
+      await seed.upsert({
+        id: "OUTCOME-READ-RACE",
+        type: "note",
+        status: "open",
+        text: "The optional outcome shutdown sentinel is durable.",
+        salience: 0.8,
+        isInsight: false,
+        createdAt: new Date().toISOString(),
+        accessCount: 0,
+        tags: [],
+        source: {},
+      });
+      seed.close();
+
+      let entered = false;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const gatedEmbeddings: EmbeddingProvider = {
+        id: stableEmbeddings.id,
+        embed: async (texts) => {
+          entered = true;
+          await gate; // deliberately ignore store shutdown
+          if (rejectProvider) {
+            throw new MemorySearchError(
+              "embedding_request_failed",
+              "private late provider failure must lose to shutdown",
+            );
+          }
+          return await fakeEmbeddings(64).embed(texts);
+        },
+      };
+      const store = createBujoMemoryStore({
+        root,
+        tier: "journal",
+        embeddings: gatedEmbeddings,
+        dim: 64,
+        backgroundDrainTimeoutMs: 20,
+      });
+
+      const reading = store.recallWithOutcome("optional outcome shutdown sentinel");
+      await waitUntil(() => entered);
+      await store.close();
+      // Reopening before the provider settles proves close released ownership;
+      // the late result must not fall back into or otherwise touch this SQLite.
+      await createBujoMemoryStore({
+        root,
+        tier: "journal",
+        embeddings: stableEmbeddings,
+        dim: 64,
+      }).close();
+
+      const rejected = expect(reading).rejects.toThrow(/operation drain deadline/iu);
+      release();
+      await rejected;
+
+      const verification = openMemoryDb({ path: dbPath });
+      try {
+        expect(verification.get("OUTCOME-READ-RACE")?.accessCount).toBe(0);
+      } finally {
+        verification.close();
+      }
+    },
+  );
+
 
   it("recall delegates to db.recall and returns scored hits", async () => {
     const store = createBujoMemoryStore({ root: tmpRoot() });

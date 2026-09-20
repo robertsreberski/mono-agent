@@ -269,6 +269,27 @@ describe("createTelegramBot notify (proactive)", () => {
     expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(1);
   });
 
+  it("keeps the child-busy warning off a running job whose child is still working", async () => {
+    const { controller, calls } = buildNotifiableBot({ async respond() { return { text: "unused" }; } });
+    const internal: ProcessJobProjection = { ...processJobProjection("queued"), kind: "internal", tool: "Agent",
+      instanceId: "helper", childStillBusy: true };
+    await controller.updateProcessJob(42, internal);
+    await controller.updateProcessJob(42, { ...internal, state: "running" });
+    const texts = [
+      String(calls.find((call) => call.method === "sendMessage")!.payload.text),
+      ...calls.filter((call) => call.method === "editMessageText").map((call) => String(call.payload.text)),
+    ];
+    expect(texts).toHaveLength(2);
+    for (const text of texts) {
+      expect(text).toContain("Instance: helper");
+      expect(text).not.toContain("childStillBusy:true");
+    }
+
+    await controller.updateProcessJob(42, { ...internal, state: "timed_out" });
+    expect(String(calls.filter((call) => call.method === "editMessageText").at(-1)!.payload.text))
+      .toContain("childStillBusy:true");
+  });
+
   it("attempts a missing-ref terminal fallback only once even when Telegram rejects it", async () => {
     const { controller, calls } = buildNotifiableBot({
       async respond() { return { text: "unused" }; },

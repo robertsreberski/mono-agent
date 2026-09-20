@@ -1,5 +1,7 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
-import { page, userEvent } from "@vitest/browser/context";
+import { commands, page, userEvent } from "@vitest/browser/context";
+import indexHtml from "../index.html?raw";
+import { RootErrorFallback } from "./components/RenderErrorBoundary";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ConsoleStoreProvider,
@@ -99,12 +101,28 @@ const detail = (summary: ThreadSummary, text: string): ThreadDetail => {
 
 const persistence = createThreadPersistence();
 
+/** `VITE_DASHBOARD_SEARCH_SHOTS=<absolute dir>` captures the final search-only layout. */
+const shotDirectory = import.meta.env.VITE_DASHBOARD_SEARCH_SHOTS as string | undefined;
+const capture = async (name: string): Promise<void> => {
+  if (shotDirectory === undefined) return;
+  await page.screenshot({ path: `${shotDirectory}/${name}.png` });
+};
+
+function mountDocument(): HTMLElement {
+  const initialDocument = new DOMParser().parseFromString(indexHtml, "text/html");
+  const sampler = initialDocument.querySelector(".status-bar-surface")!;
+  const root = initialDocument.getElementById("root")!;
+  document.body.append(sampler, root);
+  return root;
+}
+
 const openConsole = () => render(
   <ConsoleStoreProvider>
     <WebRuntimeProvider>
       <App />
     </WebRuntimeProvider>
   </ConsoleStoreProvider>,
+  { container: mountDocument() },
 );
 
 const settled = async () => {
@@ -139,6 +157,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   cleanup();
+  document.querySelectorAll(".status-bar-surface, #root").forEach((element) => element.remove());
+  await commands.emulateColorScheme(null);
   await persistence.clearAll();
   localStorage.clear();
   window.history.replaceState(null, "", "/");
@@ -202,13 +222,22 @@ describe("the dashboard as the desktop column", () => {
     openConsole();
     await settled();
 
+    const panel = screen.getByRole("navigation", { name: "Dashboard" });
+    expect(within(panel).getByRole("heading", { name: "Projects" })).toBeVisible();
+    expect(within(panel).getByRole("heading", { name: "Recent" })).toBeVisible();
+
     await userEvent.fill(screen.getByPlaceholderText("Search conversations"), "alpha");
 
     const hit = await screen.findByRole("button", { name: "Open Alpha thread" });
     expect(hit).toHaveClass("thread-search-hit");
+    expect(within(panel).getByRole("heading", { name: "Conversations" })).toBeVisible();
+    expect(within(panel).queryByRole("heading", { name: "Projects" })).toBeNull();
+    expect(within(panel).queryByRole("heading", { name: "Recent" })).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "Chats" })).toBeNull();
     // The conversation is in the column beside this one, so the hit that opens
     // it is marked exactly as its ordinary row would be.
     await waitFor(() => expect(document.querySelector(".thread-search-hit.is-active")).toBe(hit));
+    await capture("conversation-search-desktop");
   });
 
   it("puts the running cards and the conversation rows on one left edge", async () => {
@@ -413,11 +442,16 @@ describe("the dashboard as the mobile entrance screen", () => {
 
     const hit = await screen.findByRole("button", { name: "Open Alpha thread" });
     expect(hit).toHaveClass("thread-search-hit");
+    expect(within(panel()).getByRole("heading", { name: "Conversations" })).toBeVisible();
+    expect(within(panel()).queryByRole("heading", { name: "Projects" })).toBeNull();
+    expect(within(panel()).queryByRole("heading", { name: "Recent" })).toBeNull();
+    expect(within(panel()).queryByRole("button", { name: "Chats" })).toBeNull();
     // Search is the other face of the same list: the store still holds this
     // conversation -- its transcript is loaded behind the screen -- and this
     // screen still declines to point at it.
     expect(document.querySelector(".thread-search-hit.is-active")).toBeNull();
     expect(screen.getByText("Alpha transcript")).toBeInTheDocument();
+    await capture("conversation-search-mobile");
   });
 
   it("opens the settings dialog over this screen, and closing it stays here", async () => {
@@ -442,5 +476,145 @@ describe("the dashboard as the mobile entrance screen", () => {
     await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390));
     await openConversation();
     await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390));
+  });
+});
+
+const statusBarShots = import.meta.env.VITE_STATUS_BAR_SHOTS as string | undefined;
+const statusBarViewports = [
+  { name: "phone", width: 390, height: 844 },
+  { name: "desktop", width: 1440, height: 900 },
+] as const;
+
+function expectStatusBarSurface(surface: Element): void {
+  const sampler = document.querySelector<HTMLElement>(".status-bar-surface")!;
+  const color = getComputedStyle(surface).backgroundColor;
+  expect(getComputedStyle(sampler).backgroundColor).toBe(color);
+  expect(getComputedStyle(document.body).backgroundColor).toBe(color);
+  expect(getComputedStyle(document.documentElement).backgroundColor).toBe(color);
+  expect(sampler.getBoundingClientRect().top).toBe(0);
+  expect(sampler.getBoundingClientRect().height).toBe(1);
+  expect(sampler.getBoundingClientRect().width).toBe(window.innerWidth);
+  expect(sampler.inert).toBe(true);
+  expect(getComputedStyle(sampler).pointerEvents).toBe("none");
+  expect(document.elementsFromPoint(10, 0)).not.toContain(sampler);
+}
+
+/**
+ * The phone pushes the conversation in over a 220 ms `transform` transition
+ * (`.chat-region`, in the max-width: 900px block). A rect read while that slide
+ * is still landing carries its remainder, so every geometry check below waits
+ * for the transform to reach its resting `none` first.
+ */
+const slideSettled = async (): Promise<void> => {
+  const region = document.querySelector<HTMLElement>(".chat-region");
+  if (region === null) return;
+  await waitFor(() => expect(getComputedStyle(region).transform).toBe("none"));
+};
+
+/**
+ * Stationary to the eye, not to the last binary fraction.
+ *
+ * What this guards is a header that travels with the transcript -- pixels of
+ * movement, the kind a reader sees. CI's Linux renderer composites the same
+ * settled layout a fraction of a pixel apart across a scroll (observed: x
+ * 0.142 and 0.164 on the 390px viewport, width and height identical), which an
+ * exact rect comparison reads as a regression. Half a pixel is well under
+ * anything visible and still fails on real movement.
+ */
+const SUBPIXEL = 0.5;
+const expectStationary = (rect: DOMRect, before: DOMRectReadOnly): void => {
+  for (const side of ["x", "y", "top", "left", "right", "bottom", "width", "height"] as const) {
+    expect(Math.abs(rect[side] - before[side])).toBeLessThan(SUBPIXEL);
+  }
+};
+
+describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
+  it.each(["light", "dark"] as const)("tracks the %s Dashboard and conversation without changing layout", async (scheme) => {
+    await page.viewport(viewport.width, viewport.height);
+    await commands.emulateColorScheme(scheme);
+    const snapshot = bootstrap(agents, [alphaThread, cronThread, failedThread], alphaThread.id, { threadsSourceId: "alpha" });
+    vi.mocked(api.bootstrap).mockResolvedValue({
+      ...snapshot,
+      console: { ...snapshot.console, theme: "terracotta" },
+    });
+    openConsole();
+    expect(await screen.findByRole("button", { name: "Open Alpha thread" })).toBeVisible();
+    const shell = document.querySelector<HTMLElement>(".app-shell")!;
+    const dashboard = document.querySelector<HTMLElement>(".dashboard")!;
+    const sampler = document.querySelector<HTMLElement>(".status-bar-surface")!;
+    expectStatusBarSurface(shell);
+    expectStatusBarSurface(dashboard);
+    expect(shell.getBoundingClientRect().height).toBe(viewport.height);
+    expect(shell.getBoundingClientRect().top).toBe(0);
+
+    const geometry = () => [shell, dashboard, document.querySelector(".dashboard-header")!, document.querySelector(".chat-header")!]
+      .map((element) => element.getBoundingClientRect().toJSON());
+    const before = geometry();
+    sampler.remove();
+    expect(geometry()).toEqual(before);
+    document.body.prepend(sampler);
+    if (statusBarShots) await page.screenshot({ path: `${statusBarShots}/${viewport.name}-${scheme}-dashboard.png` });
+
+    await userEvent.click(screen.getByRole("button", { name: "Open Alpha thread" }));
+    await waitFor(() => expect(screen.getByText("Alpha transcript")).toBeVisible());
+    const chat = document.querySelector<HTMLElement>(".chat-panel")!;
+    const header = document.querySelector<HTMLElement>(".chat-header")!;
+    await waitFor(() => expect(chat.getBoundingClientRect().left).toBe(viewport.name === "phone" ? 0 : 340));
+    await slideSettled();
+    expectStatusBarSurface(chat);
+    expect(header.getBoundingClientRect().top).toBe(0);
+    expect(getComputedStyle(header).paddingTop).toBe(viewport.name === "phone" ? "7px" : "10px");
+    for (let step = 0; step < 4; step += 1) {
+      await userEvent.keyboard("{Tab}");
+      expect(document.activeElement).not.toBe(sampler);
+    }
+    expect(window.scrollY).toBe(0);
+    expect(shell.getBoundingClientRect().height).toBe(viewport.height);
+    if (statusBarShots) await page.screenshot({ path: `${statusBarShots}/${viewport.name}-${scheme}-conversation.png` });
+  });
+
+  it("keeps the status surface and header stationary while the transcript scrolls", async () => {
+    await page.viewport(viewport.width, viewport.height);
+    vi.mocked(api.thread).mockResolvedValue(detail(alphaThread,
+      `Alpha transcript\n\n${Array.from({ length: 80 }, (_, index) => `Transcript paragraph ${index}.`).join("\n\n")}`,
+    ));
+    openConsole();
+    await userEvent.click(await screen.findByRole("button", { name: "Open Alpha thread" }));
+    expect(await screen.findByText("Transcript paragraph 79.")).toBeVisible();
+    const scroll = document.querySelector<HTMLElement>(".thread-viewport")!;
+    const header = document.querySelector<HTMLElement>(".chat-header")!;
+    await waitFor(() => expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight));
+    await slideSettled();
+    const headerRect = header.getBoundingClientRect();
+    scroll.scrollTop = 0;
+    scroll.dispatchEvent(new Event("scroll"));
+    scroll.scrollTop = 100;
+    scroll.dispatchEvent(new Event("scroll"));
+    await waitFor(() => expect(scroll.scrollTop).toBe(100));
+    expectStationary(header.getBoundingClientRect(), headerRect);
+    expectStatusBarSurface(document.querySelector(".chat-panel")!);
+    expect(window.scrollY).toBe(0);
+  });
+
+  it.each(["loading", "service-error", "render-error"] as const)("preserves the distinct %s screen surface", async (state) => {
+    await page.viewport(viewport.width, viewport.height);
+    if (state === "render-error") {
+      render(<RootErrorFallback />, { container: mountDocument() });
+    } else {
+      vi.mocked(api.bootstrap).mockImplementation(() => state === "loading"
+        ? new Promise(() => undefined)
+        : Promise.reject(new Error("Test service unavailable")));
+      openConsole();
+    }
+    const surface = await waitFor(() => {
+      const element = document.querySelector(".initial-state, .fatal-state");
+      expect(element).not.toBeNull();
+      if (state !== "loading") expect(element).toHaveClass("fatal-state");
+      return element!;
+    });
+    for (const scheme of ["light", "dark"] as const) {
+      await commands.emulateColorScheme(scheme);
+      expectStatusBarSurface(surface);
+    }
   });
 });

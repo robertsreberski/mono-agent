@@ -656,6 +656,51 @@ describe("validateMonoAgentFolder", () => {
     expect(section.details.join("\n")).not.toContain("secret artifact contents");
   });
 
+  it("reports path-free retained child ownership counts from bounded owner-only records", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "process-jobs");
+    const recordsDir = join(stateDir, "records-v1");
+    await mkdir(recordsDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700); await chmod(recordsDir, 0o700);
+    const jobId = "33333333-3333-4333-8333-333333333333";
+    const privateRegistryRoot = join(dir, ".mono-agent", "subagents-private-canary");
+    const recordPath = join(recordsDir, `${jobId}.json`);
+    await writeFile(recordPath, `${JSON.stringify({
+      jobId, state: "interrupted", kind: "internal", childStillBusy: true,
+      subagentOwnership: {
+        schemaVersion: 1, registryRoot: privateRegistryRoot,
+        instanceIncarnation: "44444444-4444-4444-8444-444444444444",
+        turnToken: jobId, owner: { pid: 4242, incarnation: { schema: "mono-agent.process-incarnation.v1", bootSessionId: "boot", processStartId: "start" }, settlement: "unknown" },
+        revoked: true, publication: { sequence: 1, state: "pending" }, seenCalls: [],
+      },
+    })}\n`, { mode: 0o600 });
+    await chmod(recordPath, 0o600);
+    const configPath = await writeConfig({
+      runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "./IDENTITY.md" },
+      processJobs: { enabled: true }, subagents: { enabled: true, instances: { enabled: true } },
+      tools: { allowedTools: ["Agent", "AgentSend"] },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const section = sectionById(report, "process-jobs");
+    expect(section.status).toBe("ok");
+    expect(section.details).toContain("Persistent child ownership: retained=1, unresolved=1, owner-unavailable=1.");
+    expect(section.details.join("\n")).not.toContain(privateRegistryRoot);
+    expect(section.details.join("\n")).not.toContain(jobId);
+  });
+
+  it.each([undefined, "exec"])("fails closed on malformed child ownership with non-internal kind %s", async (kind) => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "process-jobs"); const recordsDir = join(stateDir, "records-v1");
+    await mkdir(recordsDir, { recursive: true, mode: 0o700 }); await chmod(stateDir, 0o700); await chmod(recordsDir, 0o700);
+    const jobId = "55555555-5555-4555-8555-555555555555";
+    await writeFile(join(recordsDir, `${jobId}.json`), `${JSON.stringify({ jobId, state: "interrupted", ...(kind ? { kind } : {}), subagentOwnership: { privateCanary: join(dir, "private") } })}\n`, { mode: 0o600 });
+    const configPath = await writeConfig({ runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "./IDENTITY.md" }, processJobs: { enabled: true } });
+    const section = sectionById(await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false }), "process-jobs");
+    expect(section.status).toBe("error"); expect(section.details.join("\n")).toContain("record child ownership is invalid");
+    expect(section.details.join("\n")).not.toContain(join(dir, "private"));
+  });
+
   it("reports quarantined unreplayable process-job transactions as a degraded incident", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const stateDir = join(dir, ".mono-agent", "process-jobs");
@@ -4030,6 +4075,40 @@ describe("validateMonoAgentFolder — web tools", () => {
     });
   }
 
+  it("probes strict Parallel with tools/list only and reports anonymous access", async () => {
+    const methods: string[] = [];
+    const fetchSpy = vi.fn(async (_url: unknown, init: RequestInit) => {
+      if (init.method === "GET") return new Response(null, { status: 405 });
+      const message = JSON.parse(String(init.body)) as { method: string; id?: number };
+      methods.push(message.method);
+      if (message.method === "notifications/initialized") return new Response(null, { status: 202 });
+      const result = message.method === "initialize"
+        ? { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } }
+        : { tools: ["web_search", "web_fetch"].map((name) => ({ name, inputSchema: { type: "object" } })) };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }), { headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({ search: { backend: "parallel" } });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
+    const section = sectionById(report, "web-tools");
+    expect(section.status).toBe("ok");
+    expect(section.details).toContain("Parallel search: anonymous access.");
+    expect(methods).toContain("tools/list");
+    expect(methods).not.toContain("tools/call");
+    expect(fetchSpy.mock.calls.every(([, init]) => init.redirect === "error")).toBe(true);
+  });
+
+  it("reports native Hound readiness without contacting an endpoint or public engines", async () => {
+    const fetchSpy = vi.fn(); vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({ search: { backend: "hound" }, fetch: { provider: "hound" } });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
+    const section = sectionById(report, "web-tools");
+    expect(section.status).toBe("ok");
+    expect(section.details).toContain("Hound is a built-in Node provider; no endpoint or Python service is required.");
+    expect(section.details).toContain("Hound local capability is available (public engines and extraction not probed).");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("reports the static defaults without running a liveness probe", async () => {
     const fetchSpy = vi.fn();
     const execSpy = vi.fn();
@@ -4047,10 +4126,10 @@ describe("validateMonoAgentFolder — web tools", () => {
     expect(sectionById(report, "web-tools")).toMatchObject({
       status: "ok",
       details: expect.arrayContaining([
-        "WebSearch backend: auto.",
+        "WebSearch backend: parallel,ollama.",
         "WebSearch request budget: 4 per logical run.",
-        "SearXNG is not configured; auto mode starts with Codex subscription search, then keyless search.",
-        "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when auto mode reaches it as the first eligible backend.",
+        "SearXNG is not configured.",
+        "Ordered chain: parallel → ollama. Unavailable providers advance to the next entry.",
         "WebFetch browser rendering: never.",
         "Static Defuddle/Readability extraction is active; agent-browser is not required.",
       ]),
@@ -4134,7 +4213,7 @@ describe("validateMonoAgentFolder — web tools", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("probes explicitly configured Ollama in auto and documents the remaining chain", async () => {
+  it("reports lazy Ollama readiness in an explicit chain", async () => {
     const fetchSpy = vi.fn(async (url: string | URL) => {
       const target = String(url);
       if ([
@@ -4148,7 +4227,7 @@ describe("validateMonoAgentFolder — web tools", () => {
     vi.stubGlobal("fetch", fetchSpy);
     const configPath = await writeWebToolsConfig({
       search: {
-        backend: "auto",
+        backend: ["ollama", "searxng", "codex", "keyless"],
         maxRequestsPerRun: 6,
         ollama: { baseUrl: "http://127.0.0.1:11434" },
         searxng: { endpoint: "http://127.0.0.1:8088" },
@@ -4159,18 +4238,17 @@ describe("validateMonoAgentFolder — web tools", () => {
     const web = sectionById(report, "web-tools");
     expect(web.status).toBe("ok");
     expect(web.details).toContain("WebSearch request budget: 6 per logical run.");
-    expect(web.details).toContain("Ollama Web Search JSON probe succeeded.");
-    expect(web.details).toContain("Ollama Web Search origin: http://127.0.0.1:11434. Auto mode advances to configured SearXNG, Codex, then keyless when Ollama is unavailable.");
+    expect(web.details).toContain("Ollama Web Search readiness is checked lazily when the chain reaches it.");
+    expect(web.details).toContain("Ollama Web Search origin: http://127.0.0.1:11434. Ordered chain: ollama → searxng → codex → keyless. Unavailable providers advance to the next entry.");
     expect(fetchSpy.mock.calls.map(([url]) => String(url))).toEqual([
       "http://127.0.0.1:8088/search",
-      "http://127.0.0.1:11434/api/experimental/web_search",
     ]);
   });
 
-  it("omits absent SearXNG from the auto fallback diagnostics", async () => {
+  it("omits absent SearXNG from explicit chain diagnostics", async () => {
     const configPath = await writeWebToolsConfig({
       search: {
-        backend: "auto",
+        backend: ["ollama", "codex", "keyless"],
         ollama: { baseUrl: "http://127.0.0.1:11434" },
       },
     });
@@ -4178,10 +4256,10 @@ describe("validateMonoAgentFolder — web tools", () => {
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
     const details = sectionById(report, "web-tools").details;
     expect(details).toContain(
-      "Ollama Web Search origin: http://127.0.0.1:11434. Auto mode advances to Codex, then keyless when Ollama is unavailable.",
+      "Ollama Web Search origin: http://127.0.0.1:11434. Ordered chain: ollama → codex → keyless. Unavailable providers advance to the next entry.",
     );
     expect(details).toContain(
-      "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when auto mode reaches it after configured Ollama.",
+      "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when the chain reaches it.",
     );
     expect(details.some((detail) => detail.includes("advances to configured SearXNG"))).toBe(false);
   });
@@ -4358,6 +4436,19 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(runtime.details.join("\n")).toContain("pi model not found: opencode-go:not-in-the-catalog");
     expect(sectionById(report, "credentials").status).toBe("ok");
     expect(report.ok).toBe(false);
+  });
+
+  it("accepts the supplemented opencode-go DeepSeek V4.1 Flash model", async () => {
+    const authPath = await writeAuthStore({ "opencode-go": { type: "api_key", key: "sk-opencode" } });
+    const configPath = await writeCredConfig({
+      runtime: { model: "opencode-go:deepseek-v4.1-flash" },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "runtime").status).toBe("ok");
+    expect(sectionById(report, "credentials").status).toBe("ok");
   });
 
   it("rejects an unknown exact Pi fallback before execution", async () => {

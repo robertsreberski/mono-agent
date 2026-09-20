@@ -3,15 +3,25 @@ import {
   ThreadPrimitive,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { page } from "@vitest/browser/context";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { commands, page } from "@vitest/browser/context";
 import { describe, expect, it, vi } from "vitest";
-import { coalesceMonitorWakeMessages, convertWebMessage } from "../runtime";
-import { projectProcessJobPresentation } from "../process-job-presentation";
+import { convertWebMessage } from "../runtime";
+import { ProcessJobStack } from "./ProcessJobStack";
+import { backgroundSubagentJob, backgroundSubagentMessages } from "../test/background-subagent-fixtures";
+import { api } from "../api";
+import { ProcessJobPresentationProvider, projectProcessJobPresentation } from "../process-job-presentation";
 import type { ProcessJobActivityEvent } from "../process-job-presentation";
+import { RouteCapabilitiesProvider } from "./route-capabilities";
 import type { WebMessage } from "../types";
 import "../styles.css";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
+
+declare module "@vitest/browser/context" {
+  interface BrowserCommands {
+    emulateColorScheme(colorScheme: "light" | "dark" | null): Promise<void>;
+  }
+}
 
 /**
  * Screenshot evidence is opt-in: `VITE_STEER_INLINE_SHOTS=<absolute dir>`
@@ -132,7 +142,7 @@ const cronReplyMessage: WebMessage = {
 function Harness({ width }: { readonly width: number }) {
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: [message("consumed", "applied"), message("uncertain", "uncertain")],
-    convertMessage: (value) => convertWebMessage(value, { selectedModel: "provider:primary" }),
+    convertMessage: (value) => convertWebMessage(value),
     onNew: async () => undefined,
     adapters: {
       threadList: {
@@ -198,7 +208,7 @@ function ActivityHarness({ width }: { readonly width: number }) {
     attachments: [],
     parts: [
       { type: "reasoning", text: "Launching the worker." },
-      { type: "tool-call", toolCallId: "launch", toolName: "Exec", status: "complete" },
+      { type: "tool-call", toolCallId: "launch", toolName: "Exec", status: "complete", args: { command: "node worker.js --launch" } },
       { type: "text", text: "Finished." },
     ],
   };
@@ -249,7 +259,7 @@ function ErrorHarness({ width, errorMessage }: { readonly width: number; readonl
 function CronHarness({ width }: { readonly width: number }) {
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: [cronMessage],
-    convertMessage: (value) => convertWebMessage(value, { selectedModel: "provider:primary" }),
+    convertMessage: (value) => convertWebMessage(value),
     onNew: async () => undefined,
   });
   return (
@@ -300,10 +310,13 @@ describe("process-job response Activity in Chromium", () => {
   it.each([760, 360] as const)("keeps causal lifecycle rows inside the %ipx response", (width) => {
     const { container } = render(<ActivityHarness width={width} />);
     const activity = screen.getByRole("button", { name: "Activity" });
-    expect(activity).toHaveTextContent("4 steps");
+    // The launch call folds into its start row: reasoning plus the two lifecycle
+    // facts, not a second tool-call row beside the start.
+    expect(activity).toHaveTextContent("3 steps");
     fireEvent.click(activity);
+    const started = screen.getByRole("group", { name: "Exec job started" });
     const rows = [
-      screen.getByRole("group", { name: "Exec job started" }),
+      started,
       screen.getByRole("group", { name: "Exec job succeeded" }),
     ];
     const messageRoot = container.querySelector<HTMLElement>(".message-assistant")!;
@@ -311,6 +324,10 @@ describe("process-job response Activity in Chromium", () => {
       expect(row.getBoundingClientRect().left).toBeGreaterThanOrEqual(messageRoot.getBoundingClientRect().left);
       expect(row.getBoundingClientRect().right).toBeLessThanOrEqual(messageRoot.getBoundingClientRect().right);
     }
+    // The surviving start row carries the launch arguments in its disclosure.
+    fireEvent.click(started.querySelector("summary")!);
+    expect(within(started).getByText("Input")).toBeVisible();
+    expect(within(started).getByText(/node worker\.js --launch/u)).toBeVisible();
     expect(messageRoot.scrollWidth).toBeLessThanOrEqual(messageRoot.clientWidth);
     expect(screen.getAllByRole("button", { name: "Copy response" })).toHaveLength(1);
   });
@@ -474,13 +491,12 @@ const steeredTwiceResponse: WebMessage = {
 
 function SteerHarness({ width, messages }: { readonly width: number; readonly messages: readonly WebMessage[] }) {
   const presentation = projectProcessJobPresentation(
-    coalesceMonitorWakeMessages(messages),
-    { selectedModel: "provider:primary", threadId: "thread" },
+    messages,
+    { threadId: "thread" },
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,
     convertMessage: (value) => convertWebMessage(value, {
-      selectedModel: "provider:primary",
       processJobEvents: presentation.eventsByMessageId.get(value.id),
       processJobs: presentation.jobsById,
     }),
@@ -592,4 +608,211 @@ describe("inline steer in Chromium", () => {
     expect(screen.getByText("Steering current run…")).toBeVisible();
     await capture(`steer-waiting-${label}-${width}x${height}`);
   });
+});
+
+
+function backgroundSubagentJobWithNewestCall(finished = false) {
+  const job = backgroundSubagentJob(finished);
+  const progress = job.subagentProgress!;
+  return { ...job, subagentProgress: { ...progress, revision: progress.revision + 1, toolCalls: progress.toolCalls + 1,
+    recent: [...progress.recent, { id: "synthetic-call-45", toolName: "Write", argsSummary: "~/worktrees/synthetic/final-check.ts",
+      status: finished ? "complete" as const : "running" as const, ...(finished ? { executionMs: 58 } : {}) }].slice(-50) } };
+}
+
+function SyntheticJobStack({ job }: { readonly job: ReturnType<typeof backgroundSubagentJob> }) {
+  const catalogByProvider = { anthropic: { models: [{
+    id: "claude-sonnet-4.5",
+    name: "Claude Sonnet 4.5",
+    provider: "anthropic",
+    providerLabel: "Anthropic",
+    reasoning: true,
+    effortLevels: ["low", "medium", "high"],
+  }] } };
+  return <RouteCapabilitiesProvider agent={null} catalogByProvider={catalogByProvider}>
+    <ProcessJobPresentationProvider threadId="thread" messages={[]} historyIsBounded={false}
+      jobs={[{ messageId: "synthetic-card", part: { type: "process-job", job } }]}>
+      <ProcessJobStack />
+    </ProcessJobPresentationProvider>
+  </RouteCapabilitiesProvider>;
+}
+
+describe("synthetic detached subagent evidence", () => {
+  it.each([
+    [1280, 800, "desktop", "light"],
+    [1280, 800, "desktop", "dark"],
+    [390, 844, "mobile", "light"],
+    [390, 844, "mobile", "dark"],
+  ] as const)("contains Activity and job progress at %ix%i (%s, %s)", async (width, height, label, scheme) => {
+    await page.viewport(width, height);
+    await commands.emulateColorScheme(scheme);
+    const directory = import.meta.env.VITE_BACKGROUND_SUBAGENT_SHOTS as string | undefined;
+    const shot = async (state: string) => {
+      const schemeSuffix = scheme === "light" ? "" : `-${scheme}`;
+      if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-${label}${schemeSuffix}-${state}.png` });
+    };
+    const fixtureWidth = Math.min(width - 24, 880);
+    const activity = render(<main style={{ width: fixtureWidth, margin: "12px auto" }}>
+      <h2>Synthetic fixture · detached Agent Activity</h2>
+      <SteerHarness width={fixtureWidth} messages={backgroundSubagentMessages()} />
+    </main>);
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.getByRole("group", { name: "Agent job started" }).querySelector("summary")).toBeVisible();
+    expect(screen.getByRole("group", { name: "Agent job succeeded" }).querySelector("summary")).toBeVisible();
+    expect(document.querySelectorAll(".process-job-event")).toHaveLength(2);
+    await shot("activity");
+    activity.unmount();
+
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(backgroundSubagentJob().timestamps.startedAt!) + 12_000);
+    const poll = vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const frame = (job: ReturnType<typeof backgroundSubagentJob>) => <main style={{ width: fixtureWidth, margin: "12px auto" }}>
+      <h2>Synthetic fixture · {job.state === "running" ? "running" : "finished"} child</h2>
+      <SyntheticJobStack job={job} />
+    </main>;
+    const stack = render(frame(backgroundSubagentJob()));
+    const region = await screen.findByRole("region", { name: "Subagent progress" });
+    await waitFor(() => expect(region).toBeVisible());
+    const runningMeta = document.querySelector(".process-job-live-meta")!;
+    expect(runningMeta).toHaveTextContent("implementer");
+    expect(runningMeta).toHaveTextContent("45 tools, 1 failed");
+    expect(runningMeta).not.toHaveTextContent("$");
+    expect(runningMeta.querySelector("dt")).toBeNull();
+    expect(runningMeta.querySelector(".effort-signal")).toHaveAttribute("data-levels", "3");
+    expect(runningMeta.querySelector(".effort-signal")).toHaveAttribute("data-filled", "3");
+    const card = region.closest<HTMLElement>(".activity-row.is-job")!;
+    const steps = region.querySelector<HTMLElement>(".activity-steps")!;
+    const stepSummary = steps.querySelector<HTMLElement>(".activity-step > summary")!;
+    const cardRect = card.getBoundingClientRect();
+    const cardStyle = getComputedStyle(card);
+    const cardContentRight = cardRect.right - parseFloat(cardStyle.borderRightWidth) - parseFloat(cardStyle.paddingRight);
+    const stepRect = stepSummary.getBoundingClientRect();
+    const metaFirstItem = runningMeta.firstElementChild as HTMLElement;
+    const firstTool = steps.querySelector<HTMLElement>(".activity-step-tool")!;
+    expect(getComputedStyle(steps).borderLeftWidth).toBe("0px");
+    expect(firstTool.getBoundingClientRect().left - metaFirstItem.getBoundingClientRect().left).toBeCloseTo(0, 1);
+    expect(cardContentRight - stepRect.right).toBeGreaterThanOrEqual(4);
+    expect(cardContentRight - stepRect.right).toBeLessThanOrEqual(10);
+    const checkBounds = () => {
+      expect(region.clientHeight).toBeLessThanOrEqual(320);
+      expect(region.scrollHeight).toBeGreaterThan(region.clientHeight);
+      expect(region.scrollWidth).toBeLessThanOrEqual(region.clientWidth);
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    };
+    const expectNewestCallAtBottom = (tool: string, summary: string) => {
+      const renderedCalls = [...steps.querySelectorAll<HTMLElement>(".activity-step")];
+      const newest = renderedCalls.at(-1)!;
+      expect(newest.querySelector(".activity-step-tool")).toHaveTextContent(tool);
+      expect(newest.querySelector(".activity-step-summary")).toHaveTextContent(summary);
+      expect(newest.querySelector(".activity-step-time")).toHaveTextContent("running");
+      expect(region.scrollTop).toBeCloseTo(region.scrollHeight - region.clientHeight, 0);
+      const regionRect = region.getBoundingClientRect();
+      const newestRect = newest.querySelector("summary")!.getBoundingClientRect();
+      expect(newestRect.top).toBeGreaterThanOrEqual(regionRect.top - 1);
+      expect(newestRect.bottom).toBeLessThanOrEqual(regionRect.bottom + 1);
+    };
+    checkBounds();
+    await waitFor(() => expectNewestCallAtBottom("Grep", "module-44.ts"));
+    stack.rerender(frame(backgroundSubagentJobWithNewestCall()));
+    await waitFor(() => expectNewestCallAtBottom("Write", "final-check.ts"));
+    expect(runningMeta).toHaveTextContent("46 tools, 1 failed");
+    await shot("running");
+
+    // Moving away from the latest call opts out of follow mode. The terminal
+    // report may arrive, but it must not take this reading position away.
+    region.scrollTop = 0;
+    fireEvent.scroll(region);
+    expect(screen.getByText("Bash ×6")).toBeVisible();
+    expect(screen.getByText("Read ×3")).toBeVisible();
+    stack.rerender(frame(backgroundSubagentJobWithNewestCall(true)));
+    fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
+    await waitFor(() => expect(screen.getByRole("region", { name: "Subagent report" })).toBeInTheDocument());
+    const finishedMeta = document.querySelector(".process-job-live-meta")!;
+    expect(finishedMeta).toHaveTextContent("implementer");
+    expect(finishedMeta).toHaveTextContent("46 tools, 1 failed");
+    expect(finishedMeta).toHaveTextContent("$0.01");
+    expect(finishedMeta.querySelector(".effort-signal")).toHaveAttribute("data-filled", "3");
+    expect(region.scrollTop).toBe(0); // reading position survives terminal report arrival
+    checkBounds();
+    region.scrollTop = region.scrollHeight;
+    fireEvent.scroll(region);
+    const report = screen.getByRole("region", { name: "Subagent report" });
+    expect(report.getBoundingClientRect().bottom).toBeLessThanOrEqual(region.getBoundingClientRect().bottom + 1);
+    expect(region.getBoundingClientRect().bottom).toBeLessThanOrEqual(document.querySelector(".process-job-stack")!.getBoundingClientRect().bottom);
+    await shot("finished");
+    stack.unmount();
+    poll.mockRestore();
+    clock.mockRestore();
+    await commands.emulateColorScheme(null);
+  });
+});
+
+
+describe("reasoning-split reply in Chromium", () => {
+  it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)(
+    "renders the complete answer at %ipx (%s)", async (width, height, label) => {
+      await page.viewport(width, height);
+      const response: WebMessage = {
+        ...steeredResponse,
+        parts: [
+          { type: "reasoning", text: "Checking the answer." },
+          { type: "text", text: "Tot" },
+          { type: "reasoning", text: "." },
+          { type: "text", text: "ally fair — the reply stays intact." },
+        ],
+      };
+      const { container } = render(<SteerHarness width={Math.min(width, 760)} messages={[response]} />);
+      expect(screen.getByText("Totally fair — the reply stays intact.")).toBeVisible();
+      expect(container.querySelector(".activity-note")).toBeNull();
+      const directory = import.meta.env.VITE_TRANSCRIPT_SHOTS as string | undefined;
+      if (directory) await page.screenshot({ path: `${directory}/synthetic-transcript-${label}.png` });
+    },
+  );
+
+  it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)(
+    "renders a running sentence a thought interrupts as one block at %ipx (%s)", async (width, height, label) => {
+      await page.viewport(width, height);
+      const sentence = "The targeted search only surfaced daycare/postpartum threads — let me look at Paola's full recent inbox and her calendar for this week to catch anything worded differently.";
+      const runningSplit: WebMessage = {
+        ...runningResponse,
+        id: "running-split-response",
+        turnId: "turn-1",
+        parts: [
+          { type: "text", text: "The" },
+          { type: "reasoning", text: "." },
+          { type: "text", text: sentence.slice("The".length) },
+        ],
+      };
+      const runningThought: WebMessage = {
+        ...runningResponse,
+        id: "running-thought-response",
+        turnId: "turn-2",
+        parts: [
+          { type: "reasoning", text: "Checking her calendar for this week" },
+          { type: "text", text: "Still pulling the week together." },
+        ],
+      };
+      const { container } = render(
+        <SteerHarness width={Math.min(width, 760)} messages={[runningSplit, runningThought]} />,
+      );
+      // Running prose streams through the animated markdown path, so wait for
+      // the whole sentence before asking how many blocks hold it: split in
+      // two, no single paragraph would ever hold all of it.
+      expect(await screen.findByText(sentence, {}, { timeout: 10_000 })).toBeVisible();
+      const paragraphs = [...container.querySelectorAll("p")]
+        .filter((paragraph) => paragraph.textContent?.includes("targeted search"));
+      expect(paragraphs).toHaveLength(1);
+      expect(paragraphs[0]?.textContent).toBe(sentence);
+      // The content-free thought is not a step, while the genuine thought
+      // beside it still renders its row.
+      const summaries = [...container.querySelectorAll(".activity-row-summary")]
+        .map((row) => row.textContent);
+      expect(summaries).not.toContain(".");
+      expect(summaries).toContain("Checking her calendar for this week");
+      // Exactly one Activity band — the genuine thought's — so the dropped
+      // thought leaves no phantom or empty card behind.
+      expect(screen.getAllByRole("button", { name: /Activity/ })).toHaveLength(1);
+      expect(screen.getByRole("button", { name: "Activity in progress" })).toBeVisible();
+      const directory = import.meta.env.VITE_TRANSCRIPT_SHOTS as string | undefined;
+      if (directory) await page.screenshot({ path: `${directory}/synthetic-transcript-running-${label}.png` });
+    },
+  );
 });

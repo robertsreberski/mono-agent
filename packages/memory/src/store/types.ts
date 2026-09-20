@@ -90,6 +90,22 @@ export interface RecallHit {
   readonly score: number;
 }
 
+export type RecallRetrievalMode = "hybrid" | "lexical_only";
+export type RecallDegradationCode = "embedding_unavailable";
+
+/**
+ * Status-bearing local recall result for callers that explicitly accept
+ * lexical-only service when a configured embedding provider is unavailable.
+ * The legacy `recall()` surface remains strict and never discards this status.
+ */
+export interface RecallOutcome {
+  readonly hits: readonly RecallHit[];
+  readonly retrievalMode: RecallRetrievalMode;
+  readonly degradation?: {
+    readonly code: RecallDegradationCode;
+  };
+}
+
 export interface SimilarHit {
   readonly record: MemoryRecord;
   readonly distance: number; // cosine distance from sqlite-vec (0 = identical)
