@@ -429,6 +429,31 @@ describe("WebSearch", () => {
     expect(codexSearch).not.toHaveBeenCalled();
   });
 
+  it("reports deterministic country refusal before cooldown without bypassing cooldown for capable requests", async () => {
+    const state = createWebSearchRunState({});
+    const fetchImpl = vi.fn(async () => new Response("limited", { status: 429, headers: { "retry-after": "120" } }));
+    const options = { searchState: state, searchConfig: { backend: "duckduckgo" }, fetchImpl, ctx: runtimeContext() };
+
+    const limited = await performWebSearch({ query: "mono agent" }, options);
+    expect(limited).toMatchObject({ error: true, outcome: {
+      code: "rate_limited", requestsUsed: 0, dispatchesUsed: 1,
+    } });
+
+    const unsupported = await performWebSearch({ query: "mono agent", country: "AD" }, options);
+    expect(unsupported).toMatchObject({ error: true, outcome: {
+      code: "unsupported_country_filter", requestsUsed: 0, dispatchesUsed: 1,
+      filterSupport: { country: "unsupported" },
+      providerAttempts: [{ backend: "duckduckgo", code: "unsupported_country_filter", requests: 0 }],
+    } });
+
+    const capable = await performWebSearch({ query: "mono agent", country: "PL" }, options);
+    expect(capable).toMatchObject({ error: true, outcome: {
+      code: "rate_limited", requestsUsed: 0, dispatchesUsed: 1,
+      filterSupport: { country: "not_applied" },
+    } });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("advances past an unsupported provider and sends exact country and date parameters to DDG", async () => {
     const calls = [];
     const fetchImpl = vi.fn(async (url, init) => {

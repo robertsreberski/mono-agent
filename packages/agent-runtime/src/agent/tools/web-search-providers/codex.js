@@ -1,6 +1,5 @@
 // @ts-check
 import { claimWebSearchRequest } from "../web-search-state.js";
-import { unsupportedCountryFilter } from "../web-search-country.js";
 export const codexProvider = {
   name: "codex", batchesQueries: false, primaryOnly: true,
   filterSupport: { language: "advisory", timeRange: "advisory", country: "unsupported" },
@@ -15,7 +14,6 @@ export const codexProvider = {
   eligibility: () => true,
   admission: () => ({ kind: "codex", key: "codex", processPolicy: "provider-owned" }),
   networkTargets: () => ["https://chatgpt.com"],
-  preflight: (options) => options.country ? unsupportedCountryFilter("codex") : null,
   search: (query, options) => options.codexSearch(query, {
     model: options.config.codex.model, signal: options.signal, coordinator: options.coordinator,
     language: options.language, timeRange: options.timeRange,

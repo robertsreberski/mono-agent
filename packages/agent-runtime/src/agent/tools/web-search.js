@@ -13,7 +13,7 @@ export { parseDuckDuckGoResults } from "./web-search-providers/duckduckgo.js";
 export { parseStartpageResults } from "./web-search-providers/startpage.js";
 import { boundWebSearchEntries } from "./web-search-output.js";
 import { buildWebNextAction, formatActionableEnvelope, webStatusForCode } from "./web-actionable.js";
-import { normalizeSearchCountry } from "./web-search-country.js";
+import { normalizeSearchCountry, unsupportedCountryFilter } from "./web-search-country.js";
 import {
   refundWebSearchRequests,
   createWebSearchRunState,
@@ -780,6 +780,20 @@ async function searchOneQuery(query, options) {
   for (const name of names) {
     if (options.signal?.aborted) return abortedSearch(name, failures);
     const provider = webSearchProviders.get(name);
+    // Capability refusal is deterministic: cooldown expiry or configuration
+    // cannot make an unsupported country request dispatchable. Keep it after
+    // abort (cancellation has priority), but before cooldown, eligibility,
+    // admission, and budget so it has no remote or shared-state side effects.
+    // Provider preflight remains for dynamic support such as DDG's region map.
+    const preflight = options.country && provider.filterSupport.country === "unsupported"
+      ? unsupportedCountryFilter(name)
+      : provider.preflight?.(options);
+    if (preflight) {
+      const result = { ok: false, backend: name, ...preflight };
+      if (names.length === 1) return { ...result, failures };
+      failures.push(result);
+      continue;
+    }
     const deferred = deferredResult(options.searchState, name);
     if (deferred) {
       failures.push(deferred);
@@ -789,16 +803,8 @@ async function searchOneQuery(query, options) {
       failures.push({ ok: false, backend: name, code: "backend_unavailable", message: `${name} requirements are not satisfied.`, retryable: false });
       continue;
     }
-    // Provider preflight runs before admission is constructed or the
-    // coordinator is touched: a provider that cannot legally attempt under the
-    // resolved policy must not wait on, consume, or poison shared admission
-    // state. Only providers with remote side effects implement it; absence
-    // means proceed. The in-provider gate stays as defense in depth.
-    const preflight = provider.preflight?.(options);
     let result;
-    if (preflight) {
-      result = { ok: false, backend: name, ...preflight };
-    } else if (provider.ownsRequests === true) {
+    if (provider.ownsRequests === true) {
       // Composite adapters gate the actual child URL before each admission.
       // An aggregate .some(denied) check would wrongly deny partial allowlists.
       result = await searchWithRequestCount(options, async () => {
