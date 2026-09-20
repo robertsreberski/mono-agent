@@ -45,7 +45,10 @@ export function failureKindOf(error) {
   return error instanceof BenchmarkError ? canonicalFailureKind(error.failureKind) : null;
 }
 
-/** Reservations bound configured model steps/output, not unobservable HTTP retries or exact input. */
+/**
+ * Reservations account for model steps and output-token hints; they do not
+ * bound provider wire output, retries or exact input.
+ */
 export class Budget {
   constructor(plan) {
     this.plan = plan;

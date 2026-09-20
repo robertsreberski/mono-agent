@@ -288,23 +288,37 @@ each trial. A failed build or changed source/output refuses admission. Building
 does not itself authorize provider calls. Existing offline `dist` remains
 explicitly **unverified**, even when the offline manifest reports a clean HEAD.
 
-The reader and extractor use separate fallback-free `MonoRuntimeLike` runtimes;
-`LlmComplete` forwards the strict production prompt unchanged, with the existing
-maintenance system prompt, no tools and one model step. The built-in embedding
-factory supports Ollama, LM Studio and OpenAI at their default endpoints. OpenAI
-embeddings use the existing `OPENAI_API_KEY` environment convention; runtime
-providers use existing supported authentication. No credentials/config file is
-copied, printed or created by the benchmark. There is no custom endpoint,
-consumer memory path, external dataset or arbitrary provider-module flag.
+The reader and extractor use separate fallback-free `MonoRuntimeLike` runtimes.
+The capture `LlmComplete` wrapper forwards the strict production prompt unchanged
+with the existing maintenance system prompt, one model step and ordinary tool/MCP
+access disabled. When production capture selects a schema, the runtime still
+exposes its reserved terminal `StructuredOutput` tool. The wrapper accepts only
+the authoritative structured result after successful runtime settlement,
+serializes the extraction object or projected reconciliation `decisions` into the
+capture trace and strict parser, and fails closed rather than falling back to
+plausible prose. Reader memory-tool behavior is unchanged.
 
-Compaction is explicitly disabled for **both** models, Pi retries are disabled,
-and no fallback route is installed. Unexpected compaction fails the trial. The
-output limit reuses the repository-internal `providerCheckMaxTokens` Pi option,
-not an invented generic `maxTokens` setting. A faux-provider contract test drives
-the real Pi harness and checks the capped dispatched model on both initial and
-post-tool requests. This is version-coupled integration evidence, not a real
-provider's billing/termination guarantee. Actual transport attempts and native
-usage stay unknown unless observable.
+The built-in embedding factory supports Ollama, LM Studio and OpenAI at their
+default endpoints. OpenAI embeddings use the existing `OPENAI_API_KEY`
+environment convention; runtime providers use existing supported authentication.
+No credentials/config file is copied, printed or created by the benchmark. There
+is no custom endpoint, consumer memory path, external dataset or arbitrary
+provider-module flag.
+
+Compaction is explicitly disabled for **both** models. Requests select explicit
+SSE with Pi retries set to zero, avoiding the selected Codex route's automatic
+WebSocket attempts and SSE fallback outside that retry count; no fallback route
+is installed. Unexpected compaction fails the trial. The repository-internal
+`providerCheckMaxTokens` option supplies an output-token hint and reservation,
+not a universal wire-enforced cap. A faux-provider contract test verifies model
+clamping inside the real Pi harness, but the selected Codex request body omits the
+cap. Dry plans therefore report that limitation, and a confirmed Codex `--real`
+run fails with `strict_output_budget_unsupported` before build, credential access
+or provider construction. Exact completed-artifact reuse remains available
+because it performs no provider request and is checked before this preflight.
+Resolving cap support requires a newly reviewed implementation/profile and fresh
+authorization; a confirmation digest alone is not authority to bypass the check.
+Actual transport attempts and native usage stay unknown unless observable.
 
 ### Pilot limits and accounting
 
@@ -320,10 +334,11 @@ repeats or external suites. Concurrency is one. The initial workload ceilings ar
 | Output-token reservations | 50,000 | 150,000 |
 | Runtime including cleanup reserve | 15 min | 40 min |
 
-Each reader reserves at most three model steps with a 512-token output limit;
-each extraction/reconciliation step reserves 2,048 output tokens. Model calls
-have a 60-second full-promise deadline, embeddings a 10-second full-promise
-deadline (including response bodies), each readiness barrier 120 seconds, and
+Each reader reserves at most three model steps with a 512-token output hint per
+step; each extraction/reconciliation step reserves 2,048 output tokens. These
+are reservation/accounting values and provider hints, not wire-output guarantees.
+Model calls have a 60-second full-promise deadline, embeddings a 10-second
+full-promise deadline (including response bodies), each readiness barrier 120 seconds, and
 cleanup one overall 10-second deadline. Global cancellation also bounds these
 awaits; the original raw promises remain tracked independently of the wrappers.
 Cleanup first quiesces harnesses and the store, rejects a timed-out/discarded
