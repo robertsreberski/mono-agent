@@ -130,18 +130,34 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
       selected: { categoryDenominators: { 1: 6, 2: 6, 3: 6, 4: 6, 5: 6 }, answerableQuestions: 24, category5Questions: 6 },
       review: { blindArmLabels: true, paidAutomaticJudge: false },
     });
-    expect(plan.perCall).toMatchObject({ readerMaxTurns: 4, readerEstimatedInputTokens: 98_304, extractorEstimatedInputTokens: 8_192, reconciliationEstimatedInputTokens: 29_897 });
+    expect(plan.perCall).toMatchObject({
+      readerMaxTurns: 4, readerEstimatedInputTokens: 98_304, extractorEstimatedInputTokens: 8_192,
+      reconciliationEstimatedInputTokens: 29_897, callTimeoutMs: 180_000,
+      readinessTimeoutMs: 5_880_000, captureModelOutputAttempts: 16,
+    });
+    expect(plan.locomo.captureRecovery).toEqual({
+      policy: "native_persisted_exponential_v1", maxAttempts: 16, retryBaseMs: 60_000,
+      retryMaxMs: 21_600_000, scheduleSource: "durable_pending_record_nextAttemptAt",
+      virtualClock: "advance_exactly_to_persisted_schedule", retryableFailure: "model_output_only",
+    });
     expect(plan.locomo.executionGate.largestReservedPromptAndOutput).toBe(98_816);
     expect(plan.locomo.ceilings.captureAdmissions).toBe(corpus.groups[0].source.turns.length);
-    expect(plan.locomo.ceilings.captureModelSteps).toBe(plan.locomo.ceilings.captureAdmissions * 2);
+    expect(plan.locomo.ceilings.captureModelSteps).toBe(plan.locomo.ceilings.captureAdmissions * 32);
     expect(plan.locomo.ceilings.readerInvocations).toBe(30);
     expect(plan.locomo.ceilings.readerModelSteps).toBe(120);
     expect(plan.locomo.ceilings.semanticJudgeInvocations).toBe(0);
+    expect(plan.limits.chatSteps).toBe(plan.locomo.ceilings.captureModelSteps + plan.locomo.ceilings.readerModelSteps);
+    expect(plan.limits.embeddingCalls).toBe(plan.locomo.ceilings.captureModelSteps + plan.locomo.ceilings.readerRecallCalls);
+    expect(plan.limits.outputTokens).toBe(plan.locomo.ceilings.captureModelSteps * 2_048
+      + plan.locomo.ceilings.readerModelSteps * 512);
+    expect(plan.limits.estimatedInputTokens).toBe(plan.locomo.ceilings.combinedInputTokensReserved);
     expect(plan.locomo.plannedComparisonAggregateMaximum).toMatchObject({
       scope: "planning_estimate_for_three_separately_enforced_invocations",
       plannedInvocations: 3, bujoRevisions: 2, fullHistoryReaders: 1, uniqueQuestions: 30, answerInvocations: 90,
       captureAdmissions: corpus.groups[0].source.turns.length * 2,
-      captureModelSteps: corpus.groups[0].source.turns.length * 4,
+      extractionModelSteps: corpus.groups[0].source.turns.length * 32,
+      reconciliationModelSteps: corpus.groups[0].source.turns.length * 32,
+      captureModelSteps: corpus.groups[0].source.turns.length * 64,
       readerModelSteps: 360, semanticJudgeInvocations: 0,
       crossProcessAdmissionEnforced: false, perInvocationLimitsEnforcedSeparately: true, parentControlledExecutionRequired: true,
     });

@@ -143,7 +143,9 @@ export function summarize(trials, events, kind, capture = []) {
     ...(diagnosticFunnel === undefined ? {} : { diagnosticFunnel }),
     ...(locomoOfficial === undefined ? {} : { locomoOfficial }),
     captureRecovery: {
+      firstAttemptSuccess: events.filter((event) => event.stage === "capture_recovery" && event.status === "first_attempt_success").length,
       scheduled: events.filter((event) => event.stage === "capture_recovery" && event.status === "scheduled").length,
+      recoveredSuccess: events.filter((event) => event.stage === "capture_recovery" && event.status === "recovered_success").length,
       exhausted: events.filter((event) => event.stage === "capture_recovery" && event.status === "exhausted").length,
     },
     semanticQA: { value: null, status: kind === "real" ? "annotation_pending" : "not_applicable_scripted" },

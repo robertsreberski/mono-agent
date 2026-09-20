@@ -2,14 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFile, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, armsFor, loadCorpus, makePlan, serializableProfile, sourceOnly, contextFor, validateCorpus } from "../lib/memory-e2e-dataset.mjs";
 import { Budget, canonicalFailureKind, captureLlm, failureKindOf, isFatalFailureKind, meteredEmbeddings, meteredRuntime, realProviders, scriptedProviders, usageOf } from "../lib/memory-e2e-providers.mjs";
 import { percentiles, ratio, lexicalDiagnostic, safeArtifact, ownedParent, summarize } from "../lib/memory-e2e-report.mjs";
-import { automaticRecallObservation, awaitReady, captureFailureKindFor, cleanupTrial, readySnapshot } from "../lib/memory-e2e-runner.mjs";
+import { automaticRecallObservation, awaitReady, captureFailureKindFor, cleanupTrial, persistedCaptureRetrySchedule, readySnapshot } from "../lib/memory-e2e-runner.mjs";
 import { prepareRealBuild, verifyRealBuild, BUILD_POLICY } from "../lib/memory-e2e-build.mjs";
 import { main, parseArguments, profileFrom } from "../memory-e2e-benchmark.mjs";
+import { CompletedTurnIntakeManager, inspectCompletedTurnIntake } from "../../packages/memory/src/bujo/capture-intake.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const budgets = [];
@@ -168,46 +170,123 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     await expect(awaitReady({ flush: async () => {}, queueSnapshot: () => ({ ...ready, intake: { ...ready.intake, pending: 1 } }) }, 20)).rejects.toThrow("capture_not_ready");
     await expect(awaitReady({ flush: () => new Promise(() => {}) }, 5)).rejects.toThrow("readiness_timeout");
   });
-  it("replays only one structured model-output failure through native intake and preserves exhaustion", async () => {
-    let attempts = 0; let advancedMs = 0; const retries = [];
+  it("advances to persisted native retry schedules, reports recovery, and preserves non-output stops", async () => {
+    const id = "a".repeat(64);
+    let attempts = 0; let now = Date.parse("2026-09-20T00:00:00.000Z");
+    const retries = []; const outcomes = [];
     const recovered = await awaitReady({
       flush: async () => { attempts += 1; },
       queueSnapshot: () => attempts >= 2 ? ready : { ...ready, intake: { ...ready.intake, pending: 1, resolved: 0 } },
     }, 100, undefined, {
-      maxAttempts: 2,
-      delayMs: 60_000,
-      inspect: () => ({ items: [{ state: "pending", attempt: 1, lastError: "model_output" }] }),
-      advanceClock: (value) => { advancedMs += value; },
-      onRetry: (value) => retries.push(value),
+      id, maxAttempts: 16,
+      inspect: () => ({ items: [{ id, state: attempts >= 2 ? "resolved" : "pending", attempt: 1, ...(attempts >= 2 ? {} : { lastError: "model_output" }) }] }),
+      persistedSchedule: (item) => ({ id, attempt: item.attempt, nextAttemptAt: "2026-09-20T00:01:00.000Z" }),
+      advanceClock: (value) => { const advance = Date.parse(value) - now; now = Date.parse(value); return advance; },
+      onRetry: (value) => retries.push(value), onReady: (value) => outcomes.push(value),
     });
     expect(recovered).toEqual(ready);
     expect(attempts).toBe(2);
-    expect(advancedMs).toBe(60_000);
-    expect(retries).toEqual([{ attempt: 1, failureKind: "model_output" }]);
+    expect(now).toBe(Date.parse("2026-09-20T00:01:00.000Z"));
+    expect(retries).toEqual([{
+      attempt: 1, failureKind: "model_output", nextAttemptAt: "2026-09-20T00:01:00.000Z", advanceMs: 60_000,
+    }]);
+    expect(outcomes).toEqual([{ attempt: 2, priorFailures: 1, status: "recovered_success" }]);
 
     let providerAttempts = 0;
     await expect(awaitReady({
       flush: async () => { providerAttempts += 1; },
       queueSnapshot: () => ({ ...ready, intake: { ...ready.intake, pending: 1, resolved: 0 } }),
     }, 100, undefined, {
-      maxAttempts: 2, delayMs: 60_000,
-      inspect: () => ({ items: [{ state: "pending", attempt: 1, lastError: "provider" }] }),
+      id, maxAttempts: 16,
+      inspect: () => ({ items: [{ id, state: "pending", attempt: 1, lastError: "provider" }] }),
+      persistedSchedule: () => { throw new Error("must not read schedule"); },
       advanceClock: () => { throw new Error("must not advance"); },
       onRetry: () => { throw new Error("must not retry"); },
     })).rejects.toThrow("capture_not_ready");
     expect(providerAttempts).toBe(1);
+  });
 
-    let exhaustedAttempts = 0; const exhausted = [];
+  it("bounds persistent malformed output at the actual native dead letter and records exhaustion", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "retry-exhaustion-test-")); dirs.push(directory);
+    const maxAttempts = 16; let attempts = 0; let now = new Date("2026-09-20T00:00:00.000Z");
+    const exhausted = []; const scheduled = [];
+    const intake = new CompletedTurnIntakeManager({
+      root: directory, clock: () => now, writeSummary: async () => {},
+      capture: async () => {
+        attempts += 1;
+        const error = new Error("persistently malformed structured output"); error.name = "MemoryModelOutputError"; throw error;
+      },
+    });
+    const admission = intake.admit({
+      runId: "runner-native-exhaustion", conversationId: "conversation", summary: "summary", captureText: "source",
+    });
     await expect(awaitReady({
-      flush: async () => { exhaustedAttempts += 1; },
-      queueSnapshot: () => ({ ...ready, intake: { ...ready.intake, pending: 1, resolved: 0 } }),
-    }, 100, undefined, {
-      maxAttempts: 2, delayMs: 60_000,
-      inspect: () => ({ items: [{ state: "pending", attempt: exhaustedAttempts, lastError: "model_output" }] }),
-      advanceClock: () => {}, onRetry: () => {}, onExhausted: (value) => exhausted.push(value),
+      flush: () => intake.flush(),
+      queueSnapshot: () => ({ intake: intake.snapshot(), shutdown: { timedOut: false, discarded: 0 } }),
+    }, 2000, undefined, {
+      id: admission.id, maxAttempts,
+      inspect: () => inspectCompletedTurnIntake(directory, now),
+      persistedSchedule: (item) => persistedCaptureRetrySchedule(admission.source, item),
+      advanceClock: (value) => { const advance = Date.parse(value) - now.getTime(); now = new Date(value); return advance; },
+      onRetry: (value) => scheduled.push(value), onExhausted: (value) => exhausted.push(value),
     })).rejects.toThrow("capture_not_ready");
-    expect(exhaustedAttempts).toBe(2);
-    expect(exhausted).toEqual([{ attempt: 2, failureKind: "model_output" }]);
+    expect(attempts).toBe(16);
+    expect(scheduled).toHaveLength(15);
+    expect(scheduled.map((entry) => entry.advanceMs)).toEqual([
+      60_000, 120_000, 240_000, 480_000, 960_000, 1_920_000, 3_840_000, 7_680_000,
+      15_360_000, 21_600_000, 21_600_000, 21_600_000, 21_600_000, 21_600_000, 21_600_000,
+    ]);
+    expect(exhausted).toEqual([{ attempt: 16, failureKind: "model_output" }]);
+    expect(inspectCompletedTurnIntake(directory, now).items[0]).toMatchObject({ state: "dead", attempt: 16 });
+    intake.finishShutdown();
+  });
+
+  it("drives actual durable intake from malformed first output to one atomic recovered success", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "retry-intake-test-")); dirs.push(directory);
+    let now = new Date("2026-09-20T00:00:00.000Z"); let captureAttempts = 0;
+    const commits = []; const outcomes = []; const retries = [];
+    const intake = new CompletedTurnIntakeManager({
+      root: directory, clock: () => now,
+      writeSummary: async () => {},
+      capture: async () => {
+        captureAttempts += 1;
+        if (captureAttempts === 1) {
+          const error = new Error("malformed structured output"); error.name = "MemoryModelOutputError"; throw error;
+        }
+        commits.push("complete-plan"); return "captured";
+      },
+    });
+    const admission = intake.admit({
+      runId: "runner-native-recovery", conversationId: "conversation", summary: "summary", captureText: "source",
+    });
+    const recovered = await awaitReady({
+      flush: () => intake.flush(),
+      queueSnapshot: () => ({ intake: intake.snapshot(), shutdown: { timedOut: false, discarded: 0 } }),
+    }, 1000, undefined, {
+      id: admission.id, maxAttempts: 16,
+      inspect: () => inspectCompletedTurnIntake(directory, now),
+      persistedSchedule: (item) => persistedCaptureRetrySchedule(admission.source, item),
+      advanceClock: (value) => { const advance = Date.parse(value) - now.getTime(); now = new Date(value); return advance; },
+      onRetry: (value) => retries.push(value), onReady: (value) => outcomes.push(value),
+    });
+    expect(recovered.intake).toMatchObject({ pending: 0, dead: 0, resolved: 1 });
+    expect(captureAttempts).toBe(2);
+    expect(commits).toEqual(["complete-plan"]);
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toMatchObject({ attempt: 1, advanceMs: 60_000 });
+    expect(outcomes).toEqual([{ attempt: 2, priorFailures: 1, status: "recovered_success" }]);
+    expect(inspectCompletedTurnIntake(directory, now).items[0]).toMatchObject({ state: "resolved", attempt: 1 });
+    intake.finishShutdown();
+  });
+
+  it("reads only validated retry coordinates from the persisted pending record", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "retry-schedule-test-")); dirs.push(directory);
+    const id = "c".repeat(64); const source = join(directory, "pending.json");
+    await writeFile(source, JSON.stringify({ state: "pending", id, attempt: 2, nextAttemptAt: "2026-09-20T00:03:00.000Z", captureText: "not returned" }));
+    await expect(persistedCaptureRetrySchedule(source, { id, attempt: 2 })).resolves.toEqual({
+      id, attempt: 2, nextAttemptAt: "2026-09-20T00:03:00.000Z",
+    });
+    await expect(persistedCaptureRetrySchedule(source, { id, attempt: 1 })).rejects.toThrow("capture_recovery_invalid");
   });
 
   it("reserves steps/output, pins SSE with no retries, and reports cap enforcement honestly", async () => {

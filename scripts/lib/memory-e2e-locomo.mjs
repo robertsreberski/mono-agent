@@ -39,7 +39,7 @@ const COMPLETED_TURN_CAPTURE_TEXT_MAX_BYTES = 512 * 1024;
  * source utterances (the final odd utterance stands alone). Pair boundaries use
  * only source order: never questions, references, evidence ids, or outcomes.
  */
-export const LOCOMO_ADAPTER_PROTOCOL = "locomo-adjacent-exchanges-v2";
+export const LOCOMO_ADAPTER_PROTOCOL = "locomo-adjacent-exchanges-v3-native-capture-recovery";
 export const LOCOMO_EXCHANGE_MAX_ENTRIES = 2;
 export const LOCOMO_EXCHANGE_MAX_USER_BYTES = 8 * 1024;
 export const LOCOMO_READER_PROMPT = Object.freeze({
@@ -52,7 +52,14 @@ const EXPERIMENTS = Object.freeze({
   [LOCOMO_DEVELOPMENT_EXPERIMENT]: Object.freeze({ role: "development", rank: 5, perCategory: 6, total: 30 }),
   [LOCOMO_CONFIRMATION_EXPERIMENT]: Object.freeze({ role: "confirmation", rank: 6, perCategory: 4, total: 20 }),
 });
-const CAPTURE_MODEL_OUTPUT_ATTEMPTS = 1;
+// Frozen to CompletedTurnIntakeManager's production defaults. The evaluator
+// advances to each durable nextAttemptAt; it does not implement a model loop.
+const CAPTURE_MODEL_OUTPUT_ATTEMPTS = 16;
+const CAPTURE_RETRY_BASE_MS = 60_000;
+const CAPTURE_RETRY_MAX_MS = 6 * 60 * 60_000;
+const CAPTURE_RETRY_POLICY = "native_persisted_exponential_v1";
+const CAPTURE_CALL_TIMEOUT_MS = 180_000;
+const CAPTURE_READINESS_TIMEOUT_MS = CAPTURE_MODEL_OUTPUT_ATTEMPTS * 2 * CAPTURE_CALL_TIMEOUT_MS + 120_000;
 const READER_MAX_TURNS = 4;
 // Covers the larger frozen confirmation history after harness timestamp/message
 // framing (offline measured maximum 84,811 tokens) while remaining well inside
@@ -383,12 +390,15 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
   // invocation enforces its own limits; no state crosses processes to enforce
   // this aggregate, and the parent must control finite phase execution.
   const comparisonSourceAdmissions = groups[0].source.turns.length;
-  const comparisonCaptureStepsPerRevision = comparisonSourceAdmissions * 2;
+  const comparisonExtractionStepsPerRevision = comparisonSourceAdmissions * CAPTURE_MODEL_OUTPUT_ATTEMPTS;
+  const comparisonCaptureStepsPerRevision = comparisonExtractionStepsPerRevision * 2;
   const comparisonReaderSteps = questions * 3 * READER_MAX_TURNS;
   const comparisonBujoReaderRecallCalls = questions * READER_MAX_TURNS;
-  const comparisonEmbeddingInputPerBujo = comparisonSourceAdmissions * (captureSearchEmbeddingInput + captureWriteEmbeddingInput)
+  const comparisonEmbeddingInputPerBujo = comparisonSourceAdmissions * CAPTURE_MODEL_OUTPUT_ATTEMPTS
+    * (captureSearchEmbeddingInput + captureWriteEmbeddingInput)
     + comparisonBujoReaderRecallCalls * queryEmbeddingInput;
-  const comparisonChatInputPerBujo = comparisonSourceAdmissions * (8_192 + LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS)
+  const comparisonChatInputPerBujo = comparisonSourceAdmissions * CAPTURE_MODEL_OUTPUT_ATTEMPTS
+    * (8_192 + LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS)
     + questions * READER_MAX_TURNS * READER_ESTIMATED_INPUT_TOKENS;
   const comparisonFullHistoryReaderInput = questions * READER_MAX_TURNS * READER_ESTIMATED_INPUT_TOKENS;
   const plannedComparisonAggregateMaximum = {
@@ -399,8 +409,8 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
     uniqueQuestions: questions,
     answerInvocations: questions * 3,
     captureAdmissions: comparisonSourceAdmissions * 2,
-    extractionModelSteps: comparisonSourceAdmissions * 2,
-    reconciliationModelSteps: comparisonSourceAdmissions * 2,
+    extractionModelSteps: comparisonExtractionStepsPerRevision * 2,
+    reconciliationModelSteps: comparisonExtractionStepsPerRevision * 2,
     captureModelSteps: comparisonCaptureStepsPerRevision * 2,
     readerModelSteps: comparisonReaderSteps,
     chatSteps: comparisonCaptureStepsPerRevision * 2 + comparisonReaderSteps,
@@ -422,8 +432,8 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
       readerEstimatedInputTokens: READER_ESTIMATED_INPUT_TOKENS,
       reconciliationEstimatedInputTokens: LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS,
       readerHistoryHeadroomMessages: 8,
-      callTimeoutMs: 180_000,
-      readinessTimeoutMs: 240_000,
+      callTimeoutMs: CAPTURE_CALL_TIMEOUT_MS,
+      readinessTimeoutMs: CAPTURE_READINESS_TIMEOUT_MS,
       captureModelOutputAttempts: CAPTURE_MODEL_OUTPUT_ATTEMPTS,
     },
   });
@@ -434,9 +444,19 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
     selectionHash: question.evaluation.selectionHash,
   }));
   const sourceIdentity = digest(groups[0].source.turns);
+  const captureRecovery = Object.freeze({
+    policy: CAPTURE_RETRY_POLICY,
+    maxAttempts: CAPTURE_MODEL_OUTPUT_ATTEMPTS,
+    retryBaseMs: CAPTURE_RETRY_BASE_MS,
+    retryMaxMs: CAPTURE_RETRY_MAX_MS,
+    scheduleSource: "durable_pending_record_nextAttemptAt",
+    virtualClock: "advance_exactly_to_persisted_schedule",
+    retryableFailure: "model_output_only",
+  });
   const protocolIdentity = digest({
     adapter: LOCOMO_ADAPTER_PROTOCOL,
     experiment,
+    captureRecovery,
     codeRevision,
     corpusSha256: sha256,
     partitionRank: config.rank,
@@ -457,6 +477,7 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
     locomo: {
       protocol: LOCOMO_ADAPTER_PROTOCOL,
       protocolIdentity,
+      captureRecovery,
       experiment: {
         id: experiment,
         role: config.role,

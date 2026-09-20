@@ -139,8 +139,8 @@ downloads or vendors it. Keep the CC BY-NC 4.0 corpus in an owner-only ignored
 directory. The adapter sends neither references, evidence annotations, images,
 summaries, observations, nor unselected conversations to a provider.
 
-Protocol `locomo-adjacent-exchanges-v2` projects each session into ordered,
-non-overlapping adjacent pairs of source utterances; a final odd utterance stands
+Protocol `locomo-adjacent-exchanges-v3-native-capture-recovery` projects each
+session into ordered, non-overlapping adjacent pairs of source utterances; a final odd utterance stands
 alone. Pairing uses only source order, never questions or answers. Speaker and
 text bytes are preserved without trimming, both participants remain quoted
 humans, and a claim-free synthetic acknowledgement completes each harness turn.
@@ -199,13 +199,11 @@ capture-once across failed invocations or automatically rerun an expensive plan.
 three separate invocations: baseline BuJo, candidate BuJo and one full-history
 reader. It is not a cross-process admission controller or provider-quota promise.
 Each command enforces only its own `limits`; the parent must control the finite
-sequence and account for completed artifacts. The frozen 30/20 selectors produce
-a worst-case two-phase estimate of 2,816 chat steps, 2,616 embedding calls,
-79,028,364 reserved input tokens and 40 hours. **That execution is not approved.**
-Before real LoCoMo work, use a parent-approved materially smaller diagnostic
-budget strategy (beginning with the separate product conformance canary) or add a
-separately reviewed narrow capture checkpoint. A dry-plan confirmation is not
-execution authorization.
+sequence and account for completed artifacts. Capture reservations include all 16
+native production intake attempts for every admission, even though a successful
+first attempt consumes only one. The plan records those deliberately conservative
+chat, embedding, input, output and runtime ceilings. A dry-plan confirmation is
+not execution authorization.
 
 Private artifacts record extraction candidates, reconciliation actions,
 committed snapshots, raw backend retrieval outcomes where supported, automatic
@@ -247,8 +245,13 @@ those limitations or future-validity filtering.
 Admission is not readiness. After `flush`, the runner checks pending, dead,
 retrying and transitioning intake; index queues/backlog, failures and dropped
 work; and strict health/vector/canonical/outbox state. Empty valid extraction can
-be ready without capturing a useful fact. Delayed retries and malformed output
-are `capture_not_ready`, never successful empty memory. Fresh semantic stores
+be ready without capturing a useful fact. For LoCoMo only, `model_output` follows
+the existing durable intake's 16-attempt policy: the evaluator advances its virtual
+clock to each record's actual persisted `nextAttemptAt`, while every provider call
+keeps its real timeout and cancellation. First-attempt and recovered successes,
+scheduled attempts and exhaustion are separate artifact events. Provider/auth,
+quota and processing failures do not take this recovery path. Persistent malformed
+output is `capture_not_ready`, never successful empty memory. Fresh semantic stores
 initialize an **empty** managed generation before replay so strict health can
 verify them; captured data is never rebuilt to conceal capture/index loss.
 
