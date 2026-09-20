@@ -35,7 +35,7 @@ import { setToolActivityPathRoots } from "@mono-agent/agent-contracts";
 import type { AgentResponder, MemoryStore } from "@mono-agent/agent-contracts";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { LlmComplete } from "@mono-agent/memory/bujo";
+import type { LlmComplete, LlmCompleteOptions } from "@mono-agent/memory/bujo";
 import { createCompositeRunRecorder, createJsonlRunRecorder } from "@mono-agent/observability";
 import type {
   PhoenixExporterConfig,
@@ -75,6 +75,7 @@ import {
   type AgentRootOwnership,
 } from "./agent-root-coordinator.js";
 import type { ChannelId } from "./channels.js";
+import { textFromMemoryRuntimeResult } from "./memory-llm-result.js";
 import { resolveMemoryRecallSettings } from "./memory-recall.js";
 import {
   createMemoryJournalRuntimeExtension,
@@ -2325,7 +2326,7 @@ function createAgentHostMemoryLlm(options: {
   const timeoutMs = options.timeoutMs ?? 60_000;
   return {
     id: `agent-host:${referenceOf(options.model)}`,
-    async complete(prompt: string, opts?: { readonly label?: string; readonly abortSignal?: AbortSignal }): Promise<string> {
+    async complete(prompt: string, opts?: LlmCompleteOptions): Promise<string> {
       const ctrl = new AbortController();
       const abort = (): void => ctrl.abort(opts?.abortSignal?.reason);
       if (opts?.abortSignal?.aborted === true) abort();
@@ -2368,6 +2369,7 @@ function createAgentHostMemoryLlm(options: {
             allowedTools: [],
             disallowedTools: [],
             mcpServers: {},
+            ...(opts?.outputSchema === undefined ? {} : { outputSchema: opts.outputSchema }),
             ...(recorder === undefined ? {} : { onEvent: (event) => { recorder.onEvent(event); } }),
           } satisfies RuntimeRunOptions);
         } catch (error) {
@@ -2382,7 +2384,12 @@ function createAgentHostMemoryLlm(options: {
         // Record with the real outcome BEFORE textFromMemoryRuntimeResult, which throws
         // on failureKind/error; recorder.finish() classifies failed/succeeded/cancelled itself.
         await safeRecorderCall(() => recorder?.finish(result));
-        return textFromMemoryRuntimeResult(result, { timedOut, timeoutMs });
+        return textFromMemoryRuntimeResult(result, {
+          timedOut,
+          timeoutMs,
+          structuredOutputRequested: opts?.outputSchema !== undefined,
+          ...(opts?.structuredResultKey === undefined ? {} : { structuredResultKey: opts.structuredResultKey }),
+        });
       } finally {
         clearTimeout(timer);
         opts?.abortSignal?.removeEventListener("abort", abort);
@@ -2435,25 +2442,6 @@ function memoryOperationFromLabel(label: string | undefined): string | undefined
   }
   const op = label.includes(":") ? label.slice(label.indexOf(":") + 1) : label;
   return op.length > 0 ? op : undefined;
-}
-
-function textFromMemoryRuntimeResult(
-  result: RuntimeResult,
-  opts?: { readonly timedOut?: boolean; readonly timeoutMs?: number },
-): string {
-  if (result.cancelled === true) {
-    if (opts?.timedOut === true) {
-      throw new Error(`agent-host memory LLM timed out after ${opts.timeoutMs ?? "?"}ms (provider too slow or unavailable).`);
-    }
-    throw new Error("agent-host memory LLM run was cancelled.");
-  }
-  if (typeof result.failureKind === "string" && result.failureKind.length > 0) {
-    throw new Error(`agent-host memory LLM failed (${result.failureKind}): ${result.error ?? "unknown error"}`);
-  }
-  if (typeof result.error === "string" && result.error.length > 0) {
-    throw new Error(`agent-host memory LLM failed: ${result.error}`);
-  }
-  return typeof result.text === "string" ? result.text : "";
 }
 
 function referenceOf(model: RuntimeModelReference): string {

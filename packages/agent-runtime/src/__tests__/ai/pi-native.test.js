@@ -1339,6 +1339,32 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.structuredResultSource).toBe("StructuredOutput");
   });
 
+  it("settles a terminal StructuredOutput submission successfully at maxTurns one", async () => {
+    const model = setup();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("StructuredOutput", { answer: 42 }, { id: "so-max-one" })]),
+    ]);
+
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "give structured output" }],
+      maxTurns: 1,
+      outputSchema: {
+        type: "object",
+        properties: { answer: { type: "number" } },
+        required: ["answer"],
+        additionalProperties: false,
+      },
+    }));
+
+    expect(result).toMatchObject({
+      error: null,
+      failureKind: null,
+      structuredResult: { answer: 42 },
+      structuredResultSource: "StructuredOutput",
+    });
+    expect(result.diagnostics).toMatchObject({ max_turns_hit: false, turn_count: 1 });
+  });
+
   it("forwards maxRetries to the provider stream options", async () => {
     const model = setup();
     let seenOptions = null;
