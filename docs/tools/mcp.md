@@ -532,9 +532,10 @@ tag membership or separate enablement key: the MCP server remains
 
 ## `ProviderUsage`: subscription quota
 
-`ProviderUsage` is a read-only app-owned, request-scoped MCP tool. It requires no
-arguments; optional `provider` accepts only `anthropic`, `openai-codex`,
-`opencode-go`, or `github-copilot`. It works on permitted agent turns on any channel, independently
+`ProviderUsage` is a read-only app-owned, request-scoped MCP tool. It takes no
+required arguments; optional `provider` accepts only `anthropic`, `openai-codex`,
+`opencode-go`, or `github-copilot`, and optional `refresh` accepts a boolean
+(absent or `false` keeps the cached read; `true` forces a current read). It works on permitted agent turns on any channel, independently
 of the web console's writable-turn tools. It returns the same
 `mono-agent.provider-usage.v1` JSON snapshot as
 [Agent settings usage meters](/observability/web-console/#subscription-usage):
@@ -555,8 +556,10 @@ allow local editor and GitHub CLI github.com discovery; unusable/enterprise Pi
 entries are omitted without local fallback, in the documented [usage credential order](/observability/web-console/#subscription-usage).
 It does not accept credentials, paths, URLs or
 account identifiers. Console and tool share one five-minute per-provider cache
-and coalesced refresh/backoff. There is no forced-refresh argument, vendor write,
-quota purchase, routing decision or local cost calculation. Retained usage fetches also
+and coalesced refresh/backoff. There is no vendor write,
+quota purchase, routing decision or local cost calculation. A forced tool read
+joins the shared in-flight fetch and never bypasses error backoff or
+`Retry-After`. Retained usage fetches also
 feed passive credential-health evidence only when using agent-owned Pi credentials:
 vendor acceptance is **Credential OK**,
 not proof of inference/model entitlement, while final auth rejection is **Needs action**.
