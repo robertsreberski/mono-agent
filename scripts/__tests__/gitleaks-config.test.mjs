@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -150,6 +151,50 @@ describe("Telegram token gitleaks rule", () => {
       expect(report.map((finding) => finding.StartLine)).toEqual(
         fixture.detected.map((_, index) => index + 1),
       );
+    },
+  );
+
+  it.skipIf(!hasGitleaks)(
+    "allows only explicitly labeled auth-path fingerprints",
+    async () => {
+      const { fixture } = await readInputs();
+      const temporaryDirectory = await mkdtemp(
+        join(tmpdir(), "mono-agent-gitleaks-worklab-"),
+      );
+      temporaryDirectories.push(temporaryDirectory);
+      const worklab = join(temporaryDirectory, ".worklab-tmp");
+      await mkdir(worklab);
+      const fingerprint = createHash("sha256").update("fixture auth path").digest("hex");
+      await writeFile(
+        join(worklab, "plan.json"),
+        `${JSON.stringify({ piAuthFingerprint: fingerprint })}\n`,
+        "utf8",
+      );
+      await writeFile(
+        join(temporaryDirectory, "public-plan.json"),
+        `${JSON.stringify({ piAuthFingerprint: fingerprint })}\n`,
+        "utf8",
+      );
+      await writeFile(
+        join(worklab, "secret.json"),
+        `${JSON.stringify({ candidate: materialize(fixture.detected[0]) })}\n`,
+        "utf8",
+      );
+      const reportPath = join(temporaryDirectory, "gitleaks-report.json");
+      const result = spawnSync(
+        "gitleaks",
+        [
+          "dir", "--redact", "--no-banner", "--config", configPath,
+          "--report-format", "json", "--report-path", reportPath,
+          "--exit-code", "17", temporaryDirectory,
+        ],
+        { encoding: "utf8" },
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(17);
+      const report = JSON.parse(await readFile(reportPath, "utf8"));
+      expect(report.map((finding) => basename(finding.File))).toEqual(["secret.json"]);
     },
   );
 });
