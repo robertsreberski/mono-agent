@@ -148,6 +148,12 @@
   keeping statusless recall strict, and warning instead of serving meaningless
   fragments when the automatic-context byte budget is too small.
 
+- Let the read-only `ProviderUsage` tool force a current quota read with an
+  optional `refresh: true` argument; absent or `false` keeps the five-minute
+  cached read. Forced reads join the shared in-flight fetch and never bypass
+  error backoff or `Retry-After`; the tool still changes no routing and
+  purchases no quota.
+
 ## 0.22.0 — Persistent subagents and Projects (2026-09-16)
 
 ### Persistent subagents
