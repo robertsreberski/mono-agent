@@ -123,7 +123,7 @@
           }
         },
         "effort": {
-          "description": "Route-specific effort forwarded through Pi to the selected provider. Doctor warns when a configured value falls outside the model's advertised ladder but keeps turn-time handling permissive. Ranking above max only prevents keyword downgrade.",
+          "description": "Route-specific effort forwarded through Pi to the selected provider. Doctor warns when a configured value falls outside the model's advertised ladder but keeps turn-time handling permissive. Message text never changes effort.",
           "examples": [
             "medium"
           ],
@@ -138,13 +138,6 @@
             "max",
             "ultra"
           ]
-        },
-        "permissionMode": {
-          "description": "Configures permissionMode for the runtime section.",
-          "examples": [
-            "default"
-          ],
-          "type": "string"
         },
         "maxTurns": {
           "description": "Configures maxTurns for the runtime section.",

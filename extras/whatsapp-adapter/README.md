@@ -243,10 +243,10 @@ UI, or add an unsolicited WhatsApp notification destination.
 
 ## Related Documentation
 
-- [WhatsApp channel guide](https://mono-agent-docs.vercel.app/channels/whatsapp/)
-- [Channels overview](https://mono-agent-docs.vercel.app/channels/)
-- [Sessions and concurrency](https://mono-agent-docs.vercel.app/runtime/sessions-concurrency/)
-- [Delivery and send tools](https://mono-agent-docs.vercel.app/channels/delivery-and-send-tools/)
+- [WhatsApp channel guide](https://docs.mono-agent.dev/channels/whatsapp/)
+- [Channels overview](https://docs.mono-agent.dev/channels/)
+- [Sessions and concurrency](https://docs.mono-agent.dev/runtime/sessions-concurrency/)
+- [Delivery and send tools](https://docs.mono-agent.dev/channels/delivery-and-send-tools/)
 
 ## Verification
 

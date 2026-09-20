@@ -88,7 +88,7 @@ represent a part default to concise human fallback; machine and verbatim
 adapters pass `unsupportedPartFallback: "none"` so reply text is not mutated.
 Artifact/app bytes and HTML remain behind responder authorization methods rather
 than entering stream frames. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 Machine destinations project unsupported parts through the shared
 `AgentReplyPartDeliveryOutcome` contract. `sanitizeReplyPartDeliveryOutcomes()`
@@ -120,7 +120,7 @@ The arrays embedded directly in adapter responses are additive unversioned
 fields. A2A and cron's private durable SQLite copy wrap the same array as
 `{ "schemaVersion": 1, "replyPartOutcomes": [...] }`. Exact adapter field and
 projection names are documented in
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/#machine-delivery-outcome-wire-contract).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/#machine-delivery-outcome-wire-contract).
 Cron detail projections retain all 20 records. Compact cron summaries retain
 the first eight in stable part order so a maximum 100-run page remains below
 the operator response ceiling.
@@ -174,6 +174,8 @@ Primary modules:
 | Process-job projection | `process-jobs.ts` | Neutral lifecycle/error enums, stable public safety/cleanup messages, strict secret-free projection parsers, and the owner-authorized operator interface. |
 | Provider-auth projection | `provider-auth.ts` | Strict bounded, secret-free provider status/login/check parsers, including closed check state/code/message projections, plus the host-owned operator interfaces and stable operation errors. |
 | Shared safety helpers | `host-safety.ts`, `bearer.ts`, `http-headers.ts`, `config-loader.ts`, `json-source.ts` | Safe binds, bounded HTTP shutdown/streaming, tokens, sanitized headers, layered config coercion, and settings files. |
+| Channel log safety | `log-redaction.ts` | Bounded descriptor-safe redaction with channel-specific credentials and sinks. |
+| Reply artifact validation | `reply-artifacts.ts` | Shared attachment metadata checks and exact bounded byte collection. |
 
 `ChannelId` is intentionally open so third-party drivers can choose an id.
 `isDeliverableConversation` only checks a conversation scheme against the ids a
@@ -349,6 +351,8 @@ InboundHttpHeaders
 JsonEnvFieldSpec
 JsonEnvMapping
 ListenErrorFactories
+LogRedactor
+LogRedactorOptions
 MAX_AGENT_REPLY_PARTS
 MAX_CRON_OPERATOR_CONVERSATION_ID_BYTES
 MAX_CRON_OPERATOR_CURSOR_BYTES
@@ -393,7 +397,6 @@ MemoryCompletedTurnAdmissionStatus
 MemoryCompletedTurnResult
 MemoryLoadOptions
 MemoryStore
-MemoryWriteResult
 MessageRef
 NOTHING_TO_REPORT_SENTINEL
 NotifyDeliveryContext
@@ -465,6 +468,7 @@ ResilientMessageStreamOptions
 RunningChannel
 RunningProcessJobChannel
 SUBAGENT_TOOL_SEPARATOR
+SecretSafeLogSink
 SessionToolHistoryEventMetadata
 SessionToolHistoryTerminalState
 SettingsJson
@@ -477,6 +481,7 @@ ToolActivityLineOptions
 agentAttachmentKindFromMimeType
 appendReplyPartFallback
 assertAgentContinuationOriginContext
+assertMatchingReplyAttachment
 assertSafeBind
 bearerTokensEqual
 buildStreamingTailPreview
@@ -484,7 +489,9 @@ canonicalizeAgentAttachmentMimeType
 classifyNotifySuppression
 close
 closeServerBounded
+collectExactReplyArtifactBytes
 createChannelUserCancelReason
+createLogRedactor
 decodeAgentAttachmentText
 encodeJsonEnvValue
 fieldSpecMappings
@@ -504,6 +511,7 @@ isProcessJobState
 isProcessJobSubagentProgress
 isProcessJobSubagentRoute
 isProviderUsageId
+isSafePrototypeInstance
 isSubagentLaunchToolName
 isTerminalProviderAuthSessionState
 isWildcardHost
@@ -536,6 +544,7 @@ readInteger
 readJsonSection
 readRecord
 readRequired
+readSafeDataProperty
 readSettingsJson
 readString
 redactedSecret
@@ -606,10 +615,10 @@ It does not normalize transport messages, run model providers, build prompts, pe
 
 ## Related Documentation
 
-- [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/)
-- [Custom channel drivers](https://mono-agent-docs.vercel.app/programmatic/custom-channels/)
-- [Runtime, tools, and guard boundaries](https://mono-agent-docs.vercel.app/runtime/tools-and-guards/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+- [Programmatic composition](https://docs.mono-agent.dev/programmatic/)
+- [Custom channel drivers](https://docs.mono-agent.dev/programmatic/custom-channels/)
+- [Runtime, tools, and guard boundaries](https://docs.mono-agent.dev/runtime/tools-and-guards/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-contracts)
 
 ## Verification

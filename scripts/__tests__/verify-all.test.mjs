@@ -253,7 +253,7 @@ describe("verify-all", () => {
 
     expect(verdict.name).toBe("Required verdict");
     expect(verdict.if).toBe("always()");
-    expect(verdict.needs).toEqual(["verify", "website", "webapp-browser", "release-dry-run"]);
+    expect(verdict.needs).toEqual(["verify", "website", "marketing", "webapp-browser", "release-dry-run"]);
     expect(verdict.steps).toHaveLength(1);
     expect(verdict.steps[0].run).toContain("CI VERDICT: GREEN");
     expect(verdict.steps[0].run).toContain("CI VERDICT: FAILED");
@@ -972,11 +972,12 @@ function parseCiVerifyJob(source) {
   const jobFields = readYamlMap(jobs, "ci.yml jobs");
   assertExactMapFields(
     jobFields,
-    ["verify", "website", "webapp-browser", "release-dry-run", "verdict"],
+    ["verify", "website", "marketing", "webapp-browser", "release-dry-run", "verdict"],
     "CI workflow jobs",
   );
   const verifyJob = requireMapField(jobFields, "verify", "ci.yml jobs");
   requireYamlMap(jobFields.get("website"), "ci.yml website job");
+  requireYamlMap(jobFields.get("marketing"), "ci.yml marketing job");
   requireYamlMap(jobFields.get("webapp-browser"), "ci.yml webapp-browser job");
   requireYamlMap(jobFields.get("release-dry-run"), "ci.yml release-dry-run job");
   requireYamlMap(jobFields.get("verdict"), "ci.yml verdict job");

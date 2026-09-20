@@ -205,11 +205,12 @@ export function createRuntime(host = {}) {
      * @returns {Promise<RuntimeResult>}
      */
     async run(systemPrompt, options = {}) {
+      if (Object.hasOwn(options, "settings")) {
+        throw new Error("runOptions.settings was removed; pass typed toolLimits and compaction instead.");
+      }
       if (!options.model) throw new Error("createRuntime.run requires options.model");
       const webSearchState = createWebSearchRunState(options.webSearchConfig, options.webSearchState);
-      const bridge = await resolveRuntimeBridge(options.model, {
-        liveInput: !!options.liveInput,
-      });
+      const bridge = await resolveRuntimeBridge(options.model);
       const callObservers = Array.isArray(options.observers) ? options.observers : [];
       const hub = createObserverHub({
         observers: [...hostObservers, ...callObservers],

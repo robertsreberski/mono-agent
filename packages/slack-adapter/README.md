@@ -397,7 +397,7 @@ valid.
 ```
 
 Destinations still pass the Slack channel allowlist. See the canonical
-[Slack channel guide](https://mono-agent-docs.vercel.app/channels/slack/#shortcuts) for all fields,
+[Slack channel guide](https://docs.mono-agent.dev/channels/slack/#shortcuts) for all fields,
 routing behavior, and Slack app setup.
 
 ### Generated reply files
@@ -414,7 +414,7 @@ file integrity plus channel/thread, including proactive retries.
 
 Custom `SlackWebApi` implementations may omit the three optional external-file
 methods and retain fallback-only behavior. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 ## Architecture
 
@@ -472,6 +472,8 @@ at-most-once admission first.
 | [`socket-mode-runner.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/socket-mode-runner.ts) | Socket Mode acknowledgements, bounded event callback admission, heartbeat, degradation, and reconnect lifecycle. |
 | [`slack-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/slack-client.ts) | Typed Slack Web API boundary and private-file downloads. |
 | [`message-stream.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/message-stream.ts) | Final-only delivery, transient status, retry classification, and message limits. |
+| [`log-redaction.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/log-redaction.ts) | Slack token patterns and diagnostic labels for the bounded shared log sanitizer in `agent-contracts`. |
+| [`reply-files.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/reply-files.ts) | Native upload and destination-bound deduplication, using shared artifact metadata and byte-count verification. |
 | [`slack-markdown.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/slack-markdown.ts) | Standard Markdown to Slack `mrkdwn` conversion and normalization. |
 | [`user-directory.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/user-directory.ts) | Bounded `users.info` cache turning user IDs into model-visible speaker names. |
 | [`thread-context.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/thread-context.ts) | Pure selection, bounding, and deadline logic for the preceding-message transcript. |
@@ -628,11 +630,11 @@ It does not own model execution, memory, prompt context, tool policy, browser/te
 
 ## Related Documentation
 
-- [Slack channel guide](https://mono-agent-docs.vercel.app/channels/slack/)
-- [Slack team-bot playbook](https://mono-agent-docs.vercel.app/playbooks/slack-team-bot-mcp-tools/)
-- [Delivery and send tools](https://mono-agent-docs.vercel.app/channels/delivery-and-send-tools/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
-- [Custom channel adapters](https://mono-agent-docs.vercel.app/programmatic/custom-channels/)
+- [Slack channel guide](https://docs.mono-agent.dev/channels/slack/)
+- [Slack team-bot playbook](https://docs.mono-agent.dev/playbooks/slack-team-bot-mcp-tools/)
+- [Delivery and send tools](https://docs.mono-agent.dev/channels/delivery-and-send-tools/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
+- [Custom channel adapters](https://docs.mono-agent.dev/programmatic/custom-channels/)
 
 ## Verification
 

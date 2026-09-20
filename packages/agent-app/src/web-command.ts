@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { readFile, rm } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 

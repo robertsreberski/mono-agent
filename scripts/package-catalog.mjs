@@ -124,7 +124,7 @@ export const packageCatalog = [
     name: "@mono-agent/memory-supermemory",
     path: "extras/memory-supermemory",
     category: "context",
-    responsibility: "Provides a MemoryStore over an external Supermemory instance (local OSS binary or hosted cloud) via its REST API: server-side extraction, hybrid recall, awaited completed-turn admission, and legacy best-effort writes.",
+    responsibility: "Provides a MemoryStore over an external Supermemory instance (local OSS binary or hosted cloud) via its REST API: server-side extraction, hybrid recall, and awaited completed-turn admission.",
     allowedDependencyCategories: ["core"],
     publishable: true,
     tier: "plugin",
@@ -142,9 +142,19 @@ export const packageCatalog = [
     dir: "observability",
     name: "@mono-agent/observability",
     category: "observability",
-    responsibility: "Records and reads local JSONL run artifacts, summaries, trace source manifests, and exposes the OTLP/Phoenix exporter through the ./otel subpath.",
+    responsibility: "Records and reads local JSONL run artifacts, summaries, trace source manifests, and composes optional run exporters.",
     allowedDependencyCategories: ["core"],
     publishable: true,
+  },
+  {
+    dir: "observability-phoenix",
+    name: "@mono-agent/observability-phoenix",
+    path: "extras/observability-phoenix",
+    category: "observability",
+    responsibility: "Exports recorded runs to Phoenix through bounded OTLP/HTTP protobuf requests when explicitly installed and configured.",
+    allowedDependencyCategories: ["core", "observability"],
+    publishable: true,
+    tier: "plugin",
   },
   {
     dir: "openai-api-adapter",
@@ -195,7 +205,7 @@ export const packageCatalog = [
     name: "@mono-agent/tui",
     category: "operator-surface",
     responsibility: "pi-tui operator console: live chat with structured stream-event insight, bounded recorded-run replay, and read-only config view for running agents.",
-    allowedDependencyCategories: ["core", "observability"],
+    allowedDependencyCategories: ["core", "observability", "communication"],
     publishable: true,
   },
   {
@@ -204,7 +214,7 @@ export const packageCatalog = [
     category: "operator-surface",
     responsibility:
       "Serves the always-on browser operator console for persistent multi-agent conversations, streamed turns, and local-device attachments.",
-    allowedDependencyCategories: ["core", "observability"],
+    allowedDependencyCategories: ["core", "observability", "communication"],
     publishable: true,
   },
   {

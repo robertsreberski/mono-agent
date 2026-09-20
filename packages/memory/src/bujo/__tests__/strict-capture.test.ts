@@ -281,10 +281,20 @@ describe("strict completed-turn extraction", () => {
           id: "single-clock-sample",
           complete: async (receivedPrompt) => {
             extractionPrompt = receivedPrompt;
-            return '{"memories":[],"entities":[],"relations":[]}';
+            return JSON.stringify({
+              memories: [{
+                type: "event",
+                text: "The maintenance happened this past weekend.",
+                salience: 0.7,
+                isInsight: false,
+                entityIds: [],
+              }],
+              entities: [],
+              relations: [],
+            });
           },
         },
-        nextId: () => "UNUSED",
+        nextId: () => "SINGLE-CLOCK",
         now: () => {
           clockCalls += 1;
           return clockCalls === 1 ? first : later;

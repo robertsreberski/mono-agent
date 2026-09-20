@@ -30,7 +30,7 @@ vi.mock("@mono-agent/memory/bujo", () => ({
     readonly embeddings: { embed(texts: readonly string[]): Promise<number[][]> };
     readonly llm: { complete(prompt: string): Promise<string> };
   }) => ({
-    capture: async () => await options.llm.complete("capture memory"),
+    complete: async () => await options.llm.complete("capture memory"),
     recall: async () => await options.embeddings.embed(["recall memory"]),
     close: async () => undefined,
   }),
@@ -82,12 +82,12 @@ describe("direct configured memory provider protection", () => {
     const fixture = await memoryFixture("empty");
     const ownership = await seedRegistry(fixture);
     const store = await createConfiguredMemory(memoryConfig(fixture), { cwd: fixture.root }) as unknown as {
-      capture(): Promise<unknown>;
+      complete(): Promise<unknown>;
       recall(): Promise<unknown>;
       close(): Promise<void>;
     };
 
-    await expect(store.capture()).resolves.toBe("[]");
+    await expect(store.complete()).resolves.toBe("[]");
     await expect(store.recall()).resolves.toEqual([[0]]);
     expect(memoryState.complete).toHaveBeenCalledOnce();
     expect(memoryState.embed).toHaveBeenCalledOnce();
@@ -103,12 +103,12 @@ describe("direct configured memory provider protection", () => {
     const fixture = await memoryFixture("sealed");
     const ownership = await seedRegistry(fixture, join(fixture.root, ".state", "jobs"));
     const store = await createConfiguredMemory(memoryConfig(fixture), { cwd: fixture.root }) as unknown as {
-      capture(): Promise<unknown>;
+      complete(): Promise<unknown>;
       recall(): Promise<unknown>;
       close(): Promise<void>;
     };
 
-    await expect(store.capture()).resolves.toBe("[]");
+    await expect(store.complete()).resolves.toBe("[]");
     await expect(store.recall()).resolves.toEqual([[0]]);
     expect(memoryState.complete).toHaveBeenCalledOnce();
     expect(memoryState.embed).toHaveBeenCalledOnce();
@@ -129,12 +129,12 @@ describe("direct configured memory provider protection", () => {
     expect(posture.kind).toBe("srt-protected");
     expect(posture.suppressSyntheticSandbox).toBe(false);
     const store = await createConfiguredMemoryForApp(config, { cwd: fixture.root }, posture) as unknown as {
-      capture(): Promise<unknown>;
+      complete(): Promise<unknown>;
       recall(): Promise<unknown>;
       close(): Promise<void>;
     };
 
-    await expect(store.capture()).resolves.toBe("[]");
+    await expect(store.complete()).resolves.toBe("[]");
     await expect(store.recall()).resolves.toEqual([[0]]);
     expect(memoryState.complete).toHaveBeenCalledOnce();
     expect(memoryState.embed).toHaveBeenCalledOnce();
@@ -195,12 +195,12 @@ describe("direct configured memory provider protection", () => {
       { cwd: fixture.root },
       posture,
     ) as unknown as {
-      capture(): Promise<unknown>;
+      complete(): Promise<unknown>;
       recall(): Promise<unknown>;
       close(): Promise<void>;
     };
 
-    await expect(store.capture()).resolves.toBe("[]");
+    await expect(store.complete()).resolves.toBe("[]");
     expect(memoryState.complete).toHaveBeenCalledOnce();
     const pendingRecall = store.recall();
     await vi.waitFor(() => expect(memoryState.embed).toHaveBeenCalledOnce());

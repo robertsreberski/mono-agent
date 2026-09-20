@@ -18,7 +18,7 @@ import { assertCanonicalGraphRepairBaseParity, safeRebuildMemoryIndex } from "..
 import { reconcile, reconcileBatch, type ReconcileDeps } from "../reconcile.js";
 import { createBujoMemoryStore } from "../store.js";
 import type { Bullet } from "../types.js";
-import { fakeEmbeddings, fakeLlm } from "./helpers.js";
+import { fakeEmbeddings, fakeLlm, projectCapture } from "./helpers.js";
 
 /**
  * A `Remember` write is content-addressed: its id is `RM-<sha256(normalized text)>`,
@@ -106,7 +106,7 @@ function batchUpdateLlm(targetId: string): ReconcileDeps["llm"] {
 }
 
 describe("remembered-fact identity is preserved through reconciliation", () => {
-  it("store.capture must not rewrite a remembered bullet in place (full pipeline)", async () => {
+  it("completed-turn capture must not rewrite a remembered bullet in place (full pipeline)", async () => {
     const root = newRoot("capture");
     const rememberedId = rememberedIdFor(REMEMBERED);
     const store = createBujoMemoryStore({
@@ -132,7 +132,7 @@ describe("remembered-fact identity is preserved through reconciliation", () => {
       expect(written.id).toBe(rememberedId);
       expect(isRememberedMemoryId(rememberedId, REMEMBERED)).toBe(true);
 
-      await store.capture("conv-1", `User: ${CANDIDATE}\nAssistant: noted.`);
+      await projectCapture(store, "conv-1", `User: ${CANDIDATE}\nAssistant: noted.`);
 
       // The remembered bullet still holds the exact text its id hashes.
       const bullet = bulletById(root, rememberedId);

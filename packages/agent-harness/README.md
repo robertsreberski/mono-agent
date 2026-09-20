@@ -90,11 +90,12 @@ lease, so a custom runtime's stale callback cannot settle a newer attempt. The
 opaque logical-owner identity lets the standard runtime refresh that lease
 without granting callback ownership to an unrelated same-ID duplicate.
 
-For `append-host-summary` and `capture` write modes, a memory store that implements
-`persistCompletedTurn` receives one awaited, run-idempotent admission before the successful turn
-returns. The provider answer remains successful if admission rejects; the harness emits
-`memory_persistence_degraded` and invokes the configured warning sink. Stores without the strong
-method keep the legacy awaited `appendHostSummary` plus optional best-effort `scheduleCapture` path.
+For `append-host-summary` and `capture` write modes, the store must implement
+`persistCompletedTurn`; harness construction rejects an incompatible store.
+Each successful turn awaits one run-idempotent admission. The provider answer
+remains successful if admission rejects; the harness emits
+`memory_persistence_degraded` and invokes the configured warning sink.
+Read-only stores need only `load` and use `memoryWriteMode: "disabled"` or omit it.
 
 The built-in default soul adds only a compact evidence router: active dialogue
 for what was just said, `MemoryRecall` for a targeted durable fact or decision,
@@ -556,11 +557,11 @@ It does not poll chats, serve UI, parse host settings files, own provider creden
 
 ## Related Documentation
 
-- [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/composition/)
+- [Programmatic composition](https://docs.mono-agent.dev/programmatic/composition/)
   explains when to use the harness instead of `agent-app`.
-- [Sessions and concurrency](https://mono-agent-docs.vercel.app/runtime/sessions-concurrency/)
+- [Sessions and concurrency](https://docs.mono-agent.dev/runtime/sessions-concurrency/)
   documents queue-after-turn, admission, execution bounds, and durable Pi sessions.
-- [Tool policy](https://mono-agent-docs.vercel.app/tools/policy/) covers the fail-closed tool
+- [Tool policy](https://docs.mono-agent.dev/tools/policy/) covers the fail-closed tool
   boundary passed into this package.
 - [`@mono-agent/runtime-adapter`](https://github.com/robertsreberski/mono-agent/tree/main/packages/runtime-adapter)
   owns the runtime contract consumed here.

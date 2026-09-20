@@ -43,9 +43,8 @@ import {
   MEMORY_LLM_PROVIDERS,
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
-  PERMISSION_MODES,
 } from "./enums.js";
-import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentModelChoice, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
+import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentModelChoice, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -97,6 +96,12 @@ export interface LoadMonoAgentConfigInput {
  * only safe if the repair names the surface the operator is actually holding.
  */
 export const RETIRED_CONFIG_FIELDS = [
+  {
+    path: "runtime.permissionMode",
+    env: "MONO_AGENT_PERMISSION_MODE",
+    message: "`runtime.permissionMode` was removed because the Pi runtime never enforced it. Delete the key; configure `sandbox` for enforced tool isolation.",
+    envMessage: "`MONO_AGENT_PERMISSION_MODE` was removed because the Pi runtime never enforced it. Remove the variable from your environment and `.env`; configure `sandbox` for enforced tool isolation.",
+  },
   {
     path: "tools.web.search.hound.endpoint",
     env: "MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT",
@@ -210,7 +215,6 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     .filter((provider): provider is LocalProviderDefinition => provider !== undefined);
 
   const effort = readEffort(input.env.MONO_AGENT_EFFORT);
-  const permissionMode = readPermissionMode(input.env.MONO_AGENT_PERMISSION_MODE);
   const concurrency = readConcurrencyConfig(input.env);
   const subagents = readSubagentsConfig(input.env, cwd);
   const subagentRoutes = subagentProviderRoutes(subagents);
@@ -223,7 +227,6 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     workspace,
     session,
     ...(effort === undefined ? {} : { effort }),
-    ...(permissionMode === undefined ? {} : { permissionMode }),
   };
 
   const context: MonoAgentConfig["context"] = {
@@ -2438,14 +2441,6 @@ function readEffort(raw: string | undefined): EffortLevel | undefined {
     return undefined;
   }
   return readChoice<EffortLevel>(normalized, "MONO_AGENT_EFFORT", EFFORT_LEVELS, EFFORT_LEVELS[0], invalidEnv);
-}
-
-function readPermissionMode(raw: string | undefined): PermissionMode | undefined {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return undefined;
-  }
-  return readChoice<PermissionMode>(normalized, "MONO_AGENT_PERMISSION_MODE", PERMISSION_MODES, PERMISSION_MODES[0], invalidEnv);
 }
 
 function readConcurrencyConfig(env: Record<string, string | undefined>): MonoAgentConfig["concurrency"] | undefined {

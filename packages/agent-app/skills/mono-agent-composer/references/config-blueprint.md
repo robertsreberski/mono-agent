@@ -2,7 +2,7 @@
 
 > A prose, per-domain version of this reference (runtime, channels, memory, …)
 > lives on the published docs site:
-> <https://mono-agent-docs.vercel.app/config/>. This annotated JSON
+> <https://docs.mono-agent.dev/config/>. This annotated JSON
 > stays the offline canonical shape.
 
 One `mono-agent.config.json` declares the whole agent. Paths are relative to the folder; config fields may be JSON-only. Environment-variable overrides are optional: only fields with a documented `MONO_AGENT_*` mapping accept one (env > JSON > defaults), so consult the generated config reference's `Env override` column (`--` means none, as for `channels.plugins`) instead of inferring one. Omit a section to leave that capability off — every section except `runtime.model` and `context.identityPath` is optional. `references/feature-coverage.md` maps every framework feature to its config key; if a capability is not listed there, it needs the programmatic escape hatch.
@@ -42,8 +42,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra
                                            // Narrowed per model for display; still accepted at turn time.
                                            // A model advertising no ultra rung simply does not offer it in pickers.
-                                           // Ranking above max only prevents keyword downgrade.
-    "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions
+                                           // Message text never changes effort.
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "compaction": {
       "enabled": true,                     // default true

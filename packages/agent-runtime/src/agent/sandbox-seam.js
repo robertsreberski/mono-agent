@@ -11,7 +11,7 @@
 // this interface instead.
 //
 // `passthroughSandbox` is the zero-dependency default every ToolContext gets
-// when no host supplies one (createToolContext/resetToolContext in
+// when no host supplies one (createToolContext in
 // ./tools/shared/tool-context.js). Its contract covers both no-injected-sandbox
 // paths equally:
 //   - No policy at all (both sides of a merge undefined, or a resolved policy

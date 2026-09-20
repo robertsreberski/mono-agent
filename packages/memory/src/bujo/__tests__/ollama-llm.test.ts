@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOllamaLlm } from "../ollama-llm.js";
 
 describe("createOllamaLlm", () => {

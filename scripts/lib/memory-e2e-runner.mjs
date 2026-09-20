@@ -357,7 +357,6 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
             memoryWriteMode: arm === "bujo" ? "capture" : "append-host-summary",
             memory: {
               async load() { return undefined; },
-              async appendHostSummary() { throw new BenchmarkError("legacy_capture_used"); },
               async persistCompletedTurn(turn) {
                 hooks.admission?.(turn, tag);
                 admissionStarted = performance.now();
@@ -604,7 +603,6 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
               memoryWriteMode: "capture",
               memory: {
                 async load() { return undefined; },
-                async appendHostSummary() { throw new BenchmarkError("legacy_capture_used"); },
                 async persistCompletedTurn(completed) {
                   hooks.admission?.(completed, baseTag);
                   admissionStarted = performance.now();

@@ -22,7 +22,7 @@ When you add a `phoenix` entry to `observability.exporters[]`, the host exports 
 Export is **metadata-only by default**: span inputs/outputs are exported, but raw message/tool payloads are withheld unless you opt in (see `includeSensitiveData`). With sensitive export enabled, non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned by default. The separate default-off `contentPatternRedaction` option replaces a closed set of high-confidence credential shapes in retained outbound text. Strings are capped. Failures are bounded by `timeoutMs` and are swallowed — a Phoenix outage cannot fail or stall a run.
 
 :::note
-The transport lives in the `@mono-agent/observability/otel` subpath (built on `@opentelemetry/otlp-transformer`). Coverage: **config**.
+The transport lives in the explicitly installed `@mono-agent/observability-phoenix` package (built on `@opentelemetry/otlp-transformer`). Coverage: **config**.
 :::
 
 ### Per-run attributes
@@ -58,7 +58,7 @@ This surfaces model-backed memory cost and latency alongside channel runs instea
 
 ## Configuration
 
-Add one `phoenix` entry to `observability.exporters[]`. Omit the whole `observability` block to keep only local JSONL artifacts.
+Install `@mono-agent/observability-phoenix` at the exact version of your installed `@mono-agent/agent-app`, then add one `phoenix` entry to `observability.exporters[]`. The configured package is copied into managed runtime installations. A missing or mismatched package is a configuration error; network export failures remain best-effort. Omit the whole `observability` block to keep only local JSONL artifacts without installing the exporter.
 
 ```json
 {

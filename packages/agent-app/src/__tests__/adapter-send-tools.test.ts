@@ -18,9 +18,7 @@ import type {
   SlackRequestOptions,
   SlackWebApi,
 } from "@mono-agent/slack-adapter";
-import { TelegramApiError } from "@mono-agent/telegram-adapter";
 import type {
-  TelegramEditMessageTextParams,
   TelegramRequestOptions,
   TelegramSendMessageParams,
   TelegramSentMessage,
@@ -1192,7 +1190,7 @@ describe("adapter send MCP tools", () => {
           signals.telegram = options?.signal;
           return await waitForAbort<TelegramSentMessage>(options?.signal);
         },
-        async sendDocument(params, options?: TelegramRequestOptions) {
+        async sendDocument(_params, options?: TelegramRequestOptions) {
           signals.file = options?.signal;
           return await waitForAbort<TelegramSentMessage>(options?.signal);
         },

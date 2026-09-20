@@ -2648,7 +2648,7 @@ describe("process job service", () => {
       },
     };
     const signalProcess = vi.fn();
-    const service = await startService(fixture, {
+    await startService(fixture, {
       store,
       sameIncarnation: async () => true,
       signalProcess,

@@ -195,12 +195,10 @@ toInstance
 
 Depends on `@earendil-works/pi-tui` plus `@mono-agent/agent-contracts`,
 `@mono-agent/config`, and `@mono-agent/observability` (replay + discovery
-readers). Its remote operator client uses Undici so deliberately long-lived
-turn streams remain governed by caller cancellation. It must not depend on the
-agent harness, runtime adapter, memory, communication adapters
-(`@mono-agent/operator-adapter` is a **dev**-only dependency for wire round-trip
-tests — the runtime client speaks the shared `stream-wire` contract from
-agent-contracts), or host composition code.
+readers). The shared `@mono-agent/operator-adapter/client` dependency owns
+bounded stream decoding and long-lived fetch; this package owns request policy
+and rendering. It must not depend on the agent harness, runtime adapter, memory,
+other communication adapters, or host composition code.
 
 ## What This Package Does Not Own
 
@@ -211,10 +209,10 @@ in the trace-source registry. The config view remains read-only.
 
 ## Related Documentation
 
-- [Terminal UI guide](https://mono-agent-docs.vercel.app/observability/tui/)
-- [Operator stream endpoint](https://mono-agent-docs.vercel.app/channels/tui/)
-- [Artifacts and traces](https://mono-agent-docs.vercel.app/observability/artifacts-and-traces/)
-- [Configuration blueprint](https://mono-agent-docs.vercel.app/config/blueprint/)
+- [Terminal UI guide](https://docs.mono-agent.dev/observability/tui/)
+- [Operator stream endpoint](https://docs.mono-agent.dev/channels/tui/)
+- [Artifacts and traces](https://docs.mono-agent.dev/observability/artifacts-and-traces/)
+- [Configuration blueprint](https://docs.mono-agent.dev/config/blueprint/)
 
 ## Verification
 

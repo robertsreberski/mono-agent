@@ -2,18 +2,12 @@
 //
 // Most consumers should reach for `createRuntime` (see runtime.js) — it
 // binds the host integration callbacks once and returns a `.run()` method.
-// The named exports below remain available for advanced use cases (custom
-// bridge registration, direct provider invocation, tool-runtime introspection).
+// The named exports below remain available for advanced use cases (direct
+// provider invocation and explicit tool contexts).
 
 export { createRuntime } from "./runtime.js";
 export { createPiOAuthApiKeyResolver } from "./pi-auth.js";
 export { createRouterRuntime } from "./ai/runtime/router.js";
-export {
-  configureToolRuntime,
-  readToolRuntime,
-  readRuntimeBrand,
-  resetToolRuntime,
-} from "./agent/tools/shared/runtime-context.js";
 export {
   DEFAULT_RUNTIME_BRAND,
   resolveRuntimeBrand,

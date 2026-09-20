@@ -75,8 +75,6 @@ describe("fictional E2E production-path contract, not model quality", () => {
   it("replays strong completed turns, drains real SQLite, shares Recall and never captures QA", async () => {
     const input = await fixture();
     const admissions: any[] = []; const requests: any[] = []; const stores: bujo.BujoMemoryStore[] = [];
-    const legacy = vi.spyOn(bujo.BujoMemoryStore.prototype, "capture").mockRejectedValue(new Error("legacy forbidden"));
-    const schedule = vi.spyOn(bujo.BujoMemoryStore.prototype, "scheduleCapture").mockImplementation(() => { throw new Error("legacy forbidden"); });
     const report = await input.runner.runBenchmark({ ...input, hooks: {
       store: (value: bujo.BujoMemoryStore) => stores.push(value),
       admission: (turn: unknown) => admissions.push(turn),
@@ -88,7 +86,8 @@ describe("fictional E2E production-path contract, not model quality", () => {
     expect(admissions.filter((turn) => turn.captureText !== undefined)).toHaveLength(8);
     expect(admissions[0].summary).toContain("User (Mira):");
     expect(admissions[8].captureText).toContain("Assistant: Thanks for telling me.");
-    expect(legacy).not.toHaveBeenCalled(); expect(schedule).not.toHaveBeenCalled();
+    // The legacy lenient capture and scheduling surfaces no longer exist on the store,
+    // so the admissions below are the only completed-turn write path in this run.
     expect(report.summary.qualityMeasured).toBe(false);
     expect(report.summary.semanticQA.value).toBeNull();
     const memory = report.trials.filter((trial: any) => ["lite", "journal", "bujo"].includes(trial.arm));
@@ -461,7 +460,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
       });
       // Product structured-reconciliation guidance adds schema-bound prompt text;
       // pin the integrated prompt's actual conservative estimate.
-      expect(oldPreflight.estimatedInputTokens).toBe(27_928);
+      expect(oldPreflight.estimatedInputTokens).toBe(28_105);
 
       const corrected = await runAtLimit(locomo.LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS);
       expect(corrected.error).toBeNull();
@@ -505,10 +504,20 @@ describe("fictional E2E production-path contract, not model quality", () => {
     const corpus = { schemaVersion: 1, name: "locomo-v1", arms: ["bujo"], groups: [group] };
     dataset.validateCorpus(corpus);
     const plan = dataset.makePlan({ corpus, sha256: "synthetic-recovery", split: "evaluation" });
-    plan.locomo = { experiment: {
-      protocol, captureModelOutputAttempts: 2,
-      captureModelOutputRetryDelayMs: 60_000,
-    } };
+    plan.locomo = {
+      captureRecovery: {
+        policy: "native_persisted_exponential_v1",
+        maxAttempts: 2,
+        retryBaseMs: 60_000,
+        retryMaxMs: 60_000,
+        scheduleSource: "durable_pending_record_nextAttemptAt",
+        virtualClock: "advance_exactly_to_persisted_schedule",
+        retryableFailure: "model_output_settled_timeout_or_proven_finite_capture_step",
+        finiteStepPolicy: "current_attempt_capture_max_turns_only",
+        timeoutPolicy: "settled_capture_runtime_only",
+      },
+      experiment: { protocol },
+    };
     plan.perCall.readinessTimeoutMs = 5_000;
     plan.limits.chatSteps += 8;
     plan.limits.embeddingCalls += 8;
@@ -531,9 +540,24 @@ describe("fictional E2E production-path contract, not model quality", () => {
     const report = await input.runner.runBenchmark({ ...input, corpus, plan, providerFactory });
     expect(report.trials).toMatchObject([{ status: "completed", cleanup: "removed_owned_store" }]);
     expect(extractionCalls).toBe(original.source.turns.length + 1);
-    expect(report.events.filter((event: any) => event.stage === "capture_recovery")).toEqual([
-      expect.objectContaining({ status: "scheduled", attempt: 1, failureKind: "model_output", delayMs: 60_000 }),
+    const recoveryEvents = report.events.filter((event: any) => event.stage === "capture_recovery");
+    expect(recoveryEvents.slice(0, 2)).toEqual([
+      expect.objectContaining({
+        status: "scheduled",
+        attempt: 1,
+        failureKind: "model_output",
+        recoveryCause: "model_output",
+        advanceMs: 60_000,
+        nextAttemptAt: expect.any(String),
+      }),
+      expect.objectContaining({ status: "recovered_success", attempt: 2, priorFailures: 1 }),
     ]);
+    expect(recoveryEvents.slice(2)).toHaveLength(original.source.turns.length - 1);
+    expect(recoveryEvents.slice(2)).toEqual(expect.arrayContaining(
+      Array.from({ length: original.source.turns.length - 1 }, () => expect.objectContaining({
+        status: "first_attempt_success", attempt: 1, priorFailures: 0,
+      })),
+    ));
     expect(report.summary.locomoOfficial.byArm.bujo.overall).toMatchObject({
       status: "invalid_incomplete", scheduled: 1, completed: 0,
     }); // Scripted answers are never scored as provider quality.

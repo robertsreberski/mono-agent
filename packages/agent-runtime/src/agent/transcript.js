@@ -4,7 +4,7 @@
 // passes it through `diagnosticsSeed.resume_snapshot` so the next worker can
 // prepend it to the system prompt.
 
-import { readRuntimeBrand } from "./tools/shared/runtime-context.js";
+import { DEFAULT_RUNTIME_BRAND } from "../runtime-brand.js";
 
 // intelligence-ramp Phase 5.3: keep more turns but reserve verbatim slots for
 // the most recent few. Older turns ride along as one-paragraph summaries so
@@ -169,7 +169,7 @@ export function buildTranscriptTailSnapshot(events, {
     turn_index: turns.length - tailWindow.length + idx + 1,
     summary: summarizeTurn(turn, { maxChars: turnSummaryChars }),
   }));
-  const brand = runtimeBrand ?? readRuntimeBrand();
+  const brand = runtimeBrand ?? DEFAULT_RUNTIME_BRAND;
   const snapshot = {
     schema: `${brand.schemaPrefix}.transcript-tail.v1`,
     captured_at: Date.now(),

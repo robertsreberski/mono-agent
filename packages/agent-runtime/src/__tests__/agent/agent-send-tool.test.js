@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from "vitest";
 import { createAgentTool, SUBAGENT_HARD_DENY } from "../../agent/tools/agent-tool.js";
 import { createAgentSendTool } from "../../agent/tools/agent-send-tool.js";
 import { getPiBuiltinTools } from "../../agent/tools/pi-bridge.js";
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+
+const ctx = createToolContext();
 
 function setup(overrides = {}) {
   const records = new Map();
@@ -140,7 +143,7 @@ describe("persistent Agent and AgentSend", () => {
     [["Agent"], [], false], [["*"], ["AgentSend"], false], [["*"], [], true],
   ])("gates persistence at the effective pi tool boundary: %j/%j", async (allowed, denied, enabled) => {
     const { options } = setup();
-    const tools = getPiBuiltinTools(allowed, { disallowedTools: denied, subagents: options });
+    const tools = getPiBuiltinTools(allowed, { ctx, disallowedTools: denied, subagents: options });
     const agent = tools.find((tool) => tool.name === "Agent");
     expect(agent.parameters.properties.persist !== undefined).toBe(enabled);
     expect(tools.some((tool) => tool.name === "AgentSend")).toBe(enabled);
@@ -150,7 +153,7 @@ describe("persistent Agent and AgentSend", () => {
     }
   });
   it("registers AgentSend next to Agent only with a registry", () => {
-    const names = (subagents) => getPiBuiltinTools(undefined, { subagents }).map((tool) => tool.name);
+    const names = (subagents) => getPiBuiltinTools(undefined, { ctx, subagents }).map((tool) => tool.name);
     expect(names(setup().options)).toContain("AgentSend");
     expect(names({ run: vi.fn() })).not.toContain("AgentSend");
   });

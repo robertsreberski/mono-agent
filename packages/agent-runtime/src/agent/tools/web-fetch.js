@@ -8,8 +8,7 @@ import { withWebDeadline, coordinatedWebRequest, webRequestFailure } from "./web
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "./shared/constants.js";
 import { writeToolArtifact } from "./shared/output-truncation.js";
-import { readToolRuntime } from "./shared/runtime-context.js";
-import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 import { renderWithAgentBrowser } from "./web-browser-render.js";
 import { contentKind, decodeWebBytes, extractHtmlLinks, extractWebDocument, markdownToText, shouldAutoRender } from "./web-document-extractor.js";
 import { parseRetryAfter } from "./web-search-providers/shared.js";
@@ -49,9 +48,9 @@ class WebFetchError extends Error {
  * Compatibility wrapper for direct callers.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} options
  */
-export async function webFetchToolImpl(params, options = {}) {
+export async function webFetchToolImpl(params, options) {
   return (await performWebFetch(params, options)).text;
 }
 
@@ -59,18 +58,21 @@ export async function webFetchToolImpl(params, options = {}) {
  * Fetch and locally extract one public URL.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} options
  */
-export async function performWebFetch(params, options = {}) {
+export async function performWebFetch(params, options) {
+  // Direct callers own their context: reject a missing one before any network work.
+  const resolvedCtx = requireToolContext(options?.ctx);
+  const resolvedOptions = { ...(options ?? {}), ctx: resolvedCtx };
   const started = Date.now();
   try {
-    return await withWebDeadline(options.signal, 45_000, async (signal) => {
-      const result = await performFetchChain(params, { ...options, signal });
+    return await withWebDeadline(resolvedOptions.signal, 45_000, async (signal) => {
+      const result = await performFetchChain(params, { ...resolvedOptions, signal });
       if (signal.aborted && !result.error) return failure("Error: WebFetch was aborted or exceeded its deadline.", signal.reason?.code === "deadline_exceeded" ? "deadline_exceeded" : "aborted", started);
       return result;
     });
   } catch (error) {
-    const normalized = webRequestFailure(error, "http", options.signal);
+    const normalized = webRequestFailure(error, "http", resolvedOptions.signal);
     return failure(`Error: ${normalized.message}`, normalized.code, started, { retryAfterMs: normalized.retryAfterMs });
   }
 }
@@ -79,7 +81,7 @@ export async function performWebFetch(params, options = {}) {
  * Fetch and locally extract one public URL.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: import("./shared/tool-context.js").ToolContext, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 async function performFetch(
   {
@@ -151,7 +153,7 @@ async function performFetch(
   }
 
   const maxChars = positiveInteger(max_output_chars, DEFAULT_MAX_TOOL_OUTPUT_CHARS);
-  const resolvedCtx = ctx ?? readToolRuntime();
+  const resolvedCtx = requireToolContext(ctx);
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   if (requestedRender === "always") {
@@ -999,7 +1001,7 @@ async function performParallelFetch(params, options) {
   if (url.username || url.password) return failure("Error: WebFetch URL credentials are not allowed.", "url_credentials_rejected", started);
   if (params.format !== undefined && !["markdown", "text"].includes(params.format)) return failure("Error: Invalid WebFetch format.", "invalid_format", started);
   if (params.render !== undefined && params.render !== "never") return failure("Error: Invalid WebFetch render mode.", "invalid_render_mode", started);
-  const ctx = options.ctx ?? readToolRuntime();
+  const ctx = requireToolContext(options.ctx);
   const sandbox = ctx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(ctx, options.sandboxPolicy);
   const result = await fetchParallelDocument(url, params, { ...options, config: options.fetchConfig?.parallel,
@@ -1019,6 +1021,6 @@ async function performHoundFetch(params, options) {
   const result = await performFetch(params, { ...options, documentOnly: true, houndLocal: true, retryDelaysMs: [], fetchConfig: { ...options.fetchConfig, render: "never" } });
   const outcome = { ...result.outcome, backend: "hound", local: true };
   const document = result.document ? { ...result.document, outcome } : undefined;
-  if (document && !options.documentOnly) return formatWebFetchDocument(document, params, options.ctx ?? readToolRuntime());
+  if (document && !options.documentOnly) return formatWebFetchDocument(document, params, requireToolContext(options.ctx));
   return { ...result, outcome, ...(document ? { document } : {}) };
 }

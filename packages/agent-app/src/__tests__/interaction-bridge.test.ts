@@ -2,7 +2,7 @@ import type { ChannelAskSnapshot, ChannelInteractionSink } from "@mono-agent/age
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { loadInteractionSettings, startInteractionBridge, type InteractionBridgeHandle } from "../interaction-bridge.js";
 

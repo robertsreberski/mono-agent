@@ -1,3 +1,4 @@
+import type { MemoryCompletedTurn } from "@mono-agent/agent-contracts";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -50,8 +51,18 @@ describe("AgentHarness resilience + caching", () => {
       load: async () => {
         throw new Error("ollama embeddings timed out");
       },
-      appendHostSummary: async () => ({ ok: true }),
-      scheduleCapture: () => {},
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        if (turn.captureText !== undefined) {
+        }
+        return {
+          ...(({ ok: true })),
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
+      },
+
     } as unknown as MemoryStore;
 
     const harness = createAgentHarness({
@@ -81,7 +92,6 @@ describe("AgentHarness resilience + caching", () => {
     let terminalCalls = 0;
     const memory: MemoryStore = {
       load: async () => undefined,
-      appendHostSummary: async () => { throw new Error("legacy append must not run"); },
       persistCompletedTurn: async () => { throw new Error("disk became read-only at /private/secret?token=do-not-log"); },
     };
     const recorderFactory = (input: { readonly runId: string; readonly conversationId: string }): RunRecorder => {
@@ -159,7 +169,6 @@ describe("AgentHarness resilience + caching", () => {
       memoryWriteMode: "append-host-summary",
       memory: {
         load: async () => undefined,
-        appendHostSummary: async () => { throw new Error("legacy path must not run"); },
         persistCompletedTurn: async () => { throw rejection; },
       },
       onMemoryWarning: (message) => warnings.push(message),

@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 
 import { listRecordedRuns } from "@mono-agent/observability";
 import {
-  describeSandboxEffectiveState,
   sandboxEffectiveStateWarning,
 } from "@mono-agent/runtime-adapter";
 

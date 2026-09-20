@@ -1,4 +1,4 @@
-import { extractCapturePlan, extractCapturePlanStrict } from "./capture-batch.js";
+import { extractCapturePlanStrict } from "./capture-batch.js";
 import {
   replayCaptureIntent,
   writeCaptureIntent,
@@ -18,23 +18,9 @@ export interface CaptureTurnResult {
   readonly associations: number;
 }
 
-/**
- * Full capture pipeline for a single conversation turn:
- *  1. Extract bounded candidate memories plus their precise graph evidence in one LLM call.
- *  2. Reconcile all close candidates in at most one additional LLM call.
- *  3. Persist entities and relations canonical-first, then mirror them to the index.
- *  4. Persist only each candidate's explicit memory/entity associations.
- *
- * Never throws on a single bad entity/relation item — each write is wrapped defensively.
- * Returns the action and graph-write counts.
- */
-export async function captureTurn(text: string, deps: ReconcileDeps): Promise<CaptureTurnResult> {
-  return await withSerializedBujoMutation(deps, async () => await captureTurnUnlocked(text, deps, false));
-}
-
 /** Strong completed-turn capture: strict all-or-nothing extraction and reconciliation. */
 export async function captureTurnStrict(text: string, deps: ReconcileDeps): Promise<CaptureTurnResult> {
-  return await withSerializedBujoMutation(deps, async () => await captureTurnUnlocked(text, deps, true));
+  return await withSerializedBujoMutation(deps, async () => await captureTurnUnlocked(text, deps));
 }
 
 /**
@@ -54,7 +40,6 @@ function knownEntityHints(root: string, text: string): ExtractedEntity[] {
 async function captureTurnUnlocked(
   text: string,
   deps: ReconcileDeps,
-  strictModelOutput: boolean,
 ): Promise<CaptureTurnResult> {
   deps.abortSignal?.throwIfAborted();
   // One batched extraction call yields candidates + their precise entity ids;
@@ -63,20 +48,20 @@ async function captureTurnUnlocked(
   // uses that same instant for the observation anchor and capture metadata.
   // Durable intake retries replace this clock with immutable admittedAt.
   const knownEntities = knownEntityHints(deps.root, text);
-  const strictObservedAt = strictModelOutput ? deps.now() : undefined;
-  const extraction = strictModelOutput
-    ? await extractCapturePlanStrict(text, deps.llm, deps.abortSignal, knownEntities, {
-      observedAt: strictObservedAt!.toISOString(),
-    })
-    : await extractCapturePlan(text, deps.llm, deps.abortSignal, knownEntities);
+  const observedAt = deps.now();
+  const extraction = await extractCapturePlanStrict(text, deps.llm, deps.abortSignal, knownEntities, {
+    observedAt: observedAt.toISOString(),
+  });
   deps.abortSignal?.throwIfAborted();
-  const now = strictObservedAt ?? deps.now();
-  const createdAt = now.toISOString();
+  const createdAt = observedAt.toISOString();
   let intentHandle: CaptureIntentHandle | undefined;
   let preparedActions: readonly CaptureIntentAction[] = [];
   await reconcileBatch(extraction.candidates, {
     ...deps,
-    strictModelOutput,
+    // Reconciliation must reuse the same host-owned observation sample; it
+    // cannot observe a later wall clock or reinterpret relative-time anchors.
+    now: () => observedAt,
+    strictModelOutput: true,
     // Once the intent exists it is the single commit owner. Writing the same
     // records directly here and then replaying the intent would duplicate the
     // SQLite/canonical transaction without improving durability.
@@ -118,7 +103,7 @@ function reconcileActionForIntent(action: CaptureIntentAction): ReconcileAction 
 }
 
 function graphForPreparedActions(
-  extraction: Awaited<ReturnType<typeof extractCapturePlan>>,
+  extraction: Awaited<ReturnType<typeof extractCapturePlanStrict>>,
   prepared: Parameters<NonNullable<ReconcileDeps["beforeBatchCommit"]>>[0],
   createdAt: string,
 ): GraphBatchInput {

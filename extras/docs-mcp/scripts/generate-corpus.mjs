@@ -11,7 +11,7 @@ const MODEL_VERSION = "1.0.4";
 const CHUNKER_VERSION = "markdown-blocks-v2";
 const MAX_CHUNK_CHARACTERS = 1_200;
 const MAX_OVERLAP_CHARACTERS = 200;
-const DOCS_ORIGIN = "https://mono-agent-docs.vercel.app";
+const DOCS_ORIGIN = "https://docs.mono-agent.dev";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = resolve(packageRoot, "../..");

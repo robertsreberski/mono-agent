@@ -191,40 +191,6 @@ const DEFAULT_PI_AUTH_PATH = join(homedir(), ".pi", "agent", "auth.json");
 const PI_API_KEY_PROVIDERS: Readonly<Record<string, string>> = {
   "opencode-go": "OPENCODE_API_KEY",
 };
-const PROVIDER_STATUS_SECRET_ENV_KEYS = [
-  ...Object.values(PI_API_KEY_PROVIDERS),
-] as const;
-const PROVIDER_STATUS_ENV_ALLOWLIST = new Set([
-  "APPDATA",
-  "COLORTERM",
-  "COMSPEC",
-  "HOMEDRIVE",
-  "HOME",
-  "HOMEPATH",
-  "LANG",
-  "LANGUAGE",
-  "LOCALAPPDATA",
-  "LOGNAME",
-  "NO_COLOR",
-  "PATH",
-  "PATHEXT",
-  "SHELL",
-  "SYSTEMROOT",
-  "TEMP",
-  "TERM",
-  "TMP",
-  "TMPDIR",
-  "USER",
-  "USERPROFILE",
-  "USERNAME",
-  "WINDIR",
-  "XDG_CACHE_HOME",
-  "XDG_CONFIG_DIRS",
-  "XDG_CONFIG_HOME",
-  "XDG_DATA_DIRS",
-  "XDG_DATA_HOME",
-  "XDG_STATE_HOME",
-]);
 const DEFAULT_PROVIDER_PREFLIGHT_TIMEOUT_MS = 5_000;
 const PROVIDER_AUTH_TERM_GRACE_MS = 1_000;
 const PROVIDER_AUTH_KILL_SETTLE_MS = 1_000;
@@ -307,29 +273,6 @@ export async function detectProviderCredentialStates(
 
 function hasNonEmptyPersistedValue(value: string | undefined): boolean {
   return value !== undefined && value.trim().length > 0;
-}
-
-/**
- * Build the minimal operational environment needed to inspect durable CLI login
- * state. A positive allowlist prevents unrelated shell credentials from being
- * inherited by provider discovery commands.
- */
-export function credentialNeutralProviderStatusEnvironment(
-  source: Readonly<Record<string, string | undefined>> = process.env,
-  _durableEnvironment: Readonly<Record<string, string | undefined>> = {},
-): Record<string, string | undefined> {
-  const sanitized: Record<string, string | undefined> = {};
-  for (const [name, value] of Object.entries(source)) {
-    const normalizedName = name.toUpperCase();
-    if (
-      PROVIDER_STATUS_ENV_ALLOWLIST.has(normalizedName)
-      || normalizedName.startsWith("LC_")
-    ) {
-      sanitized[name] = value;
-    }
-  }
-  for (const name of PROVIDER_STATUS_SECRET_ENV_KEYS) delete sanitized[name];
-  return sanitized;
 }
 
 export interface BoundedProviderCommandResult {

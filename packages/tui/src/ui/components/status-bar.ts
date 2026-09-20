@@ -99,14 +99,6 @@ export class StatusBar implements Component {
     this.ephemeral = text;
   }
 
-  setHint(hint: string): void {
-    this.hint = hint;
-  }
-
-  resetTurn(): void {
-    this.providerNote = "";
-    this.ephemeral = "";
-  }
 
   render(width: number): string[] {
     const segments: string[] = [];

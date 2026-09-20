@@ -1,0 +1,32 @@
+---
+interface Props { title: string; description: string; path?: string; }
+const { title, description, path = '/' } = Astro.props;
+const canonical = new URL(path, Astro.site).href;
+const image = new URL('/og-1200x630.jpg', Astro.site).href;
+const imageAlt = 'mono-agent social card: the brand name and “An agent workspace you can build on” beside the sculptural matte stone artwork.';
+const preview = import.meta.env.VERCEL_ENV === 'preview';
+const googleVerification = import.meta.env.PUBLIC_GOOGLE_SITE_VERIFICATION;
+const bingVerification = import.meta.env.PUBLIC_BING_SITE_VERIFICATION;
+---
+<title>{title}</title>
+<meta name="description" content={description} />
+<link rel="canonical" href={canonical} />
+<meta name="robots" content={preview ? 'noindex, follow' : 'index, follow, max-image-preview:large'} />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="mono-agent" />
+<meta property="og:locale" content="en_US" />
+<meta property="og:title" content={title} />
+<meta property="og:description" content={description} />
+<meta property="og:url" content={canonical} />
+<meta property="og:image" content={image} />
+<meta property="og:image:type" content="image/jpeg" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content={imageAlt} />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content={title} />
+<meta name="twitter:description" content={description} />
+<meta name="twitter:image" content={image} />
+<meta name="twitter:image:alt" content={imageAlt} />
+{googleVerification && <meta name="google-site-verification" content={googleVerification} />}
+{bingVerification && <meta name="msvalidate.01" content={bingVerification} />}

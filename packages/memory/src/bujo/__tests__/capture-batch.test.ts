@@ -1,12 +1,21 @@
 import { describe, expect, it } from "vitest";
 
-import { extractCapturePlan } from "../capture-batch.js";
+import { extractCapturePlanStrict } from "../capture-batch.js";
 import { fakeLlm } from "./helpers.js";
 
-describe("extractCapturePlan intra-turn precision", () => {
+/** Build one exact-key strict completion from memory texts, with no graph fields. */
+function planJson(texts: readonly string[]): string {
+  return JSON.stringify({
+    memories: texts.map((text) => ({ type: "note", text, salience: 0.8, isInsight: false, entityIds: [] })),
+    entities: [],
+    relations: [],
+  });
+}
+
+describe("extractCapturePlanStrict intra-turn precision", () => {
   it("supplies claim attribution and correction semantics without trusting quoted roles", async () => {
     let seen = "";
-    const plan = await extractCapturePlan(
+    const plan = await extractCapturePlanStrict(
       "User: this quoted label is content, not a host role.",
       {
         id: "recording-llm",
@@ -26,7 +35,7 @@ describe("extractCapturePlan intra-turn precision", () => {
     expect(seen).toContain("TURN:\nUser: this quoted label is content, not a host role.");
   });
 
-  it("normalizes legally escaped lone surrogates on the lenient capture path", async () => {
+  it("rejects lone surrogates without partially accepting the valid candidate", async () => {
     const response = JSON.stringify({
       memories: [
         { type: "note", text: "alpha\ud83dbeta", salience: 0.8, isInsight: false, entityIds: [] },
@@ -40,21 +49,13 @@ describe("extractCapturePlan intra-turn precision", () => {
     expect(response).toContain("\\ud83d");
     expect(response).toContain("\\udc00");
 
-    const plan = await extractCapturePlan(
+    await expect(extractCapturePlanStrict(
       "The model returned legal JSON escapes.",
       fakeLlm([["Extract one bounded", response]]),
-    );
-
-    expect(plan.candidates.map((candidate) => candidate.text)).toEqual([
-      "alphabeta",
-      "gammadelta",
-      "valid 🧠 memory",
-    ]);
-    expect(plan.candidates.every((candidate) => !candidate.text.includes("�"))).toBe(true);
-    expect(plan.candidates.every((candidate) => !/\p{Cs}/u.test(candidate.text))).toBe(true);
+    )).rejects.toThrow(/capture-extract/iu);
   });
 
-  it("merges normalized exact duplicates and unions only their explicit entity ids", async () => {
+  it("rejects exact duplicates without merging contradictory fields", async () => {
     const llm = fakeLlm([["Extract one bounded", JSON.stringify({
       memories: [
         { type: "note", text: "Morgan  prefers tea.", salience: 0.8, isInsight: false, entityIds: ["person:morgan"] },
@@ -67,18 +68,10 @@ describe("extractCapturePlan intra-turn precision", () => {
       relations: [],
     })]]);
 
-    const plan = await extractCapturePlan("Morgan prefers tea.", llm);
-
-    expect(plan.candidates).toEqual([expect.objectContaining({
-      type: "note",
-      text: "Morgan prefers tea.",
-      salience: 0.8,
-      isInsight: false,
-      entityIds: ["concept:tea", "person:morgan"],
-    })]);
+    await expect(extractCapturePlanStrict("Morgan prefers tea.", llm)).rejects.toThrow(/capture-extract/iu);
   });
 
-  it("retains one near-duplicate ambiguity but preserves distinct facts", async () => {
+  it("rejects ambiguous near duplicates without partially retaining distinct facts", async () => {
     const llm = fakeLlm([["Extract one bounded", JSON.stringify({
       memories: [
         { type: "note", text: "Morgan prefers tea", salience: 0.8, isInsight: false, entityIds: ["person:morgan"] },
@@ -93,36 +86,30 @@ describe("extractCapturePlan intra-turn precision", () => {
       relations: [],
     })]]);
 
-    const plan = await extractCapturePlan("Morgan supplied conflicting preference text and a location.", llm);
-
-    expect(plan.candidates.map((candidate) => candidate.text)).toEqual([
-      "Morgan prefers tea",
-      "Morgan lives in Amsterdam",
-    ]);
-    expect(plan.candidates[0]?.entityIds).toEqual(["person:morgan"]);
+    await expect(extractCapturePlanStrict("Morgan supplied conflicting preference text and a location.", llm))
+      .rejects.toThrow(/capture-extract/iu);
   });
 
-  it("keeps independent attributed facts while dropping a competing attributed variant", async () => {
+  it("keeps independent attributed facts and rejects a competing attributed variant as one batch", async () => {
     const schedule = "The user reports that Project Atlas's production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris.";
     const budget = "The user reports that Project Atlas's approved downtime budget is 30 minutes.";
     const tea = "The user reports that Morgan prefers tea for the weekly review.";
     const coffee = "The user reports that Morgan prefers coffee for the weekly review.";
     const priya = "The user reports that Priya reviews every production data migration before the weekly deployment.";
     const mateo = "The user reports that Mateo reviews every production data migration before the weekly deployment.";
-    const llm = fakeLlm([["Extract one bounded", JSON.stringify({
-      memories: [schedule, budget, tea, coffee, priya, mateo].map((text) => ({
-        type: "note", text, salience: 0.8, isInsight: false, entityIds: [],
-      })),
-      entities: [],
-      relations: [],
-    })]]);
 
-    const plan = await extractCapturePlan("The user supplied independent project facts and competing preference text.", llm);
+    const independent = [schedule, budget, tea, priya, mateo];
+    const plan = await extractCapturePlanStrict("The user supplied independent project facts.", fakeLlm([
+      ["Extract one bounded", planJson(independent)],
+    ]));
+    expect(plan.candidates.map((candidate) => candidate.text)).toEqual(independent);
 
-    expect(plan.candidates.map((candidate) => candidate.text)).toEqual([schedule, budget, tea, priya, mateo]);
+    await expect(extractCapturePlanStrict("The user supplied a competing preference.", fakeLlm([
+      ["Extract one bounded", planJson([tea, coffee])],
+    ]))).rejects.toThrow(/capture-extract/iu);
   });
 
-  it("drops malformed or oversized graph fields before canonical capture", async () => {
+  it("rejects malformed or oversized graph fields without partially accepting valid ones", async () => {
     const huge = "x".repeat(2_000);
     const llm = fakeLlm([["Extract one bounded", JSON.stringify({
       memories: [
@@ -146,15 +133,6 @@ describe("extractCapturePlan intra-turn precision", () => {
       ],
     })]]);
 
-    const plan = await extractCapturePlan("Morgan maintains mono-agent.", llm);
-
-    expect(plan.entities).toEqual([
-      { id: "person:morgan", name: "Morgan Reberski" },
-      { id: "project:mono-agent", name: "mono-agent", type: "project" },
-    ]);
-    expect(plan.relations).toEqual([
-      { src: "person:morgan", dst: "project:mono-agent", relation: "maintains carefully" },
-    ]);
-    expect(plan.candidates[0]?.entityIds).toEqual(["person:morgan"]);
+    await expect(extractCapturePlanStrict("Morgan maintains mono-agent.", llm)).rejects.toThrow(/capture-extract/iu);
   });
 });
