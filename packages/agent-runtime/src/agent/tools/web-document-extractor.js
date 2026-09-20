@@ -1,11 +1,10 @@
 // @ts-check
 
-import { Readability } from "@mozilla/readability";
-import { Defuddle as parseDefuddle } from "defuddle/node";
 import { XMLValidator } from "fast-xml-parser";
-import { DOMParser, parseHTML } from "linkedom";
-import TurndownService from "turndown";
+import { DOMParser } from "linkedom";
 import { extractText as extractPdfText, getDocumentProxy } from "unpdf";
+import { extractHoundHtml } from "./hound-local/extract.js";
+export { extractHtmlLinks, MAX_WEB_FETCH_LINKS, MAX_WEB_FETCH_LINK_URL_CHARS, MAX_WEB_FETCH_LINK_TEXT_CHARS } from "./hound-local/links.js";
 
 export const MAX_STRUCTURED_DOCUMENT_BYTES = 8 * 1024 * 1024;
 const MARKDOWN_MIME_TYPES = new Set([
@@ -105,46 +104,8 @@ async function extractPdf(bytes) {
 }
 
 async function extractHtml(html, url, format) {
-  let title = "";
-  let markdown = "";
-  const failures = [];
-  try {
-    let { document } = parseHTML(html);
-    if (!document.body?.innerHTML?.trim() && html.trim()) {
-      ({ document } = parseHTML(`<html><body>${html}</body></html>`));
-    }
-    sanitizeDocumentLinks(document, url);
-    const parsed = await parseDefuddle(/** @type {any} */ (document), url, {
-      markdown: true, separateMarkdown: true, useAsync: false,
-    });
-    title = String(parsed.title || "").trim();
-    markdown = String(parsed.contentMarkdown || parsed.content || "").trim();
-    if (meaningfulCharacters(markdown) > 0) return finishHtml(markdown, title, format, "defuddle", failures);
-    failures.push("defuddle");
-  } catch { failures.push("defuddle"); }
-
-  try {
-    const { document } = parseHTML(html);
-    sanitizeDocumentLinks(document, url);
-    const article = new Readability(/** @type {any} */ (document)).parse();
-    if (article) {
-      title ||= String(article.title || "").trim();
-      markdown = htmlToMarkdown(article.content || "", url);
-      if (meaningfulCharacters(markdown) > 0) return finishHtml(markdown, title, format, "readability", failures);
-    }
-    failures.push("readability");
-  } catch { failures.push("readability"); }
-
-  try {
-    const { document } = parseHTML(html);
-    title ||= collapseWhitespace(document.querySelector("title")?.textContent);
-    for (const node of document.querySelectorAll("script,style,noscript,template,nav")) node.remove();
-    sanitizeDocumentLinks(document, url);
-    markdown = turndown().turndown(document.body?.innerHTML || "").trim();
-    if (meaningfulCharacters(markdown) > 0) return finishHtml(markdown, title, format, "body", failures);
-    failures.push("body");
-  } catch { failures.push("body"); }
-  throw extractionError("extraction_failed", `HTML extraction failed after ${failures.join(", ")}.`, { parserFailures: failures });
+  const extracted = await extractHoundHtml(html, url);
+  return finishHtml(extracted.markdown, extracted.title, format, extracted.stage, extracted.failures);
 }
 
 function finishHtml(markdown, title, format, stage, failures) {
@@ -181,88 +142,6 @@ function extractXml(xml, format, url) {
   return { body, readableText: markdownToText(body), title: "", extractionStage: "xml", parserFailureCount: 0, parserFailures: [] };
 }
 
-function htmlToMarkdown(value, url) {
-  const { document } = parseHTML(String(value || ""));
-  sanitizeDocumentLinks(document, url);
-  return turndown().turndown(document.body?.innerHTML || "").trim();
-}
-
-function turndown() {
-  const service = new TurndownService({ bulletListMarker: "-", codeBlockStyle: "fenced", emDelimiter: "_", strongDelimiter: "**" });
-  service.addRule("tablesAsText", {
-    filter: ["table"],
-    replacement(_content, node) {
-      return `\n\n${[...node.querySelectorAll("tr")].map((row) => [...row.querySelectorAll("th,td")].map((cell) => collapseWhitespace(cell.textContent)).join(" | ")).filter(Boolean).join("\n")}\n\n`;
-    },
-  });
-  return service;
-}
-
-export const MAX_WEB_FETCH_LINKS = 20;
-export const MAX_WEB_FETCH_LINK_URL_CHARS = 2000;
-export const MAX_WEB_FETCH_LINK_TEXT_CHARS = 200;
-
-/**
- * Bounded citation/main-content links from locally parsed HTML. Deterministic,
- * order-preserving, deduplicated by resolved URL. Only safe absolute http(s)
- * targets survive; page prose never influences the result beyond anchor text.
- * This performs no fetch — it reuses already-downloaded markup.
- *
- * @param {unknown} html
- * @param {unknown} baseUrl
- * @param {{limit?: number}} [options]
- * @returns {Array<{url: string, text: string, provenance: string}>}
- */
-export function extractHtmlLinks(html, baseUrl, { limit = MAX_WEB_FETCH_LINKS } = {}) {
-  const cap = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, MAX_WEB_FETCH_LINKS) : MAX_WEB_FETCH_LINKS;
-  let document;
-  try {
-    ({ document } = parseHTML(String(html || "")));
-  } catch {
-    return [];
-  }
-  if (!document) return [];
-  const seen = new Set();
-  const links = [];
-  let anchors = [];
-  try {
-    anchors = [...document.querySelectorAll("a[href]")];
-  } catch {
-    return [];
-  }
-  for (const anchor of anchors) {
-    if (links.length >= cap) break;
-    let url;
-    try {
-      url = safeUrl(anchor.getAttribute("href"), baseUrl);
-    } catch {
-      continue;
-    }
-    if (!url || url.length > MAX_WEB_FETCH_LINK_URL_CHARS || seen.has(url)) continue;
-    seen.add(url);
-    let provenance = "page";
-    try {
-      provenance = typeof anchor.closest === "function" && anchor.closest("article,main,[role=main]") ? "main-content" : "page";
-    } catch {
-      provenance = "page";
-    }
-    links.push({
-      url,
-      text: collapseWhitespace(anchor.textContent).slice(0, MAX_WEB_FETCH_LINK_TEXT_CHARS),
-      provenance,
-    });
-  }
-  return links;
-}
-
-function sanitizeDocumentLinks(document, baseUrl) {
-  for (const node of document.querySelectorAll("a[href],img[src]")) {
-    const attribute = node.tagName?.toLowerCase() === "a" ? "href" : "src";
-    const safe = safeUrl(node.getAttribute(attribute), baseUrl);
-    if (safe) node.setAttribute(attribute, safe);
-    else node.removeAttribute(attribute);
-  }
-}
 
 function safeUrl(value, base) {
   if (typeof value !== "string" || !value.trim()) return "";

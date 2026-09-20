@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Improve local web extraction with Hound-derived content-link prioritization,
+  title and main-content fallbacks, and Markdown tables that retain links and
+  code. Keep rate-limit and access refusals terminal instead of retrying or
+  forwarding the same fetch to another provider.
+
 - Fix unrelated provider turns blocking history admission and cancellation
   publication when conversation keys share a lock shard. Concurrent writers
   sharing history must use v0.20.0 or later; stop older writers first.

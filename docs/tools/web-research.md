@@ -487,17 +487,30 @@ providers do not grant permission to bypass site policy or access controls.
 | `text` | Readable plain text with Markdown decoration removed. |
 | `raw` | Decoded response body; requires `render: "never"`. |
 
-Static extraction is local and content-aware:
+Static extraction is local and content-aware. Its HTML fallback and link
+classification algorithms adapt Hound's MIT-licensed code using native Node
+parsers, without a Python runtime or Hound service for the `local` provider.
+This does not add a robots.txt preflight to existing `local` or browser calls:
 
 1. Follow at most five redirects, re-checking sandbox network policy at every
    hop.
 2. Bound transport at 20 MiB and structured parsing at 8 MiB.
 3. Decode by BOM, HTTP charset, HTML meta/XML declaration, then UTF-8, reporting replacement characters and rejecting unsupported declared charsets.
-4. Parse HTML with Defuddle, then Readability plus Turndown, then a cleaned-body Turndown fallback. Relative links become safe absolute HTTP(S) links.
+4. Parse HTML with Defuddle, then Readability plus Turndown, then main-content
+   or cleaned-body Turndown fallback. The native Hound-derived pipeline retains
+   title metadata, rejects tiny candidates when a substantially larger article
+   exists, and preserves links and code in fallback Markdown tables. Relative
+   links become safe absolute HTTP(S) links.
 5. Strictly parse declared JSON/XML, extract RSS/Atom entries and PDF text, or decode
    ordinary text.
 6. Apply the normal tool-output cap and return the result inside the JSON
    envelope's untrusted `content` field.
+
+HTTP 429 is terminal for the current fetch; its Retry-After metadata is not
+shortened into an automatic retry. Observed access/authentication challenges
+(including challenge pages served as HTTP 503) and HTTP 403 also stop provider
+fallback. An explicit provider chain does not authorize bypassing a refusal.
+Ordinary transient transport/service outages retain bounded retry behavior.
 
 Request headers are limited to `Accept`, `Accept-Language`, `Range`, and
 `User-Agent`. Cookie, authorization, proxy, forwarding, and arbitrary custom
@@ -546,7 +559,9 @@ add no requests.
   no matching blocks reports `focus_no_match` with no content rather than
   pretending full success.
 - `include_links` lists up to 20 deduplicated absolute HTTP(S) links from the
-  already-downloaded static HTML, labeled `main-content` or `page`. Rendered,
+  already-downloaded static HTML, labeled `main-content` or `page`. Content
+  citations take priority over navigation/header/footer links before the cap;
+  duplicate fragment targets collapse to one URL. Rendered,
   remote, raw, and non-HTML documents report the capability as unavailable
   with an explicit reason instead of empty success. Parallel remote extraction
   rejects `include_links` as `unsupported_parameter` before any connection.

@@ -227,9 +227,9 @@ describe("Parallel WebFetch", () => {
     expect(result.outcome).toMatchObject({ code: "http_503", statusCode: 503, retryable: true });
     expect(result.text).not.toContain("sentinel");
   });
-  it.each(["unusable_content", "access_challenge", "http_503"])("advances from local %s in an explicit chain", async (code) => {
+  it.each(["unusable_content", "http_503"])("advances from local %s in an explicit chain", async (code) => {
     const remote = transport({ structuredContent: extract });
-    const local = code === "unusable_content" ? '<html><body><div id="root">Loading</div><script src="/one.js"></script><script src="/two.js"></script><script>window.__NEXT_DATA__={}</script></body></html>' : code === "access_challenge" ? '<html><head><title>Just a moment...</title></head><body><h1>Performing security verification</h1><p>Enable JavaScript and cookies to continue</p></body></html>' : "unavailable";
+    const local = code === "unusable_content" ? '<html><body><div id="root">Loading</div><script src="/one.js"></script><script src="/two.js"></script><script>window.__NEXT_DATA__={}</script></body></html>' : "unavailable";
     const fetchImpl = vi.fn((url, init) => String(url) === PARALLEL_MCP_URL ? remote.fetchImpl(url, init) : Promise.resolve(new Response(local, { status: code === "http_503" ? 503 : 200, headers: { "content-type": "text/html" } })));
     const result = await performWebFetch({ url: target }, { ctx, fetchImpl, retryDelaysMs: [], fetchConfig: { provider: ["local", "parallel"] } });
     // The shared fetch fixture carries excerpts only, so the rescued chain is

@@ -12,7 +12,8 @@ import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { renderWithAgentBrowser } from "./web-browser-render.js";
 import { contentKind, decodeWebBytes, extractHtmlLinks, extractWebDocument, markdownToText, shouldAutoRender } from "./web-document-extractor.js";
-import { assertNoWebAccessInterstitial } from "./web-access-interstitial.js";
+import { parseRetryAfter } from "./web-search-providers/shared.js";
+import { assertNoWebAccessInterstitial, classifyWebAccessInterstitial } from "./web-access-interstitial.js";
 import { applyFocusFilter, buildWebNextAction, formatActionableEnvelope, normalizeWebResearchOptions, webStatusForCode } from "./web-actionable.js";
 
 const FETCH_TIMEOUT_MS = 15_000;
@@ -26,7 +27,7 @@ const ALLOWED_REQUEST_HEADERS = new Set([
   "range",
   "user-agent",
 ]);
-const TRANSIENT_STATUS = new Set([408, 425, 429]);
+const TRANSIENT_STATUS = new Set([408, 425]);
 
 class WebFetchError extends Error {
   /**
@@ -226,7 +227,7 @@ async function performFetch(
       response = fetched.response;
       finalUrl = fetched.url;
       redirectCount = fetched.redirects;
-      if (isTransientResponse(response) && attempt < delays.length) {
+      if (isTransientResponse(response, fetched.bytes) && attempt < delays.length) {
         const delay = retryDelayForResponse(response, delays[attempt]);
         try { await response.body?.cancel(); } catch { /* best effort */ }
         await waitForRetry(delay, signal);
@@ -319,7 +320,8 @@ async function performFetch(
       : safeDecodePreview(bytes, contentType, responseKind);
     return failure(`HTTP ${response.status} for ${finalUrl}.`, `http_${response.status}`, startedAt, {
       attempts,
-      retryable: response.status === 429 || response.status >= 500,
+      retryable: response.status >= 500,
+      ...(response.status === 429 ? { retryAfterMs: parseRetryAfter(response) } : {}),
       statusCode: response.status,
       bytes: responseBytes,
       backend: "http",
@@ -618,8 +620,14 @@ function requestSignal(signal) {
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-function isTransientResponse(response) {
-  return TRANSIENT_STATUS.has(response.status) || response.status >= 500;
+function isTransientResponse(response, bytes) {
+  if (!TRANSIENT_STATUS.has(response.status) && response.status < 500) return false;
+  // A 503 may be an access gate, not a transient service outage. Never retry
+  // observed challenges even before the normal extraction/classification path.
+  const contentType = response.headers.get("content-type") || "";
+  let text = "";
+  try { text = decodeWebBytes(bytes.subarray(0, 32 * 1024), contentType).text; } catch { /* normal decoding error follows */ }
+  return !classifyWebAccessInterstitial({ text, statusCode: response.status });
 }
 
 function retryDelayForResponse(response, fallback) {
@@ -700,11 +708,7 @@ function positiveInteger(value, fallback) {
 }
 
 function retryAfterMilliseconds(response) {
-  const raw = response.headers.get("retry-after");
-  if (!raw) return undefined;
-  const seconds = Number(raw);
-  const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(raw) - Date.now();
-  return Number.isFinite(delay) ? Math.max(0, delay) : undefined;
+  return parseRetryAfter(response);
 }
 
 export function formatWebFetchDocument(document, params, ctx) {
@@ -959,11 +963,12 @@ async function performFetchChain(params, options) {
 }
 
 // Never fall through validation, auth, sandbox, cancellation, coordination, or
-// size failures. Only a blocked/unusable page, HTTP error, or retryable transport
-// failure may disclose the same target to the next explicitly selected provider.
+// size/access/rate-limit failures. Only unusable content, ordinary HTTP errors,
+// or retryable transport failures may disclose the same target to the next
+// explicitly selected provider.
 function fetchProviderMayAdvance(outcome) {
-  return ["unusable_content", "access_challenge", "backend_unavailable"].includes(outcome.code)
-    || /^http_(?!401$|407$)\d{3}$/u.test(outcome.code)
+  return ["unusable_content", "backend_unavailable"].includes(outcome.code)
+    || /^http_(?!401$|403$|407$|429$)\d{3}$/u.test(outcome.code)
     || (["request_failed", "timeout"].includes(outcome.code) && outcome.retryable);
 }
 

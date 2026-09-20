@@ -3,7 +3,9 @@
  * Shared managed web-research response contract for WebSearch and WebFetch.
  *
  * Interaction design is Hound-inspired (compact actionable envelope, focused
- * views, typed continuations); no Hound code, dependency, or backend is used.
+ * views, typed continuations); this envelope module remains independently
+ * implemented. Native extraction adaptations carry their own source and
+ * license notices.
  * Provider selection, admission, budget, cooldown, and sandbox enforcement
  * stay in the existing controller and providers — this module only shapes what
  * the model sees and guarantees the typed action surface.

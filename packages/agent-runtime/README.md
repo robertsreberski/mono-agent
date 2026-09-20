@@ -114,6 +114,13 @@ set `"short"` instead.
 
 ## Architecture
 
+Local web extraction uses native Hound-derived title/stage fallback and content
+link classification, with Defuddle/Readability/Turndown as the parser equivalents.
+The default `local` fetch provider needs no Python or Hound service and gains no
+new robots.txt prerequisite. See `THIRD_PARTY_NOTICES.md` for source provenance
+and licenses. Fetch rate limits and access refusals are terminal across provider
+fallback; ordinary transient failures remain bounded.
+
 `createPiOAuthApiKeyResolver` accepts optional `{ rejectedAccessToken, signal }` for a bounded usage read: only the still-current rejected token is forced through the existing OAuth refresh inside the serialized auth-file lane. Already-replaced tokens retain normal expiry behavior. Failed or cancelled refresh writes nothing; ordinary one-argument callers are unchanged.
 
 The package uses a fixed registry of bridge descriptors and loads provider code
