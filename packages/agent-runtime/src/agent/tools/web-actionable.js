@@ -13,7 +13,7 @@
  * Envelope statuses (exact):
  * - ok: complete usable output.
  * - partial: usable but incomplete output. Lossy search truncation, Parallel
- *   excerpts-only extraction, a static fallback after render failure, a
+ *   excerpts-only extraction, incomplete native engine coverage, a static fallback after render failure, a
  *   focus-filtered page subset, or a focus with no matching blocks.
  * - blocked: policy, access, or budget prevents progress. Sandbox network
  *   denial, site access challenge/authentication, rate limit/cooldown,
@@ -52,6 +52,9 @@ export const WEB_RESEARCH_STATUS_DOC = Object.freeze({
  * @type {ReadonlySet<string>}
  */
 export const BLOCKED_WEB_CODES = Object.freeze(new Set([
+  "robots_denied",
+  "robots_unavailable",
+  "robots_crawl_delay",
   "network_denied",
   "redirect_network_denied",
   "access_challenge",
@@ -216,7 +219,7 @@ export function refreshCachedSearchEnvelope(text, budget, requestedQuery) {
     ...(budget.dispatchesUsed === undefined ? {} : { dispatchesUsed: budget.dispatchesUsed }),
     ...(budget.maxDispatches === undefined ? {} : { maxDispatches: budget.maxDispatches }),
     ...(budget.dispatchesRemaining === undefined ? {} : { dispatchesRemaining: budget.dispatchesRemaining }),
-    retryInRun: typeof requestsRemaining === "number" ? requestsRemaining > 0 : parsed.coverage.retryInRun,
+    retryInRun: parsed.coverage.searchStopped === true ? false : typeof requestsRemaining === "number" ? requestsRemaining > 0 : parsed.coverage.retryInRun,
     cacheHit: true,
     attemptedBackends: [],
     actualQueries: query ? [query] : [],

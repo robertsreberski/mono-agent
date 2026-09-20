@@ -248,8 +248,8 @@ export function canonicalizeSearchUrl(value, base) {
   try { parsed = new URL(value, base); } catch { return null; }
   const wrapped = ["uddg", "url", "u", "target"].map((key) => parsed.searchParams.get(key)).find(Boolean);
   if (wrapped && (
-    parsed.hostname.endsWith("duckduckgo.com")
-    || parsed.hostname.endsWith("startpage.com")
+    (parsed.hostname === "duckduckgo.com" || parsed.hostname.endsWith(".duckduckgo.com"))
+    || (parsed.hostname === "startpage.com" || parsed.hostname.endsWith(".startpage.com"))
   )) {
     try { parsed = new URL(wrapped); } catch { /* keep the wrapper URL */ }
   }
@@ -446,3 +446,18 @@ export function parseRetryAfter(response) {
   return Math.min(8_640_000_000_000_000 - now, Math.max(1000, ms));
 }
 
+
+/** Shared process-wide pacing for native composite engine/robots requests.
+ * The caller gates the exact URL and obtains host admission before this slot.
+ * Ordinary keyless providers use the same semaphore/spacing/cooldown state.
+ */
+export async function acquireKeylessRequestSlot(backend, signal) {
+  const release = await keylessSemaphore.acquire(signal);
+  try {
+    if (backendInCooldown(backend)) throw Object.assign(new Error("Engine is cooling down."), { code: "rate_limited", retryAfterMs: processCooldownRemaining(backend) });
+    await sleep(reserveKeylessSlot(backend), signal);
+    signal?.throwIfAborted();
+    if (backendInCooldown(backend)) throw Object.assign(new Error("Engine is cooling down."), { code: "rate_limited", retryAfterMs: processCooldownRemaining(backend) });
+    return release;
+  } catch (error) { release(); throw error; }
+}

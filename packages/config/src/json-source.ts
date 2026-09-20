@@ -261,6 +261,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
         readonly searxng?: {
           readonly endpoint?: string;
         };
+        /** @deprecated Endpoint tombstone; presence is rejected before layering. */
         readonly hound?: {
           readonly endpoint?: string;
         };
@@ -276,6 +277,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly fetch?: {
         readonly provider?: string | readonly string[];
         readonly parallel?: { readonly apiKeyEnv?: string };
+        /** @deprecated Endpoint tombstone; presence is rejected before layering. */
         readonly hound?: {
           readonly endpoint?: string;
         };

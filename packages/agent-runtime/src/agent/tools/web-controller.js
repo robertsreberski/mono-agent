@@ -1,5 +1,6 @@
 // @ts-check
 
+import { houndEndpointError } from "./hound-local/config.js";
 import { parallelCacheIdentity, parallelSessionId } from "./parallel-mcp.js";
 import { createHash, randomUUID } from "node:crypto";
 import { passthroughSandbox } from "../sandbox-seam.js";
@@ -121,6 +122,8 @@ export function createWebToolController({
     namespace,
 
     async search(params, execution = {}) {
+      const migration = houndEndpointError(searchConfig?.hound);
+      if (migration) return webFailureEnvelope("WebSearch", "invalid_hound_config", migration);
       if (execution.signal?.aborted) return webFailureEnvelope("WebSearch", "aborted", "Error: WebSearch was aborted.");
       // The key must pin the backend, the endpoint AND the network policy the
       // search actually ran under. A params-only key was safe while the cache
@@ -162,6 +165,8 @@ export function createWebToolController({
     },
 
     async fetch(params, execution = {}) {
+      const migration = houndEndpointError(fetchConfig?.hound);
+      if (migration) return webFailureEnvelope("WebFetch", "invalid_fetch_config", migration);
       if (execution.signal?.aborted) return webFailureEnvelope("WebFetch", "aborted", "Error: WebFetch was aborted.");
       const resolvedCtx = ctx ?? readToolRuntime();
       const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
@@ -295,9 +300,10 @@ function withSearchCacheHit(result, searchState, requestedQuery) {
   const refreshed = refreshCachedSearchEnvelope(cloned.text, budget, requestedQuery);
   const text = refreshed ?? cloned.text;
   const resultCount = Number.isSafeInteger(cloned.outcome?.resultCount) ? cloned.outcome.resultCount : 0;
+  const retryInRun = budget.requestsRemaining > 0 && cloned.outcome?.searchStopped !== true;
   const nextAction = resultCount > 0
     ? "fetch_existing_sources"
-    : budget.requestsRemaining > 0 ? "refine_query" : "use_available_evidence";
+    : retryInRun ? "refine_query" : "use_available_evidence";
   const {
     retryAfterMs: _retryAfterMs,
     retryAt: _retryAt,
@@ -319,7 +325,7 @@ function withSearchCacheHit(result, searchState, requestedQuery) {
       rateLimited: false,
       cooldownBackends: [],
       fallbackUsed: false,
-      retryInRun: budget.requestsRemaining > 0,
+      retryInRun,
       nextAction,
     },
   };

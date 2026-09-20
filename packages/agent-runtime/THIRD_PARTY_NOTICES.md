@@ -1,6 +1,6 @@
 # Third-party notices
 
-## Hound native web extraction adaptations
+## Hound native web research adaptations
 
 Ported/adapted from hound-mcp 13.2.0, published source distribution:
 https://files.pythonhosted.org/packages/be/5c/d5b006bdb8a67bbd4e983cb7a1c6ac84f73a3b68c8057ef7fcd4a944df20/hound_mcp-13.2.0.tar.gz
@@ -13,6 +13,16 @@ Python algorithms, not its Python runtime, server, or anti-detection transports.
 `extractor.py` noise removal, using Defuddle/Readability/Turndown instead of
 trafilatura/lxml/markdownify. `links.js` adapts `links.py` anchor classification
 and fragment deduplication, with Mono's URL safety and output bounds.
+`engines.js` adapts the DuckDuckGo/Brave/Mojeek request fields and DOM selectors
+from `search_metasearch.py`, URL consensus/snippet aggregation and lean ranking
+ideas from `search_engines.py` (GitHub owner/repository-only case folding, host
+diversity). Fixtures in `hound-web-provider.test.js` exercise those ported shapes;
+they are synthetic, not recorded proof of public-engine availability.
+`search.js` supplies Mono-owned bounded fanout, accounting and cancellation.
+`robots.js` adapts the origin-cache idea from `robots.py` but deliberately rejects
+its fail-open misses and shielded/coalesced requests; robots-parser 3.0.1 supplies
+rule parsing. Hound browser/proxy/TLS impersonation, archive escalation, retry,
+BYOK, neural-model and server code are not included or executed.
 
 The reviewed 13.2.0 extraction and link sources are byte-for-byte equivalent
 to those at master-fetch revision

@@ -109,6 +109,9 @@ async function performSearch(
   /** @type {Array<Array<{title: string, url: string, snippet: string, backend: string}>>} */
   const rankedLists = [];
   const providerFailures = [];
+  const engineOutcomes = [];
+  let partialEngines = false;
+  let houndStopped = false;
   const providersUsed = new Set();
   const attemptedBackends = new Set();
   const actualQueries = [];
@@ -148,6 +151,11 @@ async function performSearch(
     // Chain failures are reported even when a later backend rescued the query,
     // so a silent degradation to the fallback is still visible in the outcome.
     if (result.failures?.length) providerFailures.push(...result.failures);
+    if (result.backend === "hound" && Array.isArray(result.engineOutcomes)) {
+      engineOutcomes.push(...result.engineOutcomes.slice(0, 3));
+      partialEngines ||= result.partial === true;
+      houndStopped ||= result.engineOutcomes.some((entry) => ["robots_denied", "robots_unavailable", "robots_crawl_delay", "access_challenge", "authentication_required", "rate_limited", "search_budget_exhausted", "network_denied"].includes(entry.code));
+    }
     if (result.ok) {
       if (typeof result.actualQuery === "string" && result.actualQuery.trim()) {
         actualQueries.push(result.actualQuery.trim());
@@ -199,9 +207,9 @@ async function performSearch(
         break;
       }
       if (!result.ok && !result.relevance) disabledForCall.add(backend);
-      if (providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
+      if (houndStopped || providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
     }
-    if (providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
+    if (houndStopped || providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
   }
   rememberRunProviderFailures(searchState, providerFailures);
   if (signal?.aborted) {
@@ -217,6 +225,7 @@ async function performSearch(
   if (providerFailures.some((entry) => entry.code === "search_budget_exhausted")) {
     return searchFailure(searchBudgetExhaustionMessage(searchState, providerFailures), "search_budget_exhausted", startedAt, searchState, callClaims.requests, {
       attempts,
+      ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12) } : {}),
       backend: config.backend,
       attemptedBackends: [...attemptedBackends],
       providerAttempts: providerAttemptMetadata(providerFailures),
@@ -232,6 +241,7 @@ async function performSearch(
     const networkDenied = providerFailures.length > 0
       && providerFailures.every((entry) => entry.message === "Network access denied by sandbox policy.");
     const throttled = providerFailures.some((entry) => entry.rateLimited || entry.cooldown);
+    const terminalHoundCode = houndStopped ? providerFailures.find((entry) => entry.backend === "hound")?.code : undefined;
     const strictProviderCode = !Array.isArray(config.backend)
       ? providerFailures.find((entry) => typeof entry.code === "string")?.code
       : undefined;
@@ -240,8 +250,9 @@ async function performSearch(
     return searchFailure(networkDenied
       ? "Error: Network access denied by sandbox policy."
       : `Error: WebSearch failed: ${reason}`,
-    networkDenied ? "network_denied" : (throttled ? "rate_limited" : (strictProviderCode || "backend_unavailable")), startedAt, searchState, callClaims.requests, {
+    networkDenied ? "network_denied" : (throttled ? "rate_limited" : (terminalHoundCode || strictProviderCode || "backend_unavailable")), startedAt, searchState, callClaims.requests, {
       attempts,
+      ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12) } : {}),
       backend: config.backend,
       retryable: providerFailures.some((entry) => entry.retryable),
       rateLimited: throttled,
@@ -264,7 +275,7 @@ async function performSearch(
     : providersUsed.size > 1 ? "mixed" : config.backend;
   const bounded = boundWebSearchEntries(merged);
   const budget = webSearchBudgetSnapshot(searchState, callClaims.requests);
-  const retryInRun = searchState.requestsUsed < searchState.maxRequests;
+  const retryInRun = !houndStopped && searchState.requestsUsed < searchState.maxRequests;
   const nextAction = bounded.resultCount > 0
     ? "fetch_existing_sources"
     : retryInRun ? "refine_query" : "use_available_evidence";
@@ -279,12 +290,13 @@ async function performSearch(
   const fittedEntries = bounded.entries;
   const omittedCount = bounded.omittedCount;
   const truncatedFinal = bounded.truncated;
-  const status = truncatedFinal ? "partial" : "ok";
+  const status = truncatedFinal || partialEngines ? "partial" : "ok";
   const actualQueryList = uniqueStrings(actualQueries.length > 0 ? actualQueries : [normalizedQuery], 4);
   const failureSummary = sanitizeFailureMetadata(providerFailures)
     .map((entry) => `${entry.backend}:${entry.code}`);
   const coverage = {
     resultCount: fittedEntries.length,
+    ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12), partialEngines, searchStopped: houndStopped } : {}),
     truncated: truncatedFinal,
     ...(omittedCount > 0 ? { omittedResults: omittedCount } : {}),
     backend,
@@ -365,6 +377,7 @@ async function performSearch(
       cooldownSkipCount: providerFailures.filter((r) => r.cooldown).length,
       quotaSkipCount: providerFailures.filter((r) => r.quotaSkipped).length,
       filterSupport: coverage.filterSupport,
+      ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12), partialEngines, searchStopped: houndStopped } : {}),
       providerFailureCount: providerFailures.length,
       rateLimited: coverage.rateLimited,
       cooldownBackends: coverage.cooldownBackends,
@@ -759,6 +772,17 @@ async function searchOneQuery(query, options) {
     let result;
     if (preflight) {
       result = { ok: false, backend: name, ...preflight };
+    } else if (provider.ownsRequests === true) {
+      // Composite adapters gate the actual child URL before each admission.
+      // An aggregate .some(denied) check would wrongly deny partial allowlists.
+      result = await searchWithRequestCount(options, async () => {
+        const value = await provider.search(query, options);
+        if (value.ok && value.engineOutcomes?.some((entry) => entry.code === "search_budget_exhausted")
+          && !filterRelevantResults(filterByDomains(value.results, options.includeDomains, options.excludeDomains), options.relevanceQuery).length) {
+          return { ...value, ok: false, code: "search_budget_exhausted", message: "WebSearch request budget exhausted without useful results.", retryable: false };
+        }
+        return value;
+      });
     } else {
       const admission = provider.admission(options.config);
       if (provider.networkTargets(options.config).some((url) => !options.sandbox.networkAllowsUrl(options.policy, url))) {

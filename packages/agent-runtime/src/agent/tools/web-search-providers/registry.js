@@ -29,6 +29,7 @@ import { startpageProvider } from "./startpage.js";
  * @property {(config: any) => {kind: string, key: string, processPolicy: string}} admission
  * @property {(config: any) => string[]} networkTargets
  * @property {{language: string, timeRange: string}} filterSupport
+ * @property {boolean} [ownsRequests] Composite owns per-request URL policy and admission; never perform aggregate gating/admission.
  * @property {boolean} batchesQueries
  * @property {boolean} [primaryOnly]
  * @property {number} [chainDeadlineMs]

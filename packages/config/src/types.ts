@@ -27,15 +27,11 @@ export interface SearxngWebSearchConfig {
   readonly endpoint: string;
 }
 
-/**
- * User-managed Hound MCP endpoint (search or fetch). Explicit opt-in only:
- * the operator runs `hound` separately and points Mono at its loopback
- * streamable-HTTP URL (including the `/mcp` path). The endpoint is trusted:
- * per-call arguments request behavior and responses are validated, but neither
- * governs the remote server's internal redirects, retries, proxies, or keys.
+/** @deprecated Source-compatible tombstone; any endpoint setting is rejected.
+ * Hound is a built-in native provider and needs no service endpoint.
  */
 export interface HoundWebEndpointConfig {
-  /** Hound must be unauthenticated loopback HTTP with an explicit `/mcp` path. */
+  /** @deprecated Remove this setting; no external Hound service is contacted. */
   readonly endpoint: string;
 }
 
@@ -467,7 +463,7 @@ export interface MonoAgentConfig {
         readonly searxng?: SearxngWebSearchConfig;
         readonly ollama?: OllamaWebSearchConfig;
         readonly parallel?: ParallelWebConfig;
-        /** User-managed Hound MCP endpoint, required when the search chain selects hound. */
+        /** @deprecated Endpoint settings are rejected: Hound search is built in. */
         readonly hound?: HoundWebEndpointConfig;
         /** ChatGPT-subscription Codex app-server search settings. */
         readonly codex?: {
@@ -478,7 +474,7 @@ export interface MonoAgentConfig {
       readonly fetch: {
         readonly provider?: WebFetchProvider | readonly WebFetchProvider[];
         readonly parallel?: ParallelWebConfig;
-        /** User-managed Hound MCP endpoint, required when the fetch chain selects hound. */
+        /** @deprecated Endpoint settings are rejected: Hound fetch is built in. */
         readonly hound?: HoundWebEndpointConfig;
         readonly render: WebFetchRenderMode;
         readonly browserCommand: string;
