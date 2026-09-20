@@ -100,8 +100,7 @@ if (menu && navigation) {
   compact.addEventListener('change', () => closeMenu());
 }
 
-// Native page scroll selects one readable card at a time. The layout itself
-// never moves or pins; scroll direction naturally reverses the active sequence.
+// A short native-scroll deck; keyboard and motion preferences restore static flow.
 const cards = document.querySelector('.block-summary');
 const heroArt = document.querySelector('.hero-art picture');
 const motionToggle = document.querySelector('.motion-toggle');
@@ -113,6 +112,8 @@ if (cards) {
   let paused = false;
   let focusedIndex = null;
   let activeIndex = 0;
+  let pointerFocus = false;
+  const ease = value => { const t = clamp(value); return t * t * (3 - 2 * t); };
   const clamp = value => Math.max(0, Math.min(1, value));
   const setActive = index => {
     activeIndex = Math.max(0, Math.min(layers.length - 1, index));
@@ -121,22 +122,67 @@ if (cards) {
       card.dataset.active = String(cardIndex === activeIndex);
     });
   };
+  const clearDeckStyles = () => layers.forEach(card => card.removeAttribute('style'));
+  const setState = state => {
+    if (cards.dataset.motionState === state) return;
+    cards.dataset.motionState = state;
+    if (state !== 'scroll') clearDeckStyles();
+  };
+  const paintDeck = () => {
+    const bounds = cards.getBoundingClientRect();
+    const stickyTop = parseFloat(getComputedStyle(grid).top) || 0;
+    const inset = parseFloat(getComputedStyle(cards).paddingTop);
+    const travel = Math.max(1, cards.clientHeight - grid.offsetHeight - inset * 2);
+    const progress = clamp((stickyTop - bounds.top - inset) / travel);
+    const timeline = progress * (layers.length - 1);
+    setActive(Math.round(timeline));
+    layers.forEach((card, index) => {
+      // A reading beat, then an eased throw; the incoming face stays opaque.
+      const turn = Math.floor(timeline);
+      const phase = ease((timeline - turn - .18) / .64);
+      const position = turn + phase;
+      const offset = index - position;
+      const direction = index % 2 === 0 ? -1 : 1;
+      let x, y, z, rotate, scale, opacity, order;
+      if (offset < 0) {
+        const tossed = clamp(-offset);
+        x = direction * card.offsetWidth * .85 * tossed;
+        y = -6 - Math.sin(tossed * Math.PI) * 65 - tossed * 24;
+        z = 32 + 32 * Math.sin(tossed * Math.PI);
+        rotate = direction * 24 * tossed;
+        scale = 1 + .035 * Math.sin(tossed * Math.PI);
+        opacity = 1 - ease((tossed - .6) / .3);
+        order = tossed < .85 ? 30 : 0;
+      } else {
+        const depth = Math.min(3, offset);
+        x = direction * depth * 8;
+        y = depth * 14 - 6;
+        z = 32 - depth * 22;
+        rotate = direction * depth * 2;
+        scale = 1 - depth * .025;
+        opacity = 1;
+        order = 20 - Math.ceil(depth * 2);
+      }
+      const values = {
+        x: `${x.toFixed(2)}px`, y: `${y.toFixed(2)}px`, z: `${z.toFixed(2)}px`,
+        rotate: `${rotate.toFixed(2)}deg`, scale: scale.toFixed(4),
+        opacity: opacity.toFixed(3), order, face: offset < 0 || index === activeIndex ? 1 : 0,
+      };
+      Object.entries(values).forEach(([name, value]) => card.style.setProperty(`--deck-${name}`, value));
+      card.style.pointerEvents = values.face && opacity > .5 ? 'auto' : 'none';
+    });
+  };
   const paint = () => {
     frame = 0;
-    if (!paused && focusedIndex === null) {
-      const bounds = cards.getBoundingClientRect();
-      const start = innerHeight * .78;
-      const range = bounds.height + innerHeight * .38;
-      const progress = clamp((start - bounds.top) / range);
-      setActive(Math.min(layers.length - 1, Math.floor(progress * layers.length)));
-    }
-    cards.dataset.motionState = focusedIndex !== null
+    const state = focusedIndex !== null
       ? 'focused'
       : paused
         ? 'paused'
         : reduce.matches
           ? 'reduced'
           : 'scroll';
+    setState(state);
+    if (state === 'scroll') paintDeck();
     if (heroArt) {
       const hero = document.querySelector('.hero').getBoundingClientRect();
       const travel = clamp(-hero.top / hero.height);
@@ -148,24 +194,37 @@ if (cards) {
   const schedule = () => { if (!frame) frame = requestAnimationFrame(paint); };
   const preference = () => {
     if (motionToggle) motionToggle.hidden = reduce.matches;
-    schedule();
+    paint();
   };
   motionToggle?.addEventListener('click', () => {
     paused = !paused;
     motionToggle.setAttribute('aria-pressed', String(paused));
     motionToggle.textContent = paused ? 'Resume motion' : 'Pause motion';
-    schedule();
+    paint();
   });
+  const keepFocusVisible = target => requestAnimationFrame(() => {
+    if (target !== document.activeElement) return;
+    const bounds = target.getBoundingClientRect();
+    if (bounds.top < 0 || bounds.bottom > innerHeight) {
+      target.scrollIntoView({ block: 'center', behavior: 'instant' });
+    }
+  });
+  grid.addEventListener('pointerdown', () => { pointerFocus = true; });
+  document.addEventListener('keydown', () => { pointerFocus = false; });
   grid.addEventListener('focusin', event => {
+    // Do not relocate a pointer target between pointerdown and click.
+    if (pointerFocus) { pointerFocus = false; return; }
     const card = event.target.closest('.block-chapter');
     focusedIndex = layers.indexOf(card);
     if (focusedIndex >= 0) setActive(focusedIndex);
     paint();
+    keepFocusVisible(event.target);
   });
   grid.addEventListener('focusout', event => {
     if (!grid.contains(event.relatedTarget)) {
       focusedIndex = null;
       schedule();
+      if (event.relatedTarget instanceof HTMLElement) keepFocusVisible(event.relatedTarget);
     }
   });
   reduce.addEventListener('change', preference);

@@ -482,8 +482,7 @@ pre {
   background:#c9dcaa;
   border:1px solid #e0edc9;
   border-radius:10px;
-  box-shadow:0 5px 0 #74806435;
-  transform:translateY(0)
+  box-shadow:0 5px 0 #74806435
 }
 .block-chapter:nth-child(2) {
   --card-ink:#292336;
@@ -508,8 +507,46 @@ pre {
 }
 .block-chapter[data-active="true"] {
   border-color:var(--card-focus);
-  box-shadow:0 0 0 2px var(--card-focus),0 18px 40px #0003;
-  transform:translateY(-3px)
+  box-shadow:0 0 0 2px var(--card-focus),0 18px 40px #0003
+}
+.block-summary[data-motion-state="scroll"] {
+  --deck-height:300px;
+  position:relative;
+  height:1000px;
+  padding:44px 0;
+  overflow:clip
+}
+.block-summary[data-motion-state="scroll"] .block-chapters {
+  position:sticky;
+  top:max(90px,calc(50vh - var(--deck-height) / 2));
+  display:block;
+  width:100%;
+  height:var(--deck-height);
+  padding:0;
+  perspective:1200px;
+  isolation:isolate
+}
+.block-summary[data-motion-state="scroll"] .block-chapter {
+  position:absolute;
+  inset:0;
+  width:min(700px,calc(100% - 100px));
+  height:100%;
+  min-height:0;
+  margin:auto;
+  transform:translate3d(var(--deck-x,0),var(--deck-y,0),var(--deck-z,0)) rotate(var(--deck-rotate,0)) scale(var(--deck-scale,1));
+  transform-origin:50% 45%;
+  opacity:var(--deck-opacity,1);
+  z-index:var(--deck-order,1);
+  box-shadow:0 3px 0 #0003,0 28px 70px #0007;
+  will-change:transform,opacity
+}
+/* Back faces stay quiet; real links retain keyboard/assistive access and focus
+   immediately restores the readable static layout. */
+.block-summary[data-motion-state="scroll"] .block-chapter>* {
+  opacity:var(--deck-face,1)
+}
+.block-summary[data-motion-state="scroll"] .block-chapter[data-active="true"] {
+  box-shadow:0 0 0 2px var(--card-focus),0 5px 0 #0003,0 38px 90px #0009
 }
 .block-chapter h4 {
   align-self:end;
@@ -1163,6 +1200,17 @@ pre {
     padding:8px 10px;
     font-size:var(--text-support)
   }
+  .block-summary[data-motion-state="scroll"] {
+    --deck-height:310px;
+    height:1040px
+  }
+  .block-summary[data-motion-state="scroll"] .block-chapters {
+    top:max(92px,calc(50vh - var(--deck-height) / 2))
+  }
+  .block-summary[data-motion-state="scroll"] .block-chapter {
+    width:calc(100% - 40px);
+    padding:18px 16px
+  }
   .blocks-note {
     padding:20px 0 45px;
     font-size:var(--text-label)
@@ -1278,6 +1326,7 @@ pre {
   }
 }
 @media(max-width:360px) {
+  .block-summary[data-motion-state="scroll"] { --deck-height:350px }
   .hero-actions { flex-direction:column }
   .hero-actions .btn { width:100% }
   .config-blueprint figcaption>span:last-child {
@@ -1301,6 +1350,9 @@ pre {
   }
   .block-chapter {
     transition:transform .24s ease,border-color .24s ease,box-shadow .24s ease
+  }
+  .block-summary[data-motion-state="scroll"] .block-chapter {
+    transition:none
   }
   .diagram-line,.diagram-accent,.diagram-node {
     transition:opacity .24s ease,stroke-width .24s ease

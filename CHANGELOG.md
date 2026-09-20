@@ -12,9 +12,10 @@
   illustrated workflow explorer supports keyboard tabs, with no-JavaScript
   content, reduced-motion artwork, native FAQ disclosures, and install-command
   copying. A shorter mobile-first layout adds a compact disclosure menu, a
-  refined mark and CTAs, a coherent responsive type scale, SVG link arrows,
-  sequentially focused visual building-block cards with native mobile layout and
-  a motion pause, GitHub-marked CTAs, a mobile-optimized transparent matte-stone
+  refined mark and CTAs, a coherent responsive type scale, SVG link arrows, and
+  building-block cards that lift and toss through a compact native-scroll deck,
+  with static pause, keyboard, reduced-motion, and no-JavaScript layouts.
+  GitHub-marked CTAs, a mobile-optimized transparent matte-stone
   hero, compact self-hosted OFL fonts, and real desktop console UI imagery with
   clearly labelled synthetic data and source-build availability.
   Workflow anchors also align after progressive enhancement in WebKit.

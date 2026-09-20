@@ -68,11 +68,17 @@ instead of the larger desktop variants, including at high device pixel ratios.
 
 Four colored cards pair concise capability summaries with distinct configuration,
 connection, delegation, and continuity diagrams. All twelve documentation links stay
-server-rendered as compact chips. Native page scroll emphasizes exactly one card at
-a time in a reversible sequence; it never overlaps, pins, or intercepts the readable
-layout. A pause control freezes that emphasis, keyboard focus selects its card, and
-reduced-motion/no-JavaScript modes keep the complete grid readable. The hero tilts
-by at most two degrees while scrolling away. Workflows identify the useful components
+server-rendered as compact chips. With motion enabled, the same real cards become a
+short sticky deck: the focused card lifts forward, arcs aside, and reveals the offset
+layer below as native page scroll advances or reverses. A short reading beat separates
+each eased throw; settled cards are opaque and tossed cards disappear completely. The 1,040px mobile / 1,000px
+desktop stage adds only 190px to the measured 390px-wide page versus the prior grid
+(7,669px total versus 7,478px in Chromium) and never intercepts scrolling. Pause, keyboard focus,
+live reduced-motion changes, and no JavaScript restore the complete readable static
+grid or column without duplicate links. Pointer activation does not reflow targets;
+keyboard entry and exit preserve the visible focused link. The local enhancement
+script has a 10.5kB uncompressed ceiling (no animation dependency). The hero tilts by at most two degrees while
+scrolling away. Workflows identify the useful components
 and repeated work they help remove. Repeated blueprint callouts are removed because
 the same capabilities already appear in the cards.
 
@@ -98,9 +104,10 @@ contacting a running console. The asset is `marketing/public/console-desktop.web
 Review this recipe if the source fixture changes. No production data is used.
 
 `pnpm run screenshots` captures desktop 1440×1000 and mobile 390×844 / 430×932
-views, including every sequential building-block focus state. Add `-- --video` for a
-genuine browser scroll recording in both desktop and mobile viewports. No screenshot
-dimension exceeds 2000px. Output stays gitignored.
+views, including the initial stack, focused middle, mid-toss, and final release states
+at desktop and mobile sizes plus two contact sheets. Add `-- --video` for a genuine
+forward-and-reverse browser scroll recording in both desktop and mobile viewports.
+No screenshot or contact-sheet dimension exceeds 2000px. Output stays gitignored.
 
 ## Local development
 

@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { chromium } from "@playwright/test";
+import sharp from "sharp";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const marketingRoot = resolve(here, "..");
@@ -80,6 +81,25 @@ async function waitForServer(url, tries = 60) {
   throw new Error(`preview server never came up at ${url}`);
 }
 
+async function makeDeckContactSheet(name, width, height, columns, thumbWidth, thumbHeight) {
+  const states = ['stack-initial', 'focused-middle', 'toss-transition', 'final-release'];
+  const images = await Promise.all(states.map(state =>
+    sharp(join(outputDir, `cards-${state}-${width}x${height}.png`))
+      .resize(thumbWidth, thumbHeight, { fit: 'cover' })
+      .png()
+      .toBuffer()
+  ));
+  const rows = Math.ceil(images.length / columns);
+  await sharp({
+    create: { width: thumbWidth * columns, height: thumbHeight * rows, channels: 3, background: '#101211' },
+  }).composite(images.map((input, index) => ({
+    input,
+    left: (index % columns) * thumbWidth,
+    top: Math.floor(index / columns) * thumbHeight,
+  }))).png().toFile(join(outputDir, name));
+  console.log(`contact sheet: ${name}`);
+}
+
 async function main() {
   await mkdir(outputDir, { recursive: true });
   const server = spawn(
@@ -112,17 +132,24 @@ async function main() {
           }, shot.scrollTo);
           await page.waitForTimeout(400);
         }
-        if (shot.scrollTo === '.building-blocks') {
-          for (const index of [0,1,2,3]) {
-            await page.locator('.block-summary').evaluate((el,index) => {
+        if (shot.scrollTo === '.building-blocks' && [390, 1440].includes(shot.width)) {
+          for (const state of [
+            { name: 'stack-initial', timeline: 0 },
+            { name: 'focused-middle', timeline: 1 },
+            { name: 'toss-transition', timeline: 1.55 },
+            { name: 'final-release', timeline: 3 },
+          ]) {
+            await page.locator('.block-summary').evaluate((el,timeline) => {
+              const grid=el.querySelector('.block-chapters');
               const bounds=el.getBoundingClientRect();
-              const progress=(index+.5)/4;
-              const targetTop=innerHeight*.78-progress*(bounds.height+innerHeight*.38);
-              scrollTo({top:scrollY+bounds.top-targetTop,behavior:'instant'});
-            },index);
-            await page.waitForFunction(index=>document.querySelector('.block-summary')?.dataset.activeCard===String(index),index);
+              const stickyTop=parseFloat(getComputedStyle(grid).top);
+              const inset=parseFloat(getComputedStyle(el).paddingTop);
+              const travel=el.clientHeight-grid.clientHeight-inset*2;
+              scrollTo({top:scrollY+bounds.top+inset-stickyTop+(timeline/3)*travel,behavior:'instant'});
+            },state.timeline);
+            await page.waitForFunction(index=>document.querySelector('.block-summary')?.dataset.activeCard===String(index),Math.round(state.timeline));
             await page.waitForTimeout(100);
-            await page.screenshot({path:join(outputDir,`cards-focus-${index+1}-${shot.width}x${shot.height}.png`)});
+            await page.screenshot({path:join(outputDir,`cards-${state.name}-${shot.width}x${shot.height}.png`)});
           }
           await page.locator('.building-blocks').evaluate(el=>el.scrollIntoView({behavior:'instant'}));
           await page.waitForTimeout(100);
@@ -142,6 +169,10 @@ async function main() {
           })));
         }
         await page.close();
+      }
+      if (!process.argv.includes('--video-only')) {
+        await makeDeckContactSheet('cards-story-desktop-contact-sheet.png', 1440, 1000, 2, 700, 486);
+        await makeDeckContactSheet('cards-story-mobile-contact-sheet.png', 390, 844, 2, 390, 844);
       }
       if (process.argv.includes('--video') || process.argv.includes('--video-only')) {
         for (const viewport of [{width:1440,height:1000,name:"desktop"},{width:390,height:844,name:"mobile"}]) {
@@ -165,14 +196,16 @@ async function main() {
           });
           await move(0, 1200);
           const layout = document.querySelector('.block-summary');
-          const positionFor = index => {
+          const positionFor = timeline => {
+            const grid=layout.querySelector('.block-chapters');
             const bounds=layout.getBoundingClientRect();
-            const progress=(index+.5)/4;
-            const targetTop=innerHeight*.78-progress*(bounds.height+innerHeight*.38);
-            return scrollY+bounds.top-targetTop;
+            const stickyTop=parseFloat(getComputedStyle(grid).top);
+            const inset=parseFloat(getComputedStyle(layout).paddingTop);
+            const travel=layout.clientHeight-grid.clientHeight-inset*2;
+            return scrollY+bounds.top+inset-stickyTop+(timeline/3)*travel;
           };
-          for (const index of [0,1,2,3]) await move(positionFor(index), 1400);
-          for (const index of [2,1,0]) await move(positionFor(index), 1100);
+          for (const timeline of [0,1,1.55,2,3]) await move(positionFor(timeline), 1100);
+          for (const timeline of [2,1,0]) await move(positionFor(timeline), 900);
           await move(scrollY + document.querySelector('#use-cases').getBoundingClientRect().top, 1500);
           await move(scrollY, 1200);
         });

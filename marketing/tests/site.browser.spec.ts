@@ -314,12 +314,13 @@ test('mobile hero is complete and sits above the CTA', async ({page}) => {
   expect(await page.locator('.hero-art img').evaluate(el=>getComputedStyle(el).maskImage)).toBe('none');
 });
 
-test('mobile page uses compact cards and no floating components', async ({page}) => {
+test('mobile page uses one compact deck stage and no duplicated cards', async ({page}) => {
   await page.setViewportSize({width:390,height:844}); await page.goto('/');
   await expect(page.locator('.block-chapter')).toHaveCount(4);
   await expect(page.locator('.block-links a')).toHaveCount(12);
   await expect(page.locator('[data-block-story], .block-layer, .workflow-art')).toHaveCount(0);
-  expect((await page.locator('.building-blocks').boundingBox())!.height).toBeLessThan(1250);
+  expect((await page.locator('.block-summary').boundingBox())!.height).toBe(1040);
+  expect((await page.locator('.building-blocks').boundingBox())!.height).toBeLessThan(1500);
   expect((await page.locator('.hero-actions').boundingBox())!.y).toBeLessThan(740);
 });
 test('high density mobile loads the mobile hero and compressed local fonts', async ({browser}) => {
@@ -333,118 +334,168 @@ test('high density mobile loads the mobile hero and compressed local fonts', asy
   await context.close();
 });
 
-for (const width of [390, 1440]) {
-  test(`native scroll focuses cards sequentially and reversibly at ${width}px`, async ({
-    page,
-  }) => {
-    await page.setViewportSize({ width, height: 900 });
-    await page.goto("/");
-    await page.evaluate(() => document.fonts.ready);
-    const cards = page.locator(".block-summary");
-    const seek = async (index: number) => {
-      await cards.evaluate((el, index) => {
-        const bounds = el.getBoundingClientRect();
-        const progress = (index + 0.5) / 4;
-        const targetTop =
-          innerHeight * 0.78 - progress * (bounds.height + innerHeight * 0.38);
-        scrollTo({
-          top: scrollY + bounds.top - targetTop,
-          behavior: "instant",
-        });
-      }, index);
-      await expect
-        .poll(() => cards.getAttribute("data-active-card"))
-        .toBe(String(index));
-      await expect(
-        cards.locator('.block-chapter[data-active="true"]'),
-      ).toHaveCount(1);
-    };
-    for (const index of [0, 1, 2, 3]) await seek(index);
-    for (const index of [2, 1, 0]) await seek(index);
-    expect(
-      await page.evaluate(() => document.documentElement.scrollWidth),
-    ).toBeLessThanOrEqual(width);
-
-    await page.setViewportSize({
-      width: width === 390 ? 430 : 1280,
-      height: 900,
+async function seekDeck(page: import("@playwright/test").Page, timeline: number) {
+  const cards = page.locator(".block-summary");
+  await cards.evaluate((el, timeline) => {
+    const grid = el.querySelector<HTMLElement>(".block-chapters")!;
+    const bounds = el.getBoundingClientRect();
+    const stickyTop = parseFloat(getComputedStyle(grid).top);
+    const inset = parseFloat(getComputedStyle(el).paddingTop);
+    const travel = el.clientHeight - grid.clientHeight - inset * 2;
+    scrollTo({
+      top: scrollY + bounds.top + inset - stickyTop + (timeline / 3) * travel,
+      behavior: "instant",
     });
-    await expect(
-      cards.locator('.block-chapter[data-active="true"]'),
-    ).toHaveCount(1);
-    await seek(3);
-    await expect(cards.locator(".block-chapter").last()).toHaveAttribute(
-      "data-active",
-      "true",
-    );
+  }, timeline);
+  await expect.poll(() => cards.getAttribute("data-active-card")).toBe(String(Math.round(timeline)));
+}
+
+async function activeCardGeometry(page: import("@playwright/test").Page) {
+  return page.locator('.block-chapter[data-active="true"]').evaluate((el) => {
+    const box = el.getBoundingClientRect();
+    return {
+      left: box.left,
+      right: box.right,
+      top: box.top,
+      bottom: box.bottom,
+      width: box.width,
+      height: box.height,
+      transform: getComputedStyle(el).transform,
+      opacity: Number(getComputedStyle(el).opacity),
+    };
   });
 }
 
-test("reduced motion keeps one sequential focus without transforms", async ({
-  page,
-}) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/");
-  const cards = page.locator(".block-summary");
-  await cards.evaluate((el) => {
-    const bounds = el.getBoundingClientRect();
-    const targetTop =
-      innerHeight * 0.78 - 0.875 * (bounds.height + innerHeight * 0.38);
-    scrollTo({ top: scrollY + bounds.top - targetTop, behavior: "instant" });
+for (const width of [390, 1440]) {
+  test(`native scroll stacks, lifts, tosses and reverses cards at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+    await page.goto("/");
+    await page.evaluate(() => document.fonts.ready);
+    const cards = page.locator(".block-summary");
+    const layers = cards.locator(".block-chapter");
+
+    await seekDeck(page, 0);
+    const initial = await layers.evaluateAll((elements) => elements.map((el) => {
+      const box = el.getBoundingClientRect();
+      return { left: box.left, top: box.top, right: box.right, bottom: box.bottom, transform: getComputedStyle(el).transform };
+    }));
+    expect(initial.every((card) => card.transform !== "none")).toBe(true);
+    const overlapWidth = Math.min(initial[0].right, initial[1].right) - Math.max(initial[0].left, initial[1].left);
+    const overlapHeight = Math.min(initial[0].bottom, initial[1].bottom) - Math.max(initial[0].top, initial[1].top);
+    expect(overlapWidth).toBeGreaterThan(200);
+    expect(overlapHeight).toBeGreaterThan(250);
+
+    for (const timeline of [0, 1, 2, 3]) {
+      await seekDeck(page, timeline);
+      const geometry = await activeCardGeometry(page);
+      expect(geometry.left).toBeGreaterThanOrEqual(0);
+      expect(geometry.right).toBeLessThanOrEqual(width);
+      expect(geometry.top).toBeGreaterThanOrEqual(0);
+      expect(geometry.bottom).toBeLessThanOrEqual(width === 390 ? 844 : 1000);
+      expect(geometry.transform).not.toBe("none");
+      expect(geometry.opacity).toBeGreaterThan(.95);
+      const stage = await cards.boundingBox();
+      expect(geometry.top).toBeGreaterThanOrEqual(stage!.y);
+      expect(geometry.bottom).toBeLessThanOrEqual(stage!.y + stage!.height);
+      if (timeline > 0) await expect(layers.nth(timeline - 1)).toHaveCSS("opacity", "0");
+    }
+
+    await seekDeck(page, 1);
+    const settledLeft = (await layers.nth(1).boundingBox())!.x;
+    await seekDeck(page, 1.7);
+    const tossed = await layers.nth(1).evaluate((el) => ({
+      box: el.getBoundingClientRect().toJSON(),
+      opacity: Number(getComputedStyle(el).opacity),
+      transform: getComputedStyle(el).transform,
+    }));
+    expect(Math.abs(tossed.box.x - settledLeft)).toBeGreaterThan(45);
+    expect(tossed.opacity).toBeLessThan(.55);
+    expect(tossed.transform).not.toBe("none");
+    await expect(cards).toHaveAttribute("data-active-card", "2");
+
+    for (const timeline of [3, 2, 1, 0]) await seekDeck(page, timeline);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+
+    await page.setViewportSize({ width: width === 390 ? 430 : 1280, height: 900 });
+    await seekDeck(page, 3);
+    await expect(layers.last()).toHaveAttribute("data-active", "true");
+    const final = await activeCardGeometry(page);
+    expect(final.top).toBeGreaterThanOrEqual(0);
+    expect(final.bottom).toBeLessThanOrEqual(900);
   });
-  await expect.poll(() => cards.getAttribute("data-active-card")).toBe("3");
-  await expect(cards.locator('.block-chapter[data-active="true"]')).toHaveCount(
-    1,
-  );
-  await expect(cards).toHaveAttribute("data-motion-state", "reduced");
-  expect(
-    await cards
-      .locator(".block-chapter")
-      .last()
-      .evaluate((el) => getComputedStyle(el).transform),
-  ).toBe("none");
-  expect(
-    await page
-      .locator(".hero-art picture")
-      .evaluate((el) => getComputedStyle(el).transform),
-  ).toBe("none");
-  await expect(page.getByRole("button", { name: "Pause motion" })).toBeHidden();
+}
+
+test("reduced motion and no-JavaScript expose a static readable card layout", async ({ browser }) => {
+  for (const options of [
+    { javaScriptEnabled: true, reducedMotion: "reduce" as const },
+    { javaScriptEnabled: false, reducedMotion: "no-preference" as const },
+  ]) {
+    const context = await browser.newContext({ ...options, viewport: { width: 390, height: 844 } });
+    const page = await context.newPage();
+    await page.goto("/");
+    const cards = page.locator(".block-summary");
+    const layers = cards.locator(".block-chapter");
+    await expect(layers).toHaveCount(4);
+    await expect(cards.locator(".block-links a")).toHaveCount(12);
+    const geometry = await layers.evaluateAll((elements) => elements.map((el) => {
+      const box = el.getBoundingClientRect();
+      return { top: box.top, bottom: box.bottom, position: getComputedStyle(el).position, transform: getComputedStyle(el).transform };
+    }));
+    expect(geometry.every((card) => card.position === "static" && card.transform === "none")).toBe(true);
+    for (let index = 1; index < geometry.length; index++) expect(geometry[index].top).toBeGreaterThanOrEqual(geometry[index - 1].bottom);
+    if (options.javaScriptEnabled) {
+      await expect(cards).toHaveAttribute("data-motion-state", "reduced");
+      await expect(page.getByRole("button", { name: "Pause motion" })).toBeHidden();
+    }
+    await context.close();
+  }
 });
 
-test("motion pause freezes focus and keyboard focus selects an unobscured card", async ({
-  page,
-}) => {
+test("pause and keyboard traversal reveal every real card in static flow", async ({ page, browserName }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
   const cards = page.locator(".block-summary");
-  const seek = async (index: number) =>
-    cards.evaluate((el, index) => {
-      const bounds = el.getBoundingClientRect();
-      const targetTop =
-        innerHeight * 0.78 -
-        ((index + 0.5) / 4) * (bounds.height + innerHeight * 0.38);
-      scrollTo({ top: scrollY + bounds.top - targetTop, behavior: "instant" });
-    }, index);
-  await seek(1);
-  await expect.poll(() => cards.getAttribute("data-active-card")).toBe("1");
-  await page.getByRole("button", { name: "Pause motion" }).evaluate((button: HTMLButtonElement) => button.click());
-  await expect(
-    page.getByRole("button", { name: "Resume motion" }),
-  ).toHaveAttribute("aria-pressed", "true");
-  await seek(3);
-  await expect(cards).toHaveAttribute("data-active-card", "1");
+  const toggle = page.locator(".motion-toggle");
+  await toggle.evaluate((button: HTMLButtonElement) => button.click());
   await expect(cards).toHaveAttribute("data-motion-state", "paused");
-  await page.getByRole("button", { name: "Resume motion" }).evaluate((button: HTMLButtonElement) => button.click());
-  await expect.poll(() => cards.getAttribute("data-active-card")).toBe("3");
-  const last = cards.locator("a").last();
-  await last.focus();
-  await expect(last).toBeFocused();
-  await expect(last).toBeInViewport();
-  await expect(cards).toHaveAttribute("data-active-card", "3");
-  await expect(cards.locator('.block-chapter[data-active="true"]')).toHaveCount(
-    1,
-  );
+  await expect(cards.locator(".block-chapter").first()).toHaveCSS("position", "static");
+  await toggle.evaluate((button: HTMLButtonElement) => button.click());
+  await seekDeck(page, 2);
+
+  await toggle.focus();
+  const forward = browserName === "webkit" ? "Alt+Tab" : "Tab";
+  const backward = browserName === "webkit" ? "Alt+Shift+Tab" : "Shift+Tab";
+  const links = cards.locator(".block-links a");
+  for (let index = 0; index < 12; index++) {
+    await page.keyboard.press(forward);
+    await expect(links.nth(index)).toBeFocused();
+    await expect(cards).toHaveAttribute("data-motion-state", "focused");
+    await expect(links.nth(index)).toBeInViewport();
+    await expect(links.nth(index).locator("xpath=ancestor::li[contains(@class,'block-chapter')]")).toHaveCSS("position", "static");
+  }
+  await page.keyboard.press(forward);
+  await expect(cards).toHaveAttribute("data-motion-state", "scroll");
+  await expect(page.locator(".blocks-note a")).toBeFocused();
+  await expect(page.locator(".blocks-note a")).toBeInViewport();
+  await page.keyboard.press(backward);
+  await expect(links.last()).toBeFocused();
+  await expect(links.last()).toBeInViewport();
+  await expect(cards).toHaveAttribute("data-motion-state", "focused");
+});
+
+test("live reduced-motion changes preserve keyboard focus and readable geometry", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  const link = page.locator(".block-links a").nth(7);
+  await link.focus();
+  await expect(link).toBeFocused();
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(link).toBeFocused();
+  await expect(link).toBeInViewport();
+  await expect(page.locator(".block-summary")).toHaveAttribute("data-motion-state", "focused");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect(link).toBeFocused();
+  await expect(link).toBeInViewport();
 });
 
 test("every GitHub CTA has an accessible decorative GitHub mark", async ({
@@ -519,3 +570,21 @@ for (const viewport of [
     });
   });
 }
+
+// A pointer click must not reflow the deck between pointerdown and click.
+test("focused deck links remain genuine pointer targets", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await seekDeck(page, 2);
+  const link = page.locator('.block-chapter[data-active="true"] .block-links a').first();
+  await link.evaluate(el => el.addEventListener("click", event => {
+    event.preventDefault();
+    el.setAttribute("data-clicked", "true");
+  }));
+  const before = await link.boundingBox();
+  await link.click();
+  await expect(link).toHaveAttribute("data-clicked", "true");
+  await expect(page.locator(".block-summary")).toHaveAttribute("data-motion-state", "scroll");
+  const after = await link.boundingBox();
+  expect(Math.abs(after!.y - before!.y)).toBeLessThan(2);
+});
