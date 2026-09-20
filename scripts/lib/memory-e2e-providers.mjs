@@ -198,6 +198,13 @@ async function waitForCaptureRuntimeSettlement(runtimePromise, {
     event.timeoutSettlement = settlement.status === "fulfilled" ? "fulfilled_discarded" : "rejected";
     event.timeoutUsage = "unknown";
     event.latePayloadAccepted = false;
+    // Local timeout may have won first, but caller/global cancellation during
+    // settlement still forbids recovery once the original runtime has ended.
+    if (budget.controller.signal.aborted || callerSignal?.aborted === true) {
+      budget.stopAdmission();
+      if (!budget.controller.signal.aborted) budget.controller.abort(new BenchmarkError("provider_timeout_or_cancelled"));
+      throw new BenchmarkError("provider_timeout_or_cancelled");
+    }
     if (compactionObserved()) throw new BenchmarkError("unexpected_compaction");
     if (settlement.status === "fulfilled") {
       const stopReason = settlement.value?.diagnostics?.pi_stop_reason;

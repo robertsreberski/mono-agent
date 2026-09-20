@@ -193,7 +193,7 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
     expect(LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS).toBe(29_897);
   });
 
-  it("reuses the production harness across admissions while the second turn recovers through native intake", async () => {
+  it.each(["late-success", "pi-cancelled"])("reuses the production harness across admissions with %s timeout recovery", async (lateResultKind) => {
     const projected = projectLocomo(dataset(), { experiment: LOCOMO_DEVELOPMENT_EXPERIMENT });
     const selected = projected.groups[0];
     const corpus = {
@@ -230,7 +230,10 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
             if (secondTurnExtractions === 1) return await new Promise((resolve) => {
               options.abortSignal.addEventListener("abort", () => setImmediate(() => {
                 timedCallSettled = true;
-                resolve({
+                resolve(lateResultKind === "pi-cancelled" ? {
+                  text: "", cancelled: true, error: null, failureKind: null,
+                  diagnostics: { pi_stop_reason: "aborted" },
+                } : {
                   text: "",
                   structuredResult: {
                     memories: [{

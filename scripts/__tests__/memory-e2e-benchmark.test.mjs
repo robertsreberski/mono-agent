@@ -409,6 +409,34 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(run).toHaveBeenCalledOnce();
     await budget.settle(100);
   });
+  it.each(["global", "caller"])("keeps %s cancellation terminal during local timeout settlement", async (scope) => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 1000;
+    const caller = new AbortController();
+    let finish;
+    let sawTimeout;
+    const timeoutObserved = new Promise((resolve) => { sawTimeout = resolve; });
+    const run = vi.fn((_system, options) => new Promise((resolve) => {
+      finish = resolve;
+      options.abortSignal.addEventListener("abort", sawTimeout, { once: true });
+    }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    const pending = metered.run("s", { messages: [], abortSignal: caller.signal });
+    const assertion = expect(pending).rejects.toThrow("provider_timeout_or_cancelled");
+    await timeoutObserved;
+    await new Promise((resolve) => setImmediate(resolve));
+    (scope === "global" ? budget.controller : caller).abort();
+    finish({ text: "", cancelled: true, error: null, failureKind: null, diagnostics: { pi_stop_reason: "aborted" } });
+    await assertion;
+    expect(budget.admissionStopped).toBe(true);
+    expect(budget.controller.signal.aborted).toBe(true);
+    expect(budget.events[0].status).not.toBe("capture_timeout_settled");
+    await expect(metered.run("s", { messages: [] })).rejects.toThrow("provider_admission_stopped");
+    expect(run).toHaveBeenCalledOnce();
+    await budget.settle(100);
+  });
   it.each(["provider_auth", "usage_limit"])("keeps capture %s terminal under timeout-recovery policy", async (failureKind) => {
     const { budget } = await setup();
     budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
