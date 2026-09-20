@@ -151,7 +151,7 @@ export {
   MAX_CAPTURE_MEMORIES,
   MAX_CAPTURE_RELATIONS,
 } from "./capture-batch.js";
-export type { CapturePlan } from "./capture-batch.js";
+export type { CaptureObservationContext, CapturePlan } from "./capture-batch.js";
 export {
   MAX_KNOWN_ENTITY_HINTS,
   renderKnownEntityHints,

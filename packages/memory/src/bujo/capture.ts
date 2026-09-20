@@ -59,12 +59,18 @@ async function captureTurnUnlocked(
   deps.abortSignal?.throwIfAborted();
   // One batched extraction call yields candidates + their precise entity ids;
   // one optional batched reconcile call classifies every near neighbour.
+  // Strict capture samples the host-owned clock once, before extraction, and
+  // uses that same instant for the observation anchor and capture metadata.
+  // Durable intake retries replace this clock with immutable admittedAt.
   const knownEntities = knownEntityHints(deps.root, text);
+  const strictObservedAt = strictModelOutput ? deps.now() : undefined;
   const extraction = strictModelOutput
-    ? await extractCapturePlanStrict(text, deps.llm, deps.abortSignal, knownEntities)
+    ? await extractCapturePlanStrict(text, deps.llm, deps.abortSignal, knownEntities, {
+      observedAt: strictObservedAt!.toISOString(),
+    })
     : await extractCapturePlan(text, deps.llm, deps.abortSignal, knownEntities);
   deps.abortSignal?.throwIfAborted();
-  const now = deps.now();
+  const now = strictObservedAt ?? deps.now();
   const createdAt = now.toISOString();
   let intentHandle: CaptureIntentHandle | undefined;
   let preparedActions: readonly CaptureIntentAction[] = [];

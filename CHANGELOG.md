@@ -33,6 +33,11 @@
   scope; distinguish corrected reports from actual state changes and avoid
   turning observed outcomes into causal proof, without extra model calls or a
   storage-schema change.
+- Give strict BuJo extraction the durable completed-turn admission instant as
+  host-owned observation context, reused across retries, and guide extraction
+  and reconciliation to retain material dates, relative phrases and anchors,
+  uncertainty, negation, event scope, and distinct repeated events without
+  presenting receipt time as event time or trusting timestamps in quoted text.
 - Make strict agent-host BuJo extraction and reconciliation request the runtime's
   schema-guided `StructuredOutput` result while retaining authoritative strict
   validation and whole-turn atomicity. Accept a successful terminal structured

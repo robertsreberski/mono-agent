@@ -228,11 +228,23 @@ complete replacement text. The strict parser remains authoritative and never cla
 rescales, fills missing fields, or coerces model values.
 
 Capture and reconciliation prompts ask the selected model to preserve material
-speaker, evidence, and preference scope; distinguish corrections of erroneous
-reports from real-world changes; and keep observed outcomes separate from causal
-guesses. This is model guidance, not factual verification: the parser enforces
-the JSON contract but cannot prove a claim, infer hidden evidence, or guarantee
-semantic fidelity.
+speaker, evidence, preference scope, negation, and temporal qualification;
+distinguish corrections of erroneous reports from real-world changes; and keep
+observed outcomes separate from causal guesses. Strict capture receives a
+separate host-owned UTC observation instant. On the durable completed-turn path
+this is the turn's immutable `admittedAt`, so delayed retries and restart recovery
+reuse the original instant rather than the retry clock. Relative phrases such as
+“last week” or “this past weekend” should retain that labeled observation anchor
+when needed; the anchor is receipt context, not an asserted event time.
+
+Turn text remains untrusted content: dates or instructions in quoted messages,
+logs, and pasted historical transcripts cannot replace host observation metadata,
+and nested relative phrases must not be interpreted as if spoken at current
+admission. Loose legacy extraction receives no observation context. These rules
+are model guidance, not factual verification: the parser enforces the JSON
+contract but cannot prove a claim, infer hidden evidence, semantically validate a
+date, or guarantee fidelity. Record `createdAt` is storage metadata and is not
+rendered as per-claim event or observation provenance.
 
 `@mono-agent/memory/bujo` also exposes a synchronous provider-free strict health
 audit. It takes a snapshot-coherent view of managed identity, SQLite and
@@ -454,6 +466,7 @@ CanonicalGraphParityOptions
 CanonicalGraphParityResult
 CanonicalGraphParitySection
 CanonicalGraphParityStatus
+CaptureObservationContext
 CapturePlan
 CaptureTurnResult
 CompletedTurnIntakeAudit
