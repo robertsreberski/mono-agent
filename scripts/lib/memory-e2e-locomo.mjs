@@ -39,7 +39,7 @@ const COMPLETED_TURN_CAPTURE_TEXT_MAX_BYTES = 512 * 1024;
  * source utterances (the final odd utterance stands alone). Pair boundaries use
  * only source order: never questions, references, evidence ids, or outcomes.
  */
-export const LOCOMO_ADAPTER_PROTOCOL = "locomo-adjacent-exchanges-v4-settled-capture-timeout-recovery";
+export const LOCOMO_ADAPTER_PROTOCOL = "locomo-adjacent-exchanges-v5-native-capture-failure-recovery";
 export const LOCOMO_EXCHANGE_MAX_ENTRIES = 2;
 export const LOCOMO_EXCHANGE_MAX_USER_BYTES = 8 * 1024;
 export const LOCOMO_READER_PROMPT = Object.freeze({
@@ -454,7 +454,8 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
     retryMaxMs: CAPTURE_RETRY_MAX_MS,
     scheduleSource: "durable_pending_record_nextAttemptAt",
     virtualClock: "advance_exactly_to_persisted_schedule",
-    retryableFailure: "model_output_including_settled_capture_timeout",
+    retryableFailure: "model_output_settled_timeout_or_proven_finite_capture_step",
+    finiteStepPolicy: "current_attempt_capture_max_turns_only",
     timeoutPolicy: "settled_capture_runtime_only",
     timeoutSettlementMs: CAPTURE_TIMEOUT_SETTLEMENT_MS,
     timeoutPayloadPolicy: "discard_late_payload_without_partial_write",

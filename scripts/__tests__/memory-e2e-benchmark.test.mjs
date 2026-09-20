@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { ARMS, armsFor, loadCorpus, makePlan, serializableProfile, sourceOnly, contextFor, validateCorpus } from "../lib/memory-e2e-dataset.mjs";
 import { Budget, BenchmarkError, canonicalFailureKind, captureLlm, failureKindOf, isFatalFailureKind, meteredEmbeddings, meteredRuntime, realProviders, scriptedProviders, usageOf } from "../lib/memory-e2e-providers.mjs";
 import { percentiles, ratio, lexicalDiagnostic, safeArtifact, ownedParent, summarize } from "../lib/memory-e2e-report.mjs";
-import { automaticRecallObservation, awaitReady, captureFailureKindFor, cleanupTrial, persistedCaptureRetrySchedule, readySnapshot } from "../lib/memory-e2e-runner.mjs";
+import { automaticRecallObservation, awaitReady, captureFailureKindFor, captureRetryCause, cleanupTrial, currentCaptureRetryCause, persistedCaptureRetrySchedule, readySnapshot } from "../lib/memory-e2e-runner.mjs";
 import { prepareRealBuild, verifyRealBuild, BUILD_POLICY } from "../lib/memory-e2e-build.mjs";
 import { main, parseArguments, profileFrom } from "../memory-e2e-benchmark.mjs";
 import { CompletedTurnIntakeManager, inspectCompletedTurnIntake } from "../../packages/memory/src/bujo/capture-intake.ts";
@@ -188,7 +188,8 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(attempts).toBe(2);
     expect(now).toBe(Date.parse("2026-09-20T00:01:00.000Z"));
     expect(retries).toEqual([{
-      attempt: 1, failureKind: "model_output", nextAttemptAt: "2026-09-20T00:01:00.000Z", advanceMs: 60_000,
+      attempt: 1, failureKind: "model_output", recoveryCause: "model_output",
+      nextAttemptAt: "2026-09-20T00:01:00.000Z", advanceMs: 60_000,
     }]);
     expect(outcomes).toEqual([{ attempt: 2, priorFailures: 1, status: "recovered_success" }]);
 
@@ -204,6 +205,70 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
       onRetry: () => { throw new Error("must not retry"); },
     })).rejects.toThrow("capture_not_ready");
     expect(providerAttempts).toBe(1);
+  });
+
+  it("admits only a current-attempt finite capture-step provider failure", () => {
+    const pending = { lastError: "provider" };
+    const finite = {
+      stage: "reconciliation", status: "capture_step_budget_exhausted",
+      failureKind: "budget_exceeded", providerReportedFailureKind: "usage_limit", maxTurnsHit: true,
+    };
+    expect(captureRetryCause(pending, finite)).toBe("finite_capture_step");
+    expect(captureRetryCause(pending, { ...finite, maxTurnsHit: false })).toBeNull();
+    expect(captureRetryCause(pending, { ...finite, providerReportedFailureKind: "provider_auth" })).toBeNull();
+    expect(captureRetryCause(pending, { ...finite, status: "provider_failed" })).toBeNull();
+    const correlated = currentCaptureRetryCause([
+      { groupId: "g", arm: "bujo", ...finite },
+      { groupId: "other", arm: "bujo", ...finite },
+      { groupId: "g", arm: "bujo", stage: "reconciliation", status: "completed" },
+    ], 1, { groupId: "g", arm: "bujo" }, pending);
+    expect(correlated).toEqual({ cause: null, nextCursor: 3 });
+    expect(captureRetryCause({ lastError: "processing" }, finite)).toBeNull();
+    expect(captureRetryCause({ lastError: "model_output" }, { status: "completed" })).toBe("model_output");
+    expect(captureRetryCause({ lastError: "model_output" }, { status: "capture_timeout_settled" }))
+      .toBe("settled_capture_timeout");
+  });
+
+  it("bounds persistent finite capture-step failures at the native provider dead letter", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "retry-step-exhaustion-test-")); dirs.push(directory);
+    const maxAttempts = 16; let attempts = 0; let now = new Date("2026-09-20T00:00:00.000Z");
+    const exhausted = []; const scheduled = [];
+    const intake = new CompletedTurnIntakeManager({
+      root: directory, clock: () => now, writeSummary: async () => {},
+      capture: async () => {
+        attempts += 1;
+        const error = new Error("finite capture step exhausted"); error.name = "MemoryModelError"; throw error;
+      },
+    });
+    const admission = intake.admit({
+      runId: "runner-native-step-exhaustion", conversationId: "conversation", summary: "summary", captureText: "source",
+    });
+    const finite = {
+      status: "capture_step_budget_exhausted", failureKind: "budget_exceeded",
+      providerReportedFailureKind: "usage_limit", maxTurnsHit: true,
+    };
+    await expect(awaitReady({
+      flush: () => intake.flush(),
+      queueSnapshot: () => ({ intake: intake.snapshot(), shutdown: { timedOut: false, discarded: 0 } }),
+    }, 2000, undefined, {
+      id: admission.id, maxAttempts,
+      inspect: () => inspectCompletedTurnIntake(directory, now),
+      persistedSchedule: (item) => persistedCaptureRetrySchedule(admission.source, item),
+      advanceClock: (value) => { const advance = Date.parse(value) - now.getTime(); now = new Date(value); return advance; },
+      retryCause: (item) => captureRetryCause(item, finite),
+      onRetry: (value) => scheduled.push(value), onExhausted: (value) => exhausted.push(value),
+    })).rejects.toThrow("capture_not_ready");
+    expect(attempts).toBe(16);
+    expect(scheduled).toHaveLength(15);
+    expect(scheduled.every((entry) => entry.failureKind === "provider"
+      && entry.recoveryCause === "finite_capture_step")).toBe(true);
+    expect(exhausted).toEqual([{
+      attempt: 16, failureKind: "provider", recoveryCause: "finite_capture_step",
+    }]);
+    expect(inspectCompletedTurnIntake(directory, now).items[0]).toMatchObject({
+      id: admission.id, state: "dead", attempt: 16, lastError: "provider",
+    });
+    intake.finishShutdown();
   });
 
   it("bounds persistent malformed output at the actual native dead letter and records exhaustion", async () => {
@@ -236,7 +301,9 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
       60_000, 120_000, 240_000, 480_000, 960_000, 1_920_000, 3_840_000, 7_680_000,
       15_360_000, 21_600_000, 21_600_000, 21_600_000, 21_600_000, 21_600_000, 21_600_000,
     ]);
-    expect(exhausted).toEqual([{ attempt: 16, failureKind: "model_output" }]);
+    expect(exhausted).toEqual([{
+      attempt: 16, failureKind: "model_output", recoveryCause: "model_output",
+    }]);
     expect(inspectCompletedTurnIntake(directory, now).items[0]).toMatchObject({ state: "dead", attempt: 16 });
     intake.finishShutdown();
   });

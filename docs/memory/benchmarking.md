@@ -139,7 +139,7 @@ downloads or vendors it. Keep the CC BY-NC 4.0 corpus in an owner-only ignored
 directory. The adapter sends neither references, evidence annotations, images,
 summaries, observations, nor unselected conversations to a provider.
 
-Protocol `locomo-adjacent-exchanges-v4-settled-capture-timeout-recovery` projects
+Protocol `locomo-adjacent-exchanges-v5-native-capture-failure-recovery` projects
 each session into ordered, non-overlapping adjacent pairs of source utterances; a final odd utterance stands
 alone. Pairing uses only source order, never questions or answers. Speaker and
 text bytes are preserved without trimming, both participants remain quoted
@@ -251,11 +251,16 @@ clock to each record's actual persisted `nextAttemptAt`, while every provider ca
 keeps its real timeout and cancellation. A capture call that reaches its local
 180-second deadline can enter that same native schedule only after the abort reaches
 the actual runtime and the original promise settles within a separate 30-second
-ceiling. Any late payload is discarded and usage remains unknown. Unknown settlement,
-global cancellation, reader timeout, auth/quota, generic provider, compaction and
-budget failures remain terminal; calls never overlap. First-attempt and recovered
-successes, timeout causes, scheduled attempts and exhaustion are separate artifact
-events. Persistent malformed output is `capture_not_ready`, never successful empty memory. Fresh semantic stores
+ceiling. Any late payload is discarded and usage remains unknown. A settled capture
+result that explicitly reports the configured finite `maxTurns` guard follows its
+unchanged durable `provider` pending record too, but only when the current attempt
+records `max_turns_hit`, normalized local `budget_exceeded`, and Pi's `usage_limit`.
+It does not add an SDK/model loop or increase the one-turn call limit. Unknown
+settlement, global cancellation, reader timeout, real auth/quota without that guard,
+generic provider, context, compaction, embedding, processing and output-limit
+failures remain terminal; calls never overlap. First-attempt and recovered successes,
+recovery causes, scheduled attempts and exhaustion are separate artifact events.
+Persistent malformed output is `capture_not_ready`, never successful empty memory. Fresh semantic stores
 initialize an **empty** managed generation before replay so strict health can
 verify them; captured data is never rebuilt to conceal capture/index loss.
 

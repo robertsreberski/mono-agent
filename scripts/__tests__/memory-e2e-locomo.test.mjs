@@ -141,7 +141,8 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
       policy: "native_persisted_exponential_v1", maxAttempts: 16, retryBaseMs: 60_000,
       retryMaxMs: 21_600_000, scheduleSource: "durable_pending_record_nextAttemptAt",
       virtualClock: "advance_exactly_to_persisted_schedule",
-      retryableFailure: "model_output_including_settled_capture_timeout",
+      retryableFailure: "model_output_settled_timeout_or_proven_finite_capture_step",
+      finiteStepPolicy: "current_attempt_capture_max_turns_only",
       timeoutPolicy: "settled_capture_runtime_only", timeoutSettlementMs: 30_000,
       timeoutPayloadPolicy: "discard_late_payload_without_partial_write",
     });
@@ -277,11 +278,97 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
       stage: "capture_recovery", status: "scheduled", recoveryCause: "settled_capture_timeout",
     }));
     expect(result.summary.captureRecovery).toEqual({
-      firstAttemptSuccess: 1, scheduled: 1, settledTimeoutScheduled: 1, recoveredSuccess: 1, exhausted: 0,
+      firstAttemptSuccess: 1, scheduled: 1, settledTimeoutScheduled: 1, finiteStepScheduled: 0,
+      recoveredSuccess: 1, exhausted: 0,
     });
     expect(result.capture.filter((entry) => entry.stage === "inventory")).toHaveLength(2);
     expect(result.capture.find((entry) => entry.stage === "inventory" && entry.turnId === selected.source.turns[1].id)?.records)
       .not.toEqual(expect.arrayContaining([expect.objectContaining({ text: "This late successful payload must never be committed." })]));
+  });
+
+  it("retries a current second-turn finite reconciliation step through the same durable record", async () => {
+    const projected = projectLocomo(dataset(), { experiment: LOCOMO_DEVELOPMENT_EXPERIMENT });
+    const selected = projected.groups[0];
+    const corpus = {
+      ...projected,
+      groups: [{
+        ...selected,
+        source: { ...selected.source, turns: selected.source.turns.slice(0, 2) },
+        questions: selected.questions.slice(0, 1),
+      }],
+    };
+    const planned = makeLocomoPlan({
+      corpus: projected, sha256: "fixture", split: "evaluation", profile: null,
+      codeRevision: "FINITE-STEP", experiment: LOCOMO_DEVELOPMENT_EXPERIMENT, arm: "bujo",
+    });
+    const plan = {
+      ...planned,
+      workload: { ...planned.workload, questions: 1, trials: 1, historicalTurnsPerMemoryArm: 2 },
+      perCall: { ...planned.perCall, readinessTimeoutMs: 2_000 },
+    };
+    const directory = await mkdtemp(join(tmpdir(), "memory-e2e-finite-step-")); dirs.push(directory);
+    const modules = await productionModules();
+    let reconciliations = 0; const configuredMaxTurns = [];
+    const providerFactory = ({ source }) => {
+      const providers = scriptedProviders({ source });
+      const run = providers.extractor.run.bind(providers.extractor);
+      providers.extractor.run = async (system, options) => {
+        configuredMaxTurns.push(options.maxTurns);
+        const prompt = options.messages[0].content;
+        if (prompt.includes("\nTURN:\n")) {
+          const second = prompt.includes("odd final 1");
+          return {
+            text: "",
+            structuredResult: {
+              memories: [{
+                type: "note", text: second ? "Alex reported the second exact fact." : "Alex reported the first exact fact.",
+                salience: 0.8, isInsight: false, entityIds: [],
+              }],
+              entities: [], relations: [],
+            },
+          };
+        }
+        reconciliations += 1;
+        if (reconciliations === 1) return {
+          text: "", error: "local finite step", failureKind: "usage_limit", numTurns: 1,
+          diagnostics: { max_turns_hit: true, max_turns: 1 },
+          structuredResult: {
+            decisions: [{
+              index: 0, action: "add", text: "This failed-step payload must never be committed.",
+            }],
+          },
+        };
+        return await run(system, options);
+      };
+      providers.reader.run = async () => ({ text: "Reader completed after finite-step recovery." });
+      return providers;
+    };
+    const result = await runBenchmark({ corpus, plan, directory, modules, providerFactory, kind: "scripted" });
+    expect(result.trials[0]).toMatchObject({ status: "completed", answer: "Reader completed after finite-step recovery." });
+    expect(reconciliations).toBe(2);
+    expect(configuredMaxTurns.every((value) => value === 1)).toBe(true);
+    expect(result.events.filter((entry) => entry.stage === "admission" && entry.status === "completed")).toHaveLength(2);
+    expect(result.events.filter((entry) => entry.stage === "admission_to_ready" && entry.status === "completed")).toHaveLength(2);
+    expect(result.events).toContainEqual(expect.objectContaining({
+      stage: "reconciliation", status: "capture_step_budget_exhausted",
+      failureKind: "budget_exceeded", providerReportedFailureKind: "usage_limit",
+      maxTurnsHit: true, configuredStepsReserved: 1, configuredTransportRetries: 0,
+    }));
+    expect(result.events).toContainEqual(expect.objectContaining({
+      stage: "capture_recovery", status: "scheduled", attempt: 1,
+      failureKind: "provider", recoveryCause: "finite_capture_step",
+    }));
+    expect(result.summary.captureRecovery).toEqual({
+      firstAttemptSuccess: 1, scheduled: 1, settledTimeoutScheduled: 0, finiteStepScheduled: 1,
+      recoveredSuccess: 1, exhausted: 0,
+    });
+    const inventories = result.capture.filter((entry) => entry.stage === "inventory");
+    expect(inventories).toHaveLength(2);
+    expect(inventories[1].records).toHaveLength(2);
+    expect(inventories[1].records).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ text: "This failed-step payload must never be committed." }),
+    ]));
+    expect(result.events.filter((entry) => entry.stage === "reader" && entry.status === "completed")).toHaveLength(1);
   });
 
   it("exports a four-way human rubric with blinded arm labels and separate answerability/image flags", () => {

@@ -39,6 +39,34 @@ export function readySnapshot(snapshot) {
   return !index || ["queued", "inFlight", "remainingBacklog", "recoveryFilesRemaining", "failed", "dropped", "discarded"].every((key) => index[key] === 0);
 }
 
+/**
+ * Classify only evaluator-proven capture failures that may follow the production
+ * durable intake schedule. The caller supplies the latest capture event from the
+ * current attempt; this function never searches historical/global events.
+ */
+export function captureRetryCause(item, captureAttempt) {
+  if (item.lastError === "model_output") {
+    return captureAttempt?.status === "capture_timeout_settled"
+      ? "settled_capture_timeout" : "model_output";
+  }
+  if (item.lastError === "provider"
+    && captureAttempt?.status === "capture_step_budget_exhausted"
+    && captureAttempt?.failureKind === "budget_exceeded"
+    && captureAttempt?.providerReportedFailureKind === "usage_limit"
+    && captureAttempt?.maxTurnsHit === true) {
+    return "finite_capture_step";
+  }
+  return null;
+}
+
+export function currentCaptureRetryCause(events, cursor, tag, item) {
+  const captureAttempt = events.slice(cursor).findLast((entry) => (
+    entry.groupId === tag.groupId && entry.arm === tag.arm
+    && ["extraction", "reconciliation"].includes(entry.stage)
+  ));
+  return { cause: captureRetryCause(item, captureAttempt), nextCursor: events.length };
+}
+
 /** A timeout returns no success; the caller must close/settle the owned store before deletion. */
 export async function awaitReady(store, timeoutMs, budget, recovery = null) {
   let timer;
@@ -69,13 +97,20 @@ export async function awaitReady(store, timeoutMs, budget, recovery = null) {
       }
       if (recovery === null) throw new BenchmarkError("capture_not_ready");
       const inspection = await recovery.inspect();
-      const failed = inspection.items.filter((item) => ["pending", "dead"].includes(item.state)
-        && item.lastError === "model_output");
+      const failed = inspection.items.filter((item) => ["pending", "dead"].includes(item.state));
       if (failed.length !== 1 || failed[0].id !== recovery.id || failed[0].attempt < 1) {
         throw new BenchmarkError("capture_not_ready");
       }
+      const recoveryCause = recovery.retryCause?.(failed[0])
+        ?? (failed[0].lastError === "model_output" ? "model_output" : null);
+      if (recoveryCause === null) throw new BenchmarkError("capture_not_ready");
+      if (!["model_output", "settled_capture_timeout", "finite_capture_step"].includes(recoveryCause)) {
+        throw new BenchmarkError("capture_recovery_invalid");
+      }
       if (failed[0].state === "dead" || failed[0].attempt >= recovery.maxAttempts) {
-        recovery.onExhausted?.({ attempt: failed[0].attempt, failureKind: failed[0].lastError });
+        recovery.onExhausted?.({
+          attempt: failed[0].attempt, failureKind: failed[0].lastError, recoveryCause,
+        });
         throw new BenchmarkError("capture_not_ready");
       }
       if (scheduledRetries >= recovery.maxAttempts - 1) throw new BenchmarkError("capture_recovery_invalid");
@@ -93,6 +128,7 @@ export async function awaitReady(store, timeoutMs, budget, recovery = null) {
       recovery.onRetry({
         attempt: failed[0].attempt,
         failureKind: failed[0].lastError,
+        recoveryCause,
         nextAttemptAt: persisted.nextAttemptAt,
         advanceMs,
       });
@@ -579,6 +615,9 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
                 },
               },
             });
+            // Scope capture-failure evidence to this turn before admission can
+            // start its background worker. Later retries advance this cursor.
+            let captureEventCursor = budget.events.length;
             const response = await event(baseTag, "replay", () => ingest.run({ conversationId: `${group.id}-${turn.sessionId}`, userMessage: turn.user, sender: { displayName: turn.speaker }, abortSignal: budget.controller.signal }));
             if (response.failure || sharedWarnings.includes("memory_warning")) throw new BenchmarkError("admission_failed");
             const recoveryConfig = plan.locomo?.captureRecovery;
@@ -599,23 +638,29 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
                 now = new Date(target);
                 return advanceMs;
               },
-              onRetry: ({ attempt, failureKind, nextAttemptAt, advanceMs }) => {
-                const captureAttempt = budget.events.findLast((entry) => entry.groupId === baseTag.groupId
-                  && entry.arm === baseTag.arm && ["extraction", "reconciliation"].includes(entry.stage));
+              retryCause: (item) => {
+                const classified = currentCaptureRetryCause(
+                  budget.events, captureEventCursor, baseTag, item,
+                );
+                captureEventCursor = classified.nextCursor;
+                if (classified.cause === "finite_capture_step"
+                  && recoveryConfig.finiteStepPolicy !== "current_attempt_capture_max_turns_only") {
+                  return null;
+                }
+                return classified.cause;
+              },
+              onRetry: ({ attempt, failureKind, recoveryCause, nextAttemptAt, advanceMs }) => {
                 budget.events.push({
                   ...baseTag, stage: "capture_recovery", status: "scheduled", attempt,
-                  failureKind,
-                  recoveryCause: captureAttempt?.status === "capture_timeout_settled"
-                    ? "settled_capture_timeout" : "model_output",
-                  nextAttemptAt, advanceMs, durationMs: 0,
+                  failureKind, recoveryCause, nextAttemptAt, advanceMs, durationMs: 0,
                 });
               },
               onReady: ({ attempt, priorFailures, status }) => budget.events.push({
                 ...baseTag, stage: "capture_recovery", status, attempt, priorFailures, durationMs: 0,
               }),
-              onExhausted: ({ attempt, failureKind }) => budget.events.push({
+              onExhausted: ({ attempt, failureKind, recoveryCause }) => budget.events.push({
                 ...baseTag, stage: "capture_recovery", status: "exhausted", attempt,
-                failureKind, durationMs: 0,
+                failureKind, recoveryCause, durationMs: 0,
               }),
             } : null;
             if (hasCaptureRecovery && (admission === null
