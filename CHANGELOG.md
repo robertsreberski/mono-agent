@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Replace the marketing site’s inactive PostHog integration with native Astro Vercel Web Analytics, preserving explicit opt-in, browser privacy signals and withdrawal controls; simplify reporting to basic page views.
+
 - Connect marketing and documentation links to mono-agent.dev and docs.mono-agent.dev, with a permanent redirect from the former marketing host.
 
 - Align marketing canonicals, social metadata and crawler endpoints with the live production origin, clarify AI-companion/framework search metadata, and prevent indexing of Vercel preview aliases.

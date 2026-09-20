@@ -276,12 +276,17 @@ describe("marketing built output", () => {
 
   it("loads bounded local enhancement and consent-gated analytics modules", () => {
     const scripts = [...html.matchAll(/<script(?![^>]*ld\+json)[^>]*>/g)].map(m => m[0]);
-    assert.equal(scripts.length, 2);
-    assert.ok(scripts[0].includes('src="/interactions.js"'));
-    assert.ok(scripts[0].includes('type="module"'));
-    assert.ok(statSync(join(DIST, "interactions.js")).size < 8500);
-    assert.ok(scripts[1].includes('src="/analytics.js"'));
-    assert.ok(statSync(join(DIST, "analytics.js")).size < 9000);
+    assert.equal(scripts.length, 3);
+    for (const asset of ["interactions.js", "analytics.js"]) {
+      assert.ok(scripts.some(script => script.includes(`src="/${asset}"`) && script.includes('type="module"')));
+      assert.ok(statSync(join(DIST, asset)).size < 9000);
+    }
+    const sdk = [...html.matchAll(/<script type="module">([\s\S]*?)<\/script>/g)].find(match => match[1].includes('vercel-analytics'));
+    assert.ok(sdk && Buffer.byteLength(sdk[1]) < 9000, "bounded bundled native Astro SDK");
+    assert.match(html, /<template[^>]*id="analytics-template"[^>]*>[\s\S]*?<vercel-analytics[\s\S]*?<\/template>/);
+    assert.ok(!html.replace(/<template[\s\S]*?<\/template>/g, '').includes('<vercel-analytics'), 'no active analytics element before consent');
+    assert.ok(!html.includes('posthog'));
+
   });
 
   it("provides a source-linked harness comparison", () => {

@@ -1,7 +1,8 @@
 ---
 import Seo from "../components/Seo.astro";
+import AnalyticsConsent from "../components/AnalyticsConsent.astro";
 const contact = import.meta.env.PUBLIC_PRIVACY_CONTACT || "";
-const configured = Boolean(import.meta.env.PUBLIC_POSTHOG_KEY);
+if (contact && !/^mailto:[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact)) throw new Error("PUBLIC_PRIVACY_CONTACT must be a mailto address.");
 ---
 <!doctype html>
 <html lang="en">
@@ -17,22 +18,29 @@ const configured = Boolean(import.meta.env.PUBLIC_POSTHOG_KEY);
       <a href="/">Back to mono-agent</a>
       <h1>Privacy &amp; analytics</h1>
       <p>This notice covers the marketing website, operated by Robert Sreberski—not agents you run yourself or the separate documentation website.</p>
-      {!configured && <p><strong>Optional analytics are not configured in this build. No PostHog events are sent.</strong></p>}
       <h2>You choose whether to share analytics</h2>
-      <p>When configured, optional analytics use PostHog’s EU ingestion service. Nothing is sent to PostHog before you choose “Allow analytics”. “No thanks” leaves analytics off. Global Privacy Control and Do Not Track signals also keep it off.</p>
-      <p>Use “Analytics preferences” in the landing-page footer to change your choice. Withdrawal stops future events; it does not erase events already received. Analytics choices are stored locally for up to 180 days. A random, per-tab session identifier is created only after consent and renewed after 30 minutes of inactivity or 24 hours total. It is not an account or a cross-device identity.</p>
+      <p>Optional traffic analytics use Vercel Web Analytics. Its collection script is loaded only after you choose “Allow analytics”. “No thanks”, Global Privacy Control and Do Not Track keep analytics off. The site works without analytics or JavaScript.</p>
+      <p>Use “Analytics preferences” here or in the landing-page footer to change your choice. Withdrawal stops future collection and normally reloads the page to unload the script; it does not erase data already received. Your choice is stored in local storage for up to 180 days. If storage cannot save a withdrawal, collection stops on this page but the choice may not persist. Permission for our previous analytics provider is not reused.</p>
       <h2>What is measured</h2>
       <ul>
-        <li>Page views and page departure, broad mobile/desktop viewport category, and which main sections were viewed.</li>
-        <li>GitHub, documentation and blueprint clicks; successful install-command copies; which FAQ was opened.</li>
-        <li>Referring hostname and short campaign tags (<code>utm_source</code>, <code>utm_medium</code>, <code>utm_campaign</code>) when supplied. Do not put personal information in campaign tags.</li>
+        <li>Page views and aggregate visitor counts for this marketing site.</li>
+        <li>Referrer information supplied by your browser, approximate location, and device, browser and operating-system categories.</li>
       </ul>
-      <p>Page addresses exclude query strings and fragments. We do not capture form contents, email addresses, session recordings, account identities, or arbitrary click text. Person-profile creation and location enrichment are disabled. Like any network service, the hosting and analytics providers receive connection information, including your IP address, when a request reaches them.</p>
+      <p>We remove query strings and fragments from measured page URLs. We do not send custom click or copy events, form contents, account identities, session recordings or newsletter data. Vercel uses a request-derived visitor hash that resets daily rather than tracking cookies or our own stored session identifier; it is not a cross-device or cross-site identity. We use the Hobby plan’s one-month reporting window, not a promise that the provider deletes data after one month.</p>
+      <p>Vercel receives connection information, including IP address and browser headers, to serve the site and process analytics. This is not an EU-only ingestion configuration. See Vercel’s documentation for its processing and retention policies.</p>
+      <button class="analytics-settings" type="button" hidden>Analytics preferences</button>
+      <p class="analytics-status" role="status" aria-live="polite"></p>
       <h2>Hosting and third-party links</h2>
       <p>Vercel serves this site and may process request/security logs under its own policies. GitHub and the documentation site have their own behavior when you follow a link. This site does not currently offer a newsletter signup.</p>
-      <p><a href="https://posthog.com/privacy">PostHog privacy policy</a> · <a href="https://vercel.com/legal/privacy-policy">Vercel privacy policy</a></p>
+      <p><a href="https://vercel.com/docs/analytics/privacy-policy">Vercel Web Analytics privacy</a> · <a href="https://vercel.com/legal/privacy-policy">Vercel privacy policy</a></p>
+      <p>Site operator: <a href="https://github.com/robertsreberski">Robert Sreberski</a>. Please do not post personal data in public issues.</p>
       {contact && <><h2>Questions and data requests</h2><p>Contact <a href={contact}>the site operator</a> privately about this website’s data processing.</p></>}
       <p>Last updated: 20 September 2026.</p>
     </main>
+    <section class="analytics-notice" aria-label="Optional analytics" hidden>
+      <p><strong>Help us understand what’s useful.</strong> Allow basic traffic analytics with Vercel? No cookies or session replay.{" "}<a href="/privacy/">Details</a></p>
+      <div><button type="button" data-consent="no">No thanks</button><button type="button" data-consent="yes">Allow analytics</button></div>
+    </section>
+    <AnalyticsConsent />
   </body>
 </html>
