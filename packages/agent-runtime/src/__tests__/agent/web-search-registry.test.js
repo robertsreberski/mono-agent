@@ -10,7 +10,7 @@ function register(name, search) {
     name, configure: () => ({ value: {} }), eligibility: () => true,
     admission: () => ({ kind: name, key: name, processPolicy: "endpoint" }),
     networkTargets: () => ["https://example.com"], batchesQueries: false,
-    filterSupport: { language: "advisory", timeRange: "advisory" }, search,
+    filterSupport: { language: "advisory", timeRange: "advisory", country: "unsupported" }, search,
   }));
 }
 describe("source-level search registry", () => {

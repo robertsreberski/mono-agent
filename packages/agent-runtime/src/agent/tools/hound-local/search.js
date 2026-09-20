@@ -6,6 +6,7 @@ import { assertHoundTarget, houndRequest } from "./network.js";
 import { assertHoundRobots } from "./robots.js";
 import { claimWebSearchRequest, countWebSearchDispatch } from "../web-search-state.js";
 import { withWebDeadline } from "../web-request.js";
+import { duckDuckGoRegion } from "../web-search-country.js";
 
 const CODES = new Set(["network_denied", "robots_denied", "robots_unavailable", "robots_crawl_delay", "rate_limited", "access_challenge", "authentication_required", "invalid_response", "response_too_large", "search_budget_exhausted", "coordination_unavailable", "aborted", "deadline_exceeded"]);
 
@@ -25,8 +26,11 @@ export async function searchLocalHound(query, options) {
     const signal = AbortSignal.any([deadlineSignal, abort.signal]);
     let fatal;
     const entries = await Promise.all(HOUND_ENGINES.map(async (engine) => {
+      if (options.country && !engine.country) return { engine: engine.name, code: "unsupported_country_filter", results: [] };
       if (options.timeRange && !engine.date) return { engine: engine.name, code: "unsupported_filter", results: [] };
-      const request = houndEngineRequest(engine, query, options.timeRange, options.language);
+      const countryRegion = options.country && engine.name === "duckduckgo"
+        ? duckDuckGoRegion(options.country, options.language) : undefined;
+      const request = houndEngineRequest(engine, query, options.timeRange, options.language, options.country);
       const child = { ...options, engine: engine.name, signal, beforeDispatch, recordMetrics };
       try {
         assertHoundTarget(request.url, child); // before robots, host admission or claims
@@ -34,14 +38,14 @@ export async function searchLocalHound(query, options) {
         const { response, text } = await houndRequest(request.url, { ...child, rejectRedirects: true }, request.init);
         if (!response.ok) throw Object.assign(new Error("Engine request failed."), { code: response.status >= 300 && response.status < 400 ? "access_challenge" : "provider_unavailable" });
         const results = parseHoundEngine(engine, text);
-        return { engine: engine.name, code: results.length ? "ok" : "empty", results };
+        return { engine: engine.name, code: results.length ? "ok" : "empty", results, ...(countryRegion ? { countryRegion } : {}) };
       } catch (error) {
         const code = signal.aborted ? (["coordination_unavailable", "deadline_exceeded"].includes(signal.reason?.code) ? signal.reason.code : "aborted") : CODES.has(error?.code) ? error.code : "provider_unavailable";
         if (code === "coordination_unavailable") { fatal = code; abort.abort(Object.assign(new Error("Coordination unavailable."), { code })); }
-        return { engine: engine.name, code, results: [], ...(Number.isFinite(error?.retryAfterMs) ? { retryAfterMs: error.retryAfterMs } : {}) };
+        return { engine: engine.name, code, results: [], ...(countryRegion ? { countryRegion } : {}), ...(Number.isFinite(error?.retryAfterMs) ? { retryAfterMs: error.retryAfterMs } : {}) };
       }
     }));
-    const engineOutcomes = entries.map((entry) => ({ engine: entry.engine, code: entry.code, ...("retryAfterMs" in entry ? { retryAfterMs: entry.retryAfterMs } : {}) }));
+    const engineOutcomes = entries.map((entry) => ({ engine: entry.engine, code: entry.code, ...(entry.countryRegion ? { countryRegion: entry.countryRegion } : {}), ...("retryAfterMs" in entry ? { retryAfterMs: entry.retryAfterMs } : {}) }));
     const delays = engineOutcomes.filter((entry) => entry.code === "rate_limited")
       .map((entry) => entry.retryAfterMs).filter((delay) => Number.isFinite(delay) && delay >= 0);
     const now = Date.now();

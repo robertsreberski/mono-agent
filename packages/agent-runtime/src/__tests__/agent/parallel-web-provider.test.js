@@ -60,10 +60,11 @@ describe("Parallel Search MCP", () => {
   });
   it("batches exact primary/alternates once, claims one answer, and hashes the run id", async () => {
     const { fetchImpl, calls } = transport();
-    const result = await performWebSearch({ query: '"Search MCP"', alternate_queries: ["parallel MCP", "site:docs.parallel.ai MCP"], limit: 10, language: "en", time_range: "year" }, searchOptions(fetchImpl));
-    expect(result.outcome).toMatchObject({ status: "ok", backend: "parallel", requestsThisCall: 1, dispatchesUsed: 1, filterSupport: { language: "advisory", timeRange: "advisory" } });
+    const result = await performWebSearch({ query: '"Search MCP"', alternate_queries: ["parallel MCP", "site:docs.parallel.ai MCP"], limit: 10, language: "en", country: "pl", time_range: "year" }, searchOptions(fetchImpl));
+    expect(result.outcome).toMatchObject({ status: "ok", backend: "parallel", requestsThisCall: 1, dispatchesUsed: 1, filterSupport: { language: "advisory", country: "advisory", timeRange: "advisory" } });
     expect(calls).toHaveLength(1);
     expect(calls[0].arguments.search_queries).toEqual(['"Search MCP"', "parallel MCP", "site:docs.parallel.ai MCP"]);
+    expect(calls[0].arguments.objective).toContain("Prefer search results localized for country PL.");
     expect(calls[0].arguments.session_id).toBe(`mono-${createHash("sha256").update(ctx.runId).digest("hex")}`);
     const searchPayload = JSON.parse(result.text);
     expect(searchPayload).toMatchObject({ tool: "WebSearch", status: "ok" });

@@ -399,6 +399,77 @@ describe("WebSearch", () => {
     }
   });
 
+  it.each(["USA", "ZZ", "1A", ""])('rejects invalid country %j before network or budget', async (country) => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 4 });
+    const fetchImpl = vi.fn();
+    const result = await performWebSearch({ query: "mono agent", country }, {
+      searchState: state, searchConfig: { backend: "duckduckgo" }, fetchImpl, ctx: runtimeContext(),
+    });
+    expect(result).toMatchObject({ error: true, outcome: { code: "invalid_country", requestsUsed: 0, dispatchesUsed: 0 } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["searxng", { backend: "searxng", endpoint: "http://127.0.0.1:8088" }],
+    ["ollama", { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } }],
+    ["codex", { backend: "codex" }],
+    ["startpage", { backend: "startpage" }],
+    ["duckduckgo", { backend: "duckduckgo" }],
+  ])("skips strict %s before dispatch when country targeting is unsupported", async (_backend, searchConfig) => {
+    const fetchImpl = vi.fn();
+    const codexSearch = vi.fn();
+    const result = await performWebSearch({ query: "mono agent", country: "AD" }, {
+      searchConfig, fetchImpl, codexSearch, ctx: runtimeContext(),
+    });
+    expect(result).toMatchObject({ error: true, outcome: {
+      code: "unsupported_country_filter", requestsUsed: 0, dispatchesUsed: 0,
+      providerAttempts: [{ code: "unsupported_country_filter", requests: 0 }],
+    } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(codexSearch).not.toHaveBeenCalled();
+  });
+
+  it("advances past an unsupported provider and sends exact country and date parameters to DDG", async () => {
+    const calls = [];
+    const fetchImpl = vi.fn(async (url, init) => {
+      calls.push({ url: new URL(url), init });
+      return new Response('<div class="result"><a class="result__a" href="https://example.com/mono-agent">Mono Agent evidence</a></div>');
+    });
+    const result = await performWebSearch({
+      query: "mono agent", alternate_queries: ["unused alternate"], country: "gb", language: "pl", time_range: "month",
+    }, { searchConfig: { backend: ["startpage", "duckduckgo"] }, fetchImpl, ctx: runtimeContext() });
+    expect(result).toMatchObject({ error: false, outcome: {
+      backend: "duckduckgo", requestsUsed: 1, dispatchesUsed: 1,
+      filterSupport: { language: "advisory", country: "provider", timeRange: "provider" },
+      providerAttempts: [{ backend: "startpage", code: "unsupported_country_filter", requests: 0 }],
+    } });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.searchParams.get("kl")).toBe("uk-en");
+    expect(calls[0].url.searchParams.get("df")).toBe("m");
+    expect(calls[0].init.headers["Accept-Language"]).toBe("pl");
+    expect(JSON.parse(result.text).coverage.requestedFilters).toMatchObject({ country: "GB", language: "pl", timeRange: "month" });
+  });
+
+  it("canonicalizes country for cache identity while separating PL, GB, and global calls", async () => {
+    const seenRegions = [];
+    const fetchImpl = vi.fn(async (url) => {
+      seenRegions.push(new URL(url).searchParams.get("kl"));
+      return new Response('<div class="result"><a class="result__a" href="https://example.com/mono-agent">Mono Agent evidence</a></div>');
+    });
+    const controller = createWebToolController({ searchConfig: { backend: "duckduckgo" }, fetchImpl, ctx: runtimeContext() });
+    try {
+      const lower = await controller.search({ query: "mono agent", country: "pl" });
+      const upper = await controller.search({ query: "mono agent", country: "PL" });
+      const gb = await controller.search({ query: "mono agent", country: "GB" });
+      const global = await controller.search({ query: "mono agent" });
+      expect(lower.outcome.cacheHit).toBe(false);
+      expect(upper.outcome.cacheHit).toBe(true);
+      expect(gb.outcome.cacheHit).toBe(false);
+      expect(global.outcome.cacheHit).toBe(false);
+      expect(seenRegions).toEqual(["pl-pl", "uk-en", "wt-wt"]);
+    } finally { await controller.close(); }
+  });
+
   it("queries strict local Ollama without credentials and uses only its same-origin compatibility route", async () => {
     const calls = [];
     const fetchImpl = vi.fn(async (url, init) => {

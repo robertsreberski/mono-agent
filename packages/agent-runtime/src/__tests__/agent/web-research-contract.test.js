@@ -84,6 +84,7 @@ function assertValidWebSearchArgs(args) {
   if (args.alternate_queries !== undefined) {
     expect(Array.isArray(args.alternate_queries) && args.alternate_queries.length <= 3).toBe(true);
   }
+  if (args.country !== undefined) expect(args.country).toMatch(/^[A-Z]{2}$/u);
   if (args.time_range !== undefined) expect(["day", "month", "year"]).toContain(args.time_range);
 }
 
@@ -142,8 +143,9 @@ describe("managed web-research contract", () => {
     expect(buildWebNextAction("WebSearch", { query: "" })).toBeNull();
     expect(buildWebNextAction("WebSearch", { query: "evidence", limit: 50 })).toBeNull();
     expect(buildWebNextAction("WebSearch", { query: "evidence", time_range: "decade" })).toBeNull();
-    expect(buildWebNextAction("WebSearch", { query: "evidence gap" }, "refine")).toMatchObject({
-      tool: "WebSearch", args: { query: "evidence gap" },
+    expect(buildWebNextAction("WebSearch", { query: "evidence", country: "ZZ" })).toBeNull();
+    expect(buildWebNextAction("WebSearch", { query: "evidence gap", country: "pl" }, "refine")).toMatchObject({
+      tool: "WebSearch", args: { query: "evidence gap", country: "PL" },
     });
   });
 

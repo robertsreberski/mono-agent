@@ -128,9 +128,10 @@ fallback does not make the first Parallel request private. Select strict local
 Ollama/SearXNG instead when remote query disclosure is inappropriate.
 
 Primary and up to three alternate queries are sent unchanged in one
-`web_search` call, costing one answered-search request. Language, time range,
-and domain preferences also inform an advisory objective; local relevance and
-domain gates still apply. Published dates are shown when supplied. Excerpts use
+`web_search` call, costing one answered-search request. Language, country, time
+range, and domain preferences also inform an advisory objective; country support
+is reported as advisory rather than an enforced geographic filter. Local
+relevance and domain gates still apply. Published dates are shown when supplied. Excerpts use
 the normal bounded snippets, not an unbounded provider payload.
 
 Optional `search.parallel.apiKeyEnv` and `fetch.parallel.apiKeyEnv` name an
@@ -186,6 +187,10 @@ robots/engine send counts against the existing non-refundable dispatch ceiling
 failure. A cold full-pool query normally sends six HTTP requests. Domain and
 relevance gates remain local. Language is advisory. Day/month/year use native
 DuckDuckGo and Brave parameters; Mojeek is explicitly skipped for time filters.
+When `country` is requested, only DuckDuckGo has a reviewed country transport;
+Brave and Mojeek are skipped before robots, admission, or budget and are reported
+as `unsupported_country_filter`. The resulting partial search therefore sends at
+most the DuckDuckGo robots and search requests.
 
 Hound search and fetch proactively honor robots rules, with a five-second,
 64 KiB robots bound and at most two robots redirects. Missing robots (404/410)
@@ -247,8 +252,11 @@ endpoint variants receive the caller's effective 1–10 result limit as
 `max_results`; a compatibility retry does not reset it.
 
 The tool accepts one `query`, up to three `alternate_queries`, a result `limit`
-from 1–10, `domains`, `exclude_domains`, `language`, and a `time_range` of
-`day`, `month`, or `year`. For sequential providers, the primary query runs first. Supplied alternates run in order only while no
+from 1–10, `domains`, `exclude_domains`, `language`, an optional `country`, and
+a `time_range` of `day`, `month`, or `year`. `country` is a case-insensitive,
+two-letter ISO 3166-1 alpha-2 code such as `PL`, `GB`, or `US`; output and cache
+identity use uppercase. Invalid/unassigned codes fail before network, admission,
+or search budget. For sequential providers, the primary query runs first. Supplied alternates run in order only while no
 relevant result has been accepted. A transport failure, quota skip or block ends
 that stage immediately; alternate wording cannot repair it. Codex gets at most
 one exact-query turn. Quotes and `site:` operators are never
@@ -257,6 +265,47 @@ duplicates are fused with reciprocal-rank fusion, and include/exclude domain
 filters plus a deterministic query-term/quoted-phrase relevance gate are
 enforced before a provider can end the chain. Parallel batches the primary and
 alternates once; Codex receives only the primary query.
+
+### Country localization
+
+`country` is a search-region/localization preference, separate from `language`.
+It does not guarantee that every result is hosted in or geographically located
+in that country. Provider ranking may still reflect the request's source IP.
+Omitting `country` sends no country preference to advisory providers and selects
+DuckDuckGo's documented `wt-wt` **No region** mode; it does not promise that
+provider-side or IP-based localization disappears.
+
+Per-call support is explicit:
+
+| Provider | Country behavior |
+| --- | --- |
+| `parallel` | Adds the normalized country to the natural-language objective; `filterSupport.country` is `advisory`. |
+| `duckduckgo` | Sends DuckDuckGo's documented `kl` region value; `wt-wt` is used when omitted. |
+| `hound` | Sends Hound's reviewed DuckDuckGo `l` region field; Brave and Mojeek are skipped and reported for country-filtered calls. |
+| `keyless` | Can continue to country-capable DuckDuckGo; Startpage is skipped rather than queried without the requested filter. |
+| `searxng`, `ollama`, `codex`, `startpage` | This adapter has no reviewed per-call country transport, so it skips before dispatch/budget. A strict selection returns actionable `unsupported_country_filter`. |
+
+DuckDuckGo country support is bounded by its
+[documented region values](https://duckduckgo.com/duckduckgo-help-pages/settings/params):
+`AR`, `AU`, `AT`, `BE`, `BR`, `BG`, `CA`, `CL`, `CN`, `CO`, `HR`, `CZ`,
+`DK`, `EE`, `FI`, `FR`, `DE`, `GR`, `HK`, `HU`, `IN`, `ID`, `IE`, `IL`,
+`IT`, `JP`, `KR`, `LV`, `LT`, `MY`, `MX`, `NL`, `NZ`, `NO`, `PE`, `PH`,
+`PL`, `PT`, `RO`, `RU`, `SG`, `SK`, `SI`, `ZA`, `ES`, `SE`, `CH`, `TW`,
+`TH`, `TR`, `UA`, `GB`, `US`, `VE`, and `VN`. Valid ISO countries outside
+that list are unsupported for DuckDuckGo/Hound and never fall back to global or
+US results. Where DuckDuckGo documents several locales (`BE`, `CA`, `ID`, `MY`,
+`PH`, `CH`, and `US`), a matching `language` selects that locale; otherwise the
+listed primary locale is used. `GB` maps to DuckDuckGo's `uk-en` token, while
+country remains `GB` in public metadata.
+
+Startpage documents a saved
+[region preference](https://support.startpage.com/hc/en-us/articles/4521469334036-How-to-get-search-results-tailored-for-your-region),
+but this stateless adapter does not invent an undocumented POST field or mutate
+persistent settings. [SearXNG's documented Search API](https://docs.searxng.org/dev/search_api.html)
+exposes `language` and `time_range`, not a country field; [Ollama's documented
+Web Search request](https://docs.ollama.com/capabilities/web-search) exposes
+`query` and `max_results`. Codex subscription search uses the app-server path,
+not the separate OpenAI Responses API `user_location` contract.
 
 Every backend shares the same model-facing output bounds. A result title is at
 most 500 characters and its snippet is at most 4,000 characters, including the

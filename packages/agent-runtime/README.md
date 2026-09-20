@@ -912,6 +912,13 @@ supplied alternate queries only if the primary has no relevant results. Codex
 subscription search preserves a 10% allowance reserve. An optional host-injected
 coordinator shares admission and cooldowns across processes. Parallel batches
 primary/alternate queries once and supports optional remote WebFetch extraction.
+WebSearch calls may request a case-insensitive ISO 3166-1 alpha-2 `country`
+localization preference. Omission requests no country/global mode where the
+provider supports one, without claiming IP-neutral ranking. Parallel treats it
+as advisory; DuckDuckGo applies its documented region token; native Hound skips
+Brave and Mojeek for that call. Providers without a reviewed per-call transport
+are skipped before dispatch and budget instead of silently ignoring it. Country
+is separate from language and does not guarantee the location of each result.
 `fetch.provider` defaults to local; Parallel cannot serve raw/header/browser
 options and reports `include_links` as an unsupported parameter. See the
 web-research guide for privacy and chain behavior. `WebFetch`

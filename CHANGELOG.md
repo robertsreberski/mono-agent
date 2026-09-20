@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Let `WebSearch` request an optional ISO country localization preference,
+  defaulting to no requested country. Apply documented DuckDuckGo regions,
+  carry advisory Parallel intent, and skip unsupported providers or Hound
+  engines before dispatch instead of silently returning untargeted results.
+
 - Improve local web extraction with Hound-derived content-link prioritization,
   title and main-content fallbacks, and Markdown tables that retain links and
   code. Keep rate-limit and access refusals terminal instead of retrying or

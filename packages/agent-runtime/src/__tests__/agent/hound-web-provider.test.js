@@ -131,6 +131,33 @@ describe("native Hound search", () => {
     expect(result.outcome.engineOutcomes).toContainEqual({ engine: "mojeek", code: "unsupported_filter" });
     expect(options.fetchImpl.mock.calls.some(([url]) => String(url).includes("mojeek"))).toBe(false);
   });
+  it("targets a supported country only through DDG and reports skipped Hound engines", async () => {
+    const options = searchOptions();
+    const result = await performWebSearch({ query: "mono agent evidence", country: "pl", language: "en" }, options);
+    expect(result).toMatchObject({ error: false, outcome: {
+      status: "partial", dispatchesUsed: 2,
+      filterSupport: { language: "advisory", country: "provider", timeRange: "not_requested" },
+    } });
+    expect(result.outcome.engineOutcomes).toEqual([
+      { engine: "duckduckgo", code: "ok", countryRegion: "pl-pl" },
+      { engine: "brave", code: "unsupported_country_filter" },
+      { engine: "mojeek", code: "unsupported_country_filter" },
+    ]);
+    const searchCall = options.fetchImpl.mock.calls.find(([url]) => new URL(url).pathname === "/html/");
+    expect(searchCall[1].body.get("l")).toBe("pl-pl");
+    expect(searchCall[1].headers["Accept-Language"]).toBe("en");
+    expect(JSON.parse(result.text).coverage.requestedFilters).toMatchObject({ country: "PL", language: "en" });
+  });
+  it("rejects a valid but unsupported Hound country before robots, admission, or budget", async () => {
+    const options = searchOptions({ coordinator: { acquire: vi.fn() } });
+    const result = await performWebSearch({ query: "mono agent evidence", country: "AD" }, options);
+    expect(result).toMatchObject({ error: true, outcome: { code: "unsupported_country_filter", requestsUsed: 0, dispatchesUsed: 0 } });
+    expect(options.fetchImpl).not.toHaveBeenCalled();
+    expect(options.coordinator.acquire).not.toHaveBeenCalled();
+    expect(JSON.parse(result.text).coverage).toMatchObject({
+      filterSupport: { country: "unsupported" }, requestedFilters: { country: "AD" },
+    });
+  });
   it("does not spend an answer for irrelevant partial results at the dispatch ceiling", async () => {
     const fetchImpl = vi.fn(async (url) => response(new URL(url).pathname === "/robots.txt" ? robots : engineHtml("duckduckgo").replaceAll("Mono agent", "Different material").replaceAll("Mono", "Different")));
     const result = await performWebSearch({ query: "uniqueunmatchedterm", domains: ["example.com"] }, searchOptions({ fetchImpl, searchConfig: { backend: "hound", maxRequestsPerRun: 1 } }));
@@ -160,11 +187,22 @@ describe("Hound engine algorithms and attribution adaptations", () => {
     const valid = "https://duckduckgo.com/l/?uddg=" + encodeURIComponent("https://example.com/article");
     expect(parseHoundEngine(HOUND_ENGINES[0], engineHtml("duckduckgo", valid))[0].url).toBe("https://example.com/article");
   });
-  it("ports request/date fields and parses the three reviewed layouts", () => {
+  it("ports request/date fields, defaults DDG to no region, and parses the three reviewed layouts", () => {
     for (const engine of HOUND_ENGINES) expect(parseHoundEngine(engine, engineHtml(engine.name))).toHaveLength(1);
     const ddg = houndEngineRequest(HOUND_ENGINES[0], 'exact "query"', "day");
     expect(ddg.init.method).toBe("POST"); expect(ddg.init.body.get("q")).toBe('exact "query"'); expect(ddg.init.body.get("df")).toBe("d");
+    expect(ddg.init.body.get("l")).toBe("wt-wt");
     expect(houndEngineRequest(HOUND_ENGINES[1], "query", "month").url).toContain("tf=pm");
+  });
+  it.each([
+    ["PL", "en", "pl-pl"],
+    ["GB", "pl", "uk-en"],
+    ["US", "en", "us-en"],
+    ["US", "es-MX", "ue-es"],
+  ])("maps country %s and language %s to documented DDG region %s", (country, language, region) => {
+    const request = houndEngineRequest(HOUND_ENGINES[0], "query", undefined, language, country);
+    expect(request.init.body.get("l")).toBe(region);
+    expect(request.init.headers["Accept-Language"]).toBe(language);
   });
   it("dedupes GitHub repo case without folding file paths and merges consensus snippets", () => {
     const result = (url, engine, snippet) => ({ url, engine, title: "Mono agent", snippet });

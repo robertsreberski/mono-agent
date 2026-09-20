@@ -2,9 +2,10 @@
 import { isIP } from "node:net";
 import { claimWebSearchRequest, countWebSearchDispatch } from "../web-search-state.js";
 import { requestSignal, readLimitedText, normalizedResult, ollamaFetchFailure, parseRetryAfter } from "./shared.js";
+import { unsupportedCountryFilter } from "../web-search-country.js";
 export const ollamaProvider = {
   name: "ollama", batchesQueries: false,
-  filterSupport: { language: "advisory", timeRange: "advisory" },
+  filterSupport: { language: "advisory", timeRange: "advisory", country: "unsupported" },
   configure(input, selected) {
     const result = normalizeOllamaSearchConfig(input?.ollama, selected ? "ollama" : undefined);
     return result.error ? result : { value: { ollama: result.value } };
@@ -12,6 +13,7 @@ export const ollamaProvider = {
   eligibility: (config) => Boolean(config.ollama),
   admission: (config) => ({ kind: "ollama", key: config.ollama.baseUrl, processPolicy: "endpoint" }),
   networkTargets: (config) => [config.ollama.baseUrl],
+  preflight: (options) => options.country ? unsupportedCountryFilter("ollama") : null,
   search: searchOllama,
 };
 async function searchOllama(query, options) {

@@ -1,4 +1,6 @@
 // @ts-check
+import { normalizeSearchCountry } from "./web-search-country.js";
+
 /**
  * Shared managed web-research response contract for WebSearch and WebFetch.
  *
@@ -365,7 +367,7 @@ function validWebFetchArgs(args) {
  */
 function validWebSearchArgs(args) {
   if (!args || typeof args !== "object" || Array.isArray(args)) return null;
-  const { query, limit, alternate_queries, domains, exclude_domains, language, time_range } = args;
+  const { query, limit, alternate_queries, domains, exclude_domains, language, country, time_range } = args;
   if (typeof query !== "string" || !query.trim() || query.trim().length > 500) return null;
   /** @type {Record<string, any>} */
   const valid = { query: query.trim() };
@@ -388,6 +390,11 @@ function validWebSearchArgs(args) {
   if (language !== undefined) {
     if (typeof language !== "string") return null;
     valid.language = language;
+  }
+  if (country !== undefined) {
+    const normalizedCountry = normalizeSearchCountry(country);
+    if (normalizedCountry.error) return null;
+    valid.country = normalizedCountry.value;
   }
   if (time_range !== undefined) {
     if (!["day", "month", "year"].includes(time_range)) return null;

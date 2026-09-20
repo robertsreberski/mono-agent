@@ -10,6 +10,7 @@ import { performWebFetch, formatWebFetchDocument } from "./web-fetch.js";
 import { performWebSearch } from "./web-search.js";
 import { filterEnvelopeNextActions, normalizeWebResearchOptions, refreshCachedSearchEnvelope, webFailureEnvelope } from "./web-actionable.js";
 import { createWebSearchRunState, webSearchBudgetSnapshot } from "./web-search-state.js";
+import { normalizeSearchCountry } from "./web-search-country.js";
 
 const MAX_CACHE_ENTRIES = 64;
 const MAX_SHARED_SEARCH_ENTRIES = 256;
@@ -125,6 +126,11 @@ export function createWebToolController({
       const migration = houndEndpointError(searchConfig?.hound);
       if (migration) return webFailureEnvelope("WebSearch", "invalid_hound_config", migration);
       if (execution.signal?.aborted) return webFailureEnvelope("WebSearch", "aborted", "Error: WebSearch was aborted.");
+      const normalizedCountry = normalizeSearchCountry(params.country);
+      if (normalizedCountry.error) return webFailureEnvelope("WebSearch", "invalid_country", `Error: ${normalizedCountry.error}`);
+      const normalizedParams = { ...params };
+      if (normalizedCountry.value) normalizedParams.country = normalizedCountry.value;
+      else delete normalizedParams.country;
       // The key must pin the backend, the endpoint AND the network policy the
       // search actually ran under. A params-only key was safe while the cache
       // lived and died with one run; process-wide it would let controllers with
@@ -146,8 +152,8 @@ export function createWebToolController({
       // strict as the key claims.
       const resolvedCtx = ctx ?? readToolRuntime();
       const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
-      const key = stableKey({ params, searchConfig: safeSearchCacheIdentity(searchConfig), policy, coordination: coordinator?.scope });
-      const result = await cachedSearch(key, params.query, async () => performWebSearch(params, {
+      const key = stableKey({ params: normalizedParams, searchConfig: safeSearchCacheIdentity(searchConfig), policy, coordination: coordinator?.scope });
+      const result = await cachedSearch(key, normalizedParams.query, async () => performWebSearch(normalizedParams, {
         coordinator,
         searchConfig,
         sandboxPolicy: policy,

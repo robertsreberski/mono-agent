@@ -1,10 +1,11 @@
 // @ts-check
 import { claimWebSearchRequest } from "../web-search-state.js";
 import { requestSignal, readLimitedText, normalizedResult, collapseWhitespace, fetchFailure, parseRetryAfter } from "./shared.js";
+import { unsupportedCountryFilter } from "../web-search-country.js";
 const SEARXNG_THROTTLE_REASON_RE = /captcha|too many requests|rate.?limit|suspend|blocked|denied/iu;
 export const searxngProvider = {
   name: "searxng", batchesQueries: false, chainDeadlineMs: 3000,
-  filterSupport: { language: "provider", timeRange: "provider" },
+  filterSupport: { language: "provider", timeRange: "provider", country: "unsupported" },
   configure(input, selected) {
   const legacyEndpoint = input?.endpoint;
   const nestedEndpoint = input?.searxng?.endpoint;
@@ -36,6 +37,7 @@ export const searxngProvider = {
   eligibility: (config) => Boolean(config.endpoint),
   admission: (config) => ({ kind: "searxng", key: config.endpoint, processPolicy: "endpoint" }),
   networkTargets: (config) => [`${config.endpoint}/search`],
+  preflight: (options) => options.country ? unsupportedCountryFilter("searxng") : null,
   search: searchSearxng,
 };
 async function searchSearxng(query, options) {

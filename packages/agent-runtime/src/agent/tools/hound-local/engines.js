@@ -5,18 +5,19 @@
 // verified source digest: package-root THIRD_PARTY_NOTICES.md.
 import { parseHTML } from "linkedom";
 import { canonicalizeSearchUrl, collapseWhitespace, wrappedSearchDestination } from "../web-search-providers/shared.js";
+import { duckDuckGoRegion } from "../web-search-country.js";
 
 export const HOUND_ENGINES = Object.freeze([
-  { name: "duckduckgo", origin: "https://html.duckduckgo.com", date: true },
-  { name: "brave", origin: "https://search.brave.com", date: true },
-  { name: "mojeek", origin: "https://www.mojeek.com", date: false },
+  { name: "duckduckgo", origin: "https://html.duckduckgo.com", date: true, country: true },
+  { name: "brave", origin: "https://search.brave.com", date: true, country: false },
+  { name: "mojeek", origin: "https://www.mojeek.com", date: false, country: false },
 ]);
 
-export function houndEngineRequest(engine, query, timeRange, language) {
+export function houndEngineRequest(engine, query, timeRange, language, country) {
   const headers = { "Accept-Language": language || "en-US,en;q=0.8" };
   const date = { day: "d", month: "m", year: "y" }[timeRange];
   if (engine.name === "duckduckgo") {
-    const body = new URLSearchParams({ q: query, b: "", l: "us-en" });
+    const body = new URLSearchParams({ q: query, b: "", l: duckDuckGoRegion(country, language) ?? "wt-wt" });
     if (date) body.set("df", date);
     return { url: `${engine.origin}/html/`, init: { method: "POST", body, headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" } } };
   }
