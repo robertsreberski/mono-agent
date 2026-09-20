@@ -1,9 +1,8 @@
 # mono-agent marketing site
 
-The prospective marketing site at **<https://mono-agent.dev/>** (not yet
-deployed — see [Prospective deployment](#prospective-deployment)). A standalone
+The prospective marketing site at **<https://mono-agent.dev/>** (Vercel hosting — see [Hosting](#hosting)). A standalone
 [Astro](https://astro.build/) static app: one crawlable HTML page, one
-stylesheet, and one small local progressive-enhancement module (under 8.5 kB uncompressed). GitHub is the primary call to action; the
+stylesheet, a consent-gated analytics module, and one small local progressive-enhancement module (under 8.5 kB uncompressed). GitHub is the primary call to action; the
 existing docs site is secondary.
 
 ## Architecture
@@ -12,8 +11,7 @@ existing docs site is secondary.
   so it never enters the root `pnpm -r build`, `pnpm -r test`, release graph,
   or `check:architecture`. Install and build it on its own, following the
   `website/` precedent.
-- **Content is authored in `src/pages/index.astro`.** The hero leads with an agent workspace you can build on: shared project context,
-  delegated work, retained execution evidence, and TypeScript composition. The major
+- **Content is authored in `src/pages/index.astro`.** The hero leads with an agent workspace you can build on: an embeddable AI companion, user-selected models and behavior, tool-powered work, and TypeScript composition. The major
   `#configuration` section makes `mono-agent.config.json` the visible blueprint
   behind those benefits. The displayed example is valid
   JSON and its keys/types are checked against the generated app schema. Every
@@ -51,7 +49,7 @@ existing docs site is secondary.
 The configuration blueprint and twelve linked building blocks are server-rendered,
 including the caveats that identity/skills/MCP files, secrets/auth, and runtime
 state remain separate. It is a readable example, not a fake editor or a deploy
-control. The workspace proof sequence is organize, delegate, inspect. A TypeScript
+control. The proof sequence is customize, delegate, inspect. A TypeScript
 composition excerpt names the configured responder; it is not a runnable app and links
 the imports and complete integration example. A source-linked comparison puts Hermes and OpenClaw alongside Mono Agent,
 then covers Codex CLI, Claude Code, and OpenCode in a native disclosure. It compares documented focus, not
@@ -59,7 +57,7 @@ feature absence, exclusivity, or benchmark performance. All comparison content i
 server-rendered. The enhancement script handles the menu, deck, and copy command;
 FAQ disclosures are native HTML.
 
-No model calls, analytics, third-party scripts or storage are used. Clipboard tests
+No model calls or third-party scripts are loaded. Optional analytics uses the PostHog Capture API only after consent, with details below. Clipboard tests
 stub success and refusal; they prove UI handling, not operating-system permission.
 Motion is finite, disabled for reduced-motion users, and never
 hijacks scrolling. Readable text does not fade through low-contrast states.
@@ -152,17 +150,23 @@ when those surfaces change.
 raising any site dependency, run the complete build and both test gates and
 confirm metadata, card dimensions, and internal links still hold.
 
-## Prospective deployment
+## Hosting
 
-The site is **not deployed yet**. When it is, the intended shape (mirroring
-the docs site on Vercel) is:
+Use a **separate** `mono-agent-marketing` Vercel project; do not change `mono-agent-docs`.
 
-- `vercel.json` pins `framework: astro`, `buildCommand: pnpm run build`,
-  `outputDirectory: dist`.
-- In the hosting project, set the project root to `marketing/` and the domain
-  to `mono-agent.dev`.
-- No environment variables, analytics, or backends are required — the output
-  is static files only.
+- `vercel.json` pins `framework: astro`, `buildCommand: pnpm run build`, and `outputDirectory: dist`.
+- For CLI deployment from this isolated app, link and deploy from `marketing/`. The uploaded project root is this directory, not the repository root.
+- If Git-based deployment is connected later, set its repository root directory to `marketing/`. Do not connect production to a branch without this app. GitHub merge and DNS changes are separate operations.
+- The intended custom domain remains `mono-agent.dev`. Domain ownership/DNS must be verified before declaring it live; a working Vercel URL does not prove the custom domain works.
+- The static site works without any environment variables. PostHog stays off until its public build variables and operator contact are set; see below.
+- `.vercel/` and `.env*` are local-only and ignored. The Vercel CLI may create an OIDC `.env.local` while linking; it is not needed for this static app and must never be uploaded or committed.
+
+```bash
+# After authenticating Vercel; from marketing/
+vercel link --project mono-agent-marketing
+vercel deploy                 # preview
+vercel deploy --prod          # only with production deployment approval
+```
 
 ## CI
 
@@ -185,3 +189,40 @@ snapshot, not an exhaustive capability matrix or performance claim:
 These capabilities overlap with Mono Agent. Do not turn these summaries into
 unsupported negative feature claims about another project. Recheck sources when
 updating the public comparison.
+
+## Shared infographic and README
+
+`src/components/AgentOverview.astro` is the single authored diagram: real HTML text, inline SVG icons, CSS connectors and a mobile vertical layout. It replaces repeated introductory prose rather than hiding the JSON example. The root README uses deterministic captures of the same component, not a second independently drawn infographic:
+
+```bash
+pnpm run build
+pnpm run screenshots -- --overview-assets
+```
+
+This refreshes `docs/assets/mono-agent-workspace{,-mobile}.png`. The regular screenshot command also captures the diagram at desktop/mobile widths. Consent screenshots are explicitly synthetic: a fake public token is injected locally and every PostHog request is intercepted. No live analytics is used by tests or asset generation.
+
+## Optional PostHog analytics
+
+Newsletter signup is intentionally postponed. PostHog is opt-in, EU-only, and disabled unless the public project token is supplied. No SDK/autocapture, remote scripts, cookies, fingerprinting, person profiles, replay or form values are used. The browser sends a small allowlisted payload directly to the documented [Capture API](https://posthog.com/docs/api/capture).
+
+Set these **public build variables** in the separate Vercel marketing project, then rebuild:
+
+- `PUBLIC_POSTHOG_KEY`: the EU project's public ingestion token (`phc_…`), **not** a personal API key.
+- `PUBLIC_PRIVACY_CONTACT`: the operator's public `mailto:` address for data requests. A configured token without this contact fails the build.
+
+Production collection is restricted to `mono-agent.dev`, `www.mono-agent.dev` and `mono-agent-marketing.vercel.app`. Branch previews and local tests cannot accidentally report into production. Consent is off by default; GPC/DNT override stored acceptance. A local preference expires after 180 days. An accepted session uses a random per-tab ID, renewed after 30 minutes idle. These measure consenting sessions, not deduplicated people across devices. Storage failure never grants consent. Withdrawal clears the session ID and stops future events, including across tabs. Event delivery errors are reported in the browser console without blocking the site; there is no retry queue.
+
+| Event | Allowed additional fields |
+| --- | --- |
+| `$pageview` | Referring hostname; short alphanumeric/underscore/hyphen `utm_source`, `utm_medium`, `utm_campaign` tags |
+| `$pageleave` | None |
+| `section_viewed` | Static section ID, once per page after consent |
+| `github_clicked`, `docs_clicked`, `blueprint_opened` | Static placement ID |
+| `install_command_copied` | None; emitted only on clipboard success |
+| `faq_opened` | Numeric question index |
+
+Shared properties are pathname/current URL without query or fragment, hostname, mobile/desktop category, per-tab session ID, `$process_person_profile: false` and `$geoip_disable: true`. Do not encode personal information in campaign tags. Hosting/ingestion providers still receive network connection metadata; this is not a promise of absolute anonymity.
+
+In PostHog, create a **Marketing** dashboard with pageviews/sessions by source and campaign, section reach, GitHub/docs conversions, and install-command copies. Use `$pageview → github_clicked` and `$pageview → install_command_copied` funnels. A 200 ingestion response alone is not reporting proof: verify the named events in the actual project before calling analytics live.
+
+For maintainer reporting, grant project-scoped read-only query access separately. A personal query key belongs in owner-only local secret storage, never in `PUBLIC_*`, the repository, or chat. No PostHog reporting credentials or MCP connection are bundled here. Dashboard creation and live ingestion verification require that account access.

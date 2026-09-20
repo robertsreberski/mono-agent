@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Extend the marketing site and README with a shared responsive agent overview, companion-led positioning, and opt-in PostHog events with privacy controls.
+
 - Add the standalone static marketing site source for the prospective
   `mono-agent.dev` domain. The isolated `marketing/` Astro app renders one
   crawlable page centered on a schema-checked `mono-agent.config.json`

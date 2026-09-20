@@ -233,12 +233,14 @@ describe("marketing built output", () => {
     assert.ok(html.includes(`href="${DOCS_URL}"`), "docs links present");
   });
 
-  it("loads only its small local progressive-enhancement module", () => {
+  it("loads bounded local enhancement and consent-gated analytics modules", () => {
     const scripts = [...html.matchAll(/<script(?![^>]*ld\+json)[^>]*>/g)].map(m => m[0]);
-    assert.equal(scripts.length, 1);
+    assert.equal(scripts.length, 2);
     assert.ok(scripts[0].includes('src="/interactions.js"'));
     assert.ok(scripts[0].includes('type="module"'));
     assert.ok(statSync(join(DIST, "interactions.js")).size < 8500);
+    assert.ok(scripts[1].includes('src="/analytics.js"'));
+    assert.ok(statSync(join(DIST, "analytics.js")).size < 9000);
   });
 
   it("provides a source-linked harness comparison", () => {
@@ -250,7 +252,7 @@ describe("marketing built output", () => {
 
   it("grounds the market position in workspace benefits and real composition APIs", () => {
     const text = decodeHtmlText(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ");
-    for (const benefit of ["Brief the project. Not every chat.", "Choose the model. Keep the work.", "Check what ran. Then carry on."]) mustContain(text, benefit, "workspace proof");
+    for (const benefit of ["Your companion. Your way of working.", "Choose the model. Keep the work.", "Check what ran. Then carry on."]) mustContain(text, benefit, "workspace proof");
     mustContain(html, "createConfiguredAgentResponder", "real TypeScript API");
     mustContain(html, "TypeScript excerpt", "excerpt label");
     mustContain(html, "Imports &amp; full example", "complete composition example link");

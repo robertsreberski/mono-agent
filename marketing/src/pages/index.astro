@@ -1,5 +1,6 @@
 ---
 import ArrowIcon from "../components/ArrowIcon.astro";
+import AgentOverview from "../components/AgentOverview.astro";
 
 // mono-agent marketing site — single static page for https://mono-agent.dev/.
 //
@@ -9,6 +10,13 @@ import ArrowIcon from "../components/ArrowIcon.astro";
 // never promise setup speed,
 // security, or availability, and never present the decorative brand artwork
 // as a product screenshot.
+// Public ingestion token only; never use a PostHog personal API key here.
+const POSTHOG_KEY = import.meta.env.PUBLIC_POSTHOG_KEY || "";
+const PRIVACY_CONTACT = import.meta.env.PUBLIC_PRIVACY_CONTACT || "";
+if (POSTHOG_KEY && (!/^phc_[a-zA-Z0-9]+$/.test(POSTHOG_KEY) || !/^mailto:[^\s@]+@[^\s@]+\.[^\s@]+$/.test(PRIVACY_CONTACT))) {
+  throw new Error("Analytics requires a public PostHog project token and PUBLIC_PRIVACY_CONTACT mailto address.");
+}
+const ANALYTICS_HOSTS = "mono-agent.dev,www.mono-agent.dev,mono-agent-marketing.vercel.app";
 const SITE_URL = "https://mono-agent.dev";
 const GITHUB_URL = "https://github.com/robertsreberski/mono-agent";
 const DOCS_URL = "https://mono-agent-docs.vercel.app/";
@@ -67,7 +75,7 @@ const jsonLd = {
 };
 ---
 <!doctype html>
-<html lang="en">
+<html lang="en" data-posthog-key={POSTHOG_KEY} data-analytics-hosts={ANALYTICS_HOSTS}>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -80,6 +88,7 @@ const jsonLd = {
     <link rel="preload" href="/fonts/instrument-serif-italic.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="/styles.css" />
     <script is:inline type="module" src="/interactions.js"></script>
+    <script is:inline type="module" src="/analytics.js"></script>
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="mono-agent" />
@@ -131,6 +140,10 @@ const jsonLd = {
       </div>
     </header>
 
+    <section class="analytics-notice" aria-label="Optional analytics" hidden>
+      <p><strong>Help us understand what’s useful.</strong> Allow usage analytics with PostHog? No replay or form tracking. <a href="/privacy/">Details</a></p>
+      <div><button type="button" data-consent="no">No thanks</button><button type="button" data-consent="yes">Allow analytics</button></div>
+    </section>
     <main id="main">
       <section class="hero" id="top" aria-labelledby="hero-heading">
         <div class="wrap hero-grid">
@@ -138,9 +151,9 @@ const jsonLd = {
             <span class="eyebrow">Your workspace / Your framework</span>
             <h1 id="hero-heading">An agent <br />workspace you <br /><em>can build on.</em></h1>
             <p class="lede">
-              Organize work with your agent. Inspect what ran.
-              Build on it in TypeScript. Your capabilities, composed in
-              <code>mono-agent.config.json</code>.
+              Your AI companion for real work. Choose its models, shape its
+              behavior in <code>mono-agent.config.json</code>, and embed it in
+              your own TypeScript application.
             </p>
             <div class="hero-actions">
               <a class="btn btn-primary" href={GITHUB_URL}><svg class="github-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 .75a11.25 11.25 0 0 0-3.558 21.922c.563.104.768-.244.768-.542 0-.267-.01-.975-.015-1.914-3.13.68-3.791-1.508-3.791-1.508-.512-1.3-1.25-1.646-1.25-1.646-1.022-.7.078-.686.078-.686 1.13.08 1.724 1.16 1.724 1.16 1.005 1.722 2.638 1.225 3.28.937.102-.728.393-1.225.715-1.507-2.498-.284-5.124-1.25-5.124-5.562 0-1.228.439-2.233 1.159-3.02-.116-.285-.502-1.429.11-2.977 0 0 .945-.303 3.094 1.154A10.78 10.78 0 0 1 12 6.183c.956.004 1.919.129 2.819.378 2.148-1.457 3.092-1.154 3.092-1.154.614 1.548.228 2.692.112 2.977.722.787 1.158 1.792 1.158 3.02 0 4.324-2.63 5.275-5.136 5.553.404.35.766 1.043.766 2.101 0 1.518-.014 2.743-.014 3.115 0 .301.203.651.774.54A11.252 11.252 0 0 0 12 .75Z" /></svg>GitHub <ArrowIcon /></a>
@@ -170,18 +183,16 @@ const jsonLd = {
       </section>
 
       <section class="capability-strip" aria-label="Core capabilities">
-        <div class="wrap"><span>Work in it. Build on it.</span><ul><li>Shared project context</li><li>Model choice per reply</li><li>Inspectable execution</li><li>TypeScript packages</li></ul></div>
+        <div class="wrap"><span>Work in it. Build on it.</span><ul><li>An embeddable AI companion</li><li>Your models, cloud or local</li><li>Your behavior, one blueprint</li><li>Tools that do real work</li></ul></div>
       </section>
 
       <section class="configuration" id="configuration" aria-labelledby="configuration-heading">
         <div class="wrap configuration-intro">
           <span class="section-label">The configuration</span>
           <h2 id="configuration-heading">One JSON file.<br /><em>Your agent’s blueprint.</em></h2>
-          <p>
-            Your agent’s role, model routes, tools, and memory—composed in
-            one readable blueprint. Review the setup, not a maze of glue code.
-          </p>
+
         </div>
+        <div class="wrap"><AgentOverview /></div>
         <div class="wrap blueprint-layout">
           <figure class="config-blueprint">
             <figcaption>
@@ -274,15 +285,15 @@ const jsonLd = {
                 </ul>
               </li>
             </ol>
-          </div><p class="blocks-note">Choose the capabilities you need. Projects, tags, and persistent subagents are available in <a href={RELEASE_URL}>v0.22.0 <ArrowIcon /></a>.</p></section>
+          </div><p class="blocks-note">Projects, tags, and persistent subagents are available in <a href={RELEASE_URL}>v0.22.0 <ArrowIcon /></a>.</p></section>
       </section>
 
       <section class="console-section section" id="console" aria-labelledby="console-heading">
         <div class="wrap">
-          <div class="console-intro"><div><span class="section-label">The workspace</span><h2 id="console-heading">Less re-briefing.<br /><em>More progress.</em></h2></div><p>A workspace for ongoing work—not a fresh start with every conversation. You and your agent can organize it together.</p></div>
+          <div class="console-intro"><div><span class="section-label">The workspace</span><h2 id="console-heading">Less re-briefing.<br /><em>More progress.</em></h2></div></div>
           <figure class="console-shot"><div class="console-frame"><a href="/console-desktop.webp" aria-label="Open full resolution desktop console screenshot"><img src="/console-desktop.webp" width="1920" height="1350" loading="lazy" alt="Desktop Mono Agent console showing a conversation, sidebar, model-change marker, and message composer." /></a></div><figcaption>Actual desktop console · synthetic example data and connection state · current source build. <span class="console-pan-hint">Tap for details · </span><a href="/console-desktop.webp">Open full resolution <ArrowIcon /></a> · <a href={RELEASE_URL}>Release notes <ArrowIcon /></a></figcaption></figure>
           <div class="console-benefits" id="why">
-            <article><span>01 / ORGANIZE</span><h3>Brief the project. Not every chat.</h3><p>Project context feeds each member conversation’s next turn. You and your agent organize chats and tags together.</p><a href={`${DOCS_URL}observability/web-console/#agents-threads-and-turns`}>Shared project context <ArrowIcon /></a></article>
+            <article><span>01 / MAKE IT YOURS</span><h3>Your companion. Your way of working.</h3><p>Give it a role, your files, and selected tools. Add skills and memory when the work needs them—not another custom host.</p><a href={`${DOCS_URL}config/blueprint/`}>Shape your agent <ArrowIcon /></a></article>
             <article><span>02 / DELEGATE</span><h3>Choose the model. Keep the work.</h3><p>Switch supported models for the next reply. Delegate a focused task to a persistent subagent, then follow up without rebuilding its brief.</p><a href={`${DOCS_URL}config/blueprint/`}>Models &amp; subagents <ArrowIcon /></a></article>
             <article><span>03 / INSPECT</span><h3>Check what ran. Then carry on.</h3><p>After an interruption, inspect retained tool results—not just remembered facts—before deciding what to do next.</p><a href={ARTIFACTS_URL}>Execution evidence <ArrowIcon /></a></article>
           </div>
@@ -297,7 +308,7 @@ const jsonLd = {
           <dl class="harness-list">
             <div class="harness-row harness-mono">
               <dt><a href={COMPOSITION_URL}>Mono Agent <ArrowIcon /></a><span>Workspace to TypeScript composition</span></dt>
-              <dd>Three entry points: the full host, a configured responder without transports, or a lower-level harness. Choose how much infrastructure you own.
+              <dd>Run the full host, embed a transport-free responder, or compose a lower-level harness.
                 <pre class="composition-code"><code>const responder = await
   createConfiguredAgentResponder(&#123; config &#125;);</code></pre>
                 <p class="composition-caption">TypeScript excerpt · <code>config</code> loaded from your blueprint. <a href={COMPOSITION_URL}>Imports &amp; full example <ArrowIcon /></a></p>
@@ -330,18 +341,16 @@ const jsonLd = {
           </dl>
           </details>
           <p class="comparison-note">Models, memory, tools, and delegation overlap. These are documented approaches, not a feature or performance ranking. Sources checked 20 September 2026.</p>
-          <p class="comparison-choice"><strong>A workspace you can extend—not a zero-setup hosted assistant.</strong> For technical users who want to configure and operate their agent.</p>
+          <p class="comparison-choice"><strong>A workspace you can extend—not a zero-setup hosted assistant.</strong></p>
         </div>
       </section>
 
       <section class="section" id="start" aria-labelledby="start-heading">
         <div class="wrap">
           <span class="section-label">Get started</span>
-          <h2 id="start-heading">From empty folder to working agent</h2>
+          <h2 id="start-heading">Make a folder an agent</h2>
           <p class="section-intro">
-            A real workspace, not another hosted account. You’ll need Node.js 24.15+
-            and access to a model. Guided setup is not instant: it checks your routes
-            with real model calls, which can take several minutes and count as usage.
+            Setup is not instant: real model checks take several minutes and count as provider usage.
           </p>
           <ol class="steps">
             <li>
@@ -362,7 +371,7 @@ cd my-agent
 mono-agent init</code></pre>
             </li>
             <li>
-              <h3>Start it, then open the workspace</h3>
+              <h3>Open the workspace</h3>
               <p>
                 Validate and start the agent, then run the browser console in
                 its own terminal and open the URL it prints.
@@ -372,13 +381,7 @@ mono-agent start
 mono-agent web run --loopback</code></pre>
             </li>
           </ol>
-          <div class="note">
-            <p>
-              <strong>Projects, tags, persistent subagents:</strong> included in
-              <a href={RELEASE_URL}>v0.22.0</a>. The console image shows current source;
-              visual details may differ from your installed version.
-            </p>
-          </div>
+
         </div>
       </section>
 
@@ -469,9 +472,12 @@ mono-agent web run --loopback</code></pre>
             <li><a href={GITHUB_URL}><svg class="github-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 .75a11.25 11.25 0 0 0-3.558 21.922c.563.104.768-.244.768-.542 0-.267-.01-.975-.015-1.914-3.13.68-3.791-1.508-3.791-1.508-.512-1.3-1.25-1.646-1.25-1.646-1.022-.7.078-.686.078-.686 1.13.08 1.724 1.16 1.724 1.16 1.005 1.722 2.638 1.225 3.28.937.102-.728.393-1.225.715-1.507-2.498-.284-5.124-1.25-5.124-5.562 0-1.228.439-2.233 1.159-3.02-.116-.285-.502-1.429.11-2.977 0 0 .945-.303 3.094 1.154A10.78 10.78 0 0 1 12 6.183c.956.004 1.919.129 2.819.378 2.148-1.457 3.092-1.154 3.092-1.154.614 1.548.228 2.692.112 2.977.722.787 1.158 1.792 1.158 3.02 0 4.324-2.63 5.275-5.136 5.553.404.35.766 1.043.766 2.101 0 1.518-.014 2.743-.014 3.115 0 .301.203.651.774.54A11.252 11.252 0 0 0 12 .75Z" /></svg>GitHub</a></li>
             <li><a href={DOCS_URL}>Documentation</a></li>
             <li><a href={RELEASE_URL}>Release notes</a></li>
+            <li><a href="/privacy/">Privacy</a></li>
+            <li><button class="analytics-settings" type="button" hidden>Analytics preferences</button></li>
           </ul>
         </nav>
       </div>
+      <p class="analytics-status wrap" role="status" aria-live="polite"></p>
     </footer>
   </body>
 </html>

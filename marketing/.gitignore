@@ -3,3 +3,5 @@ dist/
 .astro/
 output/
 assets-source/
+.vercel
+.env*

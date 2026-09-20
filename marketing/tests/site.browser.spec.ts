@@ -135,7 +135,7 @@ for (const width of [320, 430, 768, 1024]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/", { waitUntil: "networkidle" });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
-    await expect(page.getByRole("figure").filter({ hasText: "mono-agent.config.json" })).toBeVisible();
+    await expect(page.locator(".config-blueprint")).toBeVisible();
     await expect(page.locator(".harness-row")).toHaveCount(6);
   });
 }
@@ -616,7 +616,7 @@ for (const width of [390, 1440]) {
     await page.evaluate(() => document.fonts.ready);
     const proof = page.locator('#why');
     await expect(proof.locator('article')).toHaveCount(3);
-    await expect(proof).toContainText('Project context feeds');
+    await expect(proof).toContainText('Give it a role');
     await expect(proof).toContainText('persistent subagent');
     await expect(proof).toContainText('retained tool results');
     const excerpt = page.locator('.composition-code');
@@ -628,5 +628,23 @@ for (const width of [390, 1440]) {
     expect(bounds.content).toBeLessThanOrEqual(bounds.width);
     await expect(page.getByRole('link', {name: 'Imports & full example'})).toHaveAttribute('href', 'https://mono-agent-docs.vercel.app/programmatic/composition/');
     await expect(page.locator('.blocks-note')).toContainText('v0.22.0');
+  });
+}
+
+for (const width of [320, 390, 768, 1440]) {
+  test(`overview preserves readable live text and flow at ${width}`, async ({page}) => {
+    await page.setViewportSize({width, height:1000}); await page.goto('/');
+    const map = page.locator('.agent-map');
+    await expect(map.locator('li')).toHaveCount(3);
+    await expect(map).toContainText('Your folder');
+    await expect(map).toContainText('mono-agent.config.json');
+    await expect(map).toContainText('Your workspace');
+    await expect(map).toContainText('Models: cloud or local');
+    const boxes = await map.locator('li').evaluateAll(items => items.map(el => {
+      const b=el.getBoundingClientRect(); return {x:b.x,y:b.y,right:b.right,bottom:b.bottom};
+    }));
+    for(const box of boxes) {expect(box.x).toBeGreaterThanOrEqual(0);expect(box.right).toBeLessThanOrEqual(width);}
+    if(width<=700) expect(boxes[1].y).toBeGreaterThan(boxes[0].bottom);
+    else expect(boxes[1].x).toBeGreaterThan(boxes[0].right);
   });
 }

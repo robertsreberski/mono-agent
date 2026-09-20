@@ -870,7 +870,7 @@ pre {
     font-size:14px
   }
   .section {
-    padding:56px 0
+    padding:44px 0
   }
   h2 {
     font-size:39px
@@ -1329,3 +1329,59 @@ pre {
 .composition-code { margin:18px 0 10px; padding:16px; border:1px solid var(--line); border-radius:8px; background:var(--bg); font-size:12px; line-height:1.7; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--ink) }
 .harness-row .composition-caption { font-size:var(--text-label); line-height:1.65 }
 .harness-row dd { min-width:0 }
+
+/* Shared overview: live text on the site, deterministic exports for GitHub. */
+.agent-map { margin:24px 0 0; padding:24px; border:1px solid var(--line); background:#101211; border-radius:5px }
+.agent-map figcaption { color:var(--lime); font:11px/1.6 var(--mono); letter-spacing:.12em; text-transform:uppercase; margin-bottom:24px }
+.agent-map-flow { list-style:none; display:grid; grid-template-columns:1fr 1.2fr 1fr; gap:52px; padding:0; margin:0 }
+.agent-map-node { display:flex; align-items:center; gap:18px; position:relative; min-width:0; padding:22px 0 }
+.agent-map-node+li::before { content:''; width:18px; height:10px; background:currentColor; clip-path:polygon(0 40%,70% 40%,50% 0,65% 0,100% 50%,65% 100%,50% 100%,70% 60%,0 60%); position:absolute; left:-36px; top:50%; transform:translateY(-50%); color:var(--lime); font:24px/1 var(--mono) }
+.agent-map-node>svg { width:46px; height:46px; flex:none; fill:none; stroke:var(--lime); stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round }
+.agent-map-node h3 { font-size:19px; letter-spacing:-.04em; margin:0 0 6px }
+.agent-map-node p { font-size:13px; color:var(--muted); margin:0 }
+.agent-map-node code { font-size:12px; color:var(--lime); white-space:nowrap }
+.agent-map-blueprint { padding-inline:20px; border:1px solid #66704a; background:#1a2015; border-radius:4px }
+.agent-map-inputs { display:flex; justify-content:space-between; gap:16px; border-top:1px solid var(--line); padding-top:20px; margin-top:24px; font-size:13px; color:var(--muted) }
+.agent-map-inputs>span:first-child { display:flex; align-items:center; gap:9px }
+.agent-map-inputs svg { width:22px; height:22px; fill:none; stroke:var(--lime); stroke-width:1.3; stroke-linecap:round; stroke-linejoin:round; flex:none }
+.agent-map-inputs b { font-weight:400; color:var(--ink) }
+
+@media(max-width:1050px) {
+  .agent-map-flow { gap:30px }
+  .agent-map-node { gap:12px }
+  .agent-map-node+li::before { left:-25px; font-size:18px }
+  .agent-map-node>svg { width:30px; height:30px }
+  .agent-map-node h3 { font-size:16px }
+  .agent-map-blueprint { padding-inline:12px }
+}
+@media(max-width:700px) {
+  .agent-map { padding:18px; margin-top:24px }
+  .agent-map figcaption { margin-bottom:12px; font-size:10px; letter-spacing:.08em }
+  .agent-map-flow { grid-template-columns:1fr; gap:18px }
+  .agent-map-node { padding:6px 12px; gap:16px }
+  .agent-map-blueprint { padding:12px }
+  .agent-map-node>svg { width:32px; height:32px }
+  .agent-map-node h3 { margin-bottom:2px; font-size:16px }
+  .agent-map-node+li::before { content:''; rotate:90deg; top:-18px; left:25px; transform:none; font-size:16px; line-height:18px }
+  .agent-map-inputs { flex-direction:column; gap:6px; margin-top:16px; padding-top:12px; font-size:12px }
+  .agent-map-inputs>span:last-child { display:flex; flex-wrap:wrap; gap:0 5px }
+  .configuration .blueprint-layout { margin-top:24px }
+}
+
+.analytics-notice { position:fixed; z-index:100; bottom:20px; left:20px; right:20px; max-width:620px; margin-inline:auto; padding:20px; background:#1a2015; border:1px solid #718052; border-radius:5px; box-shadow:0 10px 50px #0008 }
+.analytics-notice[hidden],.analytics-settings[hidden] { display:none }
+.analytics-notice p { margin:0; font-size:14px; line-height:1.6 }
+.analytics-notice strong { color:var(--ink) }
+.analytics-notice a { text-decoration:underline }
+.analytics-notice>div { display:flex; gap:12px; margin-top:16px }
+.analytics-notice button { flex:1; min-height:44px; padding:8px; border:1px solid #718052; border-radius:3px; color:var(--ink); background:transparent; cursor:pointer; font-size:14px }
+.analytics-notice button:hover { background:#303c22 }
+.analytics-notice button:disabled { opacity:.5; cursor:not-allowed }
+.analytics-settings { color:inherit; font:inherit; border:0; padding:0; text-align:left; background:none; cursor:pointer; text-decoration:underline; text-underline-offset:3px }
+.analytics-status { font-size:12px; color:var(--muted) }
+.analytics-status:empty { display:none }
+.privacy-page { max-width:760px; padding-block:70px }
+.privacy-page h1 { font-size:48px; margin-block:24px }
+.privacy-page h2 { font:500 24px/1.3 var(--font); margin-top:36px }
+.privacy-page p,.privacy-page ul { margin-top:16px }
+.privacy-page a { text-decoration:underline }

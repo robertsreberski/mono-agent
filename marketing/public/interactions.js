@@ -1,4 +1,4 @@
-// Progressive enhancement only: no model requests, tracking, or persistence.
+// Progressive enhancement only. Consent-gated analytics lives in analytics.js.
 const copy = document.querySelector('.copy-command');
 const command = document.querySelector('#install-command');
 const status = document.querySelector('.copy-status');
@@ -9,6 +9,7 @@ if (copy && command && status) {
     try {
       await navigator.clipboard.writeText(command.textContent.trim());
       status.textContent = 'Install command copied.';
+      document.dispatchEvent(new Event('mono:install-copied'));
     } catch {
       status.textContent = 'Copy unavailable. Select and copy the command above.';
     } finally {

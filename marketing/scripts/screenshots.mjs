@@ -24,6 +24,10 @@ const PORT = 4331;
 const URL = `http://127.0.0.1:${PORT}/`;
 
 const SHOTS = [
+  { name: "consent-synthetic-mobile-390x844.png", width:390, height:844, analytics:true },
+  { name: "consent-synthetic-desktop-1440x1000.png", width:1440, height:1000, analytics:true },
+  { name: "overview-mobile-390x844.png", width: 390, height: 844, scrollTo: ".agent-map" },
+  { name: "overview-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: ".agent-map" },
   { name: "workspace-proof-mobile-390x844.png", width: 390, height: 844, scrollTo: "#why" },
   { name: "workspace-proof-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: "#why" },
   { name: "comparison-mobile-390x844.png", width: 390, height: 844, scrollTo: '#comparison' },
@@ -101,10 +105,28 @@ async function main() {
     await waitForServer(URL);
     const browser = await chromium.launch();
     try {
+      if (process.argv.includes('--overview-assets')) {
+        for (const [width, name] of [[1200, 'mono-agent-workspace.png'], [390, 'mono-agent-workspace-mobile.png']]) {
+          const page = await browser.newPage({ viewport: { width, height: 1000 }, deviceScaleFactor: width < 700 ? 2 : 1 });
+          await page.goto(URL, { waitUntil: 'networkidle' });
+          await page.evaluate(() => document.fonts.ready);
+          await page.locator('.agent-map').screenshot({ path: resolve(marketingRoot, '../docs/assets', name) });
+          await page.close();
+        }
+        return;
+      }
       for (const shot of (process.argv.includes("--video-only") ? [] : SHOTS)) {
         const page = await browser.newPage({
           viewport: { width: shot.width, height: shot.height },
         });
+        if (shot.analytics) {
+          await page.route('https://eu.i.posthog.com/**', route => route.abort());
+          await page.route(URL, async route => {
+            const response = await route.fetch();
+            const body = (await response.text()).replace(/data-posthog-key(?:="[^"]*")?/, 'data-posthog-key="phc_fixture"').replace(/data-analytics-hosts="[^"]*"/, 'data-analytics-hosts="127.0.0.1"');
+            await route.fulfill({response, body});
+          });
+        }
         await page.goto(URL, { waitUntil: "networkidle" });
         await page.evaluate(() => document.fonts.ready);
         await page.waitForFunction(() => document.getAnimations().every(a => a.playState !== "running"));
