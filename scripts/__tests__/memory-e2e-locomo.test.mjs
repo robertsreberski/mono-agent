@@ -23,7 +23,8 @@ import {
 } from "../lib/memory-e2e-locomo.mjs";
 import { nltkPorterStem, normalizeOfficialLocomoAnswer, officialLocomoScore } from "../lib/memory-e2e-locomo-score.mjs";
 import { summarize, writeArtifacts } from "../lib/memory-e2e-report.mjs";
-import { semanticReviewExport } from "../lib/memory-e2e-runner.mjs";
+import { productionModules, runBenchmark, semanticReviewExport } from "../lib/memory-e2e-runner.mjs";
+import { scriptedProviders } from "../lib/memory-e2e-providers.mjs";
 
 const dirs = [];
 afterEach(async () => { for (const directory of dirs.splice(0)) await rm(directory, { recursive: true, force: true }); });
@@ -186,6 +187,75 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
     expect(makeLocomoPlan({ corpus, sha256: "fixture", split: "evaluation", profile, codeRevision: "CANDIDATE", experiment: LOCOMO_DEVELOPMENT_EXPERIMENT, arm: "bujo" }).confirmation).not.toBe(plan.confirmation);
     expect(makeLocomoPlan({ corpus, sha256: "fixture", split: "evaluation", profile, codeRevision: "BASE", experiment: LOCOMO_DEVELOPMENT_EXPERIMENT, arm: "full-history" }).confirmation).not.toBe(plan.confirmation);
     expect(LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS).toBe(29_897);
+  });
+
+  it("reuses the production harness across admissions while the second turn recovers through native intake", async () => {
+    const projected = projectLocomo(dataset(), { experiment: LOCOMO_DEVELOPMENT_EXPERIMENT });
+    const selected = projected.groups[0];
+    const corpus = {
+      ...projected,
+      groups: [{
+        ...selected,
+        source: { ...selected.source, turns: selected.source.turns.slice(0, 2) },
+        questions: selected.questions.slice(0, 1),
+      }],
+    };
+    const planned = makeLocomoPlan({
+      corpus: projected, sha256: "fixture", split: "evaluation", profile: null,
+      codeRevision: "MULTI-ADMISSION", experiment: LOCOMO_DEVELOPMENT_EXPERIMENT, arm: "bujo",
+    });
+    const plan = {
+      ...planned,
+      workload: { ...planned.workload, questions: 1, trials: 1, historicalTurnsPerMemoryArm: 2 },
+    };
+    const directory = await mkdtemp(join(tmpdir(), "memory-e2e-multiturn-")); dirs.push(directory);
+    const modules = await productionModules();
+    let secondTurnExtractions = 0;
+    const providerFactory = ({ source }) => {
+      const providers = scriptedProviders({ source });
+      const run = providers.extractor.run.bind(providers.extractor);
+      providers.extractor.run = async (system, options) => {
+        const prompt = options.messages[0].content;
+        if (prompt.includes("\nTURN:\n")) {
+          const second = prompt.includes("odd final 1");
+          if (second) {
+            secondTurnExtractions += 1;
+            if (secondTurnExtractions === 1) return {
+              text: "",
+              structuredResult: {
+                memories: [{ type: "note", text: "This candidate must not be partially written." }],
+                entities: [], relations: [],
+              },
+            };
+          }
+          const extracted = {
+            memories: [{
+              type: "note",
+              text: second ? "Alex reported the odd final fact." : "Alex and Blair reported the first two exact facts.",
+              salience: 0.8, isInsight: false, entityIds: [],
+            }],
+            entities: [], relations: [],
+          };
+          return { text: "", structuredResult: extracted };
+        }
+        return await run(system, options);
+      };
+      return providers;
+    };
+    const result = await runBenchmark({ corpus, plan, directory, modules, providerFactory, kind: "scripted" });
+    expect(result.trials).toHaveLength(1);
+    expect(result.trials[0]).toMatchObject({ status: "completed", answer: "Scripted contract response; semantic correctness is not evaluated." });
+    expect(secondTurnExtractions).toBe(2);
+    expect(result.events.filter((event) => event.stage === "admission" && event.status === "completed")).toHaveLength(2);
+    expect(result.events.filter((event) => event.stage === "admission_to_ready" && event.status === "completed")).toHaveLength(2);
+    expect(result.events.filter((event) => event.stage === "reader" && event.status === "completed")).toHaveLength(1);
+    expect(result.summary.captureRecovery).toEqual({
+      firstAttemptSuccess: 1, scheduled: 1, recoveredSuccess: 1, exhausted: 0,
+    });
+    expect(result.capture.filter((entry) => entry.stage === "inventory")).toHaveLength(2);
+    expect(result.capture.find((entry) => entry.stage === "inventory" && entry.turnId === selected.source.turns[1].id)?.records)
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ text: "This candidate must not be partially written." })]));
+    expect(result.trials[0].tools.some((entry) => entry.phase === "result" && entry.state === "success")).toBe(true);
   });
 
   it("exports a four-way human rubric with blinded arm labels and separate answerability/image flags", () => {

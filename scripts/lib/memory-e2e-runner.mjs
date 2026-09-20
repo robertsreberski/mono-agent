@@ -554,11 +554,15 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
           hooks.store?.(store, baseTag);
           let historicalAssistant = "";
           let admitted = 0;
+          // The harness is reused across turns, so its callback must close over
+          // shared per-turn slots rather than the first loop iteration's bindings.
+          let admissionStarted = 0;
+          let admission = null;
           for (const turn of captureTurns) {
             now = new Date(Math.max(now.getTime(), Date.parse(turn.timestamp)));
             historicalAssistant = turn.assistant;
-            let admissionStarted = 0;
-            let admission = null;
+            admissionStarted = 0;
+            admission = null;
             ingest = ingest ?? modules.harness.createAgentHarness({
               ...base, runtime: { async run() { return { text: historicalAssistant }; } },
               memoryWriteMode: "capture",
