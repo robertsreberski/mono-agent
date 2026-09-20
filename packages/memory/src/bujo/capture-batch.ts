@@ -361,12 +361,63 @@ function candidateTokens(text: string): string[] {
   return text.toLocaleLowerCase("en-US").match(/[\p{L}\p{N}]+/gu) ?? [];
 }
 
+const ATTRIBUTION_COMPLEMENT_VERBS = new Set([
+  "believed",
+  "believes",
+  "claimed",
+  "claims",
+  "confirmed",
+  "confirms",
+  "explained",
+  "explains",
+  "indicated",
+  "indicates",
+  "noted",
+  "notes",
+  "reported",
+  "reports",
+  "said",
+  "says",
+  "stated",
+  "states",
+]);
+
 function isAmbiguousNearDuplicate(left: readonly string[], right: readonly string[]): boolean {
-  if (left.length < 3 || right.length < 3) return false;
-  const smaller = Math.min(left.length, right.length);
-  const rightSet = new Set(right);
-  const overlap = new Set(left.filter((token) => rightSet.has(token))).size / smaller;
+  const [leftFact, rightFact, attributionRemoved] = withoutSharedAttribution(left, right);
+  if (leftFact.length < 3 || rightFact.length < 3) return false;
+  const smaller = Math.min(leftFact.length, rightFact.length);
+  const rightSet = new Set(rightFact);
+  const overlap = new Set(leftFact.filter((token) => rightSet.has(token))).size / smaller;
   let prefix = 0;
-  while (prefix < smaller && left[prefix] === right[prefix]) prefix += 1;
-  return prefix >= 2 && prefix / smaller >= 0.5 && overlap >= 0.6;
+  while (prefix < smaller && leftFact[prefix] === rightFact[prefix]) prefix += 1;
+  const alignedSubstitutions = leftFact.length === rightFact.length
+    ? leftFact.reduce((count, token, index) => count + Number(token !== rightFact[index]), 0)
+    : Number.POSITIVE_INFINITY;
+  const sameFrameWithOneSubstitution = attributionRemoved && alignedSubstitutions === 1;
+  return overlap >= 0.6
+    && ((prefix >= 2 && prefix / smaller >= 0.5) || sameFrameWithOneSubstitution);
+}
+
+/**
+ * A repeated speaker/evidence qualification is context, not the proposition's
+ * predicate. Compare the content after an identical reporting complement so a
+ * long "the user reports that ..." preamble cannot make two independent facts
+ * look like variants. Different reporters remain material, and short contents
+ * retain the original whole-sentence guard rather than becoming uncheckable.
+ */
+function withoutSharedAttribution(
+  left: readonly string[],
+  right: readonly string[],
+): readonly [readonly string[], readonly string[], boolean] {
+  const smaller = Math.min(left.length, right.length);
+  let shared = 0;
+  while (shared < smaller && left[shared] === right[shared]) shared += 1;
+  for (let index = 0; index + 1 < shared; index += 1) {
+    if (!ATTRIBUTION_COMPLEMENT_VERBS.has(left[index] ?? "") || left[index + 1] !== "that") continue;
+    const offset = index + 2;
+    const leftFact = left.slice(offset);
+    const rightFact = right.slice(offset);
+    if (leftFact.length >= 3 && rightFact.length >= 3) return [leftFact, rightFact, true];
+  }
+  return [left, right, false];
 }

@@ -31,6 +31,9 @@
   submission at a one-turn ceiling, fail closed when the selected structured
   path returns no result, and keep direct Ollama memory completion on its
   validated JSON-text path.
+- Keep independent BuJo facts that share an explicit speaker-attribution preamble
+  from being rejected as duplicate variants, while preserving whole-batch
+  rejection for actual near-duplicates, conflicting values, and negations.
 - Let automatic direct-fact recall use finite first-party reported properties,
   choices, and work/live locations while rendering their attribution unchanged;
   require exact textual reporter identity, reject compatibility-hidden unsafe

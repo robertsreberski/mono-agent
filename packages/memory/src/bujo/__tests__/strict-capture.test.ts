@@ -35,6 +35,14 @@ const validPlan = {
   relations: [],
 };
 
+function planWithMemoryTexts(texts: readonly string[]): string {
+  return JSON.stringify({
+    memories: texts.map((text) => ({ type: "note", text, salience: 0.8, isInsight: false, entityIds: [] })),
+    entities: [],
+    relations: [],
+  });
+}
+
 describe("strict completed-turn extraction", () => {
   it("accepts exact empty arrays as an explicit no-op", async () => {
     await expect(extractCapturePlanStrict("completed turn", {
@@ -176,6 +184,51 @@ describe("strict completed-turn extraction", () => {
     expect(extractionPrompt).toContain("at most 160 Unicode code points");
     expect(extractionPrompt).toContain("no reserved <!--mem delimiter");
     expect(extractionPrompt).toContain("Do not emit duplicate JSON object keys");
+  });
+
+  it("accepts independent attributed facts that share a speaker and project prefix", async () => {
+    const texts = [
+      "The user reports that Project Atlas's production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris.",
+      "The user reports that Project Atlas's approved downtime budget is 30 minutes.",
+      "The user reports that Priya owns Project Atlas's database cutover.",
+      "The user reports that Mateo owns Project Atlas's rollback checklist.",
+      "The user reports that Project Atlas's rollback policy uses failed writes above 3% or lag above 60 seconds.",
+      "Priya reports that Project Atlas uses the blue deployment lane.",
+      "Mateo reports that Project Atlas uses the blue deployment lane.",
+    ];
+
+    await expect(extractCapturePlanStrict("completed turn", {
+      id: "independent-attributed-facts",
+      complete: async () => planWithMemoryTexts(texts),
+    })).resolves.toMatchObject({ candidates: texts.map((text) => ({ text })) });
+  });
+
+  it.each([
+    [
+      "competing values",
+      "The user reports that Morgan prefers tea for the weekly review.",
+      "The user reports that Morgan prefers coffee for the weekly review.",
+    ],
+    [
+      "competing dates",
+      "The user reports that Project Atlas starts on 20 November 2026.",
+      "The user reports that Project Atlas starts on 21 November 2026.",
+    ],
+    [
+      "a negated variant",
+      "The user reports that Project Atlas is approved for production.",
+      "The user reports that Project Atlas is not approved for production.",
+    ],
+    [
+      "a near-duplicate extension",
+      "The user reports that Project Atlas uses the blue deployment lane.",
+      "The user reports that Project Atlas uses the blue deployment lane today.",
+    ],
+  ] as const)("rejects attributed %s as one ambiguous batch", async (_label, left, right) => {
+    await expect(extractCapturePlanStrict("completed turn", {
+      id: "ambiguous-attributed-facts",
+      complete: async () => planWithMemoryTexts([left, right]),
+    })).rejects.toMatchObject({ name: "MemoryModelOutputError" });
   });
 
   it.each([

@@ -102,6 +102,24 @@ describe("extractCapturePlan intra-turn precision", () => {
     expect(plan.candidates[0]?.entityIds).toEqual(["person:morgan"]);
   });
 
+  it("keeps independent attributed facts while dropping a competing attributed variant", async () => {
+    const schedule = "The user reports that Project Atlas's production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris.";
+    const budget = "The user reports that Project Atlas's approved downtime budget is 30 minutes.";
+    const tea = "The user reports that Morgan prefers tea for the weekly review.";
+    const coffee = "The user reports that Morgan prefers coffee for the weekly review.";
+    const llm = fakeLlm([["Extract one bounded", JSON.stringify({
+      memories: [schedule, budget, tea, coffee].map((text) => ({
+        type: "note", text, salience: 0.8, isInsight: false, entityIds: [],
+      })),
+      entities: [],
+      relations: [],
+    })]]);
+
+    const plan = await extractCapturePlan("The user supplied independent project facts and competing preference text.", llm);
+
+    expect(plan.candidates.map((candidate) => candidate.text)).toEqual([schedule, budget, tea]);
+  });
+
   it("drops malformed or oversized graph fields before canonical capture", async () => {
     const huge = "x".repeat(2_000);
     const llm = fakeLlm([["Extract one bounded", JSON.stringify({
