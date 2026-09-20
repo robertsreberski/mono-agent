@@ -120,10 +120,10 @@ async function main() {
           viewport: { width: shot.width, height: shot.height },
         });
         if (shot.analytics) {
-          await page.route('https://eu.i.posthog.com/**', route => route.abort());
+          await page.route('**/_vercel/insights/**', route => route.abort());
           await page.route(URL, async route => {
             const response = await route.fetch();
-            const body = (await response.text()).replace(/data-posthog-key(?:="[^"]*")?/, 'data-posthog-key="phc_fixture"').replace(/data-analytics-hosts="[^"]*"/, 'data-analytics-hosts="127.0.0.1"');
+            const body = (await response.text()).replace(/data-analytics-hosts="[^"]*"/, 'data-analytics-hosts="127.0.0.1"');
             await route.fulfill({response, body});
           });
         }

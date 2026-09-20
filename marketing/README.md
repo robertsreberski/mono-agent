@@ -57,7 +57,7 @@ feature absence, exclusivity, or benchmark performance. All comparison content i
 server-rendered. The enhancement script handles the menu, deck, and copy command;
 FAQ disclosures are native HTML.
 
-No model calls or third-party scripts are loaded. Optional analytics uses the PostHog Capture API only after consent, with details below. Clipboard tests
+No model calls are made. The native Vercel Analytics component stays inert until consent; only then does it load the provider collection script, with details below. Clipboard tests
 stub success and refusal; they prove UI handling, not operating-system permission.
 Motion is finite, disabled for reduced-motion users, and never
 hijacks scrolling. Readable text does not fade through low-contrast states.
@@ -158,7 +158,7 @@ Use a **separate** `mono-agent-marketing` Vercel project; do not change `mono-ag
 - For CLI deployment from this isolated app, link and deploy from `marketing/`. The uploaded project root is this directory, not the repository root.
 - If Git-based deployment is connected later, set its repository root directory to `marketing/`. Do not connect production to a branch without this app. GitHub merge and DNS changes are separate operations.
 - The intended custom domain remains `mono-agent.dev`. Domain ownership/DNS must be verified before declaring it live; a working Vercel URL does not prove the custom domain works.
-- The static site works without any environment variables. PostHog stays off until its public build variables and operator contact are set; see below.
+- The static site works without any environment variables. Vercel Analytics requires project-side enablement and explicit visitor consent; no ingestion token or reporting key is required.
 - `.vercel/` and `.env*` are local-only and ignored. The Vercel CLI may create an OIDC `.env.local` while linking; it is not needed for this static app and must never be uploaded or committed.
 
 ```bash
@@ -199,33 +199,32 @@ pnpm run build
 pnpm run screenshots -- --overview-assets
 ```
 
-This refreshes `docs/assets/mono-agent-workspace{,-mobile}.png`. The regular screenshot command also captures the diagram at desktop/mobile widths. Consent screenshots are explicitly synthetic: a fake public token is injected locally and every PostHog request is intercepted. No live analytics is used by tests or asset generation.
+This refreshes `docs/assets/mono-agent-workspace{,-mobile}.png`. The regular screenshot command also captures the diagram at desktop/mobile widths. Consent screenshots are explicitly synthetic: the allowed hostname is overridden locally and every analytics endpoint is intercepted. No live analytics is used by tests or asset generation.
 
-## Optional PostHog analytics
+## Optional Vercel Web Analytics
 
-Newsletter signup is intentionally postponed. PostHog is opt-in, EU-only, and disabled unless the public project token is supplied. No SDK/autocapture, remote scripts, cookies, fingerprinting, person profiles, replay or form values are used. The browser sends a small allowlisted payload directly to the documented [Capture API](https://posthog.com/docs/api/capture).
+The marketing project uses the Hobby plan: basic page views, daily visitor estimates, referrers and device/location breakdowns, subject to Vercel’s current team-wide allowance (50,000 events/month and one-month reporting window). Custom clicks, section reach, install copies, session replay, campaign funnels and newsletter collection are **not** implemented. No paid upgrade is authorized or needed.
 
-Set these **public build variables** in the separate Vercel marketing project, then rebuild:
+The official `@vercel/analytics/astro` component lives inside an inert HTML template. `public/analytics.js` clones it only after a visitor explicitly opts in. The provider script is not requested before consent. A `window.webAnalyticsBeforeSend` guard rechecks consent/storage/GPC/DNT, drops non-pageview events and strips query strings/fragments from page URLs. Native Astro routing and Vercel’s build-time configuration remain intact.
 
-- `PUBLIC_POSTHOG_KEY`: the EU project's public ingestion token (`phc_…`), **not** a personal API key.
-- `PUBLIC_PRIVACY_CONTACT`: the operator's public `mailto:` address for data requests. A configured token without this contact fails the build.
+Consent is stored under `mono-analytics-consent-vercel-v1` for at most 180 days. Consent for the previous provider is not reused; old preference/session identifiers are cleared. Unsupported hosts, unavailable storage, malformed/expired/future preferences and GPC/DNT cannot grant permission. Withdrawal normally reloads the page to unload the SDK, including across tabs. If a browser refuses to save withdrawal, the in-page guard keeps collection off and warns that the choice may not persist. No tracking cookies, `enableCookie`, own visitor/session identifiers, person profiles or custom events are used.
 
-Production collection is restricted to `mono-agent.dev` and `www.mono-agent.dev`. Branch previews and local tests cannot accidentally report into production. Consent is off by default; GPC/DNT override stored acceptance. A local preference expires after 180 days. An accepted session uses a random per-tab ID, renewed after 30 minutes idle or 24 hours total. Session IDs follow PostHog’s UUIDv7 requirement. These measure consenting sessions, not deduplicated people across devices. Storage failure never grants consent. Withdrawal clears the session ID and stops future events, including across tabs. Event delivery errors are reported in the browser console without blocking the site; there is no retry queue.
+Vercel processes request information for daily visitor estimates, approximate geography and browser/device categories, and may receive the referrer provided by the browser. This is **not** the previous EU-only/no-geolocation setup. The privacy page describes that difference. `PUBLIC_PRIVACY_CONTACT` can optionally supply a valid public `mailto:` contact; never put a private API key in public environment variables.
 
-| Event | Allowed additional fields |
-| --- | --- |
-| `$pageview` | Referring hostname; short alphanumeric/underscore/hyphen `utm_source`, `utm_medium`, `utm_campaign` tags |
-| `$pageleave` | None |
-| `section_viewed` | Static section ID, once per page after consent |
-| `github_clicked`, `docs_clicked`, `blueprint_opened` | Static placement ID |
-| `install_command_copied` | None; emitted only on clipboard success |
-| `faq_opened` | Numeric question index |
+### Enablement and reporting
 
-Shared properties are pathname/current URL without query or fragment, hostname, mobile/desktop category, per-tab session ID, `$process_person_profile: false` and `$geoip_disable: true`. Do not encode personal information in campaign tags. Hosting/ingestion providers still receive network connection metadata; this is not a promise of absolute anonymity.
+Enable Web Analytics for `mono-agent-marketing` in Vercel’s Analytics dashboard, deploy and verify real consented visits. The project was already enabled when this integration was implemented. No PostHog account or reporting credentials are needed. The docs project is not instrumented by this change.
 
-In PostHog, create a **Marketing** dashboard with pageviews/sessions by source and campaign, section reach, GitHub/docs conversions, and install-command copies. Use `$pageview → github_clicked` and `$pageview → install_command_copied` funnels. A 200 ingestion response alone is not reporting proof: verify the named events in the actual project before calling analytics live.
+Authenticated CLI reporting is supported without Observability Plus:
 
-For maintainer reporting, grant project-scoped read-only query access separately. A personal query key belongs in owner-only local secret storage, never in `PUBLIC_*`, the repository, or chat. No PostHog reporting credentials or MCP connection are bundled here. Dashboard creation and live ingestion verification require that account access.
+```sh
+vercel metrics schema vercel.analytics.page_view.count --scope robert-sreberskis-projects
+vercel metrics vercel.analytics.page_view.count --project mono-agent-marketing --prod --since 7d --scope robert-sreberskis-projects --format json
+```
+
+`metrics schema` takes team scope, not `--project`; metric queries accept project selection. Empty results mean there is no data for the query, not that installation is proven. Provider bot filtering can exclude automated browsers. Do not manufacture visitor traffic or represent local mocked requests as ingested events.
+
+Tests run the real installed Astro component/SDK against a deterministic local provider stub. An optional `VERCEL_VENDOR_FIXTURE=/absolute/path/to/captured-script.js` runs the same tests against an unmodified captured public Vercel collection script, still with every ingestion request intercepted locally. Any test-only bot-detection overrides are confined to that intercepted local harness, never production.
 
 ## Search discovery and canonical URLs
 
