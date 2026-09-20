@@ -982,7 +982,7 @@ otherwise neither the runtime extension nor operator capability is exposed.
 Stored resources follow `artifacts.retention.maxAgeDays` within that aggregate
 ceiling; live connections are separately bounded by an eight-entry LRU and
 ten-minute idle timeout. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 for native channel behavior, fallbacks, browser security, and limits.
 
 Successful cron answers suppressed by the shared notification classifier project
@@ -1302,18 +1302,18 @@ compose communication adapters; adapters never depend on it.
 Opt in to metadata-only prompt-cache request fingerprints with
 `providers.piNative.promptCacheDiagnostics` (default `false`) or
 `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`. The offline reader is documented in
-[Prompt-cache measurement](https://mono-agent-docs.vercel.app/runtime/prompt-cache-measurement/).
+[Prompt-cache measurement](https://docs.mono-agent.dev/runtime/prompt-cache-measurement/).
 
 ## Related Documentation
 
-- [Quickstart](https://mono-agent-docs.vercel.app/getting-started/quickstart/)
-- [Agent folder layout](https://mono-agent-docs.vercel.app/config/folder-layout/)
-- [Configuration blueprint](https://mono-agent-docs.vercel.app/config/blueprint/)
-- [CLI reference](https://mono-agent-docs.vercel.app/observability/cli-reference/)
-- [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/composition/)
-- [Channels](https://mono-agent-docs.vercel.app/channels/)
-- [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+- [Quickstart](https://docs.mono-agent.dev/getting-started/quickstart/)
+- [Agent folder layout](https://docs.mono-agent.dev/config/folder-layout/)
+- [Configuration blueprint](https://docs.mono-agent.dev/config/blueprint/)
+- [CLI reference](https://docs.mono-agent.dev/observability/cli-reference/)
+- [Programmatic composition](https://docs.mono-agent.dev/programmatic/composition/)
+- [Channels](https://docs.mono-agent.dev/channels/)
+- [Local-first web research](https://docs.mono-agent.dev/tools/web-research/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-app)
 
 ## Verification

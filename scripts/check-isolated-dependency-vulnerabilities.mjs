@@ -24,6 +24,13 @@ export const ISOLATED_DEPENDENCY_GRAPHS = Object.freeze([
     dispositions: "scripts/website-dependency-vulnerability-dispositions.json",
   }),
   Object.freeze({
+    kind: "pnpm",
+    label: "marketing website",
+    cwd: "marketing",
+    rootPackageNames: Object.freeze(["mono-agent-marketing"]),
+    dispositions: "scripts/marketing-dependency-vulnerability-dispositions.json",
+  }),
+  Object.freeze({
     kind: "npm-lock",
     label: "managed sandbox runtime",
     cwd: "packages/agent-app/resources/srt",

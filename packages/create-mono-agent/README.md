@@ -147,9 +147,9 @@ decision is whether the installer basename should request implicit `init`, the
 
 ## Related Documentation
 
-- [Create your first agent](https://mono-agent-docs.vercel.app/getting-started/quickstart/)
-- [CLI reference](https://mono-agent-docs.vercel.app/observability/cli-reference/)
-- [Agent folder layout](https://mono-agent-docs.vercel.app/config/folder-layout/)
+- [Create your first agent](https://docs.mono-agent.dev/getting-started/quickstart/)
+- [CLI reference](https://docs.mono-agent.dev/observability/cli-reference/)
+- [Agent folder layout](https://docs.mono-agent.dev/config/folder-layout/)
 - [`@mono-agent/agent-app` package](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-app)
 
 ## Verification

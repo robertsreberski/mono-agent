@@ -176,7 +176,7 @@ when the responder does not implement the corresponding ownership or authorized
 resource surface.
 The web consumer retains the legacy 8 MiB input ceiling so it can read an older
 agent even though current producers emit at most 256 KiB per frame. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 ## Architecture
 
@@ -293,11 +293,11 @@ loopback is a host decision guarded by `allowNonLoopback`.
 
 ## Related Documentation
 
-- [Operator stream endpoint](https://mono-agent-docs.vercel.app/channels/tui/)
-- [Terminal UI](https://mono-agent-docs.vercel.app/observability/tui/)
-- [Always-on web console](https://mono-agent-docs.vercel.app/observability/web-console/)
-- [Artifacts and traces](https://mono-agent-docs.vercel.app/observability/artifacts-and-traces/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+- [Operator stream endpoint](https://docs.mono-agent.dev/channels/tui/)
+- [Terminal UI](https://docs.mono-agent.dev/observability/tui/)
+- [Always-on web console](https://docs.mono-agent.dev/observability/web-console/)
+- [Artifacts and traces](https://docs.mono-agent.dev/observability/artifacts-and-traces/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 
 ## Verification
 

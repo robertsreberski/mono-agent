@@ -46,7 +46,7 @@ A non-empty environment value overrides its mapped JSON field. Blank values are
 normally ignored; the legacy `MONO_AGENT_FALLBACK_MODELS=""` clear operation is
 the deliberate exception. Not every nested JSON field has an environment
 counterpart, so use the [environment variable
-map](https://mono-agent-docs.vercel.app/config/env-vars/) rather than assuming a
+map](https://docs.mono-agent.dev/config/env-vars/) rather than assuming a
 blanket override. A missing or empty JSON file contributes an empty layer.
 
 ### Agent identity and runtime routes
@@ -479,16 +479,16 @@ It does not load Telegram, WhatsApp, Slack, or other adapter-specific credential
 Opt in to metadata-only prompt-cache request fingerprints with
 `providers.piNative.promptCacheDiagnostics` (default `false`) or
 `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`. The offline reader is documented in
-[Prompt-cache measurement](https://mono-agent-docs.vercel.app/runtime/prompt-cache-measurement/).
+[Prompt-cache measurement](https://docs.mono-agent.dev/runtime/prompt-cache-measurement/).
 
 ## Related Documentation
 
-- [Configuration overview](https://mono-agent-docs.vercel.app/config/)
-- [Complete configuration blueprint](https://mono-agent-docs.vercel.app/config/blueprint/)
-- [Environment variable map](https://mono-agent-docs.vercel.app/config/env-vars/)
-- [Generated field reference](https://mono-agent-docs.vercel.app/config/reference/)
-- [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
-- [Runtime and provider configuration](https://mono-agent-docs.vercel.app/runtime/)
+- [Configuration overview](https://docs.mono-agent.dev/config/)
+- [Complete configuration blueprint](https://docs.mono-agent.dev/config/blueprint/)
+- [Environment variable map](https://docs.mono-agent.dev/config/env-vars/)
+- [Generated field reference](https://docs.mono-agent.dev/config/reference/)
+- [Local-first web research](https://docs.mono-agent.dev/tools/web-research/)
+- [Runtime and provider configuration](https://docs.mono-agent.dev/runtime/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/config)
 
 ## Verification

@@ -1,6 +1,6 @@
 # Feature Coverage
 
-Every framework capability and how a composed agent reaches it. This table is the **authoritative, exhaustive** answer to "can the config do X?" — answer from it, do not grep the `@mono-agent` package source to confirm. `config` = declarable in `mono-agent.config.json`; config fields may be JSON-only. Environment-variable overrides are optional: only fields with a documented `MONO_AGENT_*` mapping accept one, so consult the generated config reference's `Env override` column (`--` means none, as for `channels.plugins`) instead of inferring one. `cli` = a `mono-agent` CLI flag/command, `auto` = always on when the app runs, `code` = programmatic escape hatch only, `dev` = development/test tooling. A capability that is absent here, or marked `code`, is not reachable through config — that is the answer, not a cue to read source. The final column maps config-bearing rows back to the repo's canonical registry; multiple ids in one row are an intentional aggregation. The repo's `docs/reference/feature-registry.md` (framework checkout only) and the documentation site at <https://mono-agent-docs.vercel.app/> are longer-form human-facing mirrors of this same table.
+Every framework capability and how a composed agent reaches it. This table is the **authoritative, exhaustive** answer to "can the config do X?" — answer from it, do not grep the `@mono-agent` package source to confirm. `config` = declarable in `mono-agent.config.json`; config fields may be JSON-only. Environment-variable overrides are optional: only fields with a documented `MONO_AGENT_*` mapping accept one, so consult the generated config reference's `Env override` column (`--` means none, as for `channels.plugins`) instead of inferring one. `cli` = a `mono-agent` CLI flag/command, `auto` = always on when the app runs, `code` = programmatic escape hatch only, `dev` = development/test tooling. A capability that is absent here, or marked `code`, is not reachable through config — that is the answer, not a cue to read source. The final column maps config-bearing rows back to the repo's canonical registry; multiple ids in one row are an intentional aggregation. The repo's `docs/reference/feature-registry.md` (framework checkout only) and the documentation site at <https://docs.mono-agent.dev/> are longer-form human-facing mirrors of this same table.
 
 The default configured agent may also advertise the operator-only v1
 `contextImport` capability. It is not a config toggle and must be detected from
@@ -133,7 +133,7 @@ Prompt-cache diagnostics: set `providers.piNative.promptCacheDiagnostics` (defau
 `false`) or `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS` to retain metadata-only request
 fingerprints in existing run artifacts. Use the framework script
 `scripts/summarize-prompt-cache.mjs` for token-weighted cache ratios and fingerprint
-changes; see [measurement](https://mono-agent-docs.vercel.app/runtime/prompt-cache-measurement/).
+changes; see [measurement](https://docs.mono-agent.dev/runtime/prompt-cache-measurement/).
 
 
 For built-in `Agent` helpers, `subagents.models` offers call-time model choices as

@@ -108,8 +108,19 @@ describe("documentation quality", () => {
       file: "README.md",
       text: "# Project\n\n[Runtime guide](https://mono-agent.dev/runtime/)\n",
     })).toContain(
-      "README.md:3 documentation links must use `mono-agent-docs.vercel.app`, not obsolete host `mono-agent.dev`.",
+      "README.md:3 documentation links must use `docs.mono-agent.dev`, not obsolete host `mono-agent.dev`.",
     );
+  });
+
+  test("accepts marketing pages but rejects the former docs host", () => {
+    expect(checkMarkdownDocument({
+      file: "README.md",
+      text: "# Project\n\n[Marketing](https://mono-agent.dev/#configuration) · [Privacy](https://mono-agent.dev/privacy/)\n",
+    })).toEqual([]);
+    expect(checkMarkdownDocument({
+      file: "README.md",
+      text: "# Project\n\n[Runtime guide](https://mono-agent-docs.vercel.app/runtime/)\n",
+    })).toContain("README.md:3 documentation links must use `docs.mono-agent.dev`, not obsolete host `mono-agent-docs.vercel.app`.");
   });
 
   test("checks local targets and heading fragments across the public corpus", async () => {
@@ -132,15 +143,15 @@ describe("documentation quality", () => {
       "",
       "[Source module](https://github.com/robertsreberski/mono-agent/blob/main/packages/demo/src/index.ts)",
       "[Missing source module](https://github.com/robertsreberski/mono-agent/blob/main/packages/demo/src/missing.ts)",
-      "[Published guide](https://mono-agent-docs.vercel.app/guide/#present)",
-      "[Missing published guide](https://mono-agent-docs.vercel.app/absent/)",
-      "[Missing published heading](https://mono-agent-docs.vercel.app/guide/#missing)",
+      "[Published guide](https://docs.mono-agent.dev/guide/#present)",
+      "[Missing published guide](https://docs.mono-agent.dev/absent/)",
+      "[Missing published heading](https://docs.mono-agent.dev/guide/#missing)",
       "",
     ].join("\n"));
 
     expect(findDocumentationErrors({ root })).toEqual([
       "README.md:4 local link target does not exist: https://github.com/robertsreberski/mono-agent/blob/main/packages/demo/src/missing.ts",
-      "README.md:6 local link target does not exist: https://mono-agent-docs.vercel.app/absent/",
+      "README.md:6 local link target does not exist: https://docs.mono-agent.dev/absent/",
       "README.md:7 heading fragment `#missing` does not exist in docs/guide/index.md.",
     ]);
   });
