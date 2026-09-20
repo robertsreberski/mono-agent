@@ -1,133 +1,157 @@
 import AxeBuilder from '@axe-core/playwright';
+import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 
-// Synthetic public project token; all ingestion requests are intercepted.
+const key = 'mono-analytics-consent-vercel-v1';
+// Deterministic provider boundary for CI; the REAL installed Astro component and
+// SDK still mount/queue events. An optional captured vendor script supports a
+// local compatibility smoke without committing third-party hosted code.
+const provider = process.env.VERCEL_VENDOR_FIXTURE
+  ? readFileSync(process.env.VERCEL_VENDOR_FIXTURE, 'utf8')
+  : `(()=>{let before=e=>e;window.va=(type,data)=>{if(type==='beforeSend'){before=data;return;}
+    if(type!=='pageview'&&type!=='event')return;
+    const event=before({type,url:location.href,payload:data});if(!event)return;
+    fetch('/_vercel/insights/'+(type==='pageview'?'view':'event'),{method:'POST',body:JSON.stringify({o:event.url})});
+  };(window.vaq||[]).forEach(args=>window.va(...args));})();`;
 async function configured(page: Page) {
+  const requests: string[] = [];
   const events: any[] = [];
-  await page.route('https://eu.i.posthog.com/**', async route => {
+  // Test-only: all provider traffic is intercepted locally, never real ingestion.
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', {get: () => false});
+    const agent = navigator.userAgent.replace('Headless', '');
+    Object.defineProperty(navigator, 'userAgent', {get: () => agent});
+  });
+  await page.route('**/_vercel/insights/**', async route => {
+    requests.push(route.request().url());
     if (route.request().method() === 'POST') events.push(route.request().postDataJSON());
-    await route.fulfill({status: 200, body: '{}', headers: {'access-control-allow-origin': '*'}});
+    await route.fulfill({status:200, contentType: route.request().url().endsWith('script.js') ? 'application/javascript' : 'application/json', body: route.request().url().endsWith('script.js') ? provider : '{}'});
   });
   await page.route('**/*', async route => {
     const url = new URL(route.request().url());
-    if (url.hostname !== '127.0.0.1' || url.pathname !== '/') return route.fallback();
+    if (url.hostname !== '127.0.0.1' || !['/', '/privacy/'].includes(url.pathname)) return route.fallback();
     const response = await route.fetch();
-    const html = (await response.text()).replace(/data-posthog-key(?:="[^"]*")?/, 'data-posthog-key="phc_test"')
-      .replace(/data-analytics-hosts="[^"]*"/, 'data-analytics-hosts="127.0.0.1"');
-    await route.fulfill({response, body: html});
+    const html = (await response.text()).replace(/data-analytics-hosts="[^"]*"/, 'data-analytics-hosts="127.0.0.1"');
+    await route.fulfill({response, body:html});
   });
-  return events;
+  return {requests, events};
+}
+async function loaded(page: Page) {
+  await page.waitForFunction(() => typeof (window as any).webAnalyticsBeforeSend === 'function');
 }
 
-test('no analytics in unconfigured or unapproved-host builds', async ({page}) => {
-  const external: string[] = [];
-  page.on('request', request => { if (request.url().includes('posthog.com')) external.push(request.url()); });
-  await page.goto('/');
+test('unapproved hosts never mount analytics', async ({page}) => {
+  const requests: string[] = [];
+  page.on('request', request => {if(request.url().includes('/insights/')) requests.push(request.url());});
+  await page.goto('/'); await loaded(page);
   await expect(page.locator('.analytics-notice')).toBeHidden();
   await expect(page.locator('.analytics-settings')).toBeHidden();
-  expect(external).toEqual([]);
-  expect(await page.evaluate(() => Object.keys(sessionStorage))).toEqual([]);
+  expect(requests).toEqual([]);
+  expect(await page.locator('body > vercel-analytics').count()).toBe(0);
 });
-
 for (const width of [390, 1440]) {
   test(`consent controls are accessible and fit at ${width}`, async ({page}) => {
-    await page.setViewportSize({width, height: 844});
-    const events = await configured(page);
-    await page.goto('/');
+    await page.setViewportSize({width,height:844});
+    const {requests} = await configured(page);
+    await page.goto('/'); await loaded(page);
     await expect(page.locator('.analytics-notice')).toBeVisible();
-    expect(events).toEqual([]);
+    expect(requests).toEqual([]);
     const box = await page.locator('.analytics-notice').boundingBox();
     expect(box!.x).toBeGreaterThanOrEqual(0);
-    expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+    expect(box!.x+box!.width).toBeLessThanOrEqual(width);
     expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
-    await page.getByRole('button', {name: 'No thanks', exact:true}).click();
+    await page.getByRole('button',{name:'No thanks',exact:true}).click();
+    await page.reload(); await loaded(page);
     await expect(page.locator('.analytics-notice')).toBeHidden();
-    await page.reload();
-    await expect(page.locator('.analytics-notice')).toBeHidden();
-    expect(events).toEqual([]);
-    expect(await page.evaluate(() => sessionStorage.getItem('mono-analytics-session-v1'))).toBeNull();
+    expect(requests).toEqual([]);
   });
 }
-
-test('accepted events omit sensitive URLs, identifiers and form data; withdrawal stops capture', async ({page}) => {
-  const events = await configured(page);
-  await page.goto('/?email=private@example.com&utm_source=github&utm_campaign=launch&token=secret#comparison');
-  await page.getByRole('button', {name:'Allow analytics', exact:true}).click();
-  await expect.poll(() => events.filter(e => e.event === '$pageview').length).toBe(1);
-  await page.evaluate(() => document.dispatchEvent(new Event('mono:install-copied')));
-  await expect.poll(() => events.some(e => e.event === 'install_command_copied')).toBe(true);
-  const view = events.find(e => e.event === '$pageview');
-  expect(view.api_key).toBe('phc_test');
-  expect(view.distinct_id).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-7[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
-  const sessionStart = parseInt(view.distinct_id.slice(0,8) + view.distinct_id.slice(9,13),16);
-  expect(Math.abs(Date.now() - sessionStart)).toBeLessThan(10000);
-  expect(view.properties.$process_person_profile).toBe(false);
-  expect(view.properties.$geoip_disable).toBe(true);
-  expect(view.properties.utm_source).toBe('github');
-  expect(view.properties.$current_url).not.toMatch(/[?#]/);
-  expect(JSON.stringify(events)).not.toMatch(/private@example|token=secret|\$identify/);
-  await page.getByRole('button', {name:'Analytics preferences'}).click();
-  await page.getByRole('button', {name:'No thanks',exact:true}).click();
-  const count = events.length;
-  await page.evaluate(() => document.dispatchEvent(new Event('mono:install-copied')));
-  await page.reload();
+test('native Astro mounts after consent, strips page queries, drops custom events and unloads on withdrawal', async ({page}) => {
+  const {requests,events} = await configured(page);
+  await page.goto('/?email=private@example.com&utm_source=github#comparison');
+  await loaded(page); expect(requests).toEqual([]);
+  await page.getByRole('button',{name:'Allow analytics',exact:true}).click();
+  await expect.poll(()=>events.length).toBe(1);
+  expect(events[0].o).toBe('http://127.0.0.1:4330/');
+  expect(await page.evaluate(()=>Object.keys(sessionStorage))).toEqual([]);
+  expect(await page.locator('body > vercel-analytics').count()).toBe(1);
+  await page.evaluate(()=>{(window as any).va('event',{name:'github_clicked',data:{email:'private@example.com'}});});
+  await page.getByRole('button',{name:'Analytics preferences'}).click();
+  await Promise.all([page.waitForEvent('load'),page.getByRole('button',{name:'No thanks',exact:true}).click()]);
+  await loaded(page);
+  expect(events.length).toBe(1);
+  expect(requests.filter(url=>url.endsWith('script.js')).length).toBe(1);
+  expect(await page.locator('body > vercel-analytics').count()).toBe(0);
   await expect(page.locator('.analytics-notice')).toBeHidden();
-  expect(events.length).toBe(count);
-  expect(await page.evaluate(() => sessionStorage.getItem('mono-analytics-session-v1'))).toBeNull();
 });
-
-test('privacy signals override previously accepted consent', async ({page}) => {
-  const events = await configured(page);
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, 'globalPrivacyControl', {value:true});
-    localStorage.setItem('mono-analytics-consent-v1', JSON.stringify({choice:'yes', at:Date.now()}));
+for (const signal of ['globalPrivacyControl','doNotTrack']) {
+  test(`${signal} overrides stored consent`, async ({page}) => {
+    const {requests} = await configured(page);
+    await page.addInitScript(({key,signal})=>{
+      localStorage.setItem(key,JSON.stringify({choice:'yes',at:Date.now()}));
+      Object.defineProperty(navigator,signal,{value:signal==='doNotTrack'?'1':true});
+    },{key,signal});
+    await page.goto('/'); await loaded(page);
+    expect(requests).toEqual([]);
+    await page.getByRole('button',{name:'Analytics preferences'}).click();
+    await expect(page.getByRole('button',{name:'Allow analytics',exact:true})).toBeDisabled();
   });
-  await page.goto('/');
-  await expect(page.locator('.analytics-notice')).toBeHidden();
-  await page.getByRole('button', {name:'Analytics preferences'}).click();
-  await expect(page.getByRole('button', {name:'Allow analytics',exact:true})).toBeDisabled();
-  expect(events).toEqual([]);
+}
+test('unavailable storage cannot grant consent', async ({page}) => {
+  const {requests} = await configured(page);
+  await page.addInitScript(()=>{Storage.prototype.setItem=()=>{throw Error('unavailable');};});
+  await page.goto('/'); await loaded(page);
+  await page.getByRole('button',{name:'Allow analytics',exact:true}).click();
+  await expect(page.locator('.analytics-status')).toContainText('could not be saved');
+  expect(requests).toEqual([]);
 });
-
-test('storage failure does not imply consent or break navigation', async ({page}) => {
-  const events = await configured(page);
-  await page.addInitScript(() => {
-    Storage.prototype.getItem = () => { throw new Error('unavailable'); };
-    Storage.prototype.setItem = () => { throw new Error('unavailable'); };
+test('failed withdrawal persistence still blocks events and focus cannot re-enable them', async ({page}) => {
+  const {events} = await configured(page); await page.goto('/');
+  await page.getByRole('button',{name:'Allow analytics',exact:true}).click();
+  await expect.poll(()=>events.length).toBe(1);
+  await page.evaluate(()=>{Storage.prototype.setItem=()=>{throw Error('unavailable');};});
+  await page.getByRole('button',{name:'Analytics preferences'}).click();
+  await page.getByRole('button',{name:'No thanks',exact:true}).click();
+  await expect(page.locator('.analytics-status')).toContainText('could not be saved');
+  const allowed = await page.evaluate(()=>{
+    window.dispatchEvent(new Event('focus'));
+    return (window as any).webAnalyticsBeforeSend({type:'pageview',url:location.href});
   });
-  await page.goto('/');
-  expect(events).toEqual([]);
-  await page.getByRole('button', {name:'No thanks',exact:true}).click();
-  await expect(page.locator('.hero-actions a').first()).toBeVisible();
+  expect(allowed).toBeNull(); expect(events.length).toBe(1);
 });
-
-test('privacy page remains accessible without analytics', async ({page}) => {
-  await page.goto('/privacy/');
-  await expect(page.getByRole('heading', {level:1})).toHaveText('Privacy & analytics');
-  expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
-});
-
-test('old or expired session identifiers are replaced before reporting', async ({page}) => {
-  const events = await configured(page);
-  await page.addInitScript(() => {
+test('old provider consent is not reused; expired and future consent do not grant permission', async ({page}) => {
+  const {requests} = await configured(page);
+  await page.addInitScript(()=>{
     localStorage.setItem('mono-analytics-consent-v1',JSON.stringify({choice:'yes',at:Date.now()}));
-    sessionStorage.setItem('mono-analytics-session-v1',JSON.stringify({id:'00000000-0000-7000-8000-000000000000',at:Date.now()}));
+    sessionStorage.setItem('mono-analytics-session-v1','old-provider-id');
   });
-  await page.goto('/');
-  await expect.poll(() => events.some(e=>e.event==='$pageview')).toBe(true);
-  const id=events.find(e=>e.event==='$pageview').properties.$session_id;
-  expect(id).not.toBe('00000000-0000-7000-8000-000000000000');
-  expect(Date.now()-parseInt(id.slice(0,8)+id.slice(9,13),16)).toBeLessThan(10000);
+  await page.goto('/'); await loaded(page);
+  await expect(page.locator('.analytics-notice')).toBeVisible();
+  expect(await page.evaluate(()=>sessionStorage.getItem('mono-analytics-session-v1'))).toBeNull();
+  for (const at of [Date.now()-181*86400000,Date.now()+86400000]) {
+    await page.evaluate(({key,at})=>localStorage.setItem(key,JSON.stringify({choice:'yes',at})),{key,at});
+    await page.reload(); await loaded(page);
+    await expect(page.locator('.analytics-notice')).toBeVisible();
+  }
+  expect(requests).toEqual([]);
 });
-
-test('custom docs links record a conversion only after consent', async ({page}) => {
-  const events = await configured(page);
-  await page.goto('/');
-  const docs = page.locator('a[href="https://docs.mono-agent.dev/"]').first();
-  await docs.evaluate(link => link.addEventListener('click', event => event.preventDefault()));
-  await docs.click();
-  expect(events.some(event => event.event === 'docs_clicked')).toBe(false);
-  await page.getByRole('button', {name:'Allow analytics', exact:true}).click();
-  await docs.click();
-  await expect.poll(() => events.filter(event => event.event === 'docs_clicked').length).toBe(1);
+test('privacy page has accessible controls and respects saved refusal', async ({page}) => {
+  const {requests} = await configured(page);
+  await page.goto('/privacy/'); await loaded(page);
+  await expect(page.getByRole('heading',{level:1})).toHaveText('Privacy & analytics');
+  expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
+  await page.getByRole('button',{name:'No thanks',exact:true}).click();
+  await page.goto('/'); await loaded(page);
+  await expect(page.locator('.analytics-notice')).toBeHidden(); expect(requests).toEqual([]);
+});
+test('withdrawal in another tab unloads the active provider', async ({page,context}) => {
+  const first = await configured(page); await page.goto('/');
+  await page.getByRole('button',{name:'Allow analytics',exact:true}).click();
+  await expect.poll(()=>first.events.length).toBe(1);
+  const other = await context.newPage(); await configured(other); await other.goto('/privacy/');
+  await other.getByRole('button',{name:'Analytics preferences'}).click();
+  await Promise.all([page.waitForEvent('load'),other.getByRole('button',{name:'No thanks',exact:true}).click()]);
+  await loaded(page);
+  expect(await page.locator('body > vercel-analytics').count()).toBe(0);
+  expect(first.events.length).toBe(1);
 });

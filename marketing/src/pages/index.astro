@@ -1,4 +1,5 @@
 ---
+import AnalyticsConsent from "../components/AnalyticsConsent.astro";
 import Seo from "../components/Seo.astro";
 import ArrowIcon from "../components/ArrowIcon.astro";
 import AgentOverview from "../components/AgentOverview.astro";
@@ -11,13 +12,6 @@ import AgentOverview from "../components/AgentOverview.astro";
 // never promise setup speed,
 // security, or availability, and never present the decorative brand artwork
 // as a product screenshot.
-// Public ingestion token only; never use a PostHog personal API key here.
-const POSTHOG_KEY = import.meta.env.PUBLIC_POSTHOG_KEY || "";
-const PRIVACY_CONTACT = import.meta.env.PUBLIC_PRIVACY_CONTACT || "";
-if (POSTHOG_KEY && (!/^phc_[a-zA-Z0-9]+$/.test(POSTHOG_KEY) || !/^mailto:[^\s@]+@[^\s@]+\.[^\s@]+$/.test(PRIVACY_CONTACT))) {
-  throw new Error("Analytics requires a public PostHog project token and PUBLIC_PRIVACY_CONTACT mailto address.");
-}
-const ANALYTICS_HOSTS = "mono-agent.dev,www.mono-agent.dev";
 const SITE_URL = Astro.site!.origin;
 const GITHUB_URL = "https://github.com/robertsreberski/mono-agent";
 const DOCS_URL = "https://docs.mono-agent.dev/";
@@ -79,7 +73,7 @@ const jsonLd = {
 };
 ---
 <!doctype html>
-<html lang="en" data-posthog-key={POSTHOG_KEY} data-analytics-hosts={ANALYTICS_HOSTS}>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -90,7 +84,6 @@ const jsonLd = {
     <link rel="preload" href="/fonts/instrument-serif-italic.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="/styles.css" />
     <script is:inline type="module" src="/interactions.js"></script>
-    <script is:inline type="module" src="/analytics.js"></script>
 
     <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
   </head>
@@ -121,7 +114,7 @@ const jsonLd = {
     </header>
 
     <section class="analytics-notice" aria-label="Optional analytics" hidden>
-      <p><strong>Help us understand what’s useful.</strong> Allow usage analytics with PostHog? No replay or form tracking. <a href="/privacy/">Details</a></p>
+      <p><strong>Help us understand what’s useful.</strong> Allow basic traffic analytics with Vercel? No cookies or session replay. <a href="/privacy/">Details</a></p>
       <div><button type="button" data-consent="no">No thanks</button><button type="button" data-consent="yes">Allow analytics</button></div>
     </section>
     <main id="main">
@@ -459,5 +452,6 @@ mono-agent web run --loopback</code></pre>
       </div>
       <p class="analytics-status wrap" role="status" aria-live="polite"></p>
     </footer>
+    <AnalyticsConsent />
   </body>
 </html>
