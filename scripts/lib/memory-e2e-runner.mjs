@@ -599,10 +599,17 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
                 now = new Date(target);
                 return advanceMs;
               },
-              onRetry: ({ attempt, failureKind, nextAttemptAt, advanceMs }) => budget.events.push({
-                ...baseTag, stage: "capture_recovery", status: "scheduled", attempt,
-                failureKind, nextAttemptAt, advanceMs, durationMs: 0,
-              }),
+              onRetry: ({ attempt, failureKind, nextAttemptAt, advanceMs }) => {
+                const captureAttempt = budget.events.findLast((entry) => entry.groupId === baseTag.groupId
+                  && entry.arm === baseTag.arm && ["extraction", "reconciliation"].includes(entry.stage));
+                budget.events.push({
+                  ...baseTag, stage: "capture_recovery", status: "scheduled", attempt,
+                  failureKind,
+                  recoveryCause: captureAttempt?.status === "capture_timeout_settled"
+                    ? "settled_capture_timeout" : "model_output",
+                  nextAttemptAt, advanceMs, durationMs: 0,
+                });
+              },
               onReady: ({ attempt, priorFailures, status }) => budget.events.push({
                 ...baseTag, stage: "capture_recovery", status, attempt, priorFailures, durationMs: 0,
               }),

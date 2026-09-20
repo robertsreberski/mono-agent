@@ -134,12 +134,16 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
     expect(plan.perCall).toMatchObject({
       readerMaxTurns: 4, readerEstimatedInputTokens: 98_304, extractorEstimatedInputTokens: 8_192,
       reconciliationEstimatedInputTokens: 29_897, callTimeoutMs: 180_000,
-      readinessTimeoutMs: 5_880_000, captureModelOutputAttempts: 16,
+      captureTimeoutSettlementMs: 30_000, readinessTimeoutMs: 6_840_000,
+      captureModelOutputAttempts: 16,
     });
     expect(plan.locomo.captureRecovery).toEqual({
       policy: "native_persisted_exponential_v1", maxAttempts: 16, retryBaseMs: 60_000,
       retryMaxMs: 21_600_000, scheduleSource: "durable_pending_record_nextAttemptAt",
-      virtualClock: "advance_exactly_to_persisted_schedule", retryableFailure: "model_output_only",
+      virtualClock: "advance_exactly_to_persisted_schedule",
+      retryableFailure: "model_output_including_settled_capture_timeout",
+      timeoutPolicy: "settled_capture_runtime_only", timeoutSettlementMs: 30_000,
+      timeoutPayloadPolicy: "discard_late_payload_without_partial_write",
     });
     expect(plan.locomo.executionGate.largestReservedPromptAndOutput).toBe(98_816);
     expect(plan.locomo.ceilings.captureAdmissions).toBe(corpus.groups[0].source.turns.length);
@@ -207,10 +211,13 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
     const plan = {
       ...planned,
       workload: { ...planned.workload, questions: 1, trials: 1, historicalTurnsPerMemoryArm: 2 },
+      perCall: {
+        ...planned.perCall, callTimeoutMs: 10, captureTimeoutSettlementMs: 100, readinessTimeoutMs: 2_000,
+      },
     };
     const directory = await mkdtemp(join(tmpdir(), "memory-e2e-multiturn-")); dirs.push(directory);
     const modules = await productionModules();
-    let secondTurnExtractions = 0;
+    let secondTurnExtractions = 0; let timedCallSettled = false;
     const providerFactory = ({ source }) => {
       const providers = scriptedProviders({ source });
       const run = providers.extractor.run.bind(providers.extractor);
@@ -220,13 +227,22 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
           const second = prompt.includes("odd final 1");
           if (second) {
             secondTurnExtractions += 1;
-            if (secondTurnExtractions === 1) return {
-              text: "",
-              structuredResult: {
-                memories: [{ type: "note", text: "This candidate must not be partially written." }],
-                entities: [], relations: [],
-              },
-            };
+            if (secondTurnExtractions === 1) return await new Promise((resolve) => {
+              options.abortSignal.addEventListener("abort", () => setImmediate(() => {
+                timedCallSettled = true;
+                resolve({
+                  text: "",
+                  structuredResult: {
+                    memories: [{
+                      type: "note", text: "This late successful payload must never be committed.",
+                      salience: 0.8, isInsight: false, entityIds: [],
+                    }],
+                    entities: [], relations: [],
+                  },
+                });
+              }), { once: true });
+            });
+            expect(timedCallSettled).toBe(true);
           }
           const extracted = {
             memories: [{
@@ -240,22 +256,29 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
         }
         return await run(system, options);
       };
+      providers.reader.run = async () => ({ text: "Reader completed after native timeout recovery." });
       return providers;
     };
     const result = await runBenchmark({ corpus, plan, directory, modules, providerFactory, kind: "scripted" });
     expect(result.trials).toHaveLength(1);
-    expect(result.trials[0]).toMatchObject({ status: "completed", answer: "Scripted contract response; semantic correctness is not evaluated." });
+    expect(result.trials[0]).toMatchObject({ status: "completed", answer: "Reader completed after native timeout recovery." });
     expect(secondTurnExtractions).toBe(2);
     expect(result.events.filter((event) => event.stage === "admission" && event.status === "completed")).toHaveLength(2);
     expect(result.events.filter((event) => event.stage === "admission_to_ready" && event.status === "completed")).toHaveLength(2);
     expect(result.events.filter((event) => event.stage === "reader" && event.status === "completed")).toHaveLength(1);
+    expect(result.events).toContainEqual(expect.objectContaining({
+      stage: "extraction", status: "capture_timeout_settled", timeoutScope: "capture_call_local",
+      timeoutSettlement: "fulfilled_discarded", timeoutUsage: "unknown", latePayloadAccepted: false,
+    }));
+    expect(result.events).toContainEqual(expect.objectContaining({
+      stage: "capture_recovery", status: "scheduled", recoveryCause: "settled_capture_timeout",
+    }));
     expect(result.summary.captureRecovery).toEqual({
-      firstAttemptSuccess: 1, scheduled: 1, recoveredSuccess: 1, exhausted: 0,
+      firstAttemptSuccess: 1, scheduled: 1, settledTimeoutScheduled: 1, recoveredSuccess: 1, exhausted: 0,
     });
     expect(result.capture.filter((entry) => entry.stage === "inventory")).toHaveLength(2);
     expect(result.capture.find((entry) => entry.stage === "inventory" && entry.turnId === selected.source.turns[1].id)?.records)
-      .not.toEqual(expect.arrayContaining([expect.objectContaining({ text: "This candidate must not be partially written." })]));
-    expect(result.trials[0].tools.some((entry) => entry.phase === "result" && entry.state === "success")).toBe(true);
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ text: "This late successful payload must never be committed." })]));
   });
 
   it("exports a four-way human rubric with blinded arm labels and separate answerability/image flags", () => {

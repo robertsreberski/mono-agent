@@ -139,8 +139,8 @@ downloads or vendors it. Keep the CC BY-NC 4.0 corpus in an owner-only ignored
 directory. The adapter sends neither references, evidence annotations, images,
 summaries, observations, nor unselected conversations to a provider.
 
-Protocol `locomo-adjacent-exchanges-v3-native-capture-recovery` projects each
-session into ordered, non-overlapping adjacent pairs of source utterances; a final odd utterance stands
+Protocol `locomo-adjacent-exchanges-v4-settled-capture-timeout-recovery` projects
+each session into ordered, non-overlapping adjacent pairs of source utterances; a final odd utterance stands
 alone. Pairing uses only source order, never questions or answers. Speaker and
 text bytes are preserved without trimming, both participants remain quoted
 humans, and a claim-free synthetic acknowledgement completes each harness turn.
@@ -248,10 +248,14 @@ work; and strict health/vector/canonical/outbox state. Empty valid extraction ca
 be ready without capturing a useful fact. For LoCoMo only, `model_output` follows
 the existing durable intake's 16-attempt policy: the evaluator advances its virtual
 clock to each record's actual persisted `nextAttemptAt`, while every provider call
-keeps its real timeout and cancellation. First-attempt and recovered successes,
-scheduled attempts and exhaustion are separate artifact events. Provider/auth,
-quota and processing failures do not take this recovery path. Persistent malformed
-output is `capture_not_ready`, never successful empty memory. Fresh semantic stores
+keeps its real timeout and cancellation. A capture call that reaches its local
+180-second deadline can enter that same native schedule only after the abort reaches
+the actual runtime and the original promise settles within a separate 30-second
+ceiling. Any late payload is discarded and usage remains unknown. Unknown settlement,
+global cancellation, reader timeout, auth/quota, generic provider, compaction and
+budget failures remain terminal; calls never overlap. First-attempt and recovered
+successes, timeout causes, scheduled attempts and exhaustion are separate artifact
+events. Persistent malformed output is `capture_not_ready`, never successful empty memory. Fresh semantic stores
 initialize an **empty** managed generation before replay so strict health can
 verify them; captured data is never rebuilt to conceal capture/index loss.
 

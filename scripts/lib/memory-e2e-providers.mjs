@@ -157,6 +157,78 @@ export function usageOf(value) {
   };
 }
 
+function settledCaptureTimeoutRecovery(plan, stage) {
+  return ["extraction", "reconciliation"].includes(stage)
+    && plan.locomo?.captureRecovery?.timeoutPolicy === "settled_capture_runtime_only"
+    && Number.isSafeInteger(plan.perCall.captureTimeoutSettlementMs)
+    && plan.perCall.captureTimeoutSettlementMs > 0;
+}
+
+async function waitForCaptureRuntimeSettlement(runtimePromise, {
+  budget, signal, timeoutSignal, callerSignal, settlementTimeoutMs, event, compactionObserved,
+}) {
+  const tracked = budget.track(runtimePromise);
+  try {
+    return await bounded(tracked, { signal, code: "provider_timeout_or_cancelled" });
+  } catch (error) {
+    if (!signal.aborted) throw error;
+    const localTimeout = timeoutSignal.aborted
+      && !budget.controller.signal.aborted && callerSignal?.aborted !== true;
+    if (!localTimeout) {
+      budget.stopAdmission();
+      if (!budget.controller.signal.aborted) budget.controller.abort(new BenchmarkError("provider_timeout_or_cancelled"));
+      throw new BenchmarkError("provider_timeout_or_cancelled");
+    }
+    let settlement;
+    try {
+      [settlement] = await bounded(Promise.allSettled([tracked]), {
+        timeoutMs: settlementTimeoutMs,
+        code: "provider_settlement_unknown",
+      });
+    } catch {
+      event.timeoutScope = "capture_call_local";
+      event.timeoutSettlement = "unknown";
+      event.timeoutUsage = "unknown";
+      event.latePayloadAccepted = false;
+      budget.stopAdmission();
+      budget.controller.abort(new BenchmarkError("provider_settlement_unknown"));
+      throw new BenchmarkError("provider_settlement_unknown");
+    }
+    event.timeoutScope = "capture_call_local";
+    event.timeoutSettlement = settlement.status === "fulfilled" ? "fulfilled_discarded" : "rejected";
+    event.timeoutUsage = "unknown";
+    event.latePayloadAccepted = false;
+    if (compactionObserved()) throw new BenchmarkError("unexpected_compaction");
+    if (settlement.status === "fulfilled") {
+      const stopReason = settlement.value?.diagnostics?.pi_stop_reason;
+      if (["length", "max_tokens"].includes(stopReason)) throw new BenchmarkError("output_limit_reached");
+      if (settlement.value?.diagnostics?.max_turns_hit === true) {
+        throw new BenchmarkError("capture_step_budget_exhausted", { failureKind: "budget_exceeded" });
+      }
+      const failureKind = canonicalFailureKind(settlement.value?.failureKind);
+      if (failureKind !== null) event.providerReportedFailureKind = failureKind;
+      if (settlement.value?.failureKind || settlement.value?.error) {
+        if (failureKind !== null) {
+          event.failureKind = failureKind;
+          if (isFatalFailureKind(failureKind)) budget.stopProviders("provider_failed", failureKind);
+        }
+        throw failureKind === null
+          ? new BenchmarkError("provider_failed")
+          : new BenchmarkError("provider_failed", { failureKind });
+      }
+    } else {
+      const failureKind = canonicalFailureKind(settlement.reason?.failureKind);
+      if (failureKind !== null) {
+        event.failureKind = failureKind;
+        event.providerReportedFailureKind = failureKind;
+        if (isFatalFailureKind(failureKind)) budget.stopProviders("provider_failed", failureKind);
+        throw new BenchmarkError("provider_failed", { failureKind });
+      }
+    }
+    throw new BenchmarkError("capture_timeout_settled");
+  }
+}
+
 export function meteredRuntime(runtime, { budget, stage, tag, clock = performance.now.bind(performance) }) {
   return {
     async run(system, options) {
@@ -187,6 +259,7 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
       const started = clock();
       const timeout = AbortSignal.timeout(budget.plan.perCall.callTimeoutMs);
       const signal = AbortSignal.any([options.abortSignal, budget.controller.signal, timeout].filter(Boolean));
+      const recoverSettledCaptureTimeout = settledCaptureTimeoutRecovery(budget.plan, stage);
       const event = {
         ...tag,
         stage,
@@ -215,14 +288,23 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
       let compacted = false;
       try {
         if (signal.aborted) throw new BenchmarkError("provider_timeout_or_cancelled");
-        const result = await budget.wait(runtime.run(system, {
+        const runtimePromise = Promise.resolve(runtime.run(system, {
           ...options, ...cap, abortSignal: signal,
           onEvent: (value) => {
             if (/compact/iu.test(String(value?.type ?? ""))) compacted = true;
             if (value?.type === "context_usage") event.observedContext.push({ ...usageOf(value.tokens), contextWindow: finite(value.contextWindow), totalContextTokens: finite(value.tokens?.total), providerCostUsd: finite(value.providerCostUsd) });
             options.onEvent?.(value);
           },
-        }), { signal, timeoutMs: budget.plan.perCall.callTimeoutMs, code: "provider_timeout_or_cancelled" });
+        }));
+        const result = recoverSettledCaptureTimeout
+          ? await waitForCaptureRuntimeSettlement(runtimePromise, {
+              budget, signal, timeoutSignal: timeout, callerSignal: options.abortSignal,
+              settlementTimeoutMs: budget.plan.perCall.captureTimeoutSettlementMs, event,
+              compactionObserved: () => compacted,
+            })
+          : await budget.wait(runtimePromise, {
+              signal, timeoutMs: budget.plan.perCall.callTimeoutMs, code: "provider_timeout_or_cancelled",
+            });
         event.usage = usageOf(result.usage);
         event.runtimeReportedCostUsd = finite(typeof result.cost === "number" ? result.cost : result.cost?.totalCost);
         // Runtime cost may be estimated. Only explicitly provider-labelled costs enter this field.
@@ -272,7 +354,15 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
         event.status = "completed";
         return result;
       } catch (error) {
-        const code = signal.aborted ? "provider_timeout_or_cancelled" : error instanceof BenchmarkError ? error.code : "provider_failed";
+        const explicitCode = error instanceof BenchmarkError ? error.code : null;
+        const timeoutSettlementCodes = [
+          "capture_timeout_settled", "provider_settlement_unknown", "unexpected_compaction",
+          "output_limit_reached", "capture_step_budget_exhausted", "provider_failed",
+        ];
+        const preserveSettlementCode = event.timeoutScope === "capture_call_local"
+          && timeoutSettlementCodes.includes(explicitCode);
+        const code = preserveSettlementCode
+          ? explicitCode : signal.aborted ? "provider_timeout_or_cancelled" : explicitCode ?? "provider_failed";
         // Prefer a structured kind carried by the thrown failure; otherwise keep
         // the result-derived kind. Anything untrusted stays generic.
         const failureKind = canonicalFailureKind(error?.failureKind) ?? event.failureKind;
@@ -308,11 +398,24 @@ export function captureLlm(runtime, { model, workspace, sessionsRoot, budget, ta
     id: `agent-host:${model.reference}`,
     async complete(prompt, options = {}) {
       const stage = options.label === "capture:reconcile-batch" ? "reconciliation" : "extraction";
-      const result = await meteredRuntime(runtime, { budget, stage, tag }).run(MEMORY_SYSTEM, {
-        model, messages: [{ role: "user", content: prompt }], abortSignal: options.abortSignal ?? new AbortController().signal,
-        cwd: workspace, piSessionsRoot: sessionsRoot, allowedTools: [], disallowedTools: [], mcpServers: {},
-        ...(options.outputSchema === undefined ? {} : { outputSchema: options.outputSchema }),
-      });
+      let result;
+      try {
+        result = await meteredRuntime(runtime, { budget, stage, tag }).run(MEMORY_SYSTEM, {
+          model, messages: [{ role: "user", content: prompt }], abortSignal: options.abortSignal ?? new AbortController().signal,
+          cwd: workspace, piSessionsRoot: sessionsRoot, allowedTools: [], disallowedTools: [], mcpServers: {},
+          ...(options.outputSchema === undefined ? {} : { outputSchema: options.outputSchema }),
+        });
+      } catch (error) {
+        if (error instanceof BenchmarkError && error.code === "capture_timeout_settled"
+          && settledCaptureTimeoutRecovery(budget.plan, stage)) {
+          // Strict production capture owns attempt accounting. An isolated call
+          // that timed out and then settled contributes no accepted payload; an
+          // invalid completion sends the unchanged pending record through its
+          // native model_output retry schedule.
+          return "";
+        }
+        throw error;
+      }
       const output = captureCompletionText(result, options);
       capture?.({ ...tag, stage, prompt, output });
       return output;

@@ -39,7 +39,7 @@ const COMPLETED_TURN_CAPTURE_TEXT_MAX_BYTES = 512 * 1024;
  * source utterances (the final odd utterance stands alone). Pair boundaries use
  * only source order: never questions, references, evidence ids, or outcomes.
  */
-export const LOCOMO_ADAPTER_PROTOCOL = "locomo-adjacent-exchanges-v3-native-capture-recovery";
+export const LOCOMO_ADAPTER_PROTOCOL = "locomo-adjacent-exchanges-v4-settled-capture-timeout-recovery";
 export const LOCOMO_EXCHANGE_MAX_ENTRIES = 2;
 export const LOCOMO_EXCHANGE_MAX_USER_BYTES = 8 * 1024;
 export const LOCOMO_READER_PROMPT = Object.freeze({
@@ -59,7 +59,9 @@ const CAPTURE_RETRY_BASE_MS = 60_000;
 const CAPTURE_RETRY_MAX_MS = 6 * 60 * 60_000;
 const CAPTURE_RETRY_POLICY = "native_persisted_exponential_v1";
 const CAPTURE_CALL_TIMEOUT_MS = 180_000;
-const CAPTURE_READINESS_TIMEOUT_MS = CAPTURE_MODEL_OUTPUT_ATTEMPTS * 2 * CAPTURE_CALL_TIMEOUT_MS + 120_000;
+const CAPTURE_TIMEOUT_SETTLEMENT_MS = 30_000;
+const CAPTURE_READINESS_TIMEOUT_MS = CAPTURE_MODEL_OUTPUT_ATTEMPTS * 2
+  * (CAPTURE_CALL_TIMEOUT_MS + CAPTURE_TIMEOUT_SETTLEMENT_MS) + 120_000;
 const READER_MAX_TURNS = 4;
 // Covers the larger frozen confirmation history after harness timestamp/message
 // framing (offline measured maximum 84,811 tokens) while remaining well inside
@@ -433,6 +435,7 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
       reconciliationEstimatedInputTokens: LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS,
       readerHistoryHeadroomMessages: 8,
       callTimeoutMs: CAPTURE_CALL_TIMEOUT_MS,
+      captureTimeoutSettlementMs: CAPTURE_TIMEOUT_SETTLEMENT_MS,
       readinessTimeoutMs: CAPTURE_READINESS_TIMEOUT_MS,
       captureModelOutputAttempts: CAPTURE_MODEL_OUTPUT_ATTEMPTS,
     },
@@ -451,7 +454,10 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
     retryMaxMs: CAPTURE_RETRY_MAX_MS,
     scheduleSource: "durable_pending_record_nextAttemptAt",
     virtualClock: "advance_exactly_to_persisted_schedule",
-    retryableFailure: "model_output_only",
+    retryableFailure: "model_output_including_settled_capture_timeout",
+    timeoutPolicy: "settled_capture_runtime_only",
+    timeoutSettlementMs: CAPTURE_TIMEOUT_SETTLEMENT_MS,
+    timeoutPayloadPolicy: "discard_late_payload_without_partial_write",
   });
   const protocolIdentity = digest({
     adapter: LOCOMO_ADAPTER_PROTOCOL,

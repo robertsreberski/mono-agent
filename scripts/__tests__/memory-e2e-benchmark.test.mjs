@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, armsFor, loadCorpus, makePlan, serializableProfile, sourceOnly, contextFor, validateCorpus } from "../lib/memory-e2e-dataset.mjs";
-import { Budget, canonicalFailureKind, captureLlm, failureKindOf, isFatalFailureKind, meteredEmbeddings, meteredRuntime, realProviders, scriptedProviders, usageOf } from "../lib/memory-e2e-providers.mjs";
+import { Budget, BenchmarkError, canonicalFailureKind, captureLlm, failureKindOf, isFatalFailureKind, meteredEmbeddings, meteredRuntime, realProviders, scriptedProviders, usageOf } from "../lib/memory-e2e-providers.mjs";
 import { percentiles, ratio, lexicalDiagnostic, safeArtifact, ownedParent, summarize } from "../lib/memory-e2e-report.mjs";
 import { automaticRecallObservation, awaitReady, captureFailureKindFor, cleanupTrial, persistedCaptureRetrySchedule, readySnapshot } from "../lib/memory-e2e-runner.mjs";
 import { prepareRealBuild, verifyRealBuild, BUILD_POLICY } from "../lib/memory-e2e-build.mjs";
@@ -372,6 +372,94 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(budget.pending.has(raw)).toBe(true);
     expect(budget.controller.signal.aborted).toBe(true);
     finish({ text: "late answer" }); await budget.settle(100);
+  });
+  it("keeps a non-settling capture timeout terminal and admits no second call", async () => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 10;
+    const run = vi.fn(() => new Promise(() => {}));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toThrow("provider_settlement_unknown");
+    expect(run).toHaveBeenCalledOnce();
+    expect(budget.controller.signal.aborted).toBe(true);
+    expect(budget.events[0]).toMatchObject({
+      status: "provider_settlement_unknown", timeoutScope: "capture_call_local",
+      timeoutSettlement: "unknown", timeoutUsage: "unknown", latePayloadAccepted: false,
+    });
+    await expect(metered.run("s", { messages: [] })).rejects.toThrow("provider_admission_stopped");
+    expect(run).toHaveBeenCalledOnce();
+  });
+  it("keeps global cancellation terminal even when a capture runtime settles after abort", async () => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 1000;
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = vi.fn((_system, options) => new Promise((resolve) => {
+      options.abortSignal.addEventListener("abort", () => resolve({ text: "late global result" }), { once: true });
+    }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    const pending = metered.run("s", { messages: [] });
+    await new Promise((resolve) => setImmediate(resolve));
+    budget.controller.abort(new BenchmarkError("runtime_budget_exhausted"));
+    await expect(pending).rejects.toThrow("provider_timeout_or_cancelled");
+    expect(budget.admissionStopped).toBe(true);
+    expect(budget.events[0]).not.toHaveProperty("timeoutSettlement");
+    await expect(metered.run("s", { messages: [] })).rejects.toThrow("provider_admission_stopped");
+    expect(run).toHaveBeenCalledOnce();
+    await budget.settle(100);
+  });
+  it.each(["provider_auth", "usage_limit"])("keeps capture %s terminal under timeout-recovery policy", async (failureKind) => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = vi.fn(async () => ({ text: "", error: "not retained", failureKind }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toMatchObject({ code: "provider_failed", failureKind });
+    expect(budget.providerStop).toMatchObject({ code: "provider_failed", failureKind });
+    await expect(metered.run("s", { messages: [] })).rejects.toThrow("provider_admission_stopped");
+    expect(run).toHaveBeenCalledOnce();
+  });
+  it("keeps a provider-auth result that settles after capture timeout sticky", async () => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = vi.fn((_system, options) => new Promise((resolve) => {
+      options.abortSignal.addEventListener("abort", () => resolve({
+        text: "", error: "not retained", failureKind: "provider_auth",
+      }), { once: true });
+    }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toMatchObject({ failureKind: "provider_auth" });
+    expect(budget.providerStop).toMatchObject({ failureKind: "provider_auth" });
+    expect(budget.events[0]).toMatchObject({
+      timeoutSettlement: "fulfilled_discarded", providerReportedFailureKind: "provider_auth",
+      latePayloadAccepted: false,
+    });
+    await expect(metered.run("s", { messages: [] })).rejects.toThrow("provider_admission_stopped");
+    expect(run).toHaveBeenCalledOnce();
+  });
+  it("keeps compaction observed while a capture timeout settles terminal", async () => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = vi.fn((_system, options) => new Promise((resolve) => {
+      options.abortSignal.addEventListener("abort", () => {
+        options.onEvent({ type: "compaction" });
+        resolve({ text: "late compacted result" });
+      }, { once: true });
+    }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toThrow("unexpected_compaction");
+    expect(budget.providerStop).toBeNull();
+    expect(budget.events[0]).toMatchObject({
+      status: "unexpected_compaction", timeoutSettlement: "fulfilled_discarded",
+      latePayloadAccepted: false,
+    });
+    expect(budget.events[0].status).not.toBe("capture_timeout_settled");
+    expect(run).toHaveBeenCalledOnce();
   });
   it("settlement follows promises created by a capture continuation", async () => {
     const { budget } = await setup(); let finishCapture, finishEmbedding;

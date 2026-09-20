@@ -145,6 +145,8 @@ export function summarize(trials, events, kind, capture = []) {
     captureRecovery: {
       firstAttemptSuccess: events.filter((event) => event.stage === "capture_recovery" && event.status === "first_attempt_success").length,
       scheduled: events.filter((event) => event.stage === "capture_recovery" && event.status === "scheduled").length,
+      settledTimeoutScheduled: events.filter((event) => event.stage === "capture_recovery"
+        && event.status === "scheduled" && event.recoveryCause === "settled_capture_timeout").length,
       recoveredSuccess: events.filter((event) => event.stage === "capture_recovery" && event.status === "recovered_success").length,
       exhausted: events.filter((event) => event.stage === "capture_recovery" && event.status === "exhausted").length,
     },
