@@ -58,7 +58,9 @@ test('accepted events omit sensitive URLs, identifiers and form data; withdrawal
   await expect.poll(() => events.some(e => e.event === 'install_command_copied')).toBe(true);
   const view = events.find(e => e.event === '$pageview');
   expect(view.api_key).toBe('phc_test');
-  expect(view.distinct_id).toMatch(/^[a-f0-9-]{36}$/);
+  expect(view.distinct_id).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-7[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+  const sessionStart = parseInt(view.distinct_id.slice(0,8) + view.distinct_id.slice(9,13),16);
+  expect(Math.abs(Date.now() - sessionStart)).toBeLessThan(10000);
   expect(view.properties.$process_person_profile).toBe(false);
   expect(view.properties.$geoip_disable).toBe(true);
   expect(view.properties.utm_source).toBe('github');
@@ -103,4 +105,17 @@ test('privacy page remains accessible without analytics', async ({page}) => {
   await page.goto('/privacy/');
   await expect(page.getByRole('heading', {level:1})).toHaveText('Privacy & analytics');
   expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
+});
+
+test('old or expired session identifiers are replaced before reporting', async ({page}) => {
+  const events = await configured(page);
+  await page.addInitScript(() => {
+    localStorage.setItem('mono-analytics-consent-v1',JSON.stringify({choice:'yes',at:Date.now()}));
+    sessionStorage.setItem('mono-analytics-session-v1',JSON.stringify({id:'00000000-0000-7000-8000-000000000000',at:Date.now()}));
+  });
+  await page.goto('/');
+  await expect.poll(() => events.some(e=>e.event==='$pageview')).toBe(true);
+  const id=events.find(e=>e.event==='$pageview').properties.$session_id;
+  expect(id).not.toBe('00000000-0000-7000-8000-000000000000');
+  expect(Date.now()-parseInt(id.slice(0,8)+id.slice(9,13),16)).toBeLessThan(10000);
 });

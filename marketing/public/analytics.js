@@ -25,15 +25,19 @@ function preference() {
   } catch { return null; } // Unavailable storage never grants consent.
 }
 function sessionId() {
-  if (session && Date.now() - session.at < 1800000) {
-    session.at = Date.now();
-  } else {
+  const now = Date.now();
+  if (!session) {
     try { session = JSON.parse(sessionStorage.getItem(sessionKey) || 'null'); } catch { session = null; }
-    if (!session || typeof session.id !== 'string' || !/^[a-f0-9-]{36}$/.test(session.id) || Date.now() - session.at >= 1800000) {
-      session = { id: crypto.randomUUID(), at: Date.now() };
-    }
-    session.at = Date.now();
   }
+  // PostHog session aggregation requires UUIDv7 and a maximum 24-hour span.
+  const valid = session && /^[a-f0-9]{8}-[a-f0-9]{4}-7[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(session.id);
+  const start = valid ? Number.parseInt(session.id.slice(0, 8) + session.id.slice(9, 13), 16) : 0;
+  if (!valid || !Number.isFinite(session.at) || now < session.at || now - session.at >= 1800000 || now - start >= 86400000 || start > now) {
+    const random = crypto.randomUUID();
+    const time = now.toString(16).padStart(12, '0');
+    session = { id: `${time.slice(0, 8)}-${time.slice(8)}-7${random.slice(15, 18)}-${random.slice(19)}`, at: now };
+  }
+  session.at = now;
   try { sessionStorage.setItem(sessionKey, JSON.stringify(session)); } catch { /* In-memory only. */ }
   return session.id;
 }
@@ -62,7 +66,7 @@ function begin() {
   if (viewed || !consent || privacySignal) return;
   viewed = true;
   const acquisition = {};
-  try { if (document.referrer) acquisition.referrer_host = new URL(document.referrer).hostname; } catch { /* No valid source. */ }
+  try { if (document.referrer) { const url = new URL(document.referrer); acquisition.$referring_domain = url.hostname; acquisition.$referrer = url.origin; } } catch { /* No valid source. */ }
   const params = new URLSearchParams(location.search);
   for (const field of ['utm_source', 'utm_medium', 'utm_campaign']) {
     const value = params.get(field);

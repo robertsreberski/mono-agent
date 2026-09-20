@@ -21,7 +21,7 @@ const configured = Boolean(import.meta.env.PUBLIC_POSTHOG_KEY);
       {!configured && <p><strong>Optional analytics are not configured in this build. No PostHog events are sent.</strong></p>}
       <h2>You choose whether to share analytics</h2>
       <p>When configured, optional analytics use PostHog’s EU ingestion service. Nothing is sent to PostHog before you choose “Allow analytics”. “No thanks” leaves analytics off. Global Privacy Control and Do Not Track signals also keep it off.</p>
-      <p>Use “Analytics preferences” in the landing-page footer to change your choice. Withdrawal stops future events; it does not erase events already received. Analytics choices are stored locally for up to 180 days. A random, per-tab session identifier is created only after consent and renewed after 30 minutes of inactivity. It is not an account or a cross-device identity.</p>
+      <p>Use “Analytics preferences” in the landing-page footer to change your choice. Withdrawal stops future events; it does not erase events already received. Analytics choices are stored locally for up to 180 days. A random, per-tab session identifier is created only after consent and renewed after 30 minutes of inactivity or 24 hours total. It is not an account or a cross-device identity.</p>
       <h2>What is measured</h2>
       <ul>
         <li>Page views and page departure, broad mobile/desktop viewport category, and which main sections were viewed.</li>
