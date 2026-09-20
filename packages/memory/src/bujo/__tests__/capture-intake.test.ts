@@ -1092,6 +1092,74 @@ describe("BujoMemoryStore completed-turn integration", () => {
     },
   );
 
+  it("persists independent attributed facts together and keeps duplicate admission model-free after restart", async () => {
+    const memoryRoot = root();
+    const facts = [
+      "The user reports that Project Atlas's production deployment is scheduled for 20 November 2026.",
+      "The user reports that Project Atlas's approved downtime budget is 30 minutes.",
+    ];
+    let initialLlmCalls = 0;
+    const input = turn({
+      runId: "independent-attributed-restart",
+      summary: "The user supplied two independent Project Atlas facts.",
+      captureText: "User: retain the Project Atlas deployment schedule and downtime budget. Assistant: acknowledged.",
+    });
+    const first = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: {
+        id: "independent-attributed-facts",
+        complete: async () => {
+          initialLlmCalls += 1;
+          return JSON.stringify({
+            memories: facts.map((text) => ({ type: "note", text, salience: 0.8, isInsight: false, entityIds: [] })),
+            entities: [],
+            relations: [],
+          });
+        },
+      },
+      clock: () => FIXED,
+    });
+
+    const admitted = await first.persistCompletedTurn(input);
+    await first.flush();
+    const dailyPath = join(memoryRoot, "daily", "2026-07-12.md");
+    const initiallyStored = parseDailyFile(readFileSync(dailyPath, "utf8")).bullets;
+    expect(admitted.admissionStatus).toBe("admitted");
+    expect(initialLlmCalls).toBe(1);
+    expect(initiallyStored.map((bullet) => bullet.text).sort()).toEqual([...facts].sort());
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({ pending: 0, resolved: 1 });
+    await first.close();
+
+    let restartLlmCalls = 0;
+    const restarted = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: {
+        id: "must-not-run-for-duplicate",
+        complete: async () => {
+          restartLlmCalls += 1;
+          throw new Error("duplicate completed turn must not call the model");
+        },
+      },
+      clock: () => FIXED,
+    });
+    const duplicate = await restarted.persistCompletedTurn(input);
+    await restarted.flush();
+
+    const afterRestart = parseDailyFile(readFileSync(dailyPath, "utf8")).bullets;
+    expect(duplicate).toMatchObject({ id: admitted.id, admissionStatus: "duplicate", bytesWritten: 0 });
+    expect(restartLlmCalls).toBe(0);
+    expect(afterRestart.map((bullet) => bullet.id)).toEqual(initiallyStored.map((bullet) => bullet.id));
+    expect(afterRestart.map((bullet) => bullet.text).sort()).toEqual([...facts].sort());
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({ pending: 0, resolved: 1 });
+    await restarted.close();
+  });
+
   it("publishes admission immediately while coalescing ordinary transition snapshots", async () => {
     const memoryRoot = root();
     const store = createBujoMemoryStore({ root: memoryRoot, clock: () => FIXED });

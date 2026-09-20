@@ -10,6 +10,7 @@ import { appendBullet } from "../daily.js";
 import { MAX_MODEL_JSON_CHARS } from "../json.js";
 import { reconcileBatch as reconcileBatchImpl } from "../reconcile.js";
 import { assertCanonicalGraphRepairBaseParity } from "../rebuild.js";
+import type { LlmCompleteOptions } from "../llm.js";
 import type { Bullet, CandidateMemory } from "../types.js";
 import { fakeEmbeddings } from "./helpers.js";
 
@@ -19,6 +20,8 @@ const reconcileBatch: typeof reconcileBatchImpl = async (candidates, deps) => aw
   ...deps,
   canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
 });
+
+const decisions = (values: readonly unknown[]): string => JSON.stringify(values);
 
 const validPlan = {
   memories: [{
@@ -32,6 +35,14 @@ const validPlan = {
   relations: [],
 };
 
+function planWithMemoryTexts(texts: readonly string[]): string {
+  return JSON.stringify({
+    memories: texts.map((text) => ({ type: "note", text, salience: 0.8, isInsight: false, entityIds: [] })),
+    entities: [],
+    relations: [],
+  });
+}
+
 describe("strict completed-turn extraction", () => {
   it("accepts exact empty arrays as an explicit no-op", async () => {
     await expect(extractCapturePlanStrict("completed turn", {
@@ -40,10 +51,14 @@ describe("strict completed-turn extraction", () => {
     })).resolves.toEqual({ candidates: [], entities: [], relations: [] });
   });
 
-  it("accepts one fully valid exact plan without normalizing fields", async () => {
+  it("accepts one fully valid exact plan and supplies its bounded schema", async () => {
+    let options: LlmCompleteOptions | undefined;
     await expect(extractCapturePlanStrict("completed turn", {
       id: "valid",
-      complete: async () => JSON.stringify(validPlan),
+      complete: async (_prompt, received) => {
+        options = received;
+        return JSON.stringify(validPlan);
+      },
     })).resolves.toEqual({
       candidates: [{
         type: "note",
@@ -55,6 +70,44 @@ describe("strict completed-turn extraction", () => {
       entities: validPlan.entities,
       relations: [],
     });
+    expect(options?.outputSchema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: ["memories", "entities", "relations"],
+      properties: {
+        memories: {
+          type: "array",
+          maxItems: MAX_CAPTURE_MEMORIES,
+          items: {
+            additionalProperties: false,
+            properties: { text: { type: "string", maxLength: 160 } },
+          },
+        },
+        entities: { type: "array", maxItems: 16 },
+        relations: { type: "array", maxItems: 16 },
+      },
+    });
+  });
+
+  it("counts astral Unicode text by code point at the 160-point boundary", async () => {
+    const boundary = "🧠".repeat(160);
+    await expect(extractCapturePlanStrict("completed turn", {
+      id: "unicode-boundary",
+      complete: async () => JSON.stringify({
+        memories: [{ ...validPlan.memories[0], text: boundary, entityIds: [] }],
+        entities: [],
+        relations: [],
+      }),
+    })).resolves.toMatchObject({ candidates: [{ text: boundary }] });
+
+    await expect(extractCapturePlanStrict("completed turn", {
+      id: "unicode-over-boundary",
+      complete: async () => JSON.stringify({
+        memories: [{ ...validPlan.memories[0], text: `${boundary}🧠`, entityIds: [] }],
+        entities: [],
+        relations: [],
+      }),
+    })).rejects.toMatchObject({ name: "MemoryModelOutputError" });
   });
 
   it.each([
@@ -133,6 +186,63 @@ describe("strict completed-turn extraction", () => {
     expect(extractionPrompt).toContain("Do not emit duplicate JSON object keys");
   });
 
+  it("accepts independent attributed facts that share a speaker and project prefix", async () => {
+    const texts = [
+      "The user reports that Project Atlas's production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris.",
+      "The user reports that Project Atlas's approved downtime budget is 30 minutes.",
+      "The user reports that Priya owns Project Atlas's database cutover.",
+      "The user reports that Mateo owns Project Atlas's rollback checklist.",
+      "The user reports that Project Atlas's rollback policy uses failed writes above 3% or lag above 60 seconds.",
+      "Priya reports that Project Atlas uses the blue deployment lane.",
+      "Mateo reports that Project Atlas uses the blue deployment lane.",
+    ];
+
+    await expect(extractCapturePlanStrict("completed turn", {
+      id: "independent-attributed-facts",
+      complete: async () => planWithMemoryTexts(texts),
+    })).resolves.toMatchObject({ candidates: texts.map((text) => ({ text })) });
+  });
+
+  it("does not newly reject independent subjects in the same attributed sentence frame", async () => {
+    const texts = [
+      "The user reports that Priya reviews every production data migration before the weekly deployment.",
+      "The user reports that Mateo reviews every production data migration before the weekly deployment.",
+    ];
+
+    await expect(extractCapturePlanStrict("completed turn", {
+      id: "independent-attributed-subjects",
+      complete: async () => planWithMemoryTexts(texts),
+    })).resolves.toMatchObject({ candidates: texts.map((text) => ({ text })) });
+  });
+
+  it.each([
+    [
+      "competing values",
+      "The user reports that Morgan prefers tea for the weekly review.",
+      "The user reports that Morgan prefers coffee for the weekly review.",
+    ],
+    [
+      "competing dates",
+      "The user reports that Project Atlas starts on 20 November 2026.",
+      "The user reports that Project Atlas starts on 21 November 2026.",
+    ],
+    [
+      "a negated variant",
+      "The user reports that Project Atlas is approved for production.",
+      "The user reports that Project Atlas is not approved for production.",
+    ],
+    [
+      "a near-duplicate extension",
+      "The user reports that Project Atlas uses the blue deployment lane.",
+      "The user reports that Project Atlas uses the blue deployment lane today.",
+    ],
+  ] as const)("rejects attributed %s as one ambiguous batch", async (_label, left, right) => {
+    await expect(extractCapturePlanStrict("completed turn", {
+      id: "ambiguous-attributed-facts",
+      complete: async () => planWithMemoryTexts([left, right]),
+    })).rejects.toMatchObject({ name: "MemoryModelOutputError" });
+  });
+
   it.each([
     ["prose wrapper", `result: ${JSON.stringify(validPlan)}`],
     ["unterminated JSON fence", `\`\`\`json\n${JSON.stringify(validPlan)}`],
@@ -188,20 +298,20 @@ describe("strict completed-turn reconciliation", () => {
   it.each([
     ["malformed JSON", "not json"],
     ["duplicate decision key", '[{"index":0,"index":0,"action":"noop","targetId":"TARGET"}]'],
-    ["missing decision", "[]"],
-    ["duplicate index", JSON.stringify([
+    ["missing decision", decisions([])],
+    ["duplicate index", decisions([
       { index: 0, action: "noop", targetId: "TARGET" },
       { index: 0, action: "noop", targetId: "TARGET" },
     ])],
-    ["unknown action", JSON.stringify([{ index: 0, action: "merge", targetId: "TARGET" }])],
-    ["unknown target", JSON.stringify([{ index: 0, action: "noop", targetId: "OTHER" }])],
-    ["add with target", JSON.stringify([{ index: 0, action: "add", targetId: "TARGET" }])],
-    ["noop without target", JSON.stringify([{ index: 0, action: "noop" }])],
-    ["noop with text", JSON.stringify([{ index: 0, action: "noop", targetId: "TARGET", text: "duplicate" }])],
-    ["unexpected field", JSON.stringify([{ index: 0, action: "noop", targetId: "TARGET", confidence: 1 }])],
-    ["partial update", JSON.stringify([{ index: 0, action: "update", targetId: "TARGET" }])],
-    ["control replacement", JSON.stringify([{ index: 0, action: "update", targetId: "TARGET", text: "bad\u0001text" }])],
-    ["bidi replacement", JSON.stringify([{ index: 0, action: "update", targetId: "TARGET", text: "bad\u202etext" }])],
+    ["unknown action", decisions([{ index: 0, action: "merge", targetId: "TARGET" }])],
+    ["unknown target", decisions([{ index: 0, action: "noop", targetId: "OTHER" }])],
+    ["add with target", decisions([{ index: 0, action: "add", targetId: "TARGET" }])],
+    ["noop without target", decisions([{ index: 0, action: "noop" }])],
+    ["noop with text", decisions([{ index: 0, action: "noop", targetId: "TARGET", text: "duplicate" }])],
+    ["unexpected field", decisions([{ index: 0, action: "noop", targetId: "TARGET", confidence: 1 }])],
+    ["partial update", decisions([{ index: 0, action: "update", targetId: "TARGET" }])],
+    ["control replacement", decisions([{ index: 0, action: "update", targetId: "TARGET", text: "bad\u0001text" }])],
+    ["bidi replacement", decisions([{ index: 0, action: "update", targetId: "TARGET", text: "bad\u202etext" }])],
   ] as const)("rejects %s without persisting the novel slot", async (_label, reply) => {
     const fixture = await reconcileFixture();
     try {
@@ -220,16 +330,18 @@ describe("strict completed-turn reconciliation", () => {
   it("states the exact per-action object contract that strict reconciliation enforces", async () => {
     const fixture = await reconcileFixture();
     let reconcilePrompt = "";
+    let options: LlmCompleteOptions | undefined;
     try {
       const actions = await reconcileBatch(fixture.candidates, {
         ...fixture.deps,
         strictModelOutput: true,
         llm: {
           id: "shape-aware",
-          complete: async (receivedPrompt) => {
+          complete: async (receivedPrompt, receivedOptions) => {
             reconcilePrompt = receivedPrompt;
+            options = receivedOptions;
             const targetRequired = receivedPrompt.includes("targetId is REQUIRED");
-            return JSON.stringify([targetRequired
+            return decisions([targetRequired
               ? { index: 0, action: "noop", targetId: "TARGET" }
               : { index: 0, action: "noop" }]);
           },
@@ -247,6 +359,25 @@ describe("strict completed-turn reconciliation", () => {
       expect(reconcilePrompt).toContain("at most 280 Unicode code points");
       expect(reconcilePrompt).toContain("Do not emit duplicate object keys");
       expect(reconcilePrompt).toContain("Every object contains exactly the keys shown");
+      expect(reconcilePrompt).toContain('{"decisions":[...]}');
+      expect(options?.structuredResultKey).toBe("decisions");
+      expect(options?.outputSchema).toMatchObject({
+        type: "object",
+        additionalProperties: false,
+        required: ["decisions"],
+        properties: {
+          decisions: {
+            type: "array",
+            minItems: 1,
+            maxItems: 1,
+            items: { oneOf: expect.any(Array) },
+          },
+        },
+      });
+      const schemaText = JSON.stringify(options?.outputSchema);
+      expect(schemaText).toContain('"const":"noop"');
+      expect(schemaText).toContain('"enum":["TARGET"]');
+      expect(schemaText).toContain('"maxLength":280');
     } finally {
       fixture.db.close();
     }
@@ -260,7 +391,7 @@ describe("strict completed-turn reconciliation", () => {
         strictModelOutput: true,
         llm: {
           id: "conflict",
-          complete: async () => JSON.stringify([
+          complete: async () => decisions([
             { index: 0, action: "noop", targetId: "TARGET" },
             { index: 1, action: "noop", targetId: "TARGET" },
           ]),
@@ -280,7 +411,7 @@ describe("strict completed-turn reconciliation", () => {
         strictModelOutput: true,
         llm: {
           id: "valid",
-          complete: async () => JSON.stringify([{ index: 0, action: "noop", targetId: "TARGET" }]),
+          complete: async () => decisions([{ index: 0, action: "noop", targetId: "TARGET" }]),
         },
       });
       expect(actions.map((action) => action?.kind)).toEqual(["noop", "add"]);

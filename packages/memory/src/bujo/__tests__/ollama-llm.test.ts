@@ -37,6 +37,25 @@ describe("createOllamaLlm", () => {
     });
   });
 
+  it("keeps its validated text path when schema metadata is unsupported", async () => {
+    const response = '{"memories":[],"entities":[],"relations":[]}';
+    const fakeFetch = makeFetch(200, { response });
+    vi.stubGlobal("fetch", fakeFetch);
+
+    const llm = createOllamaLlm({ model: "llama3.2" });
+    await expect(llm.complete("strict prompt", {
+      outputSchema: { type: "object", required: ["memories"] },
+    })).resolves.toBe(response);
+
+    const [, init] = (fakeFetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      model: "llama3.2",
+      prompt: "strict prompt",
+      stream: false,
+      format: "json",
+    });
+  });
+
   it("returns data.response on success", async () => {
     vi.stubGlobal("fetch", makeFetch(200, { response: "the answer" }));
     const llm = createOllamaLlm({ model: "llama3.2" });

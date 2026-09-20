@@ -25,6 +25,73 @@ interface RawCapturePlan {
   readonly relations?: unknown;
 }
 
+const SAFE_TEXT_SCHEMA = (maxLength: number): Readonly<Record<string, unknown>> => ({
+  type: "string",
+  minLength: 1,
+  maxLength,
+});
+
+/** Shape guidance only; the strict parser below remains the semantic authority. */
+const STRICT_CAPTURE_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["memories", "entities", "relations"],
+  properties: {
+    memories: {
+      type: "array",
+      maxItems: MAX_CAPTURE_MEMORIES,
+      uniqueItems: true,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["type", "text", "salience", "isInsight", "entityIds"],
+        properties: {
+          type: { type: "string", enum: ["task", "event", "note"] },
+          text: SAFE_TEXT_SCHEMA(MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS),
+          salience: { type: "number", minimum: 0, maximum: 1 },
+          isInsight: { type: "boolean" },
+          entityIds: {
+            type: "array",
+            maxItems: MAX_CAPTURE_ENTITIES,
+            uniqueItems: true,
+            items: { ...SAFE_TEXT_SCHEMA(96), pattern: "^[a-z][a-z0-9-]{0,31}:[a-z0-9]+(?:-[a-z0-9]+)*$" },
+          },
+        },
+      },
+    },
+    entities: {
+      type: "array",
+      maxItems: MAX_CAPTURE_ENTITIES,
+      uniqueItems: true,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "name", "type"],
+        properties: {
+          id: { ...SAFE_TEXT_SCHEMA(96), pattern: "^[a-z][a-z0-9-]{0,31}:[a-z0-9]+(?:-[a-z0-9]+)*$" },
+          name: SAFE_TEXT_SCHEMA(160),
+          type: { ...SAFE_TEXT_SCHEMA(48), pattern: "^[a-z][a-z0-9-]{0,47}$" },
+        },
+      },
+    },
+    relations: {
+      type: "array",
+      maxItems: MAX_CAPTURE_RELATIONS,
+      uniqueItems: true,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["src", "dst", "relation"],
+        properties: {
+          src: SAFE_TEXT_SCHEMA(96),
+          dst: SAFE_TEXT_SCHEMA(96),
+          relation: { ...SAFE_TEXT_SCHEMA(96), pattern: "^[a-z0-9]+(?:[ -][a-z0-9]+)*$" },
+        },
+      },
+    },
+  },
+} as const;
+
 const SINGLE_JSON_FENCE = /^[\t\n\r ]*```(?:[jJ][sS][oO][nN])?[\t ]*\r?\n([\s\S]*?)\r?\n```[\t\n\r ]*$/;
 
 const prompt = (text: string, known: readonly ExtractedEntity[] = []): string => `Extract one bounded, durable memory plan from the completed turn below.
@@ -117,6 +184,7 @@ export async function extractCapturePlanStrict(
   try {
     raw = await llm.complete(prompt(text, knownEntities), {
       label: "capture:extract",
+      outputSchema: STRICT_CAPTURE_OUTPUT_SCHEMA,
       ...(abortSignal === undefined ? {} : { abortSignal }),
     });
   } catch (cause) {
@@ -293,12 +361,74 @@ function candidateTokens(text: string): string[] {
   return text.toLocaleLowerCase("en-US").match(/[\p{L}\p{N}]+/gu) ?? [];
 }
 
+const ATTRIBUTION_COMPLEMENT_VERBS = new Set([
+  "believed",
+  "believes",
+  "claimed",
+  "claims",
+  "confirmed",
+  "confirms",
+  "explained",
+  "explains",
+  "indicated",
+  "indicates",
+  "noted",
+  "notes",
+  "reported",
+  "reports",
+  "said",
+  "says",
+  "stated",
+  "states",
+]);
+
 function isAmbiguousNearDuplicate(left: readonly string[], right: readonly string[]): boolean {
+  // Attribution handling may only narrow the original guard. A pair accepted by
+  // the historical token predicate cannot become newly ambiguous here.
+  if (!hasAmbiguousTokenShape(left, right)) return false;
+  const [leftFact, rightFact, attributionRemoved] = withoutSharedAttribution(left, right);
+  if (!attributionRemoved) return true;
+  return hasAmbiguousTokenShape(leftFact, rightFact, true);
+}
+
+function hasAmbiguousTokenShape(
+  left: readonly string[],
+  right: readonly string[],
+  allowSingleAlignedSubstitution = false,
+): boolean {
   if (left.length < 3 || right.length < 3) return false;
   const smaller = Math.min(left.length, right.length);
   const rightSet = new Set(right);
   const overlap = new Set(left.filter((token) => rightSet.has(token))).size / smaller;
   let prefix = 0;
   while (prefix < smaller && left[prefix] === right[prefix]) prefix += 1;
-  return prefix >= 2 && prefix / smaller >= 0.5 && overlap >= 0.6;
+  const alignedSubstitutions = allowSingleAlignedSubstitution && left.length === right.length
+    ? left.reduce((count, token, index) => count + Number(token !== right[index]), 0)
+    : Number.POSITIVE_INFINITY;
+  return overlap >= 0.6
+    && ((prefix >= 2 && prefix / smaller >= 0.5) || alignedSubstitutions === 1);
+}
+
+/**
+ * A repeated speaker/evidence qualification is context, not the proposition's
+ * predicate. Compare the content after an identical reporting complement so a
+ * long "the user reports that ..." preamble cannot make two independent facts
+ * look like variants. Different reporters remain material, and short contents
+ * retain the original whole-sentence guard rather than becoming uncheckable.
+ */
+function withoutSharedAttribution(
+  left: readonly string[],
+  right: readonly string[],
+): readonly [readonly string[], readonly string[], boolean] {
+  const smaller = Math.min(left.length, right.length);
+  let shared = 0;
+  while (shared < smaller && left[shared] === right[shared]) shared += 1;
+  for (let index = 0; index + 1 < shared; index += 1) {
+    if (!ATTRIBUTION_COMPLEMENT_VERBS.has(left[index] ?? "") || left[index + 1] !== "that") continue;
+    const offset = index + 2;
+    const leftFact = left.slice(offset);
+    const rightFact = right.slice(offset);
+    if (leftFact.length >= 3 && rightFact.length >= 3) return [leftFact, rightFact, true];
+  }
+  return [left, right, false];
 }
