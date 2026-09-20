@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { ARMS, armsFor, loadCorpus, makePlan, serializableProfile, sourceOnly, contextFor, validateCorpus } from "../lib/memory-e2e-dataset.mjs";
 import { Budget, canonicalFailureKind, captureLlm, failureKindOf, isFatalFailureKind, meteredEmbeddings, meteredRuntime, realProviders, scriptedProviders, usageOf } from "../lib/memory-e2e-providers.mjs";
 import { percentiles, ratio, lexicalDiagnostic, safeArtifact, ownedParent, summarize } from "../lib/memory-e2e-report.mjs";
-import { awaitReady, captureFailureKindFor, cleanupTrial, readySnapshot } from "../lib/memory-e2e-runner.mjs";
+import { automaticRecallObservation, awaitReady, captureFailureKindFor, cleanupTrial, readySnapshot } from "../lib/memory-e2e-runner.mjs";
 import { prepareRealBuild, verifyRealBuild, BUILD_POLICY } from "../lib/memory-e2e-build.mjs";
 import { main, parseArguments, profileFrom } from "../memory-e2e-benchmark.mjs";
 
@@ -61,8 +61,48 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(network).not.toHaveBeenCalled();
     expect(() => parseArguments(["--memory-path", "/private"])).toThrow();
     expect(() => parseArguments(["--real", "--real"])).toThrow();
+    expect(parseArguments(["--allow-hosted-locomo-transfer"])).toEqual({ "allow-hosted-locomo-transfer": true });
+    expect(parseArguments(["--locomo-experiment", "locomo-bujo-eval-v1-rank5-development-30"]))
+      .toEqual({ "locomo-experiment": "locomo-bujo-eval-v1-rank5-development-30" });
+    await expect(main(["--dry-run", "--locomo-experiment", "locomo-bujo-eval-v1-rank5-development-30"]))
+      .rejects.toThrow("locomo_experiment_requires_locomo");
     expect(() => profileFrom({ reader: "openai:model" })).toThrow("incomplete_profile");
+    await expect(main(["--dry-run", "--corpus", "locomo-v1", "--reader", "openai:model", "--extractor", "openai:model", "--embedding-provider", "ollama", "--embedding-model", "fixture", "--dimension", "8"]))
+      .rejects.toThrow("locomo_hosted_transfer_ack_required");
+    await expect(main(["--dry-run", "--allow-hosted-locomo-transfer"]))
+      .rejects.toThrow("hosted_locomo_transfer_ack_requires_locomo");
   });
+  it("records null, hit, truncation and degradation without inferring private content", () => {
+    const selectHits = (hits) => hits.filter((hit) => hit.score >= 0.5);
+    expect(automaticRecallObservation({
+      block: undefined,
+      outcome: { hits: [], retrievalMode: "hybrid" },
+      query: "synthetic",
+      selectHits,
+    })).toEqual({
+      content: null, source: null, bytes: 0, hitCount: 0, truncated: false,
+      retrievalMode: "hybrid", degradation: null, status: "completed",
+    });
+    expect(automaticRecallObservation({
+      block: { content: "## Memory\n\n- synthetic hit", source: "memory", truncated: false },
+      outcome: { hits: [{ score: 0.9 }], retrievalMode: "hybrid" },
+      query: "synthetic",
+      selectHits,
+    })).toMatchObject({ content: "## Memory\n\n- synthetic hit", source: "memory", hitCount: 1, truncated: false });
+    expect(automaticRecallObservation({
+      block: { content: "## Memory\n\n- synt", source: "memory", truncated: true },
+      outcome: {
+        hits: [{ score: 0.9 }, { score: 0.4 }], retrievalMode: "lexical_only",
+        degradation: { code: "embedding_unavailable" },
+      },
+      query: "synthetic",
+      selectHits,
+    })).toMatchObject({
+      bytes: 17, hitCount: 1, truncated: true,
+      retrievalMode: "lexical_only", degradation: "embedding_unavailable",
+    });
+  });
+
   it("the direct confirmed real command cannot import production/providers before a required build", async () => {
     const profile = ["--reader", "fixture:reader", "--extractor", "fixture:extractor", "--embedding-provider", "ollama", "--embedding-model", "fixture", "--dimension", "8"];
     let plan;
@@ -71,6 +111,32 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     const prepareBuild = vi.fn(async () => { throw new Error("synthetic_build_refused"); });
     await expect(main(["--real", ...profile, "--confirm-plan", plan.confirmation], { prepareBuild })).rejects.toThrow("synthetic_build_refused");
     expect(prepareBuild).toHaveBeenCalledOnce(); expect(network).not.toHaveBeenCalled();
+  });
+  it("discloses and preflights the selected Codex wire-cap limitation before build or providers", async () => {
+    const profile = ["--reader", "openai-codex:reader", "--extractor", "openai-codex:extractor", "--embedding-provider", "ollama", "--embedding-model", "fixture", "--dimension", "8"];
+    const output = [];
+    await main(["--dry-run", ...profile], { stdout: (text) => output.push(JSON.parse(text)) });
+    expect(output[0].budgetEnforcement).toEqual({
+      providerTransport: {
+        requested: "sse",
+        piMaxRetries: 0,
+        automaticWebSocketFallback: false,
+        observedAttempts: "unknown_unless_provider_reports",
+      },
+      outputTokens: {
+        accounting: "pre_admission_reservation",
+        providerHint: "providerCheckMaxTokens",
+        wireCap: "unsupported_by_selected_openai_codex_provider",
+        strictRealExecutionSupported: false,
+      },
+    });
+    expect(output[0].limitations).toContain("providerCheckMaxTokens is not a universal wire-enforced output cap");
+    const prepareBuild = vi.fn();
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
+    await expect(main(["--real", ...profile, "--confirm-plan", output[0].confirmation], { prepareBuild }))
+      .rejects.toThrow("strict_output_budget_unsupported");
+    expect(prepareBuild).not.toHaveBeenCalled();
+    expect(network).not.toHaveBeenCalled();
   });
   it("flush alone cannot certify pending, dead, dropped, delayed or missing index work", async () => {
     expect(readySnapshot(ready)).toBe(true);
@@ -82,13 +148,86 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     await expect(awaitReady({ flush: async () => {}, queueSnapshot: () => ({ ...ready, intake: { ...ready.intake, pending: 1 } }) }, 20)).rejects.toThrow("capture_not_ready");
     await expect(awaitReady({ flush: () => new Promise(() => {}) }, 5)).rejects.toThrow("readiness_timeout");
   });
-  it("caps steps/output, disables retries and compaction, and records unknown actual usage", async () => {
+  it("replays only one structured model-output failure through native intake and preserves exhaustion", async () => {
+    let attempts = 0; let advancedMs = 0; const retries = [];
+    const recovered = await awaitReady({
+      flush: async () => { attempts += 1; },
+      queueSnapshot: () => attempts >= 2 ? ready : { ...ready, intake: { ...ready.intake, pending: 1, resolved: 0 } },
+    }, 100, undefined, {
+      maxAttempts: 2,
+      delayMs: 60_000,
+      inspect: () => ({ items: [{ state: "pending", attempt: 1, lastError: "model_output" }] }),
+      advanceClock: (value) => { advancedMs += value; },
+      onRetry: (value) => retries.push(value),
+    });
+    expect(recovered).toEqual(ready);
+    expect(attempts).toBe(2);
+    expect(advancedMs).toBe(60_000);
+    expect(retries).toEqual([{ attempt: 1, failureKind: "model_output" }]);
+
+    let providerAttempts = 0;
+    await expect(awaitReady({
+      flush: async () => { providerAttempts += 1; },
+      queueSnapshot: () => ({ ...ready, intake: { ...ready.intake, pending: 1, resolved: 0 } }),
+    }, 100, undefined, {
+      maxAttempts: 2, delayMs: 60_000,
+      inspect: () => ({ items: [{ state: "pending", attempt: 1, lastError: "provider" }] }),
+      advanceClock: () => { throw new Error("must not advance"); },
+      onRetry: () => { throw new Error("must not retry"); },
+    })).rejects.toThrow("capture_not_ready");
+    expect(providerAttempts).toBe(1);
+
+    let exhaustedAttempts = 0; const exhausted = [];
+    await expect(awaitReady({
+      flush: async () => { exhaustedAttempts += 1; },
+      queueSnapshot: () => ({ ...ready, intake: { ...ready.intake, pending: 1, resolved: 0 } }),
+    }, 100, undefined, {
+      maxAttempts: 2, delayMs: 60_000,
+      inspect: () => ({ items: [{ state: "pending", attempt: exhaustedAttempts, lastError: "model_output" }] }),
+      advanceClock: () => {}, onRetry: () => {}, onExhausted: (value) => exhausted.push(value),
+    })).rejects.toThrow("capture_not_ready");
+    expect(exhaustedAttempts).toBe(2);
+    expect(exhausted).toEqual([{ attempt: 2, failureKind: "model_output" }]);
+  });
+
+  it("reserves steps/output, pins SSE with no retries, and reports cap enforcement honestly", async () => {
     const { budget } = await setup(); const run = vi.fn(async () => ({ text: "answer", model: "faux:observed" }));
-    await meteredRuntime({ run }, { budget, stage: "reader", tag: {} }).run("system", { model: { reference: "faux:requested" }, messages: [{ role: "user", content: "question" }], abortSignal: new AbortController().signal });
-    expect(run.mock.calls[0][1]).toMatchObject({ maxTurns: 3, providerCheckMaxTokens: 512, compaction: { enabled: false }, piMaxRetries: 0, effort: "none" });
+    await meteredRuntime({ run }, { budget, stage: "reader", tag: {} }).run("system", { model: { provider: "openai-codex", reference: "openai-codex:requested" }, messages: [{ role: "user", content: "question" }], abortSignal: new AbortController().signal });
+    expect(run.mock.calls[0][1]).toMatchObject({ maxTurns: 3, providerCheckMaxTokens: 512, compaction: { enabled: false }, piTransport: "sse", piMaxRetries: 0, effort: "none" });
     expect(budget.used.chatSteps).toBe(3);
-    expect(budget.events[0]).toMatchObject({ transportAttempts: null, costUsd: null, executedModel: "faux:observed", usage: { inputTokens: null } });
+    expect(budget.events[0]).toMatchObject({
+      outputTokenLimitRequested: 512,
+      outputCapEnforcement: "unsupported_by_selected_provider",
+      requestedTransport: "sse",
+      configuredTransportRetries: 0,
+      transportAttempts: null,
+      costUsd: null,
+      executedModel: "faux:observed",
+      usage: { inputTokens: null },
+    });
     expect(usageOf({ input: 0 })).toMatchObject({ inputTokens: 0, outputTokens: null });
+  });
+  it("keeps local reader step exhaustion distinct from terminal provider quota", async () => {
+    const { budget } = await setup();
+    budget.plan.perCall.readerMaxTurns = 20;
+    budget.plan.limits.chatSteps = 20;
+    budget.plan.limits.outputTokens = 20 * budget.plan.perCall.readerOutputTokens;
+    budget.plan.limits.estimatedInputTokens = 1_000_000;
+    const run = vi.fn(async () => ({
+      text: "partial answer must not complete",
+      error: "local max turns",
+      failureKind: "usage_limit",
+      numTurns: 20,
+      diagnostics: { max_turns_hit: true, max_turns: 20 },
+    }));
+    await expect(meteredRuntime({ run }, { budget, stage: "reader", tag: {} }).run("s", { messages: [] }))
+      .rejects.toMatchObject({ code: "reader_step_budget_exhausted", failureKind: "budget_exceeded" });
+    expect(run.mock.calls[0][1].maxTurns).toBe(20);
+    expect(budget.providerStop).toBeNull();
+    expect(budget.events[0]).toMatchObject({
+      status: "reader_step_budget_exhausted", failureKind: "budget_exceeded",
+      providerReportedFailureKind: "usage_limit", maxTurnsHit: true, observedModelTurns: 20,
+    });
   });
   it("rejects hidden compaction and does not execute after exhausted reservations", async () => {
     const { budget } = await setup();
@@ -243,10 +382,95 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     const { budget } = await setup(); const run = vi.fn(async () => ({ text: "{}" }));
     const llm = captureLlm({ run }, { model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag: {} });
     await llm.complete("STRICT_PROMPT", { label: "capture:extract" });
-    expect(run.mock.calls[0][1]).toMatchObject({ messages: [{ role: "user", content: "STRICT_PROMPT" }], allowedTools: [], mcpServers: {}, maxTurns: 1, providerCheckMaxTokens: 2048, compaction: { enabled: false } });
+    expect(run.mock.calls[0][1]).toMatchObject({ messages: [{ role: "user", content: "STRICT_PROMPT" }], allowedTools: [], mcpServers: {}, maxTurns: 1, providerCheckMaxTokens: 2048, compaction: { enabled: false }, piTransport: "sse", piMaxRetries: 0 });
     const production = await readFile(new URL("../../packages/agent-app/src/configured-agent.ts", import.meta.url), "utf8");
     for (const phrase of run.mock.calls[0][0].split(/(?<=\.) /u)) expect(production).toContain(phrase);
     await expect(meteredRuntime({ run: async () => ({ error: "secret error", text: "" }) }, { budget, stage: "reader", tag: {} }).run("s", { messages: [], abortSignal: new AbortController().signal })).rejects.toThrow("provider_failed");
+  });
+  it("projects authoritative extraction and reconciliation results into the exact capture trace", async () => {
+    const extraction = await setup();
+    const extractionSchema = { type: "object", required: ["memories"] };
+    const extracted = { memories: [{ type: "note", text: "Mira likes cobalt." }], entities: [], relations: [] };
+    const extractionRun = vi.fn(async () => ({
+      text: "plausible text fallback must not win",
+      structuredResult: extracted,
+      diagnostics: { pi_stop_reason: "toolUse", max_turns_hit: false },
+    }));
+    const extractionTrace = [];
+    const extractor = captureLlm({ run: extractionRun }, {
+      model: { provider: "fixture", reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions",
+      budget: extraction.budget, tag: { groupId: "g" }, capture: (entry) => extractionTrace.push(entry),
+    });
+    await expect(extractor.complete("extract", { label: "capture:extract", outputSchema: extractionSchema }))
+      .resolves.toBe(JSON.stringify(extracted));
+    expect(extractionRun.mock.calls[0][1].outputSchema).toBe(extractionSchema);
+    expect(extractionTrace).toEqual([expect.objectContaining({ stage: "extraction", output: JSON.stringify(extracted) })]);
+
+    const reconciliation = await setup();
+    const decisions = [{ index: 0, action: "add" }];
+    const reconcileRun = vi.fn(async () => ({ text: "not parser input", structuredResult: { decisions } }));
+    const reconcileTrace = [];
+    const reconciler = captureLlm({ run: reconcileRun }, {
+      model: { provider: "fixture", reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions",
+      budget: reconciliation.budget, tag: {}, capture: (entry) => reconcileTrace.push(entry),
+    });
+    await expect(reconciler.complete("reconcile", {
+      label: "capture:reconcile-batch", outputSchema: { type: "object" }, structuredResultKey: "decisions",
+    })).resolves.toBe(JSON.stringify(decisions));
+    expect(reconcileTrace[0]).toMatchObject({ stage: "reconciliation", output: JSON.stringify(decisions) });
+  });
+
+  it("accepts empty text only for a successful structured settlement and keeps terminal toolUse distinct", async () => {
+    const { budget } = await setup();
+    const result = { text: "", structuredResult: { memories: [] }, diagnostics: { pi_stop_reason: "toolUse", max_turns_hit: false } };
+    await expect(meteredRuntime({ run: async () => result }, { budget, stage: "extraction", tag: {} })
+      .run("s", { messages: [], outputSchema: { type: "object" } })).resolves.toBe(result);
+    expect(budget.events[0]).toMatchObject({ status: "completed", maxTurnsHit: false });
+
+    const unfinished = await setup();
+    await expect(meteredRuntime({ run: async () => ({ text: "", diagnostics: { pi_stop_reason: "toolUse" } }) }, { budget: unfinished.budget, stage: "reader", tag: {} })
+      .run("s", { messages: [] })).rejects.toThrow("unfinished_tool_loop");
+  });
+
+  it.each([
+    ["provider failure", { failureKind: "provider_unavailable", error: "private", structuredResult: { ok: true } }, "provider_failed"],
+    ["runtime error", { error: "private", structuredResult: { ok: true } }, "provider_failed"],
+    ["cancelled", { cancelled: true, structuredResult: { ok: true } }, "provider_timeout_or_cancelled"],
+    ["cancelled before returned failure", { cancelled: true, failureKind: "usage_limit", error: "private", structuredResult: { ok: true } }, "provider_timeout_or_cancelled"],
+    ["compacted", { structuredResult: { ok: true } }, "unexpected_compaction"],
+    ["max turns", { structuredResult: { ok: true }, diagnostics: { max_turns_hit: true } }, "capture_step_budget_exhausted"],
+    ["missing structured payload", { text: "plausible fallback" }, "structured_result_missing"],
+  ])("rejects %s before accepting a structured payload", async (_label, result, code) => {
+    const { budget } = await setup();
+    const run = vi.fn(async (_system, options) => {
+      if (code === "unexpected_compaction") options.onEvent({ type: "compaction_started" });
+      return result;
+    });
+    await expect(meteredRuntime({ run }, { budget, stage: "extraction", tag: {} })
+      .run("s", { messages: [], outputSchema: { type: "object" } })).rejects.toThrow(code);
+    expect(budget.events[0].status).toBe(code);
+    if (result.cancelled) expect(budget.providerStop).toBeNull();
+  });
+
+  it("fails closed on missing reconciliation projection and never records fallback text", async () => {
+    const { budget } = await setup(); const trace = [];
+    const llm = captureLlm({ run: async () => ({ text: "[]", structuredResult: { other: [] } }) }, {
+      model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag: {}, capture: (entry) => trace.push(entry),
+    });
+    await expect(llm.complete("reconcile", {
+      label: "capture:reconcile-batch", outputSchema: { type: "object" }, structuredResultKey: "decisions",
+    })).rejects.toThrow("structured_result_key_missing");
+    expect(trace).toEqual([]);
+  });
+
+  it("meters bounded embedding text into both the combined and embedding-specific hard budgets", async () => {
+    const { plan } = await setup();
+    const budget = new Budget({ ...plan, limits: { ...plan.limits, embeddingInputTokens: 1 } });
+    const embed = vi.fn(async () => [[1]]);
+    await expect(meteredEmbeddings({ id: "fixture", embed }, { budget, tag: {} }).embed(["twelve bytes"])).rejects.toThrow("budget_exhausted");
+    expect(embed).not.toHaveBeenCalled();
+    expect(budget.used.embeddingInputTokens).toBe(0);
+    budget.close();
   });
   it("retains a non-fatal returned failure kind without stopping admission", async () => {
     const { budget } = await setup();
@@ -257,6 +481,14 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(budget.events[0]).toMatchObject({ status: "provider_failed", failureKind: "provider_unavailable" });
     expect(budget.providerStop).toBeNull();
     expect(budget.admissionStopped).toBe(false);
+  });
+  it("maps a structured native context failure to a typed benchmark error", async () => {
+    const { budget } = await setup();
+    const failure = await meteredRuntime({ run: async () => ({ failureKind: "context_limit", error: "private", text: "" }) }, { budget, stage: "reader", tag: {} })
+      .run("s", { messages: [], abortSignal: new AbortController().signal }).catch((error) => error);
+    expect(failure.message).toBe("native_context_limit");
+    expect(failureKindOf(failure)).toBe("context_limit");
+    expect(budget.events[0]).toMatchObject({ status: "native_context_limit", failureKind: "context_limit" });
   });
   it.each(["provider_auth", "usage_limit"])("stops provider admission after fatal reader failure: %s", async (failureKind) => {
     const { budget } = await setup();
@@ -399,6 +631,56 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(ambientModules.runtime.createMonoRuntime.mock.calls[1][0]).toEqual({ workspace: "workspace" });
     await expect(realProviders(profile, { workspace: "workspace", modules: ambientModules })).rejects.toThrow("pi_auth_resolver_unavailable");
   });
+  it("pins LoCoMo provider construction to explicit loopback endpoints and client context metadata", async () => {
+    const optionsForLocal = vi.fn((model, providers) => ({ customProvider: providers[0], customModel: { model }, modelCapabilities: { context_window: 65_536 }, isPrivateProvider: true }));
+    const modules = {
+      runtime: {
+        createMonoRuntime: vi.fn((options) => ({ options })),
+        parseMonoRuntimeModelReference: (value) => { const [provider, ...name] = value.split(":"); return { provider, model: name.join(":"), reference: value }; },
+        runtimeOptionsForLocalProvider: optionsForLocal,
+      },
+      search: { createEmbeddingProvider: vi.fn(() => ({})), createCircuitBreakerEmbeddingProvider: vi.fn((raw) => raw) },
+    };
+    const profile = {
+      reader: "ollama:gemma4:31b", extractor: "ollama:gemma4:31b",
+      embeddingProvider: "ollama", embeddingModel: "bge-m3:latest", dimension: 1024,
+      ollamaEndpoint: "http://127.0.0.1:11434", embeddingEndpoint: "http://127.0.0.1:11434", clientContextWindow: 65_536,
+    };
+    await realProviders(profile, { workspace: "workspace", modules });
+    const runtimeOptions = modules.runtime.createMonoRuntime.mock.calls[0][0];
+    expect(runtimeOptions).toMatchObject({ workspace: "workspace", resolveAttempt: expect.any(Function) });
+    runtimeOptions.resolveAttempt({ model: { provider: "ollama", model: "gemma4:31b", reference: "ollama:gemma4:31b" } });
+    expect(optionsForLocal.mock.calls[0][1][0]).toMatchObject({ id: "ollama", type: "ollama", baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false });
+    expect(optionsForLocal.mock.calls[0][1][0].models[0].capabilities).toMatchObject({ context_window: 65_536, max_tokens: 2048 });
+    expect(modules.search.createEmbeddingProvider).toHaveBeenCalledWith(expect.objectContaining({ endpoint: "http://127.0.0.1:11434", model: "bge-m3:latest" }));
+    await expect(realProviders({ ...profile, ollamaEndpoint: "http://localhost:11434" }, { workspace: "workspace", modules })).rejects.toThrow("invalid_local_ollama_profile");
+  });
+  it("uses the existing hosted Pi resolver while keeping LoCoMo embeddings on numeric loopback", async () => {
+    const resolver = async () => "fixture-key";
+    const modules = {
+      runtime: {
+        createMonoRuntime: vi.fn((options) => ({ options })),
+        parseMonoRuntimeModelReference: (reference) => ({ provider: "openai-codex", model: "gpt-5.6-luna", reference }),
+        createPiOAuthApiKeyResolver: vi.fn(() => resolver),
+        runtimeOptionsForLocalProvider: vi.fn(() => { throw new Error("hosted_chat_must_not_use_local_resolver"); }),
+      },
+      search: { createEmbeddingProvider: vi.fn(() => ({})), createCircuitBreakerEmbeddingProvider: vi.fn((raw) => raw) },
+    };
+    const profile = {
+      reader: "openai-codex:gpt-5.6-luna", extractor: "openai-codex:gpt-5.6-luna",
+      embeddingProvider: "ollama", embeddingModel: "bge-m3:latest", dimension: 1024,
+      piAuthPath: "/private/existing-pi-auth.json", embeddingEndpoint: "http://127.0.0.1:11434",
+      hostedChatContextWindow: 272_000, locomoDatasetTransferAck: "selected-public-locomo-projection-to-hosted-luna",
+    };
+    await realProviders(profile, { workspace: "workspace", modules });
+    expect(modules.runtime.createPiOAuthApiKeyResolver).toHaveBeenCalledWith({ path: "/private/existing-pi-auth.json" });
+    expect(modules.runtime.createMonoRuntime).toHaveBeenCalledTimes(2);
+    expect(modules.runtime.createMonoRuntime.mock.calls[0][0]).toEqual({ workspace: "workspace", resolvePiApiKey: resolver });
+    expect(modules.runtime.runtimeOptionsForLocalProvider).not.toHaveBeenCalled();
+    expect(modules.search.createEmbeddingProvider).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "ollama", model: "bge-m3:latest", endpoint: "http://127.0.0.1:11434",
+    }));
+  });
   it("dry-run binds the auth fingerprint without touching credentials or network", async () => {
     const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
     const profile = ["--reader", "fixture:reader", "--extractor", "fixture:extractor", "--embedding-provider", "ollama", "--embedding-model", "m", "--dimension", "8"];
@@ -421,6 +703,11 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(lexicalDiagnostic("It is not amber", gold, "real").value).toBe(false);
     expect(lexicalDiagnostic("amber", gold, "scripted").value).toBeNull();
     expect(lexicalDiagnostic("amber or violet", gold, "real").value).toBe(false);
+    expect(lexicalDiagnostic("The blue bicycle", { ...gold, accepted: ["blue bicycle"], locomoCategory: 4 }, "real"))
+      .toEqual({
+        status: "locomo_official_pinned", metric: "porter_token_f1", officialScore: 1,
+        secondaryNormalizedDiagnostic: { exact: true, f1: 1 },
+      });
   });
   it("redacts path/credential/endpoint canaries without treating unknown values as zero", () => {
     const safe = JSON.stringify(safeArtifact({ prompt: "/Users/example/memory sk-123456789012 https://host/?token=secret", headers: { Authorization: "Bearer canary" }, cost: null, answer: "Fictional cobalt." }));
@@ -433,11 +720,21 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     await symlink(root, join(dir, ".worklab-tmp"));
     await expect(ownedParent(dir)).rejects.toThrow("unsafe_output_root");
   });
-  it("scripted extractor is independent of gold and never claims a real provider", async () => {
+  it("scripted extractor is independent of gold and changes payload shape only on the schema path", async () => {
     const providers = scriptedProviders();
     expect(providers.kind).toBe("scripted");
-    const result = await providers.extractor.run("", { messages: [{ content: "\nTURN:\nUser (Fiction): A green cup.\nAssistant: Noted." }] });
-    expect(JSON.parse(result.text).memories[0].text).toBe("Fiction said: A green cup.");
+    const messages = [{ content: "\nTURN:\nUser (Fiction): A green cup.\nAssistant: Noted." }];
+    const textResult = await providers.extractor.run("", { messages });
+    expect(JSON.parse(textResult.text).memories[0].text).toBe("Fiction said: A green cup.");
+    expect(textResult).not.toHaveProperty("structuredResult");
+    const structured = await providers.extractor.run("", { messages, outputSchema: { type: "object" } });
+    expect(structured.text).toBe("");
+    expect(structured.structuredResult.memories[0].text).toBe("Fiction said: A green cup.");
+
+    const reconciliation = await providers.extractor.run("", {
+      messages: [{ content: 'candidates [{"index": 2}]' }], outputSchema: { type: "object" },
+    });
+    expect(reconciliation).toEqual({ text: "", structuredResult: { decisions: [{ index: 2, action: "add" }] } });
   });
 });
 
