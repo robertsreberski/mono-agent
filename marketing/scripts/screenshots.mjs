@@ -109,6 +109,15 @@ async function main() {
           }, shot.scrollTo);
           await page.waitForTimeout(400);
         }
+        if (shot.scrollTo === '.building-blocks') {
+          for (const [phase,fraction] of [['stack',.94],['opening',.7],['open',.4]]) {
+            await page.locator('.block-summary').evaluate((el,f)=>scrollTo({top:scrollY+el.getBoundingClientRect().top-innerHeight*f,behavior:'instant'}),fraction);
+            await page.waitForTimeout(100);
+            await page.screenshot({path:join(outputDir,`deck-${phase}-${shot.width}.png`)});
+          }
+          await page.locator('.building-blocks').evaluate(el=>el.scrollIntoView({behavior:'instant'}));
+          await page.waitForTimeout(100);
+        }
         if (shot.menu) await page.getByRole('button', {name:'Menu'}).click();
         await page.screenshot({ path: join(outputDir, shot.name) });
         console.log(`screenshots: ${shot.name}`);
@@ -116,9 +125,10 @@ async function main() {
         await page.close();
       }
       if (process.argv.includes('--video') || process.argv.includes('--video-only')) {
+        for (const viewport of [{width:1440,height:1000,name:"desktop"},{width:390,height:844,name:"mobile"}]) {
         const context = await browser.newContext({
-          viewport: { width: 1440, height: 1000 },
-          recordVideo: { dir: outputDir, size: { width: 1440, height: 1000 } },
+          viewport,
+          recordVideo: { dir: outputDir, size: { width: viewport.width, height: viewport.height } },
         });
         const page = await context.newPage();
         await page.goto(URL, { waitUntil: 'networkidle' });
@@ -135,17 +145,20 @@ async function main() {
             requestAnimationFrame(step);
           });
           await move(0, 1200);
-          const layout = document.querySelector('.building-blocks');
+          const layout = document.querySelector('.block-summary');
           const start = scrollY + layout.getBoundingClientRect().top;
-          await move(Math.max(0,start - innerHeight*.6), 2200);
-          await move(start + layout.getBoundingClientRect().height - innerHeight*.4, 5000);
+          await move(Math.max(0,start - innerHeight*.95), 2200);
+          await move(start - innerHeight*.4, 4500);
+          await move(start - innerHeight*.95, 3000);
+          await move(start - innerHeight*.4, 2500);
           await move(scrollY + document.querySelector('#use-cases').getBoundingClientRect().top, 1500);
           await move(scrollY, 1200);
         });
         const video = page.video();
         await context.close();
-        await rename(await video.path(), join(outputDir, 'scroll-story-desktop.webm'));
-        console.log('recording: scroll-story-desktop.webm (automated real browser capture)');
+        await rename(await video.path(), join(outputDir, `scroll-story-${viewport.name}.webm`));
+        console.log(`recording: scroll-story-${viewport.name}.webm (automated real browser capture)`);
+        }
       }
     } finally {
       await browser.close();

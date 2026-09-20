@@ -3,7 +3,7 @@
 The prospective marketing site at **<https://mono-agent.dev/>** (not yet
 deployed — see [Prospective deployment](#prospective-deployment)). A standalone
 [Astro](https://astro.build/) static app: one crawlable HTML page, one
-stylesheet, and one small local progressive-enhancement module. GitHub is the primary call to action; the
+stylesheet, and one small local progressive-enhancement module (under 8.5 kB uncompressed). GitHub is the primary call to action; the
 existing docs site is secondary.
 
 ## Architecture
@@ -23,7 +23,7 @@ existing docs site is secondary.
   `docs/reference/release-status.md` is the boundary reference: never present
   source-only capabilities as published, never promise setup speed or security properties, and never present
   the brand artwork as a screenshot.
-- **Artwork is decorative.** The original transparent graphite/chrome sculpture
+- **Artwork is decorative.** The transparent matte basalt-stone stack
   is used once in the hero. `public/hero-*.webp` preserve alpha;
   there is no baked background or CSS mask hiding an image seam. The social card
   is composed deterministically from the same sculpture. The local source PNG lives
@@ -63,14 +63,15 @@ hijacks scrolling. Readable text does not fade through low-contrast states.
 ## Mobile composition and console evidence
 
 The JSON configuration is always rendered visibly, including on phones without
-JavaScript. A dedicated square mobile hero crop removes transparent side space,
-not the subject, and stays above the CTAs. Phones request 320px/640px WebP sources
+JavaScript. A dedicated square mobile hero preserves the complete stone silhouette and stays above the CTAs. Phones request 320px/640px WebP sources
 instead of the larger desktop variants, including at high device pixel ratios.
 
 Simple colored cards summarize twelve capabilities across all screen sizes. They
-settle from a slight fan (at most 1.5 degrees and 12px) into their reading grid.
+open from a compact deck into their reading grid, tied reversibly to native scroll.
+Phones get a two-column composition rather than a scaled-down desktop scene.
 There is no pinned scene, orbital imagery, phase switching, or continuous animation
-loop. Reduced-motion/no-JS modes use the plain grid. Workflows identify the useful
+loop. A pause button and keyboard focus reveal the static grid; reduced-motion/no-JS
+modes do the same. The hero tilts by at most two degrees while scrolling away. Workflows identify the useful
 components and repeated work they help remove. Repeated blueprint callouts are
 removed because the same capabilities already appear in the cards.
 

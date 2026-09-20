@@ -330,12 +330,56 @@ test('high density mobile loads the mobile hero and compressed local fonts', asy
   await context.close();
 });
 
-test('simple cards settle once into their grid and honor reduced motion', async ({page}) => {
-  await page.goto('/'); const cards=page.locator('.block-summary');
-  await cards.evaluate(el=>scrollTo({top:scrollY+el.getBoundingClientRect().top-innerHeight*.8,behavior:'instant'}));
-  await expect.poll(()=>cards.evaluate(el=>Number((el as HTMLElement).style.getPropertyValue('--card-open')))).toBeLessThan(.5);
-  await cards.evaluate(el=>scrollTo({top:scrollY+el.getBoundingClientRect().top-innerHeight*.25,behavior:'instant'}));
-  await expect.poll(()=>cards.evaluate(el=>Number((el as HTMLElement).style.getPropertyValue('--card-open')))).toBe(1);
-  await page.emulateMedia({reducedMotion:'reduce'}); await expect(cards).toHaveAttribute('data-cards-motion','false');
+for (const width of [320, 390, 768, 1440]) {
+  test(`card deck opens reversibly with native scroll at ${width}px`, async ({page}) => {
+    await page.setViewportSize({width,height:900}); await page.goto('/');
+    await page.evaluate(()=>document.fonts.ready);
+    const cards=page.locator('.block-summary');
+    const seek=async (fraction:number) => {
+      await cards.evaluate((el,f)=>scrollTo({top:scrollY+el.getBoundingClientRect().top-innerHeight*f,behavior:'instant'}),fraction);
+    };
+    await seek(.94);
+    await expect.poll(()=>cards.evaluate(el=>Number((el as HTMLElement).style.getPropertyValue('--card-open')))).toBeLessThan(.1);
+    const first=cards.locator('.block-chapter').first();
+    const closed=await first.evaluate(el=>getComputedStyle(el).transform);
+    await seek(.7);
+    await expect.poll(()=>cards.evaluate(el=>Number((el as HTMLElement).style.getPropertyValue('--card-open')))).toBeGreaterThan(.4);
+    expect(await first.evaluate(el=>getComputedStyle(el).transform)).not.toBe(closed);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await seek(.4);
+    await expect(cards).toHaveAttribute('data-cards-motion','false');
+    expect(await first.evaluate(el=>getComputedStyle(el).transform)).toBe('none');
+    // Every link is unobscured at the reading pose, with no card collisions.
+    const boxes=await cards.locator('.block-chapter').evaluateAll(els=>els.map(el=>{const r=el.getBoundingClientRect();return {x:r.x,y:r.y,right:r.right,bottom:r.bottom};}));
+    boxes.forEach((a,i)=>boxes.slice(i+1).forEach(b=>expect(a.right<=b.x+1||b.right<=a.x+1||a.bottom<=b.y+1||b.bottom<=a.y+1).toBe(true)));
+    await seek(.94);
+    await expect(cards).toHaveAttribute('data-cards-motion','true');
+    await page.emulateMedia({reducedMotion:'reduce'});
+    await expect(cards).toHaveAttribute('data-cards-motion','false');
+    expect(await first.evaluate(el=>getComputedStyle(el).transform)).toBe('none');
+    expect(await page.locator('.hero-art picture').evaluate(el=>getComputedStyle(el).transform)).toBe('none');
+    await expect(page.getByRole('button',{name:'Pause motion'})).toBeHidden();
+  });
+}
+
+test('motion pause and keyboard focus expose the complete deck',async ({page})=>{
+  await page.setViewportSize({width:390,height:844});await page.goto('/');
+  const cards=page.locator('.block-summary');
+  await cards.evaluate(el=>scrollTo({top:scrollY+el.getBoundingClientRect().top-innerHeight*.9,behavior:'instant'}));
+  await page.getByRole('button',{name:'Pause motion'}).click();
+  await expect(page.getByRole('button',{name:'Resume motion'})).toHaveAttribute('aria-pressed','true');
+  await expect(cards).toHaveAttribute('data-cards-motion','false');
+  await page.getByRole('button',{name:'Resume motion'}).click();
+  await cards.locator('a').first().focus();
+  await expect(cards).toHaveAttribute('data-cards-motion','false');
   expect(await cards.locator('.block-chapter').first().evaluate(el=>getComputedStyle(el).transform)).toBe('none');
+});
+
+test('every GitHub CTA has an accessible decorative GitHub mark',async ({page})=>{
+  await page.goto('/');
+  const links=page.locator('a[href="https://github.com/robertsreberski/mono-agent"]');
+  for(const link of await links.all()){
+    await expect(link.locator('svg.github-icon')).toHaveAttribute('aria-hidden','true');
+    expect(await link.textContent()).toMatch(/GitHub|Get the code/);
+  }
 });

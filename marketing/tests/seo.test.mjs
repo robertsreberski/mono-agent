@@ -209,7 +209,7 @@ describe("marketing built output", () => {
     assert.equal(scripts.length, 1);
     assert.ok(scripts[0].includes('src="/interactions.js"'));
     assert.ok(scripts[0].includes('type="module"'));
-    assert.ok(statSync(join(DIST, "interactions.js")).size < 5500);
+    assert.ok(statSync(join(DIST, "interactions.js")).size < 8500);
     for (const id of ["workflow-build", "workflow-research", "workflow-automate"]) {
       mustContain(html, `id="${id}"`, "server-rendered workflow");
     }
