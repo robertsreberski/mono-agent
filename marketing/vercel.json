@@ -20,18 +20,5 @@
         }
       ]
     }
-  ],
-  "redirects": [
-    {
-      "source": "/:path*",
-      "has": [
-        {
-          "type": "host",
-          "value": "mono-agent-marketing.vercel.app"
-        }
-      ],
-      "destination": "https://mono-agent.dev/:path*",
-      "permanent": true
-    }
   ]
 }

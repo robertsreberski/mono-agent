@@ -201,9 +201,6 @@ describe("marketing built output", () => {
     assert.ok(!host.test('mono-agent-marketing.vercel.app'));
     assert.ok(!host.test('mono-agent.dev'));
     assert.equal(rule.headers[0].value, 'noindex, follow');
-    const redirect = config.redirects.find(rule => rule.has?.some(condition => condition.type === 'host' && condition.value === 'mono-agent-marketing.vercel.app'));
-    assert.equal(redirect.destination, 'https://mono-agent.dev/:path*');
-    assert.equal(redirect.permanent, true);
   });
 
   it("keeps one H1 with the exact headline and resolves every anchor", () => {
