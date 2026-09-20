@@ -12,15 +12,18 @@ existing docs site is secondary.
   so it never enters the root `pnpm -r build`, `pnpm -r test`, release graph,
   or `check:architecture`. Install and build it on its own, following the
   `website/` precedent.
-- **Content is authored in `src/pages/index.astro`.** The hero and the major
-  `#configuration` section make `mono-agent.config.json` the central visual
-  thesis, then connect its runtime, context, memory, tools, and channel blocks
-  to the framework/package composition story. The displayed example is valid
+- **Content is authored in `src/pages/index.astro`.** The hero leads with an agent workspace you can build on: shared project context,
+  delegated work, retained execution evidence, and TypeScript composition. The major
+  `#configuration` section makes `mono-agent.config.json` the visible blueprint
+  behind those benefits. The displayed example is valid
   JSON and its keys/types are checked against the generated app schema. Every
   claim must be source-grounded; source-only showcases must be explicitly
   labelled and linked to release availability. The honesty rules live in a comment at
   the top of that file — read them before editing copy.
-  `docs/reference/release-status.md` is the boundary reference: never present
+  The v0.22.0 release notes and published app/web tarballs confirm projects, tags,
+  and persistent subagents are released (checked 2026-09-20). The repository
+  `docs/reference/release-status.md` still describes the older 0.21.1 boundary;
+  do not repeat its stale source-only labels for these capabilities. Never present
   source-only capabilities as published, never promise setup speed or security properties, and never present
   the brand artwork as a screenshot.
 - **Artwork is decorative.** The transparent matte basalt-stone stack
@@ -48,7 +51,9 @@ existing docs site is secondary.
 The configuration blueprint and twelve linked building blocks are server-rendered,
 including the caveats that identity/skills/MCP files, secrets/auth, and runtime
 state remain separate. It is a readable example, not a fake editor or a deploy
-control. A source-linked comparison puts Hermes and OpenClaw alongside Mono Agent,
+control. The workspace proof sequence is organize, delegate, inspect. A TypeScript
+composition excerpt names the configured responder; it is not a runnable app and links
+the imports and complete integration example. A source-linked comparison puts Hermes and OpenClaw alongside Mono Agent,
 then covers Codex CLI, Claude Code, and OpenCode in a native disclosure. It compares documented focus, not
 feature absence, exclusivity, or benchmark performance. All comparison content is
 server-rendered. The enhancement script handles the menu, deck, and copy command;

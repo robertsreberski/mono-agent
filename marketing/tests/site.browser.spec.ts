@@ -44,7 +44,7 @@ for (const viewport of VIEWPORTS) {
       await page.goto("/", { waitUntil: "networkidle" });
       await expect(
         page.getByRole("heading", {
-          name: "Your agents. Your models. Your workspace.",
+          name: "An agent workspace you can build on.",
         }),
       ).toBeVisible();
     });
@@ -241,7 +241,7 @@ test('building blocks stay readable and disclose source availability', async ({p
   await expect(blocks.locator('.block-links a')).toHaveCount(12);
   await expect(blocks).toContainText('Subagents');
   await expect(blocks).toContainText('Background jobs');
-  await expect(blocks).toContainText('current source build');
+  await expect(blocks).toContainText('v0.22.0');
 });
 test('desktop console stays sharp and uncropped on phones', async ({page}) => {
   await page.setViewportSize({width:390,height:844}); await page.goto('/');
@@ -591,11 +591,41 @@ test('native deck scroll does not remeasure card widths per frame', async ({page
 });
 test('FAQ heading has breathing room and opened answers stay separated', async ({page}) => {
   await page.setViewportSize({width:390,height:844}); await page.goto('/#faq'); await page.evaluate(()=>document.fonts.ready);
-  const heading=await page.locator('#faq-heading').boundingBox();
-  const first=page.locator('.faq details').first(); const closed=await first.boundingBox();
-  expect(closed!.y-heading!.y-heading!.height).toBeGreaterThanOrEqual(24);
-  await first.locator('summary').click();
-  const answer=await first.locator('.faq-answer').boundingBox();
-  const next=await page.locator('.faq details').nth(1).boundingBox();
-  expect(next!.y).toBeGreaterThanOrEqual(answer!.y+answer!.height);
+  // Read relative geometry in one frame: Safari can still be scrolling to
+  // the hash between separate boundingBox calls even after fonts are ready.
+  const gap = await page.evaluate(() => {
+    const heading = document.querySelector('#faq-heading')!.getBoundingClientRect();
+    const first = document.querySelector('.faq details')!.getBoundingClientRect();
+    return first.top - heading.bottom;
+  });
+  expect(gap).toBeGreaterThanOrEqual(24);
+  await page.locator('.faq details').first().locator('summary').click();
+  const answerGap = await page.evaluate(() => {
+    const answer = document.querySelector('.faq details .faq-answer')!.getBoundingClientRect();
+    const next = document.querySelectorAll('.faq details')[1].getBoundingClientRect();
+    return next.top - answer.bottom;
+  });
+  expect(answerGap).toBeGreaterThanOrEqual(0);
 });
+
+for (const width of [390, 1440]) {
+  test(`workspace proof and TypeScript excerpt remain readable at ${width}px`, async ({page}) => {
+    await page.setViewportSize({width, height: 1000});
+    await page.goto('/');
+    await page.evaluate(() => document.fonts.ready);
+    const proof = page.locator('#why');
+    await expect(proof.locator('article')).toHaveCount(3);
+    await expect(proof).toContainText('Project context feeds');
+    await expect(proof).toContainText('persistent subagent');
+    await expect(proof).toContainText('retained tool results');
+    const excerpt = page.locator('.composition-code');
+    await excerpt.scrollIntoViewIfNeeded();
+    await expect(excerpt).toBeVisible();
+    const bounds = await excerpt.evaluate(el => ({left: el.getBoundingClientRect().left, right: el.getBoundingClientRect().right, width: el.clientWidth, content: el.scrollWidth}));
+    expect(bounds.left).toBeGreaterThanOrEqual(0);
+    expect(bounds.right).toBeLessThanOrEqual(width);
+    expect(bounds.content).toBeLessThanOrEqual(bounds.width);
+    await expect(page.getByRole('link', {name: 'Imports & full example'})).toHaveAttribute('href', 'https://mono-agent-docs.vercel.app/programmatic/composition/');
+    await expect(page.locator('.blocks-note')).toContainText('v0.22.0');
+  });
+}

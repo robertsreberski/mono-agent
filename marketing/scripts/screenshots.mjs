@@ -24,6 +24,8 @@ const PORT = 4331;
 const URL = `http://127.0.0.1:${PORT}/`;
 
 const SHOTS = [
+  { name: "workspace-proof-mobile-390x844.png", width: 390, height: 844, scrollTo: "#why" },
+  { name: "workspace-proof-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: "#why" },
   { name: "comparison-mobile-390x844.png", width: 390, height: 844, scrollTo: '#comparison' },
   { name: "comparison-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: '#comparison' },
   { name: "faq-mobile-390x844.png", width: 390, height: 844, scrollTo: '#faq' },

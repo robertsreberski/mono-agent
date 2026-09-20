@@ -73,7 +73,7 @@ describe("marketing built output", () => {
   it("declares the exact title, description, and canonical URL", () => {
     mustContain(
       html,
-      "<title>mono-agent — Local-first AI workspace for coding and research</title>",
+      "<title>mono-agent — An agent workspace you can build on</title>",
       "exact <title>",
     );
     const description = html.match(/<meta name="description" content="([^"]+)"\/?>/);
@@ -116,7 +116,7 @@ describe("marketing built output", () => {
       assert.ok(match, `${attr} must exist`);
       assert.ok(match[1].includes("mono-agent"), `${attr} names the brand`);
       assert.ok(
-        match[1].toLowerCase().includes("local-first ai workspace"),
+        match[1].toLowerCase().includes("an agent workspace"),
         `${attr} carries the descriptor`,
       );
     }
@@ -165,7 +165,7 @@ describe("marketing built output", () => {
   it("keeps one H1 with the exact headline and resolves every anchor", () => {
     const h1s = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/g) ?? [];
     assert.equal(h1s.length, 1, "exactly one H1");
-    assert.ok(h1s[0].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").includes("Your agents. Your models. Your workspace."),
+    assert.ok(h1s[0].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").includes("An agent workspace you can build on."),
       "exact hero headline");
     const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
     const anchors = [...html.matchAll(/href="#([^"]*)"/g)].map((m) => m[1]);
@@ -246,6 +246,21 @@ describe("marketing built output", () => {
     mustContain(html, 'id="comparison"', "comparison anchor");
     mustContain(html, "not a feature or performance ranking", "comparison limit");
     assert.ok(!html.includes('data-workflow-explorer'), "retired workflow UI is removed");
+  });
+
+  it("grounds the market position in workspace benefits and real composition APIs", () => {
+    const text = decodeHtmlText(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ");
+    for (const benefit of ["Brief the project. Not every chat.", "Choose the model. Keep the work.", "Check what ran. Then carry on."]) mustContain(text, benefit, "workspace proof");
+    mustContain(html, "createConfiguredAgentResponder", "real TypeScript API");
+    mustContain(html, "TypeScript excerpt", "excerpt label");
+    mustContain(html, "Imports &amp; full example", "complete composition example link");
+    mustContain(html, "not a zero-setup hosted assistant", "audience tradeoff");
+    mustContain(html, "not automatically resume work", "recovery boundary");
+    mustContain(html, "releases/tag/v0.22.0", "verified release notes");
+    assert.ok(!text.includes("subagents and console projects/tags require the current source build"), "no obsolete source-only claim");
+    assert.ok(!/every (?:UI|interface) action/i.test(text), "no universal UI/tool parity claim");
+    const appExports = readFileSync(join(REPO_ROOT, "packages/agent-app/src/index.ts"), "utf8");
+    assert.ok(appExports.includes("createConfiguredAgentResponder"), "composition excerpt uses a package-root export");
   });
 
   it("ships bounded real-console captures with provenance", async () => {

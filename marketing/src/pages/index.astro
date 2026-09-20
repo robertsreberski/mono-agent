@@ -12,13 +12,9 @@ import ArrowIcon from "../components/ArrowIcon.astro";
 const SITE_URL = "https://mono-agent.dev";
 const GITHUB_URL = "https://github.com/robertsreberski/mono-agent";
 const DOCS_URL = "https://mono-agent-docs.vercel.app/";
-const RELEASE_STATUS_URL = `${DOCS_URL}reference/release-status/`;
-const CONFIG_URL = `${DOCS_URL}config/`;
+const RELEASE_URL = `${GITHUB_URL}/releases/tag/v0.22.0`;
 const COMPOSITION_URL = `${DOCS_URL}programmatic/composition/`;
-const MEMORY_URL = `${DOCS_URL}memory/`;
-const FALLBACK_URL = `${DOCS_URL}runtime/fallback/`;
 const ARTIFACTS_URL = `${DOCS_URL}observability/artifacts-and-traces/`;
-const TOOLS_URL = `${DOCS_URL}tools/`;
 
 const CONFIG_EXAMPLE = `{
   "runtime": {
@@ -44,9 +40,9 @@ const CONFIG_EXAMPLE = `{
   }
 }`;
 
-const TITLE = "mono-agent — Local-first AI workspace for coding and research";
+const TITLE = "mono-agent — An agent workspace you can build on";
 const DESCRIPTION =
-  "mono-agent is a local-first, config-first AI workspace for coding, research, and automation. One mono-agent.config.json defines your agent — models, tools, skills, memory, and channels. Open source (GPL-3.0).";
+  "An agent workspace you can build on. Organize ongoing work with your agent, inspect what ran, and compose its capabilities in mono-agent.config.json—or embed the framework in your TypeScript application.";
 const OG_IMAGE = `${SITE_URL}/og-1200x630.jpg`;
 
 const jsonLd = {
@@ -95,7 +91,7 @@ const jsonLd = {
     <meta property="og:image:height" content="630" />
     <meta
       property="og:image:alt"
-      content="mono-agent social card: the brand name and “Local-first AI workspace for coding and research” beside the sculptural matte stone artwork."
+      content="mono-agent social card: the brand name and “An agent workspace you can build on” beside the sculptural matte stone artwork."
     />
 
     <meta name="twitter:card" content="summary_large_image" />
@@ -104,7 +100,7 @@ const jsonLd = {
     <meta name="twitter:image" content={OG_IMAGE} />
     <meta
       name="twitter:image:alt"
-      content="mono-agent social card: the brand name and “Local-first AI workspace for coding and research” beside the sculptural matte stone artwork."
+      content="mono-agent social card: the brand name and “An agent workspace you can build on” beside the sculptural matte stone artwork."
     />
 
     <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
@@ -139,18 +135,18 @@ const jsonLd = {
       <section class="hero" id="top" aria-labelledby="hero-heading">
         <div class="wrap hero-grid">
           <div class="hero-copy">
-            <span class="eyebrow">Independent by design / Config-first AI</span>
-            <h1 id="hero-heading">Your agents. <br />Your models. <br /><em>Your workspace.</em></h1>
+            <span class="eyebrow">Your workspace / Your framework</span>
+            <h1 id="hero-heading">An agent <br />workspace you <br /><em>can build on.</em></h1>
             <p class="lede">
-              Compose models, tools, memory, and channels in
-              <code>mono-agent.config.json</code>. Run the workspace—or build
-              on the packages underneath.
+              Organize work with your agent. Inspect what ran.
+              Build on it in TypeScript. Your capabilities, composed in
+              <code>mono-agent.config.json</code>.
             </p>
             <div class="hero-actions">
               <a class="btn btn-primary" href={GITHUB_URL}><svg class="github-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 .75a11.25 11.25 0 0 0-3.558 21.922c.563.104.768-.244.768-.542 0-.267-.01-.975-.015-1.914-3.13.68-3.791-1.508-3.791-1.508-.512-1.3-1.25-1.646-1.25-1.646-1.022-.7.078-.686.078-.686 1.13.08 1.724 1.16 1.724 1.16 1.005 1.722 2.638 1.225 3.28.937.102-.728.393-1.225.715-1.507-2.498-.284-5.124-1.25-5.124-5.562 0-1.228.439-2.233 1.159-3.02-.116-.285-.502-1.429.11-2.977 0 0 .945-.303 3.094 1.154A10.78 10.78 0 0 1 12 6.183c.956.004 1.919.129 2.819.378 2.148-1.457 3.092-1.154 3.092-1.154.614 1.548.228 2.692.112 2.977.722.787 1.158 1.792 1.158 3.02 0 4.324-2.63 5.275-5.136 5.553.404.35.766 1.043.766 2.101 0 1.518-.014 2.743-.014 3.115 0 .301.203.651.774.54A11.252 11.252 0 0 0 12 .75Z" /></svg>GitHub <ArrowIcon /></a>
               <a class="btn btn-secondary" href="#configuration">Blueprint <ArrowIcon direction="down" /></a>
             </div>
-            <p class="hero-meta">Open source. Bring your own models. Make it yours.</p>
+            <p class="hero-meta">Local-first. Open source. Yours to extend.</p>
           </div>
           <figure class="hero-art" aria-hidden="true">
             <div class="hero-halo"></div>
@@ -174,7 +170,7 @@ const jsonLd = {
       </section>
 
       <section class="capability-strip" aria-label="Core capabilities">
-        <div class="wrap"><span>Built around your choices</span><ul><li>Local &amp; cloud models</li><li>Persistent conversations</li><li>Skills &amp; MCP</li><li>Optional memory</li></ul></div>
+        <div class="wrap"><span>Work in it. Build on it.</span><ul><li>Shared project context</li><li>Model choice per reply</li><li>Inspectable execution</li><li>TypeScript packages</li></ul></div>
       </section>
 
       <section class="configuration" id="configuration" aria-labelledby="configuration-heading">
@@ -182,8 +178,8 @@ const jsonLd = {
           <span class="section-label">The configuration</span>
           <h2 id="configuration-heading">One JSON file.<br /><em>Your agent’s blueprint.</em></h2>
           <p>
-            Models, context, memory, tools. One readable declaration.
-            Version it, review it, make it yours.
+            Your agent’s role, model routes, tools, and memory—composed in
+            one readable blueprint. Review the setup, not a maze of glue code.
           </p>
         </div>
         <div class="wrap blueprint-layout">
@@ -195,7 +191,7 @@ const jsonLd = {
             </figcaption>
             <div class="blueprint-code"><pre><code id="config-blueprint-json">{CONFIG_EXAMPLE}</code></pre></div>
             <p>
-              Identity and skills stay in referenced files. Secrets stay outside the blueprint.
+              Version the blueprint. Identity, skills, MCP definitions, secrets, and live state stay separate.
             </p>
           </figure>
 
@@ -226,7 +222,7 @@ const jsonLd = {
               </li>
               <li class="block-chapter" data-card-index="1" data-active="false">
                 <h4>Context &amp; connections</h4>
-                <p>Connect tools, memory, and adapters without collapsing their boundaries.</p>
+                <p>Give your agent the tools and memory the work needs. Leave the rest out.</p>
                 <figure class="block-diagram diagram-connections" aria-hidden="true">
                   <svg viewBox="0 0 160 110" aria-hidden="true" focusable="false">
                     <path class="diagram-line" d="M80 55 31 28m49 27 49-27M80 55 31 84m49-29 49 29" />
@@ -261,7 +257,7 @@ const jsonLd = {
               </li>
               <li class="block-chapter" data-card-index="3" data-active="false">
                 <h4>Continuity</h4>
-                <p>Carry work across channels and schedules, with evidence to inspect.</p>
+                <p>Schedule recurring work and inspect retained results—not just recollections.</p>
                 <figure class="block-diagram diagram-continuity" aria-hidden="true">
                   <svg viewBox="0 0 160 110" aria-hidden="true" focusable="false">
                     <path class="diagram-line" d="M32 74c6 20 26 29 48 29 31 0 53-21 53-48S111 8 80 8 27 28 27 55" />
@@ -278,39 +274,42 @@ const jsonLd = {
                 </ul>
               </li>
             </ol>
-          </div><p class="blocks-note">Compose what you need; not every capability is on by default. Persistent/background subagents and console projects/tags require the current source build. <a href={RELEASE_STATUS_URL}>Check release availability <ArrowIcon /></a></p></section>
+          </div><p class="blocks-note">Choose the capabilities you need. Projects, tags, and persistent subagents are available in <a href={RELEASE_URL}>v0.22.0 <ArrowIcon /></a>.</p></section>
       </section>
 
       <section class="console-section section" id="console" aria-labelledby="console-heading">
         <div class="wrap">
-          <div class="console-intro"><div><span class="section-label">The workspace</span><h2 id="console-heading">Made for you.<br /><em>Open to your agent.</em></h2></div><p>One considered interface for conversations, context, and the models behind your work.</p></div>
-          <figure class="console-shot"><div class="console-frame"><a href="/console-desktop.webp" aria-label="Open full resolution desktop console screenshot"><img src="/console-desktop.webp" width="1920" height="1350" loading="lazy" alt="Desktop Mono Agent console showing a conversation, sidebar, model-change marker, and message composer." /></a></div><figcaption>Actual desktop console · synthetic example data and connection state · current source build. <span class="console-pan-hint">Tap for details · </span><a href="/console-desktop.webp">Open full resolution <ArrowIcon /></a> · <a href={RELEASE_STATUS_URL}>Release availability <ArrowIcon /></a></figcaption></figure>
+          <div class="console-intro"><div><span class="section-label">The workspace</span><h2 id="console-heading">Less re-briefing.<br /><em>More progress.</em></h2></div><p>A workspace for ongoing work—not a fresh start with every conversation. You and your agent can organize it together.</p></div>
+          <figure class="console-shot"><div class="console-frame"><a href="/console-desktop.webp" aria-label="Open full resolution desktop console screenshot"><img src="/console-desktop.webp" width="1920" height="1350" loading="lazy" alt="Desktop Mono Agent console showing a conversation, sidebar, model-change marker, and message composer." /></a></div><figcaption>Actual desktop console · synthetic example data and connection state · current source build. <span class="console-pan-hint">Tap for details · </span><a href="/console-desktop.webp">Open full resolution <ArrowIcon /></a> · <a href={RELEASE_URL}>Release notes <ArrowIcon /></a></figcaption></figure>
           <div class="console-benefits" id="why">
-            <article><span>01 / CONTINUITY</span><h3>Change models. Keep the thread.</h3><p>Choose a supported model for your next reply without starting over. Your conversation stays with you.</p></article>
-            <article><span>02 / SHARED CONTROLS</span><h3>You click. Your agent calls a tool.</h3><p>Create projects, organize tags, and find conversations through the interface—or let your agent use the corresponding tools.</p></article>
-            <article><span>03 / YOUR ARCHITECTURE</span><h3>A workspace. And a framework.</h3><p>Use the complete host or embed the configured responder in your own product. Same building blocks, your composition.</p></article>
+            <article><span>01 / ORGANIZE</span><h3>Brief the project. Not every chat.</h3><p>Project context feeds each member conversation’s next turn. You or your agent can organize chats and tags. Less repeated briefing, less filing by hand.</p><a href={`${DOCS_URL}observability/web-console/#agents-threads-and-turns`}>Shared project context <ArrowIcon /></a></article>
+            <article><span>02 / DELEGATE</span><h3>Choose the model. Keep the work.</h3><p>Switch supported models for the next reply. Delegate a focused task to a persistent subagent, then follow up without rebuilding its brief.</p><a href={`${DOCS_URL}config/blueprint/`}>Models &amp; subagents <ArrowIcon /></a></article>
+            <article><span>03 / INSPECT</span><h3>Check what ran. Then carry on.</h3><p>Remembered facts and execution records serve different jobs. After an interruption, inspect retained tool results before deciding what needs doing next.</p><a href={ARTIFACTS_URL}>Execution evidence <ArrowIcon /></a></article>
           </div>
-          <a class="text-link" href={`${DOCS_URL}observability/web-console/`}>Explore the console <ArrowIcon /></a>
         </div>
       </section>
 
       <section class="section comparison" id="comparison" aria-labelledby="comparison-heading">
         <div class="wrap">
-          <span class="section-label">Find your fit</span>
-          <h2 id="comparison-heading">Different harnesses.<br /><em>Different starting points.</em></h2>
-          <p class="section-intro">Hermes and OpenClaw are close alternatives; coding harnesses start from a different workflow. Compare the focus, not just the feature list.</p>
+          <span class="section-label">Why choose Mono Agent?</span>
+          <h2 id="comparison-heading">Work in it.<br /><em>Build on it.</em></h2>
+          <p class="section-intro">Manage ongoing agent work and build on the machinery underneath. Use the workspace today; embed the configured responder in your own TypeScript application.</p>
           <dl class="harness-list">
             <div class="harness-row harness-mono">
-              <dt><a href={CONFIG_URL}>Mono Agent <ArrowIcon /></a><span>Config-first workspace &amp; framework</span></dt>
-              <dd>Compose models, tools, optional memory, and channels in one blueprint. Run the workspace or build on its packages.</dd>
+              <dt><a href={COMPOSITION_URL}>Mono Agent <ArrowIcon /></a><span>Workspace to TypeScript composition</span></dt>
+              <dd>Three entry points: the full host, a configured responder without transports, or a lower-level harness. Choose how much infrastructure you own.
+                <pre class="composition-code"><code>const responder = await
+  createConfiguredAgentResponder(&#123; config &#125;);</code></pre>
+                <p class="composition-caption">TypeScript excerpt · <code>config</code> loaded from your blueprint. <a href={COMPOSITION_URL}>Imports &amp; full example <ArrowIcon /></a></p>
+              </dd>
             </div>
             <div class="harness-row">
               <dt><a href="https://hermes-agent.nousresearch.com/docs/">Hermes Agent <ArrowIcon /></a><span>Learning-oriented personal agent</span></dt>
-              <dd>Reuse and develop skills across sessions, retain memory, connect messaging channels, and schedule recurring work.</dd>
+              <dd>Built around reusable, evolving skills, with memory, messaging, and delegation. Integrate through its protocols or embed <a href="https://hermes-agent.nousresearch.com/docs/developer-guide/programmatic-integration">AIAgent in Python</a>.</dd>
             </div>
             <div class="harness-row">
-              <dt><a href="https://docs.openclaw.ai/">OpenClaw <ArrowIcon /></a><span>Self-hosted messaging gateway</span></dt>
-              <dd>Connect chat apps to agents through one gateway, with sessions, memory, multi-agent routing, and a browser control UI.</dd>
+              <dt><a href="https://docs.openclaw.ai/">OpenClaw <ArrowIcon /></a><span>Gateway-centered agent platform</span></dt>
+              <dd>Connects agents, messaging, and a browser control UI. Its documented <a href="https://docs.openclaw.ai/gateway/embedding">embedding path</a> supervises the executable through the Gateway WebSocket protocol.</dd>
             </div>
           </dl>
           <details class="comparison-more">
@@ -330,8 +329,8 @@ const jsonLd = {
             </div>
           </dl>
           </details>
-          <p class="comparison-note">A snapshot of documented focus, not a feature or performance ranking. Each name links to its official docs. Checked 20 September 2026.</p>
-          <p class="comparison-choice">Choose Mono Agent when you want to shape the whole setup—<strong>models, context, memory, tools, and channels</strong>—and keep it in a versioned blueprint.</p>
+          <p class="comparison-note">Models, memory, tools, and delegation overlap. These are documented approaches, not a feature or performance ranking. Sources checked 20 September 2026.</p>
+          <p class="comparison-choice"><strong>A workspace you can extend—not a zero-setup hosted assistant.</strong> For technical users who want to configure and operate their agent.</p>
         </div>
       </section>
 
@@ -375,10 +374,9 @@ mono-agent web run --loopback</code></pre>
           </ol>
           <div class="note">
             <p>
-              <strong>Published vs. source.</strong> The docs describe the
-              current source; the published npm release can lag behind it. The
-              <a href={RELEASE_STATUS_URL}>release status page</a> lists exactly
-              what is in the release and how to run a source build instead.
+              <strong>Projects, tags, persistent subagents:</strong> included in
+              <a href={RELEASE_URL}>v0.22.0</a>. The console image shows current source;
+              visual details may differ from your installed version.
             </p>
           </div>
         </div>
@@ -414,11 +412,12 @@ mono-agent web run --loopback</code></pre>
             <details>
               <summary>What can I inspect after a run?</summary>
               <div class="faq-answer">
-                Local JSONL events and a run summary record model changes, tool
-                activity, timing, and usage that reached the recorder. These are
-                bounded, best-effort filesystem records rather than a transactional
-                audit log, so a crash can lose an unsaved tail. Use them to review
-                what happened, not as proof that every in-flight event persisted.
+                <code>RunHistory</code> reads settled run evidence; <code>SessionHistory</code>
+                reads separately retained tool invocations and results, including failures
+                and interruptions. Curated memory is a different source. Retention is
+                bounded and records can be incomplete: inspection helps you decide what
+                to do next, but does not automatically resume work or prove that
+                repeating a command is safe. <a href={ARTIFACTS_URL}>Read the evidence boundaries</a>.
               </div>
             </details>
             <details>
@@ -469,7 +468,7 @@ mono-agent web run --loopback</code></pre>
           <ul>
             <li><a href={GITHUB_URL}><svg class="github-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 .75a11.25 11.25 0 0 0-3.558 21.922c.563.104.768-.244.768-.542 0-.267-.01-.975-.015-1.914-3.13.68-3.791-1.508-3.791-1.508-.512-1.3-1.25-1.646-1.25-1.646-1.022-.7.078-.686.078-.686 1.13.08 1.724 1.16 1.724 1.16 1.005 1.722 2.638 1.225 3.28.937.102-.728.393-1.225.715-1.507-2.498-.284-5.124-1.25-5.124-5.562 0-1.228.439-2.233 1.159-3.02-.116-.285-.502-1.429.11-2.977 0 0 .945-.303 3.094 1.154A10.78 10.78 0 0 1 12 6.183c.956.004 1.919.129 2.819.378 2.148-1.457 3.092-1.154 3.092-1.154.614 1.548.228 2.692.112 2.977.722.787 1.158 1.792 1.158 3.02 0 4.324-2.63 5.275-5.136 5.553.404.35.766 1.043.766 2.101 0 1.518-.014 2.743-.014 3.115 0 .301.203.651.774.54A11.252 11.252 0 0 0 12 .75Z" /></svg>GitHub</a></li>
             <li><a href={DOCS_URL}>Documentation</a></li>
-            <li><a href={RELEASE_STATUS_URL}>Release status</a></li>
+            <li><a href={RELEASE_URL}>Release notes</a></li>
           </ul>
         </nav>
       </div>

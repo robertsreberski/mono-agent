@@ -677,6 +677,12 @@ pre {
 .console-benefits p {
   font-size:var(--text-support)
 }
+.console-benefits article>a {
+  display:inline-block;
+  margin-top:14px;
+  font-size:var(--text-label);
+  color:var(--ink)
+}
 .text-link {
   font-size:var(--text-support);
   color:var(--ink);
@@ -1318,3 +1324,8 @@ pre {
   .comparison-more summary { padding:18px 14px }
   .comparison-more summary span { display:block;margin:6px 0 0 16px }
 }
+
+/* A real composition seam, presented as a compact excerpt, not a fake editor. */
+.composition-code { margin:18px 0 10px; padding:16px; border:1px solid var(--line); border-radius:8px; background:var(--bg); font-size:12px; line-height:1.7; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--ink) }
+.harness-row .composition-caption { font-size:var(--text-label); line-height:1.65 }
+.harness-row dd { min-width:0 }

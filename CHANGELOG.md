@@ -20,6 +20,10 @@
   Shorter CTAs, a single-line JSON caption, consistent FAQ spacing, and a tighter
   mobile deck reduce clutter; cached geometry and compositor transform updates
   avoid repeated card measurements during scrolling.
+  Position the site around ongoing agent work and TypeScript composition, with
+  shared project context, delegated work, and retained execution evidence as
+  concrete benefits. Keep the JSON blueprint prominent, compare architectural
+  approaches honestly, and correct availability labels against v0.22.0.
   Source only; the site is not deployed yet.
 
 - Let `WebSearch` request an optional ISO country localization preference,

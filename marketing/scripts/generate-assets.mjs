@@ -21,8 +21,8 @@ const sculpture=await sharp(source).resize({width:600}).toBuffer();
 const text=Buffer.from(`<svg width="1200" height="630" xmlns="http://www.w3.org/2000/svg">
 <text x="68" y="210" font-family="Verdana,sans-serif" font-size="18" fill="#d2f390">INDEPENDENT BY DESIGN</text>
 <text x="62" y="310" font-family="Georgia,serif" font-size="80" fill="#eceee5">mono-agent</text>
-<text x="66" y="386" font-family="Verdana,sans-serif" font-size="24" fill="#d2f390">Local-first AI workspace</text>
-<text x="66" y="430" font-family="Verdana,sans-serif" font-size="24" fill="#afb5a9">for coding and research</text>
+<text x="66" y="386" font-family="Verdana,sans-serif" font-size="24" fill="#d2f390">An agent workspace</text>
+<text x="66" y="430" font-family="Verdana,sans-serif" font-size="24" fill="#afb5a9">you can build on</text>
 </svg>`);
 await sharp({create:{width:1200,height:630,channels:3,background:'#101211'}})
   .composite([{input:sculpture,left:615,top:15},{input:text,left:0,top:0}])
