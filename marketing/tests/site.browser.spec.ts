@@ -383,3 +383,20 @@ test('every GitHub CTA has an accessible decorative GitHub mark',async ({page})=
     expect(await link.textContent()).toMatch(/GitHub|Get the code/);
   }
 });
+
+test('keyboard entry into the final card keeps focus visible after unfolding',async ({page})=>{
+  await page.setViewportSize({width:390,height:844}); await page.goto('/');
+  const cards=page.locator('.block-summary');
+  await cards.evaluate(el=>scrollTo({top:scrollY+el.getBoundingClientRect().top-innerHeight*.8,behavior:'instant'}));
+  await expect(cards).toHaveAttribute('data-cards-motion','true');
+  const last=cards.locator('a').last();
+  await last.focus();
+  await expect(last).toBeFocused();
+  await expect(last).toBeInViewport({ratio:1});
+  await page.locator('.blocks-note a').focus();
+  await cards.evaluate(el=>scrollTo({top:scrollY+el.getBoundingClientRect().top-innerHeight*.8,behavior:'instant'}));
+  await expect(cards).toHaveAttribute('data-cards-motion','true');
+  await page.keyboard.press('Shift+Tab');
+  await expect(last).toBeFocused();
+  await expect(last).toBeInViewport({ratio:1});
+});
