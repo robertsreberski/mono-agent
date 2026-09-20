@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { performWebSearch, __resetWebSearchThrottleForTests } from "../../agent/tools/web-search.js";
 import { registerSearchProvider } from "../../agent/tools/web-search-providers/registry.js";
 import { claimWebSearchRequest } from "../../agent/tools/web-search-state.js";
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+
+const ctx = createToolContext();
 
 const cleanup = [];
 afterEach(() => { cleanup.splice(0).forEach((fn) => fn()); __resetWebSearchThrottleForTests(); });
@@ -20,13 +23,13 @@ describe("source-level search registry", () => {
       claimWebSearchRequest(options.searchState, "fake", options.callClaims);
       return { ok: true, backend: "fake", results: [{ url: "https://example.com", title: query, snippet: "evidence", backend: "fake" }] };
     });
-    const result = await performWebSearch({ query: "registry evidence" }, { searchConfig: { backend: "fake" } });
+    const result = await performWebSearch({ query: "registry evidence" }, { ctx, searchConfig: { backend: "fake" } });
     expect(result.outcome).toMatchObject({ status: "ok", backend: "fake", requestsThisCall: 1 });
   });
   it("falls through a failing registered provider to a virtual group", async () => {
     register("fake-fail", () => ({ ok: false, backend: "fake-fail", retryable: true, message: "Unavailable" }));
     const fetchImpl = vi.fn(async () => new Response('<div class="result"><a class="result__a" href="https://example.com">Registry evidence</a></div>'));
-    const result = await performWebSearch({ query: "registry evidence" }, { searchConfig: { backend: ["fake-fail", "keyless"] }, fetchImpl });
+    const result = await performWebSearch({ query: "registry evidence" }, { ctx, searchConfig: { backend: ["fake-fail", "keyless"] }, fetchImpl });
     expect(result.outcome).toMatchObject({ status: "ok", backend: "duckduckgo", attemptedBackends: ["fake-fail", "keyless"], fallbackUsed: true });
   });
 
@@ -35,7 +38,7 @@ describe("source-level search registry", () => {
     const search = vi.fn();
     register("fake-countryless", search, { admission });
     const result = await performWebSearch({ query: "registry evidence", country: "PL" }, {
-      searchConfig: { backend: "fake-countryless" },
+      ctx, searchConfig: { backend: "fake-countryless" },
     });
     expect(result).toMatchObject({ error: true, outcome: {
       code: "unsupported_country_filter", requestsUsed: 0, requestsThisCall: 0, dispatchesUsed: 0,
@@ -51,7 +54,7 @@ describe("source-level search registry", () => {
     register("fake-countryless-chain", search, { admission });
     const fetchImpl = vi.fn(async () => new Response('<div class="result"><a class="result__a" href="https://example.com">Registry evidence</a></div>'));
     const result = await performWebSearch({ query: "registry evidence", country: "PL" }, {
-      searchConfig: { backend: ["fake-countryless-chain", "duckduckgo"] }, fetchImpl,
+      ctx, searchConfig: { backend: ["fake-countryless-chain", "duckduckgo"] }, fetchImpl,
     });
     expect(result.outcome).toMatchObject({
       status: "ok", backend: "duckduckgo", requestsUsed: 1, dispatchesUsed: 1,

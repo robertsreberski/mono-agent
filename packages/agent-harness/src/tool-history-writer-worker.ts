@@ -12,7 +12,7 @@ import {
   readdirSync,
   unlinkSync,
 } from "node:fs";
-import { dirname, join, parse, resolve, sep } from "node:path";
+import { join, parse, resolve, sep } from "node:path";
 import { parentPort, workerData } from "node:worker_threads";
 import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";

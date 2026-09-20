@@ -1,3 +1,4 @@
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -30,7 +31,7 @@ afterEach(() => {
 
 describe("Exec", () => {
   it("does not place an exhausted request budget in tool definitions", () => {
-    for (const tool of getPiBuiltinTools(["Exec", "Bash"], {
+    for (const tool of getPiBuiltinTools(["Exec", "Bash"], { ctx,
       processJobsAvailability: { chainDepth: 32, maxChainDepth: 32, remainingStarts: 0, unavailableReason: "chain_depth_exhausted" },
     })) {
       expect(tool.parameters.properties).toHaveProperty("background");
@@ -54,12 +55,12 @@ describe("Exec", () => {
     },
   );
   it("keeps definitions byte-identical with and without a controller", () => {
-    const withoutController = getPiBuiltinTools(["Exec", "Bash"]);
+    const withoutController = getPiBuiltinTools(["Exec", "Bash"], { ctx });
     const baseline = Object.fromEntries(withoutController.map((tool) => [tool.name, JSON.stringify(tool.parameters)]));
     expect(JSON.parse(baseline.Exec).properties).toHaveProperty("background");
     expect(JSON.parse(baseline.Bash).properties).toHaveProperty("background");
 
-    const withController = getPiBuiltinTools(["Exec", "Bash"], {
+    const withController = getPiBuiltinTools(["Exec", "Bash"], { ctx,
       processJobsController: { start: vi.fn() },
     });
     expect(withController.find((tool) => tool.name === "Exec").parameters.properties.background)
@@ -76,7 +77,7 @@ describe("Exec", () => {
     }
 
     expect(Object.fromEntries(withController.map((tool) => [tool.name, JSON.stringify(tool.parameters)]))).toEqual(baseline);
-    const disabledAgain = getPiBuiltinTools(["Exec", "Bash"]);
+    const disabledAgain = getPiBuiltinTools(["Exec", "Bash"], { ctx });
     expect(Object.fromEntries(disabledAgain.map((tool) => [tool.name, JSON.stringify(tool.parameters)]))).toEqual(baseline);
   });
 
@@ -1204,7 +1205,7 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
   });
 
   it("marks Exec and stateful tools sequential while safe read-only tools may overlap", () => {
-    const safe = getPiBuiltinTools(["Read", "WebFetch", "Bash", "Exec"], {
+    const safe = getPiBuiltinTools(["Read", "WebFetch", "Bash", "Exec"], { ctx,
       toolExecutionMode: "safe-parallel",
     });
     expect(safe.find((tool) => tool.name === "Read").executionMode).toBeUndefined();
@@ -1212,7 +1213,7 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
     expect(safe.find((tool) => tool.name === "Bash").executionMode).toBe("sequential");
     expect(safe.find((tool) => tool.name === "Exec").executionMode).toBe("sequential");
 
-    const sequential = getPiBuiltinTools(["Read", "WebFetch"], {
+    const sequential = getPiBuiltinTools(["Read", "WebFetch"], { ctx,
       toolExecutionMode: "sequential",
     });
     expect(sequential.every((tool) => tool.executionMode === "sequential")).toBe(true);
@@ -1295,3 +1296,6 @@ describe("per-run foreground command ceilings", () => {
     });
   }
 });
+
+// Each test file binds its direct tool calls to an explicit context.
+const ctx = createToolContext();

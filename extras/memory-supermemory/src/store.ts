@@ -5,7 +5,6 @@ import type {
   MemoryCompletedTurn,
   MemoryCompletedTurnResult,
   MemoryStore,
-  MemoryWriteResult,
 } from "@mono-agent/agent-contracts";
 
 import type { SupermemoryClient } from "./client.js";
@@ -20,9 +19,7 @@ const DEFAULT_COMPLETED_TURN_CACHE_MAX_ENTRIES = 10_000;
 /** Keep even an explicitly enlarged cache within a finite, reviewable memory bound. */
 const COMPLETED_TURN_CACHE_MAX_ENTRIES_LIMIT = 1_000_000;
 const RECALL_WARNING = "supermemory recall failed; continuing without remote memory.";
-const SUMMARY_WARNING = "supermemory appendHostSummary failed; the turn continues.";
 const COMPLETED_TURN_WARNING = "supermemory persistCompletedTurn failed; the provider response remains valid.";
-const CAPTURE_WARNING = "supermemory capture failed; the queued turn continues.";
 
 export interface SupermemoryStoreOptions {
   /** Hard cap on the bytes a single `load` may return. */
@@ -52,16 +49,13 @@ const NOOP_LOGGER = { warn: (_message: string): void => {} };
  * The strong `persistCompletedTurn` path awaits one run-keyed remote upsert, coalesces exact
  * same-process retries, rejects payload conflicts retained in a bounded same-process LRU, and
  * propagates failure so the harness can report degradation without changing the provider answer.
- * Legacy writes remain best-effort and NEVER throw: `appendHostSummary` returns `bytesWritten: 0`
- * on failure; `scheduleCapture` is fire-and-forget, serialized through a single chain so captures
- * cannot overlap or reject the chain. Supermemory does extraction/consolidation server-side, so
+ * Supermemory does extraction/consolidation server-side, so
  * ingestion is async and a just-admitted turn may not be immediately searchable.
  *
  * `load` degrades to `undefined` on any client error (mirroring how the harness treats empty recall),
  * so a slow/down backend yields no context rather than a failed turn.
  */
 export class SupermemoryMemoryStore implements MemoryStore {
-  private captureChain: Promise<void> = Promise.resolve();
   /** Bounded LRU of successful run/payload digests; never retains raw ids or content. */
   private readonly completedTurns = new Map<string, string>();
   private readonly completedTurnInflight = new Map<string, {
@@ -99,30 +93,12 @@ export class SupermemoryMemoryStore implements MemoryStore {
     }
   }
 
-  async appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
-    const bytes = Buffer.byteLength(summary, "utf8");
-    try {
-      await this.client.add({
-        content: summary,
-        // Idempotent: re-emitting the same one-liner upserts instead of duplicating. Supermemory
-        // customIds allow only [A-Za-z0-9._-], so use a hyphen separator (NOT a colon — that is
-        // rejected, which would silently drop the write).
-        customId: `host-summary-${stableId(`${conversationId}\n${summary}`)}`,
-        metadata: { kind: "host-summary", conversationId },
-      });
-      return { conversationId, source: SUPERMEMORY_SOURCE, bytesWritten: bytes };
-    } catch {
-      safeWarn(this.logger, SUMMARY_WARNING);
-      return { conversationId, source: SUPERMEMORY_SOURCE, bytesWritten: 0 };
-    }
-  }
-
   /**
    * Strong, awaited completed-turn admission. The remote custom id is derived
    * only from the stable run id, so a cross-process retry upserts the same
    * logical document; digests distinguish exact retry from conflict only while
    * they remain in the bounded local LRU.
-   * Unlike the legacy write methods, any failure is logged and propagated for
+   * Any failure is logged and propagated for
    * the harness to surface as memory degradation.
    */
   async persistCompletedTurn(turn: MemoryCompletedTurn): Promise<MemoryCompletedTurnResult> {
@@ -180,24 +156,11 @@ export class SupermemoryMemoryStore implements MemoryStore {
     }
   }
 
-  scheduleCapture(conversationId: string, text: string): void {
-    this.captureChain = this.captureChain
-      .then(async () => {
-        try {
-          await this.client.add({ content: text, metadata: { kind: "turn-capture", conversationId } });
-        } catch {
-          safeWarn(this.logger, CAPTURE_WARNING);
-        }
-      })
-      // Terminal guard: the chain must never settle rejected, or every future capture would be skipped.
-      .catch(() => undefined);
-  }
-
   async flush(): Promise<void> {
-    await this.captureChain;
+    await Promise.allSettled([...this.completedTurnInflight.values()].map(({ promise }) => promise));
   }
 
-  /** Drain queued captures (HTTP client owns no handle to close). */
+  /** Await in-flight admissions (HTTP client owns no handle to close). */
   async close(): Promise<void> {
     await this.flush();
   }
@@ -227,10 +190,6 @@ export class SupermemoryMemoryStore implements MemoryStore {
       }
     }
   }
-}
-
-function stableId(input: string): string {
-  return createHash("sha1").update(input).digest("hex").slice(0, 24);
 }
 
 function safeHash(input: string): string {

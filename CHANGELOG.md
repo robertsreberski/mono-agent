@@ -211,6 +211,17 @@
   error backoff or `Retry-After`; the tool still changes no routing and
   purchases no quota.
 
+- **Breaking: simplify framework configuration, runtime and memory contracts.**
+  Remove inert permission/recall options, prose-triggered effort escalation,
+  process-global tool configuration (direct public tool execution now requires
+  an explicit `ToolContext`), legacy flat runtime settings, the legacy
+  memory-write protocol and the standalone memory-recall binary. Phoenix moves
+  to the explicitly installed, matching-version `@mono-agent/observability-phoenix`
+  extra. Operator streaming, wire types, previews and channel redaction share
+  canonical implementations. See the [migration guide](./docs/reference/framework-simplification-migration.md)
+  before upgrading an existing consumer.
+
+
 ## 0.22.0 — Persistent subagents and Projects (2026-09-16)
 
 ### Persistent subagents

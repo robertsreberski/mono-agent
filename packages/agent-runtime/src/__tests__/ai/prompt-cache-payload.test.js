@@ -10,6 +10,10 @@ import { createAgentHarness, createInMemoryHistoryStore, createToolPolicy } from
 import { loadMonoAgentConfig } from '../../../../config/src/index.ts';
 import { generatePiNativeResponse } from '../../ai/providers/pi-native.js';
 import { disposeProviderSession } from '../../ai/runtime/sessions.js';
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+
+// Direct tool construction in this file binds one explicit context.
+const ctx = createToolContext();
 
 const roots = [];
 const sessions = new Set();
@@ -181,7 +185,7 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps actual %s tool arrays
         processJobsAvailability: { chainDepth: index, maxChainDepth: 4, remainingStarts: Math.max(0, 4 - index), ...(index >= 4 ? { unavailableReason: 'chain_depth_exhausted' } : {}) },
       };
       const tools = getPiBuiltinTools(['Bash', 'Exec', 'Agent', 'AgentSend', 'AskParent'], {
-        ...options, processJobsController: options.processJobs,
+        ...options, ctx, processJobsController: options.processJobs,
       });
       if (profile === 'persistent-child') expect(tools.map((tool) => tool.name)).toEqual(['AskParent', 'Bash', 'Exec']);
       const envelope = composeHostTurnEnvelope(formatHostCapabilities(options), kind);
@@ -286,8 +290,8 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MC
     const bound = await extension(input);
     const runOptions = { ...bound.runtimeOptions, toolLimits: { bashTimeoutMs: 120000 - index * 1000 },
       processJobsAvailability: { chainDepth: index, maxChainDepth: 4, remainingStarts: Math.max(0, 4 - index), ...(index >= 4 ? { unavailableReason: 'chain_depth_exhausted' } : {}) } };
-    const builtins = getPiBuiltinTools(['Bash', 'Exec', 'Read'], { toolLimits: runOptions.toolLimits });
-    const mcp = await initPiMcpTools(runOptions.mcpServers, new Set(builtins.map((tool) => tool.name)));
+    const builtins = getPiBuiltinTools(['Bash', 'Exec', 'Read'], { ctx, toolLimits: runOptions.toolLimits });
+    const mcp = await initPiMcpTools(runOptions.mcpServers, new Set(builtins.map((tool) => tool.name)), { ctx });
     try {
       expect(mcp.warnings).toEqual([]);
       if (!interactive) {

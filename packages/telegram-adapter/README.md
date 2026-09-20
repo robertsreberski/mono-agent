@@ -299,6 +299,8 @@ The request lifecycle is:
 | [`adapter.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/adapter.ts) | Request normalization, attachment metadata, download limits, and responder types. |
 | [`grammy-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/grammy-client.ts) | grammY-backed Bot API and file-transfer boundary. |
 | [`message-stream.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/message-stream.ts) | Telegram delivery, retry classification, transient activity, and finalization. |
+| [`log-redaction.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/log-redaction.ts) | Bot token patterns and diagnostic labels for the bounded shared log sanitizer in `agent-contracts`. |
+| [`reply-files.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/reply-files.ts) | Native document delivery and destination-bound deduplication, using shared artifact metadata and byte-count verification. |
 | [`transcription.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/transcription.ts) | Optional OpenAI-compatible audio transcription. |
 | [`ask-user.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/ask-user.ts) | Bounded callback encoding for structured `AskUser` buttons. |
 | [`reply-options.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/reply-options.ts) | Callback protocol for non-blocking `TelegramSendMessage.reply_options`. |

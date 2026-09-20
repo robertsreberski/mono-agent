@@ -20,7 +20,6 @@ A minimal runtime block selects a provider model and (optionally) backup models:
       { "model": "ollama:gemma4:31b" }
     ],
     "effort": "medium",
-    "permissionMode": "default",
     "maxTurns": 0,
     "session": { "mode": "continuous", "idleTimeoutMs": 1800000 }
   }
@@ -36,7 +35,6 @@ Guided init searches every bundled model for the Pi catalog — Anthropic, GitHu
 | `runtime.model` | `MONO_AGENT_MODEL` | `openai-codex:gpt-5.6-terra` | Guided init can initially select the live provider default; refs use `<provider>:<model>`. |
 | `runtime.fallbacks` | `MONO_AGENT_FALLBACKS_JSON` | `[]` | ordered `{model, effort?}` routes; omitted effort = provider default |
 | `runtime.effort` | `MONO_AGENT_EFFORT` | provider/model default when unset | `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`; model support is narrower where advertised. Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. The doctor warns and names the nearest valid level when an advertised level is not supported |
-| `runtime.permissionMode` | `MONO_AGENT_PERMISSION_MODE` | `default` | `default`/`plan`/`acceptEdits`/`bypassPermissions` |
 | `runtime.maxTurns` | `MONO_AGENT_MAX_TURNS` | `0` (unlimited) | `1`–`100` caps turns |
 | `runtime.workspace` | `MONO_AGENT_WORKSPACE` | `.` | working dir for runtime tools |
 
@@ -44,7 +42,7 @@ Guided init searches every bundled model for the Pi catalog — Anthropic, GitHu
 
 - [Pi runtime & model references](/runtime/backends/) — the `<provider>:<model>` syntax, rejected legacy spellings, and how the Pi runtime routes a turn.
 - [Providers](/runtime/providers/) — declare which providers the agent supports, widen selection to full catalogs, and configure Pi auth and transport.
-- [Execution effort & permissions](/runtime/execution-effort-permissions/) — tune reasoning depth with `runtime.effort` and the tool-permission posture with `runtime.permissionMode`.
+- [Execution effort & permissions](/runtime/execution-effort-permissions/) — tune reasoning depth with `runtime.effort` and configure actual tool approval and sandbox controls.
 - [Fallback chains](/runtime/fallback/) — canonical `runtime.fallbacks`, exact route effort, legacy compatibility, and visible failover history.
 - [Local providers](/runtime/local-providers/) — wire Ollama, LM Studio, or any OpenAI-compatible endpoint for `<provider>:<model>` references, plus pi-native transport tuning and Pi credential resolution.
 - [Sessions & concurrency](/runtime/sessions-concurrency/) — continuous provider sessions with idle eviction (`runtime.session`) and per-channel admission/execution bounds (`concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns`).

@@ -9,7 +9,6 @@ import { migrations } from "./schema.js";
 import { enforceOwnerOnlySqliteFamily } from "./sqlite-family-mode.js";
 import { loadVec, toBlob } from "./vec.js";
 import {
-  DEFAULT_DECAY_GAMMA,
   DEFAULT_RRF_K,
   DEFAULT_VEC_DIM,
   DEFAULT_WEIGHTS,
@@ -54,7 +53,6 @@ export class MemoryDbCore {
   protected readonly dim: number;
   protected readonly k: number;
   protected readonly weights: RecallWeights;
-  protected readonly decayGamma: number;
   protected readonly clock: () => Date;
 
   constructor(options: MemoryDbOptions) {
@@ -91,7 +89,6 @@ export class MemoryDbCore {
     this.dim = vecDim;
     this.k = options.k ?? DEFAULT_RRF_K;
     this.weights = { ...DEFAULT_WEIGHTS, ...options.weights };
-    this.decayGamma = options.decayGamma ?? DEFAULT_DECAY_GAMMA;
     this.clock = options.clock ?? (() => new Date());
   }
 
@@ -653,8 +650,6 @@ export class MemoryDbCore {
           isInsight: record.isInsight,
         },
         this.weights,
-        this.decayGamma,
-        now,
       );
       scored.push({ record, score });
     }

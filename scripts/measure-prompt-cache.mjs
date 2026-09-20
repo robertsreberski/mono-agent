@@ -127,7 +127,6 @@ function recallFixture() {
   let reads = 0;
   return {
     async load() { reads += 1; return { kind: "markdown", content: `Controlled recall revision ${reads}.`, source: "benchmark", truncated: false }; },
-    async appendHostSummary(conversationId) { return { conversationId, source: "benchmark-disabled", bytesWritten: 0 }; },
   };
 }
 

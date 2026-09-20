@@ -11,8 +11,6 @@ import {
   ChannelDeliveryError,
   DEFAULT_MAX_MESSAGE_CHARS,
   ResilientMessageStream,
-  normalizeTrailing,
-  splitTextByCodePoints,
 } from "@mono-agent/agent-contracts";
 import { redactTelegramErrorMessage } from "./log-redaction.js";
 import { TelegramApiError } from "./telegram-error.js";
@@ -487,10 +485,6 @@ export function classifyTelegramError(error: unknown): TelegramSendOutcome {
   // Non-TelegramApiError (e.g. a transient transport error or a test stub):
   // retry conservatively rather than surfacing it as a hard failure.
   return { kind: "retry" };
-}
-
-export function splitTelegramText(text: string, maxChars: number): string[] {
-  return splitTextByCodePoints(normalizeTrailing(text, ""), maxChars);
 }
 
 function normalizeTelegramText(text: string): string {

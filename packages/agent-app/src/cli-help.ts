@@ -46,7 +46,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       `with timeouts of ${readinessProbeTimeoutDescription()}.`,
       "--preset seeds a blueprint; --with adds channels.",
       `Effort levels: ${EFFORT_LEVELS.join(", ")}; an omitted fallback effort uses that provider's default.`,
-      "Pi forwards the configured effort to the selected provider. Ranking above max only prevents keyword downgrade.",
+      "Pi forwards the configured effort to the selected provider. Message text never changes effort.",
       "--auth runs supported Pi provider auth/preflight before writing.",
       "--dry-run previews only. Existing scaffold/config files are not overwritten;",
       "guided secret setup may securely update .env and .gitignore after explicit review.",

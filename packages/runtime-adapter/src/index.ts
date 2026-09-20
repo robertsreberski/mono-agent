@@ -46,7 +46,6 @@ export type {
   ProcessJobStartRequest,
   ProcessJobStartResult,
 } from "./process-jobs.js";
-export { resolveRuntimePolicies } from "./runtime-policies.js";
 export { PI_TRANSPORTS, isRuntimeSubagentActivityEvent } from "./types.js";
 export {
   DEFAULT_DENY_WRITE,
@@ -149,7 +148,6 @@ export type {
   RuntimeMcpAppRegistration,
   RuntimeModelReference,
   PiTransport,
-  RuntimePolicies,
   RuntimePromptOverrides,
   RuntimeResult,
   RuntimeRunOptions,

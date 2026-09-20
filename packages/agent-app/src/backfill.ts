@@ -2,12 +2,6 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import process from "node:process";
 
-import {
-  buildRunReadableSpans,
-  createDeterministicIdFactory,
-  postOtlpProtobuf,
-  serializeTraceSpans,
-} from "@mono-agent/observability/otel";
 import type {
   RunArtifactScope,
   RunExportContext,
@@ -22,6 +16,8 @@ import {
   resolveAppTraceSourceLabel,
 } from "./app-config.js";
 import type { MonoAgentAppConfigInput, ResolvedExporter } from "./app-config.js";
+import { loadPhoenixPlugin } from "./phoenix-plugin.js";
+import type { PhoenixPluginModule } from "./phoenix-plugin.js";
 
 const SUMMARY_SUFFIX = ".summary.json";
 const EVENTS_SUFFIX = ".events.jsonl";
@@ -165,11 +161,11 @@ function resolveProjectName(exporter: ResolvedExporter, sourceLabel: string, sou
 }
 
 /** POST one run's protobuf body, retrying transient failures (e.g. Phoenix 503 backpressure) with backoff. */
-async function postWithRetry(exporter: ResolvedExporter, projectName: string, body: Uint8Array): Promise<void> {
+async function postWithRetry(plugin: PhoenixPluginModule, exporter: ResolvedExporter, projectName: string, body: Uint8Array): Promise<void> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= BACKFILL_MAX_ATTEMPTS; attempt += 1) {
     try {
-      await postOtlpProtobuf({
+      await plugin.postOtlpProtobuf({
         endpoint: exporter.endpoint,
         headers: { "x-project-name": projectName, ...(exporter.headers ?? {}) },
         body,
@@ -310,6 +306,7 @@ export async function backfillRuns(
   if (exporter === undefined) {
     throw new Error("No observability exporter configured; add an observability.exporters phoenix entry.");
   }
+  const plugin = await loadPhoenixPlugin({ cwd: input.cwd });
   const artifactDir = await resolveAppArtifactDir(input);
   const sourceId = await resolveAppTraceSourceId(input);
   const sourceLabel = await resolveAppTraceSourceLabel(input);
@@ -349,20 +346,18 @@ export async function backfillRuns(
         ...(typeof summary.userInput === "string" ? { userInput: summary.userInput } : {}),
       };
       const { start, end } = runStartEndNanos(summary);
-      const spans = buildRunReadableSpans({
+      const { body, spanCount } = plugin.serializeRunTrace({
         summary,
         events,
         context,
         projectName,
         startTimeUnixNanos: start,
         endTimeUnixNanos: end,
-        idFactory: createDeterministicIdFactory(summary.runId),
       });
-      const body = serializeTraceSpans(spans);
       if (options.dryRun !== true) {
-        await postWithRetry(exporter, projectName, body);
+        await postWithRetry(plugin, exporter, projectName, body);
       }
-      outcomes.push({ runId, status: "ok", spanCount: spans.length, bytes: body.length, dryRun: options.dryRun === true });
+      outcomes.push({ runId, status: "ok", spanCount, bytes: body.length, dryRun: options.dryRun === true });
     } catch (error) {
       outcomes.push({ runId, status: "fail", reason: error instanceof Error ? error.message : String(error) });
     }

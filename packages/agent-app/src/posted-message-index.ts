@@ -1313,19 +1313,6 @@ async function ensureIndexDirectory(indexPath: string): Promise<DirectoryIdentit
   return await secureOwnerOnlyDirectory(directory, identity);
 }
 
-async function existingIndexDirectoryIdentity(
-  indexPath: string,
-): Promise<DirectoryIdentity | undefined> {
-  try {
-    return await existingIndexDirectoryIdentityRequired(indexPath);
-  } catch (error) {
-    if (isErrno(error, "ENOENT")) {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
 async function existingIndexDirectoryIdentityRequired(
   indexPath: string,
 ): Promise<DirectoryIdentity> {

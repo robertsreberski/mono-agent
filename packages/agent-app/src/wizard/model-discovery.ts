@@ -188,25 +188,6 @@ export function formatModelDiscoveryStatus(statuses: readonly ModelDiscoveryStat
   return statuses.map((status) => `${status.provider}: ${status.detail}`).join("\n");
 }
 
-export function defaultEffortForModelRef(modelRef: string, reasoning?: boolean): EffortLevel | undefined {
-  if (reasoning === true) {
-    return "medium";
-  }
-  if (reasoning === false) {
-    return "none";
-  }
-
-  const separator = modelRef.indexOf(":");
-  if (separator <= 0 || separator === modelRef.length - 1) return undefined;
-  const provider = modelRef.slice(0, separator);
-  const model = modelRef.slice(separator + 1);
-  if (provider === "opencode-go" || provider === "ollama" || provider === "lmstudio") {
-    return localModelDefaultEffort(model);
-  }
-
-  return undefined;
-}
-
 async function discoverPiModels(
   opts: Required<Pick<DiscoverWizardModelsOptions, "timeoutMs">> & DiscoverWizardModelsOptions,
 ): Promise<{ candidates: WizardModelCandidate[]; status: ModelDiscoveryStatus }> {
@@ -537,15 +518,6 @@ function parseOllamaList(stdout: string): string[] {
     .filter((name): name is string => name !== undefined && name.length > 0);
 }
 
-export function parseOpenCodeGoModels(stdout: string): string[] {
-  const prefix = "opencode-go/";
-  return stdout
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith(prefix) && line.length > prefix.length)
-    .map((line) => line.slice(prefix.length));
-}
-
 function parseOpenAiModelEntriesBody(body: unknown): DiscoveredModelEntry[] {
   if (!isRecord(body) || !Array.isArray(body.data)) {
     return [];
@@ -602,14 +574,6 @@ function booleanCapability(value: unknown): boolean | undefined {
 
 function arrayCapability(value: readonly unknown[]): boolean | undefined {
   return value.some((entry) => typeof entry === "string" && /^(reasoning|thinking)$/iu.test(entry)) ? true : undefined;
-}
-
-function localModelDefaultEffort(model: string): EffortLevel {
-  const normalized = model.toLowerCase();
-  return ["gpt-oss", "qwen3", "qwq", "deepseek-r1", "reasoning", "thinking"].some((token) => normalized.includes(token))
-    || /(?:^|[-_:/.\s])o[1345](?:$|[-_:/.\s])/u.test(normalized)
-    ? "medium"
-    : "none";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

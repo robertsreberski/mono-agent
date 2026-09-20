@@ -30,8 +30,7 @@ import { MAX_TOOL_RESULT_BYTES, summarisePayload, wrapToolsWithBloatGuard } from
 import { wrapToolsWithApprovalGate } from "../approval.js";
 import { normalizeImageForModel } from "./shared/image.js";
 import { isInsidePath } from "./shared/path-resolver.js";
-import { readToolRuntime } from "./shared/runtime-context.js";
-import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 import { filterEnvelopeNextActions, webFailureEnvelope } from "./web-actionable.js";
 import { createAskParentTool } from "./ask-parent-tool.js";
 import { createAgentSendTool } from "./agent-send-tool.js";
@@ -110,7 +109,7 @@ function artifactFilename(filename, outputDir) {
 export function normalizeMcpToolParams(_serverName, toolName, params, { qaOutputDir, ctx } = {}) {
   if (!params || typeof params !== "object" || Array.isArray(params)) return params;
   if (!PLAYWRIGHT_FILENAME_TOOLS.has(toolName) || !params.filename || isAbsolute(String(params.filename))) return params;
-  const dir = qaOutputDir ?? (ctx ?? readToolRuntime()).qaOutputDir;
+  const dir = qaOutputDir ?? (requireToolContext(ctx)).qaOutputDir;
   return {
     ...params,
     filename: artifactFilename(params.filename, dir),
@@ -118,7 +117,7 @@ export function normalizeMcpToolParams(_serverName, toolName, params, { qaOutput
 }
 
 function normalizeWorkdir(value, cwd, ctx) {
-  const base = resolve(cwd || (ctx ?? readToolRuntime()).workspace || process.cwd());
+  const base = resolve(cwd || (requireToolContext(ctx)).workspace || process.cwd());
   const resolved = value ? resolve(absolutizePath(value, base)) : base;
   return isInsidePath(base, resolved) ? resolved : base;
 }
@@ -547,10 +546,10 @@ export function getPiBuiltinTools(allowedTools, {
   // Host-only, request-current observation capability; no raw environment or
   // executable parameters are exposed through Agent/AgentSend schemas.
   const recoveryAccess = {
-    workspace: (ctx ?? readToolRuntime()).workspace ?? (ctx ?? readToolRuntime()).repoRoot,
-    readableRoots: (ctx ?? readToolRuntime()).additionalReadRoots ?? [],
-    sandboxPolicy: resolveSandboxPolicy(ctx ?? readToolRuntime(), sandboxPolicy),
-    sandboxEngine: sandboxEngine ?? (ctx ?? readToolRuntime()).sandboxEngine,
+    workspace: (requireToolContext(ctx)).workspace ?? (requireToolContext(ctx)).repoRoot,
+    readableRoots: (requireToolContext(ctx)).additionalReadRoots ?? [],
+    sandboxPolicy: resolveSandboxPolicy(requireToolContext(ctx), sandboxPolicy),
+    sandboxEngine: sandboxEngine ?? (requireToolContext(ctx)).sandboxEngine,
     runProbe: async (prepared, timeoutMs) => {
       if (prepared?.sandboxed !== true) throw new Error("Readonly observation sandbox is unavailable.");
       const handle = startPreparedProcess({ ...prepared, args: [...prepared.args] }, {
@@ -571,7 +570,7 @@ export function getPiBuiltinTools(allowedTools, {
   const webDeliveryExposed = (name) => (webDeliveryAllowAll || allowedTools.includes(name)) && !webDeliveryDenied.has(name);
   const filterWebDelivery = (result) => {
     if (!result || result.error || typeof result.text !== "string" || !result.outcome) return result;
-    const runtime = ctx ?? readToolRuntime();
+    const runtime = requireToolContext(ctx);
     const sandbox = runtime.sandbox ?? passthroughSandbox;
     const policy = resolveSandboxPolicy(runtime, sandboxPolicy);
     const filtered = filterEnvelopeNextActions(result.text, result.outcome, (action) => {
@@ -728,16 +727,18 @@ export function resolveMcpStdioCwd(cfg = {}, cwd = null) {
 }
 
 export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPolicy = null, sandboxEngine = null, ctx = null } = {}) {
-  const resolvedCtx = ctx ?? readToolRuntime();
+  const resolvedCtx = requireToolContext(ctx);
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const appOwnedLocalBinding = cfg[Symbol.for("@mono-agent/app-owned-local-binding")] === true;
   return sandbox.prepareCommand({
     policy: resolveSandboxPolicy(resolvedCtx, sandboxPolicy),
-    engine: sandboxEngine ?? undefined,
+    engine: sandboxEngine ?? resolvedCtx.sandboxEngine ?? undefined,
     command: {
       command: cfg.command,
       args: cfg.args || [],
-      cwd: resolveMcpStdioCwd(cfg, cwd),
+      // Never fall back to process.cwd(): the explicit context's workspace is the
+      // only host-independent default for a per-instance runtime.
+      cwd: resolveMcpStdioCwd(cfg, cwd ?? resolvedCtx.workspace),
       ...(cfg.env && typeof cfg.env === "object" ? { env: cfg.env } : {}),
       ...(appOwnedLocalBinding ? { allowLocalBinding: true } : {}),
     },
@@ -750,7 +751,7 @@ export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPoli
  * @param {{cwd?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, mcpApps?: any}} [options]
  */
 async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, ctx, mcpApps } = {}) {
-  const brand = (ctx ?? readToolRuntime()).runtimeBrand;
+  const brand = (requireToolContext(ctx)).runtimeBrand;
   const privateCapabilityUrl = cfg?.[PRIVATE_CAPABILITY_URL] === true;
   const client = new McpClient(
     { name: `${brand.mcpClientName}/${name}`, version: brand.mcpClientVersion },
@@ -781,7 +782,8 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, 
       const prepared = await prepareMcpStdioCommand(cfg, { cwd, sandboxPolicy, sandboxEngine, ctx });
       transport = new StdioClientTransport({
         command: prepared.command,
-        args: prepared.args || [],
+        // Copy the (readonly) prepared args into the transport's mutable list.
+        args: [...(prepared.args || [])],
         cwd: prepared.cwd,
         env: { ...process.env, ...(prepared.env || {}) },
       });

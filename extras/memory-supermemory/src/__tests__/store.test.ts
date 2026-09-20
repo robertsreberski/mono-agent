@@ -100,43 +100,6 @@ describe("SupermemoryMemoryStore.load", () => {
   });
 });
 
-describe("SupermemoryMemoryStore.appendHostSummary", () => {
-  it("adds a one-line document with an idempotent customId and returns bytesWritten", async () => {
-    const client = new FakeClient();
-    const { store } = makeStore(client);
-
-    const result = await store.appendHostSummary("conv-1", "remembered a fact");
-
-    expect(result).toEqual({ conversationId: "conv-1", source: "supermemory", bytesWritten: 17 });
-    const added = client.added[0];
-    expect(added?.content).toBe("remembered a fact");
-    // Supermemory customIds allow only [A-Za-z0-9._-] — no colon.
-    expect(added?.customId).toMatch(/^host-summary-[a-f0-9]+$/u);
-    expect(added?.metadata).toMatchObject({ kind: "host-summary", conversationId: "conv-1" });
-  });
-
-  it("derives a stable customId for identical content", async () => {
-    const client = new FakeClient();
-    const { store } = makeStore(client);
-
-    await store.appendHostSummary("conv-1", "same");
-    await store.appendHostSummary("conv-1", "same");
-
-    expect(client.added[0]?.customId).toBe(client.added[1]?.customId);
-  });
-
-  it("returns bytesWritten 0 and never throws when the add fails", async () => {
-    const client = new FakeClient();
-    client.failAdd = true;
-    const { store, warnings } = makeStore(client);
-
-    const result = await store.appendHostSummary("conv-1", "x");
-
-    expect(result.bytesWritten).toBe(0);
-    expect(warnings.some((w) => w.includes("appendHostSummary failed"))).toBe(true);
-  });
-});
-
 describe("SupermemoryMemoryStore.persistCompletedTurn", () => {
   it.each([0, 1.5, 1_000_001, Number.NaN])(
     "rejects an invalid completed-turn cache bound (%s)",
@@ -418,36 +381,22 @@ describe("SupermemoryMemoryStore.persistCompletedTurn", () => {
   });
 });
 
-describe("SupermemoryMemoryStore.scheduleCapture", () => {
-  it("posts the full turn as a capture and drains via flush", async () => {
+describe("SupermemoryMemoryStore admission draining", () => {
+  it.each([false, true])("close waits for an in-flight admission (failure=%s)", async (failAdd) => {
     const client = new FakeClient();
+    let release!: () => void;
+    client.addGate = new Promise<void>((resolve) => { release = resolve; });
+    client.failAdd = failAdd;
     const { store } = makeStore(client);
-
-    store.scheduleCapture("conv-1", "the whole turn text");
-    await store.flush();
-
-    expect(client.added).toHaveLength(1);
-    expect(client.added[0]?.content).toBe("the whole turn text");
-    expect(client.added[0]?.metadata).toMatchObject({ kind: "turn-capture", conversationId: "conv-1" });
-  });
-
-  it("serializes captures and survives failures without breaking the chain", async () => {
-    const client = new FakeClient();
-    client.failAdd = true;
-    const { store, warnings } = makeStore(client);
-
-    store.scheduleCapture("c", "one");
-    store.scheduleCapture("c", "two");
-    await store.flush();
-
-    expect(client.added).toHaveLength(2);
-    expect(warnings.filter((w) => w.includes("capture failed"))).toHaveLength(2);
-
-    // Chain still works after failures.
-    client.failAdd = false;
-    store.scheduleCapture("c", "three");
-    await store.flush();
-    expect(client.added).toHaveLength(3);
+    const admission = store.persistCompletedTurn({ runId: "run-drain", conversationId: "conv", summary: "Await remote admission." });
+    const observed = admission.then(() => "admitted", () => "failed");
+    let closed = false;
+    const closing = store.close().then(() => { closed = true; });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    release();
+    await closing;
+    expect(await observed).toBe(failAdd ? "failed" : "admitted");
   });
 });
 

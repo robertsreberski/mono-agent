@@ -13,7 +13,7 @@ import { buildSubagentsOptions } from "../../../dist/configured-agent.js";
 import { openProcessJobStore } from "../../../dist/process-jobs-store.js";
 import { createAgentTool } from "../../../../agent-runtime/src/agent/tools/agent-tool.js";
 import { generatePiNativeResponse } from "../../../../agent-runtime/src/ai/providers/pi-native.js";
-import { configureToolRuntime } from "../../../../agent-runtime/src/agent/tools/shared/runtime-context.js";
+import { createToolContext, updateToolContext } from "../../../../agent-runtime/src/agent/tools/shared/tool-context.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js";
 
 const durationMs = Number(process.argv[2] ?? 250);
@@ -51,8 +51,11 @@ try {
   } });
   const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider);
-  const driver = { configureTools: (next) => configureToolRuntime({ ...next, workspace: root }),
-    run: (prompt, options) => generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" }),
+  // The driver owns one explicit tool context for this fixture run: the retired
+  // process-global configuration seam is gone, so tools read the workspace from it.
+  const toolContext = createToolContext({ workspace: root });
+  const driver = { configureTools: (next) => updateToolContext(toolContext, { ...next, workspace: root }),
+    run: (prompt, options) => generatePiNativeResponse(prompt, { ...options, toolContext, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" }),
   };
   runtime = createMonoRuntime({ fallbackChain: [{ model: config.runtime.model }], resolveAttempt: () => ({ runtime: driver }) });
   const subagents = buildSubagentsOptions(config, { runtime, baseModel: config.runtime.model },

@@ -85,10 +85,6 @@ export class ThinkingCell implements Component {
     this.expandedValue = expanded;
   }
 
-  isExpanded(): boolean {
-    return this.expandedValue;
-  }
-
   /** Stamped once this cell is sealed (turn's first thought → this seal). */
   setDurationMs(ms: number): void {
     this.durationMsValue = ms;

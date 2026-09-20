@@ -11,3 +11,5 @@ export type { DeterministicIdFactory } from "./ids.js";
 
 export { postOtlpProtobuf } from "./transport.js";
 export type { PostOtlpProtobufInput, PostOtlpProtobufResult } from "./transport.js";
+
+export { serializeRunTrace, serializeEmptyTrace } from "./payload.js";

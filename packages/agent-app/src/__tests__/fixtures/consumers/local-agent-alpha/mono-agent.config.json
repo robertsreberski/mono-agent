@@ -10,7 +10,6 @@
     ],
     "maxTurns": 0,
     "effort": "high",
-    "permissionMode": "bypassPermissions",
     "workspace": ".",
     "session": {
       "mode": "continuous",
