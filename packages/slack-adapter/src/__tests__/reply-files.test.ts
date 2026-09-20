@@ -194,6 +194,24 @@ describe("Slack native reply files", () => {
     });
   });
 
+  it.each(["metadata", "short", "oversized", "cancelled"] as const)(
+    "retains fallback without starting native upload for %s artifacts",
+    async (failure) => {
+      const { delivery, target, openReplyArtifact, get, upload, complete } = fixture();
+      const controller = new AbortController();
+      if (failure === "cancelled") controller.abort(new Error("caller cancelled"));
+      const content = failure === "short" ? "hell" : failure === "oversized" ? "hello!" : "hello";
+      openReplyArtifact.mockResolvedValueOnce({
+        attachment: failure === "metadata" ? { ...part, mediaType: "application/json" } : part,
+        body: (async function* () { yield new TextEncoder().encode(content); })(),
+      });
+      await expect(delivery.deliver([part], { ...target, signal: controller.signal })).resolves.toEqual([part]);
+      expect(get).not.toHaveBeenCalled();
+      expect(upload).not.toHaveBeenCalled();
+      expect(complete).not.toHaveBeenCalled();
+    },
+  );
+
   it("deduplicates a confirmed integrity id only within the exact destination thread", async () => {
     const { delivery, target, get, upload, complete } = fixture();
 

@@ -75,8 +75,6 @@ describe("fictional E2E production-path contract, not model quality", () => {
   it("replays strong completed turns, drains real SQLite, shares Recall and never captures QA", async () => {
     const input = await fixture();
     const admissions: any[] = []; const requests: any[] = []; const stores: bujo.BujoMemoryStore[] = [];
-    const legacy = vi.spyOn(bujo.BujoMemoryStore.prototype, "capture").mockRejectedValue(new Error("legacy forbidden"));
-    const schedule = vi.spyOn(bujo.BujoMemoryStore.prototype, "scheduleCapture").mockImplementation(() => { throw new Error("legacy forbidden"); });
     const report = await input.runner.runBenchmark({ ...input, hooks: {
       store: (value: bujo.BujoMemoryStore) => stores.push(value),
       admission: (turn: unknown) => admissions.push(turn),
@@ -88,7 +86,8 @@ describe("fictional E2E production-path contract, not model quality", () => {
     expect(admissions.filter((turn) => turn.captureText !== undefined)).toHaveLength(8);
     expect(admissions[0].summary).toContain("User (Mira):");
     expect(admissions[8].captureText).toContain("Assistant: Thanks for telling me.");
-    expect(legacy).not.toHaveBeenCalled(); expect(schedule).not.toHaveBeenCalled();
+    // The legacy lenient capture and scheduling surfaces no longer exist on the store,
+    // so the admissions below are the only completed-turn write path in this run.
     expect(report.summary.qualityMeasured).toBe(false);
     expect(report.summary.semanticQA.value).toBeNull();
     const memory = report.trials.filter((trial: any) => ["lite", "journal", "bujo"].includes(trial.arm));

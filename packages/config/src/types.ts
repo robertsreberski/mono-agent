@@ -9,7 +9,6 @@ import type {
   MEMORY_LLM_PROVIDERS,
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
-  PERMISSION_MODES,
 } from "./enums.js";
 
 export type MemoryWriteMode = (typeof MEMORY_WRITE_MODES)[number];
@@ -182,7 +181,6 @@ export type SessionRollover = "none" | "daily";
  */
 export type SkillDisclosureMode = "index" | "full";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
-export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /** One canonical fallback route. Omitted effort means provider default. */
 export interface RuntimeFallbackConfig {
@@ -326,8 +324,6 @@ export interface MonoAgentConfig {
      */
     readonly retry?: RuntimeRetryConfig;
     readonly effort?: EffortLevel;
-    /** Tool-permission posture forwarded to the runtime (CLI execution modes). */
-    readonly permissionMode?: PermissionMode;
     /** Optional hard cap per run; omitted means unlimited. */
     readonly maxTurns?: number;
     /** Adaptive context compaction policy forwarded directly to the runtime. */

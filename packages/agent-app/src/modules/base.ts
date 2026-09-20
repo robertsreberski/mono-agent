@@ -30,7 +30,7 @@ export interface BaseConfigContext {
  * memory / channel / sandbox / observability blocks.
  */
 export function baseConfig(
-  ctx: BaseConfigContext,
+  _ctx: BaseConfigContext,
   agentName: string,
   model: string,
   fallbacks: readonly MonoAgentRuntimeFallbackJson[],

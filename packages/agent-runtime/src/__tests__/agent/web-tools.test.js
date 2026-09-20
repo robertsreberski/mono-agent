@@ -1,3 +1,4 @@
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
@@ -878,9 +879,9 @@ describe("WebSearch", () => {
     }] }), { headers: { "content-type": "application/json" } }));
     const options = { searchConfig, searchState: state, fetchImpl, ctx: runtimeContext() };
 
-    const first = await performWebSearch({ query: "mono agent one" }, options);
-    const second = await performWebSearch({ query: "mono agent two" }, options);
-    const exhausted = await performWebSearch({ query: "mono agent three" }, options);
+    const first = await performWebSearch({ query: "mono agent one" }, { ctx, ...options });
+    const second = await performWebSearch({ query: "mono agent two" }, { ctx, ...options });
+    const exhausted = await performWebSearch({ query: "mono agent three" }, { ctx, ...options });
 
     expect(first.outcome).toMatchObject({ requestsThisCall: 1, requestsUsed: 1, requestsRemaining: 1 });
     expect(second.outcome).toMatchObject({ requestsThisCall: 1, requestsUsed: 2, requestsRemaining: 0 });
@@ -2247,13 +2248,13 @@ describe("run-scoped web controller and browser isolation", () => {
     ));
     const options = { searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() };
 
-    const first = createWebToolController(options);
+    const first = createWebToolController({ ctx, ...options });
     const firstResult = await first.search({ query: "shared" });
     const callsAfterFirst = fetchImpl.mock.calls.length;
     // A run ending must not throw away results the next turn will ask for again.
     await first.close();
 
-    const second = createWebToolController(options);
+    const second = createWebToolController({ ctx, ...options });
     const secondResult = await second.search({ query: "shared" });
 
     expect(firstResult.outcome.cacheHit).toBe(false);
@@ -2282,12 +2283,12 @@ describe("run-scoped web controller and browser isolation", () => {
       codexSearch: vi.fn(),
       ctx: runtimeContext(),
     };
-    const producer = createWebToolController(options);
+    const producer = createWebToolController({ ctx, ...options });
     const produced = await producer.search({ query: "cached fallback truth" });
     await producer.close();
     const callsAfterProducer = fetchImpl.mock.calls.length;
 
-    const consumer = createWebToolController(options);
+    const consumer = createWebToolController({ ctx, ...options });
     const cached = await consumer.search({ query: "cached fallback truth" });
 
     expect(produced.outcome).toMatchObject({
@@ -2357,12 +2358,12 @@ describe("run-scoped web controller and browser isolation", () => {
       codexSearch,
       ctx: runtimeContext(),
     };
-    const producer = createWebToolController(options);
+    const producer = createWebToolController({ ctx, ...options });
     const produced = await producer.search({ query: "producer full budget cache" });
     await producer.close();
     const callsAfterProducer = fetchImpl.mock.calls.length;
 
-    const consumer = createWebToolController(options);
+    const consumer = createWebToolController({ ctx, ...options });
     const cached = await consumer.search({ query: "producer full budget cache" });
 
     expect(produced.outcome).toMatchObject({ requestsUsed: 4, requestsRemaining: 0, retryInRun: false });
@@ -2832,8 +2833,8 @@ describe("web research regressions", () => {
     const options = { searchConfig, searchState, coordinator, fetchImpl, ctx: runtimeContext() };
 
     if (kind === "dispatch") searchState.dispatchesUsed = 4;
-    else await performWebSearch({ query: "first" }, options);
-    const exhausted = await performWebSearch({ query: "second" }, options);
+    else await performWebSearch({ query: "first" }, { ctx, ...options });
+    const exhausted = await performWebSearch({ query: "second" }, { ctx, ...options });
 
     expect(exhausted.outcome.code).toBe("search_budget_exhausted");
     expect(fetchImpl).toHaveBeenCalledTimes(kind === "dispatch" ? 0 : 1);
@@ -2886,3 +2887,6 @@ describe("web research regressions", () => {
    expect(result.error).toBe(true);
    expect(fetchImpl).toHaveBeenCalledTimes(1);
  });
+
+// Each test file binds its direct tool calls to an explicit context.
+const ctx = createToolContext();

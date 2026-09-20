@@ -14,8 +14,7 @@
 //   - brand: a Grep call with ripgrep forced-missing returns the per-ctx
 //     ripgrepMissingMessage, which embeds ctx.runtimeBrand.doctorCommand — a
 //     directly observable per-instance brand stamp;
-//   - brand global non-clobber: the module-default context's brand is unchanged
-//     (neither runtime leaked its brand onto the shared default — the exact bug).
+//   - default brand: a separately created context keeps the neutral brand.
 //
 // KNOWN SHARED MODULE CACHE (documented, out of scope): ripgrep's cachedRgPath is
 // process-global, so both runtimes share the SAME resolved rg path. This test
@@ -35,7 +34,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createRuntime } from "../../runtime.js";
-import { readRuntimeBrand } from "../../agent/tools/shared/runtime-context.js";
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 import { DEFAULT_RUNTIME_BRAND } from "../../runtime-brand.js";
 import { cachedRgPath } from "../../agent/tools/shared/ripgrep.js";
 
@@ -210,9 +209,8 @@ describe("two createRuntime instances in one process — no cross-contamination"
     expect(joinedB).toContain("doctor-B-cmd");
     expect(joinedB).not.toContain("doctor-A-cmd");
 
-    // (4) Brand isolation (global non-clobber): neither runtime leaked its brand
-    // onto the shared module-default context — the exact pre-ToolContext bug.
-    expect(readRuntimeBrand()).toEqual(DEFAULT_RUNTIME_BRAND);
+    // (4) A newly created independent context keeps the neutral defaults.
+    expect(createToolContext().runtimeBrand).toEqual(DEFAULT_RUNTIME_BRAND);
   });
 
   it("configureTools mutates only its own instance's context, never the sibling's", async () => {

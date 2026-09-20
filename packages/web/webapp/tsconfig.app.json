@@ -4,7 +4,11 @@
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
     "target": "ES2022",
     "useDefineForClassFields": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "bundler",
@@ -23,5 +27,13 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src", "../src/mcp-app-document.ts", "../src/effort-ladder.ts", "../src/message-cost.ts", "../../agent-contracts/src/provider-usage.ts"]
+      "include": [
+        "src",
+        "../src/mcp-app-document.ts",
+        "../src/effort-ladder.ts",
+        "../src/message-cost.ts",
+        "../src/push-preview.ts",
+        "../src/contracts.ts",
+        "../../agent-contracts/src/provider-usage.ts"
+      ]
 }

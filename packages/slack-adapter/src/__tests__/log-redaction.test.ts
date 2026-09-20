@@ -61,6 +61,7 @@ describe("Slack log redaction", () => {
       `https://:${OTHER_BEARER}@host.invalid/`,
       `https://user@realm:${OTHER_BEARER}@host.invalid/`,
       `https://host.invalid/?%74oken=${OTHER_BEARER}`,
+      `https://host.invalid/?api%4bey=${OTHER_BEARER}`,
       `https://host.invalid/?%74oken%ZZ=${OTHER_BEARER}`,
       `https://host.invalid/?auth[token]=${OTHER_BEARER}`,
     ]) {

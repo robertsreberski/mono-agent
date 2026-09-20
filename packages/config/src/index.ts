@@ -32,7 +32,6 @@ export type {
   MonoAgentConfig,
   ObservabilityExporterConfig,
   PiNativeProviderConfig,
-  PermissionMode,
   RuntimeFallbackConfig,
   PhoenixExporterConfig,
   RedactedMemoryConfig,
@@ -71,13 +70,6 @@ export type {
   ReadMonoAgentConfigJsonResult,
 } from "./json-source.js";
 export {
-  detectEffortKeyword,
-  EFFORT_KEYWORD_TRIGGERS,
-  effortRank,
-  maxEffortLevel,
-} from "./effort-keywords.js";
-export type { EffortKeywordMatch, EffortKeywordTrigger } from "./effort-keywords.js";
-export {
   ALLOW_ALL_TOOLS,
   EFFORT_LEVELS,
   MEMORY_BACKENDS,
@@ -85,7 +77,6 @@ export {
   MEMORY_LLM_PROVIDERS,
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
-  PERMISSION_MODES,
 } from "./enums.js";
 export { buildMonoAgentConfigView, CONFIG_ENV_KEYS, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "./config-view.js";
 export type {

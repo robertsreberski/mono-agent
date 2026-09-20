@@ -158,11 +158,7 @@ export function validateWebPushKeys(p256dh: string, auth: string): void {
   }
 }
 
-export function webPushPayload(delivery: ClaimedWebPushDelivery): string {
-  return webPushPayloadWithPreview(delivery, delivery.event.title, delivery.event.body);
-}
-
-function webPushPayloadWithPreview(
+export function webPushPayload(
   delivery: ClaimedWebPushDelivery,
   title: string,
   body: string,
@@ -501,7 +497,7 @@ function webPushRequestDetails(
       ...(delivery.subscription.expirationTime === undefined ? {} : { expirationTime: delivery.subscription.expirationTime }),
       keys: { p256dh: delivery.subscription.p256dh, auth: delivery.subscription.auth },
     },
-    webPushPayloadWithPreview(delivery, title, body),
+    webPushPayload(delivery, title, body),
     {
       TTL: ttl,
       contentEncoding: "aes128gcm",

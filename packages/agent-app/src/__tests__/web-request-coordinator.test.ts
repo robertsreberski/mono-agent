@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fork, type ChildProcess } from "node:child_process";
 import { performWebSearch } from "@mono-agent/agent-runtime/agent/tools/index.js";
+import { createToolContext } from "@mono-agent/agent-runtime/agent/tools/shared/tool-context.js";
 import { createHostWebRequestCoordinator } from "../web-request-coordinator.js";
 const roots: string[] = [];
 const children: ChildProcess[] = [];
@@ -65,13 +66,19 @@ describe("host web request coordinator", () => {
       },
       coordinator,
       fetchImpl,
-      ctx: {
+      ctx: createToolContext({
         workspace: directory,
         sandbox: {
           mergePolicies: (_base: unknown, requested: unknown) => requested,
+          prepareCommand: async ({ command }) => ({
+            ...command,
+            args: command.args ?? [],
+            cwd: command.cwd ?? process.cwd(),
+            sandboxed: false,
+          }),
           networkAllowsUrl: () => true,
         },
-      },
+      }),
     });
     const expectedRetryAtMs = now + 300_000;
 

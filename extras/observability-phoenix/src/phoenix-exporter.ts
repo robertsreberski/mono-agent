@@ -1,4 +1,4 @@
-import { DEFAULT_MAX_EVENTS_PER_RUN } from "../guards.js";
+import { DEFAULT_MAX_EVENTS_PER_RUN } from "@mono-agent/observability/run-export";
 import type {
   PhoenixExporterConfig,
   RunExportContext,
@@ -6,7 +6,7 @@ import type {
   RunExporter,
   RunSummary,
   RuntimeEventLike,
-} from "../types.js";
+} from "@mono-agent/observability";
 
 import { createDeterministicIdFactory } from "./ids.js";
 import type { DeterministicIdFactory } from "./ids.js";

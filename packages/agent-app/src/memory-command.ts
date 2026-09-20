@@ -2,14 +2,11 @@ import { createHash } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import {
   lstat,
-  mkdir,
   open as openFile,
   readFile,
   readdir,
   realpath,
-  rm,
   stat,
-  writeFile,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -1682,7 +1679,7 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
       duplicates: null,
       vectorCoverage: null,
       accessConcentration: null,
-      backlog: { known: false, captureQueue: null, vectorIndex: null },
+      backlog: { known: false, completedTurnIntake: null, vectorIndex: null },
       latency: { known: false, searchP50Ms: null, searchP95Ms: null, indexingMs: null },
       cost: { known: false, totalUsd: null, embeddingCalls: null, llmCalls: null, tokens: null },
       notes: ["Remote backend health metadata is not exposed by the configured client."],
@@ -1716,7 +1713,7 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
   const liveIndexed = audit?.vectors.liveIndexed ?? 0;
   const semanticExpected = memory.embeddings !== undefined;
   const runtimeQueues = runtime.snapshot?.queues;
-  const captureQueue = runtime.stale ? undefined : runtimeQueues?.capture;
+  const completedTurnIntake = runtime.stale ? undefined : runtimeQueues?.intake;
   const runtimeVectorBacklog = runtime.stale ? undefined : runtimeQueues?.index?.remainingBacklog;
   const result = {
     configured: true,
@@ -1731,7 +1728,7 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
     accessConcentration: audit?.access ?? { totalCount: 0, accessedMemories: 0, topOnePercentShare: 0 },
     backlog: {
       known: true,
-      captureQueue: captureQueue === undefined ? null : captureQueue.queued + captureQueue.inFlight,
+      completedTurnIntake: completedTurnIntake === undefined ? null : completedTurnIntake.pending,
       vectorIndex: runtimeVectorBacklog ?? (semanticExpected ? Math.max(0, live - liveIndexed) : 0),
     },
     runtime: {
@@ -2531,7 +2528,7 @@ function renderAudit(result: {
   readonly duplicates: { readonly groups: number; readonly redundantRecords: number; readonly ratio: number } | null;
   readonly vectorCoverage: { readonly indexed: number; readonly liveIndexed: number; readonly liveCoverage: number } | null;
   readonly accessConcentration: { readonly totalCount: number; readonly accessedMemories: number; readonly topOnePercentShare: number } | null;
-  readonly backlog: { readonly captureQueue: number | null; readonly vectorIndex: number | null };
+  readonly backlog: { readonly completedTurnIntake: number | null; readonly vectorIndex: number | null };
   readonly runtime?: { readonly available: boolean; readonly stale: boolean; readonly state?: string };
   readonly latency: { readonly metadataQueryMs?: number | null; readonly searchP50Ms: number | null; readonly searchP95Ms: number | null; readonly indexingMs: number | null };
   readonly cost: { readonly totalUsd: number | null; readonly embeddingCalls: number | null; readonly llmCalls: number | null; readonly tokens: number | null };
@@ -2546,7 +2543,7 @@ function renderAudit(result: {
     ["vector coverage", result.vectorCoverage === null ? "unknown" : formatRatio(result.vectorCoverage.liveCoverage)],
     ["top 1% access share", result.accessConcentration === null ? "unknown" : formatRatio(result.accessConcentration.topOnePercentShare)],
     ["vector backlog", result.backlog.vectorIndex === null ? "unknown" : String(result.backlog.vectorIndex)],
-    ["capture queue", result.backlog.captureQueue === null ? "not live/available" : String(result.backlog.captureQueue)],
+    ["completed turn intake", result.backlog.completedTurnIntake === null ? "not live/available" : String(result.backlog.completedTurnIntake)],
     ["runtime telemetry", result.runtime === undefined || !result.runtime.available
       ? "unavailable"
       : `${result.runtime.state ?? "unknown"}${result.runtime.stale ? " (stale)" : " (live)"}`],

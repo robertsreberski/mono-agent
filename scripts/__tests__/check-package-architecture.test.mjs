@@ -31,7 +31,7 @@ describe("package architecture adapter-neutrality guard", () => {
     expect(packageCatalog.find((entry) => entry.name === "@mono-agent/web")).toMatchObject({
       dir: "web",
       category: "operator-surface",
-      allowedDependencyCategories: ["core", "observability"],
+      allowedDependencyCategories: ["core", "observability", "communication"],
       publishable: true,
     });
   });

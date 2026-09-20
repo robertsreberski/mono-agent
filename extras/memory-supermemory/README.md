@@ -10,7 +10,7 @@ contract while keeping external-backend installation explicitly opt-in.
 
 Category: `context`
 Tier: `plugin`
-Catalog responsibility: Provides a MemoryStore over an external Supermemory instance (local OSS binary or hosted cloud) via its REST API: server-side extraction, hybrid recall, awaited completed-turn admission, and legacy best-effort writes.
+Catalog responsibility: Provides a MemoryStore over an external Supermemory instance (local OSS binary or hosted cloud) via its REST API: server-side extraction, hybrid recall, and awaited completed-turn admission.
 
 <!-- package-metadata:end -->
 
@@ -21,8 +21,7 @@ installed with `@mono-agent/agent-app`; the operator installs and selects it exp
 
 Provides a `MemoryStore` backed by an external
 [Supermemory](https://supermemory.ai) REST service: server-side extraction,
-hybrid recall, awaited run-keyed completed-turn admission, and legacy
-best-effort writes. The service may be a local OSS instance or hosted cloud.
+hybrid recall and awaited run-keyed completed-turn admission. The service may be a local OSS instance or hosted cloud.
 
 ## Install / Usage
 
@@ -102,7 +101,7 @@ the normal wizard offers the plugin after installation.
    block or the tool-oriented recall-hit shape.
 
 These steps describe network requests, not an in-process database. With hosted
-Supermemory, completed-turn text, legacy write text, recall queries, and returned
+Supermemory, completed-turn text, recall queries, and returned
 memory leave the machine. Strong completed-turn metadata omits raw run and
 conversation ids, but its document content still contains the host-approved
 summary and optional capture text. A local service keeps the REST hop on-machine;
@@ -115,7 +114,7 @@ Supermemory responsibilities in either deployment.
 | --- | --- |
 | `src/index.ts` | Validated convenience factory and public exports. |
 | `src/client.ts` | Raw Fetch-based `/v3/documents`, `/v4/search`, and cached `/v3/search` fallback client. |
-| `src/store.ts` | `MemoryStore` behavior, strong admission, legacy write compatibility, recall shaping, and queue draining. |
+| `src/store.ts` | `MemoryStore` behavior, completed-turn admission, recall shaping, and in-flight admission draining. |
 | `src/format.ts` | UTF-8-bounded Markdown `MemoryBlock` rendering. |
 
 ### Read and write behavior
@@ -134,11 +133,8 @@ Supermemory responsibilities in either deployment.
   cannot classify an old duplicate or reject an old conflicting payload.
 - Strong completed-turn documents above 1,000,000 bytes are rejected instead of
   being partially admitted.
-- Legacy `appendHostSummary(conversationId, summary)` and
-  `scheduleCapture(conversationId, text)` remain best-effort compatibility paths.
-  Summary failure returns `bytesWritten: 0`; scheduled capture is serialized and
-  fire-and-forget. Neither throws to its caller, and the bundled harness does not
-  choose them while `persistCompletedTurn` is present.
+- `flush()` and `close()` await all admissions already in flight. Admission
+  failures remain visible to their original caller; draining does not rethrow them.
 - `recall(query, { topK? })` propagates search errors and returns hits shaped for
   the app-owned `MemoryRecall` tool.
 
