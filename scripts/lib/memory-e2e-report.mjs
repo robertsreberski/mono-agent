@@ -128,12 +128,18 @@ function locomoFunnel(trials, events, capture) {
 export function summarize(trials, events, kind, capture = []) {
   const locomoOfficial = locomoOfficialSummary(trials);
   const diagnosticFunnel = locomoFunnel(trials, events, capture);
-  const qualityMeasured = kind === "real" && diagnosticFunnel?.status === "complete"
-    && locomoOfficial?.byArm["full-history"] !== undefined
-    && locomoOfficial.byArm.bujo !== undefined
+  const officialLexicalMetricMeasured = kind === "real" && diagnosticFunnel?.status === "complete"
+    && locomoOfficial !== undefined && Object.values(locomoOfficial.byArm).length > 0
     && Object.values(locomoOfficial.byArm).every((arm) => arm.overall.status === "complete");
+  // The pinned official metric is a lexical diagnostic. It is not a semantic
+  // correctness review, so the generic quality flag stays false until actual
+  // human annotations are incorporated by a separate reviewed workflow.
+  const semanticQualityMeasured = false;
   return {
-    mode: kind, qualityMeasured,
+    mode: kind,
+    qualityMeasured: semanticQualityMeasured,
+    semanticQualityMeasured,
+    officialLexicalMetricMeasured,
     ...(diagnosticFunnel === undefined ? {} : { diagnosticFunnel }),
     ...(locomoOfficial === undefined ? {} : { locomoOfficial }),
     captureRecovery: {

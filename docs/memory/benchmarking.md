@@ -139,7 +139,7 @@ downloads or vendors it. Keep the CC BY-NC 4.0 corpus in an owner-only ignored
 directory. The adapter sends neither references, evidence annotations, images,
 summaries, observations, nor unselected conversations to a provider.
 
-Protocol `locomo-adjacent-exchanges-v1` projects each session into ordered,
+Protocol `locomo-adjacent-exchanges-v2` projects each session into ordered,
 non-overlapping adjacent pairs of source utterances; a final odd utterance stands
 alone. Pairing uses only source order, never questions or answers. Speaker and
 text bytes are preserved without trimming, both participants remain quoted
@@ -154,12 +154,16 @@ Two samples are frozen before inference:
 - `locomo-bujo-eval-v1-rank6-confirmation-20`: four per category from previously
   unexecuted partition rank 6. Do not tune after reading confirmation results.
 
-Both arms use reader prompt `locomo-evidence-reader-v1`, including an explicit
-`Insufficient evidence.` abstention. The original pinned lexical evaluator stays
-unchanged and secondary. `review.json` supplies blinded arm labels and a human
-`correct | partial | incorrect | abstained` rubric, while preserving separate
-category-5 answerability and image-association/dependency-unknown fields. There
-is no automatic semantic judge.
+Both arms use reader prompt `locomo-evidence-reader-v2`, including the explicit
+`No information available.` abstention accepted by the pinned official category-5
+phrase check. The original lexical evaluator stays unchanged and secondary.
+`officialLexicalMetricMeasured` reports only whether that diagnostic completed.
+The runner leaves `qualityMeasured` and `semanticQualityMeasured` false; only a
+separately completed human review can establish semantic quality. `review.json`
+supplies blinded arm labels and a human `correct`, `partial`, `incorrect`, or
+`abstained` rubric, while preserving separate category-5 answerability
+and image-association/dependency-unknown fields. There is no automatic semantic
+judge.
 
 ```bash
 node scripts/memory-e2e-benchmark.mjs --dry-run --corpus locomo-v1 \
@@ -174,22 +178,36 @@ node scripts/memory-e2e-benchmark.mjs --dry-run --corpus locomo-v1 \
 ```
 
 The dry plan binds source/question projection digests, code revision, arm,
-models/profile, prompt, metric and finite capture/reader/embedding/token/time
-ceilings into one confirmation. Capture occurs once per revision and BuJo arm;
-questions then use fresh reader histories over that store, so prior answers
-cannot contaminate later questions. Run `full-history` once per exact plan where
-possible. A completed artifact contains `checkpoint.json`; `--reuse-artifact`
-accepts it only when all checksums and the complete expanded identity match.
-Incomplete artifacts remain retained evidence and are never reusable as zero
-quality.
+models/profile, prompt, metric and per-invocation capture/reader/embedding/token/time
+limits into one confirmation. Within one successful BuJo invocation, capture runs
+once and questions then use fresh reader histories over that store, so prior
+answers cannot contaminate later questions. A completed artifact contains
+`checkpoint.json`; `--reuse-artifact` accepts it only when all checksums and the
+complete expanded identity match. This is complete-result reuse, **not** a capture
+checkpoint: an invocation that fails after capture remains retained evidence but
+cannot resume readers, and restarting it would capture again. Do not claim
+capture-once across failed invocations or automatically rerun an expensive plan.
+
+`plannedComparisonAggregateMaximum` is arithmetic planning metadata for exactly
+three separate invocations: baseline BuJo, candidate BuJo and one full-history
+reader. It is not a cross-process admission controller or provider-quota promise.
+Each command enforces only its own `limits`; the parent must control the finite
+sequence and account for completed artifacts. The frozen 30/20 selectors produce
+a worst-case two-phase estimate of 2,816 chat steps, 2,616 embedding calls,
+79,028,364 reserved input tokens and 40 hours. **That execution is not approved.**
+Before real LoCoMo work, use a parent-approved materially smaller diagnostic
+budget strategy (beginning with the separate product conformance canary) or add a
+separately reviewed narrow capture checkpoint. A dry-plan confirmation is not
+execution authorization.
 
 Private artifacts record extraction candidates, reconciliation actions,
 committed snapshots, raw backend retrieval outcomes where supported, automatic
 blocks and explicit tool results actually delivered, and reader answers. A
-missing stage is marked unavailable. Quality remains unmeasured unless capture,
-recall instrumentation and every scheduled answer complete. Dry runs and
-synthetic tests prove contracts, not memory quality; real inference is always an
-explicit confirmed action.
+missing stage is marked unavailable. The diagnostic funnel and official lexical
+metric remain unmeasured unless capture, recall instrumentation and every
+scheduled answer complete. Semantic quality remains unmeasured even then until
+actual human review. Dry runs and synthetic tests prove contracts, not memory
+quality; real inference is always an explicit separately authorized action.
 
 All five arms use the same reader, question, identity, output budget and
 controlled-text context estimate:

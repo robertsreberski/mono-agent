@@ -110,7 +110,7 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
     expect(associated.evaluation.imageAssociation.dependency).toBe("unknown");
   });
 
-  it("binds prompt, projection, selection, arm and conservative whole-run bounds into confirmation", () => {
+  it("binds prompt, projection, selection, arm and planned aggregate estimates into confirmation", () => {
     const corpus = projectLocomo(dataset(), { experiment: LOCOMO_DEVELOPMENT_EXPERIMENT });
     const profile = locomoExecutionProfile({
       reader: LOCOMO_HOSTED_PROFILE.reader,
@@ -136,11 +136,18 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
     expect(plan.locomo.ceilings.readerInvocations).toBe(30);
     expect(plan.locomo.ceilings.readerModelSteps).toBe(120);
     expect(plan.locomo.ceilings.semanticJudgeInvocations).toBe(0);
-    expect(plan.locomo.comparisonPhaseCeilings).toMatchObject({
-      bujoRevisions: 2, fullHistoryReaders: 1, uniqueQuestions: 30, answerInvocations: 90,
+    expect(plan.locomo.plannedComparisonAggregateMaximum).toMatchObject({
+      scope: "planning_estimate_for_three_separately_enforced_invocations",
+      plannedInvocations: 3, bujoRevisions: 2, fullHistoryReaders: 1, uniqueQuestions: 30, answerInvocations: 90,
       captureAdmissions: corpus.groups[0].source.turns.length * 2,
       captureModelSteps: corpus.groups[0].source.turns.length * 4,
       readerModelSteps: 360, semanticJudgeInvocations: 0,
+      crossProcessAdmissionEnforced: false, perInvocationLimitsEnforcedSeparately: true, parentControlledExecutionRequired: true,
+    });
+    expect(plan.locomo.executionGate).toMatchObject({
+      status: "dry_plan_only_parent_control_required",
+      realExecutionApproved: false,
+      requiredBeforeRealExecution: "materially_smaller_parent_approved_budget_strategy",
     });
     expect(plan.profile).not.toHaveProperty("piAuthPath");
     expect(JSON.stringify(plan)).not.toMatch(/QUESTION_SENTINEL|GOLD_ANSWER|exact first|private\/auth/u);
@@ -169,6 +176,12 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
     expect(nltkPorterStem("replacement")).toBe("replac");
     expect(officialLocomoScore("cats running, skies", "cat runs, sky", 1)).toBe(1);
     expect(officialLocomoScore("Paris", "Paris; France", 3)).toBe(1);
+    expect(LOCOMO_READER_PROMPT).toMatchObject({
+      id: "locomo-evidence-reader-v2",
+      text: expect.stringContaining("answer exactly: No information available."),
+    });
+    expect(locomoCategory5Abstains("No information available.")).toBe(true);
+    expect(officialLocomoScore("No information available.", null, 5)).toBe(1);
     expect(locomoCategory5Abstains("This was not mentioned.")).toBe(true);
     expect(lexicalAnswerScore("blue", ["blue bicycle"])).toEqual({ exact: false, f1: 2 / 3 });
     const diagnostic = { officialScore: 1 };
@@ -176,10 +189,34 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
       { groupId: "g", questionId: "q", arm: "full-history", locomoCategory: 1, status: "completed", answer: "a", lexicalDiagnostic: diagnostic },
       { groupId: "g", questionId: "q", arm: "bujo", locomoCategory: 1, status: "unstarted", answer: null, automatic: [], rawRetrievals: [], tools: [] },
     ], [], "real", []);
-    expect(summary.qualityMeasured).toBe(false);
+    expect(summary).toMatchObject({
+      qualityMeasured: false,
+      semanticQualityMeasured: false,
+      officialLexicalMetricMeasured: false,
+    });
     expect(summary.locomoOfficial.byArm.bujo.overall).toEqual({ value: null, status: "invalid_incomplete", scheduled: 1, completed: 0 });
     expect(summary.diagnosticFunnel.status).toBe("incomplete_unmeasured");
     expect(summary.diagnosticFunnel.capture.candidates).toEqual({ availability: "unavailable", records: null });
+
+    const complete = summarize([
+      { groupId: "g", questionId: "q", arm: "full-history", locomoCategory: 5, status: "completed", answer: "No information available.", lexicalDiagnostic: diagnostic },
+      { groupId: "g", questionId: "q", arm: "bujo", locomoCategory: 5, status: "completed", answer: "No information available.", lexicalDiagnostic: diagnostic, automatic: [{ status: "completed" }], rawRetrievals: [], tools: [] },
+    ], [
+      { arm: "bujo", stage: "admission", status: "completed" },
+      { arm: "bujo", stage: "readiness_wait", status: "completed" },
+    ], "real", [
+      { arm: "bujo", stage: "extraction" },
+      { arm: "bujo", stage: "reconciliation" },
+      { arm: "bujo", stage: "inventory" },
+    ]);
+    expect(complete).toMatchObject({
+      qualityMeasured: false,
+      semanticQualityMeasured: false,
+      officialLexicalMetricMeasured: true,
+      semanticQA: { value: null, status: "annotation_pending" },
+      humanReview: { status: "not_performed", sampleSize: 0 },
+    });
+    expect(complete.locomoOfficial.byArm.bujo.overall).toMatchObject({ value: 1, status: "complete" });
   });
 
   it("reuses only an exact complete immutable artifact identity", async () => {
@@ -200,7 +237,10 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
     };
     await writeArtifacts(directory, bundle);
     const canonicalDirectory = await realpath(directory);
-    await expect(loadReusableArtifact(canonicalDirectory, plan)).resolves.toMatchObject({ status: "reused_exact_completed_artifact" });
+    await expect(loadReusableArtifact(canonicalDirectory, plan)).resolves.toMatchObject({
+      status: "reused_exact_completed_artifact",
+      reuseScope: "complete_result_only_no_partial_capture_resume",
+    });
     await expect(loadReusableArtifact(canonicalDirectory, { ...plan, confirmation: "confirm-b" })).rejects.toThrow("checkpoint_identity_mismatch");
     const incomplete = await mkdtemp(join(tmpdir(), "memory-e2e-checkpoint-incomplete-")); dirs.push(incomplete);
     await writeArtifacts(incomplete, { ...bundle, summary: { diagnosticFunnel: { status: "incomplete_unmeasured" } }, trials: [{ status: "unstarted" }] });

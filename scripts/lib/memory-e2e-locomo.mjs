@@ -39,12 +39,12 @@ const COMPLETED_TURN_CAPTURE_TEXT_MAX_BYTES = 512 * 1024;
  * source utterances (the final odd utterance stands alone). Pair boundaries use
  * only source order: never questions, references, evidence ids, or outcomes.
  */
-export const LOCOMO_ADAPTER_PROTOCOL = "locomo-adjacent-exchanges-v1";
+export const LOCOMO_ADAPTER_PROTOCOL = "locomo-adjacent-exchanges-v2";
 export const LOCOMO_EXCHANGE_MAX_ENTRIES = 2;
 export const LOCOMO_EXCHANGE_MAX_USER_BYTES = 8 * 1024;
 export const LOCOMO_READER_PROMPT = Object.freeze({
-  id: "locomo-evidence-reader-v1",
-  text: "You are a careful evidence reader. Answer the current question concisely using only the conversation or memory evidence available to you. Do not invent personal details. If the evidence is insufficient, answer exactly: Insufficient evidence.\n",
+  id: "locomo-evidence-reader-v2",
+  text: "You are a careful evidence reader. Answer the current question concisely using only the conversation or memory evidence available to you. Do not invent personal details. If the evidence is insufficient, answer exactly: No information available.\n",
 });
 export const LOCOMO_DEVELOPMENT_EXPERIMENT = "locomo-bujo-eval-v1-rank5-development-30";
 export const LOCOMO_CONFIRMATION_EXPERIMENT = "locomo-bujo-eval-v1-rank6-confirmation-20";
@@ -374,9 +374,10 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
     outputTokens: captureModelSteps * 2_048 + readerModelSteps * 512,
     runtimeMs,
   };
-  // Whole comparison phase: one full-history reader plus one BuJo capture/reader
-  // at each of the baseline and candidate revisions. The candidate identity is
-  // frozen later, but its maximum work is protocol-identical and known now.
+  // Planning estimate only: arithmetic sum of one full-history invocation and
+  // one BuJo invocation at each of the baseline and candidate revisions. Each
+  // invocation enforces its own limits; no state crosses processes to enforce
+  // this aggregate, and the parent must control finite phase execution.
   const comparisonSourceAdmissions = groups[0].source.turns.length;
   const comparisonCaptureStepsPerRevision = comparisonSourceAdmissions * 2;
   const comparisonReaderSteps = questions * 3 * READER_MAX_TURNS;
@@ -386,7 +387,9 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
   const comparisonChatInputPerBujo = comparisonSourceAdmissions * (8_192 + LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS)
     + questions * READER_MAX_TURNS * 49_152;
   const comparisonFullHistoryReaderInput = questions * READER_MAX_TURNS * 49_152;
-  const comparisonPhaseCeilings = {
+  const plannedComparisonAggregateMaximum = {
+    scope: "planning_estimate_for_three_separately_enforced_invocations",
+    plannedInvocations: 3,
     bujoRevisions: 2,
     fullHistoryReaders: 1,
     uniqueQuestions: questions,
@@ -403,6 +406,9 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
     outputTokens: comparisonCaptureStepsPerRevision * 2 * 2_048 + comparisonReaderSteps * 512,
     runtimeMs: (config.role === "development" ? 8 : 10) * 2 * 60 * 60_000 + 2 * 60 * 60_000,
     semanticJudgeInvocations: 0,
+    crossProcessAdmissionEnforced: false,
+    perInvocationLimitsEnforcedSeparately: true,
+    parentControlledExecutionRequired: true,
   };
   const planCorpus = { ...corpus, arms, groups: groups.map((group) => ({ ...group, split })) };
   const made = makePlan({
@@ -480,7 +486,7 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
         imageDependency: "unknown_when_associated",
       },
       evaluator: LOCOMO_EVALUATOR,
-      comparisonPhaseCeilings,
+      plannedComparisonAggregateMaximum,
       ceilings: {
         captureAdmissions,
         captureModelOutputAttemptsPerAdmission: CAPTURE_MODEL_OUTPUT_ATTEMPTS,
@@ -509,14 +515,20 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
         localEmbeddingsOnly: true,
       } : { acknowledged: false, chatRoute: "local_only", scope: [], excluded: ["all_dataset_content_from_hosted_chat"], localEmbeddingsOnly: true },
       executionGate: hosted ? {
-        status: "ready_for_parent_review_hosted_transfer_not_executed",
+        status: "dry_plan_only_parent_control_required",
+        realExecutionApproved: false,
+        requiredBeforeRealExecution: "materially_smaller_parent_approved_budget_strategy",
         sourceCatalogContextWindow: LOCOMO_HOSTED_PROFILE.chatContextWindow,
         largestReservedPromptAndOutput: Math.max(49_152 + 512, 8_192 + 2_048, LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS + 2_048),
         sourceCatalogAdmissionFits: true,
         compactionDisabled: true,
         referencesExcludedFromProviderProjection: true,
         realDatasetInferencePerformed: false,
-      } : { status: "blocked_pending_local_capability_probe", modelMetadataIsNotExecutionProof: true },
+      } : {
+        status: "blocked_pending_local_capability_probe_and_smaller_budget_strategy",
+        realExecutionApproved: false,
+        modelMetadataIsNotExecutionProof: true,
+      },
       review: {
         rubric: "human-semantic-v1: correct | partial | incorrect | abstained",
         blindArmLabels: true,

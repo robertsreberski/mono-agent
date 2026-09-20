@@ -39,6 +39,7 @@ export function checkpointForBundle(bundle) {
   return {
     schemaVersion: 1,
     status: complete ? "complete" : "incomplete_retained_not_reusable",
+    reuseScope: "complete_result_only_no_partial_capture_resume",
     identity,
     identitySha256: digest(identity),
     completion: { expectedTrials: expected, completedTrials: completed, diagnosticFunnel: funnel?.status ?? "not_applicable" },
@@ -58,7 +59,9 @@ async function privateFile(path) {
  * Verify an immutable completed artifact before reusing it. Equality is exact:
  * code revision, protocol, source/question projections, prompt, models/profile,
  * limits, and arms are all transitively bound by confirmation plus the expanded
- * identity. Incomplete artifacts are retained evidence, never reusable zeros.
+ * identity. This reuses only a complete result; it cannot restore captured state
+ * or resume readers after a partial run. Incomplete artifacts are retained
+ * evidence, never reusable zeros.
  */
 export async function loadReusableArtifact(directory, expectedPlan) {
   const absolute = resolve(directory);
@@ -77,6 +80,7 @@ export async function loadReusableArtifact(directory, expectedPlan) {
   const checkpoint = JSON.parse(payloads.get("checkpoint.json").toString("utf8"));
   const expectedIdentity = checkpointIdentity(expectedPlan);
   if (checkpoint.schemaVersion !== 1 || checkpoint.status !== "complete"
+    || checkpoint.reuseScope !== "complete_result_only_no_partial_capture_resume"
     || checkpoint.identitySha256 !== digest(checkpoint.identity)
     || digest(checkpoint.identity) !== digest(expectedIdentity)
     || manifest.confirmation !== expectedPlan.confirmation
@@ -85,6 +89,7 @@ export async function loadReusableArtifact(directory, expectedPlan) {
   }
   return {
     status: "reused_exact_completed_artifact",
+    reuseScope: checkpoint.reuseScope,
     checkpointIdentitySha256: checkpoint.identitySha256,
     summary: JSON.parse(payloads.get("summary.json").toString("utf8")),
   };
