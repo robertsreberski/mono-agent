@@ -17,6 +17,10 @@
   imagery with clearly labelled synthetic data and source-build availability.
   Source only; the site is not deployed yet.
 
+- Fix unrelated provider turns blocking history admission and cancellation
+  publication when conversation keys share a lock shard. Concurrent writers
+  sharing history must use v0.20.0 or later; stop older writers first.
+
 - Add an opt-in Hound backend for `WebSearch` and `WebFetch` alongside
   Parallel and Ollama, keeping the `parallel,ollama` search and `local` fetch
   defaults. Select `hound` explicitly and point `tools.web.search.hound` /
