@@ -311,10 +311,10 @@ It does not own runtime execution, memory, tool policy, central registries, sign
 
 ## Related Documentation
 
-- [A2A provider channel](https://mono-agent-docs.vercel.app/channels/a2a/)
-- [Programmatic A2A consumer](https://mono-agent-docs.vercel.app/programmatic/a2a-consumer/)
-- [A2A provider and consumer playbook](https://mono-agent-docs.vercel.app/playbooks/a2a-provider-and-consumer/)
-- [Multi-agent composition](https://mono-agent-docs.vercel.app/programmatic/multi-agent/)
+- [A2A provider channel](https://docs.mono-agent.dev/channels/a2a/)
+- [Programmatic A2A consumer](https://docs.mono-agent.dev/programmatic/a2a-consumer/)
+- [A2A provider and consumer playbook](https://docs.mono-agent.dev/playbooks/a2a-provider-and-consumer/)
+- [Multi-agent composition](https://docs.mono-agent.dev/programmatic/multi-agent/)
 
 ## Verification
 

@@ -669,11 +669,11 @@ backend and does not claim local chronology.
 
 ## Related Documentation
 
-- [Memory overview and tier selection](https://mono-agent-docs.vercel.app/memory/)
-- [Write modes, durable capture, and recall](https://mono-agent-docs.vercel.app/memory/capture-and-recall/)
-- [Embeddings](https://mono-agent-docs.vercel.app/memory/embeddings/)
-- [Validation and config-aware maintenance](https://mono-agent-docs.vercel.app/memory/validation-and-cli/)
-- [Built-in versus Supermemory backends](https://mono-agent-docs.vercel.app/memory/backends-comparison/)
+- [Memory overview and tier selection](https://docs.mono-agent.dev/memory/)
+- [Write modes, durable capture, and recall](https://docs.mono-agent.dev/memory/capture-and-recall/)
+- [Embeddings](https://docs.mono-agent.dev/memory/embeddings/)
+- [Validation and config-aware maintenance](https://docs.mono-agent.dev/memory/validation-and-cli/)
+- [Built-in versus Supermemory backends](https://docs.mono-agent.dev/memory/backends-comparison/)
 
 ## Verification
 

@@ -397,13 +397,13 @@ It does not build prompts, manage memory, expose UI, poll communication channels
 
 ## Related Documentation
 
-- [Runtime and providers](https://mono-agent-docs.vercel.app/runtime/) explains the normal
+- [Runtime and providers](https://docs.mono-agent.dev/runtime/) explains the normal
   config-first path.
-- [Backends and model references](https://mono-agent-docs.vercel.app/runtime/backends/)
+- [Backends and model references](https://docs.mono-agent.dev/runtime/backends/)
   documents the five bridge selections surfaced by this facade.
-- [Local providers](https://mono-agent-docs.vercel.app/runtime/local-providers/) covers
+- [Local providers](https://docs.mono-agent.dev/runtime/local-providers/) covers
   Ollama, LM Studio, and compatible gateways.
-- [Sandboxing](https://mono-agent-docs.vercel.app/tools/sandbox/) describes the policy that
+- [Sandboxing](https://docs.mono-agent.dev/tools/sandbox/) describes the policy that
   this package validates and enforces through managed SRT.
 - [`@mono-agent/agent-runtime`](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-runtime)
   owns the underlying provider kernel.

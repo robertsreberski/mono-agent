@@ -19,7 +19,7 @@ const DIST = fileURLToPath(new URL("../dist/", import.meta.url));
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const SITE_URL = resolveSiteUrl();
 const GITHUB_URL = "https://github.com/robertsreberski/mono-agent";
-const DOCS_URL = "https://mono-agent-docs.vercel.app/";
+const DOCS_URL = "https://docs.mono-agent.dev/";
 
 function readDist(rel) {
   const path = join(DIST, rel);
@@ -189,9 +189,9 @@ describe("marketing built output", () => {
   });
 
   it("permits a verified domain migration but rejects preview and malformed canonicals", () => {
-    assert.equal(DEFAULT_SITE_URL, 'https://mono-agent-marketing.vercel.app');
+    assert.equal(DEFAULT_SITE_URL, 'https://mono-agent.dev');
     assert.equal(resolveSiteUrl('https://mono-agent.dev/'), 'https://mono-agent.dev');
-    for (const invalid of ['http://mono-agent.dev', 'https://mono-agent.dev/path', 'https://mono-agent.dev/?x=1', 'https://mono-agent.dev/#part', 'https://user:password@mono-agent.dev', 'https://mono-agent.dev:8448', 'https://mono-agent-marketing-build.vercel.app']) {
+    for (const invalid of ['http://mono-agent.dev', 'https://mono-agent.dev/path', 'https://mono-agent.dev/?x=1', 'https://mono-agent.dev/#part', 'https://user:password@mono-agent.dev', 'https://mono-agent.dev:8448', 'https://mono-agent-marketing-build.vercel.app', 'https://mono-agent-marketing.vercel.app']) {
       assert.throws(() => resolveSiteUrl(invalid));
     }
     const config = JSON.parse(readFileSync(join(REPO_ROOT,'marketing/vercel.json'),'utf8'));
@@ -201,6 +201,9 @@ describe("marketing built output", () => {
     assert.ok(!host.test('mono-agent-marketing.vercel.app'));
     assert.ok(!host.test('mono-agent.dev'));
     assert.equal(rule.headers[0].value, 'noindex, follow');
+    const redirect = config.redirects.find(rule => rule.has?.some(condition => condition.type === 'host' && condition.value === 'mono-agent-marketing.vercel.app'));
+    assert.equal(redirect.destination, 'https://mono-agent.dev/:path*');
+    assert.equal(redirect.permanent, true);
   });
 
   it("keeps one H1 with the exact headline and resolves every anchor", () => {

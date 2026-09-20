@@ -117,7 +117,7 @@ if (eligible && banner && settings && feedback) {
     const section = link.closest('section')?.id;
     const placement = sections.has(section) ? section : 'navigation';
     if (url.hostname === 'github.com' && url.pathname === '/robertsreberski/mono-agent') capture('github_clicked', { placement });
-    else if (url.hostname === 'mono-agent-docs.vercel.app') capture('docs_clicked', { placement });
+    else if (url.hostname === 'docs.mono-agent.dev') capture('docs_clicked', { placement });
     else if (url.origin === location.origin && url.hash === '#configuration') capture('blueprint_opened', { placement });
   });
   document.addEventListener('mono:install-copied', () => capture('install_command_copied'));

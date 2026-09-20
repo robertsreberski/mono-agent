@@ -110,7 +110,7 @@ describe.sequential("@mono-agent/docs-mcp", () => {
 
     for (const target of [
       "/tools/documentation-mcp/#tool-contract",
-      "https://mono-agent-docs.vercel.app/tools/documentation-mcp/#tool-contract",
+      "https://docs.mono-agent.dev/tools/documentation-mcp/#tool-contract",
       "docs/tools/documentation-mcp.md#tool-contract",
     ]) {
       const anchored = index.read(target);

@@ -1,6 +1,6 @@
 # mono-agent marketing site
 
-The marketing site at **<https://mono-agent-marketing.vercel.app/>** (intended custom domain: `mono-agent.dev`; see [Hosting](#hosting)). A standalone
+The marketing site at **<https://mono-agent.dev/>**, with documentation separately hosted at **<https://docs.mono-agent.dev/>** (see [Hosting](#hosting)). A standalone
 [Astro](https://astro.build/) static app: one crawlable HTML page, one
 stylesheet, a consent-gated analytics module, and one small local progressive-enhancement module (under 8.5 kB uncompressed). GitHub is the primary call to action; the
 existing docs site is secondary.
@@ -210,7 +210,7 @@ Set these **public build variables** in the separate Vercel marketing project, t
 - `PUBLIC_POSTHOG_KEY`: the EU project's public ingestion token (`phc_…`), **not** a personal API key.
 - `PUBLIC_PRIVACY_CONTACT`: the operator's public `mailto:` address for data requests. A configured token without this contact fails the build.
 
-Production collection is restricted to `mono-agent.dev`, `www.mono-agent.dev` and `mono-agent-marketing.vercel.app`. Branch previews and local tests cannot accidentally report into production. Consent is off by default; GPC/DNT override stored acceptance. A local preference expires after 180 days. An accepted session uses a random per-tab ID, renewed after 30 minutes idle or 24 hours total. Session IDs follow PostHog’s UUIDv7 requirement. These measure consenting sessions, not deduplicated people across devices. Storage failure never grants consent. Withdrawal clears the session ID and stops future events, including across tabs. Event delivery errors are reported in the browser console without blocking the site; there is no retry queue.
+Production collection is restricted to `mono-agent.dev` and `www.mono-agent.dev`. Branch previews and local tests cannot accidentally report into production. Consent is off by default; GPC/DNT override stored acceptance. A local preference expires after 180 days. An accepted session uses a random per-tab ID, renewed after 30 minutes idle or 24 hours total. Session IDs follow PostHog’s UUIDv7 requirement. These measure consenting sessions, not deduplicated people across devices. Storage failure never grants consent. Withdrawal clears the session ID and stops future events, including across tabs. Event delivery errors are reported in the browser console without blocking the site; there is no retry queue.
 
 | Event | Allowed additional fields |
 | --- | --- |
@@ -229,17 +229,17 @@ For maintainer reporting, grant project-scoped read-only query access separately
 
 ## Search discovery and canonical URLs
 
-`astro.config.mjs` uses `src/site.mjs` as the production-origin authority. The default is the working `https://mono-agent-marketing.vercel.app`, not the unconnected custom domain. `Seo.astro`, JSON-LD, `robots.txt` and `sitemap.xml` all derive from that one origin. The crawler files are generated static routes, not independent files with hardcoded domains.
+`astro.config.mjs` uses `src/site.mjs` as the production-origin authority. Production sets `PUBLIC_SITE_URL=https://mono-agent.dev` after DNS and HTTPS verification. Local and CI builds use the same verified custom domain by default. `Seo.astro`, JSON-LD, `robots.txt` and `sitemap.xml` all derive from that one origin. The crawler files are generated static routes, not independent files with hardcoded domains.
 
 The home title describes the embeddable companion and TypeScript framework; the description names models/tools/memory, local-first use and embedding. The privacy page has distinct metadata. Both have absolute canonical/social URLs, meaningful image alternatives and a real 1200×630 image. Structured data describes a WebSite, WebPage and actual SoftwareSourceCode with its repository/language/license—not invented ratings, an unsupported search action or a social card masquerading as an organization logo.
 
-Vercel preview builds emit `noindex, follow`; generated `mono-agent-marketing-*.vercel.app` deployment/branch aliases also receive an `X-Robots-Tag: noindex, follow` header. The public production alias remains indexable. Robots allows crawling so search engines can see the indexing directives. All substantive content and links render without JavaScript or analytics consent. No keyword-meta tag, fabricated freshness timestamp, doorway page or unsupported FAQ rich-result promise is added.
+Vercel preview builds emit `noindex, follow`; generated `mono-agent-marketing-*.vercel.app` deployment/branch aliases also receive an `X-Robots-Tag: noindex, follow` header. The custom production domain remains indexable; the former marketing Vercel alias permanently redirects to it. Robots allows crawling so search engines can see the indexing directives. All substantive content and links render without JavaScript or analytics consent. No keyword-meta tag, fabricated freshness timestamp, doorway page or unsupported FAQ rich-result promise is added.
 
 ### Owner steps outside the build
 
 1. Verify the current URL-prefix property in Google Search Console and the site in Bing Webmaster Tools. Their issued **public verification values** can be supplied as `PUBLIC_GOOGLE_SITE_VERIFICATION` and `PUBLIC_BING_SITE_VERIFICATION` in Vercel, then redeployed. Do not invent verification values; no search account is connected by these placeholders.
 2. Submit the live `/sitemap.xml`, inspect the homepage, and monitor indexing/canonical selection and real queries. A passing test is not proof a search engine indexed the site.
-3. When `mono-agent.dev` ownership and DNS are configured, verify its HTTPS pages first. Set the exported build environment `PUBLIC_SITE_URL=https://mono-agent.dev` in Vercel and redeploy; canonicals, schema, sitemap and social asset URLs change together. For a local smoke build, prefix `PUBLIC_SITE_URL=https://mono-agent.dev pnpm run build`.
+3. For a future domain migration, verify the new domain’s DNS and HTTPS pages first. Set the exported build environment `PUBLIC_SITE_URL=https://mono-agent.dev` in Vercel and redeploy; canonicals, schema, sitemap and social asset URLs change together. For a local smoke build, prefix `PUBLIC_SITE_URL=https://mono-agent.dev pnpm run build`.
 4. Configure permanent redirects from the former production host and any nonpreferred custom-domain variant to the chosen canonical domain, avoiding redirect chains. Update the search properties/sitemap and inbound project links at that time. Do not redirect before the target works.
 
 Metadata improves accurate discovery and previews; it cannot guarantee ranking, rich results, indexation, or a particular snippet. Organic growth still depends on useful documentation/content, real references and the product's relevance. Track Core Web Vitals with real-user data once available; one lab audit is not field performance.

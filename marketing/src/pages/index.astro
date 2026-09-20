@@ -17,10 +17,10 @@ const PRIVACY_CONTACT = import.meta.env.PUBLIC_PRIVACY_CONTACT || "";
 if (POSTHOG_KEY && (!/^phc_[a-zA-Z0-9]+$/.test(POSTHOG_KEY) || !/^mailto:[^\s@]+@[^\s@]+\.[^\s@]+$/.test(PRIVACY_CONTACT))) {
   throw new Error("Analytics requires a public PostHog project token and PUBLIC_PRIVACY_CONTACT mailto address.");
 }
-const ANALYTICS_HOSTS = "mono-agent.dev,www.mono-agent.dev,mono-agent-marketing.vercel.app";
+const ANALYTICS_HOSTS = "mono-agent.dev,www.mono-agent.dev";
 const SITE_URL = Astro.site!.origin;
 const GITHUB_URL = "https://github.com/robertsreberski/mono-agent";
-const DOCS_URL = "https://mono-agent-docs.vercel.app/";
+const DOCS_URL = "https://docs.mono-agent.dev/";
 const RELEASE_URL = `${GITHUB_URL}/releases/tag/v0.22.0`;
 const COMPOSITION_URL = `${DOCS_URL}programmatic/composition/`;
 const ARTIFACTS_URL = `${DOCS_URL}observability/artifacts-and-traces/`;

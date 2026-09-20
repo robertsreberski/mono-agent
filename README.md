@@ -4,9 +4,9 @@
 
 Use the workspace to work with your agent. Use the framework to build it into your own application. Choose cloud or local models, give the agent a role and tools, and compose its behavior in `mono-agent.config.json` rather than maintaining a custom host.
 
-This is the technical next step from the [landing-page source](./marketing/): how the pieces fit, how to run them, and where to extend them. For technical users who want to configure and operate their own agent—not a zero-setup hosted assistant.
+This is the technical next step from the [Mono Agent website](https://mono-agent.dev/): how the pieces fit, how to run them, and where to extend them. For technical users who want to configure and operate their own agent—not a zero-setup hosted assistant.
 
-[Get started](#quickstart-an-agent-folder-from-one-config-file) · [Build on it](#embed-the-agent) · [Documentation](https://mono-agent-docs.vercel.app/) · [Safety](#safety-and-privacy)
+[Get started](#quickstart-an-agent-folder-from-one-config-file) · [Build on it](#embed-the-agent) · [Documentation](https://docs.mono-agent.dev/) · [Safety](#safety-and-privacy)
 
 <picture>
   <source media="(max-width: 640px)" srcset="./docs/assets/mono-agent-workspace-mobile.png" />
@@ -142,8 +142,8 @@ Secrets belong in an owner-only `.env` or the provider's auth store, never in JS
 
 ## Documentation
 
-- **Documentation site** — <https://mono-agent-docs.vercel.app/> renders everything under [`docs/`](./docs/): getting started, configuration, runtime, channels, memory, tools, programmatic use, playbooks, and reference material.
-- **Marketing site** — [`marketing/`](./marketing/) holds the standalone static site source for the prospective `https://mono-agent.dev/`. See its README for setup and the separate Vercel hosting configuration.
+- **Documentation site** — <https://docs.mono-agent.dev/> renders everything under [`docs/`](./docs/): getting started, configuration, runtime, channels, memory, tools, programmatic use, playbooks, and reference material.
+- **Marketing site** — [`marketing/`](./marketing/) holds the standalone static site source for [mono-agent.dev](https://mono-agent.dev/). See its README for setup and the separate Vercel hosting configuration.
 - **Architecture and packages** — [`ARCHITECTURE.md`](./ARCHITECTURE.md) maps the system and where changes belong; [`PACKAGES.md`](./PACKAGES.md) is the generated package directory and dependency graph.
 - **Contributing** — [`CONTRIBUTING.md`](./CONTRIBUTING.md) covers the workspace setup, verification lane, and pull-request expectations. The repository requires Node.js 24.15.0 or newer and pins its own pnpm (currently `11.18.0`, engine range `>=10.16.0`).
 - **Support and reporting** — security reports follow [`SECURITY.md`](./SECURITY.md); issues and questions belong in the [repository issue tracker](https://github.com/robertsreberski/mono-agent/issues).

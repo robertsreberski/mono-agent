@@ -737,7 +737,7 @@ resource origins never become script origins. Tool/link/context actions use an
 inert, focus-trapped confirmation dialog; tool arguments are bounded and
 secret-key-redacted. Exact declared resource reads remain read-only, while
 cross-resource requests fail. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 ## Architecture
 
@@ -1118,11 +1118,11 @@ import a communication adapter or another operator surface.
 
 ## Related Documentation
 
-- [Always-on web console guide](https://mono-agent-docs.vercel.app/observability/web-console/)
-- [Operator stream endpoint](https://mono-agent-docs.vercel.app/channels/tui/)
-- [Sessions and concurrency](https://mono-agent-docs.vercel.app/runtime/sessions-concurrency/)
-- [Artifacts and traces](https://mono-agent-docs.vercel.app/observability/artifacts-and-traces/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+- [Always-on web console guide](https://docs.mono-agent.dev/observability/web-console/)
+- [Operator stream endpoint](https://docs.mono-agent.dev/channels/tui/)
+- [Sessions and concurrency](https://docs.mono-agent.dev/runtime/sessions-concurrency/)
+- [Artifacts and traces](https://docs.mono-agent.dev/observability/artifacts-and-traces/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 
 ## Verification
 

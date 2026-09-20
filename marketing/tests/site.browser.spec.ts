@@ -626,7 +626,7 @@ for (const width of [390, 1440]) {
     expect(bounds.left).toBeGreaterThanOrEqual(0);
     expect(bounds.right).toBeLessThanOrEqual(width);
     expect(bounds.content).toBeLessThanOrEqual(bounds.width);
-    await expect(page.getByRole('link', {name: 'Imports & full example'})).toHaveAttribute('href', 'https://mono-agent-docs.vercel.app/programmatic/composition/');
+    await expect(page.getByRole('link', {name: 'Imports & full example'})).toHaveAttribute('href', 'https://docs.mono-agent.dev/programmatic/composition/');
     await expect(page.locator('.blocks-note')).toContainText('v0.22.0');
   });
 }

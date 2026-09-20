@@ -119,3 +119,15 @@ test('old or expired session identifiers are replaced before reporting', async (
   expect(id).not.toBe('00000000-0000-7000-8000-000000000000');
   expect(Date.now()-parseInt(id.slice(0,8)+id.slice(9,13),16)).toBeLessThan(10000);
 });
+
+test('custom docs links record a conversion only after consent', async ({page}) => {
+  const events = await configured(page);
+  await page.goto('/');
+  const docs = page.locator('a[href="https://docs.mono-agent.dev/"]').first();
+  await docs.evaluate(link => link.addEventListener('click', event => event.preventDefault()));
+  await docs.click();
+  expect(events.some(event => event.event === 'docs_clicked')).toBe(false);
+  await page.getByRole('button', {name:'Allow analytics', exact:true}).click();
+  await docs.click();
+  await expect.poll(() => events.filter(event => event.event === 'docs_clicked').length).toBe(1);
+});

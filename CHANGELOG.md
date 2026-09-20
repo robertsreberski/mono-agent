@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Connect marketing and documentation links to mono-agent.dev and docs.mono-agent.dev, with a permanent redirect from the former marketing host.
+
 - Align marketing canonicals, social metadata and crawler endpoints with the live production origin, clarify AI-companion/framework search metadata, and prevent indexing of Vercel preview aliases.
 
 - Extend the marketing site and README with a shared responsive agent overview, companion-led positioning, and opt-in PostHog events with privacy controls.

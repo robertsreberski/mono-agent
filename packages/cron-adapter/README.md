@@ -271,10 +271,10 @@ It does not build prompts, run models, persist missed runs or pending firings, c
 
 ## Related Documentation
 
-- [Cron channel guide](https://mono-agent-docs.vercel.app/channels/cron/)
-- [Cron digest and proactive-notify playbook](https://mono-agent-docs.vercel.app/playbooks/cron-digest-proactive-notify/)
-- [Sessions and concurrency](https://mono-agent-docs.vercel.app/runtime/sessions-concurrency/)
-- [Environment-variable precedence](https://mono-agent-docs.vercel.app/config/env-vars/)
+- [Cron channel guide](https://docs.mono-agent.dev/channels/cron/)
+- [Cron digest and proactive-notify playbook](https://docs.mono-agent.dev/playbooks/cron-digest-proactive-notify/)
+- [Sessions and concurrency](https://docs.mono-agent.dev/runtime/sessions-concurrency/)
+- [Environment-variable precedence](https://docs.mono-agent.dev/config/env-vars/)
 
 ## Verification
 
