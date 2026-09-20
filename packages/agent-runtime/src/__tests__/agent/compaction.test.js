@@ -150,14 +150,60 @@ describe("resolveAgentCompactionPolicy adaptive defaults", () => {
 
   it("lets every explicit scalar override its adaptive value while retaining existing clamps", () => {
     const policy = resolveAgentCompactionPolicy({ compaction: { enabled: false, triggerRatio: 0.8, keepRecentTokens: 9_000, summaryMaxTokens: 3_000, minSavingsTokens: 7_000, fixedOverheadEnabled: false } }, { contextWindow: 372_000 });
+    // The ratio arm binds here: floor(372000 * 0.8) = 297,600 < the 372000 -
+    // 37200 = 334,800 reserve arm. (Before the scale-aware headroom the 25%
+    // reserve arm capped this at 279,000, making ratios above 0.75 inert.)
     expect(policy).toMatchObject({
       enabled: false,
       triggerRatio: 0.8,
-      triggerTokens: 279_000,
+      triggerTokens: 297_600,
       keepRecentTokens: 9_000,
       summaryMaxTokens: 3_000,
       compactionMinSavingsTokens: 7_000,
       fixedOverheadEnabled: false,
     });
+  });
+
+  it("honors a configured 0.9 on large windows while the 16k floor still protects small ones", () => {
+    // 272k: headroom floor(27200) < ratio arm, so the full 0.9 binds.
+    expect(resolveAgentCompactionPolicy(
+      { compaction: { triggerRatio: 0.9 } },
+      { contextWindow: 272_000 },
+    ).triggerTokens).toBe(244_800);
+    // 400k: headroom hits the 48k ceiling; the ratio arm still binds.
+    expect(resolveAgentCompactionPolicy(
+      { compaction: { triggerRatio: 0.9 } },
+      { contextWindow: 400_000 },
+    ).triggerTokens).toBe(360_000);
+    // 32k: the 16k headroom floor binds, so the trigger stays at half the window.
+    expect(resolveAgentCompactionPolicy(
+      { compaction: { triggerRatio: 0.9 } },
+      { contextWindow: 32_000 },
+    ).triggerTokens).toBe(16_000);
+    // 128k: the 16k floor holds the trigger at 87.5% of the window.
+    expect(resolveAgentCompactionPolicy(
+      { compaction: { triggerRatio: 0.9 } },
+      { contextWindow: 128_000 },
+    ).triggerTokens).toBe(112_000);
+  });
+
+  it("always keeps triggerTokens strictly below the context window", () => {
+    // The compaction driver maps triggerTokens to
+    // reserveTokens = contextWindow - triggerTokens + 1 and depends on the
+    // trigger staying below the window (reserveTokens >= 2). Headroom is at
+    // least 16,000 tokens, so both arms stay below the window for every
+    // supported window and every ratio in [0.2, 0.95].
+    const windows = [32_000, 64_000, 128_000, 200_000, 272_000, 372_000, 400_000, 1_000_000];
+    const ratios = [0.2, 0.5, 0.7, 0.75, 0.8, 0.9, 0.95];
+    for (const window of windows) {
+      for (const ratio of ratios) {
+        const policy = resolveAgentCompactionPolicy(
+          { compaction: { triggerRatio: ratio } },
+          { contextWindow: window },
+        );
+        expect(policy.triggerTokens).toBeLessThan(policy.contextWindow);
+        expect(policy.contextWindow - policy.triggerTokens + 1).toBeGreaterThanOrEqual(2);
+      }
+    }
   });
 });
