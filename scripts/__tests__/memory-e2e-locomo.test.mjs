@@ -130,7 +130,8 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
       selected: { categoryDenominators: { 1: 6, 2: 6, 3: 6, 4: 6, 5: 6 }, answerableQuestions: 24, category5Questions: 6 },
       review: { blindArmLabels: true, paidAutomaticJudge: false },
     });
-    expect(plan.perCall).toMatchObject({ readerMaxTurns: 4, extractorEstimatedInputTokens: 8_192, reconciliationEstimatedInputTokens: 29_897 });
+    expect(plan.perCall).toMatchObject({ readerMaxTurns: 4, readerEstimatedInputTokens: 98_304, extractorEstimatedInputTokens: 8_192, reconciliationEstimatedInputTokens: 29_897 });
+    expect(plan.locomo.executionGate.largestReservedPromptAndOutput).toBe(98_816);
     expect(plan.locomo.ceilings.captureAdmissions).toBe(corpus.groups[0].source.turns.length);
     expect(plan.locomo.ceilings.captureModelSteps).toBe(plan.locomo.ceilings.captureAdmissions * 2);
     expect(plan.locomo.ceilings.readerInvocations).toBe(30);

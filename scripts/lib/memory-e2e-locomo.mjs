@@ -54,6 +54,10 @@ const EXPERIMENTS = Object.freeze({
 });
 const CAPTURE_MODEL_OUTPUT_ATTEMPTS = 1;
 const READER_MAX_TURNS = 4;
+// Covers the larger frozen confirmation history after harness timestamp/message
+// framing (offline measured maximum 84,811 tokens) while remaining well inside
+// the selected hosted model's 272k context catalog entry.
+const READER_ESTIMATED_INPUT_TOKENS = 98_304;
 
 function reconciliationEstimatedInputTokensCeiling() {
   const widestCodePoint = "\u{10FFFF}";
@@ -356,7 +360,7 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
   const readerModelSteps = readerInvocations * READER_MAX_TURNS;
   const extractionInputTokensReserved = extractionModelSteps * 8_192;
   const reconciliationInputTokensReserved = reconciliationModelSteps * LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS;
-  const readerInputTokensReserved = readerModelSteps * 49_152;
+  const readerInputTokensReserved = readerModelSteps * READER_ESTIMATED_INPUT_TOKENS;
   const chatInputTokensReserved = extractionInputTokensReserved + reconciliationInputTokensReserved + readerInputTokensReserved;
   const captureSearchEmbeddingInput = Math.ceil(MAX_CAPTURE_MEMORIES * MAX_CAPTURE_MEMORY_CODE_POINTS * UTF8_BYTES_PER_CODE_POINT / INPUT_ESTIMATE_DIVISOR);
   const captureWriteEmbeddingInput = Math.ceil(MAX_CAPTURE_MEMORIES * MAX_RECONCILED_MEMORY_CODE_POINTS * UTF8_BYTES_PER_CODE_POINT / INPUT_ESTIMATE_DIVISOR);
@@ -385,8 +389,8 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
   const comparisonEmbeddingInputPerBujo = comparisonSourceAdmissions * (captureSearchEmbeddingInput + captureWriteEmbeddingInput)
     + comparisonBujoReaderRecallCalls * queryEmbeddingInput;
   const comparisonChatInputPerBujo = comparisonSourceAdmissions * (8_192 + LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS)
-    + questions * READER_MAX_TURNS * 49_152;
-  const comparisonFullHistoryReaderInput = questions * READER_MAX_TURNS * 49_152;
+    + questions * READER_MAX_TURNS * READER_ESTIMATED_INPUT_TOKENS;
+  const comparisonFullHistoryReaderInput = questions * READER_MAX_TURNS * READER_ESTIMATED_INPUT_TOKENS;
   const plannedComparisonAggregateMaximum = {
     scope: "planning_estimate_for_three_separately_enforced_invocations",
     plannedInvocations: 3,
@@ -415,7 +419,7 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
     corpus: planCorpus, sha256, split, profile, codeRevision, limits,
     perCall: {
       readerMaxTurns: READER_MAX_TURNS,
-      readerEstimatedInputTokens: 49_152,
+      readerEstimatedInputTokens: READER_ESTIMATED_INPUT_TOKENS,
       reconciliationEstimatedInputTokens: LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS,
       readerHistoryHeadroomMessages: 8,
       callTimeoutMs: 180_000,
@@ -521,7 +525,7 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
         requiredBeforeRealExecution: measuredOutput ? "external_authorization_for_measured_output" : "materially_smaller_parent_approved_budget_strategy",
         outputAccounting: measuredOutput ? "observed_usage_not_wire_capped" : "strict_output_cap_required",
         sourceCatalogContextWindow: LOCOMO_HOSTED_PROFILE.chatContextWindow,
-        largestReservedPromptAndOutput: Math.max(49_152 + 512, 8_192 + 2_048, LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS + 2_048),
+        largestReservedPromptAndOutput: Math.max(READER_ESTIMATED_INPUT_TOKENS + 512, 8_192 + 2_048, LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS + 2_048),
         sourceCatalogAdmissionFits: true,
         compactionDisabled: true,
         referencesExcludedFromProviderProjection: true,
