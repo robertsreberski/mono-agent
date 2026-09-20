@@ -197,6 +197,35 @@ describe("marketing built output", () => {
     assert.equal(config.telegram.botToken, undefined, "example keeps secrets out of JSON");
   });
 
+  it("renders decorative arrows as accessible SVG, never emoji-prone text", () => {
+    const css = readDist("styles.css");
+    assert.ok(
+      !/[↗↓↑←→↖↘↙]/u.test(html),
+      "built HTML has no Unicode arrow glyphs",
+    );
+    assert.ok(
+      !/[↗↓↑←→↖↘↙]/u.test(css),
+      "built CSS has no Unicode arrow glyphs",
+    );
+    const arrows = [...html.matchAll(/<svg[^>]*class="arrow-icon"[^>]*>/g)].map(
+      (match) => match[0],
+    );
+    assert.ok(
+      arrows.length >= 20,
+      `expected reusable SVG arrows (${arrows.length})`,
+    );
+    for (const arrow of arrows) {
+      assert.ok(
+        arrow.includes('aria-hidden="true"'),
+        "decorative arrow is hidden from assistive tech",
+      );
+      assert.ok(
+        arrow.includes('focusable="false"'),
+        "decorative arrow cannot receive focus",
+      );
+    }
+  });
+
   it("links GitHub as primary CTA and docs as secondary", () => {
     assert.ok(html.includes(`href="${GITHUB_URL}"`), "GitHub links present");
     const githubCount = html.split(`href="${GITHUB_URL}"`).length - 1;

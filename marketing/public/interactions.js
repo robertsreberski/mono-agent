@@ -92,53 +92,52 @@ if (menu && navigation) {
   compact.addEventListener('change', () => closeMenu());
 }
 
-// Native scroll drives one finite deck-to-grid gesture and a small hero tilt.
-// No pinning, wheel/touch interception, timers, or continuous animation loop.
+// Native page scroll selects one readable card at a time. The layout itself
+// never moves or pins; scroll direction naturally reverses the active sequence.
 const cards = document.querySelector('.block-summary');
 const heroArt = document.querySelector('.hero-art picture');
 const motionToggle = document.querySelector('.motion-toggle');
 if (cards) {
   const reduce = matchMedia('(prefers-reduced-motion: reduce)');
   const grid = cards.querySelector('.block-chapters');
-  const layers = [...grid.children];
+  const layers = [...grid.querySelectorAll('.block-chapter')];
   let frame = 0;
   let paused = false;
-  let focused = false;
-  let geometry = [];
+  let focusedIndex = null;
+  let activeIndex = 0;
   const clamp = value => Math.max(0, Math.min(1, value));
-  const measure = () => {
-    // Untransformed layout coordinates: never feed transformed bounds back into poses.
-    geometry = layers.map((card, index) => ({
-      x: grid.clientWidth / 2 - card.offsetLeft - card.offsetWidth / 2,
-      y: -card.offsetTop + index * 9,
-      angle: [-9, -3, 3, 9][index],
-    }));
+  const setActive = index => {
+    activeIndex = Math.max(0, Math.min(layers.length - 1, index));
+    cards.dataset.activeCard = String(activeIndex);
+    layers.forEach((card, cardIndex) => {
+      card.dataset.active = String(cardIndex === activeIndex);
+    });
   };
   const paint = () => {
     frame = 0;
-    const active = !reduce.matches && !paused && !focused;
-    const top = cards.getBoundingClientRect().top;
-    const progress = active ? clamp((innerHeight * .95 - top) / (innerHeight * .5)) : 1;
-    const open = progress * progress * (3 - 2 * progress);
-    cards.dataset.cardsMotion = String(active && progress < 1);
-    cards.style.setProperty('--card-open', String(progress));
-    layers.forEach((card, index) => {
-      const pose = geometry[index];
-      const rest = 1 - open;
-      card.style.setProperty('--deck-x', `${pose.x * rest}px`);
-      card.style.setProperty('--deck-y', `${pose.y * rest}px`);
-      card.style.setProperty('--deck-angle', `${pose.angle * rest}deg`);
-      card.style.setProperty('--deck-tilt', `${32 * rest}deg`);
-      card.style.setProperty('--deck-scale', String(1 - .16 * rest));
-    });
+    if (!paused && focusedIndex === null) {
+      const bounds = cards.getBoundingClientRect();
+      const start = innerHeight * .78;
+      const range = bounds.height + innerHeight * .38;
+      const progress = clamp((start - bounds.top) / range);
+      setActive(Math.min(layers.length - 1, Math.floor(progress * layers.length)));
+    }
+    cards.dataset.motionState = focusedIndex !== null
+      ? 'focused'
+      : paused
+        ? 'paused'
+        : reduce.matches
+          ? 'reduced'
+          : 'scroll';
     if (heroArt) {
       const hero = document.querySelector('.hero').getBoundingClientRect();
-      const travel = active ? clamp(-hero.top / hero.height) : 0;
-      heroArt.style.transform = active ? `translateY(${-travel * 16}px) rotate(${travel * -2}deg)` : 'none';
+      const travel = clamp(-hero.top / hero.height);
+      heroArt.style.transform = !reduce.matches && !paused
+        ? `translateY(${-travel * 16}px) rotate(${travel * -2}deg)`
+        : 'none';
     }
   };
   const schedule = () => { if (!frame) frame = requestAnimationFrame(paint); };
-  const resize = () => { measure(); schedule(); };
   const preference = () => {
     if (motionToggle) motionToggle.hidden = reduce.matches;
     schedule();
@@ -149,14 +148,22 @@ if (cards) {
     motionToggle.textContent = paused ? 'Resume motion' : 'Pause motion';
     schedule();
   });
-  // Keyboard navigation must never land on an obscured, overlapped link.
-  grid.addEventListener('focusin', () => { focused = true; paint(); });
+  grid.addEventListener('focusin', event => {
+    const card = event.target.closest('.block-chapter');
+    focusedIndex = layers.indexOf(card);
+    if (focusedIndex >= 0) setActive(focusedIndex);
+    paint();
+  });
   grid.addEventListener('focusout', event => {
-    if (!grid.contains(event.relatedTarget)) { focused = false; schedule(); }
+    if (!grid.contains(event.relatedTarget)) {
+      focusedIndex = null;
+      schedule();
+    }
   });
   reduce.addEventListener('change', preference);
-  addEventListener('scroll', schedule, {passive:true});
-  addEventListener('resize', resize, {passive:true});
-  new ResizeObserver(resize).observe(grid);
-  measure(); preference();
+  addEventListener('scroll', schedule, { passive: true });
+  addEventListener('resize', schedule, { passive: true });
+  new ResizeObserver(schedule).observe(grid);
+  setActive(activeIndex);
+  preference();
 }

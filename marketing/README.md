@@ -66,14 +66,15 @@ The JSON configuration is always rendered visibly, including on phones without
 JavaScript. A dedicated square mobile hero preserves the complete stone silhouette and stays above the CTAs. Phones request 320px/640px WebP sources
 instead of the larger desktop variants, including at high device pixel ratios.
 
-Simple colored cards summarize twelve capabilities across all screen sizes. They
-open from a compact deck into their reading grid, tied reversibly to native scroll.
-Phones get a two-column composition rather than a scaled-down desktop scene.
-There is no pinned scene, orbital imagery, phase switching, or continuous animation
-loop. A pause button and keyboard focus reveal the static grid; reduced-motion/no-JS
-modes do the same. The hero tilts by at most two degrees while scrolling away. Workflows identify the useful
-components and repeated work they help remove. Repeated blueprint callouts are
-removed because the same capabilities already appear in the cards.
+Four colored cards pair concise capability summaries with distinct configuration,
+connection, delegation, and continuity diagrams. All twelve documentation links stay
+server-rendered as compact chips. Native page scroll emphasizes exactly one card at
+a time in a reversible sequence; it never overlaps, pins, or intercepts the readable
+layout. A pause control freezes that emphasis, keyboard focus selects its card, and
+reduced-motion/no-JavaScript modes keep the complete grid readable. The hero tilts
+by at most two degrees while scrolling away. Workflows identify the useful components
+and repeated work they help remove. Repeated blueprint callouts are removed because
+the same capabilities already appear in the cards.
 
 The console image is the actual desktop App, Messages and Composer, captured at
 1280×900 CSS pixels with 1.5× device scale (1920×1350 pixels), encoded losslessly.
@@ -96,9 +97,10 @@ open events produce the deliberately configured fixture connection state without
 contacting a running console. The asset is `marketing/public/console-desktop.webp`.
 Review this recipe if the source fixture changes. No production data is used.
 
-`pnpm run screenshots` captures desktop1440×1000 and mobile390×844 views, including
-the building-block cards. Add `-- --video` for a genuine browser scroll recording.
-No screenshot dimension exceeds2000px. Output stays gitignored.
+`pnpm run screenshots` captures desktop 1440×1000 and mobile 390×844 / 430×932
+views, including every sequential building-block focus state. Add `-- --video` for a
+genuine browser scroll recording in both desktop and mobile viewports. No screenshot
+dimension exceeds 2000px. Output stays gitignored.
 
 ## Local development
 

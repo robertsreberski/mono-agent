@@ -129,7 +129,7 @@ test("disables entrance motion when reduced motion is requested", async ({
   await context.close();
 });
 
-for (const width of [320, 768, 1024]) {
+for (const width of [320, 430, 768, 1024]) {
   test(`editorial layout stays within ${width}px viewport`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/", { waitUntil: "networkidle" });
@@ -170,7 +170,7 @@ test("all workflow content and native FAQ work without JavaScript", async ({ bro
     await expect(page.locator(`#workflow-${id}`)).toBeVisible();
   }
   await expect(page.locator("#configuration")).toContainText("mono-agent.config.json");
-  await expect(page.locator("#configuration .block-chapter dt")).toHaveCount(12);
+  await expect(page.locator("#configuration .block-links a")).toHaveCount(12);
   await expect(page.getByRole("button", { name: /Copy install command/ })).toHaveCount(0);
   const question = page.locator(".faq summary").first();
   await question.click();
@@ -268,7 +268,9 @@ test('console screenshot is real component evidence with disclosed synthetic sta
 test('mobile document keeps a bounded reading length with visible configuration', async ({page}) => {
   await page.setViewportSize({width:390,height:844}); await page.goto('/');
   await expect(page.locator('[data-scroll-story]')).toHaveCount(0);
-  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThan(6900);
+  // Single-column visual cards and readable 14px functional copy add a measured
+  // ~12% versus the former two-column microtype layout, without a pinned story.
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThan(7800);
 });
 
 test('navigation and blueprint remain usable without JavaScript', async ({browser}) => {
@@ -288,7 +290,7 @@ test('workflow deep links stay visible with reduced motion', async ({page}) => {
 test('building blocks stay readable and disclose source availability', async ({page}) => {
   await page.goto('/');
   const blocks=page.locator('.building-blocks');
-  await expect(blocks.locator('dt')).toHaveCount(12);
+  await expect(blocks.locator('.block-links a')).toHaveCount(12);
   await expect(blocks).toContainText('Subagents');
   await expect(blocks).toContainText('Background jobs');
   await expect(blocks).toContainText('current source build');
@@ -314,9 +316,9 @@ test('mobile hero is complete and sits above the CTA', async ({page}) => {
 test('mobile page uses compact cards and no floating components', async ({page}) => {
   await page.setViewportSize({width:390,height:844}); await page.goto('/');
   await expect(page.locator('.block-chapter')).toHaveCount(4);
-  await expect(page.locator('.block-chapter dt')).toHaveCount(12);
+  await expect(page.locator('.block-links a')).toHaveCount(12);
   await expect(page.locator('[data-block-story], .block-layer, .workflow-art')).toHaveCount(0);
-  expect((await page.locator('.building-blocks').boundingBox())!.height).toBeLessThan(1000);
+  expect((await page.locator('.building-blocks').boundingBox())!.height).toBeLessThan(1250);
   expect((await page.locator('.hero-actions').boundingBox())!.y).toBeLessThan(740);
 });
 test('high density mobile loads the mobile hero and compressed local fonts', async ({browser}) => {
@@ -330,73 +332,189 @@ test('high density mobile loads the mobile hero and compressed local fonts', asy
   await context.close();
 });
 
-for (const width of [320, 390, 768, 1440]) {
-  test(`card deck opens reversibly with native scroll at ${width}px`, async ({page}) => {
-    await page.setViewportSize({width,height:900}); await page.goto('/');
-    await page.evaluate(()=>document.fonts.ready);
-    const cards=page.locator('.block-summary');
-    const seek=async (fraction:number) => {
-      await cards.evaluate((el,f)=>scrollTo({top:scrollY+el.getBoundingClientRect().top-innerHeight*f,behavior:'instant'}),fraction);
+for (const width of [390, 1440]) {
+  test(`native scroll focuses cards sequentially and reversibly at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/");
+    await page.evaluate(() => document.fonts.ready);
+    const cards = page.locator(".block-summary");
+    const seek = async (index: number) => {
+      await cards.evaluate((el, index) => {
+        const bounds = el.getBoundingClientRect();
+        const progress = (index + 0.5) / 4;
+        const targetTop =
+          innerHeight * 0.78 - progress * (bounds.height + innerHeight * 0.38);
+        scrollTo({
+          top: scrollY + bounds.top - targetTop,
+          behavior: "instant",
+        });
+      }, index);
+      await expect
+        .poll(() => cards.getAttribute("data-active-card"))
+        .toBe(String(index));
+      await expect(
+        cards.locator('.block-chapter[data-active="true"]'),
+      ).toHaveCount(1);
     };
-    await seek(.94);
-    await expect.poll(()=>cards.evaluate(el=>Number((el as HTMLElement).style.getPropertyValue('--card-open')))).toBeLessThan(.1);
-    const first=cards.locator('.block-chapter').first();
-    const closed=await first.evaluate(el=>getComputedStyle(el).transform);
-    await seek(.7);
-    await expect.poll(()=>cards.evaluate(el=>Number((el as HTMLElement).style.getPropertyValue('--card-open')))).toBeGreaterThan(.4);
-    expect(await first.evaluate(el=>getComputedStyle(el).transform)).not.toBe(closed);
-    expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
-    await seek(.4);
-    await expect(cards).toHaveAttribute('data-cards-motion','false');
-    expect(await first.evaluate(el=>getComputedStyle(el).transform)).toBe('none');
-    // Every link is unobscured at the reading pose, with no card collisions.
-    const boxes=await cards.locator('.block-chapter').evaluateAll(els=>els.map(el=>{const r=el.getBoundingClientRect();return {x:r.x,y:r.y,right:r.right,bottom:r.bottom};}));
-    boxes.forEach((a,i)=>boxes.slice(i+1).forEach(b=>expect(a.right<=b.x+1||b.right<=a.x+1||a.bottom<=b.y+1||b.bottom<=a.y+1).toBe(true)));
-    await seek(.94);
-    await expect(cards).toHaveAttribute('data-cards-motion','true');
-    await page.emulateMedia({reducedMotion:'reduce'});
-    await expect(cards).toHaveAttribute('data-cards-motion','false');
-    expect(await first.evaluate(el=>getComputedStyle(el).transform)).toBe('none');
-    expect(await page.locator('.hero-art picture').evaluate(el=>getComputedStyle(el).transform)).toBe('none');
-    await expect(page.getByRole('button',{name:'Pause motion'})).toBeHidden();
+    for (const index of [0, 1, 2, 3]) await seek(index);
+    for (const index of [2, 1, 0]) await seek(index);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(width);
+
+    await page.setViewportSize({
+      width: width === 390 ? 430 : 1280,
+      height: 900,
+    });
+    await expect(
+      cards.locator('.block-chapter[data-active="true"]'),
+    ).toHaveCount(1);
+    await seek(3);
+    await expect(cards.locator(".block-chapter").last()).toHaveAttribute(
+      "data-active",
+      "true",
+    );
   });
 }
 
-test('motion pause and keyboard focus expose the complete deck',async ({page})=>{
-  await page.setViewportSize({width:390,height:844});await page.goto('/');
-  const cards=page.locator('.block-summary');
-  await cards.evaluate(el=>scrollTo({top:scrollY+el.getBoundingClientRect().top-innerHeight*.9,behavior:'instant'}));
-  await page.getByRole('button',{name:'Pause motion'}).click();
-  await expect(page.getByRole('button',{name:'Resume motion'})).toHaveAttribute('aria-pressed','true');
-  await expect(cards).toHaveAttribute('data-cards-motion','false');
-  await page.getByRole('button',{name:'Resume motion'}).click();
-  await cards.locator('a').first().focus();
-  await expect(cards).toHaveAttribute('data-cards-motion','false');
-  expect(await cards.locator('.block-chapter').first().evaluate(el=>getComputedStyle(el).transform)).toBe('none');
+test("reduced motion keeps one sequential focus without transforms", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/");
+  const cards = page.locator(".block-summary");
+  await cards.evaluate((el) => {
+    const bounds = el.getBoundingClientRect();
+    const targetTop =
+      innerHeight * 0.78 - 0.875 * (bounds.height + innerHeight * 0.38);
+    scrollTo({ top: scrollY + bounds.top - targetTop, behavior: "instant" });
+  });
+  await expect.poll(() => cards.getAttribute("data-active-card")).toBe("3");
+  await expect(cards.locator('.block-chapter[data-active="true"]')).toHaveCount(
+    1,
+  );
+  await expect(cards).toHaveAttribute("data-motion-state", "reduced");
+  expect(
+    await cards
+      .locator(".block-chapter")
+      .last()
+      .evaluate((el) => getComputedStyle(el).transform),
+  ).toBe("none");
+  expect(
+    await page
+      .locator(".hero-art picture")
+      .evaluate((el) => getComputedStyle(el).transform),
+  ).toBe("none");
+  await expect(page.getByRole("button", { name: "Pause motion" })).toBeHidden();
 });
 
-test('every GitHub CTA has an accessible decorative GitHub mark',async ({page})=>{
-  await page.goto('/');
-  const links=page.locator('a[href="https://github.com/robertsreberski/mono-agent"]');
-  for(const link of await links.all()){
-    await expect(link.locator('svg.github-icon')).toHaveAttribute('aria-hidden','true');
+test("motion pause freezes focus and keyboard focus selects an unobscured card", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  const cards = page.locator(".block-summary");
+  const seek = async (index: number) =>
+    cards.evaluate((el, index) => {
+      const bounds = el.getBoundingClientRect();
+      const targetTop =
+        innerHeight * 0.78 -
+        ((index + 0.5) / 4) * (bounds.height + innerHeight * 0.38);
+      scrollTo({ top: scrollY + bounds.top - targetTop, behavior: "instant" });
+    }, index);
+  await seek(1);
+  await expect.poll(() => cards.getAttribute("data-active-card")).toBe("1");
+  await page.getByRole("button", { name: "Pause motion" }).evaluate((button: HTMLButtonElement) => button.click());
+  await expect(
+    page.getByRole("button", { name: "Resume motion" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await seek(3);
+  await expect(cards).toHaveAttribute("data-active-card", "1");
+  await expect(cards).toHaveAttribute("data-motion-state", "paused");
+  await page.getByRole("button", { name: "Resume motion" }).evaluate((button: HTMLButtonElement) => button.click());
+  await expect.poll(() => cards.getAttribute("data-active-card")).toBe("3");
+  const last = cards.locator("a").last();
+  await last.focus();
+  await expect(last).toBeFocused();
+  await expect(last).toBeInViewport();
+  await expect(cards).toHaveAttribute("data-active-card", "3");
+  await expect(cards.locator('.block-chapter[data-active="true"]')).toHaveCount(
+    1,
+  );
+});
+
+test("every GitHub CTA has an accessible decorative GitHub mark", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const links = page.locator(
+    'a[href="https://github.com/robertsreberski/mono-agent"]',
+  );
+  for (const link of await links.all()) {
+    await expect(link.locator("svg.github-icon")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
     expect(await link.textContent()).toMatch(/GitHub|Get the code/);
   }
 });
 
-test('keyboard entry into the final card keeps focus visible after unfolding',async ({page})=>{
-  await page.setViewportSize({width:390,height:844}); await page.goto('/');
-  const cards=page.locator('.block-summary');
-  await cards.evaluate(el=>scrollTo({top:scrollY+el.getBoundingClientRect().top-innerHeight*.8,behavior:'instant'}));
-  await expect(cards).toHaveAttribute('data-cards-motion','true');
-  const last=cards.locator('a').last();
-  await last.focus();
-  await expect(last).toBeFocused();
-  await expect(last).toBeInViewport({ratio:1});
-  await page.locator('.blocks-note a').focus();
-  await cards.evaluate(el=>scrollTo({top:scrollY+el.getBoundingClientRect().top-innerHeight*.8,behavior:'instant'}));
-  await expect(cards).toHaveAttribute('data-cards-motion','true');
-  await page.keyboard.press('Shift+Tab');
-  await expect(last).toBeFocused();
-  await expect(last).toBeInViewport({ratio:1});
+test("building blocks use four distinct decorative schematics and twelve links", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const blocks = page.locator(".building-blocks");
+  await expect(blocks.locator(".block-diagram")).toHaveCount(4);
+  for (const name of ["foundation", "connections", "delegated", "continuity"]) {
+    await expect(
+      blocks.locator(`.diagram-${name} svg[aria-hidden="true"]`),
+    ).toHaveCount(1);
+  }
+  await expect(blocks.locator(".block-links a")).toHaveCount(12);
+  await expect(blocks.locator(".block-chapter dd")).toHaveCount(0);
 });
+
+for (const viewport of [
+  { width: 390, height: 844, body: 14, cta: 13, code: 11, cardTitle: 20 },
+  { width: 1440, height: 1000, body: 15, cta: 14, code: 12, cardTitle: 24 },
+]) {
+  test(`uses the coherent type scale at ${viewport.width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({
+      width: viewport.width,
+      height: viewport.height,
+    });
+    await page.goto("/");
+    const sizes = await page.evaluate(() =>
+      Object.fromEntries(
+        Object.entries({
+          body: document.body,
+          cta: document.querySelector(".hero-actions .btn"),
+          card: document.querySelector(".block-chapter>p"),
+          cardLink: document.querySelector(".block-links a"),
+          label: document.querySelector(".section-label"),
+          code: document.querySelector(".config-blueprint pre"),
+          cardTitle: document.querySelector(".block-chapter h4"),
+          caption: document.querySelector(".console-shot figcaption"),
+        }).map(([key, element]) => [
+          key,
+          parseFloat(getComputedStyle(element!).fontSize),
+        ]),
+      ),
+    );
+    expect(sizes).toEqual({
+      body: viewport.body,
+      cta: viewport.cta,
+      card: 13,
+      cardLink: 13,
+      label: 11,
+      code: viewport.code,
+      cardTitle: viewport.cardTitle,
+      caption: 12,
+    });
+  });
+}

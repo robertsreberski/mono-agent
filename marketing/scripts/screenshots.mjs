@@ -26,6 +26,7 @@ const SHOTS = [
   {name:"hero-tablet-768x1000.png",width:768,height:1000},
   {name:"blocks-desktop-1440x1000.png",width:1440,height:1000,scrollTo:".building-blocks"},
   {name:"blocks-mobile-390x844.png",width:390,height:844,scrollTo:".building-blocks"},
+  {name:"blocks-mobile-430x932.png",width:430,height:932,scrollTo:".building-blocks"},
   { name: "console-desktop-1440x1000.png", width:1440,height:1000,scrollTo:"#console" },
   { name: "console-mobile-390x844.png", width:390,height:844,scrollTo:"#console" },
   { name: "menu-mobile-390x844.png", width:390,height:844,menu:true },
@@ -34,6 +35,7 @@ const SHOTS = [
   { name: "automate-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: ".workflow-explorer", workflow: "automate" },
   { name: "hero-desktop-1440x1000.png", width: 1440, height: 1000 },
   { name: "hero-mobile-390x844.png", width: 390, height: 844 },
+  { name: "hero-mobile-430x932.png", width: 430, height: 932 },
   {
     name: "usecases-desktop-1440x1000.png",
     width: 1440,
@@ -48,6 +50,7 @@ const SHOTS = [
   },
   { name: "configuration-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: "#configuration" },
   { name: "configuration-mobile-390x844.png", width: 390, height: 844, scrollTo: "#configuration" },
+  { name: "configuration-mobile-430x932.png", width: 430, height: 932, scrollTo: "#configuration" },
   { name: "configuration-code-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: ".config-blueprint" },
   { name: "configuration-code-mobile-390x844.png", width: 390, height: 844, scrollTo: ".config-blueprint" },
   {
@@ -110,10 +113,16 @@ async function main() {
           await page.waitForTimeout(400);
         }
         if (shot.scrollTo === '.building-blocks') {
-          for (const [phase,fraction] of [['stack',.94],['opening',.7],['open',.4]]) {
-            await page.locator('.block-summary').evaluate((el,f)=>scrollTo({top:scrollY+el.getBoundingClientRect().top-innerHeight*f,behavior:'instant'}),fraction);
+          for (const index of [0,1,2,3]) {
+            await page.locator('.block-summary').evaluate((el,index) => {
+              const bounds=el.getBoundingClientRect();
+              const progress=(index+.5)/4;
+              const targetTop=innerHeight*.78-progress*(bounds.height+innerHeight*.38);
+              scrollTo({top:scrollY+bounds.top-targetTop,behavior:'instant'});
+            },index);
+            await page.waitForFunction(index=>document.querySelector('.block-summary')?.dataset.activeCard===String(index),index);
             await page.waitForTimeout(100);
-            await page.screenshot({path:join(outputDir,`deck-${phase}-${shot.width}.png`)});
+            await page.screenshot({path:join(outputDir,`cards-focus-${index+1}-${shot.width}x${shot.height}.png`)});
           }
           await page.locator('.building-blocks').evaluate(el=>el.scrollIntoView({behavior:'instant'}));
           await page.waitForTimeout(100);
@@ -122,6 +131,16 @@ async function main() {
         await page.screenshot({ path: join(outputDir, shot.name) });
         console.log(`screenshots: ${shot.name}`);
         if (shot.name === "hero-mobile-390x844.png") console.log("mobile document height:", await page.evaluate(()=>document.documentElement.scrollHeight));
+        if (shot.scrollTo === ".building-blocks") {
+          console.log(`cards metrics ${shot.width}px:`, await page.evaluate(() => ({
+            sectionHeight: Math.round(document.querySelector('.building-blocks').getBoundingClientRect().height),
+            cardsHeight: Math.round(document.querySelector('.block-summary').getBoundingClientRect().height),
+            activeCard: document.querySelector('.block-summary').dataset.activeCard,
+            bodyFont: getComputedStyle(document.body).fontSize,
+            cardFont: getComputedStyle(document.querySelector('.block-chapter>p')).fontSize,
+            cardLinkFont: getComputedStyle(document.querySelector('.block-links a')).fontSize,
+          })));
+        }
         await page.close();
       }
       if (process.argv.includes('--video') || process.argv.includes('--video-only')) {
@@ -146,11 +165,14 @@ async function main() {
           });
           await move(0, 1200);
           const layout = document.querySelector('.block-summary');
-          const start = scrollY + layout.getBoundingClientRect().top;
-          await move(Math.max(0,start - innerHeight*.95), 2200);
-          await move(start - innerHeight*.4, 4500);
-          await move(start - innerHeight*.95, 3000);
-          await move(start - innerHeight*.4, 2500);
+          const positionFor = index => {
+            const bounds=layout.getBoundingClientRect();
+            const progress=(index+.5)/4;
+            const targetTop=innerHeight*.78-progress*(bounds.height+innerHeight*.38);
+            return scrollY+bounds.top-targetTop;
+          };
+          for (const index of [0,1,2,3]) await move(positionFor(index), 1400);
+          for (const index of [2,1,0]) await move(positionFor(index), 1100);
           await move(scrollY + document.querySelector('#use-cases').getBoundingClientRect().top, 1500);
           await move(scrollY, 1200);
         });
