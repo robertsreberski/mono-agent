@@ -44,9 +44,17 @@ if (explorer) {
     // Honor direct links while leaving every panel readable without JavaScript.
     const linked = panels.findIndex(panel => `#${panel.id}` === location.hash);
     activate(linked >= 0 ? linked : 0);
+    // Hash scrolling can precede enhancement/layout in WebKit. Reveal the
+    // selected panel, then align the anchor against its final readable layout.
+    const revealLinked = index => requestAnimationFrame(() => {
+      if (`#${panels[index].id}` === location.hash) {
+        panels[index].scrollIntoView({ block: 'start', behavior: 'instant' });
+      }
+    });
+    if (linked >= 0) revealLinked(linked);
     window.addEventListener('hashchange', () => {
       const index = panels.findIndex(panel => `#${panel.id}` === location.hash);
-      if (index >= 0) activate(index);
+      if (index >= 0) { activate(index); revealLinked(index); }
     });
     window.addEventListener('popstate', () => {
       const index = panels.findIndex(panel => `#${panel.id}` === location.hash);

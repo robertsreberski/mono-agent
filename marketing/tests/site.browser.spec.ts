@@ -87,7 +87,7 @@ for (const viewport of VIEWPORTS) {
   });
 }
 
-test("exposes landmarks, one H1, and a working skip link", async ({ page }) => {
+test("exposes landmarks, one H1, and a working skip link", async ({ page, browserName }) => {
   await page.goto("/", { waitUntil: "networkidle" });
   expect(await page.getByRole("heading", { level: 1 }).count()).toBe(1);
   await expect(page.getByRole("banner")).toBeAttached();
@@ -97,7 +97,8 @@ test("exposes landmarks, one H1, and a working skip link", async ({ page }) => {
 
   const skipLink = page.getByRole("link", { name: "Skip to content" });
   // Real keyboard tab (not script focus) so :focus-visible applies.
-  await page.keyboard.press("Tab");
+  // macOS WebKit follows Safari’s link-navigation preference: Option+Tab visits links.
+  await page.keyboard.press(browserName === "webkit" ? "Alt+Tab" : "Tab");
   await expect(skipLink).toBeFocused();
   await expect
     .poll(() => skipLink.evaluate((el) => el.getBoundingClientRect().top))

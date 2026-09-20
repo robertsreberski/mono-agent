@@ -17,6 +17,7 @@
   a motion pause, GitHub-marked CTAs, a mobile-optimized transparent matte-stone
   hero, compact self-hosted OFL fonts, and real desktop console UI imagery with
   clearly labelled synthetic data and source-build availability.
+  Workflow anchors also align after progressive enhancement in WebKit.
   Source only; the site is not deployed yet.
 
 - Fix unrelated provider turns blocking history admission and cancellation

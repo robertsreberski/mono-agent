@@ -112,6 +112,8 @@ pnpm run build               # astro build + internal-link check
 pnpm run test:unit           # SEO/asset/anchor contracts against dist/
 pnpm exec playwright install chromium  # local audit browser, once
 pnpm run test:browser        # serve dist/ and audit a11y + responsiveness
+pnpm exec playwright install webkit  # optional additional local engine
+pnpm run test:webkit         # same contracts under WebKit; not a physical iPhone test
 pnpm run screenshots         # capture output/*.png for human review (gitignored)
 pnpm run assets              # regenerate public/ derivatives from assets-source/
 ```

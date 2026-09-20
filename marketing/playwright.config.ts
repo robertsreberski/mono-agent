@@ -14,6 +14,9 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
+    ...(process.env.MARKETING_WEBKIT === "1"
+      ? [{ name: "webkit", use: { ...devices["Desktop Safari"] } }]
+      : []),
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },

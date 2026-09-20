@@ -13,6 +13,7 @@
     "assets": "node scripts/generate-assets.mjs",
     "test:unit": "node --test tests/*.test.mjs",
     "test:browser": "playwright test",
+    "test:webkit": "MARKETING_WEBKIT=1 playwright test --project=webkit",
     "screenshots": "node scripts/screenshots.mjs",
     "astro": "astro"
   },
