@@ -1629,6 +1629,26 @@ describe("startTuiAdapter", () => {
     let finishTurn!: () => void;
     const turnFinished = new Promise<void>((resolve) => { finishTurn = resolve; });
     const offered: AgentLiveInputRequest[] = [];
+    // The waiter is armed while the POST below is still in flight on loopback,
+    // and the server detaches it only once it observes the client disconnect,
+    // so both fixed sleeps below were bets on socket timing: on a loaded
+    // runner the post-abort sleep expires first and the still-attached waiter
+    // is offered when ownership turns ready. Capture the waiter's own 10 min
+    // expiry timer instead -- the same seam the preceding test uses, and the
+    // only such timer server.ts arms -- so the test waits for the arming
+    // itself and, afterwards, for the detach, delegating every other timer to
+    // the previously installed implementation.
+    let waiterTimer: ReturnType<typeof setTimeout> | undefined;
+    const previousSetTimeout = globalThis.setTimeout;
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((...parameters: Parameters<typeof setTimeout>) => {
+      const [callback, delay, ...args] = parameters;
+      if (delay === 10 * 60 * 1_000) {
+        waiterTimer = previousSetTimeout(callback, delay, ...args);
+        return waiterTimer;
+      }
+      return previousSetTimeout(...parameters);
+    }) as typeof setTimeout);
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
     running = await startTuiAdapter({
       responder: {
         liveInputOwnership: { version: 1 },
@@ -1661,10 +1681,14 @@ describe("startTuiAdapter", () => {
       }),
       signal: controller.signal,
     });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await vi.waitFor(() => { expect(waiterTimer).toBeDefined(); });
     controller.abort();
     await expect(liveResponse).rejects.toMatchObject({ name: "AbortError" });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Detach clears the waiter's expiry timer, so observing that clear proves
+    // the server saw the disconnect and removed the waiter -- no fixed sleep.
+    await vi.waitFor(() => { expect(clearTimeoutSpy).toHaveBeenCalledWith(waiterTimer); });
+    setTimeoutSpy.mockRestore();
+    clearTimeoutSpy.mockRestore();
     activeRequest?.onLiveInputOwnership?.({ status: "ready", runId: "late-run" });
     expect(offered).toEqual([]);
 
