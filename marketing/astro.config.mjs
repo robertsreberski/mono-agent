@@ -1,14 +1,10 @@
 // @ts-check
-
 import { defineConfig } from "astro/config";
+import { resolveSiteUrl } from "./src/site.mjs";
 
-// The prospective production origin. Keep this absolute and stable: it feeds
-// the canonical link, sitemap lookup, and Open Graph/Twitter card URLs.
-const site = "https://mono-agent.dev";
-
-// https://astro.build/config
 export default defineConfig({
-  site,
+  site: resolveSiteUrl(),
+  trailingSlash: "always",
   compressHTML: true,
-  // No client-side JavaScript on this site: every route is static HTML + CSS.
+  // Every page and crawler endpoint is pre-rendered; JS only enhances the UI.
 });

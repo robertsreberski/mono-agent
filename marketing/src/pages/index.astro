@@ -1,4 +1,5 @@
 ---
+import Seo from "../components/Seo.astro";
 import ArrowIcon from "../components/ArrowIcon.astro";
 import AgentOverview from "../components/AgentOverview.astro";
 
@@ -17,7 +18,7 @@ if (POSTHOG_KEY && (!/^phc_[a-zA-Z0-9]+$/.test(POSTHOG_KEY) || !/^mailto:[^\s@]+
   throw new Error("Analytics requires a public PostHog project token and PUBLIC_PRIVACY_CONTACT mailto address.");
 }
 const ANALYTICS_HOSTS = "mono-agent.dev,www.mono-agent.dev,mono-agent-marketing.vercel.app";
-const SITE_URL = "https://mono-agent.dev";
+const SITE_URL = Astro.site!.origin;
 const GITHUB_URL = "https://github.com/robertsreberski/mono-agent";
 const DOCS_URL = "https://mono-agent-docs.vercel.app/";
 const RELEASE_URL = `${GITHUB_URL}/releases/tag/v0.22.0`;
@@ -48,28 +49,31 @@ const CONFIG_EXAMPLE = `{
   }
 }`;
 
-const TITLE = "mono-agent — An agent workspace you can build on";
+const TITLE = "Mono Agent — Embeddable AI Companion & TypeScript Framework";
 const DESCRIPTION =
-  "An agent workspace you can build on. Organize ongoing work with your agent, inspect what ran, and compose its capabilities in mono-agent.config.json—or embed the framework in your TypeScript application.";
+  "Build an AI companion with your choice of models, tools and memory. Run a local-first workspace or embed Mono Agent in your TypeScript app. Open source.";
 const OG_IMAGE = `${SITE_URL}/og-1200x630.jpg`;
 
 const jsonLd = {
   "@context": "https://schema.org",
   "@graph": [
     {
-      "@type": "WebSite",
-      "@id": `${SITE_URL}/#website`,
-      url: `${SITE_URL}/`,
-      name: "mono-agent",
-      description: DESCRIPTION,
+      "@type": "WebSite", "@id": `${SITE_URL}/#website`,
+      url: `${SITE_URL}/`, name: "Mono Agent", alternateName: "mono-agent",
+      description: DESCRIPTION, inLanguage: "en", about: { "@id": `${SITE_URL}/#software` },
     },
     {
-      "@type": "Organization",
-      "@id": `${SITE_URL}/#organization`,
-      name: "mono-agent",
-      url: `${SITE_URL}/`,
-      logo: OG_IMAGE,
-      sameAs: [GITHUB_URL],
+      "@type": "WebPage", "@id": `${SITE_URL}/#webpage`,
+      url: `${SITE_URL}/`, name: TITLE, description: DESCRIPTION, inLanguage: "en",
+      isPartOf: { "@id": `${SITE_URL}/#website` }, mainEntity: { "@id": `${SITE_URL}/#software` },
+      primaryImageOfPage: { "@type": "ImageObject", url: OG_IMAGE, width: 1200, height: 630 },
+    },
+    {
+      "@type": "SoftwareSourceCode", "@id": `${SITE_URL}/#software`,
+      name: "mono-agent", description: DESCRIPTION, url: `${SITE_URL}/`,
+      codeRepository: GITHUB_URL, programmingLanguage: "TypeScript",
+      runtimePlatform: "Node.js >=24.15.0", license: `${GITHUB_URL}/blob/main/LICENSE`,
+      isAccessibleForFree: true,
     },
   ],
 };
@@ -79,9 +83,7 @@ const jsonLd = {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{TITLE}</title>
-    <meta name="description" content={DESCRIPTION} />
-    <link rel="canonical" href={`${SITE_URL}/`} />
+    <Seo title={TITLE} description={DESCRIPTION} />
     <meta name="theme-color" content="#101211" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preload" href="/fonts/manrope.woff2" as="font" type="font/woff2" crossorigin />
@@ -89,28 +91,6 @@ const jsonLd = {
     <link rel="stylesheet" href="/styles.css" />
     <script is:inline type="module" src="/interactions.js"></script>
     <script is:inline type="module" src="/analytics.js"></script>
-
-    <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="mono-agent" />
-    <meta property="og:title" content={TITLE} />
-    <meta property="og:description" content={DESCRIPTION} />
-    <meta property="og:url" content={`${SITE_URL}/`} />
-    <meta property="og:image" content={OG_IMAGE} />
-    <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
-    <meta
-      property="og:image:alt"
-      content="mono-agent social card: the brand name and “An agent workspace you can build on” beside the sculptural matte stone artwork."
-    />
-
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content={TITLE} />
-    <meta name="twitter:description" content={DESCRIPTION} />
-    <meta name="twitter:image" content={OG_IMAGE} />
-    <meta
-      name="twitter:image:alt"
-      content="mono-agent social card: the brand name and “An agent workspace you can build on” beside the sculptural matte stone artwork."
-    />
 
     <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
   </head>

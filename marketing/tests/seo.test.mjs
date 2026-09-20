@@ -5,7 +5,7 @@
 //
 // Asserts on dist/ (the real rendered output): metadata, canonical and social
 // URLs, sitemap/robots, honest JSON-LD, single-H1 structure, working anchors,
-// decorative-art honesty, zero client JS, and asset size caps.
+// decorative-art honesty, bounded local scripts, and asset size caps.
 import { strict as assert } from "node:assert";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -13,10 +13,11 @@ import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 
 import sharp from "sharp";
+import { resolveSiteUrl, DEFAULT_SITE_URL } from "../src/site.mjs";
 
 const DIST = fileURLToPath(new URL("../dist/", import.meta.url));
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
-const SITE_URL = "https://mono-agent.dev";
+const SITE_URL = resolveSiteUrl();
 const GITHUB_URL = "https://github.com/robertsreberski/mono-agent";
 const DOCS_URL = "https://mono-agent-docs.vercel.app/";
 
@@ -73,12 +74,12 @@ describe("marketing built output", () => {
   it("declares the exact title, description, and canonical URL", () => {
     mustContain(
       html,
-      "<title>mono-agent — An agent workspace you can build on</title>",
+      "<title>Mono Agent — Embeddable AI Companion &amp; TypeScript Framework</title>",
       "exact <title>",
     );
     const description = html.match(/<meta name="description" content="([^"]+)"\/?>/);
     assert.ok(description, "meta description must exist");
-    assert.ok(description[1].length >= 50 && description[1].length <= 300,
+    assert.ok(description[1].length >= 100 && description[1].length <= 170,
       `meta description must be useful (${description[1].length} chars)`);
     mustContain(html, `<link rel="canonical" href="${SITE_URL}/"`, "canonical link");
     mustContain(html, 'lang="en"', "html lang");
@@ -160,6 +161,46 @@ describe("marketing built output", () => {
       assert.ok(!serialized.includes(banned), `JSON-LD must not invent ${banned}`);
     }
     assert.ok(serialized.includes(SITE_URL), "JSON-LD references the site URL");
+  });
+
+
+  it("keeps every page canonical, social URL and crawler endpoint on one production origin", () => {
+    const sitemap = readDist("sitemap.xml");
+    for (const [file,path] of [["index.html","/"],["privacy/index.html","/privacy/"]]) {
+      const page = readDist(file);
+      assert.equal((page.match(/rel="canonical"/g) ?? []).length, 1);
+      assert.equal((page.match(/<title>/g) ?? []).length, 1);
+      assert.equal((page.match(/name="description"/g) ?? []).length, 1);
+      mustContain(page, `rel="canonical" href="${SITE_URL}${path}"`, "per-page canonical");
+      mustContain(page, `property="og:url" content="${SITE_URL}${path}"`, "matching social URL");
+      mustContain(page, 'name="twitter:card" content="summary_large_image"', "per-page social card");
+      mustContain(sitemap, `<loc>${SITE_URL}${path}</loc>`, "matching sitemap route");
+      mustContain(page, 'name="robots" content="index, follow, max-image-preview:large"', "production indexing");
+    }
+    assert.ok(!sitemap.includes("lastmod"), "no fabricated modification dates");
+    const data = JSON.parse(html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/)[1]);
+    const graph = data['@graph'];
+    const software = graph.find(node => node['@type'] === 'SoftwareSourceCode');
+    assert.equal(software.codeRepository, GITHUB_URL);
+    assert.equal(software.programmingLanguage, 'TypeScript');
+    assert.equal(software.license, `${GITHUB_URL}/blob/main/LICENSE`);
+    assert.equal(graph.find(node => node['@type'] === 'WebPage').mainEntity['@id'], software['@id']);
+    assert.ok(!graph.some(node => node['@type'] === 'Organization'), 'no social-card image misrepresented as an organization logo');
+  });
+
+  it("permits a verified domain migration but rejects preview and malformed canonicals", () => {
+    assert.equal(DEFAULT_SITE_URL, 'https://mono-agent-marketing.vercel.app');
+    assert.equal(resolveSiteUrl('https://mono-agent.dev/'), 'https://mono-agent.dev');
+    for (const invalid of ['http://mono-agent.dev', 'https://mono-agent.dev/path', 'https://mono-agent.dev/?x=1', 'https://mono-agent.dev/#part', 'https://user:password@mono-agent.dev', 'https://mono-agent.dev:8448', 'https://mono-agent-marketing-build.vercel.app']) {
+      assert.throws(() => resolveSiteUrl(invalid));
+    }
+    const config = JSON.parse(readFileSync(join(REPO_ROOT,'marketing/vercel.json'),'utf8'));
+    const rule = config.headers.find(rule => rule.headers.some(header => header.key === 'X-Robots-Tag'));
+    const host = new RegExp(`^(?:${rule.has[0].value})$`);
+    assert.ok(host.test('mono-agent-marketing-build-robert.vercel.app'));
+    assert.ok(!host.test('mono-agent-marketing.vercel.app'));
+    assert.ok(!host.test('mono-agent.dev'));
+    assert.equal(rule.headers[0].value, 'noindex, follow');
   });
 
   it("keeps one H1 with the exact headline and resolves every anchor", () => {

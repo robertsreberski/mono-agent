@@ -1,4 +1,5 @@
 ---
+import Seo from "../components/Seo.astro";
 const contact = import.meta.env.PUBLIC_PRIVACY_CONTACT || "";
 const configured = Boolean(import.meta.env.PUBLIC_POSTHOG_KEY);
 ---
@@ -7,9 +8,7 @@ const configured = Boolean(import.meta.env.PUBLIC_POSTHOG_KEY);
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Privacy &amp; analytics — mono-agent</title>
-    <meta name="description" content="What the Mono Agent marketing site measures, what it leaves out, and how to control optional analytics." />
-    <link rel="canonical" href="https://mono-agent.dev/privacy/" />
+    <Seo title="Privacy & analytics — mono-agent" description="What the Mono Agent marketing site measures, what it leaves out, and how to control optional analytics." path="/privacy/" />
     <link rel="stylesheet" href="/styles.css" />
     <link rel="icon" href="/favicon.svg" />
   </head>
