@@ -83,6 +83,12 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
     stdout(JSON.stringify(reused, null, 2));
     return 0;
   }
+  // A confirmed plan is not permission to pretend a reservation is a hard cap.
+  // Refuse known-unsupported strict providers before build, credentials, or any
+  // provider construction; the dry-run manifest carries the same limitation.
+  if (flags.real && plan.budgetEnforcement?.outputTokens?.strictRealExecutionSupported === false) {
+    throw new Error("strict_output_budget_unsupported");
+  }
   // Fresh source-pinned build precedes ALL production imports and provider construction.
   const build = flags.real ? await prepareBuild(ROOT, head) : { policy: "unverified-existing-dist", sourceHead: null, outputSha256: null };
   if (flags.real) await verifyRealBuild(ROOT, build);

@@ -126,13 +126,21 @@ export function bounded(promise, { timeoutMs, signal, code, onCancel } = {}) {
   });
 }
 
-/** Version-coupled existing Pi check cap; never pass an ignored generic maxTokens option. */
+/**
+ * Version-coupled Pi request controls. `providerCheckMaxTokens` is a model hint,
+ * not a universal wire cap (the selected Codex transport omits it). Explicit SSE
+ * also avoids Pi's `auto` WebSocket-to-SSE fallback outside `piMaxRetries`.
+ */
 export function cappedOptions(stage, plan) {
   return {
     maxTurns: stage === "reader" ? plan.perCall.readerMaxTurns : 1,
     providerCheckMaxTokens: stage === "reader" ? plan.perCall.readerOutputTokens : plan.perCall.extractorOutputTokens,
-    compaction: { enabled: false }, piMaxRetries: 0, maxRetryDelayMs: 0, effort: "none",
+    compaction: { enabled: false }, piTransport: "sse", piMaxRetries: 0, maxRetryDelayMs: 0, effort: "none",
   };
+}
+
+function outputCapEnforcement(model) {
+  return model?.provider === "openai-codex" ? "unsupported_by_selected_provider" : "unverified_provider_hint";
 }
 function finite(value) { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null; }
 export function usageOf(value) {
@@ -176,7 +184,30 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
       const started = clock();
       const timeout = AbortSignal.timeout(budget.plan.perCall.callTimeoutMs);
       const signal = AbortSignal.any([options.abortSignal, budget.controller.signal, timeout].filter(Boolean));
-      const event = { ...tag, stage, status: "started", configuredStepsReserved: cap.maxTurns, estimatedInputTokensReserved: estimated * cap.maxTurns, outputTokensReserved: cap.providerCheckMaxTokens * cap.maxTurns, transportAttempts: null, usage: usageOf(null), costUsd: null, requestedModel: options.model?.reference ?? null, executedModel: null, observedContext: [], durationMs: null, failureKind: null, providerReportedFailureKind: null, maxTurnsHit: false };
+      const event = {
+        ...tag,
+        stage,
+        status: "started",
+        configuredStepsReserved: cap.maxTurns,
+        estimatedInputTokensReserved: estimated * cap.maxTurns,
+        // Reservation/accounting value only. `outputCapEnforcement` states
+        // whether the selected provider is known to enforce it on the wire.
+        outputTokensReserved: cap.providerCheckMaxTokens * cap.maxTurns,
+        outputTokenLimitRequested: cap.providerCheckMaxTokens,
+        outputCapEnforcement: outputCapEnforcement(options.model),
+        requestedTransport: cap.piTransport,
+        configuredTransportRetries: cap.piMaxRetries,
+        transportAttempts: null,
+        usage: usageOf(null),
+        costUsd: null,
+        requestedModel: options.model?.reference ?? null,
+        executedModel: null,
+        observedContext: [],
+        durationMs: null,
+        failureKind: null,
+        providerReportedFailureKind: null,
+        maxTurnsHit: false,
+      };
       budget.events.push(event);
       let compacted = false;
       try {
@@ -202,19 +233,39 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
         const resultFailureKind = canonicalFailureKind(result.failureKind);
         event.providerReportedFailureKind = resultFailureKind;
         event.maxTurnsHit = result.diagnostics?.max_turns_hit === true;
-        if (resultFailureKind !== null) event.failureKind = resultFailureKind;
+        // Cancellation wins over any simultaneously returned provider category,
+        // matching the product adapter's settlement precedence. Retain the
+        // provider-reported category as metadata, but do not turn cancellation
+        // into a sticky auth/quota stop.
+        if (resultFailureKind !== null && !result.cancelled && !signal.aborted) event.failureKind = resultFailureKind;
+        const stopReason = result.diagnostics?.pi_stop_reason;
+        const structuredOutputRequested = options.outputSchema !== undefined;
+        const hasStructuredResult = result.structuredResult !== undefined;
+
+        // Settlement is authoritative. Reject every runtime/cancellation outcome
+        // before examining either text or the structured payload.
         if (compacted) throw new BenchmarkError("unexpected_compaction", { failureKind: event.failureKind });
-        if (["length", "max_tokens"].includes(result.diagnostics?.pi_stop_reason)) throw new BenchmarkError("output_limit_reached", { failureKind: event.failureKind });
-        if (signal.aborted) throw new BenchmarkError("provider_timeout_or_cancelled");
-        // Pi currently reports its own finite max-turn guard as usage_limit. In
-        // this experiment that cap is a local, pre-reserved reader budget, not
-        // provider quota evidence. Keep both diagnostics but do not trigger the
-        // terminal auth/quota stop or accept any partial answer as completion.
-        if (stage === "reader" && event.maxTurnsHit) {
-          throw new BenchmarkError("reader_step_budget_exhausted", { failureKind: "budget_exceeded" });
+        if (["length", "max_tokens"].includes(stopReason)) throw new BenchmarkError("output_limit_reached", { failureKind: event.failureKind });
+        if (signal.aborted || result.cancelled) throw new BenchmarkError("provider_timeout_or_cancelled", { failureKind: event.failureKind });
+        // Pi reports its finite max-turn guard as usage_limit. That is a local,
+        // pre-reserved step ceiling here, not provider quota evidence.
+        if (event.maxTurnsHit) {
+          const code = stage === "reader" ? "reader_step_budget_exhausted" : "capture_step_budget_exhausted";
+          throw new BenchmarkError(code, { failureKind: "budget_exceeded" });
         }
         if (resultFailureKind === "context_limit") throw new BenchmarkError("native_context_limit", { failureKind: resultFailureKind });
-        if (result.failureKind || result.error || result.cancelled || typeof result.text !== "string" || !result.text.trim()) throw new BenchmarkError("provider_failed", { failureKind: event.failureKind });
+        if (result.failureKind || result.error) throw new BenchmarkError("provider_failed", { failureKind: event.failureKind });
+        // A successful StructuredOutput call is terminal even though Pi's final
+        // assistant message has stopReason=toolUse. Without its payload, the same
+        // stop reason is an unfinished tool loop and cannot be accepted.
+        if (stopReason === "toolUse" && !(structuredOutputRequested && hasStructuredResult)) {
+          throw new BenchmarkError("unfinished_tool_loop", { failureKind: event.failureKind });
+        }
+        if (structuredOutputRequested) {
+          if (!hasStructuredResult) throw new BenchmarkError("structured_result_missing", { failureKind: event.failureKind });
+        } else if (typeof result.text !== "string" || !result.text.trim()) {
+          throw new BenchmarkError("provider_failed", { failureKind: event.failureKind });
+        }
         event.status = "completed";
         return result;
       } catch (error) {
@@ -233,6 +284,22 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
   };
 }
 
+function captureCompletionText(result, options) {
+  if (options.outputSchema === undefined) return result.text;
+  let selected = result.structuredResult;
+  if (options.structuredResultKey !== undefined) {
+    if (selected === null || typeof selected !== "object" || Array.isArray(selected)
+      || !Object.prototype.hasOwnProperty.call(selected, options.structuredResultKey)) {
+      throw new BenchmarkError("structured_result_key_missing");
+    }
+    selected = selected[options.structuredResultKey];
+  }
+  let serialized;
+  try { serialized = JSON.stringify(selected); } catch { throw new BenchmarkError("structured_result_unserializable"); }
+  if (serialized === undefined) throw new BenchmarkError("structured_result_unserializable");
+  return serialized;
+}
+
 export function captureLlm(runtime, { model, workspace, sessionsRoot, budget, tag, capture }) {
   return {
     id: `agent-host:${model.reference}`,
@@ -241,9 +308,11 @@ export function captureLlm(runtime, { model, workspace, sessionsRoot, budget, ta
       const result = await meteredRuntime(runtime, { budget, stage, tag }).run(MEMORY_SYSTEM, {
         model, messages: [{ role: "user", content: prompt }], abortSignal: options.abortSignal ?? new AbortController().signal,
         cwd: workspace, piSessionsRoot: sessionsRoot, allowedTools: [], disallowedTools: [], mcpServers: {},
+        ...(options.outputSchema === undefined ? {} : { outputSchema: options.outputSchema }),
       });
-      capture?.({ ...tag, stage, prompt, output: result.text });
-      return result.text;
+      const output = captureCompletionText(result, options);
+      capture?.({ ...tag, stage, prompt, output });
+      return output;
     },
   };
 }
@@ -319,14 +388,22 @@ export function scriptedProviders({ source } = {}) {
       async run(_system, options) {
         const prompt = options.messages[0].content;
         if (!prompt.includes("\nTURN:\n")) {
-          // Reconciliation output uses the strict production action format.
+          // Reconciliation output uses the strict production action format. The
+          // schema path returns the host tool's object root; legacy text callers
+          // retain the established decisions-array completion.
           const indexes = [...prompt.matchAll(/"index"\s*:\s*(\d+)/gu)].map((match) => Number(match[1]));
-          return { text: JSON.stringify([...new Set(indexes)].map((index) => ({ index, action: "add" }))) };
+          const decisions = [...new Set(indexes)].map((index) => ({ index, action: "add" }));
+          return options.outputSchema === undefined
+            ? { text: JSON.stringify(decisions) }
+            : { text: "", structuredResult: { decisions } };
         }
         const turn = prompt.split("\nTURN:\n").at(-1);
         const match = /^User(?: \(([^)]+)\))?: ([\s\S]*?)\nAssistant:/u.exec(turn);
         const fact = `${match?.[1] ?? "User"} said: ${match?.[2] ?? "A fictional fact."}`;
-        return { text: JSON.stringify({ memories: [{ type: "note", text: fact, salience: 0.8, isInsight: false, entityIds: [] }], entities: [], relations: [] }) };
+        const extracted = { memories: [{ type: "note", text: fact, salience: 0.8, isInsight: false, entityIds: [] }], entities: [], relations: [] };
+        return options.outputSchema === undefined
+          ? { text: JSON.stringify(extracted) }
+          : { text: "", structuredResult: extracted };
       },
     },
     reader: {

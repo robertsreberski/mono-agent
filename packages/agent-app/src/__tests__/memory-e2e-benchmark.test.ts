@@ -27,7 +27,7 @@ function withStructuredExtractor<T extends { extractor: { run(system: string, op
       ...value.extractor,
       async run(system: string, options: any) {
         const result = await run(system, options);
-        if (options.outputSchema === undefined || typeof result.text !== "string") return result;
+        if (options.outputSchema === undefined || result.structuredResult !== undefined || typeof result.text !== "string") return result;
         const parsed = JSON.parse(result.text);
         const decisions = options.outputSchema?.properties?.decisions;
         return {
@@ -287,7 +287,9 @@ describe("fictional E2E production-path contract, not model quality", () => {
           },
         },
         extractor: {
-          run: async () => ({ text: JSON.stringify({ memories, entities: [], relations: [] }) }),
+          run: async (_system: string, options: any) => options.outputSchema === undefined
+            ? { text: JSON.stringify({ memories, entities: [], relations: [] }) }
+            : { text: "", structuredResult: { memories, entities: [], relations: [] } },
         },
       };
     };
@@ -418,7 +420,10 @@ describe("fictional E2E production-path contract, not model quality", () => {
       else plan.perCall.reconciliationEstimatedInputTokens = limit;
       const budget = new input.providers.Budget(plan);
       const dispatch = vi.fn(async () => ({
-        text: JSON.stringify(candidates.map((_candidate, index) => ({ index, action: "add" }))),
+        text: "",
+        structuredResult: {
+          decisions: candidates.map((_candidate, index) => ({ index, action: "add" })),
+        },
       }));
       let nextId = 0;
       try {
@@ -454,7 +459,9 @@ describe("fictional E2E production-path contract, not model quality", () => {
         status: "rejected", errorClass: "capture_context_budget_exceeded",
         estimatedInputTokensLimit: 8_192,
       });
-      expect(oldPreflight.estimatedInputTokens).toBe(27_867);
+      // Product structured-reconciliation guidance adds schema-bound prompt text;
+      // pin the integrated prompt's actual conservative estimate.
+      expect(oldPreflight.estimatedInputTokens).toBe(27_928);
 
       const corrected = await runAtLimit(locomo.LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS);
       expect(corrected.error).toBeNull();
@@ -511,9 +518,14 @@ describe("fictional E2E production-path contract, not model quality", () => {
     let extractionCalls = 0;
     const providerFactory = (args: any) => {
       const value = input.providers.scriptedProviders(args);
-      return { ...value, extractor: { run: async () => {
+      return { ...value, extractor: { run: async (_system: string, options: any) => {
         extractionCalls += 1;
-        return { text: extractionCalls === 1 ? "{malformed" : '{"memories":[],"entities":[],"relations":[]}' };
+        if (options.outputSchema === undefined) {
+          return { text: extractionCalls === 1 ? "{malformed" : '{"memories":[],"entities":[],"relations":[]}' };
+        }
+        return extractionCalls === 1
+          ? { text: "", structuredResult: { malformed: true } }
+          : { text: "", structuredResult: { memories: [], entities: [], relations: [] } };
       } } };
     };
     const report = await input.runner.runBenchmark({ ...input, corpus, plan, providerFactory });

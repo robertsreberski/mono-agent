@@ -112,6 +112,32 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     await expect(main(["--real", ...profile, "--confirm-plan", plan.confirmation], { prepareBuild })).rejects.toThrow("synthetic_build_refused");
     expect(prepareBuild).toHaveBeenCalledOnce(); expect(network).not.toHaveBeenCalled();
   });
+  it("discloses and preflights the selected Codex wire-cap limitation before build or providers", async () => {
+    const profile = ["--reader", "openai-codex:reader", "--extractor", "openai-codex:extractor", "--embedding-provider", "ollama", "--embedding-model", "fixture", "--dimension", "8"];
+    const output = [];
+    await main(["--dry-run", ...profile], { stdout: (text) => output.push(JSON.parse(text)) });
+    expect(output[0].budgetEnforcement).toEqual({
+      providerTransport: {
+        requested: "sse",
+        piMaxRetries: 0,
+        automaticWebSocketFallback: false,
+        observedAttempts: "unknown_unless_provider_reports",
+      },
+      outputTokens: {
+        accounting: "pre_admission_reservation",
+        providerHint: "providerCheckMaxTokens",
+        wireCap: "unsupported_by_selected_openai_codex_provider",
+        strictRealExecutionSupported: false,
+      },
+    });
+    expect(output[0].limitations).toContain("providerCheckMaxTokens is not a universal wire-enforced output cap");
+    const prepareBuild = vi.fn();
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
+    await expect(main(["--real", ...profile, "--confirm-plan", output[0].confirmation], { prepareBuild }))
+      .rejects.toThrow("strict_output_budget_unsupported");
+    expect(prepareBuild).not.toHaveBeenCalled();
+    expect(network).not.toHaveBeenCalled();
+  });
   it("flush alone cannot certify pending, dead, dropped, delayed or missing index work", async () => {
     expect(readySnapshot(ready)).toBe(true);
     for (const key of ["pending", "dead", "due", "transitioning", "retrying"]) expect(readySnapshot({ ...ready, intake: { ...ready.intake, [key]: 1 } })).toBe(false);
@@ -164,12 +190,21 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(exhausted).toEqual([{ attempt: 2, failureKind: "model_output" }]);
   });
 
-  it("caps steps/output, disables retries and compaction, and records unknown actual usage", async () => {
+  it("reserves steps/output, pins SSE with no retries, and reports cap enforcement honestly", async () => {
     const { budget } = await setup(); const run = vi.fn(async () => ({ text: "answer", model: "faux:observed" }));
-    await meteredRuntime({ run }, { budget, stage: "reader", tag: {} }).run("system", { model: { reference: "faux:requested" }, messages: [{ role: "user", content: "question" }], abortSignal: new AbortController().signal });
-    expect(run.mock.calls[0][1]).toMatchObject({ maxTurns: 3, providerCheckMaxTokens: 512, compaction: { enabled: false }, piMaxRetries: 0, effort: "none" });
+    await meteredRuntime({ run }, { budget, stage: "reader", tag: {} }).run("system", { model: { provider: "openai-codex", reference: "openai-codex:requested" }, messages: [{ role: "user", content: "question" }], abortSignal: new AbortController().signal });
+    expect(run.mock.calls[0][1]).toMatchObject({ maxTurns: 3, providerCheckMaxTokens: 512, compaction: { enabled: false }, piTransport: "sse", piMaxRetries: 0, effort: "none" });
     expect(budget.used.chatSteps).toBe(3);
-    expect(budget.events[0]).toMatchObject({ transportAttempts: null, costUsd: null, executedModel: "faux:observed", usage: { inputTokens: null } });
+    expect(budget.events[0]).toMatchObject({
+      outputTokenLimitRequested: 512,
+      outputCapEnforcement: "unsupported_by_selected_provider",
+      requestedTransport: "sse",
+      configuredTransportRetries: 0,
+      transportAttempts: null,
+      costUsd: null,
+      executedModel: "faux:observed",
+      usage: { inputTokens: null },
+    });
     expect(usageOf({ input: 0 })).toMatchObject({ inputTokens: 0, outputTokens: null });
   });
   it("keeps local reader step exhaustion distinct from terminal provider quota", async () => {
@@ -347,11 +382,87 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     const { budget } = await setup(); const run = vi.fn(async () => ({ text: "{}" }));
     const llm = captureLlm({ run }, { model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag: {} });
     await llm.complete("STRICT_PROMPT", { label: "capture:extract" });
-    expect(run.mock.calls[0][1]).toMatchObject({ messages: [{ role: "user", content: "STRICT_PROMPT" }], allowedTools: [], mcpServers: {}, maxTurns: 1, providerCheckMaxTokens: 2048, compaction: { enabled: false } });
+    expect(run.mock.calls[0][1]).toMatchObject({ messages: [{ role: "user", content: "STRICT_PROMPT" }], allowedTools: [], mcpServers: {}, maxTurns: 1, providerCheckMaxTokens: 2048, compaction: { enabled: false }, piTransport: "sse", piMaxRetries: 0 });
     const production = await readFile(new URL("../../packages/agent-app/src/configured-agent.ts", import.meta.url), "utf8");
     for (const phrase of run.mock.calls[0][0].split(/(?<=\.) /u)) expect(production).toContain(phrase);
     await expect(meteredRuntime({ run: async () => ({ error: "secret error", text: "" }) }, { budget, stage: "reader", tag: {} }).run("s", { messages: [], abortSignal: new AbortController().signal })).rejects.toThrow("provider_failed");
   });
+  it("projects authoritative extraction and reconciliation results into the exact capture trace", async () => {
+    const extraction = await setup();
+    const extractionSchema = { type: "object", required: ["memories"] };
+    const extracted = { memories: [{ type: "note", text: "Mira likes cobalt." }], entities: [], relations: [] };
+    const extractionRun = vi.fn(async () => ({
+      text: "plausible text fallback must not win",
+      structuredResult: extracted,
+      diagnostics: { pi_stop_reason: "toolUse", max_turns_hit: false },
+    }));
+    const extractionTrace = [];
+    const extractor = captureLlm({ run: extractionRun }, {
+      model: { provider: "fixture", reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions",
+      budget: extraction.budget, tag: { groupId: "g" }, capture: (entry) => extractionTrace.push(entry),
+    });
+    await expect(extractor.complete("extract", { label: "capture:extract", outputSchema: extractionSchema }))
+      .resolves.toBe(JSON.stringify(extracted));
+    expect(extractionRun.mock.calls[0][1].outputSchema).toBe(extractionSchema);
+    expect(extractionTrace).toEqual([expect.objectContaining({ stage: "extraction", output: JSON.stringify(extracted) })]);
+
+    const reconciliation = await setup();
+    const decisions = [{ index: 0, action: "add" }];
+    const reconcileRun = vi.fn(async () => ({ text: "not parser input", structuredResult: { decisions } }));
+    const reconcileTrace = [];
+    const reconciler = captureLlm({ run: reconcileRun }, {
+      model: { provider: "fixture", reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions",
+      budget: reconciliation.budget, tag: {}, capture: (entry) => reconcileTrace.push(entry),
+    });
+    await expect(reconciler.complete("reconcile", {
+      label: "capture:reconcile-batch", outputSchema: { type: "object" }, structuredResultKey: "decisions",
+    })).resolves.toBe(JSON.stringify(decisions));
+    expect(reconcileTrace[0]).toMatchObject({ stage: "reconciliation", output: JSON.stringify(decisions) });
+  });
+
+  it("accepts empty text only for a successful structured settlement and keeps terminal toolUse distinct", async () => {
+    const { budget } = await setup();
+    const result = { text: "", structuredResult: { memories: [] }, diagnostics: { pi_stop_reason: "toolUse", max_turns_hit: false } };
+    await expect(meteredRuntime({ run: async () => result }, { budget, stage: "extraction", tag: {} })
+      .run("s", { messages: [], outputSchema: { type: "object" } })).resolves.toBe(result);
+    expect(budget.events[0]).toMatchObject({ status: "completed", maxTurnsHit: false });
+
+    const unfinished = await setup();
+    await expect(meteredRuntime({ run: async () => ({ text: "", diagnostics: { pi_stop_reason: "toolUse" } }) }, { budget: unfinished.budget, stage: "reader", tag: {} })
+      .run("s", { messages: [] })).rejects.toThrow("unfinished_tool_loop");
+  });
+
+  it.each([
+    ["provider failure", { failureKind: "provider_unavailable", error: "private", structuredResult: { ok: true } }, "provider_failed"],
+    ["runtime error", { error: "private", structuredResult: { ok: true } }, "provider_failed"],
+    ["cancelled", { cancelled: true, structuredResult: { ok: true } }, "provider_timeout_or_cancelled"],
+    ["cancelled before returned failure", { cancelled: true, failureKind: "usage_limit", error: "private", structuredResult: { ok: true } }, "provider_timeout_or_cancelled"],
+    ["compacted", { structuredResult: { ok: true } }, "unexpected_compaction"],
+    ["max turns", { structuredResult: { ok: true }, diagnostics: { max_turns_hit: true } }, "capture_step_budget_exhausted"],
+    ["missing structured payload", { text: "plausible fallback" }, "structured_result_missing"],
+  ])("rejects %s before accepting a structured payload", async (_label, result, code) => {
+    const { budget } = await setup();
+    const run = vi.fn(async (_system, options) => {
+      if (code === "unexpected_compaction") options.onEvent({ type: "compaction_started" });
+      return result;
+    });
+    await expect(meteredRuntime({ run }, { budget, stage: "extraction", tag: {} })
+      .run("s", { messages: [], outputSchema: { type: "object" } })).rejects.toThrow(code);
+    expect(budget.events[0].status).toBe(code);
+    if (result.cancelled) expect(budget.providerStop).toBeNull();
+  });
+
+  it("fails closed on missing reconciliation projection and never records fallback text", async () => {
+    const { budget } = await setup(); const trace = [];
+    const llm = captureLlm({ run: async () => ({ text: "[]", structuredResult: { other: [] } }) }, {
+      model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag: {}, capture: (entry) => trace.push(entry),
+    });
+    await expect(llm.complete("reconcile", {
+      label: "capture:reconcile-batch", outputSchema: { type: "object" }, structuredResultKey: "decisions",
+    })).rejects.toThrow("structured_result_key_missing");
+    expect(trace).toEqual([]);
+  });
+
   it("meters bounded embedding text into both the combined and embedding-specific hard budgets", async () => {
     const { plan } = await setup();
     const budget = new Budget({ ...plan, limits: { ...plan.limits, embeddingInputTokens: 1 } });
@@ -609,11 +720,21 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     await symlink(root, join(dir, ".worklab-tmp"));
     await expect(ownedParent(dir)).rejects.toThrow("unsafe_output_root");
   });
-  it("scripted extractor is independent of gold and never claims a real provider", async () => {
+  it("scripted extractor is independent of gold and changes payload shape only on the schema path", async () => {
     const providers = scriptedProviders();
     expect(providers.kind).toBe("scripted");
-    const result = await providers.extractor.run("", { messages: [{ content: "\nTURN:\nUser (Fiction): A green cup.\nAssistant: Noted." }] });
-    expect(JSON.parse(result.text).memories[0].text).toBe("Fiction said: A green cup.");
+    const messages = [{ content: "\nTURN:\nUser (Fiction): A green cup.\nAssistant: Noted." }];
+    const textResult = await providers.extractor.run("", { messages });
+    expect(JSON.parse(textResult.text).memories[0].text).toBe("Fiction said: A green cup.");
+    expect(textResult).not.toHaveProperty("structuredResult");
+    const structured = await providers.extractor.run("", { messages, outputSchema: { type: "object" } });
+    expect(structured.text).toBe("");
+    expect(structured.structuredResult.memories[0].text).toBe("Fiction said: A green cup.");
+
+    const reconciliation = await providers.extractor.run("", {
+      messages: [{ content: 'candidates [{"index": 2}]' }], outputSchema: { type: "object" },
+    });
+    expect(reconciliation).toEqual({ text: "", structuredResult: { decisions: [{ index: 2, action: "add" }] } });
   });
 });
 

@@ -44,6 +44,10 @@
 - Reject memory E2E corpus/split selections with no groups before provider
   setup, build, or benchmark execution instead of reporting a successful
   zero-trial run.
+- Keep memory E2E strict capture on the runtime's authoritative structured
+  result, including reconciliation projection, and pin real requests to SSE
+  with no transport retry. Report output reservations as provider hints and
+  refuse known Codex routes that cannot enforce the requested wire output cap.
 
 - Return managed `WebSearch` and `WebFetch` results as a compact JSON envelope
   with `status`, host-written summary, untrusted content or results, source and

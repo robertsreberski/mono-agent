@@ -146,6 +146,27 @@ export function contextFor(source, arm) {
   return messages;
 }
 
+function budgetEnforcementFor(profile) {
+  const references = [profile?.reader, profile?.extractor].filter((value) => typeof value === "string");
+  const codexWireCapUnsupported = references.some((value) => value.startsWith("openai-codex:"));
+  return {
+    providerTransport: {
+      requested: "sse",
+      piMaxRetries: 0,
+      automaticWebSocketFallback: false,
+      observedAttempts: "unknown_unless_provider_reports",
+    },
+    outputTokens: {
+      accounting: "pre_admission_reservation",
+      providerHint: "providerCheckMaxTokens",
+      wireCap: references.length === 0
+        ? "not_applicable_to_scripted_run"
+        : codexWireCapUnsupported ? "unsupported_by_selected_openai_codex_provider" : "unverified_for_selected_provider",
+      strictRealExecutionSupported: references.length === 0 ? null : codexWireCapUnsupported ? false : null,
+    },
+  };
+}
+
 export function makePlan({ corpus, sha256, split = "development", profile = null, codeRevision = null, limits = LIMITS[split], perCall = {} }) {
   if (!Object.hasOwn(LIMITS, split)) throw new Error("invalid_split");
   const groups = corpus.groups.filter((group) => group.split === split);
@@ -159,7 +180,8 @@ export function makePlan({ corpus, sha256, split = "development", profile = null
     profile: serializableProfile(profile), limits,
     workload: { questions: questions.length, trials: questions.length * arms.length, historicalTurnsPerMemoryArm: turns, captureStepsMaximum: turns * 2, readerStepsMaximum: questions.length * arms.length * 3 },
     perCall: { readerMaxTurns: 3, readerOutputTokens: 512, extractorOutputTokens: 2048, readerEstimatedInputTokens: 16384, extractorEstimatedInputTokens: 8192, readerHistoryHeadroomMessages: 8, framingAndToolAllowance: 4096, callTimeoutMs: 60000, embeddingTimeoutMs: 10000, readinessTimeoutMs: 120000, cleanupTimeoutMs: 10000, ...perCall },
-    limitations: ["controlled-text token reservations are conservative ceilings, not actual provider spend", "native payload/context limits require an explicit capability probe", "transport attempt count unknown unless provider reports it", "fixed arm order; cache warmth uncontrolled", "one repeat; quality/human grading unmeasured"],
+    budgetEnforcement: budgetEnforcementFor(profile),
+    limitations: ["controlled-text token reservations are conservative ceilings, not actual provider spend", "providerCheckMaxTokens is not a universal wire-enforced output cap", "strict real execution is refused for a selected provider known to omit that cap", "native payload/context limits require an explicit capability probe", "transport attempt count unknown unless provider reports it", "fixed arm order; cache warmth uncontrolled", "one repeat; quality/human grading unmeasured"],
   };
   return { ...manifest, confirmation: digest(manifest) };
 }
