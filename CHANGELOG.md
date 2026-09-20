@@ -22,29 +22,41 @@
   avoid repeated card measurements during scrolling.
   Source only; the site is not deployed yet.
 
+- Let `WebSearch` request an optional ISO country localization preference,
+  defaulting to no requested country. Apply documented DuckDuckGo regions,
+  carry advisory Parallel intent, and skip unsupported providers or Hound
+  engines before dispatch instead of silently returning untargeted results.
+
+- Improve local web extraction with Hound-derived content-link prioritization,
+  title and main-content fallbacks, and Markdown tables that retain links and
+  code. Keep rate-limit and access refusals terminal instead of retrying or
+  forwarding the same fetch to another provider, including binary login pages.
+  Reject image-only extraction without visible text, preserve ordinary search
+  URL parameters, and retain native Hound aggregate cooldown evidence.
+
 - Fix unrelated provider turns blocking history admission and cancellation
   publication when conversation keys share a lock shard. Concurrent writers
   sharing history must use v0.20.0 or later; stop older writers first.
 
-- Add an opt-in Hound backend for `WebSearch` and `WebFetch` alongside
-  Parallel and Ollama, keeping the `parallel,ollama` search and `local` fetch
-  defaults. Select `hound` explicitly and point `tools.web.search.hound` /
-  `tools.web.fetch.hound` (or `MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT` /
-  `MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT`) at a user-managed loopback Hound MCP
-  URL with an explicit `/mcp` path. Search fans out server-side with native
-  freshness, language, and domain filters; fetch is HTTP-only with
-  `respect_robots` requested (upstream handling is fail-open, not a
-  strict-enforcement guarantee), fresh extraction, bounded remote links, and
-  terminal failures for cached, unexpectedly escalated, or non-HTTP-tier
-  responses, non-live sources, and known robots refusals. The endpoint is
-  trusted: arguments request behavior and responses are validated, but remote
-  redirects, retries, and keys are not governed. Doctor liveness uses only
-  `tools/list`.
+- Replace opt-in external Hound RPC with built-in Node DDG/Brave/Mojeek search
+  and HTTP-only fetch. Gate/admit each request, account for robots/engine sends,
+  report partial engine coverage, and enforce fail-closed Hound-only robots.
+  Remove obsolete endpoint settings: JSON/env/direct callers receive an explicit
+  migration error without contacting a service. Default providers are unchanged.
 
 - Keep model-guided BuJo capture faithful to speaker, evidence, and preference
   scope; distinguish corrected reports from actual state changes and avoid
   turning observed outcomes into causal proof, without extra model calls or a
   storage-schema change.
+- Make strict agent-host BuJo extraction and reconciliation request the runtime's
+  schema-guided `StructuredOutput` result while retaining authoritative strict
+  validation and whole-turn atomicity. Accept a successful terminal structured
+  submission at a one-turn ceiling, fail closed when the selected structured
+  path returns no result, and keep direct Ollama memory completion on its
+  validated JSON-text path.
+- Keep independent BuJo facts that share an explicit speaker-attribution preamble
+  from being rejected as duplicate variants, while preserving whole-batch
+  rejection for actual near-duplicates, conflicting values, and negations.
 - Let automatic direct-fact recall use finite first-party reported properties,
   choices, and work/live locations while rendering their attribution unchanged;
   require exact textual reporter identity, reject compatibility-hidden unsafe
@@ -167,6 +179,12 @@
   outages, while clearly marking automatic and explicit recall as degraded,
   keeping statusless recall strict, and warning instead of serving meaningless
   fragments when the automatic-context byte budget is too small.
+
+- Let the read-only `ProviderUsage` tool force a current quota read with an
+  optional `refresh: true` argument; absent or `false` keeps the five-minute
+  cached read. Forced reads join the shared in-flight fetch and never bypass
+  error backoff or `Retry-After`; the tool still changes no routing and
+  purchases no quota.
 
 ## 0.22.0 — Persistent subagents and Projects (2026-09-16)
 

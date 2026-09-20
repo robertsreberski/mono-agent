@@ -13,6 +13,7 @@ export { parseDuckDuckGoResults } from "./web-search-providers/duckduckgo.js";
 export { parseStartpageResults } from "./web-search-providers/startpage.js";
 import { boundWebSearchEntries } from "./web-search-output.js";
 import { buildWebNextAction, formatActionableEnvelope, webStatusForCode } from "./web-actionable.js";
+import { normalizeSearchCountry, unsupportedCountryFilter } from "./web-search-country.js";
 import {
   refundWebSearchRequests,
   createWebSearchRunState,
@@ -31,7 +32,7 @@ const runProviderFailures = new WeakMap();
 /**
  * Compatibility wrapper for direct callers.
  *
- * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, time_range?: string}} params
+ * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, country?: string, time_range?: string}} params
  * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, fetchImpl?: typeof fetch}} [options]
  */
 export async function webSearchToolImpl(params, options = {}) {
@@ -43,7 +44,7 @@ export async function webSearchToolImpl(params, options = {}) {
  * SearXNG endpoint, ChatGPT-subscription Codex search, and/or the keyless HTML fallback chain. Returns a structured
  * internal outcome for the Pi bridge.
  *
- * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, time_range?: string}} params
+ * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, country?: string, time_range?: string}} params
  * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, searchState?: any, fetchImpl?: typeof fetch, codexSearch?: typeof searchCodexSubscription}} [options]
  */
 export async function performWebSearch(params, options = {}) {
@@ -55,7 +56,7 @@ export async function performWebSearch(params, options = {}) {
  * Codex search, and/or the keyless HTML fallback chain. Returns a structured
  * internal outcome for the Pi bridge.
  *
- * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, time_range?: string}} params
+ * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, country?: string, time_range?: string}} params
  * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, searchState?: any, fetchImpl?: typeof fetch, codexSearch?: typeof searchCodexSubscription}} [options]
  */
 async function performSearch(
@@ -66,6 +67,7 @@ async function performSearch(
     domains = [],
     exclude_domains = [],
     language,
+    country: requestedCountry,
     time_range,
   },
   {
@@ -86,6 +88,11 @@ async function performSearch(
   if (!normalizedQuery) {
     return searchFailure("Error: WebSearch query must not be empty.", "invalid_query", startedAt, searchState, callClaims.requests);
   }
+  const normalizedCountry = normalizeSearchCountry(requestedCountry);
+  if (normalizedCountry.error) {
+    return searchFailure(`Error: ${normalizedCountry.error}`, "invalid_country", startedAt, searchState, callClaims.requests);
+  }
+  const country = normalizedCountry.value;
   const max = clampInteger(limit, 1, 10, 5);
   const explicitDomains = normalizeDomains(Array.isArray(domains) ? domains : []);
   const includeDomains = normalizeDomains([...explicitDomains, ...querySiteDomains(normalizedQuery)]);
@@ -109,6 +116,9 @@ async function performSearch(
   /** @type {Array<Array<{title: string, url: string, snippet: string, backend: string}>>} */
   const rankedLists = [];
   const providerFailures = [];
+  const engineOutcomes = [];
+  let partialEngines = false;
+  let houndStopped = false;
   const providersUsed = new Set();
   const attemptedBackends = new Set();
   const actualQueries = [];
@@ -128,6 +138,7 @@ async function performSearch(
         relevanceQuery: normalizedQuery, includeDomains, excludeDomains,
         chained: Array.isArray(config.backend) && config.backend.length > 1,
         language,
+        country,
         timeRange: time_range,
         sandbox,
         policy,
@@ -148,6 +159,11 @@ async function performSearch(
     // Chain failures are reported even when a later backend rescued the query,
     // so a silent degradation to the fallback is still visible in the outcome.
     if (result.failures?.length) providerFailures.push(...result.failures);
+    if (result.backend === "hound" && Array.isArray(result.engineOutcomes)) {
+      engineOutcomes.push(...result.engineOutcomes.slice(0, 3));
+      partialEngines ||= result.partial === true;
+      houndStopped ||= result.engineOutcomes.some((entry) => ["robots_denied", "robots_unavailable", "robots_crawl_delay", "access_challenge", "authentication_required", "rate_limited", "search_budget_exhausted", "network_denied"].includes(entry.code));
+    }
     if (result.ok) {
       if (typeof result.actualQuery === "string" && result.actualQuery.trim()) {
         actualQueries.push(result.actualQuery.trim());
@@ -199,9 +215,9 @@ async function performSearch(
         break;
       }
       if (!result.ok && !result.relevance) disabledForCall.add(backend);
-      if (providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
+      if (houndStopped || providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
     }
-    if (providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
+    if (houndStopped || providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
   }
   rememberRunProviderFailures(searchState, providerFailures);
   if (signal?.aborted) {
@@ -217,6 +233,7 @@ async function performSearch(
   if (providerFailures.some((entry) => entry.code === "search_budget_exhausted")) {
     return searchFailure(searchBudgetExhaustionMessage(searchState, providerFailures), "search_budget_exhausted", startedAt, searchState, callClaims.requests, {
       attempts,
+      ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12) } : {}),
       backend: config.backend,
       attemptedBackends: [...attemptedBackends],
       providerAttempts: providerAttemptMetadata(providerFailures),
@@ -232,6 +249,7 @@ async function performSearch(
     const networkDenied = providerFailures.length > 0
       && providerFailures.every((entry) => entry.message === "Network access denied by sandbox policy.");
     const throttled = providerFailures.some((entry) => entry.rateLimited || entry.cooldown);
+    const terminalHoundCode = houndStopped ? providerFailures.find((entry) => entry.backend === "hound")?.code : undefined;
     const strictProviderCode = !Array.isArray(config.backend)
       ? providerFailures.find((entry) => typeof entry.code === "string")?.code
       : undefined;
@@ -240,8 +258,9 @@ async function performSearch(
     return searchFailure(networkDenied
       ? "Error: Network access denied by sandbox policy."
       : `Error: WebSearch failed: ${reason}`,
-    networkDenied ? "network_denied" : (throttled ? "rate_limited" : (strictProviderCode || "backend_unavailable")), startedAt, searchState, callClaims.requests, {
+    networkDenied ? "network_denied" : (throttled ? "rate_limited" : (terminalHoundCode || strictProviderCode || "backend_unavailable")), startedAt, searchState, callClaims.requests, {
       attempts,
+      ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12) } : {}),
       backend: config.backend,
       retryable: providerFailures.some((entry) => entry.retryable),
       rateLimited: throttled,
@@ -256,6 +275,13 @@ async function performSearch(
       retryInRun: false,
       nextAction: "use_available_evidence",
       providerAttempts: providerAttemptMetadata(providerFailures),
+      ...(country ? {
+        filterSupport: { country: providerFailures.length > 0 && providerFailures.every((entry) => entry.code === "unsupported_country_filter") ? "unsupported" : "not_applied" },
+        requestedFilters: {
+          country,
+          note: "Country is a provider-dependent localization preference, not a guarantee that results are located there; IP-based ranking may still apply.",
+        },
+      } : {}),
     });
   }
 
@@ -264,7 +290,7 @@ async function performSearch(
     : providersUsed.size > 1 ? "mixed" : config.backend;
   const bounded = boundWebSearchEntries(merged);
   const budget = webSearchBudgetSnapshot(searchState, callClaims.requests);
-  const retryInRun = searchState.requestsUsed < searchState.maxRequests;
+  const retryInRun = !houndStopped && searchState.requestsUsed < searchState.maxRequests;
   const nextAction = bounded.resultCount > 0
     ? "fetch_existing_sources"
     : retryInRun ? "refine_query" : "use_available_evidence";
@@ -279,12 +305,13 @@ async function performSearch(
   const fittedEntries = bounded.entries;
   const omittedCount = bounded.omittedCount;
   const truncatedFinal = bounded.truncated;
-  const status = truncatedFinal ? "partial" : "ok";
+  const status = truncatedFinal || partialEngines ? "partial" : "ok";
   const actualQueryList = uniqueStrings(actualQueries.length > 0 ? actualQueries : [normalizedQuery], 4);
   const failureSummary = sanitizeFailureMetadata(providerFailures)
     .map((entry) => `${entry.backend}:${entry.code}`);
   const coverage = {
     resultCount: fittedEntries.length,
+    ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12), partialEngines, searchStopped: houndStopped } : {}),
     truncated: truncatedFinal,
     ...(omittedCount > 0 ? { omittedResults: omittedCount } : {}),
     backend,
@@ -295,11 +322,18 @@ async function performSearch(
     fallbackUsed: attemptedBackends.size > 1,
     rateLimited: providerFailures.some((entry) => entry.rateLimited || entry.cooldown),
     cooldownBackends: cooldownBackendNames(searchState),
-    filterSupport: { language: language ? (webSearchProviders.get(backend)?.filterSupport.language ?? "advisory") : "not_requested", timeRange: time_range ? (webSearchProviders.get(backend)?.filterSupport.timeRange ?? "provider") : "not_requested" },
-    ...(language || time_range ? { requestedFilters: {
+    filterSupport: {
+      language: language ? (webSearchProviders.get(backend)?.filterSupport.language ?? "advisory") : "not_requested",
+      country: country ? (webSearchProviders.get(backend)?.filterSupport.country ?? "provider_dependent") : "not_requested",
+      timeRange: time_range ? (webSearchProviders.get(backend)?.filterSupport.timeRange ?? "provider") : "not_requested",
+    },
+    ...(language || country || time_range ? { requestedFilters: {
       ...(language ? { language: collapseWhitespace(language).slice(0, 100) } : {}),
+      ...(country ? { country } : {}),
       ...(time_range ? { timeRange: collapseWhitespace(time_range).slice(0, 100) } : {}),
-      note: "Provider-dependent; verify dates in sources.",
+      note: country
+        ? "Country is a provider-dependent localization preference, not a guarantee that results are located there; IP-based ranking may still apply. Verify dates in sources."
+        : "Provider-dependent; verify dates in sources.",
     } } : {}),
     ...budget,
     retryInRun,
@@ -365,6 +399,7 @@ async function performSearch(
       cooldownSkipCount: providerFailures.filter((r) => r.cooldown).length,
       quotaSkipCount: providerFailures.filter((r) => r.quotaSkipped).length,
       filterSupport: coverage.filterSupport,
+      ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12), partialEngines, searchStopped: houndStopped } : {}),
       providerFailureCount: providerFailures.length,
       rateLimited: coverage.rateLimited,
       cooldownBackends: coverage.cooldownBackends,
@@ -568,7 +603,7 @@ function sanitizeFailureMetadata(failures) {
   const metadata = [];
   for (const failureEntry of failures) {
     const backend = collapseWhitespace(failureEntry?.backend).slice(0, 40) || "unknown";
-    const code = ["quota_reserved", "quota_unavailable", "coordination_unavailable", "search_budget_exhausted", "auth_failed", "invalid_response", "endpoint_not_supported", "timeout", "provider_unavailable", "access_challenge"].includes(failureEntry?.code) ? failureEntry.code : failureEntry?.relevance
+    const code = ["quota_reserved", "quota_unavailable", "coordination_unavailable", "search_budget_exhausted", "auth_failed", "invalid_response", "endpoint_not_supported", "timeout", "provider_unavailable", "access_challenge", "unsupported_country_filter"].includes(failureEntry?.code) ? failureEntry.code : failureEntry?.relevance
       ? "no_relevant_results"
       : failureEntry?.rateLimited ? "rate_limited"
         : failureEntry?.cooldown ? "cooldown"
@@ -597,7 +632,7 @@ function providerAttemptMetadata(failures) {
       disposition: source?.cooldown || source?.rateLimited ? "deferred_for_run" : "advanced",
       requests: Number.isSafeInteger(source?.requestsConsumed)
         ? source.requestsConsumed
-        : source?.cooldown || source?.quotaSkipped ? 0 : 1,
+        : source?.cooldown || source?.quotaSkipped || source?.preflightSkipped ? 0 : 1,
       ...(Number.isFinite(source?.retryAfterMs) ? { retryAfterMs: source.retryAfterMs } : {}),
       ...(retryAtMs === undefined ? {} : { retryAt: new Date(retryAtMs).toISOString() }),
     };
@@ -709,6 +744,10 @@ function searchFailure(text, code, startedAt, searchState, requestsThisCall, ext
       ...(extra.failureMetadata === undefined ? {} : {
         failureSummary: extra.failureMetadata.map((entry) => `${entry.backend}:${entry.code}`),
       }),
+      ...(extra.rateLimited === undefined ? {} : { rateLimited: extra.rateLimited }),
+      ...(extra.engineOutcomes === undefined ? {} : { engineOutcomes: extra.engineOutcomes }),
+      ...(extra.filterSupport === undefined ? {} : { filterSupport: extra.filterSupport }),
+      ...(extra.requestedFilters === undefined ? {} : { requestedFilters: extra.requestedFilters }),
       ...(Number.isFinite(retryAfterMs) ? { retryAfterMs } : {}),
       ...(retryAt === undefined ? {} : { retryAt }),
     },
@@ -741,6 +780,20 @@ async function searchOneQuery(query, options) {
   for (const name of names) {
     if (options.signal?.aborted) return abortedSearch(name, failures);
     const provider = webSearchProviders.get(name);
+    // Capability refusal is deterministic: cooldown expiry or configuration
+    // cannot make an unsupported country request dispatchable. Keep it after
+    // abort (cancellation has priority), but before cooldown, eligibility,
+    // admission, and budget so it has no remote or shared-state side effects.
+    // Provider preflight remains for dynamic support such as DDG's region map.
+    const preflight = options.country && provider.filterSupport.country === "unsupported"
+      ? unsupportedCountryFilter(name)
+      : provider.preflight?.(options);
+    if (preflight) {
+      const result = { ok: false, backend: name, ...preflight };
+      if (names.length === 1) return { ...result, failures };
+      failures.push(result);
+      continue;
+    }
     const deferred = deferredResult(options.searchState, name);
     if (deferred) {
       failures.push(deferred);
@@ -750,15 +803,18 @@ async function searchOneQuery(query, options) {
       failures.push({ ok: false, backend: name, code: "backend_unavailable", message: `${name} requirements are not satisfied.`, retryable: false });
       continue;
     }
-    // Provider preflight runs before admission is constructed or the
-    // coordinator is touched: a provider that cannot legally attempt under the
-    // resolved policy must not wait on, consume, or poison shared admission
-    // state. Only providers with remote side effects implement it; absence
-    // means proceed. The in-provider gate stays as defense in depth.
-    const preflight = provider.preflight?.(options);
     let result;
-    if (preflight) {
-      result = { ok: false, backend: name, ...preflight };
+    if (provider.ownsRequests === true) {
+      // Composite adapters gate the actual child URL before each admission.
+      // An aggregate .some(denied) check would wrongly deny partial allowlists.
+      result = await searchWithRequestCount(options, async () => {
+        const value = await provider.search(query, options);
+        if (value.ok && value.engineOutcomes?.some((entry) => entry.code === "search_budget_exhausted")
+          && !filterRelevantResults(filterByDomains(value.results, options.includeDomains, options.excludeDomains), options.relevanceQuery).length) {
+          return { ...value, ok: false, code: "search_budget_exhausted", message: "WebSearch request budget exhausted without useful results.", retryable: false };
+        }
+        return value;
+      });
     } else {
       const admission = provider.admission(options.config);
       if (provider.networkTargets(options.config).some((url) => !options.sandbox.networkAllowsUrl(options.policy, url))) {

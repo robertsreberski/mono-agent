@@ -98,6 +98,18 @@ export interface LoadMonoAgentConfigInput {
  */
 export const RETIRED_CONFIG_FIELDS = [
   {
+    path: "tools.web.search.hound.endpoint",
+    env: "MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT",
+    message: "`tools.web.search.hound.endpoint` was removed: Hound is built in. Delete the endpoint setting; no external Hound service is contacted.",
+    envMessage: "`MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT` was removed: Hound is built in. Remove the variable.",
+  },
+  {
+    path: "tools.web.fetch.hound.endpoint",
+    env: "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT",
+    message: "`tools.web.fetch.hound.endpoint` was removed: Hound is built in. Delete the endpoint setting; no external Hound service is contacted.",
+    envMessage: "`MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT` was removed: Hound is built in. Remove the variable.",
+  },
+  {
     path: "runtime.executionMode",
     env: "MONO_AGENT_EXECUTION_MODE",
     message: "`runtime.executionMode` was removed; mono-agent runs only the Pi runtime (SDK). Delete the key.",
@@ -271,31 +283,12 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   }
   const webSearchParallel = readParallelWebConfig(input.env, "MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV");
   const webFetchParallel = readParallelWebConfig(input.env, "MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV");
-  const webSearchHound = readHoundWebEndpoint(
-    input.env.MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT,
-    "MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT",
-  );
-  const webFetchHound = readHoundWebEndpoint(
-    input.env.MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT,
-    "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT",
-  );
-  if (selectedWebProvider(webSearchBackend, "hound") && webSearchHound === undefined) {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT is required when MONO_AGENT_WEB_SEARCH_BACKEND=hound.",
-      { env: "MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT" },
-    );
+  for (const source of ["MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT", "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT"]) {
+    if (input.env[source] !== undefined) throw new MonoAgentConfigError("invalid_env", `${source} was removed: Hound is built in. Remove the endpoint setting; no external Hound service is contacted.`, { env: source });
   }
   const webFetchProvider = readWebProviderSelection<"local" | "parallel" | "hound">(
     input.env.MONO_AGENT_WEB_FETCH_PROVIDER, "MONO_AGENT_WEB_FETCH_PROVIDER", ["local", "parallel", "hound"], "local", input.env,
   );
-  if (selectedWebProvider(webFetchProvider, "hound") && webFetchHound === undefined) {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT is required when MONO_AGENT_WEB_FETCH_PROVIDER=hound.",
-      { env: "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT" },
-    );
-  }
   const webFetchRender = readChoice<WebFetchRenderMode>(
     input.env.MONO_AGENT_WEB_FETCH_RENDER,
     "MONO_AGENT_WEB_FETCH_RENDER",
@@ -346,13 +339,11 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
         maxRequestsPerRun: webSearchMaxRequestsPerRun,
         ...(webSearchEndpoint === undefined ? {} : { searxng: { endpoint: webSearchEndpoint } }),
         ...(webSearchOllama === undefined ? {} : { ollama: webSearchOllama }),
-        ...(webSearchHound === undefined ? {} : { hound: { endpoint: webSearchHound } }),
         codex: { model: webSearchCodexModel },
       },
       fetch: {
         provider: webFetchProvider,
         ...(webFetchParallel === undefined ? {} : { parallel: webFetchParallel }),
-        ...(webFetchHound === undefined ? {} : { hound: { endpoint: webFetchHound } }),
         render: webFetchRender,
         browserCommand: webBrowserCommand,
       },
@@ -1089,41 +1080,6 @@ function readWebSearchEndpoint(raw: string | undefined, source: string): string 
   }
 }
 
-/**
- * User-managed Hound MCP endpoint: unauthenticated loopback HTTP, preserving
- * the operator's path, which must address the streamable-HTTP handler
- * (`/mcp`). The endpoint is trusted — this validates where Mono connects, not
- * what the remote Hound server does internally.
- */
-function readHoundWebEndpoint(raw: string | undefined, source: string): string | undefined {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) return undefined;
-  try {
-    const endpoint = new URL(normalized);
-    const host = endpoint.hostname.toLowerCase().replace(/^\[|\]$/gu, "");
-    if (
-      endpoint.protocol !== "http:"
-      || !["localhost", "127.0.0.1", "::1"].includes(host)
-      || endpoint.username
-      || endpoint.password
-      || endpoint.search
-      || endpoint.hash
-    ) {
-      throw new Error("not loopback HTTP");
-    }
-    endpoint.pathname = endpoint.pathname.replace(/\/+$/u, "");
-    if (!endpoint.pathname.endsWith("/mcp")) {
-      throw new Error("missing /mcp path");
-    }
-    return endpoint.href.replace(/\/+$/u, "");
-  } catch {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      `${source} must be an unauthenticated loopback HTTP URL with an explicit /mcp path (for example http://127.0.0.1:8765/mcp).`,
-      { env: source },
-    );
-  }
-}
 
 const DEFAULT_OLLAMA_WEB_SEARCH_BASE_URL = "http://127.0.0.1:11434";
 const OFFICIAL_OLLAMA_ORIGIN = "https://ollama.com";

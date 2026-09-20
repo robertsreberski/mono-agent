@@ -51,41 +51,16 @@ describe("explicit web provider selection", () => {
     expect(config?.search.parallel).toEqual({ apiKeyEnv: "TEST_PARALLEL_KEY" });
     expect(JSON.stringify(config)).not.toContain("sentinel-secret");
   });
-  it("accepts hound with explicit loopback endpoints, required when selected", () => {
-    const web = load({
-      search: { backend: "hound", hound: { endpoint: "http://127.0.0.1:8765/mcp/" } },
-      fetch: { provider: ["local", "hound"], hound: { endpoint: "http://localhost:8765/mcp" } },
-    });
-    expect(web?.search.hound).toEqual({ endpoint: "http://127.0.0.1:8765/mcp" });
-    expect(web?.fetch.hound).toEqual({ endpoint: "http://localhost:8765/mcp" });
-    expect(() => load({ search: { backend: "hound" } })).toThrow(/MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT/);
-    expect(() => load({ fetch: { provider: "hound" } })).toThrow(/MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT/);
+  it("selects native Hound without endpoints and preserves explicit ordering", () => {
+    expect(load({ search: { backend: "hound" }, fetch: { provider: "hound" } })).toMatchObject({ search: { backend: "hound" }, fetch: { provider: "hound" } });
+    expect(load({}, { MONO_AGENT_WEB_SEARCH_BACKEND: "parallel,hound", MONO_AGENT_WEB_FETCH_PROVIDER: "local,hound" })).toMatchObject({ search: { backend: ["parallel", "hound"] }, fetch: { provider: ["local", "hound"] } });
   });
-  it("rejects non-loopback, credentialed, or pathless hound endpoints", () => {
-    for (const endpoint of [
-      "https://example.com/mcp",
-      "http://example.com:8765/mcp",
-      "http://user@127.0.0.1:8765/mcp",
-      "http://127.0.0.1:8765/mcp?token=abc",
-      "http://127.0.0.1:8765/mcp#fragment",
-      "http://127.0.0.1:8765/",
-      "http://127.0.0.1:8765",
-      "not-a-url",
-    ]) {
-      expect(() => load({ search: { backend: "hound", hound: { endpoint } } })).toThrow(/HOUND_ENDPOINT/);
-      expect(() => load({ fetch: { provider: "hound", hound: { endpoint } } })).toThrow(/HOUND_ENDPOINT/);
+  it.each(["", " ", "http://127.0.0.1:8765/mcp", "http://user:sentinel@remote.example/mcp", "not-a-url"])("rejects obsolete JSON and env endpoints without echoing values (%s)", (endpoint) => {
+    for (const kind of ["search", "fetch"] as const) {
+      expect(() => load({ [kind]: { hound: { endpoint } } })).toThrow(/was removed: Hound is built in/);
+      expect(() => load({}, { [`MONO_AGENT_WEB_${kind.toUpperCase()}_HOUND_ENDPOINT`]: endpoint })).toThrow(/was removed: Hound is built in/);
+      expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...env, [`MONO_AGENT_WEB_${kind.toUpperCase()}_HOUND_ENDPOINT`]: endpoint } })).toThrow(/was removed: Hound is built in/);
+      try { load({ [kind]: { hound: { endpoint } } }); } catch (error) { expect(String(error)).not.toContain("sentinel"); }
     }
-  });
-  it("loads hound endpoints from env without changing defaults", () => {
-    const web = load({}, {
-      MONO_AGENT_WEB_SEARCH_BACKEND: "parallel,hound",
-      MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT: "http://127.0.0.1:8765/mcp",
-      MONO_AGENT_WEB_FETCH_PROVIDER: "local,hound",
-      MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT: "http://127.0.0.1:8765/mcp",
-    });
-    expect(web?.search.backend).toEqual(["parallel", "hound"]);
-    expect(web?.search.hound).toEqual({ endpoint: "http://127.0.0.1:8765/mcp" });
-    expect(web?.fetch.provider).toEqual(["local", "hound"]);
-    expect(web?.fetch.hound).toEqual({ endpoint: "http://127.0.0.1:8765/mcp" });
   });
 });

@@ -1524,8 +1524,6 @@ function exampleFor(id: string): SettingsJsonValue {
     "tools.filesystem.readableRoots": ["/srv/shared/reference"],
     "tools.filesystem.writableRoots": ["/srv/shared/output"],
     "tools.web.search.searxng.endpoint": "http://127.0.0.1:8088",
-    "tools.web.search.hound.endpoint": "http://127.0.0.1:8765/mcp",
-    "tools.web.fetch.hound.endpoint": "http://127.0.0.1:8765/mcp",
     "tools.web.search.ollama.baseUrl": "https://ollama.com",
     "tools.web.search.ollama.apiKeyEnv": "OLLAMA_API_KEY",
     providers: {
@@ -1713,10 +1711,8 @@ function descriptionFor(id: string): string {
   if (id === "tools.web.search.codex.model") {
     return "Codex app-server model used for ChatGPT-subscription web search. The signed-in account must expose both this model and web search; default gpt-5.6-luna.";
   }
-  if (id === "tools.web.fetch.provider") return "WebFetch provider name or ordered chain: local (default), parallel, hound. Parallel cannot serve raw format, custom headers, or browser rendering. Hound serves HTTP-only remote extraction from a user-managed endpoint and additionally rejects raw format, custom headers, and local rendering.";
-  if (id === "tools.web.search.hound.endpoint" || id === "tools.web.fetch.hound.endpoint") {
-    return "User-managed Hound MCP endpoint: unauthenticated loopback HTTP URL with an explicit /mcp path (for example http://127.0.0.1:8765/mcp). Required when the corresponding chain selects hound. The endpoint is trusted: per-call arguments request behavior and responses are validated, but the remote server's internal redirects, retries, proxies, and keys are not governed.";
-  }
+  if (id === "tools.web.fetch.provider") return "WebFetch provider name or ordered chain: local (default), parallel, hound. Parallel cannot serve raw format, custom headers, or browser rendering. Hound is built-in HTTP-only local acquisition/extraction with proactive robots checks; it supports raw format and allowed headers but not browser rendering.";
+
   if (id === "tools.web.search.parallel.apiKeyEnv" || id === "tools.web.fetch.parallel.apiKeyEnv") return "Optional credential environment-variable name for Parallel MCP. Omit for anonymous access; the value is read at call time and never stored in config.";
   if (id === "tools.web.fetch.render") {
     return "Browser-render capability for sparse JavaScript pages. never forces every call to static extraction; auto permits an isolated agent-browser session when needed.";

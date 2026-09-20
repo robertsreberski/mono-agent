@@ -368,6 +368,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     toolResultsSeen: 0,
     lastToolName: null,
     maxTurnsHit: false,
+    toolExecutionsThisTurn: 0,
+    toolFailureThisTurn: false,
+    structuredOutputCompletedThisTurn: false,
     // Populated by the StructuredOutput tool callback (built in the turn runner);
     // read by the finalization retry predicate and the result assembly.
     structuredResult: null,

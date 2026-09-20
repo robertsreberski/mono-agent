@@ -80,18 +80,17 @@ Environment equivalents:
 | `tools.web.search.ollama.trustPublicUrl` | `MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL` | `false` |
 | `tools.web.search.codex.model` | `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | `gpt-5.6-luna` |
 | `tools.web.search.parallel.apiKeyEnv` | `MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV` | unset (anonymous) |
-| `tools.web.search.hound.endpoint` | `MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT` | unset (required when search selects `hound`) |
 | `tools.web.fetch.provider` | `MONO_AGENT_WEB_FETCH_PROVIDER` | `local` |
 | `tools.web.fetch.parallel.apiKeyEnv` | `MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV` | unset (anonymous) |
-| `tools.web.fetch.hound.endpoint` | `MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT` | unset (required when fetch selects `hound`) |
 | `tools.web.fetch.render` | `MONO_AGENT_WEB_FETCH_RENDER` | `never` |
 | `tools.web.fetch.browserCommand` | `MONO_AGENT_WEB_BROWSER_COMMAND` | `agent-browser` |
 
 ## WebSearch
 
 A provider name is strict; a non-empty array is an ordered fallback chain.
-Duplicate or unknown names are config errors. Providers returning failures,
-empty, irrelevant or out-of-domain results advance the chain; cooldowns and
+Duplicate or unknown names are config errors. Providers returning ordinary failures,
+empty, irrelevant or out-of-domain results advance the chain; observed Hound
+access/robots refusals do not. Cooldowns and
 deferrals skip work. Budget exhaustion or unsafe host coordination stops the
 whole call. SearXNG requires an endpoint at load time; Ollama needs no block.
 
@@ -103,7 +102,7 @@ whole call. SearXNG requires an endpoint at load time; Ollama needs no block.
 | `codex` | ChatGPT-authenticated `codex` app-server with the configured model and web-search capability. |
 | `keyless` | Virtual opt-in group: DuckDuckGo HTML, then Startpage. |
 | `duckduckgo`, `startpage` | Select either HTML engine individually. |
-| `hound` | Opt-in user-managed Hound MCP endpoint (loopback HTTP, explicit `/mcp` path). |
+| `hound` | Built-in native Node metasearch: fixed DuckDuckGo HTML, Brave HTML, and Mojeek HTML pool. No service endpoint. |
 
 ### Migrating from auto
 
@@ -129,9 +128,10 @@ fallback does not make the first Parallel request private. Select strict local
 Ollama/SearXNG instead when remote query disclosure is inappropriate.
 
 Primary and up to three alternate queries are sent unchanged in one
-`web_search` call, costing one answered-search request. Language, time range,
-and domain preferences also inform an advisory objective; local relevance and
-domain gates still apply. Published dates are shown when supplied. Excerpts use
+`web_search` call, costing one answered-search request. Language, country, time
+range, and domain preferences also inform an advisory objective; country support
+is reported as advisory rather than an enforced geographic filter. Local
+relevance and domain gates still apply. Published dates are shown when supplied. Excerpts use
 the normal bounded snippets, not an unbounded provider payload.
 
 Optional `search.parallel.apiKeyEnv` and `fetch.parallel.apiKeyEnv` name an
@@ -154,59 +154,71 @@ responses are `backend_unavailable`, never a fabricated `No results`. Strict
 Parallel doctor/validate liveness uses only `tools/list`, without a query or
 extraction, and reports anonymous versus configured `apiKeyEnv` access.
 
-### Hound MCP (opt-in)
+### Native Hound (opt-in)
 
-Hound is a user-managed companion, like SearXNG: the operator installs, runs,
-and updates `hound` separately (for example `hound --http`, which serves
-streamable HTTP at `http://127.0.0.1:8765/mcp`), then points mono-agent at it
-explicitly. Mono-agent never starts, stops, installs, or upgrades Hound, and
-selecting it changes no default. Pin compatibility: the adapter speaks the
-hand-written `mcp_smart_search` / `mcp_smart_fetch` tools of hound-mcp 12.4.1;
-readiness asserts both names on every `tools/list` probe and assumes nothing
-across Hound versions.
+Hound runs in-process in Node: no Python, external service, runtime download,
+MCP transport, browser impersonation, proxies, archive fallback, or key rotation.
+It ports selected Hound 13.2.0/ddgs engine parsers, consensus/snippet merging,
+canonical deduplication and host diversity, not full upstream feature parity.
+The package ships their licenses and precise source attribution.
 
 ```json
 {
   "tools": { "web": {
-    "search": { "backend": ["hound", "ollama"], "hound": { "endpoint": "http://127.0.0.1:8765/mcp" } },
-    "fetch": { "provider": ["local", "hound"], "hound": { "endpoint": "http://127.0.0.1:8765/mcp" } }
+    "search": { "backend": "hound" },
+    "fetch": { "provider": "hound", "render": "never" }
   } }
 }
 ```
 
-Each endpoint must be an unauthenticated loopback `http://` URL with an
-explicit `/mcp` path; anything else (remote hosts, credentials, query strings,
-fragments, missing path) is a config error, and a selected provider without
-its endpoint is a config error. The endpoint is trusted: per-call arguments
-request behavior and responses are validated, but neither governs the remote
-server. Hound follows redirects internally, retries transient failures several
-times with backoff, impersonates TLS/browser headers even in its HTTP tier,
-reads ambient server-side proxy and API-key configuration, and may download
-models or fall back to archive snapshots on its own. One provider dispatch
-fans out across Hound's engine pool, so it is never one underlying request;
-host budget and cooldown count Hound invocations only. Actual Hound search and
-fetch are additionally refused before quota, admission, or dispatch whenever
-the resolved sandbox network policy is anything but unrestricted; an
-allowlisted endpoint does not authorize remote fanout. Mono-agent implements
-no key/proxy rotation and never asks Hound to bypass quota or access gates.
+The fixed search pool discloses the query to DuckDuckGo, Brave, and Mojeek.
+Every actual engine/robots URL is policy-gated before host admission and shares
+ordinary per-engine process pacing/cooldowns. There are at most three concurrent
+engine tasks, 30 candidates per engine, 2 MiB per engine response, and a 15-second
+aggregate deadline. There is no automatic engine retry or extra-engine fallback.
+Partial allowlists can produce useful partial results; bounded `engineOutcomes`
+report each engine's actual coverage independently of fatal provider failures.
+Useful results plus a sibling denial or exhausted dispatch ceiling remain partial;
+exhaustion without results, cancellation, and coordinator failure are terminal.
 
-Search sends one query per call with native `max_results`, `freshness`
-(`day|week|month|year`), `language`, `site` (single include domain), and
-`exclude_sites`; alternates run sequentially within the existing budget, and
-server-provided action hints are stripped in favor of host next actions.
-Fetch is HTTP-only: `force_fetcher: "http"`, requested `respect_robots: true`,
-fresh extraction (`cache_ttl: 0`), no actions, headers, cookies, or proxies,
-with a finite content limit. Upstream robots handling is fail-open
-(unreachable robots files allow), so the flag requests compliance without
-guaranteeing it; do not use Hound where strict robots enforcement is required.
-Responses that arrive cached or via another escalation path, whose tier is
-not HTTP-only, whose source is not live, whose provenance is missing, or that
-carry the known robots-denied marker are
-rejected before presentation with terminal codes — an explicit refusal of
-known cases, never a fail-closed guarantee. Remote truncation is marked
-in document metadata and never auto-paginated; remote page links are
-normalized as bounded untrusted evidence. Strict Hound doctor liveness, like
-Parallel, uses only `tools/list`.
+A query reserves one answered-search request on its first actual send. Every
+robots/engine send counts against the existing non-refundable dispatch ceiling
+(`maxRequestsPerRun * 4`); only the answered reservation is refunded on overall
+failure. A cold full-pool query normally sends six HTTP requests. Domain and
+relevance gates remain local. Language is advisory. Day/month/year use native
+DuckDuckGo and Brave parameters; Mojeek is explicitly skipped for time filters.
+When `country` is requested, only DuckDuckGo has a reviewed country transport;
+Brave and Mojeek are skipped before robots, admission, or budget and are reported
+as `unsupported_country_filter`. The resulting partial search therefore sends at
+most the DuckDuckGo robots and search requests.
+
+Hound search and fetch proactively honor robots rules, with a five-second,
+64 KiB robots bound and at most two robots redirects. Missing robots (404/410)
+permit access; unavailable, malformed, denied, or challenged rules fail closed.
+Only completed rules are cached (up to 64 origins for one hour per owner/policy/
+user agent); no cross-owner in-flight coalescing or shielded requests are used.
+Positive Crawl-delay is conservatively deferred: fixed host pacing is not an
+attestation for arbitrary site-specific delays. Access/robots/auth/429 refusals
+stop fallback and alternate-query attempts; the fixed, independently governed
+sibling engines may still supply already-requested evidence.
+
+Fetch is HTTP-only common local acquisition/extraction, including raw format,
+allowed request headers, focus, pagination and static page links. Source redirects
+are policy- and robots-checked at every hop. It never invokes browser rendering
+or repeats an equivalent local/Hound acquisition later in the same provider chain.
+**Default local/browser fetch keeps its existing robots posture**; it gains no
+new proactive robots prerequisite. Observed access refusals remain terminal for
+all fetch providers. Doctor and `inspectHoundWeb()` report native capability only,
+not public engine availability or a successful extraction probe.
+
+#### Migrating the retired endpoint settings
+
+Remove `tools.web.search.hound.endpoint`, `tools.web.fetch.hound.endpoint`,
+`MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT`, and `MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT`.
+Their presence is rejected, even if Hound is unselected, a higher-priority layer
+would override the setting, or an answer is cached. Error messages do not echo
+endpoint values. Selecting `hound` without endpoint settings is now sufficient.
+Existing search/fetch defaults and `keyless` expansion are unchanged.
 
 ### Ollama Web Search
 
@@ -240,8 +252,11 @@ endpoint variants receive the caller's effective 1–10 result limit as
 `max_results`; a compatibility retry does not reset it.
 
 The tool accepts one `query`, up to three `alternate_queries`, a result `limit`
-from 1–10, `domains`, `exclude_domains`, `language`, and a `time_range` of
-`day`, `month`, or `year`. For sequential providers, the primary query runs first. Supplied alternates run in order only while no
+from 1–10, `domains`, `exclude_domains`, `language`, an optional `country`, and
+a `time_range` of `day`, `month`, or `year`. `country` is a case-insensitive,
+two-letter ISO 3166-1 alpha-2 code such as `PL`, `GB`, or `US`; output and cache
+identity use uppercase. Invalid/unassigned codes fail before network, admission,
+or search budget. For sequential providers, the primary query runs first. Supplied alternates run in order only while no
 relevant result has been accepted. A transport failure, quota skip or block ends
 that stage immediately; alternate wording cannot repair it. Codex gets at most
 one exact-query turn. Quotes and `site:` operators are never
@@ -250,6 +265,47 @@ duplicates are fused with reciprocal-rank fusion, and include/exclude domain
 filters plus a deterministic query-term/quoted-phrase relevance gate are
 enforced before a provider can end the chain. Parallel batches the primary and
 alternates once; Codex receives only the primary query.
+
+### Country localization
+
+`country` is a search-region/localization preference, separate from `language`.
+It does not guarantee that every result is hosted in or geographically located
+in that country. Provider ranking may still reflect the request's source IP.
+Omitting `country` sends no country preference to advisory providers and selects
+DuckDuckGo's documented `wt-wt` **No region** mode; it does not promise that
+provider-side or IP-based localization disappears.
+
+Per-call support is explicit:
+
+| Provider | Country behavior |
+| --- | --- |
+| `parallel` | Adds the normalized country to the natural-language objective; `filterSupport.country` is `advisory`. |
+| `duckduckgo` | Sends DuckDuckGo's documented `kl` region value; `wt-wt` is used when omitted. |
+| `hound` | Sends Hound's reviewed DuckDuckGo `l` region field; Brave and Mojeek are skipped and reported for country-filtered calls. |
+| `keyless` | Can continue to country-capable DuckDuckGo; Startpage is skipped rather than queried without the requested filter. |
+| `searxng`, `ollama`, `codex`, `startpage` | This adapter has no reviewed per-call country transport, so it skips before dispatch/budget. A strict selection returns actionable `unsupported_country_filter`. |
+
+DuckDuckGo country support is bounded by its
+[documented region values](https://duckduckgo.com/duckduckgo-help-pages/settings/params):
+`AR`, `AU`, `AT`, `BE`, `BR`, `BG`, `CA`, `CL`, `CN`, `CO`, `HR`, `CZ`,
+`DK`, `EE`, `FI`, `FR`, `DE`, `GR`, `HK`, `HU`, `IN`, `ID`, `IE`, `IL`,
+`IT`, `JP`, `KR`, `LV`, `LT`, `MY`, `MX`, `NL`, `NZ`, `NO`, `PE`, `PH`,
+`PL`, `PT`, `RO`, `RU`, `SG`, `SK`, `SI`, `ZA`, `ES`, `SE`, `CH`, `TW`,
+`TH`, `TR`, `UA`, `GB`, `US`, `VE`, and `VN`. Valid ISO countries outside
+that list are unsupported for DuckDuckGo/Hound and never fall back to global or
+US results. Where DuckDuckGo documents several locales (`BE`, `CA`, `ID`, `MY`,
+`PH`, `CH`, and `US`), a matching `language` selects that locale; otherwise the
+listed primary locale is used. `GB` maps to DuckDuckGo's `uk-en` token, while
+country remains `GB` in public metadata.
+
+Startpage documents a saved
+[region preference](https://support.startpage.com/hc/en-us/articles/4521469334036-How-to-get-search-results-tailored-for-your-region),
+but this stateless adapter does not invent an undocumented POST field or mutate
+persistent settings. [SearXNG's documented Search API](https://docs.searxng.org/dev/search_api.html)
+exposes `language` and `time_range`, not a country field; [Ollama's documented
+Web Search request](https://docs.ollama.com/capabilities/web-search) exposes
+`query` and `max_results`. Codex subscription search uses the app-server path,
+not the separate OpenAI Responses API `user_location` contract.
 
 Every backend shares the same model-facing output bounds. A result title is at
 most 500 characters and its snippet is at most 4,000 characters, including the
@@ -452,9 +508,10 @@ not rotate accounts, proxies or VPN exits.
 
 `tools.web.fetch.provider` defaults to `"local"`. Select `"parallel"` for strict
 remote extraction or an ordered array such as `["local", "parallel"]` for
-explicit fallback. Select `"hound"` for strict HTTP-only extraction from a
-user-managed Hound endpoint (see Hound MCP above), or chain it explicitly such
-as `["local", "hound"]`. No remote fetch fallback is enabled by default.
+explicit fallback. Select `"hound"` for HTTP-only native extraction with proactive
+robots enforcement (see Native Hound above). Local/Hound do not repeat an
+equivalent acquisition in the same chain. No remote fetch fallback is enabled
+by default.
 
 Parallel calls `web_fetch` for one URL with `full_content: true`, preferring
 full content. If only excerpts are returned, document metadata explicitly says
@@ -467,14 +524,13 @@ the option, before any connection. Config `fetch.render: "auto"` requires a
 local provider. In a chain, incompatible options skip Parallel and are handled
 by local extraction; they are never silently discarded or sent remotely.
 
-Fetch advances to the next selected provider only for `unusable_content`
-(sparse loading shell), `access_challenge`, `backend_unavailable`, HTTP errors
-other than 401/407, or retryable `request_failed`/`timeout`. Local transient
-retries complete first. Authentication, sandbox, invalid parameters, unsupported
-content, byte limits, cancellation, and unsafe coordination are terminal; a
-successful local extraction never triggers Parallel. Known Hound robots refusals
-(`robots_denied`), non-HTTP tiers, and non-live sources are likewise terminal
-and never fall through to local extraction. Source failures in
+Fetch advances to the next selected provider only for ordinary `unusable_content`
+(sparse loading shell), `backend_unavailable`, non-refusal HTTP errors, or
+retryable `request_failed`/`timeout`. Ordinary local transient retries complete
+first; Hound does not retry. Access challenges, 401/403/407/429, robots refusal,
+sandbox, invalid parameters, unsupported content, byte limits, cancellation,
+and unsafe coordination are terminal. Successful local extraction never triggers
+Parallel. Source failures in
 Parallel's `errors[]` preserve their HTTP status. Rendering and alternate
 providers do not grant permission to bypass site policy or access controls.
 
@@ -487,17 +543,30 @@ providers do not grant permission to bypass site policy or access controls.
 | `text` | Readable plain text with Markdown decoration removed. |
 | `raw` | Decoded response body; requires `render: "never"`. |
 
-Static extraction is local and content-aware:
+Static extraction is local and content-aware. Its HTML fallback and link
+classification algorithms adapt Hound's MIT-licensed code using native Node
+parsers, without a Python runtime or Hound service for the `local` provider.
+This does not add a robots.txt preflight to existing `local` or browser calls:
 
 1. Follow at most five redirects, re-checking sandbox network policy at every
    hop.
 2. Bound transport at 20 MiB and structured parsing at 8 MiB.
 3. Decode by BOM, HTTP charset, HTML meta/XML declaration, then UTF-8, reporting replacement characters and rejecting unsupported declared charsets.
-4. Parse HTML with Defuddle, then Readability plus Turndown, then a cleaned-body Turndown fallback. Relative links become safe absolute HTTP(S) links.
+4. Parse HTML with Defuddle, then Readability plus Turndown, then main-content
+   or cleaned-body Turndown fallback. The native Hound-derived pipeline retains
+   title metadata, rejects tiny candidates when a substantially larger article
+   exists, and preserves links and code in fallback Markdown tables. Relative
+   links become safe absolute HTTP(S) links.
 5. Strictly parse declared JSON/XML, extract RSS/Atom entries and PDF text, or decode
    ordinary text.
 6. Apply the normal tool-output cap and return the result inside the JSON
    envelope's untrusted `content` field.
+
+HTTP 429 is terminal for the current fetch; its Retry-After metadata is not
+shortened into an automatic retry. Observed access/authentication challenges
+(including challenge pages served as HTTP 503) and HTTP 403 also stop provider
+fallback. An explicit provider chain does not authorize bypassing a refusal.
+Ordinary transient transport/service outages retain bounded retry behavior.
 
 Request headers are limited to `Accept`, `Accept-Language`, `Range`, and
 `User-Agent`. Cookie, authorization, proxy, forwarding, and arbitrary custom
@@ -546,7 +615,9 @@ add no requests.
   no matching blocks reports `focus_no_match` with no content rather than
   pretending full success.
 - `include_links` lists up to 20 deduplicated absolute HTTP(S) links from the
-  already-downloaded static HTML, labeled `main-content` or `page`. Rendered,
+  already-downloaded static HTML, labeled `main-content` or `page`. Content
+  citations take priority over navigation/header/footer links before the cap;
+  duplicate fragment targets collapse to one URL. Rendered,
   remote, raw, and non-HTML documents report the capability as unavailable
   with an explicit reason instead of empty success. Parallel remote extraction
   rejects `include_links` as `unsupported_parameter` before any connection.
