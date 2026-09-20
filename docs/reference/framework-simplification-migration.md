@@ -22,7 +22,7 @@ Retired config fields produce migration errors. Real sandbox enforcement, tool a
 
 Pass typed `toolLimits` and `compaction` inputs to runtime calls. The flat `runOptions.settings` bag and the `resolveRuntimePolicies` migration helper have been removed. The policy resolver accepts typed policy groups directly and retains model-derived defaults and bounded values.
 
-Use `createRuntime` and its per-instance `configureTools` method for tool configuration. The process-global `configureToolRuntime`, `readToolRuntime`, `resetToolRuntime`, and `readRuntimeBrand` API has been removed. Direct tool/helper integrations must carry their own context from `@mono-agent/agent-runtime/agent/tools/shared/tool-context.js`. Immutable default branding does not provide a shared mutable tool environment.
+Use `createRuntime` and its per-instance `configureTools` method for tool configuration. The process-global `configureToolRuntime`, `readToolRuntime`, `resetToolRuntime`, and `readRuntimeBrand` API has been removed. Direct calls through `@mono-agent/agent-runtime/agent/tools/index.js`, including its path guards, must pass `{ ctx: createToolContext(...) }` using `@mono-agent/agent-runtime/agent/tools/shared/tool-context.js`. Immutable default branding does not provide a shared mutable tool environment.
 
 The runtime has one Pi bridge. Public bridge listing/resolution remains available; provider and model fallback still operate through the router.
 

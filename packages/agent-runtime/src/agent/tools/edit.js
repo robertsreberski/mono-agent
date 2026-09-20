@@ -36,9 +36,10 @@ process.stdin.on("end", () => {
 
 /**
  * @param {{file_path: string, old_string: string, new_string: string, replace_all?: boolean, workdir?: string}} params
- * @param {{sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, sandboxPolicy?: any, sandboxEngine?: any}} options
  */
-export async function editToolImpl({ file_path, old_string, new_string, replace_all = false, workdir }, { sandboxPolicy, sandboxEngine, ctx } = {}) {
+export async function editToolImpl({ file_path, old_string, new_string, replace_all = false, workdir }, options) {
+  const { sandboxPolicy, sandboxEngine, ctx } = options ?? {};
   const target = resolveToolPath(file_path, workdir, ctx);
   const pathOptions = { sandboxPolicy, ctx };
   const protectedTarget = protectedFilesystemTargetPlan(target, { sandboxPolicy, ctx });

@@ -150,7 +150,7 @@ sequenceDiagram
   participant Observer as Observer hub
 
   Host->>Runtime: run(systemPrompt, options)
-  Runtime->>Registry: resolveRuntimeBridge(model, executionMode)
+  Runtime->>Registry: resolveRuntimeBridge(model)
   Registry-->>Runtime: bridge.execute()
   Runtime->>Observer: create hub from host + call observers
   Runtime->>Bridge: execute(systemPrompt, normalized options)

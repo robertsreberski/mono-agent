@@ -48,9 +48,9 @@ class WebFetchError extends Error {
  * Compatibility wrapper for direct callers.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} options
  */
-export async function webFetchToolImpl(params, options = {}) {
+export async function webFetchToolImpl(params, options) {
   return (await performWebFetch(params, options)).text;
 }
 
@@ -58,20 +58,21 @@ export async function webFetchToolImpl(params, options = {}) {
  * Fetch and locally extract one public URL.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} options
  */
-export async function performWebFetch(params, options = {}) {
+export async function performWebFetch(params, options) {
   // Direct callers own their context: reject a missing one before any network work.
-  requireToolContext(options.ctx);
+  const resolvedCtx = requireToolContext(options?.ctx);
+  const resolvedOptions = { ...(options ?? {}), ctx: resolvedCtx };
   const started = Date.now();
   try {
-    return await withWebDeadline(options.signal, 45_000, async (signal) => {
-      const result = await performFetchChain(params, { ...options, signal });
+    return await withWebDeadline(resolvedOptions.signal, 45_000, async (signal) => {
+      const result = await performFetchChain(params, { ...resolvedOptions, signal });
       if (signal.aborted && !result.error) return failure("Error: WebFetch was aborted or exceeded its deadline.", signal.reason?.code === "deadline_exceeded" ? "deadline_exceeded" : "aborted", started);
       return result;
     });
   } catch (error) {
-    const normalized = webRequestFailure(error, "http", options.signal);
+    const normalized = webRequestFailure(error, "http", resolvedOptions.signal);
     return failure(`Error: ${normalized.message}`, normalized.code, started, { retryAfterMs: normalized.retryAfterMs });
   }
 }
@@ -80,7 +81,7 @@ export async function performWebFetch(params, options = {}) {
  * Fetch and locally extract one public URL.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: import("./shared/tool-context.js").ToolContext, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 async function performFetch(
   {

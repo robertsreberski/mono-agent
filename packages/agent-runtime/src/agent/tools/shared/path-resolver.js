@@ -2,6 +2,9 @@ import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { requireToolContext, resolveSandboxPolicy } from "./tool-context.js";
 
+/** @typedef {import("./tool-context.js").ToolContext} ToolContext */
+/** @typedef {{ctx: ToolContext, sandboxPolicy?: import("../../sandbox-seam.js").SandboxPolicy}} PublicPathGuardOptions */
+
 // Filesystem policy checks require the owning runtime context. Missing context
 // must not silently drop the host workspace or sandbox policy.
 function configured(ctx) {
@@ -19,8 +22,13 @@ export function resolveToolPath(path, workdir, ctx) {
   return resolve(isAbsolute(path) ? path : resolve(workspaceRoot(workdir, ctx), path));
 }
 
-export function isPathAllowed(path, workdir, options = {}) {
-  return isPathAllowedFor(path, workdir, "read", options);
+/**
+ * @param {string} path
+ * @param {string|undefined} workdir
+ * @param {PublicPathGuardOptions} options
+ */
+export function isPathAllowed(path, workdir, options) {
+  return isPathAllowedFor(path, workdir, "read", options ?? {});
 }
 
 export function isWritablePathAllowed(path, workdir, options = {}) {
@@ -74,9 +82,13 @@ function isPathLexicallyAllowedFor(path, workdir, access, options) {
     || insideLexicalRoots(Array.isArray(additionalRoots) ? additionalRoots : [], r);
 }
 
-export function isWorkdirAllowed(workdir, options = {}) {
+/**
+ * @param {string|undefined} workdir
+ * @param {PublicPathGuardOptions} options
+ */
+export function isWorkdirAllowed(workdir, options) {
   if (!workdir) return true;
-  const ctx = options.ctx;
+  const ctx = (options ?? {}).ctx;
   const r = resolve(workdir);
   const policy = resolveSandboxPolicy(requireToolContext(ctx), options.sandboxPolicy);
   if (policy) {

@@ -211,7 +211,8 @@
 
 - **Breaking: simplify framework configuration, runtime and memory contracts.**
   Remove inert permission/recall options, prose-triggered effort escalation,
-  process-global tool configuration, legacy flat runtime settings, the legacy
+  process-global tool configuration (direct public tool execution now requires
+  an explicit `ToolContext`), legacy flat runtime settings, the legacy
   memory-write protocol and the standalone memory-recall binary. Phoenix moves
   to the explicitly installed, matching-version `@mono-agent/observability-phoenix`
   extra. Operator streaming, wire types, previews and channel redaction share

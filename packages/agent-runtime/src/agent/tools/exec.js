@@ -25,9 +25,9 @@ const MAX_EXEC_ARGS = 256;
 
 /**
  * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../ai/types.js").RuntimeToolLimits, ctx?: any, toolCallId?: string, ownedForegroundProcessController?: import("./shared/owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: ProcessJobsController}} [options]
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../ai/types.js").RuntimeToolLimits, toolCallId?: string, ownedForegroundProcessController?: import("./shared/owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: ProcessJobsController}} options
  */
-export async function execToolImpl(params, options = {}) {
+export async function execToolImpl(params, options) {
   return (await execToolRun(params, options)).text;
 }
 
@@ -35,7 +35,7 @@ export async function execToolImpl(params, options = {}) {
  * Execute an argv vector directly, without shell parsing.
  *
  * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../ai/types.js").RuntimeToolLimits, ctx?: any, toolCallId?: string, ownedForegroundProcessController?: import("./shared/owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: ProcessJobsController}} [options]
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../ai/types.js").RuntimeToolLimits, toolCallId?: string, ownedForegroundProcessController?: import("./shared/owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: ProcessJobsController}} options
  */
 export async function execToolRun(
   {
@@ -48,7 +48,9 @@ export async function execToolRun(
     background,
     wake_on_completion,
   },
-  {
+  options,
+) {
+  const {
     signal,
     sandboxPolicy,
     sandboxEngine,
@@ -57,8 +59,7 @@ export async function execToolRun(
     processJobsController,
     ownedForegroundProcessController,
     toolCallId,
-  } = {},
-) {
+  } = options ?? {};
   const startedAt = Date.now();
   if (wake_on_completion !== undefined && (background !== true || typeof wake_on_completion !== "boolean")) {
     return failed("Error: wake_on_completion requires background=true and a boolean value.", "process_job_invalid", startedAt);

@@ -8,7 +8,15 @@ import {
   resolveSandboxPolicy,
 } from "../../agent/tools/shared/tool-context.js";
 import { DEFAULT_RUNTIME_BRAND } from "../../runtime-brand.js";
-import { bashToolImpl, execToolImpl, readToolImpl, webFetchToolImpl, webSearchToolImpl } from "../../agent/tools/index.js";
+import {
+  bashToolImpl,
+  execToolImpl,
+  isPathAllowed,
+  isWorkdirAllowed,
+  readToolImpl,
+  webFetchToolImpl,
+  webSearchToolImpl,
+} from "../../agent/tools/index.js";
 import { prepareMcpStdioCommand } from "../../agent/tools/pi-bridge.js";
 import { createNodeReplController } from "../../agent/tools/node-repl.js";
 
@@ -72,6 +80,20 @@ describe("direct execution requires context", () => {
 
   it("rejects missing context before constructing a Node REPL controller", () => {
     expect(() => createNodeReplController()).toThrow("explicit ToolContext");
+  });
+
+  it.each([
+    ["path", () => isPathAllowed("target.txt", undefined)],
+    ["workdir", () => isWorkdirAllowed("/tmp")],
+  ])("rejects missing context for the exported %s guard", (_name, run) => {
+    expect(run).toThrow("explicit ToolContext");
+  });
+
+  it("accepts explicit context for exported path guards", () => {
+    const workspace = tempDir();
+    const ctx = createToolContext({ workspace });
+    expect(isPathAllowed("target.txt", undefined, { ctx })).toBe(true);
+    expect(isWorkdirAllowed(workspace, { ctx })).toBe(true);
   });
 
   it("binds direct MCP command preparation to the context workspace, engine, and policy", async () => {

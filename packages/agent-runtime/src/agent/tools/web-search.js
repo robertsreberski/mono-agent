@@ -32,9 +32,9 @@ const runProviderFailures = new WeakMap();
  * Compatibility wrapper for direct callers.
  *
  * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, country?: string, time_range?: string}} params
- * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, fetchImpl?: typeof fetch}} [options]
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, sandboxPolicy?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, fetchImpl?: typeof fetch}} options
  */
-export async function webSearchToolImpl(params, options = {}) {
+export async function webSearchToolImpl(params, options) {
   return (await performWebSearch(params, options)).text;
 }
 
@@ -44,10 +44,12 @@ export async function webSearchToolImpl(params, options = {}) {
  * internal outcome for the Pi bridge.
  *
  * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, country?: string, time_range?: string}} params
- * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, searchState?: any, fetchImpl?: typeof fetch, codexSearch?: typeof searchCodexSubscription}} [options]
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, sandboxPolicy?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, searchState?: any, fetchImpl?: typeof fetch, codexSearch?: typeof searchCodexSubscription}} options
  */
-export async function performWebSearch(params, options = {}) {
-  return await withWebDeadline(options.signal, 60_000, (signal) => performSearch(params, { ...options, signal }));
+export async function performWebSearch(params, options) {
+  const resolvedCtx = requireToolContext(options?.ctx);
+  const resolvedOptions = { ...(options ?? {}), ctx: resolvedCtx };
+  return await withWebDeadline(resolvedOptions.signal, 60_000, (signal) => performSearch(params, { ...resolvedOptions, signal }));
 }
 
 /**
