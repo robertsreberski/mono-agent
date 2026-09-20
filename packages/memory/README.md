@@ -145,6 +145,10 @@ the proposition. Assistant, third-party, quoted, uncertain, corrected,
 coordinated, causal, conditional, negated, and conflicting evidence still
 abstains and remains available to deliberate recall. A same-property correction
 blocks automatic selection without inferring either its old or replacement value.
+Bounded scheduled-time questions require an exact event identity and a direct
+`is`/`was scheduled for|on|at` fact. Valid `HH:MM` colons are accepted only in
+supported temporal answer spans; distinct schedule payload representations
+abstain rather than invoking calendar or time-zone interpretation.
 
 ### Explicit remember writes
 
