@@ -10,8 +10,8 @@ import { prepareRealBuild, sourceState, verifyRealBuild } from "./lib/memory-e2e
 const ROOT = fileURLToPath(new URL("../", import.meta.url)).replace(/\/$/u, "");
 export function parseArguments(argv) {
   const flags = {};
-  const boolean = new Set(["dry-run", "real", "help"]);
-  const valued = new Set(["corpus", "split", "reader", "extractor", "embedding-provider", "embedding-model", "dimension", "confirm-plan", "pi-auth-path"]);
+  const boolean = new Set(["dry-run", "real", "help", "allow-hosted-locomo-transfer"]);
+  const valued = new Set(["corpus", "dataset", "split", "reader", "extractor", "embedding-provider", "embedding-model", "dimension", "confirm-plan", "pi-auth-path", "locomo-experiment", "locomo-arm", "reuse-artifact"]);
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i].replace(/^--/u, "");
     if (argv[i] !== `--${key}` || Object.hasOwn(flags, key) || (!boolean.has(key) && !valued.has(key))) throw new Error("invalid_arguments");
@@ -46,18 +46,43 @@ export function profileFrom(flags) {
 export async function main(argv = process.argv.slice(2), { stdout = console.log, prepareBuild = prepareRealBuild } = {}) {
   const flags = parseArguments(argv);
   if (flags.help) {
-    stdout("memory-e2e-benchmark [--dry-run] [--corpus fictional-v1|bujo-learning-v1|capture-fidelity-v1] [--split development|evaluation] [--pi-auth-path PATH]\nDefault: scripted offline production-path contract, NOT model quality.\nReal execution: --real --reader provider:model --extractor provider:model --embedding-provider ollama|lmstudio|openai --embedding-model model --dimension N [--pi-auth-path PATH] --confirm-plan SHA256\nOAuth chat routes need --pi-auth-path pointing at an existing Pi auth file (for example the standard Pi auth file; consumers may use different paths). Without it the runtimes keep ambient environment auth. The raw path never enters plans or reports; only its fingerprint binds the confirmation.\nFirst obtain SHA256 with the same profile and --dry-run. Outputs stay under .worklab-tmp/memory-e2e. No dataset downloads or consumer configuration.");
+    stdout("memory-e2e-benchmark [--dry-run] [--corpus fictional-v1|bujo-learning-v1|capture-fidelity-v1|locomo-v1] [--dataset PATH] [--split development|evaluation] [--pi-auth-path PATH] [--allow-hosted-locomo-transfer] [--locomo-experiment locomo-bujo-eval-v1-rank5-development-30|locomo-bujo-eval-v1-rank6-confirmation-20] [--locomo-arm full-history|bujo|both] [--reuse-artifact PATH]\nDefault: scripted offline production-path contract, NOT model quality. LoCoMo requires a separately downloaded, pinned --dataset file and is CC BY-NC 4.0 noncommercial-only input.\nReal execution: --real --reader provider:model --extractor provider:model --embedding-provider ollama|lmstudio|openai --embedding-model model --dimension N [--pi-auth-path PATH] --confirm-plan SHA256\nLoCoMo uses one capture per selected revision/arm and independent question histories. Exact completed artifacts may be reused only with --reuse-artifact after the same plan is confirmed. Hosted LoCoMo is rejected unless --allow-hosted-locomo-transfer affirmatively selects the documented Luna chat/local bge-m3 profile.\nFirst obtain SHA256 with the same profile and --dry-run. Outputs stay under .worklab-tmp/memory-e2e. The benchmark never downloads datasets or changes consumer configuration.");
     return 0;
   }
   const { head } = sourceState(ROOT);
   const corpusName = flags.corpus ?? "fictional-v1";
-  if (!CORPORA.includes(corpusName)) throw new Error("invalid_corpus_name");
-  const loaded = await loadCorpus(corpusName);
+  const locomo = corpusName === "locomo-v1";
+  if (!locomo && !CORPORA.includes(corpusName)) throw new Error("invalid_corpus_name");
+  if (!locomo && flags.dataset !== undefined) throw new Error("dataset_requires_external_corpus");
+  if (!locomo && flags["locomo-experiment"] !== undefined) throw new Error("locomo_experiment_requires_locomo");
+  if (!locomo && flags["locomo-arm"] !== undefined) throw new Error("locomo_arm_requires_locomo");
+  if (!locomo && flags["reuse-artifact"] !== undefined) throw new Error("reuse_artifact_requires_locomo");
+  const split = flags.split ?? (locomo ? "evaluation" : "development");
   const profile = profileFrom(flags);
-  const plan = makePlan({ ...loaded, split: flags.split ?? "development", profile, codeRevision: head });
-  if (flags["dry-run"]) { stdout(JSON.stringify(plan, null, 2)); return 0; }
+  if (!locomo && flags["allow-hosted-locomo-transfer"]) throw new Error("hosted_locomo_transfer_ack_requires_locomo");
+  const locomoAdapter = locomo ? await import("./lib/memory-e2e-locomo.mjs") : null;
+  const executionProfile = locomo
+    ? locomoAdapter.locomoExecutionProfile(profile, { allowHostedTransfer: flags["allow-hosted-locomo-transfer"] === true })
+    : profile;
+  const experiment = locomo ? flags["locomo-experiment"] ?? locomoAdapter.LOCOMO_DEVELOPMENT_EXPERIMENT : null;
+  const loaded = locomo
+    ? await locomoAdapter.loadLocomo(flags.dataset, { experiment })
+    : await loadCorpus(corpusName);
+  const plan = locomo
+    ? locomoAdapter.makeLocomoPlan({ ...loaded, split, profile: executionProfile, codeRevision: head, arm: flags["locomo-arm"] ?? "both" })
+    : makePlan({ ...loaded, split, profile: executionProfile, codeRevision: head });
+  if (flags["dry-run"]) {
+    if (flags["reuse-artifact"] !== undefined) throw new Error("reuse_artifact_requires_real_mode");
+    stdout(JSON.stringify(plan, null, 2)); return 0;
+  }
   if (flags.real && (!profile || flags["confirm-plan"] !== plan.confirmation)) throw new Error("real_execution_requires_confirmed_profile");
-  if (!flags.real && (profile || flags["confirm-plan"])) throw new Error("profile_requires_explicit_real_mode");
+  if (!flags.real && (profile || flags["confirm-plan"] || flags["reuse-artifact"])) throw new Error("profile_requires_explicit_real_mode");
+  if (flags["reuse-artifact"] !== undefined) {
+    const { loadReusableArtifact } = await import("./lib/memory-e2e-checkpoint.mjs");
+    const reused = await loadReusableArtifact(flags["reuse-artifact"], plan);
+    stdout(JSON.stringify(reused, null, 2));
+    return 0;
+  }
   // Fresh source-pinned build precedes ALL production imports and provider construction.
   const build = flags.real ? await prepareBuild(ROOT, head) : { policy: "unverified-existing-dist", sourceHead: null, outputSha256: null };
   if (flags.real) await verifyRealBuild(ROOT, build);
@@ -72,7 +97,7 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   const bundle = await runBenchmark({ ...loaded, plan, directory, modules, kind,
     providerFactory: flags.real ? async (input) => {
       await verifyRealBuild(ROOT, build);
-      return realProviders(profile, input);
+      return realProviders(executionProfile, input);
     } : scriptedProviders,
   });
   bundle.manifest.code = { head, dirty, node: process.version, build };

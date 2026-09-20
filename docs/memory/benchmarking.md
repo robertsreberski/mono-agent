@@ -131,6 +131,66 @@ observed outcomes from causal claims. It uses the same `bujo` and `full-history`
 arms. Its controls are checked in and author-visible, not a blind holdout or a
 general memory-quality score.
 
+### Private LoCoMo BuJo diagnostic
+
+The optional `locomo-v1` adapter is a closed, non-publishable diagnostic. It
+accepts only the pinned 2,805,274-byte upstream `locomo10.json` file and never
+downloads or vendors it. Keep the CC BY-NC 4.0 corpus in an owner-only ignored
+directory. The adapter sends neither references, evidence annotations, images,
+summaries, observations, nor unselected conversations to a provider.
+
+Protocol `locomo-adjacent-exchanges-v1` projects each session into ordered,
+non-overlapping adjacent pairs of source utterances; a final odd utterance stands
+alone. Pairing uses only source order, never questions or answers. Speaker and
+text bytes are preserved without trimming, both participants remain quoted
+humans, and a claim-free synthetic acknowledgement completes each harness turn.
+The same exchange projection feeds full history and BuJo capture. No exchange is
+truncated; an oversized exchange fails preflight.
+
+Two samples are frozen before inference:
+
+- `locomo-bujo-eval-v1-rank5-development-30`: six pre-outcome-hash questions per
+  category from partition rank 5.
+- `locomo-bujo-eval-v1-rank6-confirmation-20`: four per category from previously
+  unexecuted partition rank 6. Do not tune after reading confirmation results.
+
+Both arms use reader prompt `locomo-evidence-reader-v1`, including an explicit
+`Insufficient evidence.` abstention. The original pinned lexical evaluator stays
+unchanged and secondary. `review.json` supplies blinded arm labels and a human
+`correct | partial | incorrect | abstained` rubric, while preserving separate
+category-5 answerability and image-association/dependency-unknown fields. There
+is no automatic semantic judge.
+
+```bash
+node scripts/memory-e2e-benchmark.mjs --dry-run --corpus locomo-v1 \
+  --dataset /OWNER-ONLY/PATH/locomo10.json \
+  --locomo-experiment locomo-bujo-eval-v1-rank5-development-30 \
+  --locomo-arm bujo \
+  --reader openai-codex:gpt-5.6-luna \
+  --extractor openai-codex:gpt-5.6-luna \
+  --embedding-provider ollama --embedding-model bge-m3:latest \
+  --dimension 1024 --pi-auth-path /PATH/TO/EXISTING/pi-auth.json \
+  --allow-hosted-locomo-transfer
+```
+
+The dry plan binds source/question projection digests, code revision, arm,
+models/profile, prompt, metric and finite capture/reader/embedding/token/time
+ceilings into one confirmation. Capture occurs once per revision and BuJo arm;
+questions then use fresh reader histories over that store, so prior answers
+cannot contaminate later questions. Run `full-history` once per exact plan where
+possible. A completed artifact contains `checkpoint.json`; `--reuse-artifact`
+accepts it only when all checksums and the complete expanded identity match.
+Incomplete artifacts remain retained evidence and are never reusable as zero
+quality.
+
+Private artifacts record extraction candidates, reconciliation actions,
+committed snapshots, raw backend retrieval outcomes where supported, automatic
+blocks and explicit tool results actually delivered, and reader answers. A
+missing stage is marked unavailable. Quality remains unmeasured unless capture,
+recall instrumentation and every scheduled answer complete. Dry runs and
+synthetic tests prove contracts, not memory quality; real inference is always an
+explicit confirmed action.
+
 All five arms use the same reader, question, identity, output budget and
 controlled-text context estimate:
 

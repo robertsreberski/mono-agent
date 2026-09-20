@@ -50,7 +50,7 @@ export class Budget {
   constructor(plan) {
     this.plan = plan;
     this.started = performance.now();
-    this.used = { chatSteps: 0, embeddingCalls: 0, estimatedInputTokens: 0, outputTokens: 0 };
+    this.used = { chatSteps: 0, embeddingCalls: 0, estimatedInputTokens: 0, embeddingInputTokens: 0, outputTokens: 0 };
     this.events = [];
     this.pending = new Set();
     this.admissionStopped = false;
@@ -129,7 +129,7 @@ export function bounded(promise, { timeoutMs, signal, code, onCancel } = {}) {
 /** Version-coupled existing Pi check cap; never pass an ignored generic maxTokens option. */
 export function cappedOptions(stage, plan) {
   return {
-    maxTurns: stage === "reader" ? 3 : 1,
+    maxTurns: stage === "reader" ? plan.perCall.readerMaxTurns : 1,
     providerCheckMaxTokens: stage === "reader" ? plan.perCall.readerOutputTokens : plan.perCall.extractorOutputTokens,
     compaction: { enabled: false }, piMaxRetries: 0, maxRetryDelayMs: 0, effort: "none",
   };
@@ -153,13 +153,30 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
       // Conservative controlled-text estimate plus fixed schemas/framing allowance. Dynamic native
       // schemas/tool continuations are not exactly countable here; observed context is separate.
       const estimated = Math.ceil(Buffer.byteLength(system + JSON.stringify(options.messages), "utf8") / 3) + budget.plan.perCall.framingAndToolAllowance;
-      const inputLimit = stage === "reader" ? budget.plan.perCall.readerEstimatedInputTokens : budget.plan.perCall.extractorEstimatedInputTokens;
-      if (estimated > inputLimit) throw new BenchmarkError(stage === "reader" ? "context_budget_exceeded" : "capture_context_budget_exceeded");
+      const inputLimit = stage === "reader"
+        ? budget.plan.perCall.readerEstimatedInputTokens
+        : stage === "reconciliation"
+          ? budget.plan.perCall.reconciliationEstimatedInputTokens ?? budget.plan.perCall.extractorEstimatedInputTokens
+          : budget.plan.perCall.extractorEstimatedInputTokens;
+      if (estimated > inputLimit) {
+        const errorClass = stage === "reader" ? "context_budget_exceeded" : "capture_context_budget_exceeded";
+        if (stage === "reconciliation") {
+          // Keep a bounded, content-free preflight fact before capture wraps the
+          // local guard in MemoryModelError and durable intake reduces it to
+          // "provider". Never retain the prompt or exception message here.
+          budget.events.push({
+            ...tag, stage: "reconciliation_preflight", status: "rejected", errorClass,
+            estimatedInputTokens: estimated, estimatedInputTokensLimit: inputLimit,
+            durationMs: 0,
+          });
+        }
+        throw new BenchmarkError(errorClass);
+      }
       budget.reserve({ chatSteps: cap.maxTurns, outputTokens: cap.providerCheckMaxTokens * cap.maxTurns, estimatedInputTokens: estimated * cap.maxTurns });
       const started = clock();
       const timeout = AbortSignal.timeout(budget.plan.perCall.callTimeoutMs);
       const signal = AbortSignal.any([options.abortSignal, budget.controller.signal, timeout].filter(Boolean));
-      const event = { ...tag, stage, status: "started", configuredStepsReserved: cap.maxTurns, estimatedInputTokensReserved: estimated * cap.maxTurns, outputTokensReserved: cap.providerCheckMaxTokens * cap.maxTurns, transportAttempts: null, usage: usageOf(null), costUsd: null, requestedModel: options.model?.reference ?? null, executedModel: null, observedContext: [], durationMs: null, failureKind: null };
+      const event = { ...tag, stage, status: "started", configuredStepsReserved: cap.maxTurns, estimatedInputTokensReserved: estimated * cap.maxTurns, outputTokensReserved: cap.providerCheckMaxTokens * cap.maxTurns, transportAttempts: null, usage: usageOf(null), costUsd: null, requestedModel: options.model?.reference ?? null, executedModel: null, observedContext: [], durationMs: null, failureKind: null, providerReportedFailureKind: null, maxTurnsHit: false };
       budget.events.push(event);
       let compacted = false;
       try {
@@ -183,10 +200,20 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
         // Structured category only: allow-listed kind enters the event, raw
         // error/errorDetails text never does (see RUNTIME_FAILURE_KINDS).
         const resultFailureKind = canonicalFailureKind(result.failureKind);
+        event.providerReportedFailureKind = resultFailureKind;
+        event.maxTurnsHit = result.diagnostics?.max_turns_hit === true;
         if (resultFailureKind !== null) event.failureKind = resultFailureKind;
         if (compacted) throw new BenchmarkError("unexpected_compaction", { failureKind: event.failureKind });
         if (["length", "max_tokens"].includes(result.diagnostics?.pi_stop_reason)) throw new BenchmarkError("output_limit_reached", { failureKind: event.failureKind });
         if (signal.aborted) throw new BenchmarkError("provider_timeout_or_cancelled");
+        // Pi currently reports its own finite max-turn guard as usage_limit. In
+        // this experiment that cap is a local, pre-reserved reader budget, not
+        // provider quota evidence. Keep both diagnostics but do not trigger the
+        // terminal auth/quota stop or accept any partial answer as completion.
+        if (stage === "reader" && event.maxTurnsHit) {
+          throw new BenchmarkError("reader_step_budget_exhausted", { failureKind: "budget_exceeded" });
+        }
+        if (resultFailureKind === "context_limit") throw new BenchmarkError("native_context_limit", { failureKind: resultFailureKind });
         if (result.failureKind || result.error || result.cancelled || typeof result.text !== "string" || !result.text.trim()) throw new BenchmarkError("provider_failed", { failureKind: event.failureKind });
         event.status = "completed";
         return result;
@@ -221,12 +248,35 @@ export function captureLlm(runtime, { model, workspace, sessionsRoot, budget, ta
   };
 }
 
-export function meteredEmbeddings(provider, { budget, tag }) {
+function embeddingVectorDiagnostic(result, expectedCount, expectedDimension) {
+  if (!Array.isArray(result) || result.length !== expectedCount) {
+    return { status: "rejected", errorClass: "vector_count", vectorCount: Array.isArray(result) ? result.length : null };
+  }
+  for (const vector of result) {
+    if (vector === null || typeof vector !== "object" || !Number.isSafeInteger(vector.length)) {
+      return { status: "rejected", errorClass: "vector_shape", vectorCount: result.length };
+    }
+    if (Number.isSafeInteger(expectedDimension) && vector.length !== expectedDimension) {
+      return { status: "rejected", errorClass: "vector_dimension", vectorCount: result.length };
+    }
+    if (Array.from(vector).some((value) => typeof value !== "number" || !Number.isFinite(value))) {
+      return { status: "rejected", errorClass: "vector_numeric", vectorCount: result.length };
+    }
+  }
+  return { status: "accepted", errorClass: null, vectorCount: result.length };
+}
+
+export function meteredEmbeddings(provider, { budget, tag, dimension = null }) {
   return {
     id: provider.id,
     async embed(texts, options) {
-      budget.reserve({ embeddingCalls: 1, estimatedInputTokens: Math.ceil(texts.reduce((n, text) => n + Buffer.byteLength(text), 0) / 3) });
-      const event = { ...tag, stage: "embedding", textCount: texts.length, status: "started", usage: usageOf(null), costUsd: null, transportAttempts: null, durationMs: null };
+      const embeddingInputTokens = Math.ceil(texts.reduce((n, text) => n + Buffer.byteLength(text), 0) / 3);
+      budget.reserve({
+        embeddingCalls: 1,
+        estimatedInputTokens: embeddingInputTokens,
+        ...(Number.isFinite(budget.plan.limits.embeddingInputTokens) ? { embeddingInputTokens } : {}),
+      });
+      const event = { ...tag, stage: "embedding", textCount: texts.length, embeddingInputTokensReserved: embeddingInputTokens, status: "started", usage: usageOf(null), costUsd: null, transportAttempts: null, durationMs: null };
       budget.events.push(event);
       const start = performance.now();
       const signal = AbortSignal.any([options?.abortSignal, budget.controller.signal, AbortSignal.timeout(budget.plan.perCall.embeddingTimeoutMs)].filter(Boolean));
@@ -235,7 +285,19 @@ export function meteredEmbeddings(provider, { budget, tag }) {
         const result = await budget.wait(provider.embed(texts, { ...options, abortSignal: signal }), {
           signal, timeoutMs: budget.plan.perCall.embeddingTimeoutMs, code: "embedding_timeout_or_cancelled",
         });
-        event.status = "completed"; return result;
+        // Transport completion is not vector acceptance. Record only bounded
+        // shape diagnostics and leave the result untouched so the production
+        // store remains the semantic validator and failure owner.
+        event.status = "completed";
+        const diagnostic = embeddingVectorDiagnostic(result, texts.length, dimension);
+        budget.events.push({
+          ...tag, stage: "embedding_validation", status: diagnostic.status,
+          errorClass: diagnostic.errorClass, textCount: texts.length,
+          vectorCount: diagnostic.vectorCount,
+          expectedDimension: Number.isSafeInteger(dimension) ? dimension : null,
+          durationMs: 0,
+        });
+        return result;
       } catch (error) {
         event.status = signal.aborted ? "embedding_timeout_or_cancelled" : error instanceof BenchmarkError ? error.code : "embedding_failed";
         throw new BenchmarkError(event.status);
@@ -276,7 +338,8 @@ export function scriptedProviders({ source } = {}) {
           const client = new Client({ name: "memory-e2e-contract", version: "1.0.0" });
           try {
             await client.connect(new StreamableHTTPClientTransport(new URL(server.url)));
-            const args = { query: source?.question.text ?? "What was discussed?" };
+            const currentQuestion = [...(options.messages ?? [])].reverse().find((message) => message.role === "user")?.content;
+            const args = { query: source?.question?.text ?? (typeof currentQuestion === "string" ? currentQuestion : "What was discussed?") };
             await options.toolLifecycleSink?.({ phase: "invocation", toolCallId: "contract-recall", toolName: "MemoryRecall", arguments: args });
             const result = await client.callTool({ name: "MemoryRecall", arguments: args });
             await options.toolLifecycleSink?.({ phase: "result", toolCallId: "contract-recall", toolName: "MemoryRecall", state: result.isError ? "error" : "success", content: result.content });
@@ -291,7 +354,7 @@ export function scriptedProviders({ source } = {}) {
 
 /** Called only after CLI confirmation. No configured-app root leases or consumer configuration. */
 export async function realProviders(profile, { workspace, modules }) {
-  const { createMonoRuntime, parseMonoRuntimeModelReference, createPiOAuthApiKeyResolver } = modules.runtime;
+  const { createMonoRuntime, parseMonoRuntimeModelReference, createPiOAuthApiKeyResolver, runtimeOptionsForLocalProvider } = modules.runtime;
   // Explicit OAuth credential file only: one shared framework resolver for both
   // runtimes (it reads/refreshes lazily per request — construction opens no
   // credential file and copies no tokens). Without a selected path the bare
@@ -301,16 +364,35 @@ export async function realProviders(profile, { workspace, modules }) {
     if (typeof createPiOAuthApiKeyResolver !== "function") throw new Error("pi_auth_resolver_unavailable");
     return createPiOAuthApiKeyResolver({ path: profile.piAuthPath });
   })();
-  const hostOptions = resolvePiApiKey === undefined ? { workspace } : { workspace, resolvePiApiKey };
+  const readerModel = parseMonoRuntimeModelReference(profile.reader);
+  const extractorModel = parseMonoRuntimeModelReference(profile.extractor);
+  const baseHostOptions = resolvePiApiKey === undefined ? { workspace } : { workspace, resolvePiApiKey };
+  let hostOptions = baseHostOptions;
+  if (profile.ollamaEndpoint !== undefined) {
+    if (profile.ollamaEndpoint !== "http://127.0.0.1:11434" || !Number.isSafeInteger(profile.clientContextWindow) || profile.clientContextWindow < 1) {
+      throw new BenchmarkError("invalid_local_ollama_profile");
+    }
+    if (typeof runtimeOptionsForLocalProvider !== "function") throw new BenchmarkError("local_provider_runtime_options_unavailable");
+    const models = [...new Set([readerModel.model, extractorModel.model])].map((name) => ({
+      name,
+      capabilities: { context_window: profile.clientContextWindow, max_tokens: 2048 },
+    }));
+    const localProviders = [{ id: "ollama", type: "ollama", baseUrl: profile.ollamaEndpoint, enabled: true, trustPublicUrl: false, models }];
+    hostOptions = {
+      ...baseHostOptions,
+      resolveAttempt: ({ model }) => ({ options: runtimeOptionsForLocalProvider(model, localProviders) }),
+    };
+  }
   const reader = createMonoRuntime(hostOptions);
   const extractor = createMonoRuntime(hostOptions);
   const raw = modules.search.createEmbeddingProvider({
     provider: profile.embeddingProvider, model: profile.embeddingModel, timeoutMs: 10000,
     ...(profile.embeddingProvider === "openai" ? { apiKey: process.env.OPENAI_API_KEY } : {}),
+    ...(profile.embeddingEndpoint === undefined ? {} : { endpoint: profile.embeddingEndpoint }),
   });
   return {
     kind: "real", reader, extractor,
-    readerModel: parseMonoRuntimeModelReference(profile.reader), extractorModel: parseMonoRuntimeModelReference(profile.extractor), dim: profile.dimension,
+    readerModel, extractorModel, dim: profile.dimension,
     embeddings: modules.search.createCircuitBreakerEmbeddingProvider(raw),
     async close() { await reader.disposeAllSessions?.(); await extractor.disposeAllSessions?.(); },
   };
