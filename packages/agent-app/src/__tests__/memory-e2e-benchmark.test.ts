@@ -18,6 +18,27 @@ const script = (name: string): Promise<any> => import(new URL(`../../../../scrip
 const modules = { harness, bujo, store, search, runtime, retrieval, journal, extensions };
 const dirs: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
+
+function withStructuredExtractor<T extends { extractor: { run(system: string, options: any): Promise<any> } }>(value: T): T {
+  const run = value.extractor.run.bind(value.extractor);
+  return {
+    ...value,
+    extractor: {
+      ...value.extractor,
+      async run(system: string, options: any) {
+        const result = await run(system, options);
+        if (options.outputSchema === undefined || typeof result.text !== "string") return result;
+        const parsed = JSON.parse(result.text);
+        const decisions = options.outputSchema?.properties?.decisions;
+        return {
+          ...result,
+          structuredResult: decisions === undefined ? parsed : { decisions: parsed },
+        };
+      },
+    },
+  };
+}
+
 async function fixture() {
   const dataset = await script("memory-e2e-dataset");
   const providers = await script("memory-e2e-providers");
@@ -26,10 +47,31 @@ async function fixture() {
   const plan = dataset.makePlan(loaded);
   await mkdir(join(root, ".worklab-tmp"), { recursive: true });
   const directory = await mkdtemp(join(root, ".worklab-tmp", "memory-e2e-test-")); dirs.push(directory);
-  return { ...loaded, plan, directory, modules, kind: "scripted", providerFactory: providers.scriptedProviders, runner, providers };
+  return {
+    ...loaded,
+    plan,
+    directory,
+    modules,
+    kind: "scripted",
+    providerFactory: (args: any) => withStructuredExtractor(providers.scriptedProviders(args)),
+    runner,
+    providers,
+  };
 }
 
 describe("fictional E2E production-path contract, not model quality", () => {
+  it("keeps scripted extraction text-only without a schema and supplies structuredResult when selected", async () => {
+    const provider = withStructuredExtractor({
+      extractor: { run: async (_system: string, _options: any) => ({ text: '{"memories":[],"entities":[],"relations":[]}' }) },
+    });
+    await expect(provider.extractor.run("system", {})).resolves.toEqual({
+      text: '{"memories":[],"entities":[],"relations":[]}',
+    });
+    await expect(provider.extractor.run("system", { outputSchema: { type: "object" } })).resolves.toMatchObject({
+      structuredResult: { memories: [], entities: [], relations: [] },
+    });
+  });
+
   it("replays strong completed turns, drains real SQLite, shares Recall and never captures QA", async () => {
     const input = await fixture();
     const admissions: any[] = []; const requests: any[] = []; const stores: bujo.BujoMemoryStore[] = [];
@@ -114,7 +156,13 @@ describe("fictional E2E production-path contract, not model quality", () => {
 
   it("empty valid extraction is ready, not a fabricated capture success metric", async () => {
     const input = await fixture();
-    const report = await input.runner.runBenchmark({ ...input, providerFactory: (args: any) => ({ ...input.providers.scriptedProviders(args), extractor: { run: async () => ({ text: '{"memories":[],"entities":[],"relations":[]}' }) } }) });
+    const report = await input.runner.runBenchmark({
+      ...input,
+      providerFactory: (args: any) => withStructuredExtractor({
+        ...input.providers.scriptedProviders(args),
+        extractor: { run: async () => ({ text: '{"memories":[],"entities":[],"relations":[]}' }) },
+      }),
+    });
     for (const trial of report.trials.filter((trial: any) => trial.arm === "bujo")) {
       expect(trial.status).toBe("completed"); expect(trial.health.counts.memories).toBe(0);
     }

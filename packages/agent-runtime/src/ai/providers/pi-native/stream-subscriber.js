@@ -95,6 +95,10 @@ function toolResultOutcome(result) {
  * @property {number} toolResultsSeen
  * @property {string|null} lastToolName
  * @property {boolean} maxTurnsHit
+ * @property {number} toolExecutionsThisTurn
+ * @property {boolean} toolFailureThisTurn
+ * @property {boolean} structuredOutputCompletedThisTurn
+ * @property {unknown} structuredResult
  */
 
 /**
@@ -171,6 +175,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
         });
       }
     } else if (event.type === "tool_execution_start") {
+      runState.toolExecutionsThisTurn += 1;
       if (event.toolName) runState.lastToolName = event.toolName;
       if (event.toolCallId) runState.toolStartTimes.set(event.toolCallId, Date.now());
       const input = eventToolArgs(event.toolName, event.args, { cwd: options.cwd, toolLimits });
@@ -195,6 +200,15 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
         partial_result: jsonSerializable(event.partialResult, String(event.partialResult ?? "")),
       });
     } else if (event.type === "tool_execution_end") {
+      if (event.isError) runState.toolFailureThisTurn = true;
+      if (options.outputSchema !== undefined
+        && options.outputSchema !== null
+        && event.toolName === "StructuredOutput"
+        && !event.isError
+        && runState.structuredResult !== undefined
+        && runState.structuredResult !== null) {
+        runState.structuredOutputCompletedThisTurn = true;
+      }
       const resultContent = toolResultContent(event.result);
       const fileChange = toolResultFileChange(event.result);
       const outcome = toolResultOutcome(event.result);
@@ -255,13 +269,23 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       // harness for the low-level loop and reimplementing all of that. So the
       // maxTurns ceiling stays enforced HERE: we count `turn_end`s and abort on
       // the one that crosses the ceiling, but only when the turn ended to run
-      // MORE tools (stopReason "toolUse") — a turn that already produced a final
-      // answer must not be clipped. Delegate to a harness-native option only if
-      // pi lifts shouldStopAfterTurn (or an equivalent) onto AgentHarnessOptions.
+      // MORE tools (stopReason "toolUse"). The sole exception is one successful,
+      // schema-selected StructuredOutput execution: that tool is itself the final
+      // answer and terminates the turn, so aborting it would reclassify success as
+      // max-turn failure. Ordinary, mixed, and failed tool turns keep the ceiling.
+      // Delegate to a harness-native option only if pi lifts shouldStopAfterTurn
+      // (or an equivalent) onto AgentHarnessOptions.
+      const completedOnlyTerminalStructuredOutput = runState.toolExecutionsThisTurn === 1
+        && runState.toolFailureThisTurn === false
+        && runState.structuredOutputCompletedThisTurn === true;
+      runState.toolExecutionsThisTurn = 0;
+      runState.toolFailureThisTurn = false;
+      runState.structuredOutputCompletedThisTurn = false;
       if (Number.isFinite(Number(options.maxTurns))
         && Number(options.maxTurns) > 0
         && runState.turnCount >= Number(options.maxTurns)
-        && event.message?.stopReason === "toolUse") {
+        && event.message?.stopReason === "toolUse"
+        && !completedOnlyTerminalStructuredOutput) {
         runState.maxTurnsHit = true;
         void Promise.resolve(harness.abort()).catch(() => {});
       }
