@@ -486,6 +486,43 @@ describe("hasAutomaticRecallEvidence", () => {
     });
 
     it.each([
+      "Project Atlas production migration is scheduled for 20 November 2026 according to Avery.",
+      "Project Atlas production migration is scheduled for 20 November 2026 according　to Avery.",
+      "Project Atlas production migration is scheduled for possibly 20 November 2026.",
+      "Project Atlas production migration is scheduled for ｐｏｓｓｉｂｌｙ 20 November 2026.",
+      "Project Atlas production migration is scheduled for ‘20 November 2026’.",
+      "Project Atlas production migration is scheduled for \"20 November 2026\".",
+      "Project Atlas production migration is scheduled for ＂20 November 2026＂.",
+    ])("rejects attributed, uncertain, quoted, or compatibility-hidden payload qualification: %s", (text) => {
+      expect(hasAutomaticRecallEvidence(query, [{ record: { text } }])).toBe(false);
+    });
+
+    it.each([
+      ["When is Solstice scheduled?", "Solstice is scheduled for 20 November 2026."],
+      ["when is solstice scheduled?", "solstice is scheduled for 20 November 2026."],
+      ["When is the Solstice scheduled?", "The Solstice is scheduled for 20 November 2026."],
+      ["What date is Atlas migration scheduled?", "Atlas migration is scheduled for 20 November 2026."],
+      ["What day is the Atlas migration scheduled?", "The Atlas migration is scheduled on Friday."],
+      ["What time is Atlas migration scheduled?", "Atlas migration is scheduled at 09:30."],
+    ])("gives anchored scheduled syntax precedence for article and case variants: %s", (scheduledQuery, text) => {
+      expect(hasAutomaticRecallEvidence(scheduledQuery, [{ record: { text } }])).toBe(true);
+    });
+
+    it.each([
+      ["When is Solstice maintenance?", "Solstice's maintenance is 20 November 2026."],
+      ["When is Solstice's maintenance?", "Solstice's maintenance is 20 November 2026."],
+      ["When is Solstice scheduled maintenance?", "Solstice's scheduled maintenance is 20 November 2026."],
+    ])("preserves the non-scheduled named-property grammar: %s", (propertyQuery, text) => {
+      expect(hasAutomaticRecallEvidence(propertyQuery, [{ record: { text } }])).toBe(true);
+    });
+
+    it("preserves actor and relation exclusions ahead of scheduled parsing", () => {
+      expect(hasAutomaticRecallEvidence("When is the project manager scheduled?", [{ record: {
+        text: "The project manager is scheduled for 20 November 2026.",
+      } }])).toBe(false);
+    });
+
+    it.each([
       ["Project A", "Project B"],
       ["Project Atlas migration", "Atlas migration"],
       ["launch 1", "launch 2"],
@@ -504,6 +541,12 @@ describe("hasAutomaticRecallEvidence", () => {
       expect(hasAutomaticRecallEvidence("When is the Ｐroject A scheduled?", [{ record: {
         text: "Project A is scheduled on 20 November 2026.",
       } }])).toBe(true);
+
+      const fullwidthIdentity = { record: {
+        text: "Ｐroject A is scheduled on 20 November 2026.",
+      } };
+      expect(selectAnswerBearingRecallHits("When is Project A scheduled?", [fullwidthIdentity]))
+        .toEqual([fullwidthIdentity]);
     });
 
     it.each([
@@ -528,7 +571,11 @@ describe("hasAutomaticRecallEvidence", () => {
       "Project Atlas production migration is scheduled for 20 November 2026 at 9:3 Europe/Paris.",
       "Project Atlas production migration is scheduled for 20 November 2026 at 09:30:00 Europe/Paris.",
       "Project Atlas production migration is scheduled for note:09:30 on 20 November 2026.",
-    ])("rejects malformed, partial, or non-clock colon syntax: %s", (text) => {
+      "Project Atlas production migration is scheduled for 20 November 2026 at 25：30.",
+      "Project Atlas production migration is scheduled for 20 November 2026 at 09：30.",
+      "Project Atlas production migration is scheduled for 20 November 2026， 09:30.",
+      "Project Atlas production migration is scheduled for 20／11／2026.",
+    ])("rejects malformed, partial, or compatibility-hidden clock/separator syntax: %s", (text) => {
       expect(hasAutomaticRecallEvidence(query, [{ record: { text } }])).toBe(false);
     });
 

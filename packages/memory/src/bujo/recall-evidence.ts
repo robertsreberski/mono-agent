@@ -92,6 +92,7 @@ const NEGATION_OR_UNKNOWN = /\b(?:no|not|never|neither|unknown|unset|tbd|none)\b
 const ATTRIBUTED_REPORT_EXCLUSION = /\b(?:assistant|quote|quoted|quotes|quoting|quotation|pasted|claim|claimed|claims|claiming|unconfirmed|unverified|unchecked|uncertain|uncertainty|unclear|unsure|doubtful|alleged|allegedly|apparently|maybe|perhaps|possibly|probably|rumor|rumored|rumoured|supposedly|seemingly|without|correction|corrected|correcting|incorrect|wrong|erroneous)\b/iu;
 const ATTRIBUTED_REPORT_CORRECTION = /\b(?:correction|corrected|correcting|incorrect|wrong|erroneous|previously|formerly|now|instead|rather)\b/iu;
 const ATTRIBUTED_REPORT_QUOTATION = /["'“”‘’«»‹›]/u;
+const SCHEDULED_TEMPORAL_ATTRIBUTION = /\baccording\s+to\b/iu;
 const ATTRIBUTED_REPORT_UNSAFE_UNICODE = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 const ATTRIBUTED_REPORT_NORMALIZED_SYNTAX = /["'“”‘’«»‹›,:;?!.\s]/u;
 
@@ -220,6 +221,21 @@ function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
   const query = normalizeQuestion(rawQuery);
   if (query === undefined || ACTOR_OR_RELATION_QUERY.test(query)) return undefined;
 
+  // A final standalone `scheduled` is a predicate marker, not a named property.
+  // Parse this anchored form before the single-name property grammar can consume
+  // ordinary event names such as `Solstice` or `Atlas migration`.
+  const scheduledTime = /^(when\s+is|what\s+(?:date|day|time)\s+is)\s+(.+?)\s+scheduled$/iu.exec(query);
+  if (scheduledTime !== null) {
+    const subject = conservativeTemporalSubjectIdentity(scheduledTime[2]!);
+    if (subject === undefined) return undefined;
+    return {
+      kind: "copular-time",
+      subject,
+      answerKind: /time/iu.test(scheduledTime[1]!) ? "time" : "temporal",
+      scheduled: true,
+    };
+  }
+
   const namedProperty = parseNamedPropertyQuery(query);
   if (namedProperty !== undefined) return namedProperty;
 
@@ -255,22 +271,6 @@ function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
       subject: canonicalPhrase(eventTime[2]!),
       predicate: canonicalPredicate(eventTime[3]!),
       answerKind: /time/iu.test(eventTime[1]!) ? "time" : "temporal",
-    };
-  }
-
-  // A final standalone `scheduled` is a predicate marker, not part of the event
-  // identity. Keep this path distinct: it accepts only an explicitly scheduled
-  // fact below and uses a conservative subject identity instead of concept
-  // canonicalization.
-  const scheduledTime = /^(when\s+is|what\s+(?:date|day|time)\s+is)\s+(.+?)\s+scheduled$/iu.exec(query);
-  if (scheduledTime !== null) {
-    const subject = conservativeTemporalSubjectIdentity(scheduledTime[2]!);
-    if (subject === undefined) return undefined;
-    return {
-      kind: "copular-time",
-      subject,
-      answerKind: /time/iu.test(scheduledTime[1]!) ? "time" : "temporal",
-      scheduled: true,
     };
   }
 
@@ -501,7 +501,7 @@ function directTemporalFactValue(
   if (query.scheduled) {
     const match = /^(.+?)\s+(?:is|was)\s+scheduled\s+(?:for|on|at)\s+(.+)$/iu.exec(text);
     if (match === null
-      || !temporalFactLanguageIsSafe(text, match[2]!)
+      || !scheduledTemporalFactLanguageIsSafe(text, match[2]!)
       || conservativeTemporalSubjectIdentity(match[1]!) !== query.subject
       || !hasAnswerValue(query.answerKind, "temporal", match[2]!)) return undefined;
     return { value: identityText(match[2]!), attributed: false };
@@ -554,6 +554,27 @@ function temporalFactLanguageIsSafe(text: string, answer: string): boolean {
   if (answerOffset < 0 || text.slice(answerOffset) !== answer) return false;
   const maskedAnswer = answer.replace(CLOCK_VALUE, (clock) => clock.replace(":", ""));
   return factLanguageIsSafe(`${text.slice(0, answerOffset)}${maskedAnswer}`);
+}
+
+/**
+ * Scheduled payloads are canonical evidence, not a report envelope. Reject
+ * quotation, uncertainty, and postpositive attribution in the answer itself.
+ * NFKC is used only to discover compatibility punctuation; parsing, value
+ * identity, and rendering continue to use the original text.
+ */
+function scheduledTemporalFactLanguageIsSafe(text: string, answer: string): boolean {
+  if (!temporalFactLanguageIsSafe(text, answer) || hasCompatibilityPunctuation(answer)) return false;
+  const safetyAnswer = answer.normalize("NFKC");
+  return !ATTRIBUTED_REPORT_QUOTATION.test(safetyAnswer)
+    && !ATTRIBUTED_REPORT_EXCLUSION.test(safetyAnswer)
+    && !SCHEDULED_TEMPORAL_ATTRIBUTION.test(safetyAnswer);
+}
+
+function hasCompatibilityPunctuation(value: string): boolean {
+  return [...value].some((character) => {
+    const folded = character.normalize("NFKC");
+    return folded !== character && /[\p{P}\p{S}]/u.test(folded);
+  });
 }
 
 function hasAnswerValue(kind: AnswerKind, property: string, rawValue: string): boolean {

@@ -307,13 +307,16 @@ record such as `Project Atlas production migration is scheduled for 20 November
 2026 at 08:30 Europe/Paris.` The event identity remains exact apart from case,
 whitespace, Unicode compatibility forms, and a standalone leading article;
 project words, one-character tokens, digits, punctuation, order, and repetition
-remain significant. Clock colons are accepted only as valid `HH:MM` tokens in a
-supported temporal answer, not in generic properties, choices, or locations.
-Automatic recall abstains when the retrieved cohort contains two scheduled
-payloads that are not textually identical after case, whitespace, and Unicode
-compatibility normalization. It deliberately does not equate alternate date
-formats or date-only and date-time values; use `MemoryRecall` to inspect those
-raw candidates instead.
+remain significant. Clock colons are accepted only as valid ASCII `HH:MM` tokens
+in a supported temporal answer, not in generic properties, choices, or
+locations. Quoted, uncertain, or attributed schedule payloads abstain. NFKC is
+used to discover compatibility punctuation in a payload, not to convert an
+unsupported compatibility clock or separator into accepted syntax. Automatic
+recall abstains when the retrieved cohort contains two scheduled payloads that
+are not textually identical after case, whitespace, and Unicode compatibility
+normalization. It deliberately does not equate alternate date formats or
+date-only and date-time values; use `MemoryRecall` to inspect those raw
+candidates instead.
 
 You can exercise the same hybrid scoring config-aware from the agent folder with `mono-agent memory search`:
 
