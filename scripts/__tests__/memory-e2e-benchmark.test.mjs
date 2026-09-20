@@ -128,6 +128,7 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
         providerHint: "providerCheckMaxTokens",
         wireCap: "unsupported_by_selected_openai_codex_provider",
         strictRealExecutionSupported: false,
+        executionMode: "strict_output_cap_required",
       },
     });
     expect(output[0].limitations).toContain("providerCheckMaxTokens is not a universal wire-enforced output cap");
@@ -136,6 +137,25 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     await expect(main(["--real", ...profile, "--confirm-plan", output[0].confirmation], { prepareBuild }))
       .rejects.toThrow("strict_output_budget_unsupported");
     expect(prepareBuild).not.toHaveBeenCalled();
+    expect(network).not.toHaveBeenCalled();
+  });
+  it("binds an explicit measured-output opt-in and preserves build-first real execution", async () => {
+    const profile = ["--reader", "openai-codex:reader", "--extractor", "openai-codex:extractor", "--embedding-provider", "ollama", "--embedding-model", "fixture", "--dimension", "8", "--allow-measured-output"];
+    let plan;
+    await main(["--dry-run", ...profile], { stdout: (text) => { plan = JSON.parse(text); } });
+    expect(plan.profile.outputBudgetMode).toBe("measured");
+    expect(plan.budgetEnforcement.outputTokens).toMatchObject({
+      accounting: "pre_admission_reservation_plus_observed_usage",
+      wireCap: "unsupported_by_selected_openai_codex_provider",
+      strictRealExecutionSupported: false,
+      executionMode: "measured_output_explicit_opt_in",
+    });
+    expect(plan.limitations).toContain("explicit measured-output mode records observed usage but does not enforce a wire output cap");
+    const prepareBuild = vi.fn(async () => { throw new Error("synthetic_build_refused"); });
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
+    await expect(main(["--real", ...profile, "--confirm-plan", plan.confirmation], { prepareBuild }))
+      .rejects.toThrow("synthetic_build_refused");
+    expect(prepareBuild).toHaveBeenCalledOnce();
     expect(network).not.toHaveBeenCalled();
   });
   it("flush alone cannot certify pending, dead, dropped, delayed or missing index work", async () => {

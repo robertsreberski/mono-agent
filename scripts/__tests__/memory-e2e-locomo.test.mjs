@@ -151,6 +151,21 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
     });
     expect(plan.profile).not.toHaveProperty("piAuthPath");
     expect(JSON.stringify(plan)).not.toMatch(/QUESTION_SENTINEL|GOLD_ANSWER|exact first|private\/auth/u);
+    const measuredPlan = makeLocomoPlan({
+      corpus, sha256: "fixture", split: "evaluation",
+      profile: { ...profile, outputBudgetMode: "measured" },
+      codeRevision: "BASE", experiment: LOCOMO_DEVELOPMENT_EXPERIMENT, arm: "bujo",
+    });
+    expect(measuredPlan.locomo.executionGate).toMatchObject({
+      status: "measured_output_mode_selected_external_authorization_required",
+      realExecutionApproved: false,
+      requiredBeforeRealExecution: "external_authorization_for_measured_output",
+      outputAccounting: "observed_usage_not_wire_capped",
+    });
+    expect(measuredPlan.budgetEnforcement.outputTokens).toMatchObject({
+      strictRealExecutionSupported: false,
+      executionMode: "measured_output_explicit_opt_in",
+    });
     expect(makeLocomoPlan({ corpus, sha256: "fixture", split: "evaluation", profile, codeRevision: "CANDIDATE", experiment: LOCOMO_DEVELOPMENT_EXPERIMENT, arm: "bujo" }).confirmation).not.toBe(plan.confirmation);
     expect(makeLocomoPlan({ corpus, sha256: "fixture", split: "evaluation", profile, codeRevision: "BASE", experiment: LOCOMO_DEVELOPMENT_EXPERIMENT, arm: "full-history" }).confirmation).not.toBe(plan.confirmation);
     expect(LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS).toBe(29_897);

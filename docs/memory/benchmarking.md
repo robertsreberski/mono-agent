@@ -177,6 +177,13 @@ node scripts/memory-e2e-benchmark.mjs --dry-run --corpus locomo-v1 \
   --allow-hosted-locomo-transfer
 ```
 
+Providers known not to enforce `providerCheckMaxTokens` remain refused by default.
+For a separately authorized evaluation that accepts measured rather than wire-capped
+output, add `--allow-measured-output` to both the dry run and its confirmed real
+command. The flag is bound into the plan identity, retains wall-clock cancellation,
+input and model-step admission, and records observed usage; it does **not** turn the
+provider hint or output-token reservation into an enforced output cap.
+
 The dry plan binds source/question projection digests, code revision, arm,
 models/profile, prompt, metric and per-invocation capture/reader/embedding/token/time
 limits into one confirmation. Within one successful BuJo invocation, capture runs

@@ -444,6 +444,7 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
     evaluator: LOCOMO_EVALUATOR.identity,
   });
   const hosted = profile?.locomoDatasetTransferAck === LOCOMO_HOSTED_PROFILE.datasetTransferAck;
+  const measuredOutput = profile?.outputBudgetMode === "measured";
   const { confirmation: _confirmation, ...base } = made;
   const plan = {
     ...base,
@@ -515,9 +516,10 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
         localEmbeddingsOnly: true,
       } : { acknowledged: false, chatRoute: "local_only", scope: [], excluded: ["all_dataset_content_from_hosted_chat"], localEmbeddingsOnly: true },
       executionGate: hosted ? {
-        status: "dry_plan_only_parent_control_required",
+        status: measuredOutput ? "measured_output_mode_selected_external_authorization_required" : "dry_plan_only_parent_control_required",
         realExecutionApproved: false,
-        requiredBeforeRealExecution: "materially_smaller_parent_approved_budget_strategy",
+        requiredBeforeRealExecution: measuredOutput ? "external_authorization_for_measured_output" : "materially_smaller_parent_approved_budget_strategy",
+        outputAccounting: measuredOutput ? "observed_usage_not_wire_capped" : "strict_output_cap_required",
         sourceCatalogContextWindow: LOCOMO_HOSTED_PROFILE.chatContextWindow,
         largestReservedPromptAndOutput: Math.max(49_152 + 512, 8_192 + 2_048, LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS + 2_048),
         sourceCatalogAdmissionFits: true,
