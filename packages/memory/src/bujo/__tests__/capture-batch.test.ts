@@ -107,8 +107,10 @@ describe("extractCapturePlan intra-turn precision", () => {
     const budget = "The user reports that Project Atlas's approved downtime budget is 30 minutes.";
     const tea = "The user reports that Morgan prefers tea for the weekly review.";
     const coffee = "The user reports that Morgan prefers coffee for the weekly review.";
+    const priya = "The user reports that Priya reviews every production data migration before the weekly deployment.";
+    const mateo = "The user reports that Mateo reviews every production data migration before the weekly deployment.";
     const llm = fakeLlm([["Extract one bounded", JSON.stringify({
-      memories: [schedule, budget, tea, coffee].map((text) => ({
+      memories: [schedule, budget, tea, coffee, priya, mateo].map((text) => ({
         type: "note", text, salience: 0.8, isInsight: false, entityIds: [],
       })),
       entities: [],
@@ -117,7 +119,7 @@ describe("extractCapturePlan intra-turn precision", () => {
 
     const plan = await extractCapturePlan("The user supplied independent project facts and competing preference text.", llm);
 
-    expect(plan.candidates.map((candidate) => candidate.text)).toEqual([schedule, budget, tea]);
+    expect(plan.candidates.map((candidate) => candidate.text)).toEqual([schedule, budget, tea, priya, mateo]);
   });
 
   it("drops malformed or oversized graph fields before canonical capture", async () => {

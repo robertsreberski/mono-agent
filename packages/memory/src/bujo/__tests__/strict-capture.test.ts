@@ -203,6 +203,18 @@ describe("strict completed-turn extraction", () => {
     })).resolves.toMatchObject({ candidates: texts.map((text) => ({ text })) });
   });
 
+  it("does not newly reject independent subjects in the same attributed sentence frame", async () => {
+    const texts = [
+      "The user reports that Priya reviews every production data migration before the weekly deployment.",
+      "The user reports that Mateo reviews every production data migration before the weekly deployment.",
+    ];
+
+    await expect(extractCapturePlanStrict("completed turn", {
+      id: "independent-attributed-subjects",
+      complete: async () => planWithMemoryTexts(texts),
+    })).resolves.toMatchObject({ candidates: texts.map((text) => ({ text })) });
+  });
+
   it.each([
     [
       "competing values",

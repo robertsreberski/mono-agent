@@ -383,19 +383,30 @@ const ATTRIBUTION_COMPLEMENT_VERBS = new Set([
 ]);
 
 function isAmbiguousNearDuplicate(left: readonly string[], right: readonly string[]): boolean {
+  // Attribution handling may only narrow the original guard. A pair accepted by
+  // the historical token predicate cannot become newly ambiguous here.
+  if (!hasAmbiguousTokenShape(left, right)) return false;
   const [leftFact, rightFact, attributionRemoved] = withoutSharedAttribution(left, right);
-  if (leftFact.length < 3 || rightFact.length < 3) return false;
-  const smaller = Math.min(leftFact.length, rightFact.length);
-  const rightSet = new Set(rightFact);
-  const overlap = new Set(leftFact.filter((token) => rightSet.has(token))).size / smaller;
+  if (!attributionRemoved) return true;
+  return hasAmbiguousTokenShape(leftFact, rightFact, true);
+}
+
+function hasAmbiguousTokenShape(
+  left: readonly string[],
+  right: readonly string[],
+  allowSingleAlignedSubstitution = false,
+): boolean {
+  if (left.length < 3 || right.length < 3) return false;
+  const smaller = Math.min(left.length, right.length);
+  const rightSet = new Set(right);
+  const overlap = new Set(left.filter((token) => rightSet.has(token))).size / smaller;
   let prefix = 0;
-  while (prefix < smaller && leftFact[prefix] === rightFact[prefix]) prefix += 1;
-  const alignedSubstitutions = leftFact.length === rightFact.length
-    ? leftFact.reduce((count, token, index) => count + Number(token !== rightFact[index]), 0)
+  while (prefix < smaller && left[prefix] === right[prefix]) prefix += 1;
+  const alignedSubstitutions = allowSingleAlignedSubstitution && left.length === right.length
+    ? left.reduce((count, token, index) => count + Number(token !== right[index]), 0)
     : Number.POSITIVE_INFINITY;
-  const sameFrameWithOneSubstitution = attributionRemoved && alignedSubstitutions === 1;
   return overlap >= 0.6
-    && ((prefix >= 2 && prefix / smaller >= 0.5) || sameFrameWithOneSubstitution);
+    && ((prefix >= 2 && prefix / smaller >= 0.5) || alignedSubstitutions === 1);
 }
 
 /**
