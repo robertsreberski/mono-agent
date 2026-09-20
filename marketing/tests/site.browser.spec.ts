@@ -215,6 +215,7 @@ test('console screenshot is real component evidence with disclosed synthetic sta
 });
 test('mobile document keeps a bounded reading length with visible configuration', async ({page}) => {
   await page.setViewportSize({width:390,height:844}); await page.goto('/');
+  await page.evaluate(() => document.fonts.ready);
   await expect(page.locator('[data-scroll-story]')).toHaveCount(0);
   // Main comparisons and readable cards retain a bounded page; secondary
   // coding-harness details use a native disclosure, not another long section.
