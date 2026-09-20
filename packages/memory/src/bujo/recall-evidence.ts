@@ -11,9 +11,11 @@
  *    -> `The release train now leaves on Thursday.`
  * 4. copular-time: `What day is the API launch?`
  *    -> `The API launch date is 2026-08-14.`
- * 5. location: `Where does Morgan work?`
+ * 5. scheduled copular-time: `When is the Atlas migration scheduled?`
+ *    -> `The Atlas migration is scheduled for 2026-08-14 at 09:30.`
+ * 6. location: `Where does Morgan work?`
  *    -> `Morgan works in Amsterdam.`
- * 6. scoped-choice: `What color did Mira select for the Velin launch?`
+ * 7. scoped-choice: `What color did Mira select for the Velin launch?`
  *    -> `Mira selected cobalt as the color for the Velin launch.`
  *    The record must name the property *and* the scope. A scope is not a
  *    property, so `Mira selected cobalt for the Velin launch.` stays rejected:
@@ -60,6 +62,7 @@ const ENTITY_EXCLUSIONS = new Set([
 
 const DAY_OR_MONTH = /\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b/iu;
 const DATE_VALUE = /\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b/u;
+const CLOCK_VALUE = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b/gu;
 const TIME_VALUE = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b|\b\d{1,2}(?::[0-5]\d)?\s*(?:a\.?m\.?|p\.?m\.?)\b|\b(?:noon|midnight)\b/iu;
 const PHONE_VALUE = /\b(?:\+?\d[\d .()-]{5,}\d|\d{3}[- .]\d{3,})\b/u;
 const SELF_RELATIVE_MESSAGE = /\b(?:your|my)\s+(?:last|previous|most recent|immediately preceding)\s+(?:message|reply|response)\b/iu;
@@ -89,6 +92,7 @@ const NEGATION_OR_UNKNOWN = /\b(?:no|not|never|neither|unknown|unset|tbd|none)\b
 const ATTRIBUTED_REPORT_EXCLUSION = /\b(?:assistant|quote|quoted|quotes|quoting|quotation|pasted|claim|claimed|claims|claiming|unconfirmed|unverified|unchecked|uncertain|uncertainty|unclear|unsure|doubtful|alleged|allegedly|apparently|maybe|perhaps|possibly|probably|rumor|rumored|rumoured|supposedly|seemingly|without|correction|corrected|correcting|incorrect|wrong|erroneous)\b/iu;
 const ATTRIBUTED_REPORT_CORRECTION = /\b(?:correction|corrected|correcting|incorrect|wrong|erroneous|previously|formerly|now|instead|rather)\b/iu;
 const ATTRIBUTED_REPORT_QUOTATION = /["'“”‘’«»‹›]/u;
+const SCHEDULED_TEMPORAL_ATTRIBUTION = /\baccording\s+to\b/iu;
 const ATTRIBUTED_REPORT_UNSAFE_UNICODE = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 const ATTRIBUTED_REPORT_NORMALIZED_SYNTAX = /["'“”‘’«»‹›,:;?!.\s]/u;
 
@@ -125,7 +129,7 @@ type DirectFactQuery =
   | { readonly kind: "choice"; readonly subject: string; readonly reporterSubject: string; readonly property: string }
   | { readonly kind: "scoped-choice"; readonly subject: string; readonly reporterSubject: string; readonly property: string; readonly scope: string }
   | { readonly kind: "event-time"; readonly subject: string; readonly predicate: string; readonly answerKind: "temporal" | "time" }
-  | { readonly kind: "copular-time"; readonly subject: string; readonly answerKind: "temporal" | "time" }
+  | { readonly kind: "copular-time"; readonly subject: string; readonly answerKind: "temporal" | "time"; readonly scheduled: boolean }
   | { readonly kind: "location"; readonly subject: string; readonly reporterSubject: string; readonly predicate: string };
 
 /** Return score-ordered records that independently match a canonical direct fact. */
@@ -136,11 +140,11 @@ export function selectAnswerBearingRecallHits<T extends RecallEvidenceHit>(
   if (hits.length === 0 || isConversationRelativeQuery(query)) return [];
   const directFact = parseDirectFactQuery(query);
   if (directFact === undefined) return [];
-  // Two different answers to the same scoped question cannot both be injected.
-  // The same applies when at least one answer uses the bounded first-party
-  // report wrapper: dropping that qualified disagreement would silently make
-  // an unqualified record look confirmed by omission.
-  if (hasConflictingValues(directFact, hits, directFact.kind === "scoped-choice")) return [];
+  // Two different answers to the same scoped or explicitly scheduled question
+  // cannot both be injected. The same applies when at least one answer uses the
+  // bounded first-party report wrapper: dropping that qualified disagreement
+  // would silently make an unqualified record look confirmed by omission.
+  if (hasConflictingValues(directFact, hits, requiresCanonicalConflictGuard(directFact))) return [];
   return hits.filter((hit) => matchesDirectFact(directFact, hit.record.text));
 }
 
@@ -162,8 +166,9 @@ export function hasConflictingScopedChoiceEvidence(
 
 /**
  * Full-candidate conflict guard for automatic injection. Canonical-only
- * abstention remains scoped-choice behavior; other families abstain when a
- * bounded first-party report disagrees with another answer in the cohort.
+ * abstention applies to scoped choices and explicitly scheduled temporal
+ * questions; other families abstain when a bounded first-party report disagrees
+ * with another answer in the cohort.
  */
 export function hasConflictingAutomaticRecallEvidence(
   query: string,
@@ -171,7 +176,11 @@ export function hasConflictingAutomaticRecallEvidence(
 ): boolean {
   const directFact = parseDirectFactQuery(query);
   if (directFact === undefined) return false;
-  return hasConflictingValues(directFact, hits, directFact.kind === "scoped-choice");
+  return hasConflictingValues(directFact, hits, requiresCanonicalConflictGuard(directFact));
+}
+
+function requiresCanonicalConflictGuard(query: DirectFactQuery): boolean {
+  return query.kind === "scoped-choice" || (query.kind === "copular-time" && query.scheduled);
 }
 
 function hasConflictingValues(
@@ -196,9 +205,9 @@ function hasConflictingValues(
       values.add(parsed.value);
       hasAttributed ||= parsed.attributed;
     }
-    // Canonical-only conflicts preserve the existing abstention contract only
-    // for scoped choices. Other direct-fact families add abstention solely when
-    // this change introduces an attributed answer into the cohort.
+    // Canonical-only conflicts are guarded for scoped choices and scheduled
+    // temporal questions. Other direct-fact families abstain solely when a
+    // bounded attributed answer enters the cohort.
     if (values.size > 1 && (includeCanonicalOnly || hasAttributed)) return true;
   }
   return false;
@@ -211,6 +220,21 @@ export function hasAutomaticRecallEvidence(query: string, hits: readonly RecallE
 function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
   const query = normalizeQuestion(rawQuery);
   if (query === undefined || ACTOR_OR_RELATION_QUERY.test(query)) return undefined;
+
+  // A final standalone `scheduled` is a predicate marker, not a named property.
+  // Parse this anchored form before the single-name property grammar can consume
+  // ordinary event names such as `Solstice` or `Atlas migration`.
+  const scheduledTime = /^(when\s+is|what\s+(?:date|day|time)\s+is)\s+(.+?)\s+scheduled$/iu.exec(query);
+  if (scheduledTime !== null) {
+    const subject = conservativeTemporalSubjectIdentity(scheduledTime[2]!);
+    if (subject === undefined) return undefined;
+    return {
+      kind: "copular-time",
+      subject,
+      answerKind: /time/iu.test(scheduledTime[1]!) ? "time" : "temporal",
+      scheduled: true,
+    };
+  }
 
   const namedProperty = parseNamedPropertyQuery(query);
   if (namedProperty !== undefined) return namedProperty;
@@ -256,6 +280,7 @@ function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
       kind: "copular-time",
       subject: canonicalTemporalSubject(copularTime[2]!),
       answerKind: /time/iu.test(copularTime[1]!) ? "time" : "temporal",
+      scheduled: false,
     };
   }
 
@@ -406,6 +431,10 @@ function normalizedDirectFact(
 }
 
 function directFactValue(query: DirectFactQuery, rawText: string): DirectFactValue | undefined {
+  if (query.kind === "event-time" || query.kind === "copular-time") {
+    return directTemporalFactValue(query, rawText);
+  }
+
   const normalized = normalizedDirectFact(query, rawText);
   if (normalized === undefined) return undefined;
   const { text, attributed } = normalized;
@@ -444,29 +473,51 @@ function directFactValue(query: DirectFactQuery, rawText: string): DirectFactVal
     return { value: identityText(match[2]!), attributed };
   }
 
-  if (query.kind === "event-time") {
-    const match = /^(?:the\s+)?(.+?)\s+(?:now\s+)?(leaves|departs|starts|launches)\s+(?:on|at)\s+(.+)$/iu.exec(text);
-    if (match === null
-      || canonicalPhrase(match[1]!) !== query.subject
-      || canonicalPredicate(match[2]!) !== query.predicate
-      || !hasAnswerValue(query.answerKind, "temporal", match[3]!)) return undefined;
-    return { value: identityText(match[3]!), attributed };
-  }
-
-  if (query.kind === "copular-time") {
-    const match = /^(?:the\s+)?(.+?)\s+(?:is|was)\s+(.+)$/iu.exec(text);
-    if (match === null
-      || canonicalTemporalSubject(match[1]!) !== query.subject
-      || !hasAnswerValue(query.answerKind, "temporal", match[2]!)) return undefined;
-    return { value: identityText(match[2]!), attributed };
-  }
-
   const match = /^([A-Z][A-Za-z0-9-]*)\s+(works|lives)\s+(in|at)\s+(.+)$/iu.exec(text);
   if (match === null
     || canonicalName(match[1]!.toLowerCase()) !== query.subject
     || canonicalPredicate(match[2]!) !== query.predicate
     || !hasAnswerValue("location", "location", `${match[3]!} ${match[4]!}`)) return undefined;
   return { value: identityText(match[4]!), attributed };
+}
+
+function directTemporalFactValue(
+  query: Extract<DirectFactQuery, { readonly kind: "event-time" | "copular-time" }>,
+  rawText: string,
+): DirectFactValue | undefined {
+  // Inspect scheduled records before whitespace/sentence normalization can erase
+  // control or format syntax. Other established temporal families retain their
+  // existing behavior.
+  if (query.kind === "copular-time" && query.scheduled
+    && ATTRIBUTED_REPORT_UNSAFE_UNICODE.test(rawText)) return undefined;
+  const text = normalizeFactSyntax(rawText);
+  if (text === undefined) return undefined;
+
+  if (query.kind === "event-time") {
+    const match = /^(?:the\s+)?(.+?)\s+(?:now\s+)?(leaves|departs|starts|launches)\s+(?:on|at)\s+(.+)$/iu.exec(text);
+    if (match === null
+      || !temporalFactLanguageIsSafe(text, match[3]!)
+      || canonicalPhrase(match[1]!) !== query.subject
+      || canonicalPredicate(match[2]!) !== query.predicate
+      || !hasAnswerValue(query.answerKind, "temporal", match[3]!)) return undefined;
+    return { value: identityText(match[3]!), attributed: false };
+  }
+
+  if (query.scheduled) {
+    const match = /^(.+?)\s+(?:is|was)\s+scheduled\s+(?:for|on|at)\s+(.+)$/iu.exec(text);
+    if (match === null
+      || !scheduledTemporalFactLanguageIsSafe(text, match[2]!)
+      || conservativeTemporalSubjectIdentity(match[1]!) !== query.subject
+      || !hasAnswerValue(query.answerKind, "temporal", match[2]!)) return undefined;
+    return { value: identityText(match[2]!), attributed: false };
+  }
+
+  const match = /^(?:the\s+)?(.+?)\s+(?:is|was)\s+(.+)$/iu.exec(text);
+  if (match === null
+    || !temporalFactLanguageIsSafe(text, match[2]!)
+    || canonicalTemporalSubject(match[1]!) !== query.subject
+    || !hasAnswerValue(query.answerKind, "temporal", match[2]!)) return undefined;
+  return { value: identityText(match[2]!), attributed: false };
 }
 
 function matchesDirectFact(query: DirectFactQuery, rawText: string): boolean {
@@ -479,18 +530,59 @@ function normalizeQuestion(value: string): string | undefined {
 }
 
 function normalizeFactText(value: string): string | undefined {
+  const normalized = normalizeFactSyntax(value);
+  return normalized !== undefined && factLanguageIsSafe(normalized) ? normalized : undefined;
+}
+
+function normalizeFactSyntax(value: string): string | undefined {
   const normalized = value.trim()
     .replace(/\b([ap])\.m\./giu, "$1m")
     .replace(/[?!.]+$/u, "")
     .replace(/\s+/gu, " ");
-  if (normalized.length === 0
-    || /[?!.]/u.test(normalized)
-    || UNSAFE_FACT_LANGUAGE.test(normalized)
-    || REPORTED_OR_DITRANSITIVE.test(normalized)
-    || NEGATION_OR_UNKNOWN.test(normalized)) {
-    return undefined;
-  }
-  return normalized;
+  return normalized.length === 0 ? undefined : normalized;
+}
+
+function factLanguageIsSafe(value: string): boolean {
+  return !/[?!.]/u.test(value)
+    && !UNSAFE_FACT_LANGUAGE.test(value)
+    && !REPORTED_OR_DITRANSITIVE.test(value)
+    && !NEGATION_OR_UNKNOWN.test(value);
+}
+
+/**
+ * Permit a colon only inside a complete valid 24-hour clock token in the
+ * temporal answer span. Masking happens solely for the safety check; matching,
+ * conflict identity, and rendering retain the original text and punctuation.
+ */
+function temporalFactLanguageIsSafe(text: string, answer: string): boolean {
+  const answerOffset = text.length - answer.length;
+  if (answerOffset < 0 || text.slice(answerOffset) !== answer) return false;
+  const maskedAnswer = answer.replace(CLOCK_VALUE, (clock) => clock.replace(":", ""));
+  return factLanguageIsSafe(`${text.slice(0, answerOffset)}${maskedAnswer}`);
+}
+
+/**
+ * Scheduled payloads are canonical evidence, not a report envelope. Reject
+ * quotation, uncertainty, and postpositive attribution in the answer itself.
+ * NFKC is used only for safety discovery of compatibility punctuation and
+ * folded forbidden language; parsing, value identity, and rendering continue
+ * to use the original text.
+ */
+function scheduledTemporalFactLanguageIsSafe(text: string, answer: string): boolean {
+  if (!temporalFactLanguageIsSafe(text, answer) || hasCompatibilityPunctuation(answer)) return false;
+  const safetyText = text.normalize("NFKC");
+  const safetyAnswer = answer.normalize("NFKC");
+  return temporalFactLanguageIsSafe(safetyText, safetyAnswer)
+    && !ATTRIBUTED_REPORT_QUOTATION.test(safetyAnswer)
+    && !ATTRIBUTED_REPORT_EXCLUSION.test(safetyAnswer)
+    && !SCHEDULED_TEMPORAL_ATTRIBUTION.test(safetyAnswer);
+}
+
+function hasCompatibilityPunctuation(value: string): boolean {
+  return [...value].some((character) => {
+    const folded = character.normalize("NFKC");
+    return folded !== character && /[\p{P}\p{S}]/u.test(folded);
+  });
 }
 
 function hasAnswerValue(kind: AnswerKind, property: string, rawValue: string): boolean {
@@ -528,6 +620,16 @@ function singleNamedAnchor(text: string): string | undefined {
 
 function canonicalTemporalSubject(text: string): string {
   return canonicalPhrase(text).replace(/(?:^|\s)(?:temporal|time_of_day)$/u, "").trim();
+}
+
+/**
+ * Exact event identity for newly supported scheduled questions. Unlike the
+ * legacy temporal canonicalizer, this retains project words, one-character
+ * tokens, digits, punctuation, order, and repetition.
+ */
+function conservativeTemporalSubjectIdentity(raw: string): string | undefined {
+  const identity = identityText(raw).replace(/^(?:the|a|an)(?:\s+|$)/u, "").trim();
+  return identity.length === 0 ? undefined : identity;
 }
 
 function canonicalPredicate(value: string): string {

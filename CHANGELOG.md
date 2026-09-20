@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Let automatic memory recall answer directly scheduled temporal questions with
+  valid clock times while preserving exact event identity and abstaining on
+  qualified, compatibility-hidden, or conflicting schedule payloads; keep raw
+  candidates available through `MemoryRecall`.
+
 - Let `WebSearch` request an optional ISO country localization preference,
   defaulting to no requested country. Apply documented DuckDuckGo regions,
   carry advisory Parallel intent, and skip unsupported providers or Hound
