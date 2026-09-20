@@ -238,18 +238,14 @@ describe("marketing built output", () => {
     assert.equal(scripts.length, 1);
     assert.ok(scripts[0].includes('src="/interactions.js"'));
     assert.ok(scripts[0].includes('type="module"'));
-    assert.ok(statSync(join(DIST, "interactions.js")).size < 10500);
-    for (const id of ["workflow-build", "workflow-research", "workflow-automate"]) {
-      mustContain(html, `id="${id}"`, "server-rendered workflow");
-    }
-    mustContain(html, "Illustrative workflow", "honest illustrative label");
+    assert.ok(statSync(join(DIST, "interactions.js")).size < 8500);
   });
 
-  it("keeps competitor research out of public copy", () => {
-    const lower = html.toLowerCase();
-    for (const competitor of ["hermes", "openclaw", "open claw"]) {
-      assert.ok(!lower.includes(competitor), `public HTML must not name ${competitor}`);
-    }
+  it("provides a source-linked harness comparison", () => {
+    for (const name of ["Codex CLI", "Claude Code", "OpenCode", "Hermes Agent", "OpenClaw"]) mustContain(html, name, "comparison harness");
+    mustContain(html, 'id="comparison"', "comparison anchor");
+    mustContain(html, "not a feature or performance ranking", "comparison limit");
+    assert.ok(!html.includes('data-workflow-explorer'), "retired workflow UI is removed");
   });
 
   it("ships bounded real-console captures with provenance", async () => {

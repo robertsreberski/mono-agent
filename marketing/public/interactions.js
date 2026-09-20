@@ -1,69 +1,4 @@
-
 // Progressive enhancement only: no model requests, tracking, or persistence.
-const explorer = document.querySelector('[data-workflow-explorer]');
-if (explorer) {
-  const nav = explorer.querySelector('.workflow-tabs');
-  const tabs = [...explorer.querySelectorAll('[data-workflow]')];
-  const panels = [...explorer.querySelectorAll('[data-panel]')];
-  const activate = (index, focus = false, updateUrl = false) => {
-    if (updateUrl && location.hash !== `#${panels[index].id}`) {
-      history.pushState(null, '', `#${panels[index].id}`);
-    }
-    tabs.forEach((tab, i) => {
-      tab.setAttribute('aria-selected', String(i === index));
-      tab.tabIndex = i === index ? 0 : -1;
-      panels[i].hidden = i !== index;
-    });
-    if (focus) tabs[index].focus();
-  };
-  if (nav && tabs.length && tabs.length === panels.length) {
-    nav.setAttribute('role', 'tablist');
-    tabs.forEach((tab, index) => {
-      tab.setAttribute('role', 'tab');
-      tab.setAttribute('aria-controls', panels[index].id);
-      panels[index].setAttribute('role', 'tabpanel');
-      panels[index].setAttribute('aria-labelledby', tab.id);
-      panels[index].tabIndex = 0;
-      tab.addEventListener('click', (event) => {
-        event.preventDefault();
-        activate(index, false, true);
-      });
-      tab.addEventListener('keydown', (event) => {
-        let next;
-        if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
-        if (event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
-        if (event.key === 'Home') next = 0;
-        if (event.key === 'End') next = tabs.length - 1;
-        if (event.key === ' ') next = index;
-        if (next !== undefined) {
-          event.preventDefault();
-          activate(next, true, true);
-        }
-      });
-    });
-    // Honor direct links while leaving every panel readable without JavaScript.
-    const linked = panels.findIndex(panel => `#${panel.id}` === location.hash);
-    activate(linked >= 0 ? linked : 0);
-    // Hash scrolling can precede enhancement/layout in WebKit. Reveal the
-    // selected panel, then align the anchor against its final readable layout.
-    const revealLinked = index => requestAnimationFrame(() => {
-      if (`#${panels[index].id}` === location.hash) {
-        panels[index].scrollIntoView({ block: 'start', behavior: 'instant' });
-      }
-    });
-    if (linked >= 0) revealLinked(linked);
-    window.addEventListener('hashchange', () => {
-      const index = panels.findIndex(panel => `#${panel.id}` === location.hash);
-      if (index >= 0) { activate(index); revealLinked(index); }
-    });
-    window.addEventListener('popstate', () => {
-      const index = panels.findIndex(panel => `#${panel.id}` === location.hash);
-      activate(index >= 0 ? index : 0);
-    });
-    explorer.dataset.enhanced = 'true';
-  }
-}
-
 const copy = document.querySelector('.copy-command');
 const command = document.querySelector('#install-command');
 const status = document.querySelector('.copy-status');
@@ -113,10 +48,14 @@ if (cards) {
   let focusedIndex = null;
   let activeIndex = 0;
   let pointerFocus = false;
+  let lastProgress = -1;
+  let geometry = null;
   const ease = value => { const t = clamp(value); return t * t * (3 - 2 * t); };
   const clamp = value => Math.max(0, Math.min(1, value));
   const setActive = index => {
-    activeIndex = Math.max(0, Math.min(layers.length - 1, index));
+    const next = Math.max(0, Math.min(layers.length - 1, index));
+    if (next === activeIndex && cards.dataset.motionState) return;
+    activeIndex = next;
     cards.dataset.activeCard = String(activeIndex);
     layers.forEach((card, cardIndex) => {
       card.dataset.active = String(cardIndex === activeIndex);
@@ -126,27 +65,34 @@ if (cards) {
   const setState = state => {
     if (cards.dataset.motionState === state) return;
     cards.dataset.motionState = state;
+    geometry = null;
+    lastProgress = -1;
     if (state !== 'scroll') clearDeckStyles();
   };
   const paintDeck = () => {
     const bounds = cards.getBoundingClientRect();
-    const stickyTop = parseFloat(getComputedStyle(grid).top) || 0;
-    const inset = parseFloat(getComputedStyle(cards).paddingTop);
-    const travel = Math.max(1, cards.clientHeight - grid.offsetHeight - inset * 2);
-    const progress = clamp((stickyTop - bounds.top - inset) / travel);
+    // Batch every layout read before writes; never measure a card mid-paint.
+    if (!geometry) {
+      const top = parseFloat(getComputedStyle(grid).top) || 0;
+      const inset = parseFloat(getComputedStyle(cards).paddingTop);
+      geometry = { top, inset, travel: Math.max(1, cards.clientHeight - grid.offsetHeight - inset * 2), width: layers[0].offsetWidth };
+    }
+    const progress = clamp((geometry.top - bounds.top - geometry.inset) / geometry.travel);
+    if (progress === lastProgress) return;
+    lastProgress = progress;
     const timeline = progress * (layers.length - 1);
     setActive(Math.round(timeline));
+    const turn = Math.floor(timeline);
+    const phase = ease((timeline - turn - .18) / .64);
+    const position = turn + phase;
     layers.forEach((card, index) => {
       // A reading beat, then an eased throw; the incoming face stays opaque.
-      const turn = Math.floor(timeline);
-      const phase = ease((timeline - turn - .18) / .64);
-      const position = turn + phase;
       const offset = index - position;
       const direction = index % 2 === 0 ? -1 : 1;
       let x, y, z, rotate, scale, opacity, order;
       if (offset < 0) {
         const tossed = clamp(-offset);
-        x = direction * card.offsetWidth * .85 * tossed;
+        x = direction * geometry.width * .85 * tossed;
         y = -6 - Math.sin(tossed * Math.PI) * 65 - tossed * 24;
         z = 32 + 32 * Math.sin(tossed * Math.PI);
         rotate = direction * 24 * tossed;
@@ -163,13 +109,14 @@ if (cards) {
         opacity = 1;
         order = 20 - Math.ceil(depth * 2);
       }
-      const values = {
-        x: `${x.toFixed(2)}px`, y: `${y.toFixed(2)}px`, z: `${z.toFixed(2)}px`,
-        rotate: `${rotate.toFixed(2)}deg`, scale: scale.toFixed(4),
-        opacity: opacity.toFixed(3), order, face: offset < 0 || index === activeIndex ? 1 : 0,
-      };
-      Object.entries(values).forEach(([name, value]) => card.style.setProperty(`--deck-${name}`, value));
-      card.style.pointerEvents = values.face && opacity > .5 ? 'auto' : 'none';
+      card.style.transform = `translate3d(${x.toFixed(2)}px,${y.toFixed(2)}px,${z.toFixed(2)}px) rotate(${rotate.toFixed(2)}deg) scale(${scale.toFixed(4)})`;
+      const alpha = opacity.toFixed(3);
+      const face = offset < 0 || index === activeIndex ? '1' : '0';
+      const pointer = face === '1' && opacity > .5 ? 'auto' : 'none';
+      if (card.style.opacity !== alpha) card.style.opacity = alpha;
+      if (card.style.zIndex !== String(order)) card.style.zIndex = String(order);
+      if (card.style.getPropertyValue('--deck-face') !== face) card.style.setProperty('--deck-face', face);
+      if (card.style.pointerEvents !== pointer) card.style.pointerEvents = pointer;
     });
   };
   const paint = () => {
@@ -181,15 +128,15 @@ if (cards) {
         : reduce.matches
           ? 'reduced'
           : 'scroll';
+    const hero = heroArt && !compact.matches ? document.querySelector('.hero').getBoundingClientRect() : null;
     setState(state);
     if (state === 'scroll') paintDeck();
-    if (heroArt) {
-      const hero = document.querySelector('.hero').getBoundingClientRect();
+    if (hero) {
       const travel = clamp(-hero.top / hero.height);
       heroArt.style.transform = !reduce.matches && !paused
         ? `translateY(${-travel * 16}px) rotate(${travel * -2}deg)`
         : 'none';
-    }
+    } else if (heroArt) heroArt.style.transform = 'none';
   };
   const schedule = () => { if (!frame) frame = requestAnimationFrame(paint); };
   const preference = () => {
@@ -229,8 +176,9 @@ if (cards) {
   });
   reduce.addEventListener('change', preference);
   addEventListener('scroll', schedule, { passive: true });
-  addEventListener('resize', schedule, { passive: true });
-  new ResizeObserver(schedule).observe(grid);
+  const invalidate = () => { geometry = null; lastProgress = -1; schedule(); };
+  addEventListener('resize', invalidate, { passive: true });
+  new ResizeObserver(invalidate).observe(grid);
   setActive(activeIndex);
   preference();
 }

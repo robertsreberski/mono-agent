@@ -66,8 +66,8 @@ for (const viewport of VIEWPORTS) {
       );
       const viewport = page.viewportSize();
       expect(viewport).not.toBeNull();
-      for (const name of ["Get the code on GitHub", "Explore the blueprint"]) {
-        const box = await page
+      for (const name of ["GitHub", "Blueprint"]) {
+        const box = await page.locator(".hero-actions")
           .getByRole("link", { name })
           .first()
           .boundingBox();
@@ -109,7 +109,7 @@ test("exposes landmarks, one H1, and a working skip link", async ({ page, browse
 
 test("section navigation reaches every anchored section", async ({ page }) => {
   await page.goto("/", { waitUntil: "networkidle" });
-  for (const section of ["configuration", "console", "use-cases"]) {
+  for (const section of ["configuration", "console", "comparison"]) {
     await page.getByRole("navigation", { name: "Sections" })
       .locator(`a[href="#${section}"]`)
       .click();
@@ -136,61 +136,32 @@ for (const width of [320, 430, 768, 1024]) {
     await page.goto("/", { waitUntil: "networkidle" });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await expect(page.getByRole("figure").filter({ hasText: "mono-agent.config.json" })).toBeVisible();
-    const examples = page.locator(".workflow-recipe");
-    await expect(examples).toHaveCount(3);
+    await expect(page.locator(".harness-row")).toHaveCount(6);
   });
 }
 
-for (const width of [390, 1440]) {
-  test(`workflow explorer supports pointer, keyboard and all states at ${width}px`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 1000 });
-    await page.goto("/");
-    const tabs = page.getByRole("tablist", { name: "Choose a workflow" });
-    await expect(tabs).toBeVisible();
-    await tabs.getByRole("tab", { name: /Research/ }).click();
-    await expect(page.getByRole("tabpanel")).toHaveCount(1);
-    await expect(page.getByRole("tabpanel")).toContainText("Connect the dots.");
-    await tabs.getByRole("tab", { name: /Research/ }).press("ArrowRight");
-    await expect(tabs.getByRole("tab", { name: /Automate/ })).toBeFocused();
-    await expect(page.getByRole("tabpanel")).toContainText("Find your rhythm.");
-    await page.keyboard.press("Home");
-    await expect(tabs.getByRole("tab", { name: /Build/ })).toHaveAttribute("aria-selected", "true");
-    await page.keyboard.press("End");
-    await expect(tabs.getByRole("tab", { name: /Automate/ })).toHaveAttribute("aria-selected", "true");
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
-    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
-    expect(results.violations, JSON.stringify(results.violations)).toEqual([]);
-  });
-}
-
-test("all workflow content and native FAQ work without JavaScript", async ({ browser }) => {
+test("comparison content and native FAQ work without JavaScript", async ({ browser }) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   const page = await context.newPage();
   await page.goto("/");
-  for (const id of ["build", "research", "automate"]) {
-    await expect(page.locator(`#workflow-${id}`)).toBeVisible();
-  }
+  await expect(page.locator(".harness-row")).toHaveCount(6);
+  await expect(page.locator("#comparison")).toContainText("OpenClaw");
   await expect(page.locator("#configuration")).toContainText("mono-agent.config.json");
   await expect(page.locator("#configuration .block-links a")).toHaveCount(12);
-  await expect(page.getByRole("button", { name: /Copy install command/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Copy command/ })).toHaveCount(0);
   const question = page.locator(".faq summary").first();
   await question.click();
   await expect(page.locator(".faq details").first()).toHaveAttribute("open", "");
   await context.close();
 });
 
-test("deep-linked workflow is selected on load", async ({ page }) => {
-  await page.goto("/#workflow-research");
-  await expect(page.getByRole("tab", { name: /Research/ })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByRole("tabpanel")).toContainText("Connect the dots.");
-});
 
 test("copy command reports success only after clipboard resolves", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", {
     value: { writeText: async (text: string) => { (window as any).copied = text; } },
   }));
   await page.goto("/");
-  await page.getByRole("button", { name: /Copy install command/ }).click();
+  await page.getByRole("button", { name: /Copy command/ }).click();
   await expect(page.getByRole("status")).toHaveText("Install command copied.");
   expect(await page.evaluate(() => (window as any).copied)).toBe("npm i -g create-mono-agent");
 });
@@ -200,41 +171,17 @@ test("clipboard refusal leaves honest manual instructions", async ({ page }) => 
     value: { writeText: async () => { throw new Error("denied"); } },
   }));
   await page.goto("/");
-  await page.getByRole("button", { name: /Copy install command/ }).click();
+  await page.getByRole("button", { name: /Copy command/ }).click();
   await expect(page.getByRole("status")).toHaveText("Copy unavailable. Select and copy the command above.");
-  await expect(page.getByRole("button", { name: /Copy install command/ })).toBeEnabled();
+  await expect(page.getByRole("button", { name: /Copy command/ })).toBeEnabled();
 });
 
-test("workflow URL follows selection and back/forward navigation", async ({ page }) => {
-  await page.goto("/#workflow-research");
-  await page.getByRole("tab", { name: /Automate/ }).click();
-  await expect(page).toHaveURL(/#workflow-automate$/);
-  await page.reload();
-  await expect(page.getByRole("tabpanel")).toContainText("Find your rhythm.");
-  await page.goBack();
-  await expect(page.getByRole("tab", { name: /Research/ })).toHaveAttribute("aria-selected", "true");
-  await page.goForward();
-  await expect(page.getByRole("tab", { name: /Automate/ })).toHaveAttribute("aria-selected", "true");
-  await page.evaluate(() => { location.hash = "workflow-build"; });
-  await expect(page.getByRole("tabpanel")).toContainText("From stuck to shipped.");
-});
 
-test("workflow tabs support Enter and Space activation", async ({ page }) => {
-  await page.goto("/");
-  const research = page.getByRole("tab", { name: /Research/ });
-  await research.focus();
-  await research.press("Enter");
-  await expect(research).toHaveAttribute("aria-selected", "true");
-  const automate = page.getByRole("tab", { name: /Automate/ });
-  await automate.focus();
-  await automate.press("Space");
-  await expect(automate).toHaveAttribute("aria-selected", "true");
-});
 
 test("missing Clipboard API remains an honest manual-copy path", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", { value: undefined }));
   await page.goto("/");
-  await page.getByRole("button", { name: /Copy install command/ }).click();
+  await page.getByRole("button", { name: /Copy command/ }).click();
   await expect(page.getByRole("status")).toContainText("Copy unavailable.");
 });
 
@@ -269,8 +216,8 @@ test('console screenshot is real component evidence with disclosed synthetic sta
 test('mobile document keeps a bounded reading length with visible configuration', async ({page}) => {
   await page.setViewportSize({width:390,height:844}); await page.goto('/');
   await expect(page.locator('[data-scroll-story]')).toHaveCount(0);
-  // Single-column visual cards and readable 14px functional copy add a measured
-  // ~12% versus the former two-column microtype layout, without a pinned story.
+  // Main comparisons and readable cards retain a bounded page; secondary
+  // coding-harness details use a native disclosure, not another long section.
   expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThan(7800);
 });
 
@@ -281,11 +228,11 @@ test('navigation and blueprint remain usable without JavaScript', async ({browse
   await expect(page.locator('#config-blueprint-json')).toBeVisible();
   await context.close();
 });
-test('workflow deep links stay visible with reduced motion', async ({page}) => {
+test('comparison deep link stays visible with reduced motion', async ({page}) => {
   await page.emulateMedia({reducedMotion:'reduce'});
   await page.goto('/#configuration');
-  await page.goto('/#workflow-research',{waitUntil:'networkidle'});
-  await expect(page.locator('#workflow-research')).toBeInViewport();
+  await page.goto('/#comparison',{waitUntil:'networkidle'});
+  await expect(page.locator('#comparison')).toBeInViewport();
 });
 
 test('building blocks stay readable and disclose source availability', async ({page}) => {
@@ -319,7 +266,7 @@ test('mobile page uses one compact deck stage and no duplicated cards', async ({
   await expect(page.locator('.block-chapter')).toHaveCount(4);
   await expect(page.locator('.block-links a')).toHaveCount(12);
   await expect(page.locator('[data-block-story], .block-layer, .workflow-art')).toHaveCount(0);
-  expect((await page.locator('.block-summary').boundingBox())!.height).toBe(1040);
+  expect((await page.locator('.block-summary').boundingBox())!.height).toBe(740);
   expect((await page.locator('.building-blocks').boundingBox())!.height).toBeLessThan(1500);
   expect((await page.locator('.hero-actions').boundingBox())!.y).toBeLessThan(740);
 });
@@ -383,7 +330,7 @@ for (const width of [390, 1440]) {
     const overlapWidth = Math.min(initial[0].right, initial[1].right) - Math.max(initial[0].left, initial[1].left);
     const overlapHeight = Math.min(initial[0].bottom, initial[1].bottom) - Math.max(initial[0].top, initial[1].top);
     expect(overlapWidth).toBeGreaterThan(200);
-    expect(overlapHeight).toBeGreaterThan(250);
+    expect(overlapHeight).toBeGreaterThan(200);
 
     for (const timeline of [0, 1, 2, 3]) {
       await seekDeck(page, timeline);
@@ -587,4 +534,68 @@ test("focused deck links remain genuine pointer targets", async ({ page }) => {
   await expect(page.locator(".block-summary")).toHaveAttribute("data-motion-state", "scroll");
   const after = await link.boundingBox();
   expect(Math.abs(after!.y - before!.y)).toBeLessThan(2);
+});
+
+for (const width of [320, 390, 430]) {
+  test(`compact labels and card faces fit at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({width,height:844}); await page.goto('/');
+    await page.evaluate(() => document.fonts.ready);
+    const layout = await page.evaluate(() => {
+      const ctas = [...document.querySelectorAll('.hero-actions a')].map(el => el.getBoundingClientRect().toJSON());
+      const caption = [...document.querySelectorAll('.config-blueprint figcaption strong, .config-blueprint figcaption>span:last-child')].map(el => el.getBoundingClientRect().toJSON());
+      return {ctas,caption};
+    });
+    expect(Math.abs(layout.ctas[0].top-layout.ctas[1].top)).toBeLessThan(2);
+    expect(Math.abs(layout.caption[0].top-layout.caption[1].top)).toBeLessThan(3);
+    for(const turn of [0,1,2,3]) {
+      await seekDeck(page,turn);
+      const face=page.locator('.block-chapter[data-active="true"]');
+      const box=await face.boundingBox();
+      for(const link of await face.locator('a').all()) {
+        const b=await link.boundingBox();
+        expect(b!.y+b!.height).toBeLessThanOrEqual(box!.y+box!.height);
+        expect(b!.x+b!.width).toBeLessThanOrEqual(box!.x+box!.width);
+      }
+    }
+    expect(await page.locator('.block-summary').evaluate(el=>el.clientHeight)).toBeLessThanOrEqual(760);
+  });
+}
+test('comparison links official sources without a feature-ranking claim', async ({page}) => {
+  await page.goto('/#comparison');
+  await page.locator('.comparison-more summary').click();
+  await expect(page.locator('.harness-row')).toHaveCount(6);
+  for(const name of ['Mono Agent','Codex CLI','Claude Code','OpenCode','Hermes Agent','OpenClaw']) {
+    await expect(page.locator('.harness-list').getByRole('link',{name,exact:true})).toHaveAttribute('href', /^https:\/\//);
+  }
+  await expect(page.locator('.comparison-note')).toContainText('not a feature or performance ranking');
+});
+test('native deck scroll does not remeasure card widths per frame', async ({page}) => {
+  await page.goto('/'); await page.evaluate(()=>document.fonts.ready);
+  await seekDeck(page,0);
+  const reads=await page.evaluate(async () => {
+    let count=0;
+    const descriptor=Object.getOwnPropertyDescriptor(HTMLElement.prototype,'offsetWidth')!;
+    Object.defineProperty(HTMLElement.prototype,'offsetWidth',{...descriptor,get(){
+      if(this.matches('.block-chapter')) count++;
+      return descriptor.get!.call(this);
+    }});
+    try {
+      for(let i=0;i<24;i++) {
+        window.scrollBy({top:5,behavior:'instant'});
+        await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+      }
+      return count;
+    } finally { Object.defineProperty(HTMLElement.prototype,'offsetWidth',descriptor); }
+  });
+  expect(reads).toBeLessThanOrEqual(1);
+});
+test('FAQ heading has breathing room and opened answers stay separated', async ({page}) => {
+  await page.setViewportSize({width:390,height:844}); await page.goto('/#faq'); await page.evaluate(()=>document.fonts.ready);
+  const heading=await page.locator('#faq-heading').boundingBox();
+  const first=page.locator('.faq details').first(); const closed=await first.boundingBox();
+  expect(closed!.y-heading!.y-heading!.height).toBeGreaterThanOrEqual(24);
+  await first.locator('summary').click();
+  const answer=await first.locator('.faq-answer').boundingBox();
+  const next=await page.locator('.faq details').nth(1).boundingBox();
+  expect(next!.y).toBeGreaterThanOrEqual(answer!.y+answer!.height);
 });

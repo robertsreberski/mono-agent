@@ -24,6 +24,9 @@ const PORT = 4331;
 const URL = `http://127.0.0.1:${PORT}/`;
 
 const SHOTS = [
+  { name: "comparison-mobile-390x844.png", width: 390, height: 844, scrollTo: '#comparison' },
+  { name: "comparison-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: '#comparison' },
+  { name: "faq-mobile-390x844.png", width: 390, height: 844, scrollTo: '#faq' },
   {name:"hero-tablet-768x1000.png",width:768,height:1000},
   {name:"blocks-desktop-1440x1000.png",width:1440,height:1000,scrollTo:".building-blocks"},
   {name:"blocks-mobile-390x844.png",width:390,height:844,scrollTo:".building-blocks"},
@@ -31,24 +34,9 @@ const SHOTS = [
   { name: "console-desktop-1440x1000.png", width:1440,height:1000,scrollTo:"#console" },
   { name: "console-mobile-390x844.png", width:390,height:844,scrollTo:"#console" },
   { name: "menu-mobile-390x844.png", width:390,height:844,menu:true },
-  { name: "research-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: ".workflow-explorer", workflow: "research" },
-  { name: "research-mobile-390x844.png", width: 390, height: 844, scrollTo: ".workflow-explorer", workflow: "research" },
-  { name: "automate-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: ".workflow-explorer", workflow: "automate" },
   { name: "hero-desktop-1440x1000.png", width: 1440, height: 1000 },
   { name: "hero-mobile-390x844.png", width: 390, height: 844 },
   { name: "hero-mobile-430x932.png", width: 430, height: 932 },
-  {
-    name: "usecases-desktop-1440x1000.png",
-    width: 1440,
-    height: 1000,
-    scrollTo: "#use-cases",
-  },
-  {
-    name: "usecases-mobile-390x844.png",
-    width: 390,
-    height: 844,
-    scrollTo: "#use-cases",
-  },
   { name: "configuration-desktop-1440x1000.png", width: 1440, height: 1000, scrollTo: "#configuration" },
   { name: "configuration-mobile-390x844.png", width: 390, height: 844, scrollTo: "#configuration" },
   { name: "configuration-mobile-430x932.png", width: 430, height: 932, scrollTo: "#configuration" },
@@ -118,10 +106,6 @@ async function main() {
         await page.goto(URL, { waitUntil: "networkidle" });
         await page.evaluate(() => document.fonts.ready);
         await page.waitForFunction(() => document.getAnimations().every(a => a.playState !== "running"));
-        if (shot.workflow) {
-          await page.locator(`[data-workflow="${shot.workflow}"]`).click();
-          await page.waitForFunction(() => document.getAnimations().every(a => a.playState !== "running"));
-        }
         if (shot.scrollTo) {
           // Instant jump: the site enables smooth scroll-behavior, which
           // would otherwise leave the capture mid-flight.
@@ -206,7 +190,7 @@ async function main() {
           };
           for (const timeline of [0,1,1.55,2,3]) await move(positionFor(timeline), 1100);
           for (const timeline of [2,1,0]) await move(positionFor(timeline), 900);
-          await move(scrollY + document.querySelector('#use-cases').getBoundingClientRect().top, 1500);
+          await move(scrollY + document.querySelector('#comparison').getBoundingClientRect().top, 1500);
           await move(scrollY, 1200);
         });
         const video = page.video();

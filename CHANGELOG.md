@@ -6,19 +6,20 @@
   `mono-agent.dev` domain. The isolated `marketing/` Astro app renders one
   crawlable page centered on a schema-checked `mono-agent.config.json`
   blueprint, framework/package composition, deliberate memory tiers, explicit
-  model routes, local run evidence, Build/Research/Automate use cases, honest
+  model routes, local run evidence, a source-linked harness comparison, honest
   setup, FAQ, and GitHub/docs calls to action. Tested SEO metadata, a social
   card, sitemap/robots, and a dedicated CI lane protect the static output. The
-  illustrated workflow explorer supports keyboard tabs, with no-JavaScript
-  content, reduced-motion artwork, native FAQ disclosures, and install-command
-  copying. A shorter mobile-first layout adds a compact disclosure menu, a
+  harness comparison leads with Hermes and OpenClaw, with additional coding
+  harnesses, no-JavaScript content, native FAQ disclosures, and command copying. A shorter mobile-first layout adds a compact disclosure menu, a
   refined mark and CTAs, a coherent responsive type scale, SVG link arrows, and
   building-block cards that lift and toss through a compact native-scroll deck,
   with static pause, keyboard, reduced-motion, and no-JavaScript layouts.
   GitHub-marked CTAs, a mobile-optimized transparent matte-stone
   hero, compact self-hosted OFL fonts, and real desktop console UI imagery with
   clearly labelled synthetic data and source-build availability.
-  Workflow anchors also align after progressive enhancement in WebKit.
+  Shorter CTAs, a single-line JSON caption, consistent FAQ spacing, and a tighter
+  mobile deck reduce clutter; cached geometry and compositor transform updates
+  avoid repeated card measurements during scrolling.
   Source only; the site is not deployed yet.
 
 - Fix unrelated provider turns blocking history admission and cancellation

@@ -48,12 +48,11 @@ existing docs site is secondary.
 The configuration blueprint and twelve linked building blocks are server-rendered,
 including the caveats that identity/skills/MCP files, secrets/auth, and runtime
 state remain separate. It is a readable example, not a fake editor or a deploy
-control. The workflow field guide presents concise, server-rendered Build,
-Research and Automate content without repeated decorative illustrations. `public/interactions.js` progressively adds
-ARIA tabs (arrow keys, Home/End, Enter/Space), direct workflow links, a copy-install
-button with honest success/failure feedback, and the compact mobile menu.
-All workflow content remains readable when JavaScript is disabled; FAQ disclosures
-are native HTML. These are illustrative workflows, never live model output.
+control. A source-linked comparison puts Hermes and OpenClaw alongside Mono Agent,
+then covers Codex CLI, Claude Code, and OpenCode in a native disclosure. It compares documented focus, not
+feature absence, exclusivity, or benchmark performance. All comparison content is
+server-rendered. The enhancement script handles the menu, deck, and copy command;
+FAQ disclosures are native HTML.
 
 No model calls, analytics, third-party scripts or storage are used. Clipboard tests
 stub success and refusal; they prove UI handling, not operating-system permission.
@@ -71,15 +70,16 @@ connection, delegation, and continuity diagrams. All twelve documentation links 
 server-rendered as compact chips. With motion enabled, the same real cards become a
 short sticky deck: the focused card lifts forward, arcs aside, and reveals the offset
 layer below as native page scroll advances or reverses. A short reading beat separates
-each eased throw; settled cards are opaque and tossed cards disappear completely. The 1,040px mobile / 1,000px
-desktop stage adds only 190px to the measured 390px-wide page versus the prior grid
-(7,669px total versus 7,478px in Chromium) and never intercepts scrolling. Pause, keyboard focus,
+each eased throw; settled cards are opaque and tossed cards disappear completely. The 740px mobile / 1,000px
+desktop stage never intercepts scrolling. Mobile card faces are 250px high (350px
+on narrow 320px screens where readable text needs more room). Geometry is cached
+on layout changes; animation reads are batched before writes, transform updates
+do not propagate inherited CSS variables, and unchanged endpoints skip work. Pause, keyboard focus,
 live reduced-motion changes, and no JavaScript restore the complete readable static
 grid or column without duplicate links. Pointer activation does not reflow targets;
 keyboard entry and exit preserve the visible focused link. The local enhancement
-script has a 10.5kB uncompressed ceiling (no animation dependency). The hero tilts by at most two degrees while
-scrolling away. Workflows identify the useful components
-and repeated work they help remove. Repeated blueprint callouts are removed because
+script has a 8.5kB uncompressed ceiling (no animation dependency). The desktop hero tilts by at most two degrees while
+scrolling away; the mobile hero remains still. Repeated blueprint callouts are removed because
 the same capabilities already appear in the cards.
 
 The console image is the actual desktop App, Messages and Composer, captured at
@@ -165,3 +165,18 @@ The repo's `ci.yml` runs a dedicated parallel **`marketing`** job: isolated
 install, Chromium install, build (with link check), unit contracts against
 the build, then the browser audit. Treat a red **`marketing`** check as a
 merge blocker by convention, same as the `website` lane.
+
+## Comparison sources
+
+Checked 20 September 2026 against official documentation. This is a positioning
+snapshot, not an exhaustive capability matrix or performance claim:
+
+- [Hermes Agent](https://hermes-agent.nousresearch.com/docs/): learning-oriented skills, persistent memory, messaging gateway, scheduled work.
+- [OpenClaw](https://docs.openclaw.ai/): self-hosted messaging gateway, sessions, memory, multi-agent routing, browser control UI.
+- [Codex CLI](https://developers.openai.com/codex/cli/): terminal editing/review, skills, MCP, scripted `codex exec`.
+- [Claude Code](https://code.claude.com/docs/en/overview): multiple coding surfaces, instructions, skills/hooks/MCP and Agent SDK.
+- [OpenCode](https://opencode.ai/docs/): provider choice, open-source terminal/desktop/IDE interfaces, Plan and Build modes.
+
+These capabilities overlap with Mono Agent. Do not turn these summaries into
+unsupported negative feature claims about another project. Recheck sources when
+updating the public comparison.
