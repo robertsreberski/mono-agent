@@ -25,6 +25,11 @@
   scope; distinguish corrected reports from actual state changes and avoid
   turning observed outcomes into causal proof, without extra model calls or a
   storage-schema change.
+- Make strict agent-host BuJo extraction and reconciliation request the runtime's
+  schema-guided `StructuredOutput` result while retaining authoritative strict
+  validation and whole-turn atomicity. Fail closed when the selected structured
+  path returns no result; direct Ollama memory completion keeps its validated
+  JSON-text path.
 - Let automatic direct-fact recall use finite first-party reported properties,
   choices, and work/live locations while rendering their attribution unchanged;
   require exact textual reporter identity, reject compatibility-hidden unsafe

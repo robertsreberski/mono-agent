@@ -542,6 +542,60 @@ function withPreparedVector(
   };
 }
 
+function strictReconciliationOutputSchema(
+  indexes: readonly number[],
+  neighbours: readonly (readonly SimilarHit[])[],
+): Readonly<Record<string, unknown>> {
+  const variants = indexes.flatMap((index) => {
+    const indexSchema = { type: "integer", const: index } as const;
+    const targetIds = [...new Set((neighbours[index] ?? []).map((hit) => hit.record.id))];
+    const targetSchema = { type: "string", enum: targetIds } as const;
+    const replacementSchema = {
+      type: "string",
+      minLength: 1,
+      maxLength: MAX_RECONCILIATION_TEXT_CODE_POINTS,
+    } as const;
+    return [
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["index", "action"],
+        properties: { index: indexSchema, action: { const: "add" } },
+      },
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["index", "action", "targetId"],
+        properties: { index: indexSchema, action: { const: "noop" }, targetId: targetSchema },
+      },
+      ...(["update", "supersede"] as const).map((action) => ({
+        type: "object",
+        additionalProperties: false,
+        required: ["index", "action", "targetId", "text"],
+        properties: {
+          index: indexSchema,
+          action: { const: action },
+          targetId: targetSchema,
+          text: replacementSchema,
+        },
+      })),
+    ];
+  });
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["decisions"],
+    properties: {
+      decisions: {
+        type: "array",
+        minItems: indexes.length,
+        maxItems: indexes.length,
+        items: { oneOf: variants },
+      },
+    },
+  };
+}
+
 async function classifyBatch(
   candidates: readonly CandidateMemory[],
   neighbours: readonly (readonly SimilarHit[])[],
@@ -557,12 +611,16 @@ async function classifyBatch(
       text: hit.record.text,
     })),
   }));
+  const strictOutput = deps.strictModelOutput === true;
   let raw: string;
   try {
     raw = await deps.llm.complete(
-      `Classify each candidate against only its supplied existing memories. Return ONLY one exact JSON array with one object per offered index.
+      `Classify each candidate against only its supplied existing memories. Return ONLY one exact JSON array with one decision per offered index.
+${strictOutput
+  ? 'When a schema-guided StructuredOutput tool is available, submit that same array in the exact object {"decisions":[...]} required by the tool; do not print a second copy.'
+  : ""}
 
-Use exactly one of these object shapes:
+Use exactly one of these decision object shapes:
 - add: {"index":N,"action":"add"}
 - noop: {"index":N,"action":"noop","targetId":"existing-id"}
 - update: {"index":N,"action":"update","targetId":"existing-id","text":"complete merged memory"}
@@ -584,6 +642,9 @@ INPUT:
 ${JSON.stringify(input)}`,
       {
         label: "capture:reconcile-batch",
+        ...(strictOutput
+          ? { outputSchema: strictReconciliationOutputSchema(indexes, neighbours), structuredResultKey: "decisions" }
+          : {}),
         ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
       },
     );

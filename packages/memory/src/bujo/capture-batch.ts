@@ -25,6 +25,73 @@ interface RawCapturePlan {
   readonly relations?: unknown;
 }
 
+const SAFE_TEXT_SCHEMA = (maxLength: number): Readonly<Record<string, unknown>> => ({
+  type: "string",
+  minLength: 1,
+  maxLength,
+});
+
+/** Shape guidance only; the strict parser below remains the semantic authority. */
+const STRICT_CAPTURE_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["memories", "entities", "relations"],
+  properties: {
+    memories: {
+      type: "array",
+      maxItems: MAX_CAPTURE_MEMORIES,
+      uniqueItems: true,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["type", "text", "salience", "isInsight", "entityIds"],
+        properties: {
+          type: { type: "string", enum: ["task", "event", "note"] },
+          text: SAFE_TEXT_SCHEMA(MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS),
+          salience: { type: "number", minimum: 0, maximum: 1 },
+          isInsight: { type: "boolean" },
+          entityIds: {
+            type: "array",
+            maxItems: MAX_CAPTURE_ENTITIES,
+            uniqueItems: true,
+            items: { ...SAFE_TEXT_SCHEMA(96), pattern: "^[a-z][a-z0-9-]{0,31}:[a-z0-9]+(?:-[a-z0-9]+)*$" },
+          },
+        },
+      },
+    },
+    entities: {
+      type: "array",
+      maxItems: MAX_CAPTURE_ENTITIES,
+      uniqueItems: true,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "name", "type"],
+        properties: {
+          id: { ...SAFE_TEXT_SCHEMA(96), pattern: "^[a-z][a-z0-9-]{0,31}:[a-z0-9]+(?:-[a-z0-9]+)*$" },
+          name: SAFE_TEXT_SCHEMA(160),
+          type: { ...SAFE_TEXT_SCHEMA(48), pattern: "^[a-z][a-z0-9-]{0,47}$" },
+        },
+      },
+    },
+    relations: {
+      type: "array",
+      maxItems: MAX_CAPTURE_RELATIONS,
+      uniqueItems: true,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["src", "dst", "relation"],
+        properties: {
+          src: SAFE_TEXT_SCHEMA(96),
+          dst: SAFE_TEXT_SCHEMA(96),
+          relation: { ...SAFE_TEXT_SCHEMA(96), pattern: "^[a-z0-9]+(?:[ -][a-z0-9]+)*$" },
+        },
+      },
+    },
+  },
+} as const;
+
 const SINGLE_JSON_FENCE = /^[\t\n\r ]*```(?:[jJ][sS][oO][nN])?[\t ]*\r?\n([\s\S]*?)\r?\n```[\t\n\r ]*$/;
 
 const prompt = (text: string, known: readonly ExtractedEntity[] = []): string => `Extract one bounded, durable memory plan from the completed turn below.
@@ -117,6 +184,7 @@ export async function extractCapturePlanStrict(
   try {
     raw = await llm.complete(prompt(text, knownEntities), {
       label: "capture:extract",
+      outputSchema: STRICT_CAPTURE_OUTPUT_SCHEMA,
       ...(abortSignal === undefined ? {} : { abortSignal }),
     });
   } catch (cause) {
