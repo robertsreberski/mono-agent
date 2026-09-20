@@ -22,11 +22,12 @@ loads this package only when `observability.exporters` selects `type: "phoenix"`
 
 ## Install / Usage
 
-Install this package in the agent folder at exactly the same version as
-`@mono-agent/agent-app`:
+For a `0.22.0` agent, install this package in the agent folder at exactly the
+same version as `@mono-agent/agent-app` once that version is available from your
+selected registry:
 
 ```bash
-npm install @mono-agent/observability-phoenix@0.20.14
+npm install @mono-agent/observability-phoenix@0.22.0
 ```
 
 Keep the existing configuration shape:

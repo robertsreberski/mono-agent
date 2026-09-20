@@ -1,11 +1,11 @@
 ---
 title: "Effort & permissions"
-description: "Configure reasoning effort, keyword escalation, permission posture, turn limits, and workspace scope."
+description: "Configure explicit reasoning effort, turn limits, and workspace scope; enforce tools through sandbox, policy, and approvals."
 sidebar:
   order: 2
 ---
 
-This page covers the `runtime.*` knobs that shape *how* a run executes once a provider is selected: how much reasoning effort it spends, how tool permissions are posed, and how many turns a run may take. All of these are `config` coverage (set in `mono-agent.config.json`) with a matching `MONO_AGENT_*` environment override. For *which* provider each model string maps to, see [Pi runtime & model references](/runtime/backends/).
+This page covers the `runtime.*` knobs that shape *how* a run executes once a provider is selected: explicit reasoning effort, turn limits, and workspace scope. Those runtime controls use `mono-agent.config.json` with the matching `MONO_AGENT_*` environment variables listed below. Tool permissions are enforced separately through the sandbox, tool policy, and programmatic approval gates. For *which* provider each model string maps to, see [Pi runtime & model references](/runtime/backends/).
 
 A representative runtime block:
 
