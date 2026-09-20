@@ -453,6 +453,195 @@ describe("hasAutomaticRecallEvidence", () => {
     });
   });
 
+  describe("scheduled temporal evidence", () => {
+    const query = "When is the Project Atlas production migration scheduled?";
+    const target = "Project Atlas production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris.";
+
+    it("selects one bounded scheduled fact while excluding adjacent direct facts", () => {
+      const hit = { record: { text: target } };
+      const distractors = [
+        "Priya owns the Project Atlas database cutover.",
+        "The approved downtime budget for Project Atlas is 30 minutes.",
+        "Project Boreal production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris.",
+      ].map((text) => ({ record: { text } }));
+
+      expect(selectAnswerBearingRecallHits(query, [hit, ...distractors])).toEqual([hit]);
+      expect(hasAutomaticRecallEvidence("What time is the Project Atlas production migration scheduled?", [hit])).toBe(true);
+      expect(hasAutomaticRecallEvidence("What time is the Project Atlas production migration scheduled?", [{ record: {
+        text: "Project Atlas production migration is scheduled at 08:30.",
+      } }])).toBe(true);
+    });
+
+    it.each([
+      "Project Atlas production migration was completed on 20 November 2026.",
+      "Project Atlas production migration was cancelled on 20 November 2026.",
+      "Project Atlas production migration was canceled on 20 November 2026.",
+      "Project Atlas production migration is 20 November 2026.",
+      "Project Atlas production migration is not scheduled for 20 November 2026.",
+      "Project Atlas production migration is scheduled for unknown.",
+      "Project Atlas production migration is scheduled for 20 November 2026 if validation passes.",
+      "Avery reports that Project Atlas production migration is scheduled for 20 November 2026.",
+    ])("rejects a non-schedule, unsafe, or reported answer: %s", (text) => {
+      expect(hasAutomaticRecallEvidence(query, [{ record: { text } }])).toBe(false);
+    });
+
+    it.each([
+      "Project Atlas production migration is scheduled for 20 November 2026 according to Avery.",
+      "Project Atlas production migration is scheduled for 20 November 2026 according　to Avery.",
+      "Project Atlas production migration is scheduled for possibly 20 November 2026.",
+      "Project Atlas production migration is scheduled for ｐｏｓｓｉｂｌｙ 20 November 2026.",
+      "Project Atlas production migration is scheduled for ‘20 November 2026’.",
+      "Project Atlas production migration is scheduled for \"20 November 2026\".",
+      "Project Atlas production migration is scheduled for ＂20 November 2026＂.",
+    ])("rejects attributed, uncertain, quoted, or compatibility-hidden payload qualification: %s", (text) => {
+      expect(hasAutomaticRecallEvidence(query, [{ record: { text } }])).toBe(false);
+    });
+
+    it.each([
+      ["negation", "Project Atlas production migration is scheduled for ｎｏｔ 20 November 2026."],
+      ["unknown value", "Project Atlas production migration is scheduled for ｕｎｋｎｏｗｎ on 20 November 2026."],
+      ["conditional", "Project Atlas production migration is scheduled for 20 November 2026 ｉｆ validation passes."],
+      ["reported", "Project Atlas production migration is scheduled for 20 November 2026 as ｒｅｐｏｒｔｅｄ by Avery."],
+      ["coordination", "Project Atlas production migration is scheduled for 20 November 2026 ａｎｄ backup review."],
+    ])("applies the complete existing language policy to NFKC safety text: %s", (_case, text) => {
+      expect(hasAutomaticRecallEvidence(query, [{ record: { text } }])).toBe(false);
+    });
+
+    it.each([
+      "Project Atlas production migration is scheduled for possi\u200bbly 20 November 2026.",
+      "Project Atlas production migration is scheduled for 20 November 2026 ｉ\u200bｆ validation passes.",
+      "Project Atlas production migration is scheduled for 20 November 2026\u0000.",
+      "Project Atlas production migration is scheduled for 20 November 2026\u2060.",
+    ])("rejects control or format syntax before fact normalization: %s", (text) => {
+      expect(hasAutomaticRecallEvidence(query, [{ record: { text } }])).toBe(false);
+    });
+
+    it("keeps valid ASCII clocks and fullwidth alphanumeric event identity", () => {
+      const hit = { record: {
+        text: "Ｐroject Atlas production migration is scheduled for 20 November 2026 at 09:30.",
+      } };
+      expect(selectAnswerBearingRecallHits(query, [hit])).toEqual([hit]);
+    });
+
+    it.each([
+      ["When is Solstice scheduled?", "Solstice is scheduled for 20 November 2026."],
+      ["when is solstice scheduled?", "solstice is scheduled for 20 November 2026."],
+      ["When is the Solstice scheduled?", "The Solstice is scheduled for 20 November 2026."],
+      ["What date is Atlas migration scheduled?", "Atlas migration is scheduled for 20 November 2026."],
+      ["What day is the Atlas migration scheduled?", "The Atlas migration is scheduled on Friday."],
+      ["What time is Atlas migration scheduled?", "Atlas migration is scheduled at 09:30."],
+    ])("gives anchored scheduled syntax precedence for article and case variants: %s", (scheduledQuery, text) => {
+      expect(hasAutomaticRecallEvidence(scheduledQuery, [{ record: { text } }])).toBe(true);
+    });
+
+    it.each([
+      ["When is Solstice maintenance?", "Solstice's maintenance is 20 November 2026."],
+      ["When is Solstice's maintenance?", "Solstice's maintenance is 20 November 2026."],
+      ["When is Solstice scheduled maintenance?", "Solstice's scheduled maintenance is 20 November 2026."],
+    ])("preserves the non-scheduled named-property grammar: %s", (propertyQuery, text) => {
+      expect(hasAutomaticRecallEvidence(propertyQuery, [{ record: { text } }])).toBe(true);
+    });
+
+    it("preserves actor and relation exclusions ahead of scheduled parsing", () => {
+      expect(hasAutomaticRecallEvidence("When is the project manager scheduled?", [{ record: {
+        text: "The project manager is scheduled for 20 November 2026.",
+      } }])).toBe(false);
+    });
+
+    it.each([
+      ["Project A", "Project B"],
+      ["Project Atlas migration", "Atlas migration"],
+      ["launch 1", "launch 2"],
+      ["Bora Bora", "Bora"],
+      ["Project A", "Project-A"],
+    ])("preserves scheduled event identity: %s != %s", (asked, stored) => {
+      expect(hasAutomaticRecallEvidence(`When is the ${asked} scheduled?`, [{ record: {
+        text: `${stored} is scheduled for 20 November 2026.`,
+      } }])).toBe(false);
+    });
+
+    it("normalizes only case, whitespace, compatibility forms, and a standalone leading article for identity", () => {
+      expect(hasAutomaticRecallEvidence("When is the Project A launch 1 scheduled?", [{ record: {
+        text: "PROJECT A  launch 1 is scheduled on 20 November 2026.",
+      } }])).toBe(true);
+      expect(hasAutomaticRecallEvidence("When is the Ｐroject A scheduled?", [{ record: {
+        text: "Project A is scheduled on 20 November 2026.",
+      } }])).toBe(true);
+
+      const fullwidthIdentity = { record: {
+        text: "Ｐroject A is scheduled on 20 November 2026.",
+      } };
+      expect(selectAnswerBearingRecallHits("When is Project A scheduled?", [fullwidthIdentity]))
+        .toEqual([fullwidthIdentity]);
+    });
+
+    it.each([
+      ["What time does the release train start?", "The release train starts at 09:30."],
+      ["What time is the API launch?", "The API launch is 09:30."],
+      [query, target],
+    ])("permits a valid clock colon only in a supported temporal answer: %s", (clockQuery, text) => {
+      expect(hasAutomaticRecallEvidence(clockQuery, [{ record: { text } }])).toBe(true);
+    });
+
+    it.each([
+      ["What deployment color did Mira select?", "Mira selected 09:30 as the deployment color."],
+      ["What is Avery's alarm label?", "Avery's alarm label is 09:30."],
+      ["Where does Morgan work?", "Morgan works at 09:30."],
+    ])("does not enable clock colons for a non-temporal family: %s", (clockQuery, text) => {
+      expect(hasAutomaticRecallEvidence(clockQuery, [{ record: { text } }])).toBe(false);
+    });
+
+    it.each([
+      "Project Atlas production migration is scheduled for 20 November 2026 at 25:30 Europe/Paris.",
+      "Project Atlas production migration is scheduled for 20 November 2026 at 09:99 Europe/Paris.",
+      "Project Atlas production migration is scheduled for 20 November 2026 at 9:3 Europe/Paris.",
+      "Project Atlas production migration is scheduled for 20 November 2026 at 09:30:00 Europe/Paris.",
+      "Project Atlas production migration is scheduled for note:09:30 on 20 November 2026.",
+      "Project Atlas production migration is scheduled for 20 November 2026 at 25：30.",
+      "Project Atlas production migration is scheduled for 20 November 2026 at 09：30.",
+      "Project Atlas production migration is scheduled for 20 November 2026， 09:30.",
+      "Project Atlas production migration is scheduled for 20／11／2026.",
+    ])("rejects malformed, partial, or compatibility-hidden clock/separator syntax: %s", (text) => {
+      expect(hasAutomaticRecallEvidence(query, [{ record: { text } }])).toBe(false);
+    });
+
+    it.each([
+      [
+        "different date",
+        "Project Atlas production migration is scheduled for 21 November 2026 at 08:30 Europe/Paris.",
+      ],
+      [
+        "equivalent date in a different representation",
+        "Project Atlas production migration is scheduled for 2026-11-20 at 08:30 Europe/Paris.",
+      ],
+      [
+        "date-only versus date-time",
+        "Project Atlas production migration is scheduled for 20 November 2026.",
+      ],
+    ])("abstains on a lower-scored %s conflict before score slicing", (_case, conflict) => {
+      const fillers = Array.from({ length: 8 }, (_, index) => ({
+        id: `filler-${index}`,
+        score: 0.98 - index * 0.01,
+        record: { text: `Adjacent archive record ${index}` },
+      }));
+      expect(selectAutomaticRecallHits([
+        { id: "target", score: 0.99, record: { text: target } },
+        ...fillers,
+        { id: "conflict", score: 0.1, record: { text: conflict } },
+      ], { query })).toEqual([]);
+    });
+
+    it("keeps exact duplicate schedule payloads after bounded identity normalization", () => {
+      const hits = [
+        { id: "first", score: 0.99, record: { text: target } },
+        { id: "duplicate", score: 0.9, record: {
+          text: "Project Atlas production migration was scheduled on  20 NOVEMBER 2026 at 08:30 Europe/Paris.",
+        } },
+      ];
+      expect(selectAutomaticRecallHits(hits, { query })).toEqual(hits);
+    });
+  });
+
   it("exposes a deterministic profile without record or provider identifiers", () => {
     expect(automaticRecallEvidenceProfile("What is Morgan's phone number?")).toEqual({
       anchors: ["morgan"],
@@ -552,6 +741,33 @@ describe("composeRecallBlock", () => {
     expect(block.source).toBe("memory-bujo");
     expect(block.content).toContain("Morgan's memory preference is opt-in.");
     expect(block.truncated).toBe(false);
+    db.close();
+  });
+
+  it("composes only the direct scheduled answer from adjacent project facts", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    const base = {
+      type: "note" as const,
+      status: "open" as const,
+      salience: 0.5,
+      isInsight: false,
+      createdAt: "2026-06-15T09:00:00.000Z",
+      accessCount: 0,
+      tags: [],
+      source: {},
+    };
+    await db.upsertMany([
+      { ...base, id: "schedule", text: "Project Atlas production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris." },
+      { ...base, id: "owner", text: "Priya owns the Project Atlas database cutover." },
+      { ...base, id: "downtime", text: "The approved downtime budget for Project Atlas is 30 minutes." },
+      { ...base, id: "other", text: "Project Boreal production migration is scheduled for 21 November 2026 at 09:30 Europe/Paris." },
+    ]);
+
+    const block = await composeRecallBlock(db, "When is the Project Atlas production migration scheduled?", { topK: 5 });
+    expect(block?.content).toContain("Project Atlas production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris.");
+    expect(block?.content).not.toContain("owns");
+    expect(block?.content).not.toContain("downtime");
+    expect(block?.content).not.toContain("Boreal");
     db.close();
   });
 
