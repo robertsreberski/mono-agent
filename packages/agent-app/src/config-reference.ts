@@ -528,23 +528,6 @@ function setProcessJobsSchema(root: Record<string, JsonSchema>): void {
 }
 
 function setStructuredAppSchemas(root: Record<string, JsonSchema>): void {
-  setSchemaPath(root, ["observability", "exporters"], {
-    type: "array",
-    maxItems: 1,
-    items: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        type: { const: "phoenix" },
-        endpoint: { type: "string" },
-        headers: { type: "object", additionalProperties: { type: "string", minLength: 1 } },
-        includeSensitiveData: { type: "boolean" },
-        contentPatternRedaction: { type: "boolean" },
-        timeoutMs: { type: "integer", minimum: 1, maximum: 60_000 },
-        projectName: { type: "string", minLength: 1 },
-      },
-    },
-  });
   setSchemaPath(root, ["providers", "local"], {
     type: "array",
     items: providerEntrySchema(true),
@@ -714,6 +697,15 @@ function slackActionSchema(idKey: "callbackId" | "actionId", requireLabel: boole
 }
 
 function setRemovedConfigSchemas(root: Record<string, JsonSchema>): void {
+  root.observability = {
+    type: "object",
+    deprecated: true,
+    additionalProperties: false,
+    description: "First-party Phoenix/OTLP export was removed. Only this inert empty compatibility shape is accepted.",
+    properties: {
+      exporters: { type: "array", maxItems: 0 },
+    },
+  };
   root.monitors = {
     type: "object",
     deprecated: true,
@@ -1335,9 +1327,6 @@ function inferType(id: string): ConfigReferenceType {
   }
   if (/(Ms|Bytes|Count|Days|Turns|Retries|Attempts|Delay|port|dim|threshold|Hours|Runs)$/iu.test(id) || id.endsWith(".port")) {
     return "integer";
-  }
-  if (id === "observability.exporters") {
-    return "array";
   }
   return "string";
 }

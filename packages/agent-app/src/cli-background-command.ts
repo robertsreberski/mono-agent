@@ -9,12 +9,8 @@ import {
 } from "@mono-agent/runtime-adapter";
 
 import { startMonoAgentApp } from "./app.js";
-import type { ExporterStatus, MonoAgentApp, SandboxStatus } from "./app.js";
+import type { MonoAgentApp, SandboxStatus } from "./app.js";
 import { startVerifiedManagedMonoAgentApp } from "./app-controller.js";
-import {
-  describeSensitiveDataExportWarning,
-  phoenixAppBaseUrl,
-} from "./app-config.js";
 import {
   acquireBackgroundWorkerLease,
   canonicalBackgroundConfigPath,
@@ -108,8 +104,7 @@ type PreflightFailure = Extract<PreflightResult, { ok: false }>;
  * folder without a config is not a configured agent). Then run the structural
  * validation with `liveness:false` (network probes only yield `waiting`, never
  * `error`, so skipping them keeps the verdict while avoiding bounded network
- * timeouts) and refuse on any `error` section. `waiting` (e.g.
- * Ollama/Supermemory/Phoenix not up yet) is runtime-soft and never blocks.
+ * timeouts) and refuse on any `error` section. `waiting` (e.g. Ollama or Supermemory not up yet) is runtime-soft and never blocks.
  */
 export async function ensureStartable(
   args: Pick<ParsedCliArgs, "configPath">,
@@ -728,8 +723,6 @@ export async function printAppStatus(app: MonoAgentApp, options: PrintAppStatusO
   }
   process.stdout.write(ui.rule("sandbox"));
   process.stdout.write(`  ${describeSandboxStatus(app.sandboxStatus)}\n`);
-  process.stdout.write(ui.rule("observability"));
-  process.stdout.write(`  ${describeExporter(app.exporterStatus, artifactDir)}\n`);
   const channels = [...app.channelStatuses()];
   if (channels.length > 0) {
     const sections = formatHumanChannelSections(channels.map(([id, status]) => ({
@@ -780,30 +773,6 @@ async function writeAppRunsHealthDetail(app: MonoAgentApp, options: PrintAppStat
 
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function describeExporter(status: ExporterStatus, artifactDir: string | undefined): string {
-  if (status.kind !== "configured") {
-    return `${status.kind}: ${status.reason}`;
-  }
-  const parts = [`phoenix ${status.endpoint}`];
-  const appUrl = phoenixAppBaseUrl(status.endpoint);
-  if (appUrl !== undefined) {
-    parts.push(`app ${appUrl}`);
-  }
-  if (status.includeSensitiveData) {
-    parts.push(ui.style.yellow(describeSensitiveDataExportWarning(status.endpoint)));
-  }
-  if (status.lastWarning !== undefined) {
-    parts.push(`last warning: ${status.lastWarning}`);
-  }
-  if (status.lastError !== undefined) {
-    parts.push(`last error: ${status.lastError}`);
-  }
-  parts.push(artifactDir === undefined
-    ? "JSONL artifacts remain local"
-    : `JSONL artifacts remain local at ${artifactDir}`);
-  return parts.join("; ");
 }
 
 function describeSandboxStatus(status: SandboxStatus): string {

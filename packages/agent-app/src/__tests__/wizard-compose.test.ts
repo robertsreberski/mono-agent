@@ -50,8 +50,6 @@ function answersForModule(id: string): WizardAnswers {
       return defaultAnswers({ memory: id });
     case "sandbox":
       return defaultAnswers({ sandbox: true });
-    case "observability":
-      return defaultAnswers({ observability: true });
     case "provider":
       return defaultAnswers({ model: id === "provider:ollama" ? "ollama:llama3.1:8b" : "lmstudio:qwen2.5:7b" });
     default:

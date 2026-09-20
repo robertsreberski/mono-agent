@@ -116,15 +116,5 @@
     "registryDir": "./.local-agent-beta/trace",
     "sourceId": "local-agent-beta",
     "sourceLabel": "Local Agent Beta"
-  },
-  "observability": {
-    "exporters": [
-      {
-        "type": "phoenix",
-        "endpoint": "http://127.0.0.1:6006/v1/traces",
-        "projectName": "local-agent-beta",
-        "includeSensitiveData": true
-      }
-    ]
   }
 }

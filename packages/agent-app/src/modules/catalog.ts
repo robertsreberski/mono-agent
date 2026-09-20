@@ -5,7 +5,6 @@ import {
   DEFAULT_MEMORY_EMBEDDING_ENDPOINTS,
   memoryEmbeddingEndpointProblem,
 } from "../memory-embedding-service.js";
-import { missingPhoenixPluginMessage } from "../phoenix-plugin.js";
 import { DEFAULT_MODEL, memoryBlock } from "./base.js";
 import type { CapabilityModule, ModuleKind } from "./types.js";
 
@@ -481,25 +480,6 @@ const sandbox: CapabilityModule = {
 };
 
 // ---------------------------------------------------------------------------
-// Observability
-// ---------------------------------------------------------------------------
-
-const observabilityPhoenix: CapabilityModule = {
-  id: "observability:phoenix",
-  kind: "observability",
-  title: "Phoenix tracing",
-  summary: "Best-effort Phoenix OTLP export, sensitive data excluded.",
-  riskLevel: "low",
-  inputs: [],
-  configFragment: () => ({
-    observability: { exporters: [{ type: "phoenix", includeSensitiveData: false }] },
-  }),
-  validateExpectations: [
-    { sectionId: "observability", mustBe: "ok", note: `${missingPhoenixPluginMessage()} Then start Phoenix (or it reports \`waiting\`).` },
-  ],
-};
-
-// ---------------------------------------------------------------------------
 // Providers (internal — never shown in the wizard, auto-added for pi:<provider> models)
 // ---------------------------------------------------------------------------
 
@@ -538,7 +518,7 @@ const providerLmStudio: CapabilityModule = {
 };
 
 /**
- * Ordered catalog: the six channels, four memory tiers, sandbox, observability,
+ * Ordered catalog: the six channels, four memory tiers, sandbox,
  * then the two internal provider modules. Wizard-visible modules (all but the two
  * `provider:*`) come first; the composer presents them in this order.
  */
@@ -554,7 +534,6 @@ export const CAPABILITY_MODULES: readonly CapabilityModule[] = [
   memoryBujo,
   memorySupermemory,
   sandbox,
-  observabilityPhoenix,
   providerOllama,
   providerLmStudio,
 ];

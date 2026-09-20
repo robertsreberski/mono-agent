@@ -111,16 +111,6 @@ export type MonoAgentMemoryLlmJson = {
   readonly timeoutMs?: number;
 };
 
-/** JSON-serialisable shape for a single observability exporter block. */
-export type MonoAgentObservabilityExporterJson = {
-  readonly type?: string;
-  readonly endpoint?: string;
-  readonly headers?: { readonly [k: string]: string };
-  readonly includeSensitiveData?: boolean;
-  readonly contentPatternRedaction?: boolean;
-  readonly timeoutMs?: number;
-};
-
 /**
  * Serializable shape of MonoAgentConfig persisted as `mono-agent.config.json`.
  *
@@ -310,8 +300,9 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly staleAfterMs?: number;
     readonly globalDiscovery?: boolean;
   };
+  /** Removed exporter compatibility: only an absent/empty object or empty array is accepted on read. */
   readonly observability?: {
-    readonly exporters?: readonly MonoAgentObservabilityExporterJson[];
+    readonly exporters?: readonly never[];
   };
   readonly providers?: MonoAgentProvidersJson;
 }
@@ -353,7 +344,11 @@ export async function readMonoAgentConfigJson(path: string): Promise<ReadMonoAge
  * `paths` carries the full set.
  */
 export function assertNoRetiredMonoAgentConfigJson(json: object): void {
-  const retired = RETIRED_CONFIG_FIELDS.filter((field) => hasOwnJsonPath(json, field.path));
+  const retired = RETIRED_CONFIG_FIELDS.filter((field) => {
+    const found = ownJsonPathValue(json, field.path);
+    if (!found.present) return false;
+    return field.jsonValueIsActive?.(found.value) ?? true;
+  });
   if (retired.length === 0) return;
   throw new MonoAgentConfigError("invalid_json", retired.map((field) => field.message).join(" "), {
     path: retired[0]!.path,
@@ -361,14 +356,14 @@ export function assertNoRetiredMonoAgentConfigJson(json: object): void {
   });
 }
 
-function hasOwnJsonPath(json: object, path: string): boolean {
+function ownJsonPathValue(json: object, path: string): { readonly present: boolean; readonly value?: unknown } {
   let current: unknown = json;
   for (const segment of path.split(".")) {
-    if (typeof current !== "object" || current === null || Array.isArray(current)) return false;
-    if (!Object.prototype.hasOwnProperty.call(current, segment)) return false;
+    if (typeof current !== "object" || current === null || Array.isArray(current)) return { present: false };
+    if (!Object.prototype.hasOwnProperty.call(current, segment)) return { present: false };
     current = (current as Record<string, unknown>)[segment];
   }
-  return true;
+  return { present: true, value: current };
 }
 
 /**

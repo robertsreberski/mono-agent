@@ -1,16 +1,14 @@
 export {
   isAppCoreConfigError,
   loadAppCoreConfig,
-  phoenixAppBaseUrl,
   resolveAppArtifactDir,
-  resolveAppObservabilityExporters,
   resolveAppTraceHeartbeatMs,
   resolveAppTraceRegistryDir,
   resolveAppTraceSourceId,
   resolveAppTraceSourceLabel,
   resolveAppTraceStaleAfterMs,
 } from "./app-config.js";
-export type { AppTraceDefaults, MonoAgentAppConfigInput, ResolvedExporter } from "./app-config.js";
+export type { AppTraceDefaults, MonoAgentAppConfigInput } from "./app-config.js";
 export {
   createConfiguredAgentHarness,
   createConfiguredAgentResponder,
@@ -94,7 +92,6 @@ export type {
 export { startMonoAgentApp } from "./app.js";
 export type {
   ConfigApplyResult,
-  ExporterStatus,
   MonoAgentApp,
   MonoAgentAppOptions,
   TraceabilityStatus,

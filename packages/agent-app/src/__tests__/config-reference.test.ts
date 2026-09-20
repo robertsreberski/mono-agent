@@ -125,7 +125,6 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "traceability.heartbeatMs": "integer",
   "traceability.staleAfterMs": "integer",
   "traceability.globalDiscovery": "boolean",
-  "observability.exporters": "array",
   providers: "object",
   "providers.piAuthPath": "string",
   "providers.piNative.transport": "string",
@@ -185,6 +184,21 @@ describe("config reference", () => {
       description: expect.stringContaining("including unknown nested keys, is accepted and ignored"),
     }));
   });
+  it("keeps removed observability schema compatibility narrow and unadvertised", () => {
+    const schema = buildMonoAgentConfigSchema();
+    expect((schema.properties as Record<string, unknown>).observability).toEqual({
+      type: "object",
+      deprecated: true,
+      additionalProperties: false,
+      description: "First-party Phoenix/OTLP export was removed. Only this inert empty compatibility shape is accepted.",
+      properties: { exporters: { type: "array", maxItems: 0 } },
+    });
+    expect(allConfigReferenceFields().some((field) => field.jsonPath === "observability.exporters")).toBe(false);
+    expect(findUnknownAppConfigPaths({ observability: {} })).toEqual([]);
+    expect(findUnknownAppConfigPaths({ observability: { exporters: [] } })).toEqual([]);
+    expect(findUnknownAppConfigPaths({ observability: { unknown: [] } })).toEqual(["observability.unknown"]);
+  });
+
   it("describes string and strict named subagent model choices", () => {
     const schema = buildMonoAgentConfigSchema();
     expect((schema.properties as Record<string, unknown>).subagents).toMatchObject({
@@ -268,9 +282,7 @@ describe("config reference", () => {
           models: [{ name: "model", capabilities: { vendor_extension: true } }],
         }],
       },
-      observability: {
-        exporters: [{ type: "phoenix", headers: { "x-vendor-token": "secret" } }],
-      },
+      observability: { exporters: [] },
       memory: { reflection: { removedLegacyShape: true } },
     })).toEqual([]);
 

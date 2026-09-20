@@ -113,16 +113,6 @@
     "heartbeatMs": 10000,
     "staleAfterMs": 30000
   },
-  "observability": {
-    "exporters": [
-      {
-        "type": "phoenix",
-        "endpoint": "http://127.0.0.1:6006/v1/traces",
-        "projectName": "local-agent-alpha",
-        "includeSensitiveData": true
-      }
-    ]
-  },
   "webhook": {
     "enabled": true,
     "host": "127.0.0.1",

@@ -23,7 +23,6 @@ function controller(trustedRuntimeReadRoots: readonly string[]): MemoryControlle
     sharedMemoryBuilt: false,
     sharedMemoryBuild: undefined,
     observabilityContext: async () => ({}),
-    recordExporterWarning() {},
     ensureSharedMemoryRetrieval: () => undefined,
   } as MemoryControllerPort;
 }

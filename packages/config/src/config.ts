@@ -44,7 +44,7 @@ import {
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
 } from "./enums.js";
-import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentModelChoice, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
+import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, PiNativeProviderConfig, RedactedMonoAgentConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentModelChoice, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -95,7 +95,37 @@ export interface LoadMonoAgentConfigInput {
  * pointing at the JSON shape is not a repair they can carry out. Hand-migration is
  * only safe if the repair names the surface the operator is actually holding.
  */
-export const RETIRED_CONFIG_FIELDS = [
+export interface RetiredConfigField {
+  readonly path: string;
+  readonly env: string;
+  readonly message: string;
+  readonly envMessage: string;
+  /** Return true only when the legacy JSON value represented active behavior. */
+  readonly jsonValueIsActive?: (value: unknown) => boolean;
+  /** Return true only when the legacy environment value represented active behavior. */
+  readonly envValueIsActive?: (value: string | undefined) => boolean;
+}
+
+function retiredObservabilityJsonIsActive(value: unknown): boolean {
+  if (!isRecord(value) || Array.isArray(value)) return true;
+  const keys = Object.keys(value);
+  if (keys.length === 0) return false;
+  if (keys.length !== 1 || keys[0] !== "exporters") return true;
+  return !Array.isArray(value.exporters) || value.exporters.length !== 0;
+}
+
+function retiredObservabilityEnvIsActive(value: string | undefined): boolean {
+  const raw = normalizeOptionalString(value);
+  if (raw === undefined) return false;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return !Array.isArray(parsed) || parsed.length !== 0;
+  } catch {
+    return true;
+  }
+}
+
+export const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
   {
     path: "runtime.permissionMode",
     env: "MONO_AGENT_PERMISSION_MODE",
@@ -138,6 +168,14 @@ export const RETIRED_CONFIG_FIELDS = [
     message: "`memory.llm.executionMode` was removed for the same reason as `runtime.executionMode`: mono-agent runs only the Pi runtime (SDK). Delete the key.",
     envMessage: "`MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` was removed for the same reason as `MONO_AGENT_EXECUTION_MODE`: mono-agent runs only the Pi runtime (SDK). Remove the variable from your environment and `.env`.",
   },
+  {
+    path: "observability",
+    env: "MONO_AGENT_OBSERVABILITY_EXPORTERS",
+    message: "`observability.exporters` was removed with first-party Phoenix/OTLP export. Remove the active exporter block before upgrading. Local run artifacts are unchanged and mono-agent does not select a replacement. If a final export is required, perform it before upgrading with the known-good version you already operate.",
+    envMessage: "`MONO_AGENT_OBSERVABILITY_EXPORTERS` was removed with first-party Phoenix/OTLP export. Remove the active variable from your environment and `.env` before upgrading. Local run artifacts are unchanged and mono-agent does not select a replacement. If a final export is required, perform it before upgrading with the known-good version you already operate.",
+    jsonValueIsActive: retiredObservabilityJsonIsActive,
+    envValueIsActive: retiredObservabilityEnvIsActive,
+  },
 ] as const;
 
 const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 1_800_000;
@@ -164,9 +202,6 @@ export const DEFAULT_MEMORY_ARTIFACT_RETENTION_MAX_AGE_DAYS = 7;
 export const DEFAULT_MEMORY_ARTIFACT_RETENTION_MAX_COUNT = 5_000;
 const DEFAULT_TRACE_HEARTBEAT_MS = 10_000;
 const DEFAULT_TRACE_STALE_AFTER_MS = 30_000;
-const OBSERVABILITY_EXPORTER_TYPES = ["phoenix"] as const;
-const DEFAULT_PHOENIX_ENDPOINT = "http://127.0.0.1:6006/v1/traces";
-const DEFAULT_PHOENIX_TIMEOUT_MS = 5_000;
 const DEFAULT_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
 export const MAX_AGENT_NAME_LENGTH = 80;
 
@@ -202,7 +237,6 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const artifactRetention = readArtifactRetentionConfig(input.env);
   const memoryArtifactRetention = readMemoryArtifactRetentionConfig(input.env, artifactRetention);
   const traceability = readTraceabilityConfig(input.env, cwd, agentName);
-  const observability = readObservabilityConfig(input.env);
   // Pi's auth path is routinely documented with a home-relative `~` prefix.
   // `path.resolve()` treats that prefix as a literal directory, so keep the
   // expansion explicit and limited to this user-owned credential path.
@@ -375,7 +409,6 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
       memoryRetention: memoryArtifactRetention,
     },
     traceability,
-    ...(observability === undefined ? {} : { observability }),
     providers,
   };
 
@@ -499,9 +532,9 @@ export function assertConfiguredProviderCoverage(
  * still fails closed.
  */
 function assertNoRetiredConfigEnv(env: Record<string, string | undefined>): void {
-  const retired = RETIRED_CONFIG_FIELDS.filter(
-    (field) => normalizeOptionalString(env[field.env]) !== undefined,
-  );
+  const retired = RETIRED_CONFIG_FIELDS.filter((field) => field.envValueIsActive === undefined
+    ? normalizeOptionalString(env[field.env]) !== undefined
+    : field.envValueIsActive(env[field.env]));
   if (retired.length === 0) return;
   // Report all of them, not just the first: a hand-migration is a single edit pass, and
   // one-at-a-time discovery turns a four-variable `.env` into four stop/edit/re-run cycles.
@@ -556,7 +589,6 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
     ...(config.sandbox === undefined ? {} : { sandbox: { ...config.sandbox } }),
     artifacts: { ...config.artifacts },
     traceability: { ...config.traceability },
-    ...(config.observability === undefined ? {} : { observability: redactObservabilityConfig(config.observability) }),
   };
   if (config.memory !== undefined) {
     const { embeddings, supermemory, ...memory } = config.memory;
@@ -1916,154 +1948,6 @@ function readTraceabilityConfig(
   };
 }
 
-/**
- * Read the optional observability exporter block from
- * `MONO_AGENT_OBSERVABILITY_EXPORTERS` (a JSON array). Modeled on
- * {@link readLocalProvidersJson}: env-first, shape-only validation, no network.
- * Endpoint reachability is intentionally NOT probed here — that is `validate`'s
- * job (spec section 9). Returns undefined when the var is absent so the
- * conditional-spread idiom keeps `observability` off the config when unused.
- */
-function readObservabilityConfig(
-  env: Record<string, string | undefined>,
-): MonoAgentConfig["observability"] | undefined {
-  const raw = normalizeOptionalString(env.MONO_AGENT_OBSERVABILITY_EXPORTERS);
-  if (raw === undefined) {
-    return undefined;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new MonoAgentConfigError("invalid_json", "MONO_AGENT_OBSERVABILITY_EXPORTERS must contain valid JSON.", {
-      env: "MONO_AGENT_OBSERVABILITY_EXPORTERS",
-      reason: error instanceof Error ? error.message : String(error),
-    });
-  }
-  if (!Array.isArray(parsed)) {
-    throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_OBSERVABILITY_EXPORTERS must be a JSON array.", {
-      env: "MONO_AGENT_OBSERVABILITY_EXPORTERS",
-    });
-  }
-  // Only the first exporter is wired (runtime/status/validate read exporters[0]).
-  // Reject >1 loudly rather than silently dropping the rest.
-  if (parsed.length > 1) {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_OBSERVABILITY_EXPORTERS supports a single exporter; configure exactly one.",
-      { env: "MONO_AGENT_OBSERVABILITY_EXPORTERS" },
-    );
-  }
-  const exporters = parsed.map((value, index) =>
-    normalizeExporterFromUnknown(value, `MONO_AGENT_OBSERVABILITY_EXPORTERS[${index}]`),
-  );
-  return { exporters };
-}
-
-function normalizeExporterFromUnknown(value: unknown, source: string): ObservabilityExporterConfig {
-  if (!isRecord(value) || Array.isArray(value)) {
-    throw new MonoAgentConfigError("invalid_env", `${source} must be an object.`, { env: source });
-  }
-  // A present-but-non-string `type` is an invalid type and must fail clearly,
-  // not silently collapse to undefined (and thus the phoenix default).
-  if (value.type !== undefined && typeof value.type !== "string") {
-    throw new MonoAgentConfigError("invalid_env", `${source}.type must be a string.`, { env: source });
-  }
-  const type = readChoice<(typeof OBSERVABILITY_EXPORTER_TYPES)[number]>(
-    typeof value.type === "string" ? value.type : undefined,
-    source,
-    OBSERVABILITY_EXPORTER_TYPES,
-    OBSERVABILITY_EXPORTER_TYPES[0],
-    invalidEnv,
-  );
-  const endpointRaw = readObjectString(value, "endpoint", source, false);
-  const endpoint = endpointRaw === undefined ? DEFAULT_PHOENIX_ENDPOINT : validateEndpoint(endpointRaw, source);
-  const headers = readStringRecord(value.headers, "headers", source);
-  const includeSensitiveData = readObjectBoolean(value, "includeSensitiveData", false, source);
-  const contentPatternRedaction = readObjectBoolean(value, "contentPatternRedaction", false, source);
-  const timeoutMs = readObjectInteger(value, "timeoutMs", source, { min: 1, max: 60_000 });
-  const projectName = readObjectString(value, "projectName", source, false);
-  return {
-    type,
-    endpoint,
-    ...(headers === undefined ? {} : { headers }),
-    includeSensitiveData,
-    contentPatternRedaction,
-    timeoutMs: timeoutMs ?? DEFAULT_PHOENIX_TIMEOUT_MS,
-    ...(projectName === undefined ? {} : { projectName }),
-  };
-}
-
-/**
- * Shape-validate an endpoint string via `new URL` — never performs a request.
- * Also rejects credential/secret-bearing URL components (userinfo, query,
- * fragment): the raw endpoint is printed and persisted in plaintext via
- * start/status/doctor and trace-source metadata, so a `user:pass@`, `?api_key=`
- * or `#token` would leak. Secrets belong in `headers`, which are redacted.
- */
-function validateEndpoint(value: string, source: string): string {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must be a valid URL.`, { env: source });
-  }
-  assertEndpointHasNoSecrets(url, source);
-  return value;
-}
-
-/**
- * Reject URL components that can smuggle credentials into a plaintext-displayed
- * endpoint. Shared shape so the core config and the app resolver agree.
- */
-function assertEndpointHasNoSecrets(url: URL, source: string): void {
-  if (url.username !== "" || url.password !== "") {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      `${source}.endpoint must not embed credentials (user:pass@); put secrets in headers instead.`,
-      { env: source },
-    );
-  }
-  if (url.search !== "") {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      `${source}.endpoint must not contain a query string; put tokens in headers instead.`,
-      { env: source },
-    );
-  }
-  if (url.hash !== "") {
-    throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must not contain a URL fragment.`, {
-      env: source,
-    });
-  }
-}
-
-/** Read an optional object of string->non-empty-string (e.g. HTTP headers). */
-function readStringRecord(
-  value: unknown,
-  key: string,
-  source: string,
-): Readonly<Record<string, string>> | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!isRecord(value) || Array.isArray(value)) {
-    throw new MonoAgentConfigError("invalid_env", `${source}.${key} must be an object.`, { env: source });
-  }
-  const out: Record<string, string> = {};
-  for (const [headerKey, headerValue] of Object.entries(value)) {
-    if (typeof headerValue !== "string" || headerValue.length === 0) {
-      throw new MonoAgentConfigError(
-        "invalid_env",
-        `${source}.${key}.${headerKey} must be a non-empty string.`,
-        { env: source },
-      );
-    }
-    out[headerKey] = headerValue;
-  }
-  return out;
-}
-
 /** Read an optional integer field from a parsed object, bounded and integer-checked. */
 function readObjectInteger(
   object: Record<string, unknown>,
@@ -2072,9 +1956,7 @@ function readObjectInteger(
   bounds: { readonly min: number; readonly max: number },
 ): number | undefined {
   const value = object[key];
-  if (value === undefined) {
-    return undefined;
-  }
+  if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isInteger(value) || value < bounds.min || value > bounds.max) {
     throw new MonoAgentConfigError(
       "invalid_env",
@@ -2083,24 +1965,6 @@ function readObjectInteger(
     );
   }
   return value;
-}
-
-function redactObservabilityConfig(
-  observability: NonNullable<MonoAgentConfig["observability"]>,
-): RedactedObservabilityConfig {
-  return {
-    exporters: observability.exporters.map((exporter) => {
-      const { headers, ...rest } = exporter;
-      if (headers === undefined) {
-        return rest;
-      }
-      const redactedHeaders: Record<string, "[redacted]"> = {};
-      for (const headerKey of Object.keys(headers)) {
-        redactedHeaders[headerKey] = "[redacted]";
-      }
-      return { ...rest, headers: redactedHeaders };
-    }),
-  };
 }
 
 interface ConfiguredProviderEnvelope {

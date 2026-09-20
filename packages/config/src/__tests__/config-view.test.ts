@@ -66,7 +66,6 @@ describe("buildMonoAgentConfigView", () => {
       "sandbox",
       "artifacts",
       "traceability",
-      "observability",
       "providers",
     ]);
   });
@@ -195,11 +194,10 @@ describe("buildMonoAgentConfigView", () => {
     expect(memory.fields[0]).toMatchObject({ value: "not configured", source: "default" });
   });
 
-  it("surfaces the observability and local-provider sections the old registry omitted", () => {
+  it("surfaces the local-provider section the old registry omitted", () => {
     const sections = buildView(baseEnv);
-    expect(section(sections, "observability").status).toBe("disabled");
     expect(field(sections, "providers")).toBeDefined();
-    expect(field(sections, "observability.exporters")).toBeDefined();
+    expect(sections.some((entry) => entry.id === "observability")).toBe(false);
   });
 
   it("shows the Pi transport source and compatibility default", () => {

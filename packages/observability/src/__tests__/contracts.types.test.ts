@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import type {
-  ObservabilityExporterConfig,
-  PhoenixExporterConfig,
   RedactJsonValueOptions,
   RunExportContext,
   RunExportEventContext,
@@ -113,26 +111,5 @@ describe("run-export contracts", () => {
     const exporter: RunExporter = {};
     expect(exporter.start).toBeUndefined();
     expect(exporter.finish).toBeUndefined();
-  });
-
-  it("constructs a PhoenixExporterConfig and the ObservabilityExporterConfig alias", () => {
-    const phoenix: PhoenixExporterConfig = {
-      type: "phoenix",
-      endpoint: "http://127.0.0.1:6006/v1/traces",
-      headers: { authorization: "secret" },
-      includeSensitiveData: false,
-      contentPatternRedaction: true,
-      timeoutMs: 5000,
-    };
-    const config: ObservabilityExporterConfig = phoenix;
-    expect(config.type).toBe("phoenix");
-    expect(config.headers?.authorization).toBe("secret");
-    expect(config.contentPatternRedaction).toBe(true);
-  });
-
-  it("constructs a minimal PhoenixExporterConfig (type only)", () => {
-    const phoenix: PhoenixExporterConfig = { type: "phoenix" };
-    expect(phoenix.type).toBe("phoenix");
-    expect(phoenix.endpoint).toBeUndefined();
   });
 });

@@ -103,7 +103,7 @@ describe("JsonlRunRecorder", () => {
     expect(entries).toContain(unrelatedTemp);
   });
 
-  it("persists the user prompt into the summary so backfill can show it as input", async () => {
+  it("persists the user prompt into the summary so local replay can show it as input", async () => {
     const dir = await tempDir();
     const recorder = createJsonlRunRecorder({
       runId: "run:1",

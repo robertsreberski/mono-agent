@@ -93,7 +93,6 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `memory.supermemory.timeoutMs` | `integer` | `MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS` | 10000 | `10000` | Configures supermemory.timeoutMs for the memory section. |
 | `memory.writeMode` | `string` | `MONO_AGENT_MEMORY_WRITE_MODE` | disabled | `disabled` | Configures writeMode for the memory section. |
 | `monitors` | `object` | `--` | unset | `{}` | Deprecated compatibility object. The whole object, including unknown nested keys, is accepted and ignored. Use background process jobs for finite work. |
-| `observability.exporters` | `array` | `MONO_AGENT_OBSERVABILITY_EXPORTERS` | unset | `[]` | Configures exporters for the observability section. |
 | `openaiApi.allowNonLoopback` | `boolean` | `MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK` | false | `true` | Configures allowNonLoopback for the openaiApi section. |
 | `openaiApi.apiKey` | `string` | `MONO_AGENT_OPENAI_API_KEY` | unset | `env:MONO_AGENT_OPENAI_API_KEY` | Secret value for openaiApi.apiKey; prefer the env override. |
 | `openaiApi.basePath` | `string` | `MONO_AGENT_OPENAI_API_BASE_PATH` | /v1 | `/v1` | Configures basePath for the openaiApi section. |

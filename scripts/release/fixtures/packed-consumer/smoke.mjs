@@ -35,6 +35,7 @@ if (packageNames.includes("@mono-agent/agent-app")) {
     throw new Error("Packed app still publishes the retired memory-recall binary.");
   }
   await assertRemovedImport("@mono-agent/observability/otel", "ERR_PACKAGE_PATH_NOT_EXPORTED");
+  await assertRemovedImport("@mono-agent/observability/run-export", "ERR_PACKAGE_PATH_NOT_EXPORTED");
   if (target === "@mono-agent/agent-app") {
     await assertRemovedImport("@mono-agent/observability-phoenix", "ERR_MODULE_NOT_FOUND");
     await assertRemovedImport("@opentelemetry/otlp-transformer", "ERR_MODULE_NOT_FOUND");

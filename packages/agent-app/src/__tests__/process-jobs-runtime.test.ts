@@ -105,7 +105,6 @@ describe("process-job request availability", () => {
       drivers: [],
       startupCompleted: false,
       backgroundSnapshot: undefined,
-      exporterStatusValue: { kind: "disabled", reason: "test" },
       sandboxStatusValue: {
         configured: false,
         effective: "off",
