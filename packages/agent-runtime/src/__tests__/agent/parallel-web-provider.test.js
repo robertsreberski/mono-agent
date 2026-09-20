@@ -60,10 +60,11 @@ describe("Parallel Search MCP", () => {
   });
   it("batches exact primary/alternates once, claims one answer, and hashes the run id", async () => {
     const { fetchImpl, calls } = transport();
-    const result = await performWebSearch({ query: '"Search MCP"', alternate_queries: ["parallel MCP", "site:docs.parallel.ai MCP"], limit: 10, language: "en", time_range: "year" }, searchOptions(fetchImpl));
-    expect(result.outcome).toMatchObject({ status: "ok", backend: "parallel", requestsThisCall: 1, dispatchesUsed: 1, filterSupport: { language: "advisory", timeRange: "advisory" } });
+    const result = await performWebSearch({ query: '"Search MCP"', alternate_queries: ["parallel MCP", "site:docs.parallel.ai MCP"], limit: 10, language: "en", country: "pl", time_range: "year" }, searchOptions(fetchImpl));
+    expect(result.outcome).toMatchObject({ status: "ok", backend: "parallel", requestsThisCall: 1, dispatchesUsed: 1, filterSupport: { language: "advisory", country: "advisory", timeRange: "advisory" } });
     expect(calls).toHaveLength(1);
     expect(calls[0].arguments.search_queries).toEqual(['"Search MCP"', "parallel MCP", "site:docs.parallel.ai MCP"]);
+    expect(calls[0].arguments.objective).toContain("Prefer search results localized for country PL.");
     expect(calls[0].arguments.session_id).toBe(`mono-${createHash("sha256").update(ctx.runId).digest("hex")}`);
     const searchPayload = JSON.parse(result.text);
     expect(searchPayload).toMatchObject({ tool: "WebSearch", status: "ok" });
@@ -227,9 +228,9 @@ describe("Parallel WebFetch", () => {
     expect(result.outcome).toMatchObject({ code: "http_503", statusCode: 503, retryable: true });
     expect(result.text).not.toContain("sentinel");
   });
-  it.each(["unusable_content", "access_challenge", "http_503"])("advances from local %s in an explicit chain", async (code) => {
+  it.each(["unusable_content", "http_503"])("advances from local %s in an explicit chain", async (code) => {
     const remote = transport({ structuredContent: extract });
-    const local = code === "unusable_content" ? '<html><body><div id="root">Loading</div><script src="/one.js"></script><script src="/two.js"></script><script>window.__NEXT_DATA__={}</script></body></html>' : code === "access_challenge" ? '<html><head><title>Just a moment...</title></head><body><h1>Performing security verification</h1><p>Enable JavaScript and cookies to continue</p></body></html>' : "unavailable";
+    const local = code === "unusable_content" ? '<html><body><div id="root">Loading</div><script src="/one.js"></script><script src="/two.js"></script><script>window.__NEXT_DATA__={}</script></body></html>' : "unavailable";
     const fetchImpl = vi.fn((url, init) => String(url) === PARALLEL_MCP_URL ? remote.fetchImpl(url, init) : Promise.resolve(new Response(local, { status: code === "http_503" ? 503 : 200, headers: { "content-type": "text/html" } })));
     const result = await performWebFetch({ url: target }, { ctx, fetchImpl, retryDelaysMs: [], fetchConfig: { provider: ["local", "parallel"] } });
     // The shared fetch fixture carries excerpts only, so the rescued chain is

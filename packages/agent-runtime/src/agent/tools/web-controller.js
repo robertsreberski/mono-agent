@@ -1,5 +1,6 @@
 // @ts-check
 
+import { houndEndpointError } from "./hound-local/config.js";
 import { parallelCacheIdentity, parallelSessionId } from "./parallel-mcp.js";
 import { createHash, randomUUID } from "node:crypto";
 import { passthroughSandbox } from "../sandbox-seam.js";
@@ -9,6 +10,7 @@ import { performWebFetch, formatWebFetchDocument } from "./web-fetch.js";
 import { performWebSearch } from "./web-search.js";
 import { filterEnvelopeNextActions, normalizeWebResearchOptions, refreshCachedSearchEnvelope, webFailureEnvelope } from "./web-actionable.js";
 import { createWebSearchRunState, webSearchBudgetSnapshot } from "./web-search-state.js";
+import { normalizeSearchCountry } from "./web-search-country.js";
 
 const MAX_CACHE_ENTRIES = 64;
 const MAX_SHARED_SEARCH_ENTRIES = 256;
@@ -121,7 +123,14 @@ export function createWebToolController({
     namespace,
 
     async search(params, execution = {}) {
+      const migration = houndEndpointError(searchConfig?.hound);
+      if (migration) return webFailureEnvelope("WebSearch", "invalid_hound_config", migration);
       if (execution.signal?.aborted) return webFailureEnvelope("WebSearch", "aborted", "Error: WebSearch was aborted.");
+      const normalizedCountry = normalizeSearchCountry(params.country);
+      if (normalizedCountry.error) return webFailureEnvelope("WebSearch", "invalid_country", `Error: ${normalizedCountry.error}`);
+      const normalizedParams = { ...params };
+      if (normalizedCountry.value) normalizedParams.country = normalizedCountry.value;
+      else delete normalizedParams.country;
       // The key must pin the backend, the endpoint AND the network policy the
       // search actually ran under. A params-only key was safe while the cache
       // lived and died with one run; process-wide it would let controllers with
@@ -143,8 +152,8 @@ export function createWebToolController({
       // strict as the key claims.
       const resolvedCtx = ctx ?? readToolRuntime();
       const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
-      const key = stableKey({ params, searchConfig: safeSearchCacheIdentity(searchConfig), policy, coordination: coordinator?.scope });
-      const result = await cachedSearch(key, params.query, async () => performWebSearch(params, {
+      const key = stableKey({ params: normalizedParams, searchConfig: safeSearchCacheIdentity(searchConfig), policy, coordination: coordinator?.scope });
+      const result = await cachedSearch(key, normalizedParams.query, async () => performWebSearch(normalizedParams, {
         coordinator,
         searchConfig,
         sandboxPolicy: policy,
@@ -162,6 +171,8 @@ export function createWebToolController({
     },
 
     async fetch(params, execution = {}) {
+      const migration = houndEndpointError(fetchConfig?.hound);
+      if (migration) return webFailureEnvelope("WebFetch", "invalid_fetch_config", migration);
       if (execution.signal?.aborted) return webFailureEnvelope("WebFetch", "aborted", "Error: WebFetch was aborted.");
       const resolvedCtx = ctx ?? readToolRuntime();
       const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
@@ -295,9 +306,10 @@ function withSearchCacheHit(result, searchState, requestedQuery) {
   const refreshed = refreshCachedSearchEnvelope(cloned.text, budget, requestedQuery);
   const text = refreshed ?? cloned.text;
   const resultCount = Number.isSafeInteger(cloned.outcome?.resultCount) ? cloned.outcome.resultCount : 0;
+  const retryInRun = budget.requestsRemaining > 0 && cloned.outcome?.searchStopped !== true;
   const nextAction = resultCount > 0
     ? "fetch_existing_sources"
-    : budget.requestsRemaining > 0 ? "refine_query" : "use_available_evidence";
+    : retryInRun ? "refine_query" : "use_available_evidence";
   const {
     retryAfterMs: _retryAfterMs,
     retryAt: _retryAt,
@@ -319,7 +331,7 @@ function withSearchCacheHit(result, searchState, requestedQuery) {
       rateLimited: false,
       cooldownBackends: [],
       fallbackUsed: false,
-      retryInRun: budget.requestsRemaining > 0,
+      retryInRun,
       nextAction,
     },
   };

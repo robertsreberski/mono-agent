@@ -5,7 +5,7 @@ import { canonicalizeSearchUrl } from "./shared.js";
 
 export const parallelProvider = {
   name: "parallel", batchesQueries: true,
-  filterSupport: { language: "advisory", timeRange: "advisory" },
+  filterSupport: { language: "advisory", timeRange: "advisory", country: "advisory" },
   configure: (input) => ({ value: { parallel: input?.parallel } }),
   eligibility: () => true,
   admission: () => ({ kind: "parallel", key: PARALLEL_MCP_URL, processPolicy: "endpoint" }),
@@ -25,6 +25,7 @@ export const parallelProvider = {
 
 export function parallelSearchObjective(query, options) {
   return [query, options.language ? `Prefer sources in ${options.language}.` : "",
+    options.country ? `Prefer search results localized for country ${options.country}.` : "",
     options.timeRange ? `Prefer sources published within the last ${options.timeRange}.` : "",
     options.includeDomains?.length ? `Prefer these domains: ${options.includeDomains.join(", ")}.` : "",
     options.excludeDomains?.length ? `Avoid these domains: ${options.excludeDomains.join(", ")}.` : "",

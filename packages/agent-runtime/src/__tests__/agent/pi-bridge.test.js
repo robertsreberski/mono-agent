@@ -1283,6 +1283,9 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
     expect(search.description).toContain("one broad, high-yield query");
     expect(search.description).toContain("Never sleep");
     expect(search.description).toContain("snippets as leads");
+    expect(search.description).toContain("ISO 3166-1");
+    expect(search.description).toContain("does not guarantee");
+    expect(search.parameters.properties.country).toMatchObject({ type: "string", pattern: "^[A-Za-z]{2}$" });
     expect(fetch.description).toContain("Prefer static markdown");
     expect(fetch.description).toContain("does not bypass login, CAPTCHA, Cloudflare");
     expect(fetch.parameters.properties.format.description).toContain("raw returns decoded source");

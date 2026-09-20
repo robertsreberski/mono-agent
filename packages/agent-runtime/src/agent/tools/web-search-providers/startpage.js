@@ -3,7 +3,7 @@ import { parseHTML } from "linkedom";
 import { keylessHtmlSearch, canonicalizeSearchUrl, collapseWhitespace } from "./shared.js";
 export const startpageProvider = {
   name: "startpage", batchesQueries: false,
-  filterSupport: { language: "advisory", timeRange: "advisory" },
+  filterSupport: { language: "advisory", timeRange: "advisory", country: "unsupported" },
   configure: () => ({ value: {} }), eligibility: () => true,
   admission: () => ({ kind: "startpage", key: "startpage", processPolicy: "keyless" }),
   networkTargets: () => ["https://www.startpage.com"],

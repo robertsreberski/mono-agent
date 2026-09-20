@@ -100,8 +100,6 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "tools.web.search.codex.model": "string",
   "tools.web.search.endpoint": "string",
   "tools.web.search.searxng.endpoint": "string",
-  "tools.web.search.hound.endpoint": "string",
-  "tools.web.fetch.hound.endpoint": "string",
   "tools.web.search.ollama.baseUrl": "string",
   "tools.web.search.ollama.apiKeyEnv": "string",
   "tools.web.search.ollama.trustPublicUrl": "boolean",

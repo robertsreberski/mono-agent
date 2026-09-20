@@ -206,20 +206,19 @@ Search selects one strict provider or a non-empty ordered array. The default is
 `["parallel", "ollama"]`; local Ollama requires no block. `searxng`, `codex`,
 `keyless`, `duckduckgo`, `startpage`, and `hound` are opt-in. Removed `auto`
 configurations fail with their previous explicit order. SearXNG
-endpoints are deliberately limited to unauthenticated loopback HTTP URLs. A
-Hound selection additionally requires `search.hound.endpoint`, an
-unauthenticated loopback HTTP MCP URL with an explicit `/mcp` path pointing at
-an operator-run Hound service, which the endpoint trust boundary documents. The
+endpoints are deliberately limited to unauthenticated loopback HTTP URLs. Hound runs locally in Node without a service endpoint. Remove retired
+`search.hound.endpoint` and `fetch.hound.endpoint` settings and their environment
+variables; their presence is a migration error. The
 legacy `search.endpoint` spelling remains a compatibility alias for
 `search.searxng.endpoint`. Ollama defaults to the loopback host; the exact
 official `https://ollama.com` origin requires an API key named by `apiKeyEnv`,
 while other public origins require HTTPS plus `trustPublicUrl` and cannot
 receive that credential.
 `fetch.provider` is `"local"` by default; `"parallel"`, `"hound"`, or an ordered
-array opts into remote extraction. Parallel cannot serve raw bodies, custom
-headers, or browser rendering. Hound serves HTTP-only extraction from a
-user-managed loopback endpoint (`fetch.hound.endpoint`, required when selected)
-and additionally rejects raw bodies, custom headers, and local rendering.
+array selects explicit extraction providers. Parallel is remote and cannot
+serve raw bodies, custom headers, or browser rendering. Hound is local HTTP-only
+extraction with proactive robots checks; it supports raw bodies and allowed
+headers, but not browser rendering.
 Optional search/fetch `parallel.apiKeyEnv` fields name a
 credential variable; omit them for anonymous Parallel access.
 Fetch rendering config is `never` by default (browser capability disabled) or

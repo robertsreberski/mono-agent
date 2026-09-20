@@ -681,13 +681,14 @@ export function getPiBuiltinTools(allowedTools, {
     }, ["url"]), webController
       ? async (params, execution) => filterWebDelivery(await webController.fetch(params, execution))
       : async () => webFailureEnvelope("WebFetch", "controller_unavailable", "Error: WebFetch controller is unavailable."), toolContext),
-    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Discover public sources as a JSON envelope with status (ok/partial/blocked/error), summary, untrusted result leads, source/coverage metadata, and typed next_actions. Partial means usable but incomplete output; blocked means policy/access/budget prevents progress; error means execution failure. Use the configured provider or explicit ordered chain (default: Parallel then local Ollama); a single provider name is strict. Start with one broad, high-yield query covering the decision's main constraints, then use WebFetch on returned URLs. Treat snippets as leads, not final evidence. Refine only for a material evidence gap. Never sleep, retry, or delegate to bypass a request budget, cooldown, quota limit, or access gate; continue honestly from available evidence.", objectSchema({
+    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Discover public sources as a JSON envelope with status (ok/partial/blocked/error), summary, untrusted result leads, source/coverage metadata, and typed next_actions. Partial means usable but incomplete output; blocked means policy/access/budget prevents progress; error means execution failure. Use the configured provider or explicit ordered chain (default: Parallel then local Ollama); a single provider name is strict. Optional country requests a two-letter ISO 3166-1 search-region preference separate from language; omission requests no country/global mode where supported, and provider coverage reports advisory or unsupported handling. Country targeting does not guarantee every result is geographically located there. Start with one broad, high-yield query covering the decision's main constraints, then use WebFetch on returned URLs. Treat snippets as leads, not final evidence. Refine only for a material evidence gap. Never sleep, retry, or delegate to bypass a request budget, cooldown, quota limit, or access gate; continue honestly from available evidence.", objectSchema({
       query: { type: "string" },
       limit: { type: "integer" },
       alternate_queries: { type: "array", items: { type: "string" }, maxItems: 3 },
       domains: { type: "array", items: { type: "string" } },
       exclude_domains: { type: "array", items: { type: "string" } },
       language: { type: "string" },
+      country: { type: "string", pattern: "^[A-Za-z]{2}$", description: "Optional ISO 3166-1 alpha-2 search-region preference, normalized case-insensitively." },
       time_range: { type: "string", enum: ["day", "month", "year"] },
     }, ["query"]), webController
       ? async (params, execution) => filterWebDelivery(await webController.search(params, execution))

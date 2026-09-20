@@ -5,12 +5,13 @@ import { claimWebSearchRequest } from "../../agent/tools/web-search-state.js";
 
 const cleanup = [];
 afterEach(() => { cleanup.splice(0).forEach((fn) => fn()); __resetWebSearchThrottleForTests(); });
-function register(name, search) {
+function register(name, search, overrides = {}) {
   cleanup.push(registerSearchProvider({
     name, configure: () => ({ value: {} }), eligibility: () => true,
     admission: () => ({ kind: name, key: name, processPolicy: "endpoint" }),
     networkTargets: () => ["https://example.com"], batchesQueries: false,
-    filterSupport: { language: "advisory", timeRange: "advisory" }, search,
+    filterSupport: { language: "advisory", timeRange: "advisory", country: "unsupported" }, search,
+    ...overrides,
   }));
 }
 describe("source-level search registry", () => {
@@ -27,5 +28,38 @@ describe("source-level search registry", () => {
     const fetchImpl = vi.fn(async () => new Response('<div class="result"><a class="result__a" href="https://example.com">Registry evidence</a></div>'));
     const result = await performWebSearch({ query: "registry evidence" }, { searchConfig: { backend: ["fake-fail", "keyless"] }, fetchImpl });
     expect(result.outcome).toMatchObject({ status: "ok", backend: "duckduckgo", attemptedBackends: ["fake-fail", "keyless"], fallbackUsed: true });
+  });
+
+  it("centrally rejects a declared unsupported country before admission, search, or budget", async () => {
+    const admission = vi.fn(() => ({ kind: "fake-countryless", key: "fake-countryless", processPolicy: "endpoint" }));
+    const search = vi.fn();
+    register("fake-countryless", search, { admission });
+    const result = await performWebSearch({ query: "registry evidence", country: "PL" }, {
+      searchConfig: { backend: "fake-countryless" },
+    });
+    expect(result).toMatchObject({ error: true, outcome: {
+      code: "unsupported_country_filter", requestsUsed: 0, requestsThisCall: 0, dispatchesUsed: 0,
+      providerAttempts: [{ backend: "fake-countryless", code: "unsupported_country_filter", requests: 0 }],
+    } });
+    expect(admission).not.toHaveBeenCalled();
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it("advances from a registered country-unsupported provider to a capable provider", async () => {
+    const admission = vi.fn();
+    const search = vi.fn();
+    register("fake-countryless-chain", search, { admission });
+    const fetchImpl = vi.fn(async () => new Response('<div class="result"><a class="result__a" href="https://example.com">Registry evidence</a></div>'));
+    const result = await performWebSearch({ query: "registry evidence", country: "PL" }, {
+      searchConfig: { backend: ["fake-countryless-chain", "duckduckgo"] }, fetchImpl,
+    });
+    expect(result.outcome).toMatchObject({
+      status: "ok", backend: "duckduckgo", requestsUsed: 1, dispatchesUsed: 1,
+      providerAttempts: [{ backend: "fake-countryless-chain", code: "unsupported_country_filter", requests: 0 }],
+    });
+    expect(admission).not.toHaveBeenCalled();
+    expect(search).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(new URL(fetchImpl.mock.calls[0][0]).searchParams.get("kl")).toBe("pl-pl");
   });
 });

@@ -1268,19 +1268,6 @@
                     }
                   }
                 },
-                "hound": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "endpoint": {
-                      "description": "User-managed Hound MCP endpoint: unauthenticated loopback HTTP URL with an explicit /mcp path (for example http://127.0.0.1:8765/mcp). Required when the corresponding chain selects hound. The endpoint is trusted: per-call arguments request behavior and responses are validated, but the remote server's internal redirects, retries, proxies, and keys are not governed.",
-                      "examples": [
-                        "http://127.0.0.1:8765/mcp"
-                      ],
-                      "type": "string"
-                    }
-                  }
-                },
                 "ollama": {
                   "type": "object",
                   "additionalProperties": false,
@@ -1343,19 +1330,6 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "hound": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "endpoint": {
-                      "description": "User-managed Hound MCP endpoint: unauthenticated loopback HTTP URL with an explicit /mcp path (for example http://127.0.0.1:8765/mcp). Required when the corresponding chain selects hound. The endpoint is trusted: per-call arguments request behavior and responses are validated, but the remote server's internal redirects, retries, proxies, and keys are not governed.",
-                      "examples": [
-                        "http://127.0.0.1:8765/mcp"
-                      ],
-                      "type": "string"
-                    }
-                  }
-                },
                 "parallel": {
                   "type": "object",
                   "additionalProperties": false,
@@ -1370,7 +1344,7 @@
                   }
                 },
                 "provider": {
-                  "description": "WebFetch provider name or ordered chain: local (default), parallel, hound. Parallel cannot serve raw format, custom headers, or browser rendering. Hound serves HTTP-only remote extraction from a user-managed endpoint and additionally rejects raw format, custom headers, and local rendering.",
+                  "description": "WebFetch provider name or ordered chain: local (default), parallel, hound. Parallel cannot serve raw format, custom headers, or browser rendering. Hound is built-in HTTP-only local acquisition/extraction with proactive robots checks; it supports raw format and allowed headers but not browser rendering.",
                   "examples": [
                     "local"
                   ],
