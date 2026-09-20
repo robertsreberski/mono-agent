@@ -309,10 +309,11 @@ whitespace, Unicode compatibility forms, and a standalone leading article;
 project words, one-character tokens, digits, punctuation, order, and repetition
 remain significant. Clock colons are accepted only as valid ASCII `HH:MM` tokens
 in a supported temporal answer, not in generic properties, choices, or
-locations. Quoted, uncertain, or attributed schedule payloads abstain. NFKC is
-used to discover compatibility punctuation in a payload, not to convert an
-unsupported compatibility clock or separator into accepted syntax. Automatic
-recall abstains when the retrieved cohort contains two scheduled payloads that
+locations. Quoted, uncertain, attributed, or control/format-bearing schedule
+payloads abstain. NFKC safety discovery applies the same forbidden-language
+policy to compatibility-folded text, but never converts an unsupported clock or
+separator into accepted syntax. Automatic recall abstains when the retrieved
+cohort contains two scheduled payloads that
 are not textually identical after case, whitespace, and Unicode compatibility
 normalization. It deliberately does not equate alternate date formats or
 date-only and date-time values; use `MemoryRecall` to inspect those raw

@@ -147,10 +147,10 @@ abstains and remains available to deliberate recall. A same-property correction
 blocks automatic selection without inferring either its old or replacement value.
 Bounded scheduled-time questions require an exact event identity and a direct
 `is`/`was scheduled for|on|at` fact. Valid ASCII `HH:MM` colons are accepted
-only in supported temporal answer spans. Quoted, uncertain, attributed, or
-compatibility-punctuation-hidden payloads abstain instead of being normalized
-into evidence; distinct schedule payload representations also abstain rather
-than invoking calendar or time-zone interpretation.
+only in supported temporal answer spans. Quoted, uncertain, attributed,
+compatibility-hidden, or control/format-bearing payloads abstain instead of
+being normalized into evidence. Distinct schedule payload representations also
+abstain rather than invoking calendar or time-zone interpretation.
 
 ### Explicit remember writes
 

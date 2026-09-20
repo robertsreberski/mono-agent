@@ -498,6 +498,32 @@ describe("hasAutomaticRecallEvidence", () => {
     });
 
     it.each([
+      ["negation", "Project Atlas production migration is scheduled for ｎｏｔ 20 November 2026."],
+      ["unknown value", "Project Atlas production migration is scheduled for ｕｎｋｎｏｗｎ on 20 November 2026."],
+      ["conditional", "Project Atlas production migration is scheduled for 20 November 2026 ｉｆ validation passes."],
+      ["reported", "Project Atlas production migration is scheduled for 20 November 2026 as ｒｅｐｏｒｔｅｄ by Avery."],
+      ["coordination", "Project Atlas production migration is scheduled for 20 November 2026 ａｎｄ backup review."],
+    ])("applies the complete existing language policy to NFKC safety text: %s", (_case, text) => {
+      expect(hasAutomaticRecallEvidence(query, [{ record: { text } }])).toBe(false);
+    });
+
+    it.each([
+      "Project Atlas production migration is scheduled for possi\u200bbly 20 November 2026.",
+      "Project Atlas production migration is scheduled for 20 November 2026 ｉ\u200bｆ validation passes.",
+      "Project Atlas production migration is scheduled for 20 November 2026\u0000.",
+      "Project Atlas production migration is scheduled for 20 November 2026\u2060.",
+    ])("rejects control or format syntax before fact normalization: %s", (text) => {
+      expect(hasAutomaticRecallEvidence(query, [{ record: { text } }])).toBe(false);
+    });
+
+    it("keeps valid ASCII clocks and fullwidth alphanumeric event identity", () => {
+      const hit = { record: {
+        text: "Ｐroject Atlas production migration is scheduled for 20 November 2026 at 09:30.",
+      } };
+      expect(selectAnswerBearingRecallHits(query, [hit])).toEqual([hit]);
+    });
+
+    it.each([
       ["When is Solstice scheduled?", "Solstice is scheduled for 20 November 2026."],
       ["when is solstice scheduled?", "solstice is scheduled for 20 November 2026."],
       ["When is the Solstice scheduled?", "The Solstice is scheduled for 20 November 2026."],

@@ -485,6 +485,11 @@ function directTemporalFactValue(
   query: Extract<DirectFactQuery, { readonly kind: "event-time" | "copular-time" }>,
   rawText: string,
 ): DirectFactValue | undefined {
+  // Inspect scheduled records before whitespace/sentence normalization can erase
+  // control or format syntax. Other established temporal families retain their
+  // existing behavior.
+  if (query.kind === "copular-time" && query.scheduled
+    && ATTRIBUTED_REPORT_UNSAFE_UNICODE.test(rawText)) return undefined;
   const text = normalizeFactSyntax(rawText);
   if (text === undefined) return undefined;
 
@@ -559,13 +564,16 @@ function temporalFactLanguageIsSafe(text: string, answer: string): boolean {
 /**
  * Scheduled payloads are canonical evidence, not a report envelope. Reject
  * quotation, uncertainty, and postpositive attribution in the answer itself.
- * NFKC is used only to discover compatibility punctuation; parsing, value
- * identity, and rendering continue to use the original text.
+ * NFKC is used only for safety discovery of compatibility punctuation and
+ * folded forbidden language; parsing, value identity, and rendering continue
+ * to use the original text.
  */
 function scheduledTemporalFactLanguageIsSafe(text: string, answer: string): boolean {
   if (!temporalFactLanguageIsSafe(text, answer) || hasCompatibilityPunctuation(answer)) return false;
+  const safetyText = text.normalize("NFKC");
   const safetyAnswer = answer.normalize("NFKC");
-  return !ATTRIBUTED_REPORT_QUOTATION.test(safetyAnswer)
+  return temporalFactLanguageIsSafe(safetyText, safetyAnswer)
+    && !ATTRIBUTED_REPORT_QUOTATION.test(safetyAnswer)
     && !ATTRIBUTED_REPORT_EXCLUSION.test(safetyAnswer)
     && !SCHEDULED_TEMPORAL_ATTRIBUTION.test(safetyAnswer);
 }
