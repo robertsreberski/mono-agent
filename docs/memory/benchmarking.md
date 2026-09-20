@@ -302,8 +302,9 @@ The built-in embedding factory supports Ollama, LM Studio and OpenAI at their
 default endpoints. OpenAI embeddings use the existing `OPENAI_API_KEY`
 environment convention; runtime providers use existing supported authentication.
 No credentials/config file is copied, printed or created by the benchmark. There
-is no custom endpoint, consumer memory path, external dataset or arbitrary
-provider-module flag.
+is no custom endpoint, consumer memory path or arbitrary provider-module flag.
+The only supported external dataset is the explicitly selected,
+provenance-pinned LoCoMo corpus described above.
 
 Compaction is explicitly disabled for **both** models. Requests select explicit
 SSE with Pi retries set to zero, avoiding the selected Codex route's automatic
