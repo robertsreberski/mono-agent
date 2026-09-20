@@ -1,36 +1,32 @@
 # mono-agent
 
-**Your agents. Your models. Your workspace.**
+**An AI companion you can shape, run, and embed.**
 
-mono-agent turns a folder into an AI agent you work with in a persistent web workspace. Point it at a research folder and it plans, drafts, and summarizes; hand it a codebase and it reads code, edits files, runs commands, and explains what failed. One `mono-agent.config.json` defines the whole agent — model, tools, skills, memory, and channels — so what you configured is something you can read, review, version, and move instead of host glue you maintain.
+Use the workspace to work with your agent. Use the framework to build it into your own application. Choose cloud or local models, give the agent a role and tools, and compose its behavior in `mono-agent.config.json` rather than maintaining a custom host.
 
-The same agent can answer in the browser console, over Telegram or Slack, through a webhook or an OpenAI-compatible endpoint, or on a cron schedule, all from that one config file. Everything runs local-first: model requests go where you point them, credentials stay in a dotenv file or the provider's own auth store, and run artifacts stay on your machine. Tools are powerful and the defaults are open, so read [Safety and privacy](#safety-and-privacy) before you expose the agent to a network.
+This is the technical next step from the [Mono Agent website](https://mono-agent.dev/): how the pieces fit, how to run them, and where to extend them. For technical users who want to configure and operate their own agent—not a zero-setup hosted assistant.
+
+[Get started](#quickstart-an-agent-folder-from-one-config-file) · [Build on it](#embed-the-agent) · [Documentation](https://docs.mono-agent.dev/) · [Safety](#safety-and-privacy)
+
+<picture>
+  <source media="(max-width: 640px)" srcset="./docs/assets/mono-agent-workspace-mobile.png" />
+  <img src="./docs/assets/mono-agent-workspace.png" alt="Conceptual overview: your folder supplies role, files and knowledge; mono-agent.config.json composes the agent; the workspace lets you organize, delegate and inspect. Choose cloud or local models and extend with channels, memory, skills and MCP." />
+</picture>
+
+*One agent, from folder to workspace. A conceptual diagram, not a runtime screenshot. Model and tool requests go to the services you configure; local-first does not mean local-only.*
+
+## Why build with Mono Agent?
+
+- **A companion shaped around your work.** Define its role and context, select tools and skills, and add optional memory. Use it to research, write, work in a repository, or carry out a recurring task.
+- **Your models, not a fixed provider.** Select supported subscription/API routes or local models. Configure fallbacks where useful; provider availability and credentials still determine whether a request succeeds.
+- **Actions, not just answers.** Agents can inspect files, run commands, use MCP tools, and delegate focused work to persistent subagents. Keep follow-up conversations and inspect retained execution evidence after an interruption.
+- **A workspace and a framework.** Start in the browser; later embed a configured responder or compose a lower-level harness in TypeScript. You choose how much infrastructure to own.
+
+Projects and tags help organize the browser workspace, with project context available to member conversations. They support the workflow; the agent itself is not tied to the browser. Configured channels include Telegram, Slack, webhooks, an OpenAI-compatible endpoint, and cron. Each channel has its own conversation history.
 
 ## Release status
 
-These docs describe the current `main` source. The latest published npm release is `create-mono-agent@0.21.1` (published 2026-09-10), so a global npm install does not yet contain everything documented here: console projects and tags, durable background subagents, and subscription usage meters are source-only examples. [Release status](./docs/reference/release-status.md) lists the current gap and the source-build alternative.
-
-![Conceptual diagram: a folder with its role and knowledge becomes one mono-agent.config.json, which drives a web workspace for talking, reviewing, and continuing work. Supporting cards list code and debug, research and write, and organize and delegate; channels, memory, skills, and MCP extend the same agent, and a note reads "local-first, not local-only: model calls go to your chosen provider."](./docs/assets/mono-agent-overview.png)
-
-**Source overview.** A folder with a role and knowledge, one `mono-agent.config.json`, and a browser workspace for the conversation. Anything beyond that — channels, memory, skills, MCP — is configuration for the same agent, not host code. Local-first means model calls go where you point them, not that nothing leaves the machine. This diagram describes the current `main` source: [Release status](./docs/reference/release-status.md) separates what the published npm release already contains, and [Setup security and managed runtime](./docs/reference/setup-security.md) covers the managed-start and secret-handling model.
-
-## What you can do
-
-- **Work in a codebase** — open a project folder as the agent workspace and ask it to fix a failing test, review a diff, trace a bug, or run and interpret commands. With the [native sandbox](./docs/tools/sandbox.md) enabled, tool subprocesses are confined to the roots you allow and network access is deny-by-default.
-- **Research, write, and plan** — give it source material and a role, then have it draft, compare, summarize, and keep notes; optional [memory tiers](./docs/memory/index.md) carry what it learns into later conversations.
-- **Keep the work organized** — conversations can be grouped into projects and tagged, and console project tools let the agent act on that workspace state instead of only replying. Source-only for now: see [Release status](./docs/reference/release-status.md).
-- **Delegate sustained work** — durable subagent sessions keep working on longer tasks in the background and report back into the conversation, including questions they need you to answer. Source-only for now: see [Release status](./docs/reference/release-status.md).
-- **Automate a routine** — schedule a recurring digest, accept requests on a [webhook](./docs/channels/webhook.md), publish an [OpenAI-compatible endpoint](./docs/channels/openai-api.md), or talk to the agent from [Telegram](./docs/channels/telegram.md) and [Slack](./docs/channels/slack.md).
-- **Bring your own models** — route to subscription/API providers such as OpenAI Codex, Anthropic, GitHub Copilot, and OpenCode-Go, or run entirely local with Ollama or LM Studio. Fallback routes keep a turn alive when the primary provider fails.
-- **Extend it as configuration** — add [skills](./docs/context/skills.md), [MCP servers](./docs/tools/mcp.md), [tool policy](./docs/tools/policy.md), and preset-seeded capability modules without writing a host.
-
-```json
-{
-  "runtime": { "model": "openai-codex:gpt-5.6-terra", "workspace": "." },
-  "context": { "identityPath": "./IDENTITY.md" },
-  "telegram": { "enabled": true }
-}
-```
+The published baseline checked on 2026-09-20 is **`create-mono-agent@0.22.0`**. Projects, tags and persistent subagents are included in that release. This README also follows current source, so use the [versioned release notes](https://github.com/robertsreberski/mono-agent/releases/tag/v0.22.0) when evaluating an installed version. The [older release comparison](./docs/reference/release-status.md) currently records the 0.21.1 boundary, not the latest npm baseline.
 
 ## Quickstart: An Agent Folder From One Config File
 
@@ -38,9 +34,7 @@ Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, doc
 
 Guided setup is authentic and not instant: it signs you in to the provider you choose and makes one real model request for every selected route to prove the route answers. That can take several minutes and counts as usage on your account. Running with flags, `--yes`, or without a TTY skips all of it and writes the scaffold only; add `--auth` if you want provider setup on that automated path too. [Setup details](#setup-details) list the exact deadlines, flags, and files.
 
-![Setup diagram: prerequisites are Node.js 24.15+, a working folder, model access through provider sign-in or a local model, and a browser. Four steps — install the CLI with "npm i -g create-mono-agent", define your agent with "mono-agent init", run the agent with "mono-agent validate" then "mono-agent start", and open the console with "mono-agent web run --loopback" at http://127.0.0.1:5050 in a separate terminal. Footer notes: without a service manager use "mono-agent start --foreground"; guided setup makes real model calls while flags or --yes scaffold only; the console has no login, so review tool access and network exposure.](./docs/assets/mono-agent-setup.png)
 
-**Setup at a glance.** Four steps and four prerequisites, every one written out as copyable text below. `init` is the only readiness-proven step: it signs in to the provider and proves each selected route, it starts the agent on macOS while Linux prints the start step, and any flag or non-TTY run scaffolds only. The console is a separate foreground process with no application login — see [Security and privacy](#safety-and-privacy) and [Setup security and managed runtime](./docs/reference/setup-security.md).
 
 ### 1. Install the CLI
 
@@ -92,7 +86,7 @@ Passing any flag, `--yes`, or running without a TTY skips the wizard: `init` wri
 
 ## Make it yours
 
-Everything below is configuration in the same one file. Edit `mono-agent.config.json` (and `IDENTITY.md`), then apply the change: a background service loads it with `mono-agent validate` followed by `mono-agent restart` (and `mono-agent status` confirms the result), while a foreground agent is stopped with Ctrl-C in the terminal that owns it, validated, and started again with `mono-agent start --foreground`. `restart` and `status` target the managed background instance, not a foreground process. Either way the running agent keeps serving the old config until it restarts, and the console is a separate process you can leave running. Start with the defaults, then add what you need:
+The blueprint composes these capabilities; identity, skills, MCP definitions, credentials, and live state remain separate. Edit `mono-agent.config.json` (and `IDENTITY.md`), then apply the change: a background service loads it with `mono-agent validate` followed by `mono-agent restart` (and `mono-agent status` confirms the result), while a foreground agent is stopped with Ctrl-C in the terminal that owns it, validated, and started again with `mono-agent start --foreground`. `restart` and `status` target the managed background instance, not a foreground process. Either way the running agent keeps serving the old config until it restarts, and the console is a separate process you can leave running. Start with the defaults, then add what you need:
 
 - **Models and fallbacks** — `runtime.model` takes any `<provider>:<model>` ref; add ordered `runtime.fallbacks` and per-route effort. Local providers use `providers.local`. Start with [Runtime & providers](./docs/runtime/index.md).
 - **Tools and safety** — the tool surface is allow-all by default; narrow it with `tools.allowedTools`, or go chat-only with `[]`. [Tool policy](./docs/tools/policy.md) and the [sandbox](./docs/tools/sandbox.md) are the two separate controls.
@@ -102,18 +96,54 @@ Everything below is configuration in the same one file. Edit `mono-agent.config.
 - **Presets and the wizard** — `mono-agent presets list` shows the built-in answer sets, and `mono-agent init --preset <id> --yes` scaffolds one non-interactively: [Presets & capability modules](./docs/reference/presets.md).
 - **A composer skill for authoring** — the bundled `mono-agent-composer` skill walks an agent through building a folder with the same flow; `mono-agent install-skill` installs it and pairs the docs MCP companion: [Documentation MCP](./docs/tools/documentation-mcp.md).
 
+## Embed the agent
+
+Keep the workspace for interactive work, or compose the agent into your own Node.js application. These are real package entry points, not a browser automation layer:
+
+| Entry point | What you own |
+| --- | --- |
+| `startMonoAgentApp` | A full configured host with channels and lifecycle; Mono handles the app composition. |
+| `createConfiguredAgentResponder` | Your transport/server; Mono composes the configured responder, without starting channels or the web console. |
+| `createAgentHarness` / `createAgentResponder` | The runtime, context, memory, history and other dependencies you choose to supply. |
+
+For an existing agent folder, a configured responder starts with:
+
+```ts
+import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
+import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
+
+const config = await loadMonoAgentConfigWithSources({
+  env: process.env,
+  cwd: process.cwd(),
+  jsonPath: "./mono-agent.config.json",
+});
+const responder = await createConfiguredAgentResponder({
+  config,
+  cwd: process.cwd(),
+});
+```
+
+This is a composition excerpt, not a complete server: install matching package versions and provide your own transport/lifecycle. See [Composition & custom runtimes](./docs/programmatic/composition.md) for entry-point boundaries, examples and custom runtime injection, or [Build a channel](./docs/programmatic/custom-channels.md) for an adapter.
+
+## Inspect the work, not just the answer
+
+The browser exposes model changes, tool activity and retained results. `RunHistory` reads settled runs; `SessionHistory` reads separately retained tool invocations and results. Curated memory is a different source.
+
+Records are bounded and can be incomplete. Inspecting an interrupted run does not automatically resume it, or prove a command is safe to repeat. See [Run artifacts & traces](./docs/observability/artifacts-and-traces.md) for retention and redaction limits.
+
 ## Safety and privacy
 
 mono-agent is local-first and single-owner by default, and two defaults deserve attention before anything is network-reachable:
 
-- **The web console has no application login.** A source install binds `127.0.0.1:5050` and publishes a mono-agent-owned Tailscale route only with `--share-tailnet`; the published `0.21.1` release still binds a managed console wide and claims a macOS Serve route automatically, so on that release the compatible local-first path is the foreground `mono-agent web run --loopback` ([release status](./docs/reference/release-status.md)). Widening is explicit (`--host <addr>`), the foreground console touches no proxy configuration, and other proxies, tunnels, and routes are never inspected or removed. Anyone who can reach the console operates the discovered agents and can complete provider sign-in, so read [the console's security boundary](./docs/observability/web-console.md#security-boundary-trusted-network-no-login) before widening the bind or publishing a route.
+- **The web console has no application login.** A fresh current-source install binds `127.0.0.1:5050` and publishes a mono-agent-owned Tailscale route only with `--share-tailnet`; the older `0.21.1` release binds a managed console wide and claims a macOS Serve route automatically, so on that release the compatible local-first path is the foreground `mono-agent web run --loopback` ([release status](./docs/reference/release-status.md)). Widening is explicit (`--host <addr>`), the foreground console touches no proxy configuration, and other proxies, tunnels, and routes are never inspected or removed. Anyone who can reach the console operates the discovered agents and can complete provider sign-in, so read [the console's security boundary](./docs/observability/web-console.md#security-boundary-trusted-network-no-login) before widening the bind or publishing a route.
 - **Tools are allow-all by default and the sandbox is opt-in.** A fresh agent can run shell commands, read and write files, and fetch pages unless you narrow `tools.allowedTools`. The native sandbox confines Pi-owned commands to declared roots with a deny-by-default network policy and fails closed when no usable engine exists, so a command fails instead of silently running unsandboxed.
 
 Secrets belong in an owner-only `.env` or the provider's auth store, never in JSON or chat; guided setup fails closed rather than guessing where a secret may be written. Read [SECURITY.md](./SECURITY.md) for the trust boundaries, [Setup security and managed runtime](./docs/reference/setup-security.md) for the managed-runtime and secret-persistence contracts, and [Run artifacts & traces](./docs/observability/artifacts-and-traces.md) for what is recorded locally and how redaction is bounded.
 
 ## Documentation
 
-- **Documentation site** — <https://mono-agent-docs.vercel.app/> renders everything under [`docs/`](./docs/): getting started, configuration, runtime, channels, memory, tools, programmatic use, playbooks, and reference material.
+- **Documentation site** — <https://docs.mono-agent.dev/> renders everything under [`docs/`](./docs/): getting started, configuration, runtime, channels, memory, tools, programmatic use, playbooks, and reference material.
+- **Marketing site** — [`marketing/`](./marketing/) holds the standalone static site source for [mono-agent.dev](https://mono-agent.dev/). See its README for setup and the separate Vercel hosting configuration.
 - **Architecture and packages** — [`ARCHITECTURE.md`](./ARCHITECTURE.md) maps the system and where changes belong; [`PACKAGES.md`](./PACKAGES.md) is the generated package directory and dependency graph.
 - **Contributing** — [`CONTRIBUTING.md`](./CONTRIBUTING.md) covers the workspace setup, verification lane, and pull-request expectations. The repository requires Node.js 24.15.0 or newer and pins its own pnpm (currently `11.18.0`, engine range `>=10.16.0`).
 - **Support and reporting** — security reports follow [`SECURITY.md`](./SECURITY.md); issues and questions belong in the [repository issue tracker](https://github.com/robertsreberski/mono-agent/issues).

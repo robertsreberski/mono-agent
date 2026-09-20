@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- Connect marketing and documentation links to mono-agent.dev and docs.mono-agent.dev, with a permanent redirect from the former marketing host.
+
+- Align marketing canonicals, social metadata and crawler endpoints with the live production origin, clarify AI-companion/framework search metadata, and prevent indexing of Vercel preview aliases.
+
+- Extend the marketing site and README with a shared responsive agent overview, companion-led positioning, and opt-in PostHog events with privacy controls.
+
+- Add the standalone static marketing site source for the
+  `mono-agent.dev` domain. The isolated `marketing/` Astro app renders one
+  crawlable page centered on a schema-checked `mono-agent.config.json`
+  blueprint, framework/package composition, deliberate memory tiers, explicit
+  model routes, local run evidence, a source-linked harness comparison, honest
+  setup, FAQ, and GitHub/docs calls to action. Tested SEO metadata, a social
+  card, sitemap/robots, and a dedicated CI lane protect the static output. The
+  harness comparison leads with Hermes and OpenClaw, with additional coding
+  harnesses, no-JavaScript content, native FAQ disclosures, and command copying. A shorter mobile-first layout adds a compact disclosure menu, a
+  refined mark and CTAs, a coherent responsive type scale, SVG link arrows, and
+  building-block cards that lift and toss through a compact native-scroll deck,
+  with static pause, keyboard, reduced-motion, and no-JavaScript layouts.
+  GitHub-marked CTAs, a mobile-optimized transparent matte-stone
+  hero, compact self-hosted OFL fonts, and real desktop console UI imagery with
+  clearly labelled synthetic data and source-build availability.
+  Shorter CTAs, a single-line JSON caption, consistent FAQ spacing, and a tighter
+  mobile deck reduce clutter; cached geometry and compositor transform updates
+  avoid repeated card measurements during scrolling.
+  Position the site around ongoing agent work and TypeScript composition, with
+  shared project context, delegated work, and retained execution evidence as
+  concrete benefits. Keep the JSON blueprint prominent, compare architectural
+  approaches honestly, and correct availability labels against v0.22.0.
+  The marketing site is deployed at `mono-agent.dev`, with documentation at
+  `docs.mono-agent.dev`.
 - Let automatic memory recall answer directly scheduled temporal questions with
   valid clock times while preserving exact event identity and abstaining on
   qualified, compatibility-hidden, or conflicting schedule payloads; keep raw

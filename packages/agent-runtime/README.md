@@ -82,7 +82,7 @@ revisions, reads only the originating tool's declared `ui://` resource, and
 receives one exact connection capability. Successful registration retains that
 existing MCP client instead of creating a client per UI call; host LRU/idle
 eviction closes the client, transport, and sandbox cleanup.
-See [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+See [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 ### Anthropic cache retention
 
@@ -1295,16 +1295,16 @@ runtime fails closed.
 
 ## Related Documentation
 
-- [Runtime and providers](https://mono-agent-docs.vercel.app/runtime/) explains the
+- [Runtime and providers](https://docs.mono-agent.dev/runtime/) explains the
   config-first model and backend choices.
-- [Backends and model references](https://mono-agent-docs.vercel.app/runtime/backends/)
+- [Backends and model references](https://docs.mono-agent.dev/runtime/backends/)
   documents the built-in bridges and their execution modes.
-- [Programmatic approvals and structured output](https://mono-agent-docs.vercel.app/programmatic/approval-and-structured-output/)
+- [Programmatic approvals and structured output](https://docs.mono-agent.dev/programmatic/approval-and-structured-output/)
   shows the code-only host hooks.
-- [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
+- [Local-first web research](https://docs.mono-agent.dev/tools/web-research/)
   documents Ollama/SearXNG selection, extraction, retry, browser isolation, and
   sandbox policy.
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
   documents the host bridge, browser sandbox, and lifecycle limits.
 - [Architecture](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/ARCHITECTURE.md)
   and [migration guide](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/MIGRATION.md)

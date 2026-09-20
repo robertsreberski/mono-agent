@@ -1,0 +1,28 @@
+{
+  "name": "mono-agent-marketing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "mono-agent marketing site (standalone Astro static app). Source for the prospective https://mono-agent.dev/.",
+  "license": "GPL-3.0-only",
+  "packageManager": "pnpm@11.18.0+sha512.33d83c77da82f49fba836925c6f1b841181ec3132b670639bd012f7075f5c7cf634c5f870147c19aae7478fac01df09d8892e880454896edd23ee9b33757563c",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build && node scripts/check-links.mjs",
+    "preview": "astro preview --host 127.0.0.1 --port 4330",
+    "assets": "node scripts/generate-assets.mjs",
+    "test:unit": "node --test tests/*.test.mjs",
+    "test:browser": "playwright test",
+    "test:webkit": "MARKETING_WEBKIT=1 playwright test --project=webkit",
+    "screenshots": "node scripts/screenshots.mjs",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "astro": "~7.2.8",
+    "sharp": "0.35.4"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.61.1"
+  }
+}

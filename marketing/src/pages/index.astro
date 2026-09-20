@@ -1,0 +1,463 @@
+---
+import Seo from "../components/Seo.astro";
+import ArrowIcon from "../components/ArrowIcon.astro";
+import AgentOverview from "../components/AgentOverview.astro";
+
+// mono-agent marketing site — single static page for https://mono-agent.dev/.
+//
+// Copy rules for this file: every claim must already be true of the published
+// baseline or be explicitly framed as configuration. Never advertise
+// source-only capabilities as published (label them and link release status),
+// never promise setup speed,
+// security, or availability, and never present the decorative brand artwork
+// as a product screenshot.
+// Public ingestion token only; never use a PostHog personal API key here.
+const POSTHOG_KEY = import.meta.env.PUBLIC_POSTHOG_KEY || "";
+const PRIVACY_CONTACT = import.meta.env.PUBLIC_PRIVACY_CONTACT || "";
+if (POSTHOG_KEY && (!/^phc_[a-zA-Z0-9]+$/.test(POSTHOG_KEY) || !/^mailto:[^\s@]+@[^\s@]+\.[^\s@]+$/.test(PRIVACY_CONTACT))) {
+  throw new Error("Analytics requires a public PostHog project token and PUBLIC_PRIVACY_CONTACT mailto address.");
+}
+const ANALYTICS_HOSTS = "mono-agent.dev,www.mono-agent.dev";
+const SITE_URL = Astro.site!.origin;
+const GITHUB_URL = "https://github.com/robertsreberski/mono-agent";
+const DOCS_URL = "https://docs.mono-agent.dev/";
+const RELEASE_URL = `${GITHUB_URL}/releases/tag/v0.22.0`;
+const COMPOSITION_URL = `${DOCS_URL}programmatic/composition/`;
+const ARTIFACTS_URL = `${DOCS_URL}observability/artifacts-and-traces/`;
+
+const CONFIG_EXAMPLE = `{
+  "runtime": {
+    "model": "openai-codex:gpt-5.6-terra",
+    "workspace": "."
+  },
+  "context": {
+    "identityPath": "./IDENTITY.md",
+    "skillsRoot": "./skills",
+    "selectedSkills": ["code-review"]
+  },
+  "memory": {
+    "mode": "lite",
+    "writeMode": "append-host-summary"
+  },
+  "tools": {
+    "allowedTools": ["Read", "Grep", "WebSearch"],
+    "mcpConfigPath": "./mcp.json"
+  },
+  "telegram": {
+    "enabled": true,
+    "allowedChatIds": ["YOUR_CHAT_ID"]
+  }
+}`;
+
+const TITLE = "Mono Agent — Embeddable AI Companion & TypeScript Framework";
+const DESCRIPTION =
+  "Build an AI companion with your choice of models, tools and memory. Run a local-first workspace or embed Mono Agent in your TypeScript app. Open source.";
+const OG_IMAGE = `${SITE_URL}/og-1200x630.jpg`;
+
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite", "@id": `${SITE_URL}/#website`,
+      url: `${SITE_URL}/`, name: "Mono Agent", alternateName: "mono-agent",
+      description: DESCRIPTION, inLanguage: "en", about: { "@id": `${SITE_URL}/#software` },
+    },
+    {
+      "@type": "WebPage", "@id": `${SITE_URL}/#webpage`,
+      url: `${SITE_URL}/`, name: TITLE, description: DESCRIPTION, inLanguage: "en",
+      isPartOf: { "@id": `${SITE_URL}/#website` }, mainEntity: { "@id": `${SITE_URL}/#software` },
+      primaryImageOfPage: { "@type": "ImageObject", url: OG_IMAGE, width: 1200, height: 630 },
+    },
+    {
+      "@type": "SoftwareSourceCode", "@id": `${SITE_URL}/#software`,
+      name: "mono-agent", description: DESCRIPTION, url: `${SITE_URL}/`,
+      codeRepository: GITHUB_URL, programmingLanguage: "TypeScript",
+      runtimePlatform: "Node.js >=24.15.0", license: `${GITHUB_URL}/blob/main/LICENSE`,
+      isAccessibleForFree: true,
+    },
+  ],
+};
+---
+<!doctype html>
+<html lang="en" data-posthog-key={POSTHOG_KEY} data-analytics-hosts={ANALYTICS_HOSTS}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <Seo title={TITLE} description={DESCRIPTION} />
+    <meta name="theme-color" content="#101211" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preload" href="/fonts/manrope.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/instrument-serif-italic.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="/styles.css" />
+    <script is:inline type="module" src="/interactions.js"></script>
+    <script is:inline type="module" src="/analytics.js"></script>
+
+    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="wrap">
+        <a class="brand" href="#top" aria-label="mono-agent — back to top">
+          <img src="/favicon.svg" alt="" width="30" height="30" aria-hidden="true" />
+          <span>mono-agent</span>
+        </a>
+        <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-navigation" hidden><span>Menu</span><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3 7h14M3 13h14" /></svg></button>
+        <nav class="site-nav" id="site-navigation" aria-label="Sections">
+          <ul>
+            <li><a href="#configuration">Blueprint</a></li>
+            <li><a href="#console">Console</a></li>
+            <li><a href="#comparison">Compare</a></li>
+            <li><a href={DOCS_URL}>Docs <ArrowIcon /></a></li>
+            <li class="mobile-github"><a href={GITHUB_URL}><svg class="github-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 .75a11.25 11.25 0 0 0-3.558 21.922c.563.104.768-.244.768-.542 0-.267-.01-.975-.015-1.914-3.13.68-3.791-1.508-3.791-1.508-.512-1.3-1.25-1.646-1.25-1.646-1.022-.7.078-.686.078-.686 1.13.08 1.724 1.16 1.724 1.16 1.005 1.722 2.638 1.225 3.28.937.102-.728.393-1.225.715-1.507-2.498-.284-5.124-1.25-5.124-5.562 0-1.228.439-2.233 1.159-3.02-.116-.285-.502-1.429.11-2.977 0 0 .945-.303 3.094 1.154A10.78 10.78 0 0 1 12 6.183c.956.004 1.919.129 2.819.378 2.148-1.457 3.092-1.154 3.092-1.154.614 1.548.228 2.692.112 2.977.722.787 1.158 1.792 1.158 3.02 0 4.324-2.63 5.275-5.136 5.553.404.35.766 1.043.766 2.101 0 1.518-.014 2.743-.014 3.115 0 .301.203.651.774.54A11.252 11.252 0 0 0 12 .75Z" /></svg>GitHub <ArrowIcon /></a></li>
+          </ul>
+        </nav>
+        <div class="header-cta">
+
+          <a class="btn btn-primary btn-small" href={GITHUB_URL}><svg class="github-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 .75a11.25 11.25 0 0 0-3.558 21.922c.563.104.768-.244.768-.542 0-.267-.01-.975-.015-1.914-3.13.68-3.791-1.508-3.791-1.508-.512-1.3-1.25-1.646-1.25-1.646-1.022-.7.078-.686.078-.686 1.13.08 1.724 1.16 1.724 1.16 1.005 1.722 2.638 1.225 3.28.937.102-.728.393-1.225.715-1.507-2.498-.284-5.124-1.25-5.124-5.562 0-1.228.439-2.233 1.159-3.02-.116-.285-.502-1.429.11-2.977 0 0 .945-.303 3.094 1.154A10.78 10.78 0 0 1 12 6.183c.956.004 1.919.129 2.819.378 2.148-1.457 3.092-1.154 3.092-1.154.614 1.548.228 2.692.112 2.977.722.787 1.158 1.792 1.158 3.02 0 4.324-2.63 5.275-5.136 5.553.404.35.766 1.043.766 2.101 0 1.518-.014 2.743-.014 3.115 0 .301.203.651.774.54A11.252 11.252 0 0 0 12 .75Z" /></svg>GitHub</a>
+        </div>
+      </div>
+    </header>
+
+    <section class="analytics-notice" aria-label="Optional analytics" hidden>
+      <p><strong>Help us understand what’s useful.</strong> Allow usage analytics with PostHog? No replay or form tracking. <a href="/privacy/">Details</a></p>
+      <div><button type="button" data-consent="no">No thanks</button><button type="button" data-consent="yes">Allow analytics</button></div>
+    </section>
+    <main id="main">
+      <section class="hero" id="top" aria-labelledby="hero-heading">
+        <div class="wrap hero-grid">
+          <div class="hero-copy">
+            <span class="eyebrow">Your workspace / Your framework</span>
+            <h1 id="hero-heading">An agent <br />workspace you <br /><em>can build on.</em></h1>
+            <p class="lede">
+              Your AI companion for real work. Choose its models, shape its
+              behavior in <code>mono-agent.config.json</code>, and embed it in
+              your own TypeScript application.
+            </p>
+            <div class="hero-actions">
+              <a class="btn btn-primary" href={GITHUB_URL}><svg class="github-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 .75a11.25 11.25 0 0 0-3.558 21.922c.563.104.768-.244.768-.542 0-.267-.01-.975-.015-1.914-3.13.68-3.791-1.508-3.791-1.508-.512-1.3-1.25-1.646-1.25-1.646-1.022-.7.078-.686.078-.686 1.13.08 1.724 1.16 1.724 1.16 1.005 1.722 2.638 1.225 3.28.937.102-.728.393-1.225.715-1.507-2.498-.284-5.124-1.25-5.124-5.562 0-1.228.439-2.233 1.159-3.02-.116-.285-.502-1.429.11-2.977 0 0 .945-.303 3.094 1.154A10.78 10.78 0 0 1 12 6.183c.956.004 1.919.129 2.819.378 2.148-1.457 3.092-1.154 3.092-1.154.614 1.548.228 2.692.112 2.977.722.787 1.158 1.792 1.158 3.02 0 4.324-2.63 5.275-5.136 5.553.404.35.766 1.043.766 2.101 0 1.518-.014 2.743-.014 3.115 0 .301.203.651.774.54A11.252 11.252 0 0 0 12 .75Z" /></svg>GitHub <ArrowIcon /></a>
+              <a class="btn btn-secondary" href="#configuration">Blueprint <ArrowIcon direction="down" /></a>
+            </div>
+            <p class="hero-meta">Local-first. Open source. Yours to extend.</p>
+          </div>
+          <figure class="hero-art" aria-hidden="true">
+            <div class="hero-halo"></div>
+            <picture>
+              <source media="(max-width: 640px)" srcset="/hero-mobile-320.webp 320w, /hero-mobile-640.webp 640w" sizes="220px" width="640" height="640" />
+              <source type="image/webp" srcset="/hero-640.webp 640w, /hero-960.webp 960w, /hero-1440.webp 1440w" sizes="(max-width: 640px) 220px, (max-width: 1050px) 50vw, 540px" />
+              <img
+                src="/hero-1440.webp"
+                srcset="/hero-640.webp 640w, /hero-960.webp 960w, /hero-1440.webp 1440w"
+                sizes="(max-width: 640px) 220px, (max-width: 1050px) 50vw, 540px"
+                width="1254"
+                height="1254"
+                alt=""
+                fetchpriority="high"
+              />
+            </picture>
+            <figcaption class="visually-hidden">Decorative brand illustration, not a product screenshot.</figcaption>
+          </figure>
+        </div>
+        <div class="wrap hero-footnote"><span>01 / YOUR WORK, YOUR WAY</span><a href="#configuration">Open the blueprint <ArrowIcon direction="down" /></a></div>
+      </section>
+
+      <section class="capability-strip" aria-label="Core capabilities">
+        <div class="wrap"><span>Work in it. Build on it.</span><ul><li>An embeddable AI companion</li><li>Your models, cloud or local</li><li>Your behavior, one blueprint</li><li>Tools that do real work</li></ul></div>
+      </section>
+
+      <section class="configuration" id="configuration" aria-labelledby="configuration-heading">
+        <div class="wrap configuration-intro">
+          <span class="section-label">The configuration</span>
+          <h2 id="configuration-heading">One JSON file.<br /><em>Your agent’s blueprint.</em></h2>
+
+        </div>
+        <div class="wrap"><AgentOverview /></div>
+        <div class="wrap blueprint-layout">
+          <figure class="config-blueprint">
+            <figcaption>
+              <span aria-hidden="true">&#123; &#125;</span>
+              <strong>mono-agent.config.json</strong>
+              <span>Example</span>
+            </figcaption>
+            <div class="blueprint-code"><pre><code id="config-blueprint-json">{CONFIG_EXAMPLE}</code></pre></div>
+            <p>
+              Version the blueprint. Identity, skills, MCP definitions, secrets, and live state stay separate.
+            </p>
+          </figure>
+
+
+        </div>
+        <section class="wrap building-blocks" aria-labelledby="blocks-heading">
+          <div class="blocks-heading"><div><h3 id="blocks-heading">Choose your<br /><em>building blocks.</em></h3></div><p>Start with a model and a point of view. Add only what your work needs.</p></div>
+          <div class="blocks-toolbar"><span>One agent. Many possibilities.</span><button class="motion-toggle" type="button" aria-pressed="false" hidden>Pause motion</button></div>
+          <div class="block-summary" data-active-card="0">
+            <ol class="block-chapters">
+              <li class="block-chapter" data-card-index="0" data-active="true">
+                <h4>Foundation</h4>
+                <p>Set the role, model routes, and reusable instructions that shape each turn.</p>
+                <figure class="block-diagram diagram-foundation" aria-hidden="true">
+                  <svg viewBox="0 0 160 110" aria-hidden="true" focusable="false">
+                    <path class="diagram-line" d="M28 22h82l22 18v48H28z" />
+                    <path class="diagram-line" d="M110 22v18h22M40 50h58M40 63h77M40 76h48" />
+                    <path class="diagram-accent" d="M18 31v67h104" />
+                    <circle class="diagram-node" cx="18" cy="31" r="4" />
+                    <circle class="diagram-node" cx="122" cy="98" r="4" />
+                  </svg>
+                </figure>
+                <ul class="block-links">
+                  <li><a href={`${DOCS_URL}context/`}>Identity &amp; context <ArrowIcon /></a></li>
+                  <li><a href={`${DOCS_URL}runtime/`}>Models &amp; routing <ArrowIcon /></a></li>
+                  <li><a href={`${DOCS_URL}context/skills/`}>Skills <ArrowIcon /></a></li>
+                </ul>
+              </li>
+              <li class="block-chapter" data-card-index="1" data-active="false">
+                <h4>Context &amp; connections</h4>
+                <p>Give your agent the tools and memory the work needs. Leave the rest out.</p>
+                <figure class="block-diagram diagram-connections" aria-hidden="true">
+                  <svg viewBox="0 0 160 110" aria-hidden="true" focusable="false">
+                    <path class="diagram-line" d="M80 55 31 28m49 27 49-27M80 55 31 84m49-29 49 29" />
+                    <circle class="diagram-node" cx="80" cy="55" r="14" />
+                    <circle class="diagram-accent" cx="31" cy="28" r="9" />
+                    <circle class="diagram-accent" cx="129" cy="28" r="9" />
+                    <circle class="diagram-accent" cx="31" cy="84" r="9" />
+                    <circle class="diagram-accent" cx="129" cy="84" r="9" />
+                  </svg>
+                </figure>
+                <ul class="block-links">
+                  <li><a href={`${DOCS_URL}tools/mcp/`}>Tools &amp; MCP <ArrowIcon /></a></li>
+                  <li><a href={`${DOCS_URL}memory/`}>Memory <ArrowIcon /></a></li>
+                  <li><a href={`${DOCS_URL}programmatic/composition/`}>Packages &amp; adapters <ArrowIcon /></a></li>
+                </ul>
+              </li>
+              <li class="block-chapter" data-card-index="2" data-active="false">
+                <h4>Delegated work</h4>
+                <p>Hand focused work to subagents and bounded background jobs.</p>
+                <figure class="block-diagram diagram-delegated" aria-hidden="true">
+                  <svg viewBox="0 0 160 110" aria-hidden="true" focusable="false">
+                    <path class="diagram-line" d="M27 55h30m0 0c20 0 15-30 35-30h39M57 55h74m-74 0c20 0 15 30 35 30h39" />
+                    <circle class="diagram-node" cx="27" cy="55" r="8" />
+                    <path class="diagram-accent" d="m124 19 7 6-7 6m0 18 7 6-7 6m0 18 7 6-7 6" />
+                  </svg>
+                </figure>
+                <ul class="block-links">
+                  <li><a href={`${DOCS_URL}config/blueprint/`}>Subagents <ArrowIcon /></a></li>
+                  <li><a href={`${DOCS_URL}tools/background-process-jobs/`}>Background jobs <ArrowIcon /></a></li>
+                  <li><a href={`${DOCS_URL}tools/sandbox/`}>Sandbox &amp; policy <ArrowIcon /></a></li>
+                </ul>
+              </li>
+              <li class="block-chapter" data-card-index="3" data-active="false">
+                <h4>Continuity</h4>
+                <p>Schedule recurring work and inspect retained results—not just recollections.</p>
+                <figure class="block-diagram diagram-continuity" aria-hidden="true">
+                  <svg viewBox="0 0 160 110" aria-hidden="true" focusable="false">
+                    <path class="diagram-line" d="M32 74c6 20 26 29 48 29 31 0 53-21 53-48S111 8 80 8 27 28 27 55" />
+                    <path class="diagram-accent" d="m17 48 10 10 10-10M48 55h64" />
+                    <circle class="diagram-node" cx="48" cy="55" r="6" />
+                    <circle class="diagram-node" cx="80" cy="55" r="6" />
+                    <circle class="diagram-node" cx="112" cy="55" r="6" />
+                  </svg>
+                </figure>
+                <ul class="block-links">
+                  <li><a href={`${DOCS_URL}channels/`}>Channels <ArrowIcon /></a></li>
+                  <li><a href={`${DOCS_URL}channels/cron/`}>Schedules <ArrowIcon /></a></li>
+                  <li><a href={`${DOCS_URL}observability/`}>Run evidence <ArrowIcon /></a></li>
+                </ul>
+              </li>
+            </ol>
+          </div><p class="blocks-note">Projects, tags, and persistent subagents are available in <a href={RELEASE_URL}>v0.22.0 <ArrowIcon /></a>.</p></section>
+      </section>
+
+      <section class="console-section section" id="console" aria-labelledby="console-heading">
+        <div class="wrap">
+          <div class="console-intro"><div><span class="section-label">The workspace</span><h2 id="console-heading">Less re-briefing.<br /><em>More progress.</em></h2></div></div>
+          <figure class="console-shot"><div class="console-frame"><a href="/console-desktop.webp" aria-label="Open full resolution desktop console screenshot"><img src="/console-desktop.webp" width="1920" height="1350" loading="lazy" alt="Desktop Mono Agent console showing a conversation, sidebar, model-change marker, and message composer." /></a></div><figcaption>Actual desktop console · synthetic example data and connection state · current source build. <span class="console-pan-hint">Tap for details · </span><a href="/console-desktop.webp">Open full resolution <ArrowIcon /></a> · <a href={RELEASE_URL}>Release notes <ArrowIcon /></a></figcaption></figure>
+          <div class="console-benefits" id="why">
+            <article><span>01 / MAKE IT YOURS</span><h3>Your companion. Your way of working.</h3><p>Give it a role, your files, and selected tools. Add skills and memory when the work needs them—not another custom host.</p><a href={`${DOCS_URL}config/blueprint/`}>Shape your agent <ArrowIcon /></a></article>
+            <article><span>02 / DELEGATE</span><h3>Choose the model. Keep the work.</h3><p>Switch supported models for the next reply. Delegate a focused task to a persistent subagent, then follow up without rebuilding its brief.</p><a href={`${DOCS_URL}config/blueprint/`}>Models &amp; subagents <ArrowIcon /></a></article>
+            <article><span>03 / INSPECT</span><h3>Check what ran. Then carry on.</h3><p>After an interruption, inspect retained tool results—not just remembered facts—before deciding what to do next.</p><a href={ARTIFACTS_URL}>Execution evidence <ArrowIcon /></a></article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section comparison" id="comparison" aria-labelledby="comparison-heading">
+        <div class="wrap">
+          <span class="section-label">Why choose Mono Agent?</span>
+          <h2 id="comparison-heading">Work in it.<br /><em>Build on it.</em></h2>
+          <p class="section-intro">Use the workspace today. Embed its configured responder in your TypeScript application.</p>
+          <dl class="harness-list">
+            <div class="harness-row harness-mono">
+              <dt><a href={COMPOSITION_URL}>Mono Agent <ArrowIcon /></a><span>Workspace to TypeScript composition</span></dt>
+              <dd>Run the full host, embed a transport-free responder, or compose a lower-level harness.
+                <pre class="composition-code"><code>const responder = await
+  createConfiguredAgentResponder(&#123; config &#125;);</code></pre>
+                <p class="composition-caption">TypeScript excerpt · <code>config</code> loaded from your blueprint. <a href={COMPOSITION_URL}>Imports &amp; full example <ArrowIcon /></a></p>
+              </dd>
+            </div>
+            <div class="harness-row">
+              <dt><a href="https://hermes-agent.nousresearch.com/docs/">Hermes Agent <ArrowIcon /></a><span>Learning-oriented personal agent</span></dt>
+              <dd>Built around reusable, evolving skills, with memory, messaging, and delegation. Integrate through its protocols or embed <a href="https://hermes-agent.nousresearch.com/docs/developer-guide/programmatic-integration">AIAgent in Python</a>.</dd>
+            </div>
+            <div class="harness-row">
+              <dt><a href="https://docs.openclaw.ai/">OpenClaw <ArrowIcon /></a><span>Gateway-centered agent platform</span></dt>
+              <dd>Connects agents, messaging, and a browser control UI. Its documented <a href="https://docs.openclaw.ai/gateway/embedding">embedding path</a> supervises the executable through the Gateway WebSocket protocol.</dd>
+            </div>
+          </dl>
+          <details class="comparison-more">
+            <summary>Coding harnesses <span>Codex · Claude Code · OpenCode</span></summary>
+            <dl class="harness-list">
+            <div class="harness-row">
+              <dt><a href="https://developers.openai.com/codex/cli/">Codex CLI <ArrowIcon /></a><span>Terminal coding &amp; automation</span></dt>
+              <dd>Inspect, edit, run, and review a repository. Use skills and MCP, or script repeatable work with <code>codex exec</code>.</dd>
+            </div>
+            <div class="harness-row">
+              <dt><a href="https://code.claude.com/docs/en/overview">Claude Code <ArrowIcon /></a><span>Coding across terminal, IDE &amp; web</span></dt>
+              <dd>Extend coding workflows with project instructions, skills, hooks, and MCP. Build custom agents with the Agent SDK.</dd>
+            </div>
+            <div class="harness-row">
+              <dt><a href="https://opencode.ai/docs/">OpenCode <ArrowIcon /></a><span>Provider-flexible coding</span></dt>
+              <dd>Choose model providers and move between Plan and Build modes in an open-source terminal, desktop, or IDE workflow.</dd>
+            </div>
+          </dl>
+          </details>
+          <p class="comparison-note">Models, memory, tools, and delegation overlap. These are documented approaches, not a feature or performance ranking. Sources checked 20 September 2026.</p>
+          <p class="comparison-choice"><strong>A workspace you can extend—not a zero-setup hosted assistant.</strong></p>
+        </div>
+      </section>
+
+      <section class="section" id="start" aria-labelledby="start-heading">
+        <div class="wrap">
+          <span class="section-label">Get started</span>
+          <h2 id="start-heading">Make a folder an agent</h2>
+          <p class="section-intro">
+            Setup is not instant: real model checks take several minutes and count as provider usage.
+          </p>
+          <ol class="steps">
+            <li>
+              <h3>Install the CLI</h3>
+              <p>Requires Node.js 24.15.0 or newer. No pnpm needed.</p>
+              <pre><code id="install-command">npm i -g create-mono-agent</code></pre>
+              <button class="copy-command" type="button" hidden>Copy command <ArrowIcon /></button><p class="copy-status" role="status" aria-live="polite"></p>
+            </li>
+            <li>
+              <h3>Create the agent folder</h3>
+              <p>
+                Bare <code>init</code> on a terminal is the guided wizard: it
+                names the agent, writes its role, and proves each model route.
+                Any flag scaffolds the files only.
+              </p>
+              <pre><code>mkdir my-agent
+cd my-agent
+mono-agent init</code></pre>
+            </li>
+            <li>
+              <h3>Open the workspace</h3>
+              <p>
+                Validate and start the agent, then run the browser console in
+                its own terminal and open the URL it prints.
+              </p>
+              <pre><code>mono-agent validate
+mono-agent start
+mono-agent web run --loopback</code></pre>
+            </li>
+          </ol>
+
+        </div>
+      </section>
+
+      <section class="section" id="faq" aria-labelledby="faq-heading">
+        <div class="wrap">
+          <span class="section-label">FAQ</span>
+          <h2 id="faq-heading">Short answers, honestly</h2>
+          <div class="faq">
+            <details>
+              <summary>Is everything really in one JSON file?</summary>
+              <div class="faq-answer">
+                The blueprint brings runtime, context references, memory, tools,
+                and channels together. Identity, skills, MCP definitions, secrets,
+                provider auth, and framework-managed state stay in their own files
+                or stores. You still need the referenced files, provider auth,
+                and any channel or memory services the blueprint selects. Run
+                <code>mono-agent validate</code> to check the shape, finish any
+                reported setup, and restart after edits.
+              </div>
+            </details>
+            <details>
+              <summary>What does “local-first” actually mean here?</summary>
+              <div class="faq-answer">
+                Your agent files and run artifacts are stored on your machine
+                by default. The models, tools, and channels you configure may
+                send the context they need to their own services, so read what
+                each one transmits before you enable it. Preferring a model on
+                your own hardware keeps even inference local.
+              </div>
+            </details>
+            <details>
+              <summary>What can I inspect after a run?</summary>
+              <div class="faq-answer">
+                <code>RunHistory</code> reads settled run evidence; <code>SessionHistory</code>
+                reads separately retained tool invocations and results, including failures
+                and interruptions. Curated memory is a different source. Retention is
+                bounded and records can be incomplete: inspection helps you decide what
+                to do next, but does not automatically resume work or prove that
+                repeating a command is safe. <a href={ARTIFACTS_URL}>Read the evidence boundaries</a>.
+              </div>
+            </details>
+            <details>
+              <summary>Which models can I use?</summary>
+              <div class="faq-answer">
+                Supported <code>&lt;provider&gt;:&lt;model&gt;</code> routes include
+                subscription and API providers such as OpenAI Codex and
+                Anthropic, plus fully local providers like Ollama or LM Studio.
+                Ordered fallbacks can try another route, and results and traces
+                report when the selected route changes.
+              </div>
+            </details>
+            <details>
+              <summary>Is the web console safe to expose?</summary>
+              <div class="faq-answer">
+                Treat it as single-owner with no application login: anyone who
+                can reach it can operate your agents. Keep it on loopback
+                unless you have a reason not to, and read the console security
+                docs first.
+              </div>
+            </details>
+            <details>
+              <summary>What does it cost?</summary>
+              <div class="faq-answer">
+                mono-agent itself is free, open-source software under GPL-3.0.
+                Cloud usage follows your provider’s subscription or API pricing,
+                including setup calls. Local models use your own hardware.
+              </div>
+            </details>
+            <details>
+              <summary>Where is the full documentation?</summary>
+              <div class="faq-answer">
+                The complete guides, configuration reference, and security model
+                live on the documentation site — start there when the config
+                file gets ambitious.
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <span>mono-agent — open source under GPL-3.0-only.</span>
+        <nav aria-label="Project links">
+          <ul>
+            <li><a href={GITHUB_URL}><svg class="github-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 .75a11.25 11.25 0 0 0-3.558 21.922c.563.104.768-.244.768-.542 0-.267-.01-.975-.015-1.914-3.13.68-3.791-1.508-3.791-1.508-.512-1.3-1.25-1.646-1.25-1.646-1.022-.7.078-.686.078-.686 1.13.08 1.724 1.16 1.724 1.16 1.005 1.722 2.638 1.225 3.28.937.102-.728.393-1.225.715-1.507-2.498-.284-5.124-1.25-5.124-5.562 0-1.228.439-2.233 1.159-3.02-.116-.285-.502-1.429.11-2.977 0 0 .945-.303 3.094 1.154A10.78 10.78 0 0 1 12 6.183c.956.004 1.919.129 2.819.378 2.148-1.457 3.092-1.154 3.092-1.154.614 1.548.228 2.692.112 2.977.722.787 1.158 1.792 1.158 3.02 0 4.324-2.63 5.275-5.136 5.553.404.35.766 1.043.766 2.101 0 1.518-.014 2.743-.014 3.115 0 .301.203.651.774.54A11.252 11.252 0 0 0 12 .75Z" /></svg>GitHub</a></li>
+            <li><a href={DOCS_URL}>Documentation</a></li>
+            <li><a href={RELEASE_URL}>Release notes</a></li>
+            <li><a href="/privacy/">Privacy</a></li>
+            <li><button class="analytics-settings" type="button" hidden>Analytics preferences</button></li>
+          </ul>
+        </nav>
+      </div>
+      <p class="analytics-status wrap" role="status" aria-live="polite"></p>
+    </footer>
+  </body>
+</html>

@@ -88,7 +88,7 @@ represent a part default to concise human fallback; machine and verbatim
 adapters pass `unsupportedPartFallback: "none"` so reply text is not mutated.
 Artifact/app bytes and HTML remain behind responder authorization methods rather
 than entering stream frames. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 Machine destinations project unsupported parts through the shared
 `AgentReplyPartDeliveryOutcome` contract. `sanitizeReplyPartDeliveryOutcomes()`
@@ -120,7 +120,7 @@ The arrays embedded directly in adapter responses are additive unversioned
 fields. A2A and cron's private durable SQLite copy wrap the same array as
 `{ "schemaVersion": 1, "replyPartOutcomes": [...] }`. Exact adapter field and
 projection names are documented in
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/#machine-delivery-outcome-wire-contract).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/#machine-delivery-outcome-wire-contract).
 Cron detail projections retain all 20 records. Compact cron summaries retain
 the first eight in stable part order so a maximum 100-run page remains below
 the operator response ceiling.
@@ -606,10 +606,10 @@ It does not normalize transport messages, run model providers, build prompts, pe
 
 ## Related Documentation
 
-- [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/)
-- [Custom channel drivers](https://mono-agent-docs.vercel.app/programmatic/custom-channels/)
-- [Runtime, tools, and guard boundaries](https://mono-agent-docs.vercel.app/runtime/tools-and-guards/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+- [Programmatic composition](https://docs.mono-agent.dev/programmatic/)
+- [Custom channel drivers](https://docs.mono-agent.dev/programmatic/custom-channels/)
+- [Runtime, tools, and guard boundaries](https://docs.mono-agent.dev/runtime/tools-and-guards/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-contracts)
 
 ## Verification

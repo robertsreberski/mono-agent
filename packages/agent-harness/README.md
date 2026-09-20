@@ -556,11 +556,11 @@ It does not poll chats, serve UI, parse host settings files, own provider creden
 
 ## Related Documentation
 
-- [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/composition/)
+- [Programmatic composition](https://docs.mono-agent.dev/programmatic/composition/)
   explains when to use the harness instead of `agent-app`.
-- [Sessions and concurrency](https://mono-agent-docs.vercel.app/runtime/sessions-concurrency/)
+- [Sessions and concurrency](https://docs.mono-agent.dev/runtime/sessions-concurrency/)
   documents queue-after-turn, admission, execution bounds, and durable Pi sessions.
-- [Tool policy](https://mono-agent-docs.vercel.app/tools/policy/) covers the fail-closed tool
+- [Tool policy](https://docs.mono-agent.dev/tools/policy/) covers the fail-closed tool
   boundary passed into this package.
 - [`@mono-agent/runtime-adapter`](https://github.com/robertsreberski/mono-agent/tree/main/packages/runtime-adapter)
   owns the runtime contract consumed here.

@@ -166,9 +166,9 @@ the version-specific fallback when an MCP client is unavailable or mismatched.
 
 ## Related Documentation
 
-- [Documentation MCP companion guide](https://mono-agent-docs.vercel.app/tools/documentation-mcp/)
-- [MCP server configuration](https://mono-agent-docs.vercel.app/tools/mcp/)
-- [Feature registry](https://mono-agent-docs.vercel.app/reference/feature-registry/)
+- [Documentation MCP companion guide](https://docs.mono-agent.dev/tools/documentation-mcp/)
+- [MCP server configuration](https://docs.mono-agent.dev/tools/mcp/)
+- [Feature registry](https://docs.mono-agent.dev/reference/feature-registry/)
 
 ## Verification
 
