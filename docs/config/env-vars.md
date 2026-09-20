@@ -184,12 +184,16 @@ They are tolerated so stale environments do not break startup, but they are igno
 | `MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL` | `tools.web.search.ollama.trustPublicUrl` | Explicit `true` acknowledgement for an unauthenticated custom public HTTPS Ollama origin. Never authorizes hosted credentials there. |
 | `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | `tools.web.search.codex.model` | Codex app-server subscription-search model; default `gpt-5.6-luna`. |
 | `MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV` | `tools.web.search.parallel.apiKeyEnv` | Optional credential variable name; omitted means anonymous, missing named value is an error. Read at call time. |
-| `MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT` | `tools.web.search.hound.endpoint` | Unauthenticated loopback HTTP Hound MCP URL with an explicit `/mcp` path; required whenever a search selection includes `hound`. The endpoint is trusted (see the Hound MCP section). |
 | `MONO_AGENT_WEB_FETCH_PROVIDER` | `tools.web.fetch.provider` | Strict `local` (default), `parallel`, `hound`, or comma-separated ordered chain such as `local,parallel`. |
 | `MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV` | `tools.web.fetch.parallel.apiKeyEnv` | Optional credential variable name for Parallel extraction; omitted means anonymous. |
-| `MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT` | `tools.web.fetch.hound.endpoint` | Unauthenticated loopback HTTP Hound MCP URL with an explicit `/mcp` path; required whenever a fetch selection includes `hound`. |
 | `MONO_AGENT_WEB_FETCH_RENDER` | `tools.web.fetch.render` | `never` (default and capability disabled) or `auto` (static-first isolated browser fallback). |
 | `MONO_AGENT_WEB_BROWSER_COMMAND` | `tools.web.fetch.browserCommand` | Direct `agent-browser` executable name/path. Default `agent-browser`; shell fragments are not evaluated. |
+
+Hound is built in and requires no endpoint. Remove the retired
+`MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT` and `MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT`
+variables (including empty values); their presence is a migration error, even
+when Hound is unselected. See [native Hound](../tools/web-research.md#native-hound-opt-in).
+
 
 ### Durable continuations
 

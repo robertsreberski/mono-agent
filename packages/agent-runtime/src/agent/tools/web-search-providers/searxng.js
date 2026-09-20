@@ -4,7 +4,7 @@ import { requestSignal, readLimitedText, normalizedResult, collapseWhitespace, f
 const SEARXNG_THROTTLE_REASON_RE = /captcha|too many requests|rate.?limit|suspend|blocked|denied/iu;
 export const searxngProvider = {
   name: "searxng", batchesQueries: false, chainDeadlineMs: 3000,
-  filterSupport: { language: "provider", timeRange: "provider" },
+  filterSupport: { language: "provider", timeRange: "provider", country: "unsupported" },
   configure(input, selected) {
   const legacyEndpoint = input?.endpoint;
   const nestedEndpoint = input?.searxng?.endpoint;

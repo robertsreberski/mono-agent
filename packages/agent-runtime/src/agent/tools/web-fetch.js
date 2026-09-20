@@ -1,6 +1,6 @@
 import { fetchParallelDocument, unsupportedParallelFetchOption } from "./parallel-web-fetch.js";
-import { fetchHoundDocument, unsupportedHoundFetchOption } from "./hound-web-fetch.js";
-import { validateHoundEndpoint } from "./hound-mcp.js";
+import { houndEndpointError } from "./hound-local/config.js";
+import { assertHoundRobots } from "./hound-local/robots.js";
 import { parallelSessionId } from "./parallel-mcp.js";
 import { withWebDeadline, coordinatedWebRequest, webRequestFailure } from "./web-request.js";
 // @ts-check
@@ -12,7 +12,8 @@ import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { renderWithAgentBrowser } from "./web-browser-render.js";
 import { contentKind, decodeWebBytes, extractHtmlLinks, extractWebDocument, markdownToText, shouldAutoRender } from "./web-document-extractor.js";
-import { assertNoWebAccessInterstitial } from "./web-access-interstitial.js";
+import { parseRetryAfter } from "./web-search-providers/shared.js";
+import { assertNoWebAccessInterstitial, classifyWebAccessInterstitial } from "./web-access-interstitial.js";
 import { applyFocusFilter, buildWebNextAction, formatActionableEnvelope, normalizeWebResearchOptions, webStatusForCode } from "./web-actionable.js";
 
 const FETCH_TIMEOUT_MS = 15_000;
@@ -26,7 +27,7 @@ const ALLOWED_REQUEST_HEADERS = new Set([
   "range",
   "user-agent",
 ]);
-const TRANSIENT_STATUS = new Set([408, 425, 429]);
+const TRANSIENT_STATUS = new Set([408, 425]);
 
 class WebFetchError extends Error {
   /**
@@ -48,7 +49,7 @@ class WebFetchError extends Error {
  * Compatibility wrapper for direct callers.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 export async function webFetchToolImpl(params, options = {}) {
   return (await performWebFetch(params, options)).text;
@@ -58,7 +59,7 @@ export async function webFetchToolImpl(params, options = {}) {
  * Fetch and locally extract one public URL.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 export async function performWebFetch(params, options = {}) {
   const started = Date.now();
@@ -78,7 +79,7 @@ export async function performWebFetch(params, options = {}) {
  * Fetch and locally extract one public URL.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 async function performFetch(
   {
@@ -93,6 +94,7 @@ async function performFetch(
   {
     coordinator,
     documentOnly = false,
+    houndLocal = false,
     sandboxPolicy,
     sandboxEngine,
     ctx,
@@ -215,6 +217,7 @@ async function performFetch(
     try {
       const fetched = await fetchFollowingRedirects(parsed, {
         coordinator,
+        houndLocal, robotsOwner: resolvedCtx,
         headers: requestHeaders.headers,
         sandbox,
         policy,
@@ -226,7 +229,7 @@ async function performFetch(
       response = fetched.response;
       finalUrl = fetched.url;
       redirectCount = fetched.redirects;
-      if (isTransientResponse(response) && attempt < delays.length) {
+      if (isTransientResponse(response, fetched.bytes, finalUrl) && attempt < delays.length) {
         const delay = retryDelayForResponse(response, delays[attempt]);
         try { await response.body?.cancel(); } catch { /* best effort */ }
         await waitForRetry(delay, signal);
@@ -300,7 +303,7 @@ async function performFetch(
       // where their decoding metadata and browser recommendation are retained.
       decodedForExtraction = undefined;
     }
-  } else if ([401, 407].includes(response.status)) {
+  } else {
     try {
       assertNoWebAccessInterstitial({ url: finalUrl, statusCode: response.status });
     } catch (error) {
@@ -319,7 +322,8 @@ async function performFetch(
       : safeDecodePreview(bytes, contentType, responseKind);
     return failure(`HTTP ${response.status} for ${finalUrl}.`, `http_${response.status}`, startedAt, {
       attempts,
-      retryable: response.status === 429 || response.status >= 500,
+      retryable: response.status >= 500,
+      ...(response.status === 429 ? { retryAfterMs: parseRetryAfter(response) } : {}),
       statusCode: response.status,
       bytes: responseBytes,
       backend: "http",
@@ -497,6 +501,9 @@ async function fetchFollowingRedirects(initialUrl, options) {
           : "Network access denied by sandbox policy (redirect).",
       );
     }
+    if (options.houndLocal) await assertHoundRobots(current.href, {
+      ...options, robotsOwner: options.robotsOwner, userAgent: options.headers["User-Agent"],
+    });
     const fetched = await coordinatedWebRequest(options.coordinator, "fetch", current.origin, options.signal, async () => {
       const response = await options.fetchImpl(current, {
         headers: options.headers, redirect: "manual", signal: requestSignal(options.signal),
@@ -618,8 +625,14 @@ function requestSignal(signal) {
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-function isTransientResponse(response) {
-  return TRANSIENT_STATUS.has(response.status) || response.status >= 500;
+function isTransientResponse(response, bytes, url) {
+  if (!TRANSIENT_STATUS.has(response.status) && response.status < 500) return false;
+  // A 503 may be an access gate, not a transient service outage. Never retry
+  // observed challenges even before the normal extraction/classification path.
+  const contentType = response.headers.get("content-type") || "";
+  let text = "";
+  try { text = decodeWebBytes(bytes.subarray(0, 32 * 1024), contentType).text; } catch { /* normal decoding error follows */ }
+  return !classifyWebAccessInterstitial({ url, text, statusCode: response.status });
 }
 
 function retryDelayForResponse(response, fallback) {
@@ -700,11 +713,7 @@ function positiveInteger(value, fallback) {
 }
 
 function retryAfterMilliseconds(response) {
-  const raw = response.headers.get("retry-after");
-  if (!raw) return undefined;
-  const seconds = Number(raw);
-  const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(raw) - Date.now();
-  return Number.isFinite(delay) ? Math.max(0, delay) : undefined;
+  return parseRetryAfter(response);
 }
 
 export function formatWebFetchDocument(document, params, ctx) {
@@ -919,7 +928,6 @@ function countCompleteLines(prefix, whole) {
 
 function linksUnavailableReason(outcome) {
   if (outcome?.backend === "parallel") return "remote extraction does not provide page links";
-  if (outcome?.backend === "hound") return "remote extraction did not return page links";
   if (outcome?.rendered === true) return "browser rendering skips static link extraction";
   if (outcome?.extractionStage === "raw") return "raw format skips HTML link extraction";
   const kind = typeof outcome?.contentKind === "string" && outcome.contentKind ? outcome.contentKind : "this";
@@ -929,13 +937,15 @@ function linksUnavailableReason(outcome) {
 
 async function performFetchChain(params, options) {
   const started = Date.now();
+  const migration = houndEndpointError(options.fetchConfig?.hound);
+  if (migration) return failure(migration, "invalid_fetch_config", started);
   const selection = options.fetchConfig?.provider ?? "local";
   const names = Array.isArray(selection) ? selection : [selection];
   if (!names.length || new Set(names).size !== names.length || names.some((name) => !["local", "parallel", "hound"].includes(name))) {
     return failure("Error: Invalid WebFetch provider selection.", "invalid_fetch_config", started);
   }
   const parallelUnsupported = unsupportedParallelFetchOption(params);
-  const houndUnsupported = unsupportedHoundFetchOption(params);
+  const houndUnsupported = ["auto", "always"].includes(params.render) || options.fetchConfig?.render === "auto" ? "browser rendering" : undefined;
   const remoteUnsupported = (name) => (name === "parallel" ? parallelUnsupported : houndUnsupported);
   if (!names.includes("local") && names.every((name) => name !== "local" && remoteUnsupported(name))) {
     const first = names.find((name) => name !== "local");
@@ -948,9 +958,14 @@ async function performFetchChain(params, options) {
   }
   let result;
   const attemptedProviders = [];
+  let localAttempted = false;
   for (const name of names) {
     if (name === "parallel" && parallelUnsupported) continue;
     if (name === "hound" && houndUnsupported) continue;
+    if (["local", "hound"].includes(name)) {
+      if (localAttempted) continue;
+      localAttempted = true;
+    }
     attemptedProviders.push(name);
     result = name === "local" ? await performFetch(params, options) : name === "parallel" ? await performParallelFetch(params, options) : await performHoundFetch(params, options);
     if (!result.error || !fetchProviderMayAdvance(result.outcome)) break;
@@ -959,11 +974,12 @@ async function performFetchChain(params, options) {
 }
 
 // Never fall through validation, auth, sandbox, cancellation, coordination, or
-// size failures. Only a blocked/unusable page, HTTP error, or retryable transport
-// failure may disclose the same target to the next explicitly selected provider.
+// size/access/rate-limit failures. Only unusable content, ordinary HTTP errors,
+// or retryable transport failures may disclose the same target to the next
+// explicitly selected provider.
 function fetchProviderMayAdvance(outcome) {
-  return ["unusable_content", "access_challenge", "backend_unavailable"].includes(outcome.code)
-    || /^http_(?!401$|407$)\d{3}$/u.test(outcome.code)
+  return ["unusable_content", "backend_unavailable"].includes(outcome.code)
+    || /^http_(?!401$|403$|407$|429$)\d{3}$/u.test(outcome.code)
     || (["request_failed", "timeout"].includes(outcome.code) && outcome.retryable);
 }
 
@@ -999,45 +1015,10 @@ async function performParallelFetch(params, options) {
     : formatWebFetchDocument(document, params, ctx);
 }
 
-function validateHoundFetchEndpoint(input) {
-  const validated = validateHoundEndpoint(input);
-  if (validated.error) return { error: validated.error };
-  return { endpoint: validated.endpoint };
-}
-
 async function performHoundFetch(params, options) {
-  const started = Date.now();
-  if ((params.start_line !== undefined && (!Number.isSafeInteger(params.start_line) || params.start_line < 1))
-    || (params.max_lines !== undefined && (!Number.isSafeInteger(params.max_lines) || params.max_lines < 1 || params.max_lines > 10000))) {
-    return failure("Error: Invalid WebFetch line range.", "invalid_range", started);
-  }
-  const researchOptions = normalizeWebResearchOptions({ focus: params.focus, include_links: params.include_links });
-  if (researchOptions.error) {
-    return failure(researchOptions.error.message, researchOptions.error.code, started);
-  }
-  let url;
-  try { url = new URL(params.url); } catch { return failure("Error: Invalid URL", "invalid_url", started); }
-  if (!["http:", "https:"].includes(url.protocol)) return failure("Error: WebFetch only supports http(s) URLs.", "unsupported_protocol", started);
-  if (url.username || url.password) return failure("Error: WebFetch URL credentials are not allowed.", "url_credentials_rejected", started);
-  if (params.format !== undefined && !["markdown", "text"].includes(params.format)) return failure("Error: Invalid WebFetch format.", "invalid_format", started);
-  if (params.render !== undefined && params.render !== "never") return failure("Error: Invalid WebFetch render mode.", "invalid_render_mode", started);
-  if (params.headers != null && Object.keys(params.headers).length) return failure("Error: Hound WebFetch does not support headers.", "unsupported_parameter", started, { backend: "hound", option: "headers" });
-  const validated = validateHoundFetchEndpoint(options.fetchConfig?.hound?.endpoint);
-  if (validated.error) {
-    return failure("Error: Hound WebFetch endpoint is not configured.", "invalid_fetch_config", started);
-  }
-  const ctx = options.ctx ?? readToolRuntime();
-  const sandbox = ctx.sandbox ?? passthroughSandbox;
-  const policy = resolveSandboxPolicy(ctx, options.sandboxPolicy);
-  const result = await fetchHoundDocument(url, params, {
-    ...options, endpoint: validated.endpoint, ctx, sandbox, policy,
-  });
-  if (!result.ok) return failure(`Error: ${result.message}`, result.code, started, {
-    backend: "hound", retryable: result.retryable, statusCode: result.statusCode,
-    retryAfterMs: result.retryAfterMs, rateLimited: result.rateLimited,
-  });
-  const document = result.document;
-  document.outcome = { ...document.outcome, queueWaitMs: result.coordinationWaitMs, backendDurationMs: result.backendDurationMs };
-  return options.documentOnly ? { text: "", error: false, document, outcome: document.outcome }
-    : formatWebFetchDocument(document, params, ctx);
+  const result = await performFetch(params, { ...options, documentOnly: true, houndLocal: true, retryDelaysMs: [], fetchConfig: { ...options.fetchConfig, render: "never" } });
+  const outcome = { ...result.outcome, backend: "hound", local: true };
+  const document = result.document ? { ...result.document, outcome } : undefined;
+  if (document && !options.documentOnly) return formatWebFetchDocument(document, params, options.ctx ?? readToolRuntime());
+  return { ...result, outcome, ...(document ? { document } : {}) };
 }

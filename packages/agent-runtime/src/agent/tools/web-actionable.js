@@ -1,9 +1,13 @@
 // @ts-check
+import { normalizeSearchCountry } from "./web-search-country.js";
+
 /**
  * Shared managed web-research response contract for WebSearch and WebFetch.
  *
  * Interaction design is Hound-inspired (compact actionable envelope, focused
- * views, typed continuations); no Hound code, dependency, or backend is used.
+ * views, typed continuations); this envelope module remains independently
+ * implemented. Native extraction adaptations carry their own source and
+ * license notices.
  * Provider selection, admission, budget, cooldown, and sandbox enforcement
  * stay in the existing controller and providers — this module only shapes what
  * the model sees and guarantees the typed action surface.
@@ -11,7 +15,7 @@
  * Envelope statuses (exact):
  * - ok: complete usable output.
  * - partial: usable but incomplete output. Lossy search truncation, Parallel
- *   excerpts-only extraction, a static fallback after render failure, a
+ *   excerpts-only extraction, incomplete native engine coverage, a static fallback after render failure, a
  *   focus-filtered page subset, or a focus with no matching blocks.
  * - blocked: policy, access, or budget prevents progress. Sandbox network
  *   denial, site access challenge/authentication, rate limit/cooldown,
@@ -50,6 +54,9 @@ export const WEB_RESEARCH_STATUS_DOC = Object.freeze({
  * @type {ReadonlySet<string>}
  */
 export const BLOCKED_WEB_CODES = Object.freeze(new Set([
+  "robots_denied",
+  "robots_unavailable",
+  "robots_crawl_delay",
   "network_denied",
   "redirect_network_denied",
   "access_challenge",
@@ -214,7 +221,7 @@ export function refreshCachedSearchEnvelope(text, budget, requestedQuery) {
     ...(budget.dispatchesUsed === undefined ? {} : { dispatchesUsed: budget.dispatchesUsed }),
     ...(budget.maxDispatches === undefined ? {} : { maxDispatches: budget.maxDispatches }),
     ...(budget.dispatchesRemaining === undefined ? {} : { dispatchesRemaining: budget.dispatchesRemaining }),
-    retryInRun: typeof requestsRemaining === "number" ? requestsRemaining > 0 : parsed.coverage.retryInRun,
+    retryInRun: parsed.coverage.searchStopped === true ? false : typeof requestsRemaining === "number" ? requestsRemaining > 0 : parsed.coverage.retryInRun,
     cacheHit: true,
     attemptedBackends: [],
     actualQueries: query ? [query] : [],
@@ -360,7 +367,7 @@ function validWebFetchArgs(args) {
  */
 function validWebSearchArgs(args) {
   if (!args || typeof args !== "object" || Array.isArray(args)) return null;
-  const { query, limit, alternate_queries, domains, exclude_domains, language, time_range } = args;
+  const { query, limit, alternate_queries, domains, exclude_domains, language, country, time_range } = args;
   if (typeof query !== "string" || !query.trim() || query.trim().length > 500) return null;
   /** @type {Record<string, any>} */
   const valid = { query: query.trim() };
@@ -383,6 +390,11 @@ function validWebSearchArgs(args) {
   if (language !== undefined) {
     if (typeof language !== "string") return null;
     valid.language = language;
+  }
+  if (country !== undefined) {
+    const normalizedCountry = normalizeSearchCountry(country);
+    if (normalizedCountry.error) return null;
+    valid.country = normalizedCountry.value;
   }
   if (time_range !== undefined) {
     if (!["day", "month", "year"].includes(time_range)) return null;

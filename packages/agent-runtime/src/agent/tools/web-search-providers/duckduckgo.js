@@ -1,19 +1,27 @@
 // @ts-check
 import { parseHTML } from "linkedom";
 import { keylessHtmlSearch, canonicalizeSearchUrl, collapseWhitespace } from "./shared.js";
+import { duckDuckGoRegion, unsupportedCountryFilter } from "../web-search-country.js";
 export const duckduckgoProvider = {
   name: "duckduckgo", batchesQueries: false,
-  filterSupport: { language: "advisory", timeRange: "provider" },
+  filterSupport: { language: "advisory", timeRange: "provider", country: "provider" },
   configure: () => ({ value: {} }), eligibility: () => true,
   admission: () => ({ kind: "duckduckgo", key: "duckduckgo", processPolicy: "keyless" }),
   networkTargets: () => ["https://html.duckduckgo.com"],
+  preflight: (options) => options.country && !duckDuckGoRegion(options.country, options.language)
+    ? unsupportedCountryFilter("duckduckgo") : null,
   search: searchDuckDuckGo,
 };
 function searchDuckDuckGo(query, options) {
+  const url = new URL("https://html.duckduckgo.com/html/");
+  url.searchParams.set("q", query);
+  url.searchParams.set("kl", duckDuckGoRegion(options.country, options.language));
+  const date = { day: "d", month: "m", year: "y" }[options.timeRange];
+  if (date) url.searchParams.set("df", date);
   return keylessHtmlSearch({
     backend: "duckduckgo",
     label: "DuckDuckGo",
-    url: `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}${({ day: "d", month: "m", year: "y" }[options.timeRange]) ? `&df=${({ day: "d", month: "m", year: "y" }[options.timeRange])}` : ""}`,
+    url: url.href,
     parse: parseDuckDuckGoResults,
   }, options);
 }

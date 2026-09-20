@@ -569,7 +569,7 @@ export interface RuntimeRunOptions {
       readonly trustPublicUrl?: boolean;
     };
     readonly parallel?: { readonly apiKeyEnv?: string };
-    /** User-managed Hound MCP endpoint, required when the search chain selects hound. */
+    /** @deprecated Endpoint settings are rejected: Hound search is built in. */
     readonly hound?: { readonly endpoint?: string };
     readonly codex?: { readonly model?: string };
   };
@@ -577,7 +577,7 @@ export interface RuntimeRunOptions {
   readonly webFetchConfig?: {
     readonly provider?: "local" | "parallel" | "hound" | readonly ("local" | "parallel" | "hound")[];
     readonly parallel?: { readonly apiKeyEnv?: string };
-    /** User-managed Hound MCP endpoint, required when the fetch chain selects hound. */
+    /** @deprecated Endpoint settings are rejected: Hound fetch is built in. */
     readonly hound?: { readonly endpoint?: string };
     readonly render?: "never" | "auto";
     readonly browserCommand?: string;
