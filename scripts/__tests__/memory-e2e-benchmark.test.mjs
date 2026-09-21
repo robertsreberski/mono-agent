@@ -535,6 +535,91 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     await expect(metered.run("s", { messages: [] })).rejects.toThrow("provider_admission_stopped");
     expect(run).toHaveBeenCalledOnce();
   });
+  it("records settled finite-step evidence before classifying a local capture timeout", async () => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = vi.fn((_system, options) => new Promise((resolve) => {
+      options.abortSignal.addEventListener("abort", () => resolve({
+        text: "", error: "not retained", failureKind: "usage_limit",
+        diagnostics: { max_turns_hit: true },
+      }), { once: true });
+    }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toMatchObject({
+      code: "capture_step_budget_exhausted", failureKind: "budget_exceeded",
+    });
+    expect(budget.providerStop).toBeNull();
+    expect(budget.events[0]).toMatchObject({
+      status: "capture_step_budget_exhausted",
+      failureKind: "budget_exceeded",
+      providerReportedFailureKind: "usage_limit",
+      maxTurnsHit: true,
+      timeoutSettlement: "fulfilled_discarded",
+      latePayloadAccepted: false,
+    });
+    expect(captureRetryCause({ lastError: "provider" }, budget.events[0])).toBe("finite_capture_step");
+  });
+  it.each([
+    { label: "provider auth even with a max-turn flag", failureKind: "provider_auth", maxTurnsHit: true },
+    { label: "hosted quota without a max-turn flag", failureKind: "usage_limit", maxTurnsHit: false },
+  ])("keeps settled $label terminal after a local capture timeout", async ({ failureKind, maxTurnsHit }) => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = vi.fn((_system, options) => new Promise((resolve) => {
+      options.abortSignal.addEventListener("abort", () => resolve({
+        text: "", error: "not retained", failureKind,
+        diagnostics: { max_turns_hit: maxTurnsHit },
+      }), { once: true });
+    }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toMatchObject({
+      code: "provider_failed", failureKind,
+    });
+    expect(budget.providerStop).toMatchObject({ code: "provider_failed", failureKind });
+    expect(budget.events[0]).toMatchObject({
+      status: "provider_failed", failureKind,
+      providerReportedFailureKind: failureKind, maxTurnsHit,
+    });
+    expect(captureRetryCause({ lastError: "provider" }, budget.events[0])).toBeNull();
+  });
+  it.each(["immediate", "after local timeout"])("keeps a generic runtime rejection %s terminal", async (timing) => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = timing === "immediate"
+      ? vi.fn(async () => { throw new Error("synthetic generic rejection"); })
+      : vi.fn((_system, options) => new Promise((_resolve, reject) => {
+          options.abortSignal.addEventListener("abort", () => reject(new Error("synthetic generic rejection")), { once: true });
+        }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toMatchObject({ code: "provider_failed" });
+    expect(budget.events[0].status).toBe("provider_failed");
+    expect(budget.events[0].status).not.toBe("capture_timeout_settled");
+    expect(captureRetryCause({ lastError: "provider" }, budget.events[0])).toBeNull();
+  });
+  it("keeps a positively identified local abort rejection on the settled-timeout recovery path", async () => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = vi.fn((_system, options) => new Promise((_resolve, reject) => {
+      options.abortSignal.addEventListener("abort", () => {
+        const error = new Error("synthetic local abort");
+        error.name = "AbortError";
+        reject(error);
+      }, { once: true });
+    }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toMatchObject({ code: "capture_timeout_settled" });
+    expect(budget.events[0]).toMatchObject({
+      status: "capture_timeout_settled", timeoutSettlement: "rejected", latePayloadAccepted: false,
+    });
+  });
   it("keeps compaction observed while a capture timeout settles terminal", async () => {
     const { budget } = await setup();
     budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };

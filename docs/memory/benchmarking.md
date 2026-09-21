@@ -139,9 +139,13 @@ downloads or vendors it. Keep the CC BY-NC 4.0 corpus in an owner-only ignored
 directory. The adapter sends neither references, evidence annotations, images,
 summaries, observations, nor unselected conversations to a provider.
 
-Protocol `locomo-adjacent-exchanges-v5-native-capture-failure-recovery` projects
-each session into ordered, non-overlapping adjacent pairs of source utterances; a final odd utterance stands
-alone. Pairing uses only source order, never questions or answers. Speaker and
+Protocol `locomo-adjacent-exchanges-v6-source-clock-native-capture-failure-recovery`
+projects each session into ordered, non-overlapping adjacent pairs of source
+utterances; a final odd utterance stands alone. Each projected turn is admitted
+at its source timestamp after the prior admission has fully resolved; virtual
+retry-clock advances stay within that prior admission and cannot shift a later
+turn's observation anchor. Pairing uses only source order, never questions or
+answers. Speaker and
 text bytes are preserved without trimming, both participants remain quoted
 humans, and a claim-free synthetic acknowledgement completes each harness turn.
 The same exchange projection feeds full history and BuJo capture. No exchange is

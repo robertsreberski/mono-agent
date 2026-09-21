@@ -594,7 +594,10 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
           let admissionStarted = 0;
           let admission = null;
           for (const turn of captureTurns) {
-            now = new Date(Math.max(now.getTime(), Date.parse(turn.timestamp)));
+            // Each completed source turn owns its admission clock. The prior
+            // turn has fully resolved before this loop advances, so a virtual
+            // retry clock must not leak into the next source observation.
+            now = new Date(turn.timestamp);
             historicalAssistant = turn.assistant;
             admissionStarted = 0;
             admission = null;

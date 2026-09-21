@@ -155,7 +155,7 @@ describe("Telegram token gitleaks rule", () => {
   );
 
   it.skipIf(!hasGitleaks)(
-    "allows only explicitly labeled auth-path fingerprints",
+    "allows only the fingerprint finding when real credentials share its minified line",
     async () => {
       const { fixture } = await readInputs();
       const temporaryDirectory = await mkdtemp(
@@ -165,21 +165,14 @@ describe("Telegram token gitleaks rule", () => {
       const worklab = join(temporaryDirectory, ".worklab-tmp");
       await mkdir(worklab);
       const fingerprint = createHash("sha256").update("fixture auth path").digest("hex");
-      await writeFile(
-        join(worklab, "plan.json"),
-        `${JSON.stringify({ piAuthFingerprint: fingerprint })}\n`,
-        "utf8",
-      );
-      await writeFile(
-        join(temporaryDirectory, "public-plan.json"),
-        `${JSON.stringify({ piAuthFingerprint: fingerprint })}\n`,
-        "utf8",
-      );
-      await writeFile(
-        join(worklab, "secret.json"),
-        `${JSON.stringify({ candidate: materialize(fixture.detected[0]) })}\n`,
-        "utf8",
-      );
+      const genericApiKey = createHash("sha256").update("synthetic generic api key").digest("hex");
+      const mixedLine = `${JSON.stringify({
+        piAuthFingerprint: fingerprint,
+        apiKey: genericApiKey,
+        candidate: materialize(fixture.detected[0]),
+      })}\n`;
+      await writeFile(join(worklab, "private-plan.json"), mixedLine, "utf8");
+      await writeFile(join(temporaryDirectory, "public-plan.json"), mixedLine, "utf8");
       const reportPath = join(temporaryDirectory, "gitleaks-report.json");
       const result = spawnSync(
         "gitleaks",
@@ -194,7 +187,19 @@ describe("Telegram token gitleaks rule", () => {
       expect(result.error).toBeUndefined();
       expect(result.status, result.stderr).toBe(17);
       const report = JSON.parse(await readFile(reportPath, "utf8"));
-      expect(report.map((finding) => basename(finding.File))).toEqual(["secret.json"]);
+      expect(report).toHaveLength(4);
+      expect(report.map((finding) => basename(finding.File)).sort()).toEqual([
+        "private-plan.json",
+        "private-plan.json",
+        "public-plan.json",
+        "public-plan.json",
+      ]);
+      expect(report.map((finding) => finding.RuleID).sort()).toEqual([
+        "generic-api-key",
+        "generic-api-key",
+        "telegram-bot-token",
+        "telegram-bot-token",
+      ]);
     },
   );
 });

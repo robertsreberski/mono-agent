@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -562,6 +562,93 @@ describe("fictional E2E production-path contract, not model quality", () => {
       status: "invalid_incomplete", scheduled: 1, completed: 0,
     }); // Scripted answers are never scored as provider quality.
     expect((await readdir(input.directory)).filter((name) => name.startsWith("work-"))).toEqual([]);
+  }, 30000);
+
+  it("resets adjacent source admissions after a virtual retry advances the recovery clock", async () => {
+    const input = await fixture();
+    const dataset = await script("memory-e2e-dataset");
+    const timestamp = "2025-01-10T12:00:00.000Z";
+    const turns = [
+      { id: "same-t-1", sessionId: "same-t", speaker: "Mira", timestamp, user: "First source turn.", assistant: "First source response." },
+      { id: "same-t-2", sessionId: "same-t", speaker: "Mira", timestamp, user: "Second source turn.", assistant: "Second source response." },
+    ];
+    const corpus = {
+      schemaVersion: 1,
+      name: "locomo-v1",
+      turnsPerGroup: { min: 1, max: 64 },
+      arms: ["bujo"],
+      groups: [{
+        id: "source-clock",
+        split: "evaluation",
+        source: { turns, contextPolicy: "memory-only" },
+        questions: [{
+          id: "q-source-clock",
+          source: { text: "What was captured?", timestamp },
+          evaluation: {
+            answerable: false, accepted: [], forbidden: [], evidenceTurnIds: [],
+            category: "adversarial", locomoCategory: 5,
+          },
+        }],
+      }],
+    };
+    dataset.validateCorpus(corpus);
+    const plan = dataset.makePlan({ corpus, sha256: "synthetic-source-clock", split: "evaluation" });
+    plan.locomo = {
+      captureRecovery: {
+        policy: "native_persisted_exponential_v1",
+        maxAttempts: 2,
+        retryBaseMs: 60_000,
+        retryMaxMs: 60_000,
+        scheduleSource: "durable_pending_record_nextAttemptAt",
+        virtualClock: "advance_exactly_to_persisted_schedule",
+        retryableFailure: "model_output_settled_timeout_or_proven_finite_capture_step",
+        finiteStepPolicy: "current_attempt_capture_max_turns_only",
+        timeoutPolicy: "settled_capture_runtime_only",
+      },
+      experiment: { protocol: "synthetic-source-clock" },
+    };
+    plan.perCall.readinessTimeoutMs = 5_000;
+    plan.limits.chatSteps += 8;
+    plan.limits.embeddingCalls += 8;
+    plan.limits.estimatedInputTokens += 100_000;
+    plan.limits.embeddingInputTokens += 100_000;
+    plan.limits.outputTokens += 20_000;
+    const extractionPrompts: string[] = [];
+    let extractionCalls = 0;
+    const providerFactory = (args: any) => {
+      const value = input.providers.scriptedProviders(args);
+      return { ...value, extractor: { run: async (_system: string, options: any) => {
+        extractionCalls += 1;
+        extractionPrompts.push(options.messages[0].content);
+        return extractionCalls === 1
+          ? { text: "", structuredResult: { malformed: true } }
+          : { text: "", structuredResult: { memories: [], entities: [], relations: [] } };
+      } } };
+    };
+    const admittedAt: string[] = [];
+    const report = await input.runner.runBenchmark({
+      ...input, corpus, plan, providerFactory,
+      hooks: { store: (memory: bujo.BujoMemoryStore) => {
+        const persist = memory.persistCompletedTurn.bind(memory);
+        memory.persistCompletedTurn = async (completed) => {
+          const result = await persist(completed);
+          const record = JSON.parse(await readFile(result.source, "utf8"));
+          admittedAt.push(record.admittedAt);
+          return result;
+        };
+      } },
+    });
+
+    expect(report.trials).toMatchObject([{ status: "completed", cleanup: "removed_owned_store" }]);
+    expect(extractionCalls).toBe(3);
+    expect(admittedAt).toEqual([timestamp, timestamp]);
+    expect(extractionPrompts).toHaveLength(3);
+    expect(extractionPrompts.every((prompt) => prompt.includes(`admitted at ${timestamp}.`))).toBe(true);
+    expect(report.events.filter((event: any) => event.stage === "capture_recovery")).toEqual([
+      expect.objectContaining({ status: "scheduled", advanceMs: 60_000 }),
+      expect.objectContaining({ status: "recovered_success", attempt: 2 }),
+      expect.objectContaining({ status: "first_attempt_success", attempt: 1 }),
+    ]);
   }, 30000);
 
   it.each(["reader", "capture"])("reports terminal provider admission after clean %s failure cleanup", async (stage) => {

@@ -39,7 +39,7 @@ const COMPLETED_TURN_CAPTURE_TEXT_MAX_BYTES = 512 * 1024;
  * source utterances (the final odd utterance stands alone). Pair boundaries use
  * only source order: never questions, references, evidence ids, or outcomes.
  */
-export const LOCOMO_ADAPTER_PROTOCOL = "locomo-adjacent-exchanges-v5-native-capture-failure-recovery";
+export const LOCOMO_ADAPTER_PROTOCOL = "locomo-adjacent-exchanges-v6-source-clock-native-capture-failure-recovery";
 export const LOCOMO_EXCHANGE_MAX_ENTRIES = 2;
 export const LOCOMO_EXCHANGE_MAX_USER_BYTES = 8 * 1024;
 export const LOCOMO_READER_PROMPT = Object.freeze({

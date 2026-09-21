@@ -28,7 +28,7 @@ regexes = [
 
 [[allowlists]]
 description = "Explicitly labeled non-secret SHA-256 auth-path fingerprints"
-regexTarget = "line"
+regexTarget = "match"
 regexes = [
   '''(?i)(?:piAuthFingerprint|authFingerprint|EXPECTED_AUTH_FINGERPRINT)["']?\s*[:=]\s*["']?[0-9a-f]{64}''',
 ]

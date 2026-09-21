@@ -62,6 +62,12 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
     expect(() => parseLocomoTimestamp("01/02/2025 09:05")).toThrow("locomo_invalid_timestamp");
   });
 
+  it("versions source-clock admission semantics in the protocol identity", () => {
+    expect(LOCOMO_ADAPTER_PROTOCOL).toBe(
+      "locomo-adjacent-exchanges-v6-source-clock-native-capture-failure-recovery",
+    );
+  });
+
   it("preserves exact text, order, attribution and timestamp in adjacent human exchanges", () => {
     const raw = sample("conv-exchange").conversation;
     const exchanges = projectLocomoExchangeSession(raw, "session_1");

@@ -208,12 +208,15 @@ async function waitForCaptureRuntimeSettlement(runtimePromise, {
     if (compactionObserved()) throw new BenchmarkError("unexpected_compaction");
     if (settlement.status === "fulfilled") {
       const stopReason = settlement.value?.diagnostics?.pi_stop_reason;
+      const failureKind = canonicalFailureKind(settlement.value?.failureKind);
+      event.providerReportedFailureKind = failureKind;
+      event.maxTurnsHit = settlement.value?.diagnostics?.max_turns_hit === true;
       if (["length", "max_tokens"].includes(stopReason)) throw new BenchmarkError("output_limit_reached");
-      if (settlement.value?.diagnostics?.max_turns_hit === true) {
+      // Pi's local finite-turn guard reports both facts. A max-turn diagnostic
+      // alone must not mask provider auth/quota or an unknown provider failure.
+      if (failureKind === "usage_limit" && event.maxTurnsHit) {
         throw new BenchmarkError("capture_step_budget_exhausted", { failureKind: "budget_exceeded" });
       }
-      const failureKind = canonicalFailureKind(settlement.value?.failureKind);
-      if (failureKind !== null) event.providerReportedFailureKind = failureKind;
       if (settlement.value?.failureKind || settlement.value?.error) {
         if (failureKind !== null) {
           event.failureKind = failureKind;
@@ -230,6 +233,12 @@ async function waitForCaptureRuntimeSettlement(runtimePromise, {
         event.providerReportedFailureKind = failureKind;
         if (isFatalFailureKind(failureKind)) budget.stopProviders("provider_failed", failureKind);
         throw new BenchmarkError("provider_failed", { failureKind });
+      }
+      // Only a standard abort rejection is positive evidence that the local
+      // timeout cancelled this runtime. Any other settled rejection is an
+      // unknown provider failure, not a recoverable timeout completion.
+      if (!(settlement.reason instanceof Error && settlement.reason.name === "AbortError")) {
+        throw new BenchmarkError("provider_failed");
       }
     }
     throw new BenchmarkError("capture_timeout_settled");

@@ -88,8 +88,10 @@
   zero-trial run.
 - Add opt-in LoCoMo memory diagnostics with ordered source exchanges, one
   capture pass per conversation within a run, independent question histories,
-  and exact completed-result reuse. Report lexical scores separately from
-  unmeasured semantic quality and expose capture, retrieval, and budget limits.
+  source timestamp-bound admission clocks that retries cannot shift, and exact
+  completed-result reuse. Retry only positively identified local capture
+  failures. Report lexical scores separately from unmeasured semantic quality
+  and expose capture, retrieval, and budget limits.
 - Keep memory E2E strict capture on the runtime's authoritative structured
   result, including reconciliation projection, and pin real requests to SSE
   with no transport retry. Report output reservations as provider hints and
