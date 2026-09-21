@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a Markdown blog to the marketing site at `/blog/`, with an index,
+  article pages, RSS, sitemap entries, and per-post social cards. The
+  collection ships empty and the index reads intentionally until the first
+  post lands; the authoring contract lives in `marketing/BLOG.md`.
+
 - Fix `subagents.maxTurns` and `subagents.definitions[].maxTurns` rejecting
   the advertised 400 ceiling. The loader now accepts the full 1–400 range the
   generated schema describes, so a config already set to the published maximum
