@@ -267,7 +267,7 @@ describe("runCli memory", () => {
     expect(bujoMemory.readBujoCanonicalSourceFingerprint(destinationRoot)).toBe(before);
   }, 30_000);
 
-  it("emits the closed strict-health JSON contract for unconfigured and remote memory", async () => {
+  it("emits the closed strict-health JSON contract for unconfigured memory", async () => {
     const unconfiguredDir = await agentDir({ memory: undefined });
     const unconfigured = await captureCli(() => withCwd(unconfiguredDir, () => withCleanMonoAgentEnv(() =>
       runCli(["memory", "audit", "--strict", "--json"]))));
@@ -292,24 +292,6 @@ describe("runCli memory", () => {
     });
     expect(unconfigured.stdout).not.toContain(unconfiguredDir);
 
-    const remoteDir = await agentDir({
-      memory: {
-        backend: "supermemory",
-        mode: "lite",
-        writeMode: "capture",
-        supermemory: { baseUrl: "https://memory.invalid", container: "strict-agent" },
-      },
-    });
-    const remote = await captureCli(() => withCwd(remoteDir, () => withCleanMonoAgentEnv(() =>
-      runCli(["memory", "audit", "--strict", "--json"]))));
-    expect(remote.code).toBe(1);
-    expect(remote.stderr).toBe("");
-    expect(JSON.parse(remote.stdout)).toMatchObject({
-      schemaVersion: 1,
-      backend: "supermemory",
-      status: "unknown",
-      issues: [],
-    });
   });
 
   it("audits a real Lite store exactly and exits one for degraded and unhealthy states", async () => {
@@ -1292,24 +1274,6 @@ describe("runCli memory", () => {
     expect((await readdir(join(memoryRoot, ".."))).some((name) => name.includes("forget-backup"))).toBe(false);
   }, 30_000);
 
-  it("rejects rebuild and rollback for Supermemory", async () => {
-    const dir = await agentDir({
-      memory: {
-        backend: "supermemory",
-        mode: "lite",
-        writeMode: "capture",
-        supermemory: { baseUrl: "https://memory.invalid", container: "agent-alpha" },
-      },
-    });
-
-    for (const operation of ["rebuild", "rollback"]) {
-      const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", operation]))));
-      expect(result.code, operation).toBe(1);
-      expect(result.stdout, operation).toBe("");
-      expect(result.stderr, operation).toMatch(/Supermemory.*remote index/iu);
-    }
-  });
-
   it("runs explicit BuJo replay adoption with an aggregate-only JSON contract", async () => {
     const privateRoot = join(await tempDir(), "private-memory-root");
     const dir = await agentDir({
@@ -1518,12 +1482,6 @@ describe("runCli memory", () => {
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "private-test-embed", dim: 8 },
       },
-      {
-        backend: "supermemory",
-        mode: "bujo",
-        writeMode: "capture",
-        supermemory: { baseUrl: "https://memory.invalid", container: "private-container" },
-      },
     ]) {
       const dir = await agentDir({ memory });
       const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
@@ -1533,7 +1491,6 @@ describe("runCli memory", () => {
         "private-lite-memory",
         "private-journal-memory",
         "private-test-embed",
-        "private-container",
       ]);
 
       const human = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
@@ -1543,7 +1500,6 @@ describe("runCli memory", () => {
         "private-lite-memory",
         "private-journal-memory",
         "private-test-embed",
-        "private-container",
       ]);
     }
   });
@@ -1648,33 +1604,7 @@ describe("runCli memory", () => {
     }
   });
 
-  it("previews Supermemory with the live recall tool disabled and marks local stats unavailable", async () => {
-    const server = await supermemoryServer();
-    try {
-      const dir = await agentDir({
-        memory: {
-          backend: "supermemory",
-          mode: "lite",
-          writeMode: "capture",
-          recallTool: { enabled: false },
-          supermemory: { baseUrl: server.baseUrl, container: "agent-alpha" },
-        },
-      });
 
-      const stats = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "stats"]))));
-      expect(stats.code).toBe(0);
-      expect(stats.stdout).toContain("Remote-only fields not known locally");
-      expect(stats.stdout).toContain("agent-alpha");
-
-      const search = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "search", "coffee"]))));
-      expect(search.code).toBe(0);
-      expect(search.stdout).toContain("Supermemory remembers coffee preference.");
-      expect(server.searchBodies).toHaveLength(1);
-      expect(server.searchBodies[0]).toMatchObject({ containerTag: "agent-alpha", q: "coffee" });
-    } finally {
-      await server.close();
-    }
-  });
 });
 
 async function seedLocalStore(root: string, seededAt?: Date): Promise<void> {
@@ -1908,52 +1838,6 @@ async function withCleanMonoAgentEnv<T>(run: () => Promise<T>): Promise<T> {
       process.env[key] = value;
     }
   }
-}
-
-async function supermemoryServer(): Promise<{
-  readonly baseUrl: string;
-  readonly searchBodies: Record<string, unknown>[];
-  readonly close: () => Promise<void>;
-}> {
-  const searchBodies: Record<string, unknown>[] = [];
-  const server = createServer((req, res) => {
-    let body = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => {
-      body += chunk;
-    });
-    req.on("end", () => {
-      if (req.method !== "POST" || req.url !== "/v4/search") {
-        res.writeHead(404, { "content-type": "application/json" });
-        res.end("{}");
-        return;
-      }
-      searchBodies.push(JSON.parse(body) as Record<string, unknown>);
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({
-        results: [
-          { id: "sm-1", memory: "Supermemory remembers coffee preference.", similarity: 0.88 },
-        ],
-      }));
-    });
-  });
-  await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address() as AddressInfo;
-  return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
-    searchBodies,
-    close: () => new Promise<void>((resolve, reject) => {
-      server.close((error) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve();
-        }
-      });
-    }),
-  };
 }
 
 async function closedLoopbackEndpoint(): Promise<string> {

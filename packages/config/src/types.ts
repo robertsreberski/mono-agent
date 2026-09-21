@@ -44,33 +44,8 @@ export interface OllamaWebSearchConfig {
   /** Required acknowledgement for non-private custom HTTPS origins. */
   readonly trustPublicUrl: boolean;
 }
-/**
- * Which memory engine backs the store. `"bujo"` (default) is the homegrown
- * SQLite/embeddings engine selected by {@link MemoryMode}. External backends
- * (e.g. `"supermemory"`) implement the same MemoryStore contract; for them
- * `mode`/`embeddings`/`llm` are ignored and a backend-specific block applies.
- * Extensible union: add a backend here and its config block on the memory shape.
- */
+/** Built-in memory engine selector. */
 export type MemoryBackend = (typeof MEMORY_BACKENDS)[number];
-/**
- * Supermemory external backend (https://supermemory.ai). Points at a local OSS
- * binary or the hosted cloud via `baseUrl`. Extraction/consolidation happens
- * server-side, so no `memory.llm` is needed for this backend.
- */
-export interface MemorySupermemoryConfig {
-  /** REST base URL — local OSS binary (e.g. http://127.0.0.1:8080) or hosted cloud. */
-  readonly baseUrl: string;
-  /** Resolved API key value (inline or read from `apiKeyEnv` at load time). Optional for no-auth local. */
-  readonly apiKey?: string;
-  /** Name of the env var the key was read from, kept for redacted display. */
-  readonly apiKeyEnv?: string;
-  /** Namespace/container tag scoping this agent's memories. Defaults to the trace sourceId. */
-  readonly container?: string;
-  /** Per-call HTTP timeout in ms (default 10000). */
-  readonly timeoutMs?: number;
-  /** Also inject Supermemory's official MCP server alongside the in-app recall tool. Default false. */
-  readonly exposeMcpServer?: boolean;
-}
 /** Configuration for bujo-tier lightweight consolidation. */
 export interface MemoryConsolidationConfig {
   readonly enabled?: boolean;
@@ -352,18 +327,12 @@ export interface MonoAgentConfig {
     readonly skillDisclosure?: SkillDisclosureMode;
   };
   readonly memory?: {
-    /**
-     * Memory engine. `"bujo"` (default) uses the homegrown SQLite engine driven
-     * by `mode`. External backends (e.g. `"supermemory"`) implement the same
-     * MemoryStore contract and ignore `mode`/`embeddings`/`llm`.
-     */
+    /** Memory engine. `"bujo"` is the built-in SQLite engine driven by `mode`. */
     readonly backend?: MemoryBackend;
     readonly mode: MemoryMode;
     readonly path: string;
     readonly maxBytes: number;
     readonly writeMode: MemoryWriteMode;
-    /** Supermemory external backend config; required when `backend` is `"supermemory"`. */
-    readonly supermemory?: MemorySupermemoryConfig;
     /** Embedding provider for semantic memory recall; keyword fallback when unset. */
     readonly embeddings?: MemoryEmbeddingsConfig;
     /** LLM for bujo capture and effective tier selection. */
@@ -373,15 +342,14 @@ export interface MonoAgentConfig {
      * provides targeted search for every backend; capable local tiers may also
      * provide policy-gated `MemoryJournal` chronology. Derived from this single
      * memory block — no hand-wired MCP entry. Defaults on for every configured
-     * memory tier; explicit false opts out of both explicit read tools without
+     * local tier; explicit false opts out of both explicit read tools without
      * disabling automatic memory context.
      */
     readonly recallTool?: { readonly enabled: boolean };
     /**
      * Agent-callable `Remember` tool that durably stores one explicitly stated
      * fact. Deterministic and append-only; it takes no chat LLM. Defaults on for
-     * the bujo backend (every tier) and off for external backends, which expose
-     * no such write surface. Explicit false opts out.
+     * every local tier; explicit false opts out.
      */
     readonly rememberTool?: { readonly enabled: boolean };
     /** Bujo-tier lightweight consolidation. Scheduler default cadence: every two hours. */
@@ -520,10 +488,6 @@ export type RedactedMemoryEmbeddingsConfig = Omit<MemoryEmbeddingsConfig, "apiKe
   readonly apiKey?: RedactedSecretValue;
 };
 
-export type RedactedMemorySupermemoryConfig = Omit<MemorySupermemoryConfig, "apiKey"> & {
-  readonly apiKey?: RedactedSecretValue;
-};
-
 export type RedactedOllamaWebSearchConfig = Omit<OllamaWebSearchConfig, "apiKey"> & {
   readonly apiKey?: RedactedSecretValue;
 };
@@ -538,10 +502,9 @@ export type RedactedToolsConfig = Omit<MonoAgentConfig["tools"], "web"> & {
 
 export type RedactedMemoryConfig = Omit<
   NonNullable<MonoAgentConfig["memory"]>,
-  "embeddings" | "supermemory"
+  "embeddings"
 > & {
   readonly embeddings?: RedactedMemoryEmbeddingsConfig;
-  readonly supermemory?: RedactedMemorySupermemoryConfig;
 };
 
 export interface RedactedMonoAgentConfig {

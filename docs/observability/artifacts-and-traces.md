@@ -318,21 +318,24 @@ not turn into a fast full memory audit. It publishes the same value to the prima
 enabled best-effort global mirror. Memory health is independent of process health: a source can be `running` while its
 memory is `degraded`, or have memory `in_progress` while durable work drains normally.
 
-The nested contract is discriminated by `backend`. Built-in `bujo` requires `mode`
-(`lite`, `journal`, or `bujo`), its core status, canonically ordered closed issues, and optional
-whitelisted counts (`pending`, `due`, `dead`, `outbox`, `temporary`, `memories`, `vectors`, and
-`missingVectors`). `supermemory` carries only `unknown`; `none` carries `not_configured` or
-`unknown`; neither remote/absent variant carries mode, issues, or counts. Registry readers normalize
-this as untrusted input: unknown fields are discarded, while a semantically contradictory newest
-snapshot becomes a timestamp-preserving `unknown` variant rather than disappearing and leaving an
-older green value authoritative. A duplicate local/global source keeps the independently freshest
-`memoryHealth.checkedAt` rather than coupling it to whichever process manifest won the ordinary
-source merge.
+The nested current contract is discriminated by `backend`. Local `bujo` requires
+`mode` (`lite`, `journal`, or `bujo`), its core status, canonically ordered closed
+issues, and optional whitelisted counts (`pending`, `due`, `dead`, `outbox`,
+`temporary`, `memories`, `vectors`, and `missingVectors`). `none` carries
+`not_configured` or `unknown` without mode, issues, or counts. Registry readers
+normalize this as untrusted input: unknown fields are discarded, while a
+semantically contradictory newest snapshot becomes a timestamp-preserving
+`none/unknown` variant rather than disappearing and leaving an older green value
+authoritative. A persisted legacy `supermemory/unknown` snapshot is likewise
+normalized to `none/unknown` while retaining its valid timestamp and source
+identity; a new strict report that uses the retired backend is malformed. A
+duplicate local/global source keeps the independently freshest
+`memoryHealth.checkedAt` rather than coupling it to whichever process manifest
+won the ordinary source merge.
 
 The snapshot is safe for discovery surfaces: it contains no paths, filenames, record/run ids,
 memory or model text, payloads, or raw provider/native errors. `none/not_configured`,
-`none/unknown`, and `supermemory/unknown` omit `mode`; the latter is unknown because a local trace registry cannot
-assert health of the remote index. For the exact strict CLI schema and exit contract, see
+and `none/unknown` omit `mode`. For the exact strict CLI schema and exit contract, see
 [Memory validation & CLI](/memory/validation-and-cli/#strict-provider-free-health-gate).
 
 Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3× margin) so a single missed write does not flap a healthy agent into the stale state. Registries also self-prune: manifests whose heartbeat is older than 7 days AND whose process is no longer running are deleted automatically the next time an agent starts or `mono-agent tui` runs.

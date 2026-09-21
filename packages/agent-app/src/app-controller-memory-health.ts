@@ -67,13 +67,7 @@ export function refreshMemoryHealthSnapshot(controller: MemoryHealthControllerPo
   }).catch(() => {
     const health = controller.memoryHealthValue.backend === "bujo"
       ? unknownBujoMemoryHealth(controller.memoryHealthValue.mode)
-      : controller.memoryHealthValue.backend === "supermemory"
-        ? {
-            backend: "supermemory" as const,
-            status: "unknown" as const,
-            checkedAt: new Date().toISOString(),
-          }
-        : unknownNoMemoryHealth();
+      : unknownNoMemoryHealth();
     if (!controller.stopped && generation === controller.memoryHealthGeneration) {
       controller.memoryHealthValue = health;
       controller.recordMemoryHealthCompletion(generation);
@@ -107,13 +101,6 @@ export async function computeMemoryHealth(controller: MemoryHealthControllerPort
     return {
       backend: "none",
       status: "not_configured",
-      checkedAt: new Date().toISOString(),
-    };
-  }
-  if ((memory.backend ?? "bujo") === "supermemory") {
-    return {
-      backend: "supermemory",
-      status: "unknown",
       checkedAt: new Date().toISOString(),
     };
   }

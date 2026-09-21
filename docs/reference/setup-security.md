@@ -47,7 +47,7 @@ Promotion uses an identity-bound owner-only lock and installs a `0600` file with
 
 ### Exact executing closure
 
-Guided macOS setup materializes the exact already-resolved CLI dependency closure into a private versioned runtime under `~/.mono-agent/runtimes/agent-app/`. The closure includes config-selected channel plugins and the optional Supermemory package. Copying it does not run npm, lifecycle scripts, or another dependency resolution, and it never daemonizes a disposable npm-cache path.
+Guided macOS setup materializes the exact already-resolved CLI dependency closure into a private versioned runtime under `~/.mono-agent/runtimes/agent-app/`. The closure includes config-selected channel plugins. Copying it does not run npm, lifecycle scripts, or another dependency resolution, and it never daemonizes a disposable npm-cache path.
 
 A complete source digest plus a relative path/type/mode/content-hash manifest is bound to the runtime marker and rechecked before reuse. Dependency or selected-plugin drift therefore prevents a stale managed closure from being treated as current.
 

@@ -11,9 +11,7 @@ import * as z from "zod/v4";
 import type {
   MemoryRecallEmbeddings,
   MemoryRecallSettings,
-  MemoryRecallSupermemorySettings,
 } from "./memory-recall-settings.js";
-import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
 export { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
 export type {
@@ -21,8 +19,6 @@ export type {
   MemoryRecallEmbeddings,
   MemoryRecallEmbeddingsCircuitBreaker,
   MemoryRecallSettings,
-  MemoryRecallSupermemory,
-  MemoryRecallSupermemorySettings,
   ResolveMemoryRecallSettingsOptions,
 } from "./memory-recall-settings.js";
 
@@ -83,10 +79,6 @@ export interface RecallCapableStore {
   close(): Promise<void>;
 }
 
-function isSupermemorySettings(settings: MemoryRecallSettings): settings is MemoryRecallSupermemorySettings {
-  return "supermemory" in settings;
-}
-
 export interface MemoryRecallRuntimeExtension {
   readonly runtimeOptions: {
     readonly mcpServers: Record<string, unknown>;
@@ -111,19 +103,7 @@ export const DEFAULT_RECALL_EMBEDDINGS_TIMEOUT_MS = 10_000;
  * circuit breaker fast-fails after repeated failures so a sustained outage stops blocking it.
  */
 export async function createRecallStore(settings: MemoryRecallSettings): Promise<RecallCapableStore> {
-  // Backend packages load lazily so importing the settings/type surface never pulls the
-  // SQLite/BuJo stack or Supermemory client into the main process. Only a recall command or the
-  // injected tool pays for the backend it actually serves.
-  if (isSupermemorySettings(settings)) {
-    const { createSupermemoryStore } = await loadSupermemoryPlugin();
-    const sm = settings.supermemory;
-    return createSupermemoryStore({
-      baseUrl: sm.baseUrl,
-      container: sm.container,
-      ...(sm.apiKey === undefined ? {} : { apiKey: sm.apiKey }),
-      ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
-    });
-  }
+  // Load the native SQLite/BuJo stack only when recall is used.
   const { createBujoMemoryStore, resolveActiveMemoryDbPath } = await import("@mono-agent/memory/bujo");
   const dbPath = settings.dbPath ?? await resolveActiveMemoryDbPath(settings.root);
   const { embeddings } = settings;

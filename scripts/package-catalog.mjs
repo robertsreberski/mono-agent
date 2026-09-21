@@ -120,16 +120,6 @@ export const packageCatalog = [
     publishable: true,
   },
   {
-    dir: "memory-supermemory",
-    name: "@mono-agent/memory-supermemory",
-    path: "extras/memory-supermemory",
-    category: "context",
-    responsibility: "Provides a MemoryStore over an external Supermemory instance (local OSS binary or hosted cloud) via its REST API: server-side extraction, hybrid recall, and awaited completed-turn admission.",
-    allowedDependencyCategories: ["core"],
-    publishable: true,
-    tier: "plugin",
-  },
-  {
     dir: "create-mono-agent",
     name: "create-mono-agent",
     category: "app",

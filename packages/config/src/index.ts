@@ -1,11 +1,11 @@
 export {
   assertConfiguredProviderCoverage,
+  assertNoRetiredMonoAgentConfig,
   MAX_AGENT_NAME_LENGTH,
   loadMonoAgentConfig,
   MonoAgentConfigError,
   redactMonoAgentConfig,
   resolveConfiguredProviders,
-  resolveSupermemoryContainer,
   RETIRED_CONFIG_FIELDS,
 } from "./config.js";
 export type {
@@ -27,14 +27,12 @@ export type {
   MemoryMode,
   MemoryOllamaLlmConfig,
   MemoryConsolidationConfig,
-  MemorySupermemoryConfig,
   MemoryWriteMode,
   MonoAgentConfig,
   PiNativeProviderConfig,
   RuntimeFallbackConfig,
   RedactedMemoryConfig,
   RedactedMemoryEmbeddingsConfig,
-  RedactedMemorySupermemoryConfig,
   RedactedMonoAgentConfig,
   RedactedLocalProviderDefinition,
   RedactedProviderDefinition,

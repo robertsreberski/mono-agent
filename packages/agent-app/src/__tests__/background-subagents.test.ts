@@ -144,22 +144,153 @@ describe("parent stop", () => {
       successorGate.resolve({ text: "next" }); await done(f.service, successor.details.jobId);
     } finally { gate.resolve({ text: "cleanup" }); }
   }, 40_000);
+  it("rearms a newer terminal publication when cancellation grace completes under an older publication", async () => {
+    const f = await managedFixture(undefined, { maxRuntimeMs: 60_000 });
+    const releaseUnknownConfirm = deferred<void>();
+    const unknownConfirmHeld = deferred<void>();
+    const releaseRetainedConfirm = deferred<void>();
+    const retainedConfirmHeld = deferred<number>();
+    let heldUnknown = false;
+    let heldRetained = false;
+    f.service.bindManagedSubagents!({
+      root: resolve(f.root, "children"),
+      verify: async (identity) => await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        if (phase === "confirm" && !publication.released && publication.disposition.status === "cancelled") {
+          if (!heldUnknown && publication.disposition.continuity === "unknown") {
+            heldUnknown = true;
+            unknownConfirmHeld.resolve();
+            await releaseUnknownConfirm.promise;
+          } else if (!heldRetained && publication.disposition.continuity === "retained") {
+            heldRetained = true;
+            retainedConfirmHeld.resolve(publication.sequence);
+            await releaseRetainedConfirm.promise;
+          }
+        }
+        await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+      },
+    });
+    const providerGate = deferred<any>();
+    const providerEntered = deferred<void>();
+    const providerAborted = deferred<void>();
+    let request: any;
+    const { agent, send } = tools(f, async (input: any) => {
+      request = input;
+      providerEntered.resolve();
+      if (input.abortSignal.aborted) providerAborted.resolve();
+      else input.abortSignal.addEventListener("abort", () => providerAborted.resolve(), { once: true });
+      return await providerGate.promise;
+    });
+
+    vi.useFakeTimers();
+    try {
+      const first = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
+      await providerEntered.promise;
+      const stopping = send.execute("stop", { id: "helper", stop: true });
+      await providerAborted.promise;
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect((await stopping).details.stop).toMatchObject({
+        status: "stop_requested",
+        childStillBusy: true,
+        resumable: false,
+      });
+      await vi.advanceTimersByTimeAsync(1_100);
+      await unknownConfirmHeld.promise;
+      vi.useRealTimers();
+
+      providerGate.resolve({ text: "late", subagentContinuity: { turnToken: request.turnToken, state: "retained" } });
+      releaseUnknownConfirm.resolve();
+      const retainedSequence = await retainedConfirmHeld.promise;
+      await vi.waitFor(async () => {
+        const record = await f.store.get(first.details.jobId);
+        expect(record).toMatchObject({
+          state: "cancelled",
+          childStillBusy: true,
+          subagentOwnership: {
+            owner: { settlement: "settled" },
+            disposition: { status: "cancelled", continuity: "retained", resumeAfterStop: true },
+            publication: { state: "pending" },
+          },
+        });
+        expect(record!.subagentOwnership!.publication.sequence).toBeGreaterThan(retainedSequence);
+      }, { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+      expect(await f.instances.get("helper")).toMatchObject({ status: "running", turns: 0 });
+      expect(f.wake).not.toHaveBeenCalled();
+      await expect(send.execute("busy", { id: "helper", message: "next" })).rejects.toThrow("busy");
+      await expect(agent.execute("capacity", { id: "other", persist: true, background: true, prompt: "no" })).rejects.toThrow();
+
+      releaseRetainedConfirm.resolve();
+      await vi.waitFor(async () => expect((await f.store.get(first.details.jobId))?.subagentOwnership?.publication)
+        .toMatchObject({ state: "confirmed", receiptPending: false }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+      expect(await done(f.service, first.details.jobId)).toMatchObject({ state: "cancelled", childStillBusy: false });
+      const settledInstance = await f.instances.get("helper");
+      expect(settledInstance).toMatchObject({ status: "idle", turns: 1 });
+      expect(settledInstance?.recoveryBlocked).not.toBe(true);
+      expect(f.wake).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+      releaseUnknownConfirm.resolve();
+      releaseRetainedConfirm.resolve();
+      providerGate.resolve({ text: "cleanup" });
+    }
+  }, 40_000);
   it.each([false, true])("stop races completion and AskParent without fabricating cancellation (question=%s)", async (question) => {
     const f = await managedFixture(); const gate = deferred<any>(); const reached = deferred<void>(); const proceed = deferred<void>();
+    const controllerDrained = deferred<void>(); const secondReadDrained = deferred<void>();
     const { agent, options } = tools(f, async () => gate.promise);
     const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
     const controller = options.backgroundSubagentController;
-    const send = createAgentSendTool({ ...options, backgroundSubagentController: { ...controller,
-      stop: async (identity: any) => { reached.resolve(); await proceed.promise; return controller.stop!(identity); } } });
-    const stopping = send.execute("stop", { id: "helper", stop: true }); await reached.promise;
-    gate.resolve({ text: "completed first", ...(question ? { subagentQuestion: { question: "Choose scope?" } } : {}) });
-    await done(f.service, started.details.jobId); proceed.resolve();
-    const result = await stopping;
-    if (result.details.stop.status === "stopped") expect(result.details.stop).toMatchObject({ disposition: question ? "awaiting_reply" : "ok", stopRequested: false, resumable: true });
-    else expect(result.details.stop).toMatchObject({ code: "subagent_stop_unavailable", stopRequested: "unknown" });
-    expect((await send.execute("idle", { id: "helper", stop: true })).details.stop).toMatchObject({ status: "already_idle", disposition: question ? "awaiting_reply" : "ok", resumable: true });
-    expect(await f.instances.get("helper")).toMatchObject({ turns: 1, status: question ? "awaiting_reply" : "idle" });
-    expect(f.wake).toHaveBeenCalledOnce();
+    // The public six-second race does not cancel its underlying operation. Track
+    // the proof and final registry read so fixture removal never races late I/O.
+    const originalGet = options.instances.get.bind(options.instances);
+    let readCalls = 0;
+    const instances = { ...options.instances, get: async (id: string) => {
+      const call = ++readCalls;
+      try { return await originalGet(id); }
+      finally { if (call === 2) secondReadDrained.resolve(); }
+    } };
+    let observedProof: Awaited<ReturnType<NonNullable<typeof controller.stop>>> | undefined;
+    let completionOrder = 0; let proofObservedAt = 0;
+    const send = createAgentSendTool({ ...options, instances, backgroundSubagentController: { ...controller,
+      stop: async (identity: any) => {
+        reached.resolve();
+        try {
+          await proceed.promise;
+          observedProof = await controller.stop!(identity);
+          proofObservedAt = ++completionOrder;
+          return observedProof;
+        } finally { controllerDrained.resolve(); }
+      } } });
+    let stopping: ReturnType<typeof send.execute> | undefined;
+    try {
+      stopping = send.execute("stop", { id: "helper", stop: true }); await reached.promise;
+      gate.resolve({ text: "completed first", ...(question ? { subagentQuestion: { question: "Choose scope?" } } : {}) });
+      await done(f.service, started.details.jobId); proceed.resolve();
+      const result = await stopping;
+      const receiptObservedAt = ++completionOrder;
+      await controllerDrained.promise;
+      expect(observedProof).toMatchObject({ jobId: started.details.jobId, disposition: question ? "awaiting_reply" : "ok",
+        stopRequested: false, childStillBusy: false, resumable: true });
+      await secondReadDrained.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (result.details.stop.status === "stopped") {
+        expect(result.details.stop).toMatchObject({ disposition: question ? "awaiting_reply" : "ok", stopRequested: false, resumable: true });
+        expect(proofObservedAt).toBeLessThan(receiptObservedAt);
+      } else {
+        expect(result.details.stop).toMatchObject({ code: "subagent_stop_unavailable", stopRequested: expect.toBeOneOf(["unknown", false]) });
+        if (result.details.stop.stopRequested === "unknown") expect(receiptObservedAt).toBeLessThan(proofObservedAt);
+        else expect(proofObservedAt).toBeLessThan(receiptObservedAt);
+      }
+      expect((await send.execute("idle", { id: "helper", stop: true })).details.stop).toMatchObject({ status: "already_idle", disposition: question ? "awaiting_reply" : "ok", resumable: true });
+      expect(await f.instances.get("helper")).toMatchObject({ turns: 1, status: question ? "awaiting_reply" : "idle" });
+      expect(f.wake).toHaveBeenCalledOnce();
+    } finally {
+      gate.resolve({ text: "cleanup" });
+      proceed.resolve();
+      if (stopping) await Promise.allSettled([stopping, controllerDrained.promise]);
+      if (observedProof) await secondReadDrained.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
   }, 15_000);
   it("publication failure and restart remain fenced until the exact stop certificate is acknowledged", async () => {
     const f = await managedFixture(); const entered = deferred<void>(); const root = resolve(f.root, "children");
@@ -348,6 +479,7 @@ describe("managed detached production execution", () => {
       await entered.promise; // Real registry transaction owns its lock and is at its actual write boundary.
       shutdown = f.service.stop().then(() => { stopped = true; });
       await vi.waitFor(() => expect((f.service as unknown as { managedWritesClosed: boolean }).managedWritesClosed).toBe(true));
+      expect((f.service as unknown as { managedPublicationRearmPending: Set<string> }).managedPublicationRearmPending.size).toBe(0);
       expect(releaseOwner, "entered registry I/O must finish before owner-lock release").not.toHaveBeenCalled();
       expect(stopped).toBe(false);
       await expect(openProcessJobsService(f.options)).rejects.toMatchObject({ code: "process_job_controller_unavailable" });
@@ -857,13 +989,14 @@ describe("managed detached production execution", () => {
   }, 15_000);
   it.each(["delay-confirm", "fail-after-confirm"])("keeps admission and wakes fenced through %s", async (fault) => {
     const f = await managedFixture(); const gate = deferred<void>();
-    let intercepted = false;
+    let intercepted = false; let releasedConfirmAttempts = 0;
     f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
       verify: async (identity) => await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
       publish: async (phase, publication) => {
         const handle = await f.registry.open(publication.identity.conversationId, { existingOnly: true });
         if (phase === "confirm" && publication.released) {
           intercepted = true;
+          releasedConfirmAttempts++;
           if (fault === "delay-confirm") await gate.promise;
           else { await handle.publishOwned(phase, publication); throw new Error("injected confirmation receipt failure"); }
         }
@@ -887,6 +1020,8 @@ describe("managed detached production execution", () => {
         expect((await f.instances.get("helper"))?.turns).toBe(1);
         expect(f.wake).toHaveBeenCalledOnce();
       }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(releasedConfirmAttempts).toBe(1);
     } finally { gate.resolve(); }
   }, 12_000);
 

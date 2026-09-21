@@ -10,11 +10,8 @@ same `@mono-agent/memory/store` + `@mono-agent/memory/bujo` substrate. Pick the 
 that matches your external-dependency budget; all tiers share the same config shape —
 only `memory.mode` and the optional embeddings/LLM blocks differ.
 
-Weighing the built-in engine against an external memory service? See
-[Backends: BuJo vs Supermemory](/memory/backends-comparison/).
-Planning shared knowledge across several agents? See
-[Fleet-scale shared knowledge](/memory/backends-comparison/#fleet-scale-shared-knowledge)
-for the current framework boundary and external-service pattern.
+For a compact capability and dependency comparison, see
+[Local memory tiers and custom stores](/memory/backends-comparison/).
 
 ## Memory Tiers
 
@@ -36,8 +33,7 @@ for the current framework boundary and external-service pattern.
 
 All three local tiers can back the app-owned `MemoryJournal` tool without a
 provider call. It reads the curated active index in chronological order; BuJo's
-raw `audit/` observations and dropped records remain excluded. Supermemory
-supports targeted search but not this local chronology.
+raw `audit/` observations and dropped records remain excluded.
 
 Route by the evidence the question needs:
 
@@ -109,7 +105,7 @@ success.
 This is not a multi-tenant or adversarial security boundary. In particular, checksums and logical
 digests detect unexpected changes inside the trusted same-user workflow; they do not authenticate
 the store against a malicious process running as that OS owner (or as root) that can rewrite both
-data and its commitments. Network-provider trust and external memory backends are separate
+data and its commitments. Network-provider trust and injected custom stores are separate
 boundaries. Manual same-owner edits are outside this guarantee: stop the agent and use the
 documented maintenance flows instead of rewriting managed files in place. See [reversible forget
 plans](/memory/validation-and-cli/#reversible-explicit-bujo-forget-plans) and [safe rebuild and
@@ -213,8 +209,8 @@ For Pi SDK memory capture through the host runtime, use:
 How the **host** persists each completed turn (independent of the tier's recall):
 
 - `disabled` — never write.
-- `append-host-summary` — admit a deterministic observation by stable provider run id. The built-in backend fsyncs it, then projects it without a chat LLM: Lite/Journal put it in the canonical daily log, Journal queues semantic indexing after the lexical commit, and BuJo puts it in the separate raw audit. Supermemory instead awaits one run-keyed remote upsert of the summary.
-- `capture` — on the built-in backend, fsync the summary and full capture text by stable provider run id, then project the raw audit and run serialized BuJo curation in the background. One contract-explicit, strictly validated extraction call plus at most one strict batch-reconcile call writes canonical facts and precise graph evidence. The extraction prompt spells out the exact field, `0..1` salience, identifier, reference, and relation rules. Reconciliation spells out each exact action shape: `ADD` omits target/text, `NOOP` requires a supplied target id and omits text, and `UPDATE`/`SUPERSEDE` require target plus complete replacement text. The provider-neutral strict parser never fills or coerces an invalid result. A normal stop drains for up to 10 seconds; a timed-out active attempt remains pending for restart. Provider/model failures retry with bounded exponential backoff for more than 24 hours, then remain as a durable dead letter rather than claiming success. Built-in `capture` requires `mode: "bujo"`; Supermemory accepts it independently of the compatibility mode and awaits a remote upsert before its service performs asynchronous extraction.
+- `append-host-summary` — admit a deterministic observation by stable provider run id. The local backend fsyncs it, then projects it without a chat LLM: Lite/Journal put it in the canonical daily log, Journal queues semantic indexing after the lexical commit, and BuJo puts it in the separate raw audit.
+- `capture` — fsync the summary and full capture text by stable provider run id, then project the raw audit and run serialized BuJo curation in the background. One contract-explicit, strictly validated extraction call plus at most one strict batch-reconcile call writes canonical facts and precise graph evidence. The extraction prompt spells out the exact field, `0..1` salience, identifier, reference, and relation rules. Reconciliation spells out each exact action shape: `ADD` omits target/text, `NOOP` requires a supplied target id and omits text, and `UPDATE`/`SUPERSEDE` require target plus complete replacement text. The provider-neutral strict parser never fills or coerces an invalid result. A normal stop drains for up to 10 seconds; a timed-out active attempt remains pending for restart. Provider/model failures retry with bounded exponential backoff for more than 24 hours, then remain as a durable dead letter rather than claiming success. `capture` requires `mode: "bujo"`.
 
 The strong built-in write returns only after the owner-only `.capture-intake/pending` record and
 directory entry plus its compact content-free admission commitment are durable. Repeating the same
@@ -405,9 +401,10 @@ the full question flow and config blocks the composer writes.
 
 The agent gets targeted read-only `MemoryRecall` — FTS search for Lite and hybrid
 keyword/semantic search for Journal/BuJo. `agent-app` auto-provisions it from the
-single `config.memory` block for every backend. Local Lite, Journal, and BuJo stores
-also gain the separately policy-gated `MemoryJournal` chronological tool; Supermemory
-does not. Set `recallTool.enabled` to `false` to opt out of both explicit read tools.
+single `config.memory` block for local memory. Local Lite, Journal, and BuJo stores
+also gain the separately policy-gated `MemoryJournal` chronological tool. Injected
+custom stores must affirm chronological support before that tool is offered. Set
+`recallTool.enabled` to `false` to opt out of both explicit read tools.
 There is no hand-wired `.mcp.json` entry and no separate local LLM to run.
 
 Unqualified active-conversation questions are not durable-memory searches. For example,
@@ -449,7 +446,7 @@ NFKC-normalized, trimmed, and collapsed to a single line, and the tool echoes
 back exactly what it wrote.
 
 It is narrower than recall in three ways. It needs a writable **bujo-backend**
-store, so read-only stores and the Supermemory backend never receive it; it is
+store, so read-only stores never receive it; it is
 gated by `memory.rememberTool.enabled` (default on for the bujo backend); and
 unlike `MemoryRecall` it **is** subject to `tools.allowedTools`, so a
 restrictive policy must name `Remember`. Text carrying a credential is rejected

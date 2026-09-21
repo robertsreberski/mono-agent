@@ -98,7 +98,7 @@ describe("isRememberCapableStore", () => {
   it("requires an affirmative capability, not just a remember method", () => {
     // A read-only store structurally HAS remember(); only the signal separates them.
     expect(isRememberCapableStore({ remember: async () => ({}), supportsRemember: () => false })).toBe(false);
-    // The Supermemory shape: a MemoryStore with no durable write surface at all.
+    // A generic read-only MemoryStore has no durable write surface at all.
     expect(isRememberCapableStore({ persistCompletedTurn: async () => ({}) })).toBe(false);
     expect(isRememberCapableStore(undefined)).toBe(false);
     expect(isRememberCapableStore({ remember: async () => ({}), supportsRemember: () => true })).toBe(true);

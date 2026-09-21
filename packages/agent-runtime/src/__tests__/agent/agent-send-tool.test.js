@@ -307,4 +307,39 @@ describe("AgentSend stop", () => {
       expect(await result).toMatchObject({ isError: true, details: { stop: { code: "subagent_stop_unavailable", stopRequested: "unknown" } } });
     } finally { vi.useRealTimers(); }
   });
+  it("preserves a settled false proof when the final registry read exceeds the deadline", async () => {
+    vi.useFakeTimers();
+    let releaseRead;
+    let markReadEntered;
+    let markReadDrained;
+    const readGate = new Promise((resolve) => { releaseRead = resolve; });
+    const readEntered = new Promise((resolve) => { markReadEntered = resolve; });
+    const readDrained = new Promise((resolve) => { markReadDrained = resolve; });
+    const f = setup({ backgroundSubagentController: { stop: vi.fn(async () => {
+      f.records.set("helper", { id: "helper", incarnation: "epoch", status: "idle", turns: 1, settledTurnToken: "owned-token", lastStatus: "ok" });
+      return { jobId: "owned-token", stopRequested: false, childStillBusy: false, resumable: true, disposition: "ok" };
+    }) } });
+    f.records.set("helper", { id: "helper", incarnation: "epoch", status: "running", turns: 0, activeTurn: { kind: "detached", token: "owned-token" } });
+    const read = f.instances.get;
+    let reads = 0;
+    f.instances.get = vi.fn(async (id) => {
+      reads++;
+      if (reads === 2) {
+        markReadEntered();
+        try { await readGate; } finally { markReadDrained(); }
+      }
+      return await read(id);
+    });
+    const result = createAgentSendTool(f.options).execute("stop", { id: "helper", stop: true });
+    try {
+      await readEntered;
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await result).toMatchObject({ isError: true, details: { stop: { code: "subagent_stop_unavailable", stopRequested: false } } });
+    } finally {
+      releaseRead();
+      await readDrained;
+      await vi.runAllTicks();
+      vi.useRealTimers();
+    }
+  });
 });

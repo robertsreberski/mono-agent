@@ -244,7 +244,6 @@ describe("reply artifact responder composition", () => {
       memoryStore: async () => memory as never,
       ensureSharedMemoryRetrieval: () => undefined,
       reportMemoryRecallStatus: () => false,
-      supermemoryMcpRuntimeOptions: () => undefined,
       adapterSendToolsRuntimeOptions: async () => ({ blockingToolNames: [] }),
       requestModelOverrideRuntimeOptions: () => ({
         extension: async () => ({ runtimeOptions: {}, cleanup: async () => {} }),
@@ -575,7 +574,6 @@ async function createRouteGuardFixture(
     memoryStore: async () => memory as never,
     ensureSharedMemoryRetrieval: () => undefined,
     reportMemoryRecallStatus: () => false,
-    supermemoryMcpRuntimeOptions: () => undefined,
     adapterSendToolsRuntimeOptions: async () => ({ blockingToolNames: [] }),
     requestModelOverrideRuntimeOptions(coreConfigInput) {
       return createRequestModelOverrideRuntimeOptions(controller, coreConfigInput);

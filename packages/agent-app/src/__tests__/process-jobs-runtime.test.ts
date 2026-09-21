@@ -423,7 +423,7 @@ describe("process-job request availability", () => {
   it("preserves parent-plus-one depth through a busy live-session queue and removes capability at max depth", async () => {
     const controller = vi.fn((_request: unknown, _depth: number | (() => number)) => ({ start: vi.fn() }));
     const coreConfig = {
-      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, workspace: "/agent" },
       tools: { allowedTools: ["Exec"], disallowedTools: [] },
     } as never;
     const extension = createProcessJobsRuntimeExtension({
@@ -536,7 +536,7 @@ describe("process-job request availability", () => {
       const conversationId = channel === "slack" ? "slack:C1:1.1" : "telegram:42";
       const controller = vi.fn((_request: unknown, _chainDepth: number | (() => number)) => ({ start: vi.fn() }));
       const coreConfig = {
-        runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+        runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, workspace: "/agent" },
         tools: { allowedTools: ["Exec"], disallowedTools: [] },
       } as never;
       const extension = createProcessJobsRuntimeExtension({
@@ -626,7 +626,7 @@ describe("process-job request availability", () => {
       await writeFile(identityPath, "You are Mono.", "utf8");
       const controller = vi.fn((_request: unknown, _chainDepth: number | (() => number)) => ({ start: vi.fn() }));
       const coreConfig = {
-        runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+        runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, workspace: "/agent" },
         tools: { allowedTools: ["Exec"], disallowedTools: [] },
       } as never;
       const extension = createProcessJobsRuntimeExtension({
@@ -848,7 +848,7 @@ describe("process-job request availability", () => {
   it("fails closed when overlapping wake flights reuse one exact delivery discriminator", async () => {
     const controller = vi.fn(() => ({ start: vi.fn() }));
     const coreConfig = {
-      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, workspace: "/agent" },
       tools: { allowedTools: ["Exec"], disallowedTools: [] },
     } as never;
     const extension = createProcessJobsRuntimeExtension({

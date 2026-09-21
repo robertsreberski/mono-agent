@@ -471,20 +471,19 @@ describe("findJsonSecretConfigWarnings", () => {
     expect(warnings).toEqual([]);
   });
 
-  it("warns for a JSON-sourced Supermemory api key and names its env var", () => {
-    const warnings = findJsonSecretConfigWarnings(buildView(baseEnv, {
+  it("keeps an exact empty legacy Supermemory block out of the resolved config view", () => {
+    const sections = buildView(baseEnv, {
       memory: {
-        backend: "supermemory",
-        supermemory: {
-          baseUrl: "http://127.0.0.1:6767",
-          apiKey: "sm-json-secret",
-        },
+        backend: "bujo",
+        mode: "lite",
+        path: "./memory",
+        supermemory: {},
       },
-    }));
+    });
 
-    expect(warnings).toEqual([
-      "[WARN] memory.supermemory.apiKey is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY).",
-    ]);
+    expect(findJsonSecretConfigWarnings(sections)).toEqual([]);
+    expect(sections.flatMap((entry) => entry.fields).map((entry) => entry.id))
+      .not.toContain("memory.supermemory.baseUrl");
   });
 });
 

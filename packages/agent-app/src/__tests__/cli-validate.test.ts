@@ -200,45 +200,6 @@ describe("runCli validate --consumer", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ ok: true });
   });
 
-  it("reports Supermemory as waiting when its base URL points at a closed port", async () => {
-    const baseUrl = await closedLoopbackBaseUrl();
-    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
-    await writeConsumerConfig(dir, "mono-agent.config.json", {
-      runtime: { model: "openai-codex:gpt-5.5" },
-      context: { identityPath: "./IDENTITY.md" },
-      memory: {
-        backend: "supermemory",
-        mode: "lite",
-        path: ".mono-agent/memory",
-        writeMode: "capture",
-        supermemory: { baseUrl, container: "closed-port-agent" },
-      },
-    });
-    process.chdir(dir);
-
-    const result = await captureRunCli(["validate", "--json"]);
-
-    expect(result.code).toBe(0);
-    expect(result.stderr).toBe("");
-    const report = JSON.parse(result.stdout) as {
-      readonly ok: boolean;
-      readonly structurallyValid: boolean;
-      readonly operationallyReady: boolean;
-      readonly sections: readonly {
-        readonly id: string;
-        readonly status: string;
-        readonly details: readonly string[];
-      }[];
-    };
-    const memory = report.sections.find((section) => section.id === "memory");
-    expect(report.ok).toBe(true);
-    expect(report.structurallyValid).toBe(true);
-    expect(report.operationallyReady).toBe(false);
-    expect(memory?.status).toBe("waiting");
-    expect(memory?.details.join("\n")).toContain(`Supermemory is not reachable at ${baseUrl}`);
-    expect(memory?.details.join("\n")).toContain("memory.supermemory.baseUrl");
-    expect(memory?.details.join("\n")).toContain("mono-agent validate");
-  });
 
   it("loads the consumer .env and config without changing the current directory", async () => {
     const invocationDir = join(dir, "invocation");

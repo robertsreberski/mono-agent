@@ -429,7 +429,7 @@ export interface JsonlRunReaderOptions {
 export type TraceSourceStatus = "running" | "stopped" | "failed";
 export type TraceSourceHealth = "running" | "stale" | "stopped" | "failed";
 
-export type TraceSourceMemoryBackend = "bujo" | "supermemory" | "none";
+export type TraceSourceMemoryBackend = "bujo" | "none";
 export type TraceSourceMemoryMode = "lite" | "journal" | "bujo";
 export type TraceSourceMemoryStatus =
   | "healthy"
@@ -490,15 +490,6 @@ export interface TraceSourceBujoMemoryHealth extends TraceSourceMemoryHealthBase
   readonly counts?: TraceSourceMemoryCounts;
 }
 
-/** Remote Supermemory cannot be inspected by the local trace registry. */
-export interface TraceSourceSupermemoryMemoryHealth extends TraceSourceMemoryHealthBase {
-  readonly backend: "supermemory";
-  readonly status: "unknown";
-  readonly mode?: never;
-  readonly issues?: never;
-  readonly counts?: never;
-}
-
 /** No configured backend, or configuration could not be loaded safely. */
 export interface TraceSourceNoMemoryHealth extends TraceSourceMemoryHealthBase {
   readonly backend: "none";
@@ -511,7 +502,6 @@ export interface TraceSourceNoMemoryHealth extends TraceSourceMemoryHealthBase {
 /** Content-free memory health safe to publish in a trace-source manifest. */
 export type TraceSourceMemoryHealth =
   | TraceSourceBujoMemoryHealth
-  | TraceSourceSupermemoryMemoryHealth
   | TraceSourceNoMemoryHealth;
 
 export interface TraceSourceManifest {

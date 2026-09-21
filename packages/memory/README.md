@@ -672,11 +672,10 @@ This package may depend on core contracts and local persistence/search dependenc
 ## What This Package Does Not Own
 
 It does not own host configuration, backend selection, app-owned `MemoryRecall`
-or `MemoryJournal` MCP wiring, external Supermemory storage, model runtime
-execution, communication channels, or run artifact persistence.
-`@mono-agent/agent-app` chooses which memory backend to build and wires eligible
-tools, while `@mono-agent/memory-supermemory` owns the external Supermemory
-backend and does not claim local chronology.
+or `MemoryJournal` MCP wiring, external custom-store implementations, model
+runtime execution, communication channels, or run artifact persistence.
+`@mono-agent/agent-app` chooses the local tier to build and wires eligible tools;
+programmatic hosts may inject a separate structural `MemoryStore`.
 
 ## Related Documentation
 
@@ -684,7 +683,7 @@ backend and does not claim local chronology.
 - [Write modes, durable capture, and recall](https://docs.mono-agent.dev/memory/capture-and-recall/)
 - [Embeddings](https://docs.mono-agent.dev/memory/embeddings/)
 - [Validation and config-aware maintenance](https://docs.mono-agent.dev/memory/validation-and-cli/)
-- [Built-in versus Supermemory backends](https://docs.mono-agent.dev/memory/backends-comparison/)
+- [Local memory tiers and custom stores](https://docs.mono-agent.dev/memory/backends-comparison/)
 
 ## Verification
 

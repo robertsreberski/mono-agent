@@ -173,9 +173,7 @@ export function restartArtifactRetentionScheduler(controller: MaintenanceControl
       artifactDir,
       retention: coreConfig.artifacts.retention,
       memoryRetention: coreConfig.artifacts.memoryRetention,
-      ...(coreConfig.memory === undefined || coreConfig.memory.backend === "supermemory"
-        ? {}
-        : { memoryRoot: coreConfig.memory.path }),
+      ...(coreConfig.memory === undefined ? {} : { memoryRoot: coreConfig.memory.path }),
       ...(controller.logger === undefined ? {} : { logger: controller.logger }),
       beforeFirstRun: () => controller.reconcileStaleRunsOnce(artifactDir),
     });
@@ -192,7 +190,7 @@ export function restartArtifactRetentionScheduler(controller: MaintenanceControl
         maxCount: coreConfig.artifacts.memoryRetention.maxCount,
         dryRun: coreConfig.artifacts.memoryRetention.dryRun,
       },
-      forgetBackups: coreConfig.memory === undefined || coreConfig.memory.backend === "supermemory"
+      forgetBackups: coreConfig.memory === undefined
         ? { enabled: false }
         : {
             enabled: true,

@@ -814,10 +814,10 @@ describe("startMonoAgentApp", () => {
         heartbeatMs: 250,
       },
       memory: {
-        backend: "supermemory",
+        backend: "bujo",
         mode: "lite",
-        writeMode: "capture",
-        supermemory: { baseUrl: "https://memory.invalid", container: "periodic-agent" },
+        path: "./memory",
+        writeMode: "disabled",
       },
     });
 
@@ -825,9 +825,9 @@ describe("startMonoAgentApp", () => {
     controller.refreshMemoryHealthOnTimer();
     await vi.waitFor(async () => {
       const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
-      expect(sources[0]?.memoryHealth).toMatchObject({ backend: "supermemory", status: "unknown" });
+      expect(sources[0]?.memoryHealth).toMatchObject({ backend: "bujo" });
     }, { timeout: 2_000, interval: 50 });
-    expect(app.memoryHealth).toMatchObject({ backend: "supermemory", status: "unknown" });
+    expect(app.memoryHealth).toMatchObject({ backend: "bujo" });
 
     expect(controller.memoryHealthRefreshTimer).toBeDefined();
     const stopping = app.stop();
@@ -2872,7 +2872,7 @@ describe("startMonoAgentApp", () => {
     await writeConfig(baseConfig());
     const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
     const coreConfig = {
-      runtime: { model: { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" }, executionMode: "sdk", maxTurns: 4, workspace: dir, session: { mode: "per-message", idleTimeoutMs: 1_800_000 } },
+      runtime: { model: { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" }, maxTurns: 4, workspace: dir, session: { mode: "per-message", idleTimeoutMs: 1_800_000 } },
       context: { identityPath: join(dir, "IDENTITY.md"), selectedSkills: [] },
       memory: { mode: "lite", path: join(dir, "mem"), writeMode: "disabled", maxBytes: 8_000 },
       tools: { allowedTools: [], disallowedTools: [] },

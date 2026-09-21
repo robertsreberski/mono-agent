@@ -232,13 +232,12 @@ describe("check-consumer-docs-consistency", () => {
     ]);
   });
 
-  it("enforces canonical MemoryRecall spelling in the app, memory, config, and Supermemory READMEs", async () => {
+  it("enforces canonical MemoryRecall spelling in current app, memory, and config READMEs", async () => {
     const repoRoot = await tempRepo();
     const readmePaths = [
       "packages/agent-app/README.md",
       "packages/config/README.md",
       "packages/memory/README.md",
-      "extras/memory-supermemory/README.md",
     ];
     for (const relativePath of readmePaths) {
       await writeRepoDoc(repoRoot, relativePath, "Use canonical `MemoryRecall`.\n");

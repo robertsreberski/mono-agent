@@ -104,7 +104,7 @@ type PreflightFailure = Extract<PreflightResult, { ok: false }>;
  * folder without a config is not a configured agent). Then run the structural
  * validation with `liveness:false` (network probes only yield `waiting`, never
  * `error`, so skipping them keeps the verdict while avoiding bounded network
- * timeouts) and refuse on any `error` section. `waiting` (e.g. Ollama or Supermemory not up yet) is runtime-soft and never blocks.
+ * timeouts) and refuse on any `error` section. `waiting` (e.g. Ollama not up yet) is runtime-soft and never blocks.
  */
 export async function ensureStartable(
   args: Pick<ParsedCliArgs, "configPath">,

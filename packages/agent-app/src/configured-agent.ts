@@ -33,7 +33,7 @@ import { resolve as resolvePath } from "node:path";
 
 import { setToolActivityPathRoots } from "@mono-agent/agent-contracts";
 import type { AgentResponder, MemoryStore } from "@mono-agent/agent-contracts";
-import { resolveSupermemoryContainer } from "@mono-agent/config";
+import { assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { LlmComplete, LlmCompleteOptions } from "@mono-agent/memory/bujo";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
@@ -122,7 +122,6 @@ import {
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import { activeProjectSkillSelections, isRetiredProjectSkillName } from "./project-skills.js";
 import { isReadSkillDenied } from "./skill-registry.js";
-import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
 type StaticRuntimeOptions = NonNullable<AgentHarnessOptions["runtimeOptions"]>;
 
@@ -440,6 +439,7 @@ function createConfiguredAgentRuntimeBase(
   options: ConfiguredAgentRuntimeOptions | undefined,
   suppressSandboxEngine = false,
 ): MonoRuntimeLike {
+  assertNoRetiredMonoAgentConfig(config);
   const fallback = fallbackChainForConfig(config, options);
   const sandboxEngine = suppressSandboxEngine
     ? undefined
@@ -1020,11 +1020,8 @@ function configuredRoutesOnlyPiNative(
 }
 
 /**
- * Memory backends load lazily: the SQLite/BuJo stack (better-sqlite3,
- * sqlite-vec) and the Supermemory REST client are imported only when
- * `config.memory` selects them, so a memory-less or supermemory-only agent
- * never pays for the other backend. This is what makes the configured
- * composition functions async.
+ * The SQLite/BuJo stack (better-sqlite3, sqlite-vec) loads lazily only when
+ * memory is configured. This keeps memory-less composition lightweight.
  */
 type MemoryBujoModule = typeof import("@mono-agent/memory/bujo");
 type MemorySearchModule = typeof import("@mono-agent/memory/search");
@@ -1049,6 +1046,7 @@ async function createConfiguredAgentHarnessInternal(
   internalHooks: ConfiguredAgentInternalHooks = {},
 ): Promise<AgentHarness> {
   const config = options.config;
+  assertNoRetiredMonoAgentConfig(config);
   const recording = await recorderCompositionDeps(config, options, internalHooks);
   const ownership = await acquireAgentRootOwnership(options.cwd ?? process.cwd());
   const agentRoot = ownership.agentRoot;
@@ -1823,7 +1821,7 @@ function configuredMemoryForHarness(
   }
   return new MemoryRetrievalService(memory, {
     maxBytes: config.memory.maxBytes,
-    source: (config.memory.backend ?? "bujo") === "supermemory" ? "supermemory" : "memory-bujo",
+    source: "memory-bujo",
   });
 }
 
@@ -1912,32 +1910,9 @@ async function createConfiguredMemoryInternal(
   deps: ConfiguredMemoryDependencies,
   protectionPosture?: ProcessJobsProtectionPosture,
 ): Promise<MemoryStore | undefined> {
+  assertNoRetiredMonoAgentConfig(config);
   if (config.memory === undefined) {
     return undefined;
-  }
-  const backend = config.memory.backend ?? "bujo";
-  if (backend === "supermemory") {
-    const sm = config.memory.supermemory;
-    if (sm === undefined) {
-      // Defensive: the loader already rejects this combination.
-      throw new Error("memory.backend 'supermemory' requires a memory.supermemory block.");
-    }
-    const { createSupermemoryStore } = await loadSupermemoryPlugin({
-      ...(deps.cwd === undefined ? {} : { cwd: deps.cwd }),
-      ...(deps.preferAppPluginInstall === undefined
-        ? {}
-        : { preferAppInstall: deps.preferAppPluginInstall }),
-    });
-    // External backend: `mode`/`embeddings`/`llm` are bujo-only and intentionally ignored. Recall +
-    // capture both go over the REST client; Supermemory extracts/consolidates server-side.
-    return createSupermemoryStore({
-      baseUrl: sm.baseUrl,
-      container: resolveSupermemoryContainer(config),
-      ...(sm.apiKey === undefined ? {} : { apiKey: sm.apiKey }),
-      ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
-      ...(config.memory.maxBytes === undefined ? {} : { maxBytes: config.memory.maxBytes }),
-      ...(deps.logger === undefined ? {} : { logger: deps.logger }),
-    });
   }
   const { mode, path: root, maxBytes, embeddings: embeddingsConfig, llm: llmConfig } = config.memory;
   const bujo = await loadMemoryBujoModule();

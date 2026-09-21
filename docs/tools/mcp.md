@@ -214,8 +214,8 @@ A complete empty range is `status: "ok"` with `noData: true`. Invalid input/curs
 and range bounds return closed error codes. Store failures return the generic
 `journal_unavailable` error without raw paths or backend text. Unsupported capability is
 different again: the endpoint is not composed. Lite, Journal, and BuJo support it over
-their local canonical index without embedding/chat calls; Supermemory does not, and no
-search fallback or fake empty result is provided.
+their local canonical index without embedding/chat calls. Unsupported custom stores get no
+search fallback or fake empty result.
 
 Availability requires `memory.recallTool.enabled`, an affirmative local browse
 capability, and app-tool policy. Under a restrictive allowlist name `MemoryJournal`,
@@ -265,10 +265,10 @@ rejected.
 Availability is narrower than recall. The tool appears only when a memory block
 is configured, `memory.rememberTool.enabled` is not `false`, tool policy allows
 `Remember`, and the store affirms it can accept writes. That last condition
-excludes read-only stores and the Supermemory backend, which implements the
-shared `MemoryStore` contract but no durable write surface: a configured memory
-block does not by itself grant a write tool. Unlike `MemoryRecall`, `Remember`
-**is** gated by `tools.allowedTools`, so an operator can withhold durable writes
+excludes read-only stores and custom stores without a durable write surface: a
+configured memory block does not by itself grant a write tool. Unlike
+`MemoryRecall`, `Remember` **is** gated by `tools.allowedTools`, so an operator can
+withhold durable writes
 while keeping recall; `disallowedTools` removes it and deny wins.
 
 Writes are idempotent across partial failure. The bullet id is derived from the

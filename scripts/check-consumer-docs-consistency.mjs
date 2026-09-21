@@ -13,7 +13,6 @@ const userDocRoots = [
   "packages/agent-app/README.md",
   "packages/config/README.md",
   "packages/memory/README.md",
-  "extras/memory-supermemory/README.md",
   "packages/observability/README.md",
   "packages/operator-adapter/README.md",
   "packages/tui/README.md",

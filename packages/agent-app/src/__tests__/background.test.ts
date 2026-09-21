@@ -427,39 +427,6 @@ describe("background config identity", () => {
     expect(Object.values(environment)).not.toContain("/tmp/shadow:/custom/bin");
   });
 
-  it("uses the effective config environment for env-only managed plugin discovery without putting it in launchd", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "mono-agent-background-env-plugin-"));
-    try {
-      const configPath = join(cwd, "mono-agent.config.json");
-      await writeFile(join(cwd, "IDENTITY.md"), "# Identity\n\nEnvironment plugin test.\n");
-      await writeFile(configPath, `${JSON.stringify({
-        runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
-        context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
-        tools: { allowedTools: [], disallowedTools: [] },
-      }, null, 2)}\n`);
-      const secret = "must-never-enter-the-plist";
-      const target = await resolveInstanceTarget({
-        args: { configPath },
-        cwd,
-        cliPath: "/opt/app/dist/cli.js",
-        env: {
-          PATH: "/usr/bin:/bin",
-          MONO_AGENT_MEMORY_BACKEND: "supermemory",
-          MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:8787",
-          MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY: secret,
-        },
-      });
-
-      expect(target.configurationEnvironment.MONO_AGENT_MEMORY_BACKEND).toBe("supermemory");
-      expect(target.environment.MONO_AGENT_MEMORY_BACKEND).toBeUndefined();
-      expect(Object.values(target.environment)).not.toContain(secret);
-      const packages = await defaultBackgroundDeps().resolveManagedRuntimePackages?.(target);
-      expect(packages?.map((entry) => entry.packageName)).toContain("@mono-agent/memory-supermemory");
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-
   it.skipIf(process.platform === "win32")("canonicalizes symlinked parent aliases without following the final config name", async () => {
     const home = await mkdtemp(join(tmpdir(), "mono-agent-config-identity-"));
     try {
