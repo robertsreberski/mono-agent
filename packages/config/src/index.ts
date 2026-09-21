@@ -2,15 +2,18 @@ export {
   assertConfiguredProviderCoverage,
   assertNoRetiredMonoAgentConfig,
   MAX_AGENT_NAME_LENGTH,
+  MEMORY_LLM_JSON_PATHS,
   MonoAgentConfigError,
   redactMonoAgentConfig,
   resolveConfiguredProviders,
+  resolveJsonMonoAgentConfig,
   RETIRED_CONFIG_FIELDS,
 } from "./config.js";
 export type {
   MonoAgentConfigErrorCode,
   MonoAgentConfigErrorDetails,
   ProviderCoverageRoute,
+  ResolveJsonMonoAgentConfigInput,
 } from "./config.js";
 export type {
   ArtifactRetentionConfig,

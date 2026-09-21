@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { redactMonoAgentConfig, resolveProjectedMonoAgentConfig } from "../config.js";
+import { redactMonoAgentConfig, resolveJsonMonoAgentConfig } from "../config.js";
 import {
   buildMonoAgentConfigView,
   findJsonSecretConfigWarnings,
@@ -9,7 +9,6 @@ import {
 } from "../config-view.js";
 import type { ConfigViewSection } from "../config-view.js";
 import type { MonoAgentConfigJson } from "../json-source.js";
-import { projectMonoAgentConfigJson } from "../layered-loader.js";
 
 function buildView(json: MonoAgentConfigJson): readonly ConfigViewSection[] {
   const complete: MonoAgentConfigJson = {
@@ -17,7 +16,7 @@ function buildView(json: MonoAgentConfigJson): readonly ConfigViewSection[] {
     runtime: { model: "pi:ollama:qwen3:8b", ...json.runtime },
     context: { identityPath: "/repo/IDENTITY.md", ...json.context },
   };
-  const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: projectMonoAgentConfigJson(complete) });
+  const config = resolveJsonMonoAgentConfig({ cwd: "/repo", json: complete });
   return buildMonoAgentConfigView({ redacted: redactMonoAgentConfig(config), json: complete });
 }
 

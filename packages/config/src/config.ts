@@ -44,6 +44,7 @@ import {
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
 } from "./enums.js";
+import type { MonoAgentConfigJson } from "./json-source.js";
 import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryWriteMode, MonoAgentConfig, PiNativeProviderConfig, RedactedMonoAgentConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentModelChoice, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
@@ -72,20 +73,27 @@ export class MonoAgentConfigError extends Error {
 }
 
 /**
- * Error factory bound to the `invalid_env` code, handed to the shared
+ * Error factory bound to the `invalid_json` code, handed to the shared
  * `@mono-agent/agent-contracts` coercers so their fail-closed throws keep config's
- * typed error shape (code + env/reason details) verbatim.
+ * typed error shape. The coercers report the field name under `details.env`;
+ * every name handed to them is a JSON path (never an environment variable), so
+ * it is re-attributed to `details.path` here -- the single translation point
+ * between the string coercers and JSON-path diagnostics.
  */
-const invalidEnv: ConfigErrorFactory = (message, details) =>
-  new MonoAgentConfigError("invalid_env", message, details);
+const invalidJson: ConfigErrorFactory = (message, details) => {
+  const { env, ...rest } = details ?? {};
+  return new MonoAgentConfigError("invalid_json", message, {
+    ...rest,
+    ...(typeof env === "string" ? { path: env } : {}),
+  });
+};
 
-interface ProjectedMonoAgentConfigInput {
+export interface ResolveJsonMonoAgentConfigInput {
   /**
-   * Internal string projection of JSON values. This is not an environment
-   * contract: the public loader accepts only a JSON path and never reads
-   * process environment configuration.
+   * Parsed `mono-agent.config.json` content. The core loader reads nothing else:
+   * no process environment variable influences the resolved config.
    */
-  readonly env: Record<string, string | undefined>;
+  readonly json: MonoAgentConfigJson;
   readonly cwd: string;
 }
 
@@ -94,21 +102,15 @@ interface ProjectedMonoAgentConfigInput {
  * same repair instead of silently dropping a fallback chain or surfacing an
  * unactionable unknown-key error from a host-owned schema.
  *
- * `message` repairs the JSON key; `envMessage` repairs the environment variable.
- * They are separate on purpose: an operator whose `.env` still sets
- * `MONO_AGENT_FALLBACK_MODELS` has no `runtime.fallbackModels` key to rewrite, so
- * pointing at the JSON shape is not a repair they can carry out. Hand-migration is
- * only safe if the repair names the surface the operator is actually holding.
+ * `message` repairs the JSON key the operator actually edits. Stale
+ * `MONO_AGENT_*` environment variables are silently ignored and never reported
+ * here: there is no surface left that reads them.
  */
 export interface RetiredConfigField {
   readonly path: string;
-  readonly env: string;
   readonly message: string;
-  readonly envMessage: string;
   /** Return true only when the legacy JSON value represented active behavior. */
   readonly jsonValueIsActive?: (value: unknown) => boolean;
-  /** Return true only when the legacy environment value represented active behavior. */
-  readonly envValueIsActive?: (value: string | undefined) => boolean;
 }
 
 function retiredObservabilityJsonIsActive(value: unknown): boolean {
@@ -119,17 +121,6 @@ function retiredObservabilityJsonIsActive(value: unknown): boolean {
   return !Array.isArray(value.exporters) || value.exporters.length !== 0;
 }
 
-function retiredObservabilityEnvIsActive(value: string | undefined): boolean {
-  const raw = normalizeOptionalString(value);
-  if (raw === undefined) return false;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return !Array.isArray(parsed) || parsed.length !== 0;
-  } catch {
-    return true;
-  }
-}
-
 function retiredSupermemorySelectorIsActive(value: unknown): boolean {
   return typeof value === "string" && normalizeOptionalString(value) === "supermemory";
 }
@@ -138,129 +129,54 @@ function retiredSupermemoryBlockIsActive(value: unknown): boolean {
   return !isRecord(value) || Array.isArray(value) || Object.keys(value).length !== 0;
 }
 
-function retiredSupermemoryEnvIsActive(value: string | undefined): boolean {
-  return normalizeOptionalString(value) !== undefined;
-}
-
-function retiredJsonValueIsInactive(): boolean {
-  return false;
-}
-
 const RETIRED_SUPERMEMORY_SELECTOR_JSON_MESSAGE =
   "`memory.backend` no longer accepts `supermemory`: first-party Supermemory support was removed. Remove the selector before upgrading. mono-agent does not select a replacement or migrate remote data; remote data remains untouched.";
 const RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE =
   "`memory.supermemory` was removed with first-party Supermemory support. Remove the block before upgrading. mono-agent does not select a replacement or migrate remote data; remote data remains untouched.";
 
-function retiredSupermemoryEnvMessage(env: string): string {
-  return `\`${env}\` was removed with first-party Supermemory support. Remove the variable from your environment and .env before upgrading. mono-agent does not select a replacement or migrate remote data; remote data remains untouched.`;
-}
-
 export const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
   {
     path: "runtime.permissionMode",
-    env: "MONO_AGENT_PERMISSION_MODE",
     message: "`runtime.permissionMode` was removed because the Pi runtime never enforced it. Delete the key; configure `sandbox` for enforced tool isolation.",
-    envMessage: "`MONO_AGENT_PERMISSION_MODE` was removed because the Pi runtime never enforced it. Remove the variable from your environment and `.env`; configure `sandbox` for enforced tool isolation.",
   },
   {
     path: "tools.web.search.hound.endpoint",
-    env: "MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT",
     message: "`tools.web.search.hound.endpoint` was removed: Hound is built in. Delete the endpoint setting; no external Hound service is contacted.",
-    envMessage: "`MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT` was removed: Hound is built in. Remove the variable.",
   },
   {
     path: "tools.web.fetch.hound.endpoint",
-    env: "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT",
     message: "`tools.web.fetch.hound.endpoint` was removed: Hound is built in. Delete the endpoint setting; no external Hound service is contacted.",
-    envMessage: "`MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT` was removed: Hound is built in. Remove the variable.",
   },
   {
     path: "runtime.executionMode",
-    env: "MONO_AGENT_EXECUTION_MODE",
     message: "`runtime.executionMode` was removed; mono-agent runs only the Pi runtime (SDK). Delete the key.",
-    envMessage: "`MONO_AGENT_EXECUTION_MODE` was removed; mono-agent runs only the Pi runtime (SDK). Remove the variable from your environment and `.env`.",
   },
   {
     path: "runtime.routeSafety",
-    env: "MONO_AGENT_ROUTE_SAFETY",
     message: "`runtime.routeSafety` was removed; every route is Pi-native, so `per-route-native` has no meaning. Delete the key.",
-    envMessage: "`MONO_AGENT_ROUTE_SAFETY` was removed; every route is Pi-native, so `per-route-native` has no meaning. Remove the variable from your environment and `.env`.",
   },
   {
     path: "runtime.fallbackModels",
-    env: "MONO_AGENT_FALLBACK_MODELS",
     message: "`runtime.fallbackModels` was replaced by `runtime.fallbacks: [{ \"model\": \"...\" }]`. Replace the key with that shape.",
-    envMessage: "`MONO_AGENT_FALLBACK_MODELS` was replaced by `MONO_AGENT_FALLBACKS_JSON`, a JSON array of `{ \"model\": \"...\" }` objects. Remove the variable and re-express the chain there, or drop it into `runtime.fallbacks` in mono-agent.config.json.",
   },
   {
     path: "memory.backend",
-    env: "MONO_AGENT_MEMORY_BACKEND",
     message: RETIRED_SUPERMEMORY_SELECTOR_JSON_MESSAGE,
-    envMessage: "`MONO_AGENT_MEMORY_BACKEND=supermemory` was removed with first-party Supermemory support. Remove or change the selector before upgrading. mono-agent does not select a replacement or migrate remote data; remote data remains untouched.",
     jsonValueIsActive: retiredSupermemorySelectorIsActive,
-    envValueIsActive: retiredSupermemorySelectorIsActive,
   },
   {
     path: "memory.supermemory",
-    env: "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL",
     message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
-    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL"),
     jsonValueIsActive: retiredSupermemoryBlockIsActive,
-    envValueIsActive: retiredSupermemoryEnvIsActive,
-  },
-  {
-    path: "memory.supermemory.apiKey",
-    env: "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY",
-    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
-    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY"),
-    jsonValueIsActive: retiredJsonValueIsInactive,
-    envValueIsActive: retiredSupermemoryEnvIsActive,
-  },
-  {
-    path: "memory.supermemory.apiKeyEnv",
-    env: "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV",
-    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
-    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV"),
-    jsonValueIsActive: retiredJsonValueIsInactive,
-    envValueIsActive: retiredSupermemoryEnvIsActive,
-  },
-  {
-    path: "memory.supermemory.container",
-    env: "MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER",
-    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
-    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER"),
-    jsonValueIsActive: retiredJsonValueIsInactive,
-    envValueIsActive: retiredSupermemoryEnvIsActive,
-  },
-  {
-    path: "memory.supermemory.timeoutMs",
-    env: "MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS",
-    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
-    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS"),
-    jsonValueIsActive: retiredJsonValueIsInactive,
-    envValueIsActive: retiredSupermemoryEnvIsActive,
-  },
-  {
-    path: "memory.supermemory.exposeMcpServer",
-    env: "MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER",
-    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
-    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER"),
-    jsonValueIsActive: retiredJsonValueIsInactive,
-    envValueIsActive: retiredSupermemoryEnvIsActive,
   },
   {
     path: "memory.llm.executionMode",
-    env: "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
     message: "`memory.llm.executionMode` was removed for the same reason as `runtime.executionMode`: mono-agent runs only the Pi runtime (SDK). Delete the key.",
-    envMessage: "`MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` was removed for the same reason as `MONO_AGENT_EXECUTION_MODE`: mono-agent runs only the Pi runtime (SDK). Remove the variable from your environment and `.env`.",
   },
   {
     path: "observability",
-    env: "MONO_AGENT_OBSERVABILITY_EXPORTERS",
     message: "`observability.exporters` was removed with first-party Phoenix/OTLP export. Remove the active exporter block before upgrading. Local run artifacts are unchanged and mono-agent does not select a replacement. If a final export is required, perform it before upgrading with the known-good version you already operate.",
-    envMessage: "`MONO_AGENT_OBSERVABILITY_EXPORTERS` was removed with first-party Phoenix/OTLP export. Remove the active variable from your environment and `.env` before upgrading. Local run artifacts are unchanged and mono-agent does not select a replacement. If a final export is required, perform it before upgrading with the known-good version you already operate.",
     jsonValueIsActive: retiredObservabilityJsonIsActive,
-    envValueIsActive: retiredObservabilityEnvIsActive,
   },
 ] as const;
 
@@ -301,15 +217,15 @@ const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
   openai: "text-embedding-3-small",
 };
 /**
- * Keep model first: the layered loader uses this order when attributing an
- * incompatible memory.llm environment field.
+ * JSON paths that activate the `memory.llm` block. Keep model first: diagnostics
+ * attribute an incompatible `memory.llm` block to the most informative field.
  */
-export const MEMORY_LLM_ENV_KEYS = [
-  "MONO_AGENT_MEMORY_LLM_MODEL",
-  "MONO_AGENT_MEMORY_LLM_PROVIDER",
-  "MONO_AGENT_MEMORY_LLM_ENDPOINT",
-  "MONO_AGENT_MEMORY_LLM_TRACE",
-  "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
+export const MEMORY_LLM_JSON_PATHS = [
+  "memory.llm.model",
+  "memory.llm.provider",
+  "memory.llm.endpoint",
+  "memory.llm.trace",
+  "memory.llm.timeoutMs",
 ] as const;
 export const DEFAULT_ARTIFACT_RETENTION_MAX_AGE_DAYS = 365;
 export const DEFAULT_ARTIFACT_RETENTION_MAX_COUNT = 50_000;
@@ -320,52 +236,190 @@ const DEFAULT_TRACE_STALE_AFTER_MS = 30_000;
 const DEFAULT_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
 export const MAX_AGENT_NAME_LENGTH = 80;
 
-export function resolveProjectedMonoAgentConfig(input: ProjectedMonoAgentConfigInput): MonoAgentConfig {
-  assertNoRetiredConfigEnv(input.env);
+/**
+ * JSON scalar coercion for direct `mono-agent.config.json` parsing.
+ *
+ * The shared `@mono-agent/agent-contracts` coercers operate on strings, so a
+ * JSON scalar is rendered to its string form before validation. Numbers and
+ * booleans stringify exactly the way the previous JSON-to-string projection
+ * rendered them, which keeps every range, enum and choice diagnostic identical
+ * apart from naming the JSON path instead of a variable nobody set. Objects and
+ * arrays are never scalars: they fail closed with the path the operator edits.
+ */
+function jsonString(value: unknown, path: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  throw new MonoAgentConfigError("invalid_json", `${path} must be a string.`, { path });
+}
+
+function requireJsonString(value: unknown, path: string): string {
+  const normalized = normalizeOptionalString(jsonString(value, path));
+  if (normalized === undefined) {
+    throw new MonoAgentConfigError("invalid_json", `${path} is required.`, { path });
+  }
+  return normalized;
+}
+
+function jsonInteger(
+  value: unknown,
+  path: string,
+  fallback: number,
+  bounds?: { readonly min: number; readonly max: number },
+): number {
+  return readInteger(jsonString(value, path), path, fallback, invalidJson, bounds);
+}
+
+function jsonOptionalInteger(
+  value: unknown,
+  path: string,
+  bounds: { readonly min: number; readonly max: number },
+): number | undefined {
+  if (value === undefined) return undefined;
+  return readInteger(jsonString(value, path), path, bounds.min, invalidJson, bounds);
+}
+
+function jsonOptionalNumber(
+  value: unknown,
+  path: string,
+  bounds: { readonly min: number; readonly max: number },
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < bounds.min || value > bounds.max) {
+      throw new MonoAgentConfigError(
+        "invalid_json",
+        `${path} must be a number between ${bounds.min} and ${bounds.max}.`,
+        { path, reason: "out_of_range" },
+      );
+    }
+    return value;
+  }
+  const normalized = normalizeOptionalString(jsonString(value, path));
+  if (normalized === undefined) return undefined;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed < bounds.min || parsed > bounds.max) {
+    throw new MonoAgentConfigError(
+      "invalid_json",
+      `${path} must be a number between ${bounds.min} and ${bounds.max}.`,
+      { path, reason: "out_of_range" },
+    );
+  }
+  return parsed;
+}
+
+function jsonBoolean(value: unknown, path: string, fallback: boolean): boolean {
+  return readBoolean(jsonString(value, path), path, fallback, invalidJson);
+}
+
+function jsonOptionalBoolean(value: unknown, path: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  return readBoolean(jsonString(value, path), path, false, invalidJson);
+}
+
+function jsonChoice<T extends string>(
+  value: unknown,
+  path: string,
+  choices: readonly T[],
+  fallback: T,
+): T {
+  return readChoice(jsonString(value, path), path, choices, fallback, invalidJson);
+}
+
+/**
+ * Read a JSON string array. Arrays are kept element-wise so values containing
+ * commas survive intact; a lone comma-separated string is still split for
+ * tolerance. Anything else fails closed with the JSON path.
+ */
+function jsonStringArray(value: unknown, path: string): string[] {
+  if (value === undefined) return [];
+  if (typeof value === "string") return readCsv(value);
+  if (Array.isArray(value)) {
+    return value.map((entry) => {
+      if (typeof entry !== "string") {
+        throw new MonoAgentConfigError("invalid_json", `${path} must be an array of strings.`, { path });
+      }
+      return entry;
+    }).map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+  }
+  throw new MonoAgentConfigError("invalid_json", `${path} must be an array of strings.`, { path });
+}
+
+/**
+ * Narrow an optional JSON block to a record. Missing stays missing; anything
+ * present but not an object fails closed with the block path.
+ */
+function jsonRecord(value: unknown, path: string): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  throw new MonoAgentConfigError("invalid_json", `${path} must be an object.`, { path });
+}
+
+/**
+ * Tolerant container access for the pure parent blocks (`runtime`, `context`,
+ * `tools`, ...). A malformed parent behaves as absent so the required-field
+ * and default logic below still produces the authoritative diagnostic.
+ */
+function jsonContainer(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInput): MonoAgentConfig {
+  assertNoRetiredMonoAgentConfig(input.json);
   const cwd = normalizeCwd(input.cwd);
-  const agentName = readAgentName(input.env.MONO_AGENT_NAME);
-  const model = parseModel(readRequired(input.env, "MONO_AGENT_MODEL"));
-  const fallbacks = readFallbacks(input.env);
-  const retry = readRetryConfig(input.env);
+  const json = input.json;
+  const runtimeJson = jsonContainer(json.runtime);
+  const contextJson = jsonContainer(json.context);
+  const toolsJson = jsonContainer(json.tools);
+  const webJson = jsonContainer(toolsJson?.web);
+  const agentName = readAgentName(jsonString(jsonContainer(json.agent)?.name, "agent.name"));
+  const model = parseModel(requireJsonString(runtimeJson?.model, "runtime.model"), "runtime.model");
+  const fallbacks = readFallbacks(runtimeJson?.fallbacks);
+  const retry = readRetryConfig(runtimeJson);
   assertUniqueFallbackRoutes(model, fallbacks);
-  const maxTurns = readMaxTurns(input.env.MONO_AGENT_MAX_TURNS);
-  const compaction = readRuntimeCompactionConfig(input.env);
-  const workspace = readPath(input.env.MONO_AGENT_WORKSPACE, cwd, cwd);
-  const session = readSessionConfig(input.env);
-  const identityPath = readPath(readRequired(input.env, "MONO_AGENT_IDENTITY_PATH"), cwd);
-  const soulPath = readOptionalPath(input.env.MONO_AGENT_SOUL_PATH, cwd);
-  const skillsRoot = readOptionalPath(input.env.MONO_AGENT_SKILLS_ROOT, cwd);
-  const selectedSkills = readCsv(input.env.MONO_AGENT_SELECTED_SKILLS);
+  const maxTurns = readMaxTurns(runtimeJson?.maxTurns);
+  const compaction = readRuntimeCompactionConfig(runtimeJson?.compaction);
+  const workspace = readPath(jsonString(runtimeJson?.workspace, "runtime.workspace"), cwd, cwd);
+  const session = readSessionConfig(runtimeJson?.session);
+  const identityPath = readPath(requireJsonString(contextJson?.identityPath, "context.identityPath"), cwd);
+  const soulPath = readOptionalPath(jsonString(contextJson?.soulPath, "context.soulPath"), cwd);
+  const skillsRoot = readOptionalPath(jsonString(contextJson?.skillsRoot, "context.skillsRoot"), cwd);
+  const selectedSkills = jsonStringArray(contextJson?.selectedSkills, "context.selectedSkills");
   // The skills loader rejects caps below 256 bytes; validate at the same floor.
-  const skillMaxBytes = readOptionalInteger(input.env.MONO_AGENT_SKILL_MAX_BYTES, "MONO_AGENT_SKILL_MAX_BYTES", { min: 256, max: 1_000_000 });
+  const skillMaxBytes = jsonOptionalInteger(contextJson?.skillMaxBytes, "context.skillMaxBytes", { min: 256, max: 1_000_000 });
   // Unset stays undefined so the harness default ("full" legacy) is preserved
   // byte-for-byte; only validate the choice when an operator opts in explicitly.
-  const skillDisclosure = normalizeOptionalString(input.env.MONO_AGENT_SKILL_DISCLOSURE) === undefined
+  const skillDisclosure = contextJson?.skillDisclosure === undefined
     ? undefined
-    : readChoice<SkillDisclosureMode>(input.env.MONO_AGENT_SKILL_DISCLOSURE, "MONO_AGENT_SKILL_DISCLOSURE", ["index", "full"], "full", invalidEnv);
-  const memory = readMemoryConfig(input.env, cwd);
-  const mcpConfigPath = readOptionalPath(input.env.MONO_AGENT_MCP_CONFIG_PATH, cwd);
-  const mcpRequestContextServers = readCsv(input.env.MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS);
-  const continuationServers = readCsv(input.env.MONO_AGENT_CONTINUATION_SERVERS);
-  const sandbox = readSandboxConfig(input.env, workspace);
-  const artifactDir = readPath(input.env.MONO_AGENT_ARTIFACT_DIR, cwd, resolve(cwd, ".mono-agent", "artifacts"));
-  const artifactRetention = readArtifactRetentionConfig(input.env);
-  const memoryArtifactRetention = readMemoryArtifactRetentionConfig(input.env, artifactRetention);
-  const traceability = readTraceabilityConfig(input.env, cwd, agentName);
+    : jsonChoice<SkillDisclosureMode>(contextJson.skillDisclosure, "context.skillDisclosure", ["index", "full"], "full");
+  const memory = readMemoryConfig(json.memory, cwd);
+  const mcpConfigPath = readOptionalPath(jsonString(toolsJson?.mcpConfigPath, "tools.mcpConfigPath"), cwd);
+  const mcpRequestContextServers = jsonStringArray(toolsJson?.mcpRequestContextServers, "tools.mcpRequestContextServers");
+  const continuationServers = jsonStringArray(toolsJson?.continuationServers, "tools.continuationServers");
+  const sandbox = readSandboxConfig(json.sandbox, workspace);
+  const artifactsJson = jsonContainer(json.artifacts);
+  const artifactDir = readPath(jsonString(artifactsJson?.dir, "artifacts.dir"), cwd, resolve(cwd, ".mono-agent", "artifacts"));
+  const artifactRetention = readArtifactRetentionConfig(artifactsJson?.retention);
+  const memoryArtifactRetention = readMemoryArtifactRetentionConfig(artifactsJson?.memoryRetention, artifactRetention);
+  const traceability = readTraceabilityConfig(json.traceability, cwd, agentName);
   // Pi's auth path is routinely documented with a home-relative `~` prefix.
   // `path.resolve()` treats that prefix as a literal directory, so keep the
   // expansion explicit and limited to this user-owned credential path.
-  const providerEnvelope = readConfiguredProviders(input.env);
-  const providerEnv = layerProviderReservedValuesOntoEnv(providerEnvelope, input.env);
-  const piAuthPath = readUserPath(providerEnv.MONO_AGENT_PI_AUTH_PATH, cwd, DEFAULT_PI_AUTH_PATH);
-  const piNative = readPiNativeProviderConfig(providerEnv, cwd);
+  const providerEnvelope = readConfiguredProviders(json.providers);
+  const piAuthPath = readUserPath(providerEnvelope.piAuthPath, cwd, DEFAULT_PI_AUTH_PATH);
+  const piNative = readPiNativeProviderConfig(providerEnvelope.piNative, cwd);
   const localProviders = providerEnvelope.entries
     .map((provider) => localProviderDefinitionFor(provider))
     .filter((provider): provider is LocalProviderDefinition => provider !== undefined);
 
-  const effort = readEffort(input.env.MONO_AGENT_EFFORT);
-  const concurrency = readConcurrencyConfig(input.env);
-  const subagents = readSubagentsConfig(input.env, cwd);
+  const effort = readEffort(jsonString(runtimeJson?.effort, "runtime.effort"));
+  const concurrency = readConcurrencyConfig(json.concurrency);
+  const subagents = readSubagentsConfig(json.subagents, cwd);
   const subagentRoutes = subagentProviderRoutes(subagents);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
@@ -387,23 +441,25 @@ export function resolveProjectedMonoAgentConfig(input: ProjectedMonoAgentConfigI
     ...(skillDisclosure === undefined ? {} : { skillDisclosure }),
   };
 
-  const mcpCallTimeoutMs = readOptionalTimeoutMs(input.env.MONO_AGENT_MCP_CALL_TIMEOUT_MS, "MONO_AGENT_MCP_CALL_TIMEOUT_MS");
+  const mcpCallTimeoutMs = readOptionalTimeoutMs(jsonString(toolsJson?.mcpCallTimeoutMs, "tools.mcpCallTimeoutMs"), "tools.mcpCallTimeoutMs");
   const mcpCallMaxTotalTimeoutMs = readOptionalTimeoutMs(
-    input.env.MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
-    "MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS",
+    jsonString(toolsJson?.mcpCallMaxTotalTimeoutMs, "tools.mcpCallMaxTotalTimeoutMs"),
+    "tools.mcpCallMaxTotalTimeoutMs",
   );
+  const searchJson = jsonContainer(webJson?.search);
+  const fetchJson = jsonContainer(webJson?.fetch);
   const webSearchBackend = readWebProviderSelection<WebSearchBackend>(
-    input.env.MONO_AGENT_WEB_SEARCH_BACKEND, "MONO_AGENT_WEB_SEARCH_BACKEND",
+    searchJson?.backend, "tools.web.search.backend",
     ["searxng", "ollama", "codex", "keyless", "duckduckgo", "startpage", "parallel", "hound"],
-    ["parallel", "ollama"], input.env,
+    ["parallel", "ollama"], searchAutoRepair(searchJson),
   );
   const legacyWebSearchEndpoint = readWebSearchEndpoint(
-    input.env.MONO_AGENT_WEB_SEARCH_ENDPOINT,
-    "MONO_AGENT_WEB_SEARCH_ENDPOINT",
+    jsonString(searchJson?.endpoint, "tools.web.search.endpoint"),
+    "tools.web.search.endpoint",
   );
   const canonicalWebSearchEndpoint = readWebSearchEndpoint(
-    input.env.MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT,
-    "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT",
+    jsonString(jsonContainer(searchJson?.searxng)?.endpoint, "tools.web.search.searxng.endpoint"),
+    "tools.web.search.searxng.endpoint",
   );
   if (
     legacyWebSearchEndpoint !== undefined
@@ -411,65 +467,61 @@ export function resolveProjectedMonoAgentConfig(input: ProjectedMonoAgentConfigI
     && legacyWebSearchEndpoint !== canonicalWebSearchEndpoint
   ) {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_WEB_SEARCH_ENDPOINT and MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT disagree; keep only the canonical SearXNG variable.",
-      { env: "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT" },
+      "invalid_json",
+      "tools.web.search.endpoint and tools.web.search.searxng.endpoint disagree; keep only the canonical SearXNG setting.",
+      { path: "tools.web.search.searxng.endpoint" },
     );
   }
   const webSearchEndpoint = canonicalWebSearchEndpoint ?? legacyWebSearchEndpoint;
-  const webSearchOllama = readOllamaWebSearchConfig(input.env, webSearchBackend);
-  const webSearchCodexModel = readWebSearchCodexModel(input.env.MONO_AGENT_WEB_SEARCH_CODEX_MODEL);
-  const webSearchMaxRequestsPerRun = readInteger(
-    input.env.MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN,
-    "MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN",
+  const webSearchOllama = readOllamaWebSearchConfig(searchJson?.ollama, webSearchBackend);
+  const webSearchCodexModel = readWebSearchCodexModel(jsonString(jsonContainer(searchJson?.codex)?.model, "tools.web.search.codex.model"));
+  const webSearchMaxRequestsPerRun = jsonInteger(
+    searchJson?.maxRequestsPerRun,
+    "tools.web.search.maxRequestsPerRun",
     4,
-    invalidEnv,
     { min: 1, max: 20 },
   );
   if (selectedWebProvider(webSearchBackend, "searxng") && webSearchEndpoint === undefined) {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT (or legacy MONO_AGENT_WEB_SEARCH_ENDPOINT) is required when MONO_AGENT_WEB_SEARCH_BACKEND=searxng.",
-      { env: "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT" },
+      "invalid_json",
+      "tools.web.search.searxng.endpoint (or legacy tools.web.search.endpoint) is required when tools.web.search.backend selects searxng.",
+      { path: "tools.web.search.searxng.endpoint" },
     );
   }
-  const webSearchParallel = readParallelWebConfig(input.env, "MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV");
-  const webFetchParallel = readParallelWebConfig(input.env, "MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV");
-  for (const source of ["MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT", "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT"]) {
-    if (input.env[source] !== undefined) throw new MonoAgentConfigError("invalid_env", `${source} was removed: Hound is built in. Remove the endpoint setting; no external Hound service is contacted.`, { env: source });
-  }
+  const webSearchParallel = readParallelWebConfig(searchJson?.parallel, "tools.web.search.parallel.apiKeyEnv");
+  const webFetchParallel = readParallelWebConfig(fetchJson?.parallel, "tools.web.fetch.parallel.apiKeyEnv");
   const webFetchProvider = readWebProviderSelection<"local" | "parallel" | "hound">(
-    input.env.MONO_AGENT_WEB_FETCH_PROVIDER, "MONO_AGENT_WEB_FETCH_PROVIDER", ["local", "parallel", "hound"], "local", input.env,
+    fetchJson?.provider, "tools.web.fetch.provider", ["local", "parallel", "hound"], "local",
   );
-  const webFetchRender = readChoice<WebFetchRenderMode>(
-    input.env.MONO_AGENT_WEB_FETCH_RENDER,
-    "MONO_AGENT_WEB_FETCH_RENDER",
+  const webFetchRender = jsonChoice<WebFetchRenderMode>(
+    jsonContainer(webJson?.fetch)?.render,
+    "tools.web.fetch.render",
     ["never", "auto"],
     "never",
-    invalidEnv,
   );
   if (webFetchRender === "auto" && !selectedWebProvider(webFetchProvider, "local")) {
-    throw new MonoAgentConfigError("invalid_env", 'tools.web.fetch.render "auto" requires the local fetch provider.', { env: "MONO_AGENT_WEB_FETCH_PROVIDER" });
+    throw new MonoAgentConfigError("invalid_json", 'tools.web.fetch.render "auto" requires the local fetch provider.', { path: "tools.web.fetch.provider" });
   }
-  const webBrowserCommand = readWebBrowserCommand(input.env.MONO_AGENT_WEB_BROWSER_COMMAND);
+  const webBrowserCommand = readWebBrowserCommand(jsonString(fetchJson?.browserCommand, "tools.web.fetch.browserCommand"));
+  const filesystemJson = jsonContainer(toolsJson?.filesystem);
   const fileToolReadableRoots = readFileToolRoots(
-    input.env.MONO_AGENT_FILE_TOOL_READABLE_ROOTS,
-    "MONO_AGENT_FILE_TOOL_READABLE_ROOTS",
+    filesystemJson?.readableRoots,
+    "tools.filesystem.readableRoots",
   )
     .map((path) => readPath(path, cwd));
   const fileToolWritableRoots = readFileToolRoots(
-    input.env.MONO_AGENT_FILE_TOOL_WRITABLE_ROOTS,
-    "MONO_AGENT_FILE_TOOL_WRITABLE_ROOTS",
+    filesystemJson?.writableRoots,
+    "tools.filesystem.writableRoots",
   )
     .map((path) => readPath(path, cwd));
   const tools: MonoAgentConfig["tools"] = {
-    // Omitted `tools.allowedTools` (env unset) → allow-all default; an explicit empty
-    // list arrives as `MONO_AGENT_ALLOWED_TOOLS=""` (readCsv → []) meaning chat-only.
+    // Omitted `tools.allowedTools` → allow-all default; an explicit empty
+    // list ([]) means chat-only.
     allowedTools:
-      input.env.MONO_AGENT_ALLOWED_TOOLS === undefined
+      toolsJson?.allowedTools === undefined
         ? [ALLOW_ALL_TOOLS]
-        : readCsv(input.env.MONO_AGENT_ALLOWED_TOOLS),
-    disallowedTools: readCsv(input.env.MONO_AGENT_DISALLOWED_TOOLS),
+        : jsonStringArray(toolsJson.allowedTools, "tools.allowedTools"),
+    disallowedTools: jsonStringArray(toolsJson?.disallowedTools, "tools.disallowedTools"),
     ...(fileToolReadableRoots.length === 0 && fileToolWritableRoots.length === 0
       ? {}
       : {
@@ -484,7 +536,7 @@ export function resolveProjectedMonoAgentConfig(input: ProjectedMonoAgentConfigI
     ...(mcpCallTimeoutMs === undefined ? {} : { mcpCallTimeoutMs }),
     ...(mcpCallMaxTotalTimeoutMs === undefined ? {} : { mcpCallMaxTotalTimeoutMs }),
     web: {
-      coordination: readChoice(input.env.MONO_AGENT_WEB_COORDINATION, "MONO_AGENT_WEB_COORDINATION", ["process", "host"] as const, "process", invalidEnv),
+      coordination: jsonChoice(webJson?.coordination, "tools.web.coordination", ["process", "host"] as const, "process"),
       search: {
         backend: webSearchBackend,
         ...(webSearchParallel === undefined ? {} : { parallel: webSearchParallel }),
@@ -547,7 +599,7 @@ export function resolveConfiguredProviders(
     const entry = validateProviderDefinition(rawEntry);
     if (byId.has(entry.id)) {
       throw new MonoAgentConfigError(
-        "invalid_env",
+        "invalid_json",
         `Provider id "${entry.id}" is configured more than once. Remove the duplicate definition.`,
         { providerId: entry.id },
       );
@@ -634,32 +686,6 @@ export function assertConfiguredProviderCoverage(
       { providerId, path: route.path, reason: repair },
     );
   }
-}
-
-/**
- * Reject a retired field only when it still carries a value. Every reader in
- * this loader treats an empty env var as unset (`normalizeOptionalString`,
- * `readCsv`) and the layered loader drops empty env values before layering, so
- * `MONO_AGENT_FALLBACK_MODELS=` never configured anything even before the field
- * was retired -- it loaded as "no fallbacks". Rejecting it would turn an inert
- * leftover line in a deployed `.env` into a startup crash with no stale setting
- * behind it. A non-empty value is still a real, silently-dropped setting and
- * still fails closed.
- */
-function assertNoRetiredConfigEnv(env: Record<string, string | undefined>): void {
-  const retired = RETIRED_CONFIG_FIELDS.filter((field) => field.envValueIsActive === undefined
-    ? normalizeOptionalString(env[field.env]) !== undefined
-    : field.envValueIsActive(env[field.env]));
-  if (retired.length === 0) return;
-  // Report all of them, not just the first: a hand-migration is a single edit pass, and
-  // one-at-a-time discovery turns a four-variable `.env` into four stop/edit/re-run cycles.
-  // `env`/`path` stay the first entry so existing single-key consumers are unchanged.
-  throw new MonoAgentConfigError("invalid_env", retired.map((field) => field.envMessage).join(" "), {
-    env: retired[0]!.env,
-    path: retired[0]!.path,
-    envs: retired.map((field) => field.env),
-    paths: retired.map((field) => field.path),
-  });
 }
 
 export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgentConfig {
@@ -762,44 +788,35 @@ function modelReferenceEcho(raw: string): string {
   return sanitizeModelReferenceText(raw, MODEL_REFERENCE_ECHO_MAX_BYTES);
 }
 
-function parseModel(raw: string): MonoAgentConfig["runtime"]["model"] {
+function parseModel(raw: string, path: string): MonoAgentConfig["runtime"]["model"] {
   try {
     return parseMonoRuntimeModelReference(raw);
   } catch (error) {
     const reason = modelReferenceReason(error);
     throw new MonoAgentConfigError(
       "invalid_model_reference",
-      `MONO_AGENT_MODEL \`${modelReferenceEcho(raw)}\` is not a valid runtime model reference: ${reason}`,
-      { env: "MONO_AGENT_MODEL", reason },
+      `${path} \`${modelReferenceEcho(raw)}\` is not a valid runtime model reference: ${reason}`,
+      { path, reason },
     );
   }
 }
 
-function readFallbacks(env: Record<string, string | undefined>): readonly RuntimeFallbackConfig[] {
-  const raw = normalizeOptionalString(env.MONO_AGENT_FALLBACKS_JSON);
-  if (raw === undefined) {
+function readFallbacks(value: unknown): readonly RuntimeFallbackConfig[] {
+  if (value === undefined) {
     return [];
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new MonoAgentConfigError("invalid_json", "MONO_AGENT_FALLBACKS_JSON must be a JSON array.", {
-      env: "MONO_AGENT_FALLBACKS_JSON",
-      reason: error instanceof Error ? error.message : String(error),
+  if (!Array.isArray(value)) {
+    throw new MonoAgentConfigError("invalid_json", "runtime.fallbacks must be an array.", {
+      path: "runtime.fallbacks",
     });
   }
-  if (!Array.isArray(parsed)) {
-    throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_FALLBACKS_JSON must be a JSON array.", {
-      env: "MONO_AGENT_FALLBACKS_JSON",
-    });
-  }
+  const parsed = value;
   return parsed.map((entry, index) => {
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
       throw new MonoAgentConfigError(
-        "invalid_env",
-        `MONO_AGENT_FALLBACKS_JSON entry ${index + 1} must be an object with a model.`,
-        { env: "MONO_AGENT_FALLBACKS_JSON", index },
+        "invalid_json",
+        `runtime.fallbacks entry ${index + 1} must be an object with a model.`,
+        { path: "runtime.fallbacks", index },
       );
     }
     const record = entry as Record<string, unknown>;
@@ -808,44 +825,44 @@ function readFallbacks(env: Record<string, string | undefined>): readonly Runtim
     );
     if (unknownKeys.length > 0) {
       throw new MonoAgentConfigError(
-        "invalid_env",
-        `MONO_AGENT_FALLBACKS_JSON entry ${index + 1} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.sort().join(", ")}. Only model, effort, and attempts are supported.`,
-        { env: "MONO_AGENT_FALLBACKS_JSON", index, unknownKeys: unknownKeys.sort() },
+        "invalid_json",
+        `runtime.fallbacks entry ${index + 1} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.sort().join(", ")}. Only model, effort, and attempts are supported.`,
+        { path: "runtime.fallbacks", index, unknownKeys: unknownKeys.sort() },
       );
     }
     if (typeof record.model !== "string" || record.model.trim().length === 0) {
       throw new MonoAgentConfigError(
         "invalid_model_reference",
-        `MONO_AGENT_FALLBACKS_JSON entry ${index + 1} must contain a non-empty model reference.`,
-        { env: "MONO_AGENT_FALLBACKS_JSON", index },
+        `runtime.fallbacks entry ${index + 1} must contain a non-empty model reference.`,
+        { path: "runtime.fallbacks", index },
       );
     }
-    const model = parseFallbackModel(record.model, "MONO_AGENT_FALLBACKS_JSON", index);
+    const model = parseFallbackModel(record.model, index);
     const attempts = readFallbackAttempts(record.attempts, index);
     if (record.effort === undefined) {
       return attempts === undefined ? { model } : { model, attempts };
     }
     if (typeof record.effort !== "string") {
       throw new MonoAgentConfigError(
-        "invalid_env",
-        `MONO_AGENT_FALLBACKS_JSON entry ${index + 1} effort must be one of: ${EFFORT_LEVELS.join(", ")}.`,
-        { env: "MONO_AGENT_FALLBACKS_JSON", index },
+        "invalid_json",
+        `runtime.fallbacks entry ${index + 1} effort must be one of: ${EFFORT_LEVELS.join(", ")}.`,
+        { path: "runtime.fallbacks", index },
       );
     }
     const normalizedEffort = normalizeOptionalString(record.effort);
     if (normalizedEffort === undefined) {
       throw new MonoAgentConfigError(
-        "invalid_env",
-        `MONO_AGENT_FALLBACKS_JSON entry ${index + 1} effort must be one of: ${EFFORT_LEVELS.join(", ")}.`,
-        { env: "MONO_AGENT_FALLBACKS_JSON", index },
+        "invalid_json",
+        `runtime.fallbacks entry ${index + 1} effort must be one of: ${EFFORT_LEVELS.join(", ")}.`,
+        { path: "runtime.fallbacks", index },
       );
     }
     const effort = readChoice<EffortLevel>(
       normalizedEffort,
-      `MONO_AGENT_FALLBACKS_JSON[${index}].effort`,
+      `runtime.fallbacks[${index}].effort`,
       EFFORT_LEVELS,
       "medium",
-      invalidEnv,
+      invalidJson,
     );
     return attempts === undefined ? { model, effort } : { model, effort, attempts };
   });
@@ -857,9 +874,9 @@ function readFallbackAttempts(value: unknown, index: number): number | undefined
   }
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 10) {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      `MONO_AGENT_FALLBACKS_JSON entry ${index + 1} attempts must be an integer between 1 and 10.`,
-      { env: "MONO_AGENT_FALLBACKS_JSON", index },
+      "invalid_json",
+      `runtime.fallbacks entry ${index + 1} attempts must be an integer between 1 and 10.`,
+      { path: "runtime.fallbacks", index },
     );
   }
   return value;
@@ -868,28 +885,17 @@ function readFallbackAttempts(value: unknown, index: number): number | undefined
 const SUBAGENT_NAME_RE = /^[a-z0-9][a-z0-9-]*$/u;
 
 function readSubagentsConfig(
-  env: Record<string, string | undefined>,
+  value: unknown,
   cwd: string,
 ): MonoAgentSubagentsConfig | undefined {
-  const raw = normalizeOptionalString(env.MONO_AGENT_SUBAGENTS_JSON);
-  if (raw === undefined) {
+  if (value === undefined) {
     return undefined;
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new MonoAgentConfigError("invalid_json", "MONO_AGENT_SUBAGENTS_JSON must be a JSON object.", {
-      env: "MONO_AGENT_SUBAGENTS_JSON",
-      reason: error instanceof Error ? error.message : String(error),
-    });
+  const parsed = jsonRecord(value, "subagents");
+  if (parsed === undefined) {
+    return undefined;
   }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_SUBAGENTS_JSON must be a JSON object.", {
-      env: "MONO_AGENT_SUBAGENTS_JSON",
-    });
-  }
-  const record = parsed as Record<string, unknown>;
+  const record = parsed;
   const definitions = readSubagentDefinitions(record.definitions, cwd);
   const models = readSubagentModels(record.models, definitions);
   return {
@@ -955,8 +961,8 @@ function readSubagentModels(
     } catch (error) {
       const reason = modelReferenceReason(error);
       throw new MonoAgentConfigError("invalid_model_reference",
-        `MONO_AGENT_SUBAGENTS_JSON ${subject} model \`${modelReferenceEcho(record.model)}\` is not a valid runtime model reference: ${reason}`,
-        { env: "MONO_AGENT_SUBAGENTS_JSON", reason });
+        `subagents ${subject} model \`${modelReferenceEcho(record.model)}\` is not a valid runtime model reference: ${reason}`,
+        { path: "subagents", reason });
     }
     if (record.name !== undefined && (typeof record.name !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(record.name))) {
       throw invalidSubagents(`${subject} name must be lowercase kebab-case, 1-40 characters, without a colon.`);
@@ -1046,7 +1052,7 @@ function readSubagentDefinitions(
       ...(hasPromptPath ? { promptPath: readPath(String(record.promptPath), cwd) } : {}),
       ...(record.model === undefined ? {} : { model: parseSubagentModel(record.model, name) }),
       ...(record.effort === undefined ? {} : {
-        effort: readChoice<EffortLevel>(String(record.effort), `subagents.definitions[${index}].effort`, EFFORT_LEVELS, "medium", invalidEnv),
+        effort: readChoice<EffortLevel>(String(record.effort), `subagents.definitions[${index}].effort`, EFFORT_LEVELS, "medium", invalidJson),
       }),
       ...(allowedTools === undefined ? {} : { allowedTools }),
       ...(disallowedTools === undefined ? {} : { disallowedTools }),
@@ -1067,8 +1073,8 @@ function parseSubagentModel(value: unknown, name: string): MonoAgentConfig["runt
     const reason = modelReferenceReason(error);
     throw new MonoAgentConfigError(
       "invalid_model_reference",
-      `MONO_AGENT_SUBAGENTS_JSON definition "${name}" model \`${modelReferenceEcho(value)}\` is not a valid runtime model reference: ${reason}`,
-      { env: "MONO_AGENT_SUBAGENTS_JSON", reason },
+      `subagents definition "${name}" model \`${modelReferenceEcho(value)}\` is not a valid runtime model reference: ${reason}`,
+      { path: "subagents", reason },
     );
   }
 }
@@ -1099,50 +1105,55 @@ function readSubagentInteger(value: unknown, field: string, min: number, max: nu
 }
 
 function invalidSubagents(detail: string): MonoAgentConfigError {
-  return new MonoAgentConfigError("invalid_env", `MONO_AGENT_SUBAGENTS_JSON ${detail}`, {
-    env: "MONO_AGENT_SUBAGENTS_JSON",
+  return new MonoAgentConfigError("invalid_json", `subagents ${detail}`, {
+    path: "subagents",
   });
 }
 
-function readRetryConfig(env: Record<string, string | undefined>): RuntimeRetryConfig {
+function readRetryConfig(runtime: Record<string, unknown> | undefined): RuntimeRetryConfig {
+  const retry = jsonRecord(runtime?.retry, "runtime.retry") ?? {};
   return {
-    primaryAttempts: readRetryInteger(env.MONO_AGENT_RETRY_PRIMARY_ATTEMPTS, "MONO_AGENT_RETRY_PRIMARY_ATTEMPTS", 2, 1, 10),
-    backoffMs: readRetryInteger(env.MONO_AGENT_RETRY_BACKOFF_MS, "MONO_AGENT_RETRY_BACKOFF_MS", 1_000, 0, 60_000),
-    maxBackoffMs: readRetryInteger(env.MONO_AGENT_RETRY_MAX_BACKOFF_MS, "MONO_AGENT_RETRY_MAX_BACKOFF_MS", 15_000, 0, 300_000),
+    primaryAttempts: readRetryInteger(retry.primaryAttempts, "runtime.retry.primaryAttempts", 2, 1, 10),
+    backoffMs: readRetryInteger(retry.backoffMs, "runtime.retry.backoffMs", 1_000, 0, 60_000),
+    maxBackoffMs: readRetryInteger(retry.maxBackoffMs, "runtime.retry.maxBackoffMs", 15_000, 0, 300_000),
   };
 }
 
 function readRetryInteger(
-  raw: string | undefined,
-  env: string,
+  value: unknown,
+  path: string,
   fallback: number,
   min: number,
   max: number,
 ): number {
-  const normalized = normalizeOptionalString(raw);
+  if (value === undefined) {
+    return fallback;
+  }
+  const normalized = normalizeOptionalString(jsonString(value, path));
   if (normalized === undefined) {
     return fallback;
   }
-  const value = Number(normalized);
-  if (!Number.isInteger(value) || value < min || value > max) {
+  const parsed = Number(normalized);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      `${env} must be an integer between ${min} and ${max}.`,
-      { env },
+      "invalid_json",
+      `${path} must be an integer between ${min} and ${max}.`,
+      { path },
     );
   }
-  return value;
+  return parsed;
 }
 
-function parseFallbackModel(raw: string, env: string, index: number): MonoAgentConfig["runtime"]["model"] {
+function parseFallbackModel(raw: string, index: number): MonoAgentConfig["runtime"]["model"] {
+  const path = `runtime.fallbacks[${index}].model`;
   try {
     return parseMonoRuntimeModelReference(raw.trim());
   } catch (error) {
     const reason = modelReferenceReason(error);
     throw new MonoAgentConfigError(
       "invalid_model_reference",
-      `${env} entry ${index + 1} model \`${modelReferenceEcho(raw)}\` is not a valid runtime model reference: ${reason}`,
-      { env, index, reason },
+      `${path} \`${modelReferenceEcho(raw)}\` is not a valid runtime model reference: ${reason}`,
+      { path, index, reason },
     );
   }
 }
@@ -1158,7 +1169,7 @@ function assertUniqueFallbackRoutes(
     const first = seen.get(key);
     if (first !== undefined) {
       throw new MonoAgentConfigError(
-        "invalid_env",
+        "invalid_json",
         `Duplicate runtime route \`${key}\` at ${route.path}; it is already selected at ${first}.`,
         { route: key, path: route.path, duplicateOf: first },
       );
@@ -1175,9 +1186,9 @@ function readAgentName(raw: string | undefined): string | undefined {
   const length = Array.from(name).length;
   if (length === 0 || length > MAX_AGENT_NAME_LENGTH || /[\u0000-\u001f\u007f]/u.test(name)) {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      `MONO_AGENT_NAME must be a single-line name between 1 and ${MAX_AGENT_NAME_LENGTH} characters.`,
-      { env: "MONO_AGENT_NAME", maxLength: MAX_AGENT_NAME_LENGTH },
+      "invalid_json",
+      `agent.name must be a single-line name between 1 and ${MAX_AGENT_NAME_LENGTH} characters.`,
+      { path: "agent.name", maxLength: MAX_AGENT_NAME_LENGTH },
     );
   }
   return name;
@@ -1188,7 +1199,7 @@ function readOptionalTimeoutMs(raw: string | undefined, name: string): number | 
   if (normalizeOptionalString(raw) === undefined) {
     return undefined;
   }
-  return readInteger(raw, name, 0, invalidEnv, { min: 1000, max: 86_400_000 });
+  return readInteger(raw, name, 0, invalidJson, { min: 1000, max: 86_400_000 });
 }
 
 function readWebSearchEndpoint(raw: string | undefined, source: string): string | undefined {
@@ -1211,9 +1222,9 @@ function readWebSearchEndpoint(raw: string | undefined, source: string): string 
     return endpoint.href.replace(/\/+$/u, "");
   } catch {
     throw new MonoAgentConfigError(
-      "invalid_env",
+      "invalid_json",
       `${source} must be an unauthenticated loopback HTTP URL.`,
-      { env: source },
+      { path: source },
     );
   }
 }
@@ -1223,22 +1234,24 @@ const DEFAULT_OLLAMA_WEB_SEARCH_BASE_URL = "http://127.0.0.1:11434";
 const OFFICIAL_OLLAMA_ORIGIN = "https://ollama.com";
 
 function readOllamaWebSearchConfig(
-  env: Record<string, string | undefined>,
+  value: unknown,
   backend: WebSearchBackend | readonly WebSearchBackend[],
 ): NonNullable<NonNullable<MonoAgentConfig["tools"]["web"]>["search"]["ollama"]> | undefined {
-  const baseUrlRaw = normalizeOptionalString(env.MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL);
-  const apiKeyEnv = normalizeOptionalString(env.MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV);
-  const trustRaw = normalizeOptionalString(env.MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL);
-  if (!selectedWebProvider(backend, "ollama") && baseUrlRaw === undefined && apiKeyEnv === undefined && trustRaw === undefined) {
+  const ollama = jsonRecord(value, "tools.web.search.ollama");
+  if (ollama === undefined && !selectedWebProvider(backend, "ollama")) {
     return undefined;
   }
+  const block = ollama ?? {};
 
-  const source = "MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL";
+  const source = "tools.web.search.ollama.baseUrl";
+  const baseUrlRaw = normalizeOptionalString(jsonString(block.baseUrl, source));
+  const apiKeyEnv = normalizeOptionalString(jsonString(block.apiKeyEnv, "tools.web.search.ollama.apiKeyEnv"));
+  const trustRaw = jsonString(block.trustPublicUrl, "tools.web.search.ollama.trustPublicUrl");
   let parsed: URL;
   try {
     parsed = new URL(baseUrlRaw ?? DEFAULT_OLLAMA_WEB_SEARCH_BASE_URL);
   } catch {
-    throw new MonoAgentConfigError("invalid_env", `${source} must be a valid HTTP(S) origin URL.`, { env: source });
+    throw new MonoAgentConfigError("invalid_json", `${source} must be a valid HTTP(S) origin URL.`, { path: source });
   }
   if (
     !["http:", "https:"].includes(parsed.protocol)
@@ -1249,62 +1262,52 @@ function readOllamaWebSearchConfig(
     || !["", "/"].includes(parsed.pathname)
   ) {
     throw new MonoAgentConfigError(
-      "invalid_env",
+      "invalid_json",
       `${source} must be an HTTP(S) origin without credentials, path, query, or fragment.`,
-      { env: source },
+      { path: source },
     );
   }
   const baseUrl = parsed.origin;
   const official = baseUrl === OFFICIAL_OLLAMA_ORIGIN;
-  const trustPublicUrl = readBoolean(
-    env.MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL,
-    "MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL",
-    false,
-    invalidEnv,
-  );
+  const trustPublicUrl = trustRaw === undefined
+    ? false
+    : readBoolean(trustRaw, "tools.web.search.ollama.trustPublicUrl", false, invalidJson);
   if (!official && !isPrivateBaseUrl(baseUrl)) {
     if (parsed.protocol !== "https:" || !trustPublicUrl) {
       throw new MonoAgentConfigError(
-        "invalid_env",
-        `${source} points to a public custom origin; use HTTPS and set MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL=true after reviewing it.`,
-        { env: source },
+        "invalid_json",
+        `${source} points to a public custom origin; use HTTPS and set tools.web.search.ollama.trustPublicUrl to true after reviewing it.`,
+        { path: source },
       );
     }
   }
   if (!official && apiKeyEnv !== undefined) {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV is allowed only for the exact https://ollama.com origin.",
-      { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV" },
+      "invalid_json",
+      "tools.web.search.ollama.apiKeyEnv is allowed only for the exact https://ollama.com origin.",
+      { path: "tools.web.search.ollama.apiKeyEnv" },
     );
   }
   if (apiKeyEnv !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(apiKeyEnv)) {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV must name an environment variable.",
-      { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV" },
+      "invalid_json",
+      "tools.web.search.ollama.apiKeyEnv must name an environment variable.",
+      { path: "tools.web.search.ollama.apiKeyEnv" },
     );
   }
   if (official && apiKeyEnv === undefined) {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV is required for hosted Ollama Web Search.",
-      { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV" },
+      "invalid_json",
+      "tools.web.search.ollama.apiKeyEnv is required for hosted Ollama Web Search.",
+      { path: "tools.web.search.ollama.apiKeyEnv" },
     );
   }
-  const apiKey = apiKeyEnv === undefined ? undefined : normalizeOptionalString(env[apiKeyEnv]);
-  if (official && apiKey === undefined) {
-    throw new MonoAgentConfigError(
-      "missing_required_env",
-      `${apiKeyEnv} is required by MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV.`,
-      { env: apiKeyEnv ?? "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV" },
-    );
-  }
+  // The named credential stays unresolved at load: the web runtime reads it
+  // from the effective environment when it calls the provider.
   return {
     baseUrl,
     trustPublicUrl,
     ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
-    ...(apiKey === undefined ? {} : { apiKey }),
   };
 }
 
@@ -1312,9 +1315,9 @@ function readWebSearchCodexModel(raw: string | undefined): string {
   const value = normalizeOptionalString(raw) ?? "gpt-5.6-luna";
   if (value.length > 160 || /[\u0000-\u001f\u007f]/u.test(value)) {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_WEB_SEARCH_CODEX_MODEL must be a non-empty model id of at most 160 characters without control characters.",
-      { env: "MONO_AGENT_WEB_SEARCH_CODEX_MODEL" },
+      "invalid_json",
+      "tools.web.search.codex.model must be a non-empty model id of at most 160 characters without control characters.",
+      { path: "tools.web.search.codex.model" },
     );
   }
   return value;
@@ -1324,134 +1327,146 @@ function readWebBrowserCommand(raw: string | undefined): string {
   const value = normalizeOptionalString(raw) ?? "agent-browser";
   if (/[\u0000-\u001f\u007f]/u.test(value)) {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_WEB_BROWSER_COMMAND must be one executable name or path without control characters.",
-      { env: "MONO_AGENT_WEB_BROWSER_COMMAND" },
+      "invalid_json",
+      "tools.web.fetch.browserCommand must be one executable name or path without control characters.",
+      { path: "tools.web.fetch.browserCommand" },
     );
   }
   return value;
 }
 
-function readMaxTurns(raw: string | undefined): number | undefined {
-  const maxTurns = readInteger(raw, "MONO_AGENT_MAX_TURNS", 0, invalidEnv, { min: 0, max: 100 });
+function readMaxTurns(value: unknown): number | undefined {
+  const maxTurns = jsonInteger(value, "runtime.maxTurns", 0, { min: 0, max: 100 });
   return maxTurns === 0 ? undefined : maxTurns;
 }
 
 function readRuntimeCompactionConfig(
-  env: Record<string, string | undefined>,
+  value: unknown,
 ): NonNullable<MonoAgentConfig["runtime"]["compaction"]> {
-  const triggerRatio = readOptionalNumber(
-    env.MONO_AGENT_COMPACTION_TRIGGER_RATIO,
-    "MONO_AGENT_COMPACTION_TRIGGER_RATIO",
+  const compaction = jsonRecord(value, "runtime.compaction") ?? {};
+  const triggerRatio = jsonOptionalNumber(
+    compaction.triggerRatio,
+    "runtime.compaction.triggerRatio",
     { min: 0.2, max: 0.95 },
   );
-  const keepRecentTokens = readOptionalInteger(
-    env.MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS,
-    "MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS",
+  const keepRecentTokens = jsonOptionalInteger(
+    compaction.keepRecentTokens,
+    "runtime.compaction.keepRecentTokens",
     { min: 4_000, max: 200_000 },
   );
-  const summaryMaxTokens = readOptionalInteger(
-    env.MONO_AGENT_COMPACTION_SUMMARY_MAX_TOKENS,
-    "MONO_AGENT_COMPACTION_SUMMARY_MAX_TOKENS",
+  const summaryMaxTokens = jsonOptionalInteger(
+    compaction.summaryMaxTokens,
+    "runtime.compaction.summaryMaxTokens",
     { min: 1_000, max: 64_000 },
   );
-  const minSavingsTokens = readOptionalInteger(
-    env.MONO_AGENT_COMPACTION_MIN_SAVINGS_TOKENS,
-    "MONO_AGENT_COMPACTION_MIN_SAVINGS_TOKENS",
+  const minSavingsTokens = jsonOptionalInteger(
+    compaction.minSavingsTokens,
+    "runtime.compaction.minSavingsTokens",
     { min: 0, max: 500_000 },
   );
-  const contextWindowOverride = readOptionalInteger(
-    env.MONO_AGENT_COMPACTION_CONTEXT_WINDOW_OVERRIDE,
-    "MONO_AGENT_COMPACTION_CONTEXT_WINDOW_OVERRIDE",
+  const contextWindowOverride = jsonOptionalInteger(
+    compaction.contextWindowOverride,
+    "runtime.compaction.contextWindowOverride",
     { min: 32_000, max: 10_000_000 },
   );
   return {
-    enabled: readBoolean(
-      env.MONO_AGENT_COMPACTION_ENABLED,
-      "MONO_AGENT_COMPACTION_ENABLED",
+    enabled: jsonBoolean(
+      compaction.enabled,
+      "runtime.compaction.enabled",
       true,
-      invalidEnv,
     ),
     ...(triggerRatio === undefined ? {} : { triggerRatio }),
     ...(keepRecentTokens === undefined ? {} : { keepRecentTokens }),
     ...(summaryMaxTokens === undefined ? {} : { summaryMaxTokens }),
     ...(minSavingsTokens === undefined ? {} : { minSavingsTokens }),
-    fixedOverheadEnabled: readBoolean(
-      env.MONO_AGENT_COMPACTION_FIXED_OVERHEAD_ENABLED,
-      "MONO_AGENT_COMPACTION_FIXED_OVERHEAD_ENABLED",
+    fixedOverheadEnabled: jsonBoolean(
+      compaction.fixedOverheadEnabled,
+      "runtime.compaction.fixedOverheadEnabled",
       true,
-      invalidEnv,
     ),
     ...(contextWindowOverride === undefined ? {} : { contextWindowOverride }),
   };
 }
 
-function readArtifactRetentionConfig(env: Record<string, string | undefined>): MonoAgentConfig["artifacts"]["retention"] {
+function readArtifactRetentionConfig(value: unknown): MonoAgentConfig["artifacts"]["retention"] {
+  const retention = jsonRecord(value, "artifacts.retention") ?? {};
   return {
-    maxAgeDays: readInteger(
-      env.MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS,
-      "MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS",
+    maxAgeDays: jsonInteger(
+      retention.maxAgeDays,
+      "artifacts.retention.maxAgeDays",
       DEFAULT_ARTIFACT_RETENTION_MAX_AGE_DAYS,
-      invalidEnv,
       { min: 1, max: 3_650 },
     ),
-    maxCount: readInteger(
-      env.MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT,
-      "MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT",
+    maxCount: jsonInteger(
+      retention.maxCount,
+      "artifacts.retention.maxCount",
       DEFAULT_ARTIFACT_RETENTION_MAX_COUNT,
-      invalidEnv,
       { min: 1, max: 1_000_000 },
     ),
-    dryRun: readBoolean(
-      env.MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN,
-      "MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN",
+    dryRun: jsonBoolean(
+      retention.dryRun,
+      "artifacts.retention.dryRun",
       false,
-      invalidEnv,
     ),
   };
 }
 
 function readMemoryArtifactRetentionConfig(
-  env: Record<string, string | undefined>,
+  value: unknown,
   agentRetention: MonoAgentConfig["artifacts"]["retention"],
 ): MonoAgentConfig["artifacts"]["memoryRetention"] {
+  const retention = jsonRecord(value, "artifacts.memoryRetention") ?? {};
   return {
-    maxAgeDays: readInteger(
-      env.MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_AGE_DAYS,
-      "MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_AGE_DAYS",
+    maxAgeDays: jsonInteger(
+      retention.maxAgeDays,
+      "artifacts.memoryRetention.maxAgeDays",
       DEFAULT_MEMORY_ARTIFACT_RETENTION_MAX_AGE_DAYS,
-      invalidEnv,
       { min: 1, max: 3_650 },
     ),
-    maxCount: readInteger(
-      env.MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_COUNT,
-      "MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_COUNT",
+    maxCount: jsonInteger(
+      retention.maxCount,
+      "artifacts.memoryRetention.maxCount",
       DEFAULT_MEMORY_ARTIFACT_RETENTION_MAX_COUNT,
-      invalidEnv,
       { min: 1, max: 1_000_000 },
     ),
-    dryRun: readBoolean(
-      env.MONO_AGENT_ARTIFACT_MEMORY_RETENTION_DRY_RUN,
-      "MONO_AGENT_ARTIFACT_MEMORY_RETENTION_DRY_RUN",
+    dryRun: jsonBoolean(
+      retention.dryRun,
+      "artifacts.memoryRetention.dryRun",
       agentRetention.dryRun,
-      invalidEnv,
     ),
   };
 }
 
-function readSandboxConfig(env: Record<string, string | undefined>, workspace: string): MonoAgentConfig["sandbox"] | undefined {
-  if (!hasSandboxEnv(env)) {
+function readSandboxConfig(value: unknown, workspace: string): MonoAgentConfig["sandbox"] | undefined {
+  const sandbox = jsonRecord(value, "sandbox");
+  if (sandbox === undefined) {
+    return undefined;
+  }
+  const network = jsonRecord(sandbox.network, "sandbox.network") ?? {};
+  // An empty block configures nothing: it stays absent rather than materializing
+  // a default-deny policy the operator never asked for.
+  const configured = [
+    sandbox.mode,
+    network.mode,
+    network.allowlist,
+    sandbox.readableRoots,
+    sandbox.writableRoots,
+    sandbox.denyWrite,
+    sandbox.fallback,
+    sandbox.unsafeAllowHostProcess,
+  ].some((field) => field !== undefined);
+  if (!configured) {
     return undefined;
   }
 
-  const mode = readChoice<SandboxMode>(env.MONO_AGENT_SANDBOX_MODE, "MONO_AGENT_SANDBOX_MODE", SANDBOX_MODES, "native", invalidEnv);
-  const networkMode = readChoice<SandboxNetworkMode>(env.MONO_AGENT_SANDBOX_NETWORK, "MONO_AGENT_SANDBOX_NETWORK", SANDBOX_NETWORK_MODES, "none", invalidEnv);
-  const fallback = readChoice<SandboxFallback>(env.MONO_AGENT_SANDBOX_FALLBACK, "MONO_AGENT_SANDBOX_FALLBACK", SANDBOX_FALLBACKS, "fail-closed", invalidEnv);
+  const mode = jsonChoice<SandboxMode>(sandbox.mode, "sandbox.mode", SANDBOX_MODES, "native");
+  const networkMode = jsonChoice<SandboxNetworkMode>(network.mode, "sandbox.network.mode", SANDBOX_NETWORK_MODES, "none");
+  const fallback = jsonChoice<SandboxFallback>(sandbox.fallback, "sandbox.fallback", SANDBOX_FALLBACKS, "fail-closed");
   // Filesystem scope entries are resolved by the sandbox against `root` (the
   // workspace), so relative entries here mean "relative to the workspace".
-  const readableRoots = readCsv(env.MONO_AGENT_SANDBOX_READABLE_ROOTS);
-  const writableRoots = readCsv(env.MONO_AGENT_SANDBOX_WRITABLE_ROOTS);
-  const denyWrite = readCsv(env.MONO_AGENT_SANDBOX_DENY_WRITE);
+  const readableRoots = jsonStringArray(sandbox.readableRoots, "sandbox.readableRoots");
+  const writableRoots = jsonStringArray(sandbox.writableRoots, "sandbox.writableRoots");
+  const denyWrite = jsonStringArray(sandbox.denyWrite, "sandbox.denyWrite");
   try {
     return createSandboxPolicy({
       mode,
@@ -1461,20 +1476,19 @@ function readSandboxConfig(env: Record<string, string | undefined>, workspace: s
       ...(denyWrite.length === 0 ? {} : { denyWrite }),
       network: {
         mode: networkMode,
-        allowlist: readCsv(env.MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST),
+        allowlist: jsonStringArray(network.allowlist, "sandbox.network.allowlist"),
       },
       fallback,
-      unsafeAllowHostProcess: readBoolean(
-        env.MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS,
-        "MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS",
+      unsafeAllowHostProcess: jsonBoolean(
+        sandbox.unsafeAllowHostProcess,
+        "sandbox.unsafeAllowHostProcess",
         false,
-        invalidEnv,
       ),
     });
   } catch (error) {
     if (error instanceof SandboxPolicyError) {
-      throw new MonoAgentConfigError("invalid_env", `Sandbox policy env is invalid: ${error.message}`, {
-        env: sandboxPolicyErrorEnv(error),
+      throw new MonoAgentConfigError("invalid_json", `Sandbox policy config is invalid: ${error.message}`, {
+        path: sandboxPolicyErrorPath(error),
         reason: error.message,
       });
     }
@@ -1482,78 +1496,58 @@ function readSandboxConfig(env: Record<string, string | undefined>, workspace: s
   }
 }
 
-function sandboxPolicyErrorEnv(error: SandboxPolicyError): string {
+function sandboxPolicyErrorPath(error: SandboxPolicyError): string {
   const field = typeof error.details.field === "string" ? error.details.field : undefined;
   if (field === "unsafeAllowHostProcess") {
-    return "MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS";
+    return "sandbox.unsafeAllowHostProcess";
   }
   if (field === "readableRoots" || field?.startsWith("readableRoots[")) {
-    return "MONO_AGENT_SANDBOX_READABLE_ROOTS";
+    return "sandbox.readableRoots";
   }
   if (field === "writableRoots" || field?.startsWith("writableRoots[")) {
-    return "MONO_AGENT_SANDBOX_WRITABLE_ROOTS";
+    return "sandbox.writableRoots";
   }
   if (field === "denyWrite" || field?.startsWith("denyWrite[")) {
-    return "MONO_AGENT_SANDBOX_DENY_WRITE";
+    return "sandbox.denyWrite";
   }
   if (field === "network.allowlist" || field?.startsWith("network.allowlist[")) {
-    return "MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST";
+    return "sandbox.network.allowlist";
   }
   if (field === "network.mode") {
-    return "MONO_AGENT_SANDBOX_NETWORK";
+    return "sandbox.network.mode";
   }
   if (field === "fallback") {
-    return "MONO_AGENT_SANDBOX_FALLBACK";
+    return "sandbox.fallback";
   }
   if (field === "root") {
-    return "MONO_AGENT_WORKSPACE";
+    return "runtime.workspace";
   }
-  return "MONO_AGENT_SANDBOX_MODE";
+  return "sandbox.mode";
 }
 
-function hasSandboxEnv(env: Record<string, string | undefined>): boolean {
-  return [
-    env.MONO_AGENT_SANDBOX_MODE,
-    env.MONO_AGENT_SANDBOX_NETWORK,
-    env.MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST,
-    env.MONO_AGENT_SANDBOX_READABLE_ROOTS,
-    env.MONO_AGENT_SANDBOX_WRITABLE_ROOTS,
-    env.MONO_AGENT_SANDBOX_DENY_WRITE,
-    env.MONO_AGENT_SANDBOX_FALLBACK,
-    env.MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS,
-  ].some((value) => normalizeOptionalString(value) !== undefined);
-}
-
-function readSessionConfig(env: Record<string, string | undefined>): MonoAgentConfig["runtime"]["session"] {
-  const mode = readChoice<SessionMode>(env.MONO_AGENT_SESSION_MODE, "MONO_AGENT_SESSION_MODE", [
+function readSessionConfig(value: unknown): MonoAgentConfig["runtime"]["session"] {
+  const session = jsonRecord(value, "runtime.session") ?? {};
+  const mode = jsonChoice<SessionMode>(session.mode, "runtime.session.mode", [
     "continuous",
     "per-message",
-  ], "continuous", invalidEnv);
-  const idleTimeoutMs = readInteger(
-    env.MONO_AGENT_SESSION_IDLE_TIMEOUT_MS,
-    "MONO_AGENT_SESSION_IDLE_TIMEOUT_MS",
+  ], "continuous");
+  const idleTimeoutMs = jsonInteger(
+    session.idleTimeoutMs,
+    "runtime.session.idleTimeoutMs",
     DEFAULT_SESSION_IDLE_TIMEOUT_MS,
-    invalidEnv,
     { min: 1_000, max: 86_400_000 },
   );
-  const rollover = readChoice<SessionRollover>(env.MONO_AGENT_SESSION_ROLLOVER, "MONO_AGENT_SESSION_ROLLOVER", [
+  const rollover = jsonChoice<SessionRollover>(session.rollover, "runtime.session.rollover", [
     "none",
     "daily",
-  ], "none", invalidEnv);
-  const rolloverTimezone = typeof env.MONO_AGENT_SESSION_ROLLOVER_TIMEZONE === "string"
-    && env.MONO_AGENT_SESSION_ROLLOVER_TIMEZONE.trim()
-    ? env.MONO_AGENT_SESSION_ROLLOVER_TIMEZONE.trim()
-    : undefined;
+  ], "none");
+  const rolloverTimezone = normalizeOptionalString(jsonString(session.rolloverTimezone, "runtime.session.rolloverTimezone"));
   // Unset stays undefined so hosts can keep their existing display policy;
   // explicit false is preserved for operators who want to suppress notices.
-  const rolloverNotice = normalizeOptionalString(env.MONO_AGENT_SESSION_ROLLOVER_NOTICE) === undefined
-    ? undefined
-    : readBoolean(env.MONO_AGENT_SESSION_ROLLOVER_NOTICE, "MONO_AGENT_SESSION_ROLLOVER_NOTICE", false, invalidEnv);
+  const rolloverNotice = jsonOptionalBoolean(session.rolloverNotice, "runtime.session.rolloverNotice");
   // Unset stays undefined so the harness default (false, no behavior change) is
   // preserved byte-for-byte; only parse the boolean when an operator opts in.
-  const isolateProactive = normalizeOptionalString(env.MONO_AGENT_SESSION_ISOLATE_PROACTIVE) === undefined
-    ? undefined
-    : readBoolean(env.MONO_AGENT_SESSION_ISOLATE_PROACTIVE, "MONO_AGENT_SESSION_ISOLATE_PROACTIVE", false, invalidEnv);
+  const isolateProactive = jsonOptionalBoolean(session.isolateProactive, "runtime.session.isolateProactive");
   return {
     mode,
     idleTimeoutMs,
@@ -1565,164 +1559,148 @@ function readSessionConfig(env: Record<string, string | undefined>): MonoAgentCo
 }
 
 /**
- * Pre-v2 memory keys the loader still tolerates (never throws) but no longer
- * honors. Surfaced as a one-line deprecation warning instead of being silently
- * dropped, so a stale config doesn't look like it is taking effect.
+ * A JSON memory field counts as configured when it is present and non-blank,
+ * mirroring how blank strings used to fall through to defaults.
  */
-const RETIRED_MEMORY_ENV_KEYS = [
-  "MONO_AGENT_MEMORY_GRAPH_PATH",
-  "MONO_AGENT_MEMORY_SCOPE",
-  "MONO_AGENT_MEMORY_TOOLS_ENABLED",
-  "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
-  "MONO_AGENT_MEMORY_REFLECTION_CRON",
-  "MONO_AGENT_MEMORY_MIGRATION_ENABLED",
-  "MONO_AGENT_MEMORY_MIGRATION_CRON",
-] as const;
-
-function warnRetiredMemoryKeys(env: Record<string, string | undefined>): void {
-  const retired = RETIRED_MEMORY_ENV_KEYS.filter(
-    (name) => normalizeOptionalString(env[name]) !== undefined,
-  );
-  if (retired.length > 0) {
-    console.warn(
-      `[mono-agent] Ignoring retired memory env var(s): ${retired.join(", ")}. `
-        + "These were removed in Memory v2 and have no effect.",
-    );
-  }
+function hasMemoryJsonField(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  return value !== undefined;
 }
 
-function readMemoryConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["memory"] | undefined {
-  warnRetiredMemoryKeys(env);
-  const backend = readChoice<MemoryBackend>(
-    env.MONO_AGENT_MEMORY_BACKEND,
-    "MONO_AGENT_MEMORY_BACKEND",
+function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"] | undefined {
+  const memory = jsonRecord(value, "memory");
+  if (memory === undefined) {
+    return undefined;
+  }
+  const backend = jsonChoice<MemoryBackend>(
+    memory.backend,
+    "memory.backend",
     MEMORY_BACKENDS,
     "bujo",
-    invalidEnv,
   );
-  const rawPath = normalizeOptionalString(env.MONO_AGENT_MEMORY_PATH);
+  const rawPath = normalizeOptionalString(jsonString(memory.path, "memory.path"));
+  const embeddingsJson = jsonContainer(memory.embeddings);
+  const llmJson = jsonContainer(memory.llm);
+  const recallToolJson = jsonContainer(memory.recallTool);
+  const rememberToolJson = jsonContainer(memory.rememberTool);
+  const consolidationJson = jsonContainer(memory.consolidation);
 
-  // Every configured local memory setting requires a durable path. Retired memory keys
-  // stay tolerated by their existing compatibility warning and are not path-gated.
+  // Every configured local memory setting requires a durable path.
   if (rawPath === undefined) {
     const orphaned = [
-      "MONO_AGENT_MEMORY_MODE",
-      "MONO_AGENT_MEMORY_WRITE_MODE",
-      "MONO_AGENT_MEMORY_MAX_BYTES",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV",
-      "MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_DIM",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
-      "MONO_AGENT_MEMORY_LLM_PROVIDER",
-      "MONO_AGENT_MEMORY_LLM_MODEL",
-      "MONO_AGENT_MEMORY_LLM_ENDPOINT",
-      "MONO_AGENT_MEMORY_LLM_TRACE",
-      "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
-      "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
-      "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED",
-      "MONO_AGENT_MEMORY_CONSOLIDATION_CRON",
-    ].find((name) => normalizeOptionalString(env[name]) !== undefined);
+      "memory.mode",
+      "memory.writeMode",
+      "memory.maxBytes",
+      "memory.embeddings.provider",
+      "memory.embeddings.model",
+      "memory.embeddings.endpoint",
+      "memory.embeddings.apiKey",
+      "memory.embeddings.apiKeyEnv",
+      "memory.rememberTool.enabled",
+      "memory.embeddings.dim",
+      "memory.embeddings.timeoutMs",
+      "memory.embeddings.circuitBreaker.failureThreshold",
+      "memory.embeddings.circuitBreaker.cooldownMs",
+      "memory.llm.provider",
+      "memory.llm.model",
+      "memory.llm.endpoint",
+      "memory.llm.trace",
+      "memory.llm.timeoutMs",
+      "memory.recallTool.enabled",
+      "memory.consolidation.enabled",
+      "memory.consolidation.cron",
+    ].find((path) => {
+      const segments = path.split(".").slice(1);
+      let current: unknown = memory;
+      for (const segment of segments) {
+        if (typeof current !== "object" || current === null || Array.isArray(current)) return false;
+        current = (current as Record<string, unknown>)[segment];
+      }
+      return hasMemoryJsonField(current);
+    });
     if (orphaned !== undefined) {
-      throw new MonoAgentConfigError("invalid_env", `${orphaned} requires MONO_AGENT_MEMORY_PATH (or memory.path) to be set.`, {
-        env: orphaned,
+      throw new MonoAgentConfigError("invalid_json", `${orphaned} requires memory.path to be set.`, {
+        path: "memory.path",
       });
     }
     return undefined;
   }
-  const mode = readChoice<MemoryMode>(
-    env.MONO_AGENT_MEMORY_MODE,
-    "MONO_AGENT_MEMORY_MODE",
+  const mode = jsonChoice<MemoryMode>(
+    memory.mode,
+    "memory.mode",
     MEMORY_MODES,
     "lite",
-    invalidEnv,
   );
-  const writeMode = readChoice<MemoryWriteMode>(
-    env.MONO_AGENT_MEMORY_WRITE_MODE,
-    "MONO_AGENT_MEMORY_WRITE_MODE",
+  const writeMode = jsonChoice<MemoryWriteMode>(
+    memory.writeMode,
+    "memory.writeMode",
     MEMORY_WRITE_MODES,
     "disabled",
-    invalidEnv,
   );
   // Capture requires the local BuJo tier and its chat LLM.
   if (writeMode === "capture" && mode !== "bujo") {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      `MONO_AGENT_MEMORY_WRITE_MODE "capture" requires MONO_AGENT_MEMORY_MODE "bujo" (it needs a chat LLM).`,
-      { env: "MONO_AGENT_MEMORY_WRITE_MODE" },
+      "invalid_json",
+      `memory.writeMode "capture" requires memory.mode "bujo" (it needs a chat LLM).`,
+      { path: "memory.writeMode" },
     );
   }
-  if ((mode === "lite" || mode === "journal") && hasMemoryLlmConfig(env)) {
+  if ((mode === "lite" || mode === "journal") && hasMemoryLlmJson(llmJson)) {
     const message = mode === "lite"
-      ? 'MONO_AGENT_MEMORY_MODE "lite" is lexical-only and cannot configure memory.llm. Remove it or select journal/bujo.'
-      : 'MONO_AGENT_MEMORY_MODE "journal" is semantic-only and cannot configure a capture LLM or BuJo consolidation.';
-    throw new MonoAgentConfigError("invalid_env", message, { env: "MONO_AGENT_MEMORY_MODE" });
+      ? 'memory.mode "lite" is lexical-only and cannot configure memory.llm. Remove it or select journal/bujo.'
+      : 'memory.mode "journal" is semantic-only and cannot configure a capture LLM or BuJo consolidation.';
+    throw new MonoAgentConfigError("invalid_json", message, { path: "memory.mode" });
   }
-  const embeddings = readMemoryEmbeddingsConfig(env);
-  const llm = readMemoryLlmConfig(env);
-  const dim = readOptionalInteger(env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM, "MONO_AGENT_MEMORY_EMBEDDINGS_DIM", { min: 1, max: 16_384 });
-  const consolidation = readMemoryConsolidationConfig(env);
-
-  const embeddingsWithDim =
-    embeddings === undefined
-      ? undefined
-      : dim === undefined
-        ? embeddings
-        : { ...embeddings, dim };
+  const embeddings = readMemoryEmbeddingsConfig(memory.embeddings);
+  const llm = readMemoryLlmConfig(memory.llm, mode);
+  const consolidation = readMemoryConsolidationConfig(memory.consolidation);
 
   // Built-in tiers are capability contracts, not best-effort hints.  Keeping
   // the matrix strict prevents a configured Journal/BuJo agent from silently
   // running as a cheaper tier when a prerequisite was omitted.
   if (mode === "lite") {
-    const incompatible = embeddingsWithDim !== undefined
+    const incompatible = embeddings !== undefined
       ? "memory.embeddings"
-      : dim !== undefined
-        ? "memory.embeddings.dim"
-        : llm !== undefined
-          ? "memory.llm"
-          : consolidation !== undefined
-            ? "memory.consolidation"
-            : undefined;
+      : llm !== undefined
+        ? "memory.llm"
+        : consolidation !== undefined
+          ? "memory.consolidation"
+          : undefined;
     if (incompatible !== undefined) {
       throw new MonoAgentConfigError(
-        "invalid_env",
-        `MONO_AGENT_MEMORY_MODE "lite" is lexical-only and cannot configure ${incompatible}. Remove it or select journal/bujo.`,
-        { env: "MONO_AGENT_MEMORY_MODE" },
+        "invalid_json",
+        `memory.mode "lite" is lexical-only and cannot configure ${incompatible}. Remove it or select journal/bujo.`,
+        { path: "memory.mode" },
       );
     }
   } else if (mode === "journal") {
-    if (embeddingsWithDim === undefined) {
+    if (embeddings === undefined) {
       throw new MonoAgentConfigError(
-        "invalid_env",
-        'MONO_AGENT_MEMORY_MODE "journal" requires an explicit memory.embeddings block.',
-        { env: "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL" },
+        "invalid_json",
+        'memory.mode "journal" requires an explicit memory.embeddings block.',
+        { path: "memory.embeddings" },
       );
     }
     if (llm !== undefined || consolidation !== undefined) {
       throw new MonoAgentConfigError(
-        "invalid_env",
-        'MONO_AGENT_MEMORY_MODE "journal" is semantic-only and cannot configure a capture LLM or BuJo consolidation.',
-        { env: "MONO_AGENT_MEMORY_MODE" },
+        "invalid_json",
+        'memory.mode "journal" is semantic-only and cannot configure a capture LLM or BuJo consolidation.',
+        { path: "memory.mode" },
       );
     }
   } else {
-    if (embeddingsWithDim === undefined) {
+    if (embeddings === undefined) {
       throw new MonoAgentConfigError(
-        "invalid_env",
-        'MONO_AGENT_MEMORY_MODE "bujo" requires an explicit memory.embeddings block.',
-        { env: "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL" },
+        "invalid_json",
+        'memory.mode "bujo" requires an explicit memory.embeddings block.',
+        { path: "memory.embeddings" },
       );
     }
     if (llm === undefined) {
       throw new MonoAgentConfigError(
-        "invalid_env",
-        'MONO_AGENT_MEMORY_MODE "bujo" requires an explicit memory.llm block.',
-        { env: "MONO_AGENT_MEMORY_LLM_MODEL" },
+        "invalid_json",
+        'memory.mode "bujo" requires an explicit memory.llm block.',
+        { path: "memory.llm" },
       );
     }
   }
@@ -1732,29 +1710,25 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   // The same switch also gates policy-allowed chronological browsing on local
   // tiers that affirm that separate capability. Explicit false is the shared
   // explicit-read opt-out; it does not disable automatic context recall.
-  const recallToolDefault = true;
-  const recallToolEnabled = readBoolean(
-    env.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED,
-    "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
-    recallToolDefault,
-    invalidEnv,
+  const recallToolEnabled = jsonBoolean(
+    recallToolJson?.enabled,
+    "memory.recallTool.enabled",
+    true,
   );
 
-  const rememberToolDefault = true;
-  const rememberToolEnabled = readBoolean(
-    env.MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED,
-    "MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED",
-    rememberToolDefault,
-    invalidEnv,
+  const rememberToolEnabled = jsonBoolean(
+    rememberToolJson?.enabled,
+    "memory.rememberTool.enabled",
+    true,
   );
 
   return {
     backend,
     mode,
-    path: readPath(rawPath ?? "./.mono-agent/memory", cwd),
-    maxBytes: readInteger(env.MONO_AGENT_MEMORY_MAX_BYTES, "MONO_AGENT_MEMORY_MAX_BYTES", DEFAULT_MEMORY_MAX_BYTES, invalidEnv, { min: 1, max: 1_000_000 }),
+    path: readPath(rawPath, cwd),
+    maxBytes: jsonInteger(memory.maxBytes, "memory.maxBytes", DEFAULT_MEMORY_MAX_BYTES, { min: 1, max: 1_000_000 }),
     writeMode,
-    ...(embeddingsWithDim === undefined ? {} : { embeddings: embeddingsWithDim }),
+    ...(embeddings === undefined ? {} : { embeddings }),
     ...(llm === undefined ? {} : { llm }),
     recallTool: { enabled: recallToolEnabled },
     rememberTool: { enabled: rememberToolEnabled },
@@ -1762,74 +1736,72 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   };
 }
 
-function readMemoryEmbeddingsConfig(env: Record<string, string | undefined>): MemoryEmbeddingsConfig | undefined {
-  const hasEmbeddingsEnv = [
-    env.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER,
-    env.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL,
-    env.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT,
-    env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY,
-    env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV,
-    env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM,
-    env.MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS,
-    env.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
-    env.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS,
-  ].some((value) => normalizeOptionalString(value) !== undefined);
-  if (!hasEmbeddingsEnv) {
+function readMemoryEmbeddingsConfig(value: unknown): MemoryEmbeddingsConfig | undefined {
+  const embeddings = jsonRecord(value, "memory.embeddings");
+  if (embeddings === undefined) {
     return undefined;
   }
+  if (Object.keys(embeddings).length === 0) {
+    const path = "memory.embeddings";
+    const message = `${path} must contain at least one setting; provider, model, and dim default after the block is activated.`;
+    throw new MonoAgentConfigError("invalid_json", message, { path, reason: message });
+  }
 
-  const provider = readChoice<MemoryEmbeddingsProvider>(
-    env.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER,
-    "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER",
+  const provider = jsonChoice<MemoryEmbeddingsProvider>(
+    embeddings.provider,
+    "memory.embeddings.provider",
     MEMORY_EMBEDDINGS_PROVIDERS,
     "ollama",
-    invalidEnv,
   );
-  const model = normalizeOptionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL) ?? DEFAULT_EMBEDDINGS_MODELS[provider];
-  const endpoint = normalizeOptionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT);
-  const apiKeyEnv = normalizeOptionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV);
-  // A declared name is authoritative. Ignoring an unresolved name in favor of
-  // the generic literal could send a stale credential to a newly selected
-  // provider; local providers preserve the unresolved reference so readiness
-  // can explain it, while OpenAI still fails its mandatory-key validation.
-  const apiKey = apiKeyEnv === undefined
-    ? normalizeOptionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY)
-    : normalizeOptionalString(env[apiKeyEnv]);
-  if (provider === "openai" && apiKey === undefined) {
+  const model = normalizeOptionalString(jsonString(embeddings.model, "memory.embeddings.model")) ?? DEFAULT_EMBEDDINGS_MODELS[provider];
+  const endpoint = normalizeOptionalString(jsonString(embeddings.endpoint, "memory.embeddings.endpoint"));
+  const apiKeyEnv = normalizeOptionalString(jsonString(embeddings.apiKeyEnv, "memory.embeddings.apiKeyEnv"));
+  // A declared name is authoritative and stays unresolved at load: the runtime
+  // resolves it against the effective environment when the provider is used,
+  // so readiness can explain a missing value. Only an inline literal lands in
+  // `apiKey` here.
+  const apiKey = normalizeOptionalString(jsonString(embeddings.apiKey, "memory.embeddings.apiKey"));
+  if (provider === "openai" && apiKey === undefined && apiKeyEnv === undefined) {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      "openai memory embeddings require MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY (or apiKeyEnv pointing at a set variable).",
-      { env: "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY" },
+      "invalid_json",
+      "openai memory embeddings require memory.embeddings.apiKey or memory.embeddings.apiKeyEnv.",
+      { path: "memory.embeddings.apiKey" },
     );
   }
-  const timeoutMs = readOptionalInteger(
-    env.MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS,
-    "MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS",
+  const dim = jsonOptionalInteger(embeddings.dim, "memory.embeddings.dim", { min: 1, max: 16_384 });
+  const timeoutMs = jsonOptionalInteger(
+    embeddings.timeoutMs,
+    "memory.embeddings.timeoutMs",
     { min: 1, max: 600_000 },
   );
-  const circuitBreaker = readMemoryEmbeddingsCircuitBreakerConfig(env);
+  const circuitBreaker = readMemoryEmbeddingsCircuitBreakerConfig(embeddings.circuitBreaker);
   return {
     provider,
     model,
     ...(endpoint === undefined ? {} : { endpoint }),
     ...(apiKey === undefined ? {} : { apiKey }),
     ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
+    ...(dim === undefined ? {} : { dim }),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(circuitBreaker === undefined ? {} : { circuitBreaker }),
   };
 }
 
 function readMemoryEmbeddingsCircuitBreakerConfig(
-  env: Record<string, string | undefined>,
+  value: unknown,
 ): MemoryEmbeddingsCircuitBreakerConfig | undefined {
-  const failureThreshold = readOptionalInteger(
-    env.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
-    "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
+  const circuitBreaker = jsonRecord(value, "memory.embeddings.circuitBreaker");
+  if (circuitBreaker === undefined) {
+    return undefined;
+  }
+  const failureThreshold = jsonOptionalInteger(
+    circuitBreaker.failureThreshold,
+    "memory.embeddings.circuitBreaker.failureThreshold",
     { min: 1, max: 100 },
   );
-  const cooldownMs = readOptionalInteger(
-    env.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS,
-    "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
+  const cooldownMs = jsonOptionalInteger(
+    circuitBreaker.cooldownMs,
+    "memory.embeddings.circuitBreaker.cooldownMs",
     { min: 1, max: 3_600_000 },
   );
   if (failureThreshold === undefined && cooldownMs === undefined) {
@@ -1841,32 +1813,39 @@ function readMemoryEmbeddingsCircuitBreakerConfig(
   };
 }
 
-function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlmConfig | undefined {
-  if (!hasMemoryLlmConfig(env)) {
+function readMemoryLlmConfig(value: unknown, mode: MemoryMode): MemoryLlmConfig | undefined {
+  const llm = jsonRecord(value, "memory.llm");
+  if (llm === undefined) {
     return undefined;
   }
-  const rawModel = normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_MODEL);
+  if (Object.keys(llm).length === 0) {
+    const path = "memory.llm";
+    const message = mode === "bujo"
+      ? `${path} must contain a model for memory.mode "bujo".`
+      : `memory.mode "${mode}" cannot configure ${path}.`;
+    throw new MonoAgentConfigError("invalid_json", message, { path, reason: message });
+  }
+  const rawModel = normalizeOptionalString(jsonString(llm.model, "memory.llm.model"));
   if (rawModel === undefined) {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_MEMORY_LLM_MODEL is required when any memory.llm value is set.",
-      { env: "MONO_AGENT_MEMORY_LLM_MODEL" },
+      "invalid_json",
+      "memory.llm.model is required when any memory.llm value is set.",
+      { path: "memory.llm.model" },
     );
   }
-  const provider = readChoice<MemoryLlmProvider>(
-    env.MONO_AGENT_MEMORY_LLM_PROVIDER,
-    "MONO_AGENT_MEMORY_LLM_PROVIDER",
+  const provider = jsonChoice<MemoryLlmProvider>(
+    llm.provider,
+    "memory.llm.provider",
     MEMORY_LLM_PROVIDERS,
     "ollama",
-    invalidEnv,
   );
-  const endpoint = normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_ENDPOINT);
+  const endpoint = normalizeOptionalString(jsonString(llm.endpoint, "memory.llm.endpoint"));
   if (provider === "agent-host") {
     if (endpoint !== undefined) {
       throw new MonoAgentConfigError(
-        "invalid_env",
-        "MONO_AGENT_MEMORY_LLM_ENDPOINT is only valid when MONO_AGENT_MEMORY_LLM_PROVIDER is ollama.",
-        { env: "MONO_AGENT_MEMORY_LLM_ENDPOINT" },
+        "invalid_json",
+        "memory.llm.endpoint is only valid when memory.llm.provider is ollama.",
+        { path: "memory.llm.endpoint" },
       );
     }
     try {
@@ -1875,15 +1854,12 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
       const reason = modelReferenceReason(error);
       throw new MonoAgentConfigError(
         "invalid_model_reference",
-        `MONO_AGENT_MEMORY_LLM_MODEL \`${modelReferenceEcho(rawModel)}\` is not a valid runtime model reference for agent-host memory LLM: ${reason}`,
-        { env: "MONO_AGENT_MEMORY_LLM_MODEL", reason },
+        `memory.llm.model \`${modelReferenceEcho(rawModel)}\` is not a valid runtime model reference for agent-host memory LLM: ${reason}`,
+        { path: "memory.llm.model", reason },
       );
     }
-    const trace =
-      normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_TRACE) === undefined
-        ? undefined
-        : readBoolean(env.MONO_AGENT_MEMORY_LLM_TRACE, "MONO_AGENT_MEMORY_LLM_TRACE", true, invalidEnv);
-    const timeoutMs = readOptionalInteger(env.MONO_AGENT_MEMORY_LLM_TIMEOUT_MS, "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS", {
+    const trace = jsonOptionalBoolean(llm.trace, "memory.llm.trace");
+    const timeoutMs = jsonOptionalInteger(llm.timeoutMs, "memory.llm.timeoutMs", {
       min: 1_000,
       max: 600_000,
     });
@@ -1894,18 +1870,18 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
     };
   }
-  if (normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_TRACE) !== undefined) {
+  if (hasMemoryJsonField(llm.trace)) {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_MEMORY_LLM_TRACE is only valid when MONO_AGENT_MEMORY_LLM_PROVIDER is agent-host.",
-      { env: "MONO_AGENT_MEMORY_LLM_TRACE" },
+      "invalid_json",
+      "memory.llm.trace is only valid when memory.llm.provider is agent-host.",
+      { path: "memory.llm.trace" },
     );
   }
-  if (normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_TIMEOUT_MS) !== undefined) {
+  if (hasMemoryJsonField(llm.timeoutMs)) {
     throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS is only valid when MONO_AGENT_MEMORY_LLM_PROVIDER is agent-host.",
-      { env: "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS" },
+      "invalid_json",
+      "memory.llm.timeoutMs is only valid when memory.llm.provider is agent-host.",
+      { path: "memory.llm.timeoutMs" },
     );
   }
   return {
@@ -1915,8 +1891,9 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
   };
 }
 
-function hasMemoryLlmConfig(env: Record<string, string | undefined>): boolean {
-  return MEMORY_LLM_ENV_KEYS.some((name) => normalizeOptionalString(env[name]) !== undefined);
+function hasMemoryLlmJson(llm: Record<string, unknown> | undefined): boolean {
+  if (llm === undefined) return false;
+  return MEMORY_LLM_JSON_PATHS.some((path) => hasMemoryJsonField(llm[path.slice("memory.llm.".length)]));
 }
 
 /**
@@ -1924,19 +1901,21 @@ function hasMemoryLlmConfig(env: Record<string, string | undefined>): boolean {
  * not config-load validated, so operators get a runtime warning without blocking config load.
  */
 function readMemoryConsolidationConfig(
-  env: Record<string, string | undefined>,
+  value: unknown,
 ): MemoryConsolidationConfig | undefined {
-  const enabledKey = "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED";
-  const cronKey = "MONO_AGENT_MEMORY_CONSOLIDATION_CRON";
-  const hasEnabled = normalizeOptionalString(env[enabledKey]) !== undefined;
-  const hasCron = normalizeOptionalString(env[cronKey]) !== undefined;
+  const consolidation = jsonRecord(value, "memory.consolidation");
+  if (consolidation === undefined) {
+    return undefined;
+  }
+  const hasEnabled = hasMemoryJsonField(consolidation.enabled);
+  const hasCron = hasMemoryJsonField(consolidation.cron);
   if (!hasEnabled && !hasCron) {
     return undefined;
   }
   const enabled = hasEnabled
-    ? readBoolean(env[enabledKey], enabledKey, true, invalidEnv)
+    ? jsonBoolean(consolidation.enabled, "memory.consolidation.enabled", true)
     : undefined;
-  const cron = normalizeOptionalString(env[cronKey]);
+  const cron = normalizeOptionalString(jsonString(consolidation.cron, "memory.consolidation.cron"));
   return {
     ...(enabled === undefined ? {} : { enabled }),
     ...(cron === undefined ? {} : { cron }),
@@ -1944,28 +1923,29 @@ function readMemoryConsolidationConfig(
 }
 
 function readTraceabilityConfig(
-  env: Record<string, string | undefined>,
+  value: unknown,
   cwd: string,
   agentName: string | undefined,
 ): MonoAgentConfig["traceability"] {
+  const traceability = jsonRecord(value, "traceability") ?? {};
   const registryDir = readPath(
-    env.MONO_AGENT_TRACE_REGISTRY_DIR,
+    jsonString(traceability.registryDir, "traceability.registryDir"),
     cwd,
     resolve(homedir(), ".mono-agent", "trace-sources"),
   );
-  const sourceId = normalizeOptionalString(env.MONO_AGENT_TRACE_SOURCE_ID);
+  const sourceId = normalizeOptionalString(jsonString(traceability.sourceId, "traceability.sourceId"));
   // An explicit trace label remains authoritative. Otherwise the public agent
   // name becomes the display label without changing the stable source id.
-  const sourceLabel = normalizeOptionalString(env.MONO_AGENT_TRACE_SOURCE_LABEL) ?? agentName;
-  const heartbeatMs = readInteger(env.MONO_AGENT_TRACE_HEARTBEAT_MS, "MONO_AGENT_TRACE_HEARTBEAT_MS", DEFAULT_TRACE_HEARTBEAT_MS, invalidEnv, {
+  const sourceLabel = normalizeOptionalString(jsonString(traceability.sourceLabel, "traceability.sourceLabel")) ?? agentName;
+  const heartbeatMs = jsonInteger(traceability.heartbeatMs, "traceability.heartbeatMs", DEFAULT_TRACE_HEARTBEAT_MS, {
     min: 250,
     max: 86_400_000,
   });
-  const staleAfterMs = readInteger(env.MONO_AGENT_TRACE_STALE_AFTER_MS, "MONO_AGENT_TRACE_STALE_AFTER_MS", DEFAULT_TRACE_STALE_AFTER_MS, invalidEnv, {
+  const staleAfterMs = jsonInteger(traceability.staleAfterMs, "traceability.staleAfterMs", DEFAULT_TRACE_STALE_AFTER_MS, {
     min: 1_000,
     max: 604_800_000,
   });
-  const globalDiscovery = readBoolean(env.MONO_AGENT_TRACE_GLOBAL_DISCOVERY, "MONO_AGENT_TRACE_GLOBAL_DISCOVERY", true, invalidEnv);
+  const globalDiscovery = jsonBoolean(traceability.globalDiscovery, "traceability.globalDiscovery", true);
   return {
     registryDir,
     ...(sourceId === undefined ? {} : { sourceId }),
@@ -1987,9 +1967,9 @@ function readObjectInteger(
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isInteger(value) || value < bounds.min || value > bounds.max) {
     throw new MonoAgentConfigError(
-      "invalid_env",
+      "invalid_json",
       `${source}.${key} must be an integer between ${bounds.min} and ${bounds.max}.`,
-      { env: source },
+      { path: `${source}.${key}` },
     );
   }
   return value;
@@ -2013,47 +1993,25 @@ const PROVIDER_ENTRY_KEYS = new Set([
   "type",
 ]);
 
-function readConfiguredProviders(env: Record<string, string | undefined>): ConfiguredProviderEnvelope {
-  const providerJson = normalizeOptionalString(env.MONO_AGENT_PROVIDERS_JSON);
-  let parsed: Record<string, unknown> = {};
-  if (providerJson !== undefined) {
-    let value: unknown;
-    try {
-      value = JSON.parse(providerJson);
-    } catch (error) {
-      throw new MonoAgentConfigError("invalid_json", "MONO_AGENT_PROVIDERS_JSON must contain valid JSON.", {
-        env: "MONO_AGENT_PROVIDERS_JSON",
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    }
-    if (!isRecord(value) || Array.isArray(value)) {
-      throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_PROVIDERS_JSON must be an object.", {
-        env: "MONO_AGENT_PROVIDERS_JSON",
-      });
-    }
-    parsed = value;
-  }
+function readConfiguredProviders(value: unknown): ConfiguredProviderEnvelope {
+  const parsed = jsonRecord(value, "providers") ?? {};
 
   const entries = new Map<string, { readonly provider: ProviderDefinition; readonly path: string }>();
   for (const id of Object.keys(parsed).filter((key) => !RESERVED_PROVIDER_KEYS.has(key)).sort()) {
-    addConfiguredProvider(entries, normalizeProviderFromUnknown(id, parsed[id], env, `providers.${id}`, false), `providers.${id}`);
+    addConfiguredProvider(entries, normalizeProviderFromUnknown(id, parsed[id], `providers.${id}`, false), `providers.${id}`);
   }
 
-  const legacyFromEnv = readLegacyProviderEnv(env);
+  // The `local` array is the legacy single-shape form of the same provider map.
   const legacyFromMap = parsed.local;
-  if (legacyFromEnv.length === 0 && legacyFromMap !== undefined) {
+  if (legacyFromMap !== undefined) {
     if (!Array.isArray(legacyFromMap)) {
-      throw new MonoAgentConfigError("invalid_env", "providers.local must be an array.", { env: "MONO_AGENT_PROVIDERS_JSON" });
+      throw new MonoAgentConfigError("invalid_json", "providers.local must be an array.", { path: "providers.local" });
     }
     legacyFromMap.forEach((provider, index) => {
       const path = `providers.local[${index}]`;
-      const normalized = normalizeLegacyProviderFromUnknown(provider, env, path);
+      const normalized = normalizeLegacyProviderFromUnknown(provider, path);
       addConfiguredProvider(entries, normalized, path);
     });
-  }
-
-  for (const legacy of legacyFromEnv) {
-    addConfiguredProvider(entries, legacy.provider, legacy.path);
   }
 
   const piAuthPath = parsed.piAuthPath === undefined
@@ -2069,103 +2027,44 @@ function readConfiguredProviders(env: Record<string, string | undefined>): Confi
   };
 }
 
-function readLegacyProviderEnv(
-  env: Record<string, string | undefined>,
-): readonly { readonly provider: LocalProviderDefinition; readonly path: string }[] {
-  const registryJson = normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDERS_JSON);
-  if (registryJson !== undefined) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(registryJson);
-    } catch (error) {
-      throw new MonoAgentConfigError("invalid_json", "MONO_AGENT_LOCAL_PROVIDERS_JSON must contain valid JSON.", {
-        env: "MONO_AGENT_LOCAL_PROVIDERS_JSON",
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    }
-    const rawProviders = Array.isArray(parsed)
-      ? parsed
-      : isRecord(parsed) && Array.isArray(parsed.local)
-        ? parsed.local
-        : undefined;
-    if (rawProviders === undefined) {
-      throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_LOCAL_PROVIDERS_JSON must be an array or an object with local array.", {
-        env: "MONO_AGENT_LOCAL_PROVIDERS_JSON",
-      });
-    }
-    return rawProviders.map((provider, index) => {
-      const path = `MONO_AGENT_LOCAL_PROVIDERS_JSON[${index}]`;
-      return { provider: normalizeLegacyProviderFromUnknown(provider, env, path), path };
-    });
-  }
-
-  const id = normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_ID);
-  const type = normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_TYPE);
-  const baseUrl = normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_BASE_URL);
-  const hasOneProviderEnv = id !== undefined
-    || type !== undefined
-    || baseUrl !== undefined
-    || normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_ENABLED) !== undefined
-    || normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL) !== undefined
-    || normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_API_KEY) !== undefined;
-  if (!hasOneProviderEnv) {
-    return [];
-  }
-  const path = "MONO_AGENT_LOCAL_PROVIDER";
-  return [{
-    path,
-    provider: normalizeLegacyProviderFromUnknown({
-      id: id ?? "ollama",
-      type: type ?? "ollama",
-      ...(baseUrl === undefined ? {} : { baseUrl }),
-      enabled: readBoolean(env.MONO_AGENT_LOCAL_PROVIDER_ENABLED, "MONO_AGENT_LOCAL_PROVIDER_ENABLED", true, invalidEnv),
-      trustPublicUrl: readBoolean(env.MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL, "MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL", false, invalidEnv),
-      ...(normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_API_KEY) === undefined
-        ? {}
-        : { apiKey: normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_API_KEY) as string }),
-    }, env, path),
-  }];
-}
-
 function normalizeLegacyProviderFromUnknown(
   value: unknown,
-  env: Record<string, string | undefined>,
   source: string,
 ): LocalProviderDefinition {
   if (!isRecord(value) || Array.isArray(value)) {
-    throw new MonoAgentConfigError("invalid_env", `${source} must be an object.`, { env: source });
+    throw new MonoAgentConfigError("invalid_json", `${source} must be an object.`, { path: source });
   }
   const id = readObjectString(value, "id", source, true) as string;
-  const provider = normalizeProviderFromUnknown(id, value, env, source, true);
+  const provider = normalizeProviderFromUnknown(id, value, source, true);
   return provider as LocalProviderDefinition;
 }
 
 function normalizeProviderFromUnknown(
   id: string,
   value: unknown,
-  env: Record<string, string | undefined>,
   source: string,
   requireType: boolean,
 ): ProviderDefinition {
   if (!isRecord(value) || Array.isArray(value)) {
-    throw new MonoAgentConfigError("invalid_env", `${source} must be an object.`, { env: source });
+    throw new MonoAgentConfigError("invalid_json", `${source} must be an object.`, { path: source });
   }
   const unknownKeys = Object.keys(value).filter((key) =>
     !(requireType && key === "id") && !PROVIDER_ENTRY_KEYS.has(key),
   ).sort();
   if (unknownKeys.length > 0) {
     throw new MonoAgentConfigError(
-      "invalid_env",
+      "invalid_json",
       `${source} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`,
-      { env: source, unknownKeys },
+      { path: source, unknownKeys },
     );
   }
   const type = readObjectString(value, "type", source, requireType) as ProviderDefinition["type"];
   const baseUrl = readObjectString(value, "baseUrl", source, false);
   const apiKeyEnv = readObjectString(value, "apiKeyEnv", source, false);
-  const apiKeyFromEnv = apiKeyEnv === undefined ? undefined : normalizeOptionalString(env[apiKeyEnv]);
-  const inlineApiKey = readObjectString(value, "apiKey", source, false);
-  const apiKey = apiKeyFromEnv ?? inlineApiKey;
+  // Credential names stay unresolved at load: the runtime resolves them against
+  // the effective environment when the provider is used. Only an inline literal
+  // lands in `apiKey` here, so secrets never flow through the loader.
+  const apiKey = readObjectString(value, "apiKey", source, false);
   const models = readLocalProviderModels(value.models, source);
   const maxAdvertisedModels = readObjectInteger(value, "maxAdvertisedModels", source, { min: 1, max: 200 });
   const provider: ProviderDefinition = {
@@ -2185,8 +2084,8 @@ function normalizeProviderFromUnknown(
       : validateProviderDefinition(provider);
   } catch (error) {
     if (error instanceof RuntimeAdapterError) {
-      throw new MonoAgentConfigError("invalid_env", error.message, {
-        env: source,
+      throw new MonoAgentConfigError("invalid_json", error.message, {
+        path: source,
         reason: error.message,
       });
     }
@@ -2202,9 +2101,9 @@ function addConfiguredProvider(
   const existing = entries.get(provider.id);
   if (existing !== undefined) {
     throw new MonoAgentConfigError(
-      "invalid_env",
+      "invalid_json",
       `Provider id "${provider.id}" is configured twice at ${existing.path} and ${path}. Remove one definition.`,
-      { env: path, providerId: provider.id, paths: [existing.path, path] },
+      { path, providerId: provider.id, paths: [existing.path, path] },
     );
   }
   entries.set(provider.id, { provider, path });
@@ -2214,45 +2113,24 @@ function readProviderPiNative(value: unknown): Readonly<Record<string, unknown>>
   const source = "providers.piNative";
   const record = readPlainObject(value, source);
   if (record.promptCacheDiagnostics !== undefined && typeof record.promptCacheDiagnostics !== "boolean") {
-    throw new MonoAgentConfigError("invalid_env", "providers.piNative.promptCacheDiagnostics must be a boolean.");
+    throw new MonoAgentConfigError("invalid_json", "providers.piNative.promptCacheDiagnostics must be a boolean.", {
+      path: "providers.piNative.promptCacheDiagnostics",
+    });
   }
   if (record.cacheRetention !== undefined && !["short", "long"].includes(record.cacheRetention as string)) {
-    throw new MonoAgentConfigError("invalid_env", "providers.piNative.cacheRetention must be short or long.");
+    throw new MonoAgentConfigError("invalid_json", "providers.piNative.cacheRetention must be short or long.", {
+      path: "providers.piNative.cacheRetention",
+    });
   }
   const allowed = new Set(["transport", "cacheRetention", "promptCacheDiagnostics", "piMaxRetries", "maxRetryDelayMs", "piSessionsRoot"]);
   const unknownKeys = Object.keys(record).filter((key) => !allowed.has(key)).sort();
   if (unknownKeys.length > 0) {
-    throw new MonoAgentConfigError("invalid_env", `${source} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`, {
-      env: source,
+    throw new MonoAgentConfigError("invalid_json", `${source} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`, {
+      path: source,
       unknownKeys,
     });
   }
   return record;
-}
-
-function layerProviderReservedValuesOntoEnv(
-  providers: ConfiguredProviderEnvelope,
-  env: Record<string, string | undefined>,
-): Record<string, string | undefined> {
-  const layered = { ...env };
-  if (normalizeOptionalString(env.MONO_AGENT_PI_AUTH_PATH) === undefined && providers.piAuthPath !== undefined) {
-    layered.MONO_AGENT_PI_AUTH_PATH = providers.piAuthPath;
-  }
-  const mappings = [
-    ["transport", "MONO_AGENT_PI_TRANSPORT"],
-    ["promptCacheDiagnostics", "MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS"],
-    ["piMaxRetries", "MONO_AGENT_PI_MAX_RETRIES"],
-    ["cacheRetention", "MONO_AGENT_PI_CACHE_RETENTION"],
-    ["maxRetryDelayMs", "MONO_AGENT_MAX_RETRY_DELAY_MS"],
-    ["piSessionsRoot", "MONO_AGENT_PI_SESSIONS_ROOT"],
-  ] as const;
-  for (const [property, envKey] of mappings) {
-    const value = providers.piNative?.[property];
-    if (normalizeOptionalString(env[envKey]) === undefined && value !== undefined) {
-      layered[envKey] = String(value);
-    }
-  }
-  return layered;
 }
 
 function readLocalProviderModels(value: unknown, source: string): readonly LocalProviderModelDefinition[] {
@@ -2260,12 +2138,12 @@ function readLocalProviderModels(value: unknown, source: string): readonly Local
     return [];
   }
   if (!Array.isArray(value)) {
-    throw new MonoAgentConfigError("invalid_env", `${source}.models must be an array.`, { env: source });
+    throw new MonoAgentConfigError("invalid_json", `${source}.models must be an array.`, { path: source });
   }
   return value.map((model, index) => {
     const modelSource = `${source}.models[${index}]`;
     if (!isRecord(model) || Array.isArray(model)) {
-      throw new MonoAgentConfigError("invalid_env", `${modelSource} must be an object.`, { env: modelSource });
+      throw new MonoAgentConfigError("invalid_json", `${modelSource} must be an object.`, { path: modelSource });
     }
     const name = readObjectString(model, "name", modelSource, true) as string;
     const alias = readObjectString(model, "alias", modelSource, false);
@@ -2319,31 +2197,27 @@ function redactProviderDefinition<T extends ProviderDefinition>(provider: T): Om
   };
 }
 
-function readRequired(env: Record<string, string | undefined>, name: string): string {
-  const value = normalizeOptionalString(env[name]);
-  if (value === undefined) {
-    throw new MonoAgentConfigError("missing_required_env", `${name} is required.`, { env: name });
-  }
-  return value;
-}
-
 function readEffort(raw: string | undefined): EffortLevel | undefined {
   const normalized = normalizeOptionalString(raw);
   if (normalized === undefined) {
     return undefined;
   }
-  return readChoice<EffortLevel>(normalized, "MONO_AGENT_EFFORT", EFFORT_LEVELS, EFFORT_LEVELS[0], invalidEnv);
+  return readChoice<EffortLevel>(normalized, "runtime.effort", EFFORT_LEVELS, EFFORT_LEVELS[0], invalidJson);
 }
 
-function readConcurrencyConfig(env: Record<string, string | undefined>): MonoAgentConfig["concurrency"] | undefined {
-  const maxConcurrentRuns = readOptionalInteger(
-    env.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS,
-    "MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS",
+function readConcurrencyConfig(value: unknown): MonoAgentConfig["concurrency"] | undefined {
+  const concurrency = jsonRecord(value, "concurrency");
+  if (concurrency === undefined) {
+    return undefined;
+  }
+  const maxConcurrentRuns = jsonOptionalInteger(
+    concurrency.maxConcurrentRuns,
+    "concurrency.maxConcurrentRuns",
     { min: 1, max: 100_000 },
   );
-  const maxPendingRuns = readOptionalInteger(
-    env.MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS,
-    "MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS",
+  const maxPendingRuns = jsonOptionalInteger(
+    concurrency.maxPendingRuns,
+    "concurrency.maxPendingRuns",
     { min: 1, max: 100_000 },
   );
   if (maxConcurrentRuns === undefined && maxPendingRuns === undefined) {
@@ -2356,27 +2230,26 @@ function readConcurrencyConfig(env: Record<string, string | undefined>): MonoAge
 }
 
 function readPiNativeProviderConfig(
-  env: Record<string, string | undefined>,
+  value: Readonly<Record<string, unknown>> | undefined,
   cwd: string,
 ): PiNativeProviderConfig {
-  const transport = normalizeOptionalString(env.MONO_AGENT_PI_TRANSPORT) === undefined
+  const piNative = value ?? {};
+  const transport = normalizeOptionalString(jsonString(piNative.transport, "providers.piNative.transport")) === undefined
     ? undefined
     : readChoice<PiTransport>(
-        env.MONO_AGENT_PI_TRANSPORT,
-        "MONO_AGENT_PI_TRANSPORT",
+        jsonString(piNative.transport, "providers.piNative.transport"),
+        "providers.piNative.transport",
         PI_TRANSPORTS,
         "auto",
-        invalidEnv,
+        invalidJson,
       );
-  const promptCacheDiagnostics = normalizeOptionalString(env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS) === undefined
-    ? undefined
-    : readBoolean(env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS, "MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS", false, invalidEnv);
-  const cacheRetention = readChoice<"short" | "long">(
-    env.MONO_AGENT_PI_CACHE_RETENTION, "MONO_AGENT_PI_CACHE_RETENTION", ["short", "long"], "long", invalidEnv,
+  const promptCacheDiagnostics = jsonOptionalBoolean(piNative.promptCacheDiagnostics, "providers.piNative.promptCacheDiagnostics");
+  const cacheRetention = jsonChoice<"short" | "long">(
+    piNative.cacheRetention, "providers.piNative.cacheRetention", ["short", "long"], "long",
   );
-  const piMaxRetries = readOptionalInteger(env.MONO_AGENT_PI_MAX_RETRIES, "MONO_AGENT_PI_MAX_RETRIES", { min: 0, max: 8 });
-  const maxRetryDelayMs = readOptionalInteger(env.MONO_AGENT_MAX_RETRY_DELAY_MS, "MONO_AGENT_MAX_RETRY_DELAY_MS", { min: 100, max: 3_600_000 });
-  const piSessionsRoot = readOptionalPath(env.MONO_AGENT_PI_SESSIONS_ROOT, cwd);
+  const piMaxRetries = jsonOptionalInteger(piNative.piMaxRetries, "providers.piNative.piMaxRetries", { min: 0, max: 8 });
+  const maxRetryDelayMs = jsonOptionalInteger(piNative.maxRetryDelayMs, "providers.piNative.maxRetryDelayMs", { min: 100, max: 3_600_000 });
+  const piSessionsRoot = readOptionalPath(jsonString(piNative.piSessionsRoot, "providers.piNative.piSessionsRoot"), cwd);
   return {
     ...(transport === undefined ? {} : { transport }),
     ...(promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics }),
@@ -2387,70 +2260,49 @@ function readPiNativeProviderConfig(
   };
 }
 
-function readOptionalInteger(
-  raw: string | undefined,
-  name: string,
-  bounds: { readonly min: number; readonly max: number },
-): number | undefined {
-  if (normalizeOptionalString(raw) === undefined) {
-    return undefined;
-  }
-  return readInteger(raw, name, bounds.min, invalidEnv, bounds);
-}
-
-function readOptionalNumber(
-  raw: string | undefined,
-  name: string,
-  bounds: { readonly min: number; readonly max: number },
-): number | undefined {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return undefined;
-  }
-  const value = Number(normalized);
-  if (!Number.isFinite(value) || value < bounds.min || value > bounds.max) {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      `${name} must be a number between ${bounds.min} and ${bounds.max}.`,
-      { env: name, reason: "out_of_range" },
-    );
-  }
-  return value;
-}
-
 function readPath(raw: string | undefined, cwd: string, defaultPath?: string): string {
   const normalized = normalizeOptionalString(raw);
   if (normalized === undefined) {
     if (defaultPath !== undefined) {
       return defaultPath;
     }
-    throw new MonoAgentConfigError("invalid_env", "Path value is required.");
+    throw new MonoAgentConfigError("invalid_json", "Path value is required.");
   }
   return resolve(cwd, normalized);
 }
 
-// JSON config arrays cross the layered loader's string-only env surface as a
-// JSON array so path names containing commas retain their element boundaries.
-// Direct environment configuration remains backward-compatible with CSV.
-function readFileToolRoots(raw: string | undefined, name: string): string[] {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) return [];
-  if (normalized.startsWith("[")) {
-    try {
-      const parsed: unknown = JSON.parse(normalized);
-      if (Array.isArray(parsed) && parsed.every((value) => typeof value === "string")) {
-        return parsed;
+// JSON arrays stay element-wise so roots containing commas retain their
+// boundaries. A lone comma-separated string is still split for tolerance.
+function readFileToolRoots(value: unknown, path: string): string[] {
+  if (value === undefined) return [];
+  if (typeof value === "string") {
+    const normalized = normalizeOptionalString(value);
+    if (normalized === undefined) return [];
+    if (normalized.startsWith("[")) {
+      try {
+        const parsed: unknown = JSON.parse(normalized);
+        if (Array.isArray(parsed) && parsed.every((entry) => typeof entry === "string")) {
+          return parsed;
+        }
+      } catch {
+        // Report the same deterministic error as a parsed non-string array below.
       }
-    } catch {
-      // Report the same deterministic error as a parsed non-string array below.
+      throw new MonoAgentConfigError(
+        "invalid_json",
+        `${path} must be a comma-separated path list or an array of strings.`,
+        { path, reason: "invalid_string_array" },
+      );
     }
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      `${name} must be a comma-separated path list or a JSON array of strings.`,
-      { env: name, reason: "invalid_string_array" },
-    );
+    return readCsv(value);
   }
-  return readCsv(raw);
+  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
+    return value;
+  }
+  throw new MonoAgentConfigError(
+    "invalid_json",
+    `${path} must be a comma-separated path list or an array of strings.`,
+    { path, reason: "invalid_string_array" },
+  );
 }
 
 function readUserPath(raw: string | undefined, cwd: string, defaultPath?: string): string {
@@ -2459,7 +2311,7 @@ function readUserPath(raw: string | undefined, cwd: string, defaultPath?: string
     if (defaultPath !== undefined) {
       return defaultPath;
     }
-    throw new MonoAgentConfigError("invalid_env", "Path value is required.");
+    throw new MonoAgentConfigError("invalid_json", "Path value is required.");
   }
   if (normalized === "~") {
     return homedir();
@@ -2484,12 +2336,12 @@ function readObjectString(
   const value = object[key];
   if (value === undefined) {
     if (required) {
-      throw new MonoAgentConfigError("invalid_env", `${source}.${key} is required.`, { env: source });
+      throw new MonoAgentConfigError("invalid_json", `${source}.${key} is required.`, { path: `${source}.${key}` });
     }
     return undefined;
   }
   if (typeof value !== "string" || value.trim().length === 0 || value.trim() !== value) {
-    throw new MonoAgentConfigError("invalid_env", `${source}.${key} must be a non-empty trimmed string.`, { env: source });
+    throw new MonoAgentConfigError("invalid_json", `${source}.${key} must be a non-empty trimmed string.`, { path: `${source}.${key}` });
   }
   return value;
 }
@@ -2507,12 +2359,12 @@ function readObjectBoolean(
   if (typeof value === "boolean") {
     return value;
   }
-  throw new MonoAgentConfigError("invalid_env", `${source}.${key} must be a boolean.`, { env: source });
+  throw new MonoAgentConfigError("invalid_json", `${source}.${key} must be a boolean.`, { path: `${source}.${key}` });
 }
 
 function readPlainObject(value: unknown, source: string): Record<string, unknown> {
   if (!isRecord(value) || Array.isArray(value)) {
-    throw new MonoAgentConfigError("invalid_env", `${source} must be an object.`, { env: source });
+    throw new MonoAgentConfigError("invalid_json", `${source} must be an object.`, { path: source });
   }
   return { ...value };
 }
@@ -2520,7 +2372,7 @@ function readPlainObject(value: unknown, source: string): Record<string, unknown
 function normalizeCwd(value: string): string {
   const normalized = normalizeOptionalString(value);
   if (normalized === undefined) {
-    throw new MonoAgentConfigError("invalid_env", "cwd must be a non-empty path.");
+    throw new MonoAgentConfigError("invalid_json", "cwd must be a non-empty path.");
   }
   return resolve(normalized);
 }
@@ -2533,41 +2385,63 @@ function selectedWebProvider(selection: string | readonly string[], name: string
   return typeof selection === "string" ? selection === name : selection.includes(name);
 }
 
+/**
+ * The previous `auto` order for a search block, derived from the providers the
+ * block actually configures. Used only to repair a stale `"auto"` selection.
+ */
+function searchAutoRepair(search: Record<string, unknown> | undefined): readonly string[] {
+  return [
+    ...(search?.ollama !== undefined ? ["ollama"] : []),
+    ...(normalizeOptionalString(jsonString((search?.searxng as Record<string, unknown> | undefined)?.endpoint, "tools.web.search.searxng.endpoint")) !== undefined
+      || normalizeOptionalString(jsonString(search?.endpoint, "tools.web.search.endpoint")) !== undefined
+      ? ["searxng"]
+      : []),
+    "codex", "keyless",
+  ];
+}
+
 function readWebProviderSelection<T extends string>(
-  raw: string | undefined, source: string, names: readonly T[], fallback: T | readonly T[],
-  env: Record<string, string | undefined>,
+  value: unknown, path: string, names: readonly T[], fallback: T | readonly T[],
+  autoRepair?: readonly string[],
 ): T | readonly T[] {
-  if (raw === undefined) return fallback;
-  const value = raw.trim();
-  if (value === "auto" && source === "MONO_AGENT_WEB_SEARCH_BACKEND") {
-    const previous = [
-      ...([env.MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL, env.MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV, env.MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL].some((v) => v !== undefined) ? ["ollama"] : []),
-      ...(env.MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT || env.MONO_AGENT_WEB_SEARCH_ENDPOINT ? ["searxng"] : []),
-      "codex", "keyless",
-    ];
-    throw new MonoAgentConfigError("invalid_env", `tools.web.search.backend "auto" was removed; use ${JSON.stringify(previous)} (the previous auto order for this configuration)`, { env: source });
+  if (value === undefined) return fallback;
+  if (Array.isArray(value)) {
+    if (value.length === 0 || value.some((name) => typeof name !== "string" || !names.includes(name as T))) {
+      throw new MonoAgentConfigError("invalid_json", `${path} must be one provider or a non-empty ordered chain of: ${names.join(", ")}.`, { path });
+    }
+    if (new Set(value).size !== value.length) {
+      throw new MonoAgentConfigError("invalid_json", `${path} contains duplicate provider names.`, { path });
+    }
+    return value as T | readonly T[];
+  }
+  const raw = jsonString(value, path);
+  const trimmed = normalizeOptionalString(raw);
+  if (trimmed === undefined) return fallback;
+  if (trimmed === "auto" && autoRepair !== undefined) {
+    throw new MonoAgentConfigError("invalid_json", `tools.web.search.backend "auto" was removed; use ${JSON.stringify(autoRepair)} (the previous auto order for this configuration)`, { path });
   }
   let selection: unknown;
-  try { selection = value.startsWith("[") ? JSON.parse(value) : value.includes(",") ? value.split(",").map((name) => name.trim()) : value; }
+  try { selection = trimmed.startsWith("[") ? JSON.parse(trimmed) : trimmed.includes(",") ? trimmed.split(",").map((name) => name.trim()) : trimmed; }
   catch { selection = null; }
   const list = Array.isArray(selection) ? selection : [selection];
   if (!list.length || list.some((name) => typeof name !== "string" || !names.includes(name as T))) {
-    throw new MonoAgentConfigError("invalid_env", `${source} must be one provider or a non-empty ordered chain of: ${names.join(", ")}.`, { env: source });
+    throw new MonoAgentConfigError("invalid_json", `${path} must be one provider or a non-empty ordered chain of: ${names.join(", ")}.`, { path });
   }
   if (new Set(list).size !== list.length) {
-    throw new MonoAgentConfigError("invalid_env", `${source} contains duplicate provider names.`, { env: source });
+    throw new MonoAgentConfigError("invalid_json", `${path} contains duplicate provider names.`, { path });
   }
   return selection as T | readonly T[];
 }
 
-function readParallelWebConfig(env: Record<string, string | undefined>, source: string): { readonly apiKeyEnv: string } | undefined {
-  if (env[source] === undefined) return undefined;
-  const name = env[source]?.trim() ?? "";
+function readParallelWebConfig(value: unknown, path: string): { readonly apiKeyEnv: string } | undefined {
+  const raw = jsonContainer(value)?.apiKeyEnv;
+  if (raw === undefined) return undefined;
+  const name = normalizeOptionalString(jsonString(raw, path)) ?? "";
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
-    throw new MonoAgentConfigError("invalid_env", `${source} must name an environment variable.`, { env: source });
+    throw new MonoAgentConfigError("invalid_json", `${path} must name an environment variable.`, { path });
   }
-  if (!env[name]?.trim()) {
-    throw new MonoAgentConfigError("invalid_env", `${source} names a missing or empty credential variable.`, { env: source });
-  }
+  // The named credential stays unresolved at load: the Parallel runtime reads
+  // it from the effective environment at call time, so anonymous access is an
+  // omitted field rather than a load error.
   return { apiKeyEnv: name };
 }
