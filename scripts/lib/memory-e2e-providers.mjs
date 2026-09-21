@@ -450,7 +450,8 @@ export function captureLlm(runtime, { model, workspace, sessionsRoot, budget, ta
           // This second event truthfully records rejection at the strict host
           // projection boundary without rewriting the completed transport event.
           budget.events.push({
-            ...tag, stage, status: error.code, runtimeSettlement: "fulfilled",
+            ...tag, stage: "capture_projection", captureStage: stage,
+            status: error.code, runtimeSettlement: "fulfilled",
             structuredOutputFailure: error.code, failureKind: null,
             providerReportedFailureKind: null, maxTurnsHit: false, durationMs: 0,
           });

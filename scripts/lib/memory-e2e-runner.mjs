@@ -78,7 +78,9 @@ export function captureRetryCause(item, captureAttempt) {
 export function currentCaptureRetryCause(events, cursor, tag, item) {
   const captureAttempt = events.slice(cursor).findLast((entry) => (
     entry.groupId === tag.groupId && entry.arm === tag.arm
-    && ["extraction", "reconciliation"].includes(entry.stage)
+    && (["extraction", "reconciliation"].includes(entry.stage)
+      || (entry.stage === "capture_projection"
+        && ["extraction", "reconciliation"].includes(entry.captureStage)))
   ));
   return { cause: captureRetryCause(item, captureAttempt), nextCursor: events.length };
 }

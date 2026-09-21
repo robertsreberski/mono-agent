@@ -941,21 +941,28 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
   ])("fails closed on reconciliation projection %s and records the settled boundary", async (_label, structuredResult, code) => {
     const { budget } = await setup(); const trace = [];
     const llm = captureLlm({ run: async () => ({ text: "[]", structuredResult }) }, {
-      model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag: {}, capture: (entry) => trace.push(entry),
+      model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag: { groupId: "projection", arm: "bujo" }, capture: (entry) => trace.push(entry),
     });
     await expect(llm.complete("reconcile", {
       label: "capture:reconcile-batch", outputSchema: { type: "object" }, structuredResultKey: "decisions",
     })).rejects.toThrow(code);
     expect(trace).toEqual([]);
+    expect(summarize([], budget.events, "scripted").arms.bujo.stages.reconciliation.attempted).toBe(1);
     expect(budget.events).toHaveLength(2);
     expect(budget.events[0]).toMatchObject({ stage: "reconciliation", status: "completed" });
     expect(budget.events[1]).toMatchObject({
-      stage: "reconciliation", status: code, runtimeSettlement: "fulfilled",
+      stage: "capture_projection", captureStage: "reconciliation",
+      status: code, runtimeSettlement: "fulfilled",
       structuredOutputFailure: code, failureKind: null,
       providerReportedFailureKind: null, maxTurnsHit: false,
     });
     expect(captureRetryCause({ lastError: "provider" }, budget.events[1]))
       .toBe("settled_structured_output");
+    expect(currentCaptureRetryCause(budget.events, 0, { groupId: "projection", arm: "bujo" }, { lastError: "provider" }))
+      .toEqual({ cause: "settled_structured_output", nextCursor: 2 });
+    expect(currentCaptureRetryCause(budget.events, 2, { groupId: "projection", arm: "bujo" }, { lastError: "provider" }))
+      .toEqual({ cause: null, nextCursor: 2 });
+    expect(summarize([], budget.events, "scripted").arms.bujo.stages.capture_projection.attempted).toBe(1);
   });
 
   it("meters bounded embedding text into both the combined and embedding-specific hard budgets", async () => {
