@@ -105,6 +105,28 @@ function measureStatements<T>(store: WebStore, read: () => T): { statements: num
   }
 }
 
+function capturePreparedSql<T>(store: WebStore, read: () => T): { sql: readonly string[]; value: T } {
+  const sql: string[] = [];
+  const holder = store as unknown as { database: DatabaseSync };
+  const real = holder.database;
+  holder.database = new Proxy(real, {
+    get(target, property) {
+      const value = Reflect.get(target, property) as unknown;
+      if (typeof value !== "function") return value;
+      if (property !== "prepare") return value.bind(target);
+      return (text: string) => {
+        sql.push(text);
+        return (value as (statement: string) => object).call(target, text);
+      };
+    },
+  }) as DatabaseSync;
+  try {
+    return { sql, value: read() };
+  } finally {
+    holder.database = real;
+  }
+}
+
 function transcriptMarkers(store: WebStore, threadId: string, kind: "model" | "project" | "resumed") {
   return store.getThreadDetail(threadId)!.messages.flatMap((message) => message.parts.flatMap((part) =>
     part.type === "conversation-marker" && part.kind === kind ? [{ ...part, turnId: message.turnId }] : []));
@@ -133,6 +155,103 @@ describe("WebStore", () => {
       expect(raw.prepare("SELECT parts_json FROM messages WHERE id = ?").get(turn.assistantMessageId))
         .toEqual({ parts_json: historical });
     } finally { raw.close(); store.close(); }
+  });
+
+  it("preserves every message-page tie-breaker, filtered part and attachment order across cursors", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const raw = new DatabaseSync(store.paths.database);
+    const at = "2026-09-21T10:00:00.000Z";
+    const rows = [
+      ["assistant-a", "assistant", [{ type: "text", text: "assistant a" }]],
+      ["user-a", "user", [{ type: "text", text: "user a" }]],
+      ["system-a", "system", [{ type: "conversation-marker", kind: "resumed", previousMessageAt: at, idleMs: 3_600_001, at }, { type: "monitor-activity", monitors: [] }]],
+      ["assistant-b", "assistant", [{ type: "text", text: "assistant b" }]],
+      ["user-b", "user", [{ type: "text", text: "user b" }]],
+      ["system-b", "system", [{ type: "text", text: "system b" }]],
+    ] as const;
+    try {
+      raw.prepare(`INSERT INTO turns
+        (id, thread_id, status, text, assistant_message_id, started_at, finished_at)
+        VALUES ('tie-turn', ?, 'complete', 'tied', 'assistant-a', ?, ?)`)
+        .run(thread.id, at, at);
+      const insert = raw.prepare(`INSERT INTO messages
+        (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, 'tie-turn', ?, ?, ?, ?, 'complete')`);
+      for (const [id, role, parts] of rows) insert.run(id, thread.id, role, JSON.stringify(parts), at, at);
+      const insertAttachment = raw.prepare(`INSERT INTO attachments
+        (id, thread_id, message_id, name, content_type, size_bytes, kind, status, uploaded, origin, storage_name, created_at, updated_at)
+        VALUES (?, ?, 'user-a', ?, 'text/plain', 1, 'document', 'committed', 1, 'upload', ?, ?, ?)`);
+      insertAttachment.run("attachment-b", thread.id, "b.txt", "attachment-b.txt", at, at);
+      insertAttachment.run("attachment-a", thread.id, "a.txt", "attachment-a.txt", at, at);
+
+      const expected = ["system-a", "user-a", "user-b", "system-b", "assistant-a", "assistant-b"];
+      expect(store.listMessagesPage(thread.id).messages.map((message) => message.id)).toEqual(expected);
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = store.listMessagesPage(thread.id, { limit: 2, ...(cursor === undefined ? {} : { before: cursor }) });
+        ids.unshift(...page.messages.map((message) => message.id));
+        cursor = page.nextCursor;
+      } while (cursor !== undefined);
+      expect(ids).toEqual(expected);
+      expect(store.getMessage("system-a")?.parts).toEqual([
+        { type: "conversation-marker", kind: "resumed", previousMessageAt: at, idleMs: 3_600_001, at },
+      ]);
+      expect(store.getMessage("user-a")?.attachments.map((attachment) => attachment.id))
+        .toEqual(["attachment-a", "attachment-b"]);
+    } finally {
+      raw.close();
+      store.close();
+    }
+  });
+
+  it("hydrates one and thirty message rows with a constant statement count", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      for (let index = 0; index < 15; index += 1) {
+        const turn = store.beginTurn({ threadId: thread.id, text: `request ${String(index)}`, attachmentIds: [] });
+        store.completeTurn(turn.turnId, `answer ${String(index)}`);
+      }
+      const one = measureStatements(store, () => store.listMessagesPage(thread.id, { limit: 1 }));
+      const thirty = measureStatements(store, () => store.listMessagesPage(thread.id, { limit: 30 }));
+      expect(one.value.messages).toHaveLength(1);
+      expect(thirty.value.messages).toHaveLength(30);
+      expect(thirty.statements).toBe(one.statements);
+    } finally { store.close(); }
+  });
+
+  it("fetches message blobs only after the bounded page and preview key sets", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: "request", attachmentIds: [] });
+      store.completeTurn(turn.turnId, "answer");
+
+      const pageSql = capturePreparedSql(store, () => store.listMessagesPage(thread.id)).sql
+        .find((sql) => sql.includes("WITH page AS MATERIALIZED"));
+      expect(pageSql).toBeDefined();
+      expect(pageSql!.indexOf("LIMIT ?")).toBeLessThan(pageSql!.indexOf("SELECT m.*, page.ordered_at"));
+
+      const previewSql = capturePreparedSql(store, () => store.listThreadsPage({
+        sourceId: "agent-one",
+        archived: false,
+      })).sql.find((sql) => sql.includes("WITH latest AS MATERIALIZED"));
+      expect(previewSql).toBeDefined();
+      expect(previewSql).not.toContain("SELECT m.*, ROW_NUMBER()");
+      expect(previewSql!.indexOf("WHERE latest.rn = 1"))
+        .toBeGreaterThan(previewSql!.indexOf("SELECT latest.thread_id, m.parts_json"));
+    } finally { store.close(); }
   });
 
   it("discards unrenderable retired activity when recovery rewrites an interrupted historical message", async () => {

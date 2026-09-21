@@ -43,8 +43,8 @@ afterEach(async () => {
  *
  * The shape mirrors the observed high-water marks without using owner data:
  * roughly 24 MiB in one thread, about 137 messages, and one 4 MiB running
- * message. The assertion deliberately describes the bug. Replace it with the
- * fixed latency budget when implementing the query/projection change.
+ * message. This is an opt-in host benchmark rather than a portable CI gate;
+ * the budget catches a return to blob-carrying sorts and per-row hydration.
  */
 reproduce("blocks the event loop while reading a realistic large transcript", async () => {
   const root = await temporaryRoot();
@@ -89,8 +89,8 @@ reproduce("blocks the event loop while reading a realistic large transcript", as
     }));
 
     expect(detail).toBeDefined();
-    expect(readMs).toBeGreaterThan(100);
-    expect(delayedMs).toBeGreaterThan(100);
+    expect(readMs).toBeLessThan(100);
+    expect(delayedMs).toBeLessThan(100);
   } finally {
     store.close();
   }

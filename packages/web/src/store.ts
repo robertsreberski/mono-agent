@@ -2872,20 +2872,31 @@ export class WebStore {
       );
     }
     values.push(limit + 1);
+    // Rank and bound KEYS before fetching parts_json. Carrying m.* through the
+    // temporary ORDER BY made SQLite copy multi-megabyte message blobs into its
+    // sorter, even though a page needs only the winning rows.
     const rows = this.database.prepare(`
-      SELECT m.*, ${orderedAt} AS ordered_at, ${rank} AS role_rank, m.rowid AS storage_rowid,
+      WITH page AS MATERIALIZED (
+        SELECT m.rowid AS storage_rowid, ${orderedAt} AS ordered_at,
+          ${rank} AS role_rank, m.created_at AS created_at
+        FROM messages m
+        LEFT JOIN turns t ON t.id = m.turn_id
+        WHERE m.thread_id = ? AND ${visibleMessageSql("m")} ${beforeSql}
+        ORDER BY ordered_at DESC, role_rank DESC, m.created_at DESC, storage_rowid DESC
+        LIMIT ?
+      )
+      SELECT m.*, page.ordered_at, page.role_rank, page.storage_rowid,
         t.finished_at AS turn_finished_at
-      FROM messages m
+      FROM page
+      JOIN messages m ON m.rowid = page.storage_rowid
       LEFT JOIN turns t ON t.id = m.turn_id
-      WHERE m.thread_id = ? AND ${visibleMessageSql("m")} ${beforeSql}
-      ORDER BY ordered_at DESC, role_rank DESC, m.created_at DESC, storage_rowid DESC
-      LIMIT ?
+      ORDER BY page.ordered_at DESC, page.role_rank DESC, page.created_at DESC, page.storage_rowid DESC
     `).all(...values) as unknown as MessagePageRow[];
     const hasMore = rows.length > limit;
     const pageRows = rows.slice(0, limit).reverse();
     const oldest = pageRows[0];
     return {
-      messages: pageRows.map((row) => this.mapMessage(row)),
+      messages: this.mapMessages(pageRows),
       ...(hasMore && oldest !== undefined
         ? {
             nextCursor: encodeCursor({
@@ -5984,49 +5995,76 @@ export class WebStore {
   }
 
   private mapMessage(row: MessageRow): WebMessage {
-    const attachments = this.database
-      .prepare("SELECT * FROM attachments WHERE message_id = ? AND origin = 'upload' ORDER BY created_at, id")
-      .all(row.id) as unknown as AttachmentRow[];
-    const storedParts = parseParts(row.parts_json);
-    const quote = quoteFromParts(storedParts);
-    const liveInputStatus = liveInputStatusFromParts(storedParts);
-    const role = normalizeRole(row.role);
-    const finishedAt = role === "assistant" ? this.turnFinishedAt(row) : undefined;
-    const attribution = role === "assistant" && row.turn_id !== null
-      ? runAttribution(this.requireTurn(row.turn_id))
-      : undefined;
-    return {
-      id: row.id,
-      threadId: row.thread_id,
-      ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
-      role,
-      ...(quote === undefined ? {} : { quote }),
-      parts: storedParts.filter(
-        (part) => part.type !== "telemetry"
-          || (part.event !== QUOTE_TELEMETRY_EVENT && part.event !== LIVE_INPUT_TELEMETRY_EVENT),
-      ),
-      attachments: attachments.map((attachment) => toWebAttachment(mapStoredAttachment(attachment))),
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      ...(finishedAt === undefined ? {} : { finishedAt }),
-      status: normalizeMessageStatus(row.status),
-      ...(liveInputStatus === undefined ? {} : { liveInputStatus }),
-      ...(attribution === undefined ? {} : { attribution }),
-      seq: row.seq,
-    };
+    return this.mapMessages([row])[0] as WebMessage;
   }
 
   /**
-   * The turn's terminal stamp, which `finishTurnInTransaction` writes with the
-   * message status. A page query projects it from its own join; only a
-   * single-row read pays for a lookup.
+   * Hydrate a bounded message set with a constant number of statements.
+   *
+   * A transcript page used to query attachments once per row and the turn once
+   * per assistant row. Besides the statement count, every turn lookup prepared
+   * and crossed the native SQLite boundary separately. The page already owns a
+   * bounded id set, so both relations are read once and grouped here.
    */
-  private turnFinishedAt(row: MessageRow): string | undefined {
-    if (row.turn_id === null) return undefined;
-    if (row.turn_finished_at !== undefined) return row.turn_finished_at ?? undefined;
-    const turn = this.database.prepare("SELECT finished_at FROM turns WHERE id = ?")
-      .get(row.turn_id) as unknown as { finished_at: string | null } | undefined;
-    return turn?.finished_at ?? undefined;
+  private mapMessages(rows: readonly MessageRow[]): WebMessage[] {
+    if (rows.length === 0) return [];
+    const messageIds = rows.map((row) => row.id);
+    const attachmentRows = this.database.prepare(`
+      SELECT * FROM attachments
+      WHERE message_id IN (SELECT value FROM json_each(?)) AND origin = 'upload'
+      ORDER BY message_id, created_at, id
+    `).all(JSON.stringify(messageIds)) as unknown as AttachmentRow[];
+    const attachments = new Map<string, AttachmentRow[]>();
+    for (const attachment of attachmentRows) {
+      if (attachment.message_id === null) continue;
+      const owned = attachments.get(attachment.message_id) ?? [];
+      owned.push(attachment);
+      attachments.set(attachment.message_id, owned);
+    }
+    const turnIds = [...new Set(rows.flatMap((row) =>
+      normalizeRole(row.role) === "assistant" && row.turn_id !== null ? [row.turn_id] : []))];
+    const turns = turnIds.length === 0
+      ? new Map<string, TurnRow>()
+      : new Map((this.database.prepare(`
+          SELECT * FROM turns WHERE id IN (SELECT value FROM json_each(?))
+        `).all(JSON.stringify(turnIds)) as unknown as TurnRow[]).map((turn) => [turn.id, turn]));
+
+    return rows.map((row) => {
+      const storedParts = parseParts(row.parts_json);
+      const quote = quoteFromParts(storedParts);
+      const liveInputStatus = liveInputStatusFromParts(storedParts);
+      const role = normalizeRole(row.role);
+      // A missing turn is storage corruption. Keep the established error shape
+      // on that exceptional path without putting one lookup per row back on the
+      // healthy page path.
+      const turn = role === "assistant" && row.turn_id !== null
+        ? turns.get(row.turn_id) ?? this.requireTurn(row.turn_id)
+        : undefined;
+      const finishedAt = role === "assistant"
+        ? row.turn_finished_at !== undefined ? row.turn_finished_at ?? undefined : turn?.finished_at ?? undefined
+        : undefined;
+      const attribution = turn === undefined ? undefined : runAttribution(turn);
+      return {
+        id: row.id,
+        threadId: row.thread_id,
+        ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
+        role,
+        ...(quote === undefined ? {} : { quote }),
+        parts: storedParts.filter(
+          (part) => part.type !== "telemetry"
+            || (part.event !== QUOTE_TELEMETRY_EVENT && part.event !== LIVE_INPUT_TELEMETRY_EVENT),
+        ),
+        attachments: (attachments.get(row.id) ?? [])
+          .map((attachment) => toWebAttachment(mapStoredAttachment(attachment))),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        ...(finishedAt === undefined ? {} : { finishedAt }),
+        status: normalizeMessageStatus(row.status),
+        ...(liveInputStatus === undefined ? {} : { liveInputStatus }),
+        ...(attribution === undefined ? {} : { attribution }),
+        seq: row.seq,
+      };
+    });
   }
 
   /** The newest turn of each listed conversation, by thread id. */
@@ -6130,15 +6168,22 @@ export class WebStore {
    * conversation's attachments, turn row and finish stamp.
    */
   private lastMessagePreviews(threadIds: readonly string[]): Map<string, string> {
+    // The window ranks keys only. Selecting m.* inside it made SQLite carry
+    // every candidate parts_json through the partition sorter before discarding
+    // all but one row per conversation.
     const rows = this.database.prepare(`
-      SELECT * FROM (
-        SELECT m.*, ROW_NUMBER() OVER (
-          PARTITION BY m.thread_id ORDER BY m.created_at DESC, m.rowid DESC
-        ) AS rn
+      WITH latest AS MATERIALIZED (
+        SELECT m.rowid AS storage_rowid, m.thread_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY m.thread_id ORDER BY m.created_at DESC, m.rowid DESC
+          ) AS rn
         FROM messages m
         WHERE m.thread_id IN (SELECT value FROM json_each(?)) AND ${visibleMessageSql("m")} AND NOT (${markerMessageSql("m")})
-      ) WHERE rn = 1
-    `).all(JSON.stringify(threadIds)) as unknown as MessageRow[];
+      )
+      SELECT latest.thread_id, m.parts_json
+      FROM latest JOIN messages m ON m.rowid = latest.storage_rowid
+      WHERE latest.rn = 1
+    `).all(JSON.stringify(threadIds)) as unknown as Array<{ thread_id: string; parts_json: string }>;
     const previews = new Map<string, string>();
     for (const row of rows) {
       const parts = parseParts(row.parts_json);
