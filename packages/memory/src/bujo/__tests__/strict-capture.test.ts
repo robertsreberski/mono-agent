@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { openMemoryDb } from "../../store/index.js";
-import { extractCapturePlanStrict, MAX_CAPTURE_MEMORIES } from "../capture-batch.js";
+import { extractCapturePlanStrict, MAX_CAPTURE_MEMORIES, STRICT_CAPTURE_OUTPUT_SCHEMA } from "../capture-batch.js";
 import { captureTurnStrict } from "../capture.js";
 import { appendBullet } from "../daily.js";
 import { MAX_MODEL_JSON_CHARS } from "../json.js";
@@ -81,7 +81,7 @@ describe("strict completed-turn extraction", () => {
           maxItems: MAX_CAPTURE_MEMORIES,
           items: {
             additionalProperties: false,
-            properties: { text: { type: "string", maxLength: 160 } },
+            properties: { text: { type: "string", minLength: 1 } },
           },
         },
         entities: { type: "array", maxItems: 16 },
@@ -101,6 +101,9 @@ describe("strict completed-turn extraction", () => {
       }),
     })).resolves.toMatchObject({ candidates: [{ text: boundary }] });
 
+    // Over-bound memory text is clamped on the host, never rejected: a single
+    // long sentence must not discard the whole response. Clamping counts code
+    // points, so an astral pair is kept whole rather than split into halves.
     await expect(extractCapturePlanStrict("completed turn", {
       id: "unicode-over-boundary",
       complete: async () => JSON.stringify({
@@ -108,7 +111,82 @@ describe("strict completed-turn extraction", () => {
         entities: [],
         relations: [],
       }),
+    })).resolves.toMatchObject({ candidates: [{ text: boundary }] });
+  });
+
+  it("clamps one over-long memory text instead of discarding the whole response", async () => {
+    const long = `${"a".repeat(170)} tail`;
+    const short = "Morgan prefers strict durable capture.";
+    const plan = await extractCapturePlanStrict("completed turn", {
+      id: "over-long-clamped",
+      complete: async () => planWithMemoryTexts([long, short]),
+    });
+    expect(plan.candidates).toHaveLength(2);
+    expect([...plan.candidates[0]!.text].length).toBe(160);
+    expect(plan.candidates[0]!.text).toBe("a".repeat(160));
+    // The sibling memory in the same response survives — this is the regression.
+    expect(plan.candidates[1]!.text).toBe(short);
+  });
+
+  it("drops only the clamp-collided candidate and keeps unrelated siblings", async () => {
+    // Two long facts whose shared opening exceeds the bound but whose tails are
+    // lexically distinct: the pre-clamp pair is NOT a near-duplicate, yet
+    // clamping makes them identical. Without per-candidate handling this would
+    // reject the batch and discard the unrelated sibling with it — the very
+    // batch-loss shape this clamp exists to remove.
+    const shared = "Robert reported that the nightly repository watch job completed its full scan of every tracked "
+      + "pull request and then posted its digest to the console without any error at all on ";
+    expect([...shared].length).toBeGreaterThan(160);
+    const first = `${shared}Monday covering authentication caching pagination throttling logging metrics dashboards alerting `
+      + "backups migrations rollbacks indexing sharding replication failover quotas billing invoices "
+      + "receipts refunds disputes chargebacks settlements payouts ledgers reconciliations audits.";
+    const second = `${shared}Tuesday including onboarding tutorials walkthroughs checklists templates snippets examples samples `
+      + "demos sandboxes playgrounds workshops seminars webinars podcasts newsletters bulletins digests "
+      + "summaries briefs memos minutes agendas transcripts recordings archives forums.";
+    const clamped = [...first].slice(0, 160).join("").trim();
+    expect([...second].slice(0, 160).join("").trim()).toBe(clamped);
+    const sibling = "Morgan prefers strict durable capture.";
+
+    const plan = await extractCapturePlanStrict("completed turn", {
+      id: "clamp-collision",
+      complete: async () => planWithMemoryTexts([first, second, sibling]),
+    });
+
+    expect(plan.candidates).toHaveLength(2);
+    expect(plan.candidates[0]!.text).toBe(clamped);
+    expect(plan.candidates[1]!.text).toBe(sibling);
+  });
+
+  it("still fails the whole attempt for memories the model authored as indistinct", async () => {
+    // Unchanged contract: a pre-clamp duplicate is a model-output defect, not
+    // a host artifact, so it must not be silently dropped.
+    const text = "Morgan prefers strict durable capture.";
+    await expect(extractCapturePlanStrict("completed turn", {
+      id: "authored-duplicate",
+      complete: async () => planWithMemoryTexts([text, text]),
     })).rejects.toMatchObject({ name: "MemoryModelOutputError" });
+  });
+
+  it("keeps structural capture fields strict rather than clamping them", async () => {
+    // Truncating an id would silently break entityIds referential integrity,
+    // so only free-text memory bodies clamp.
+    await expect(extractCapturePlanStrict("completed turn", {
+      id: "over-long-entity-id",
+      complete: async () => JSON.stringify({
+        memories: [],
+        entities: [{ id: `person:${"m".repeat(96)}`, name: "Morgan", type: "person" }],
+        relations: [],
+      }),
+    })).rejects.toMatchObject({ name: "MemoryModelOutputError" });
+  });
+
+  it("does not cap memory text length in the tool schema the model sees", async () => {
+    // The cap is a host contract, not a tool-call rejection: a model that
+    // overruns must still be able to submit, so the host can clamp.
+    const schema = STRICT_CAPTURE_OUTPUT_SCHEMA as Record<string, any>;
+    const text = schema.properties.memories.items.properties.text;
+    expect(text.minLength).toBe(1);
+    expect(text.maxLength).toBeUndefined();
   });
 
   it.each([
@@ -394,7 +472,6 @@ describe("strict completed-turn extraction", () => {
     ["bidi formatting control", JSON.stringify({ ...validPlan, memories: [{ ...validPlan.memories[0], text: "bad\u202etext" }] })],
     ["zero-width formatting control", JSON.stringify({ ...validPlan, entities: [{ ...validPlan.entities[0], name: "Mor\u200bgan" }] })],
     ["unpaired surrogate", '{"memories":[{"type":"note","text":"bad\\ud800","salience":0.5,"isInsight":false,"entityIds":[]}],"entities":[],"relations":[]}'],
-    ["overlong text", JSON.stringify({ ...validPlan, memories: [{ ...validPlan.memories[0], text: "x".repeat(161) }] })],
     ["too many memories", JSON.stringify({ ...validPlan, memories: Array.from({ length: MAX_CAPTURE_MEMORIES + 1 }, (_, index) => ({
       type: "note", text: `fact ${index}`, salience: 0.5, isInsight: false, entityIds: [],
     })) })],
