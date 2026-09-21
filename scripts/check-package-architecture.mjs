@@ -239,11 +239,6 @@ const extractedResponsibilityDeclarations = [
     owner: "background-log-maintenance.ts",
   },
   {
-    file: join("packages", "agent-app", "src", "doctor.ts"),
-    declaration: "function probeExporterEndpoint",
-    owner: "doctor-observability.ts",
-  },
-  {
     file: join("packages", "slack-adapter", "src", "adapter.ts"),
     declaration: "function buildSlackRuntimeControlCatalog",
     owner: "runtime-controls.ts",

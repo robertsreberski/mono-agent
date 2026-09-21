@@ -157,7 +157,7 @@ with the primary's attribution id.
 
 The runtime result includes `failoverHistory`. An
 exhausted chain reports `provider_unavailable_exhausted` with per-attempt models,
-failure kinds/subkinds. Run summaries and Phoenix failover
+failure kinds/subkinds. Run summaries and local failover
 attributes preserve normalized failover details; the events JSONL preserves the
 per-attempt `provider_retry_started`, `provider_failover_started`, and
 `provider_failover_completed` events. There is no separate per-route safety

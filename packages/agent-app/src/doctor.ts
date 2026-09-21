@@ -143,7 +143,7 @@ import {
 import type { LaunchdLogInspection, LaunchdLogStreamInspection } from "./launchd-logs.js";
 import { readLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
 import type { ManagedLaunchdLogMonitorStatus } from "./background-log-maintenance.js";
-import { exporterSection, runsSection } from "./doctor-observability.js";
+import { runsSection } from "./doctor-runs.js";
 import { sessionToolHistorySection } from "./doctor-session-history.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor-types.js";
 
@@ -199,7 +199,7 @@ export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput 
   readonly allowFilesystemWrites?: boolean;
   /**
    * When false, skip live probes (Ollama and Supermemory reachability, the
-   * Phoenix export probe, and local tool version checks) and validate
+   * local run health and local tool version checks) and validate
    * only structure/shape. Those probes can only ever downgrade a section to
    * `waiting`, never `error`, so skipping them leaves the pass/fail verdict
    * (`ok`) unchanged — the start preflight relies on this. Defaults to true.
@@ -294,7 +294,6 @@ export async function validateMonoAgentFolder(
     sections.push(await sandboxSection(coreConfig, options.sandboxEngine));
   }
 
-  sections.push(await exporterSection(options, liveness, options.preferAppPluginInstall === true));
   sections.push(await runsSection(options, coreConfig));
   sections.push(await launchdLogsSection(options.configPath));
 
@@ -765,7 +764,7 @@ async function readPiAuthProviders(path: string): Promise<
  *   `apiKey` / `apiKeyEnv` contract instead of Pi OAuth; an OAuth provider absent from
  *   the store, or whose access token has expired, is flagged `waiting` with a re-auth hint.
  *
- * `waiting` (never `error`) keeps the verdict non-fatal, mirroring the Ollama/Phoenix
+ * `waiting` (never `error`) keeps the verdict non-fatal, mirroring the Ollama
  * probes — the goal is visibility, not blocking start.
  */
 async function credentialsSection(

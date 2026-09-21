@@ -1,6 +1,6 @@
 import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
 import type { ChannelDriver, ChannelId, ChannelStatus, RunningChannel } from "./channels.js";
-import type { ConfigApplyResult, SandboxStatus, TraceabilityStatus, ExporterStatus } from "./app-controller-types.js";
+import type { ConfigApplyResult, SandboxStatus, TraceabilityStatus } from "./app-controller-types.js";
 
 export interface LifecycleControllerPort {
   readonly drivers: readonly ChannelDriver[];
@@ -21,7 +21,6 @@ export interface LifecycleControllerPort {
   stopTraceSource(reason: string): Promise<void>;
   refreshSandboxStatus(reason: string): Promise<SandboxStatus>;
   startTraceability(reason: string): Promise<TraceabilityStatus>;
-  startExporters(reason: string): Promise<ExporterStatus>;
   startContinuationServiceIfConfigured(reason: string): Promise<void>;
   prepareProcessJobsProtection(reason: string): Promise<void>;
   startProcessJobsIfConfigured(reason: string): Promise<void>;
@@ -67,7 +66,6 @@ export async function applyConfigChange(controller: LifecycleControllerPort, rea
     await controller.stopTraceSource(`${reason}:reload`);
     await controller.refreshSandboxStatus(reason);
     await controller.startTraceability(reason);
-    await controller.startExporters(reason);
     await controller.startContinuationServiceIfConfigured(reason);
     await controller.startProcessJobsIfConfigured(reason);
     await Promise.all(controller.drivers.map((driver) => controller.startChannelIfConfigured(driver.id, reason)));

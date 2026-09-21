@@ -208,13 +208,14 @@ const misleadingArtifactDurabilityClaims = [
     pattern: /\bfull[- ]fidelity\s+TUI\s+NDJSON\s+(?:turns?|frames?|stream)\b/iu,
   },
   {
-    label: "guaranteed every-run Phoenix stream",
+    label: "exporter retirement deletes local artifacts",
     pattern:
-      /\bevery\s+run(?:\s+lifecycle)?\s+streams?\s+to\s+(?:a\s+)?\[?Phoenix\b|\bstream\s+every\s+run(?:\s+lifecycle)?\s+to\s+Phoenix\b/iu,
+      /\b(?:removing|retiring|retirement\s+of)\b[^\n.!?]{0,120}\b(?:Phoenix|OTLP|trace exporter)\b[^\n.!?]{0,160}\bdeletes?\b[^\n.!?]{0,80}\blocal\b[^\n.!?]{0,40}\bartifacts?\b/iu,
   },
   {
-    label: "guaranteed every-run Phoenix export",
-    pattern: /\bexported\s+on\s+every\s+run\b/iu,
+    label: "exporter retirement implies network isolation",
+    pattern:
+      /\b(?:without|removing|retiring)\b[^\n.!?]{0,120}\b(?:Phoenix|OTLP|trace exporter)\b[^\n.!?]{0,160}(?:\b(?:application|agent|framework)\s+(?:is|becomes?)\s+(?:network[- ]isolated|fully offline)\b|(?<!does not )\bmakes?\s+(?:the\s+)?(?:application|agent|framework)\s+(?:network[- ]isolated|fully offline)\b|\bmeans?\s+no\s+network(?:\s+access)?\b)/iu,
   },
   {
     label: "always-written JSONL artifacts",

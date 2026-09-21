@@ -9,7 +9,7 @@ import {
   writeJsonAtomic,
 } from "./artifact-fs.js";
 import { errorFailureKind, errorToJson, redactJsonValue } from "./redaction.js";
-import { normalizeFailoverHistory } from "./run-export-mapping.js";
+import { normalizeFailoverHistory } from "./failover-history.js";
 import type { JsonlRunRecorderOptions, RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "./types.js";
 
 // System prompts are bounded by their OWN cap, not the per-event `maxStringBytes`

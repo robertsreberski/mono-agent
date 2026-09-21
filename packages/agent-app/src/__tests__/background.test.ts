@@ -3058,7 +3058,6 @@ describe("statusBackground", () => {
         readonly health: string;
         readonly configPath: string;
         readonly logs: { readonly stdout: string; readonly stderr: string };
-        readonly observability?: { readonly endpoint: string };
         readonly processJobs?: { readonly protection: Record<string, unknown> };
         readonly channels?: Record<string, unknown>;
         readonly runsHealth: { readonly totalRuns: number } | null;
@@ -3070,7 +3069,7 @@ describe("statusBackground", () => {
     expect(parsed.instance?.health).toBe("running");
     expect(parsed.instance?.configPath).toBe(target.configPath);
     expect(parsed.instance?.logs.stdout).toBe(target.paths.stdoutPath);
-    expect(parsed.instance?.observability?.endpoint).toBe("http://127.0.0.1:6006/v1/traces");
+    expect(parsed.instance).not.toHaveProperty("observability");
     expect(parsed.instance?.processJobs?.protection).toEqual({
       protection: "unsafe-unprotected",
       retainedRoots: true,
@@ -3166,31 +3165,7 @@ describe("statusBackground", () => {
     }
   });
 
-  it("prints the observability exporter line with the local-artifacts note", async () => {
-    const { runner } = makeRunner({ loaded: true });
-    const target = makeTarget();
-    const current = makeSource(target, {
-      metadata: {
-        reason: "startup-complete",
-        observability: {
-          endpoint: "http://127.0.0.1:6006/v1/traces",
-          includeSensitiveData: false,
-          jsonlArtifactsLocal: true,
-        },
-      },
-    });
-    const harness = makeHarness({ runner, list: listReturning(() => [current]) });
-
-    await statusBackground(target, harness.deps);
-
-    const stdout = harness.out.join("");
-    expect(stdout).toContain("observability");
-    expect(stdout).toContain("http://127.0.0.1:6006/v1/traces");
-    expect(stdout).toContain("JSONL artifacts remain local");
-    expect(stdout).not.toContain("[WARN] includeSensitiveData=true");
-  });
-
-  it("prints a warning from persisted observability metadata when sensitive data export is enabled", async () => {
+  it("ignores retired observability metadata while reporting local runs health", async () => {
     const { runner } = makeRunner({ loaded: true });
     const target = makeTarget();
     const endpoint = "http://127.0.0.1:6006/v1/traces";
@@ -3199,8 +3174,52 @@ describe("statusBackground", () => {
         reason: "startup-complete",
         observability: {
           endpoint,
+          includeSensitiveData: false,
+          jsonlArtifactsLocal: true,
+        },
+      },
+    });
+    const listRecordedRuns = vi.fn(async () => ({ totalRuns: 7, runs: [], warnings: [] }));
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => [current]),
+      listRecordedRuns,
+    });
+
+    await statusBackground(target, harness.deps);
+
+    expect(listRecordedRuns).toHaveBeenCalledWith({
+      artifactDir: current.artifactDir,
+      maxRuns: 50,
+      scope: "agent",
+    });
+    const stdout = harness.out.join("");
+    expect(stdout).toContain("runs health");
+    expect(stdout).toContain("Recorded runs: 7 total");
+    expect(stdout).not.toContain("observability");
+    expect(stdout).not.toContain(endpoint);
+  });
+
+  it("ignores sensitive legacy exporter metadata while retaining process-job protection warnings", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const endpoint = "http://127.0.0.1:6006/v1/traces";
+    const protectionWarning = "UNSAFE: ProcessJobs state and operator secret are model-accessible.";
+    const current = makeSource(target, {
+      metadata: {
+        reason: "startup-complete",
+        observability: {
+          endpoint,
           includeSensitiveData: true,
           jsonlArtifactsLocal: true,
+        },
+        processJobs: {
+          protection: {
+            protection: "unsafe-unprotected",
+            retainedRoots: true,
+            unsafeAllowUnprotectedState: true,
+            warning: protectionWarning,
+          },
         },
       },
     });
@@ -3209,12 +3228,10 @@ describe("statusBackground", () => {
     await statusBackground(target, harness.deps);
 
     const stdout = harness.out.join("");
-    expect(stdout).toContain("[WARN] includeSensitiveData=true");
-    expect(stdout).toContain(endpoint);
-    expect(stdout).toContain("user input");
-    expect(stdout).toContain("assistant replies");
-    expect(stdout).toContain("tool args/results");
-    expect(stdout).toContain("system prompt");
+    expect(stdout).toContain("process jobs protection");
+    expect(stdout).toContain(protectionWarning);
+    expect(stdout).not.toContain("includeSensitiveData=true");
+    expect(stdout).not.toContain(endpoint);
   });
 
   it("prints effective sandbox state from persisted metadata", async () => {

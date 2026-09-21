@@ -133,7 +133,6 @@ export interface ResponderControllerPort {
     readonly sourceLabel?: string;
     readonly configPath?: string;
   }>;
-  recordExporterWarning(warning: { readonly phase: string; readonly message: string }): void;
   recordSessionEvent(event: ConfiguredAgentSessionEvent, coreConfig: MonoAgentConfig): void;
 }
 
@@ -392,11 +391,8 @@ export async function buildResponder(
     onToolHistoryWarning: (message) => {
       controller.logger?.warn?.(message);
     },
-    // Thread run-identifying context onto exported spans and surface per-run
-    // export warnings to `exporterStatus` (agent-host only builds the exporter
-    // when config.observability.exporters is non-empty).
+    // Preserve per-app trace-source identity and config-path correlation.
     observabilityContext,
-    exporterWarn: (warning) => controller.recordExporterWarning(warning),
     onSessionEvent: (event) => controller.recordSessionEvent(event, coreConfig),
   }, {
     processJobs: {

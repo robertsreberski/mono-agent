@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -35,6 +35,7 @@ if (packageNames.includes("@mono-agent/agent-app")) {
     throw new Error("Packed app still publishes the retired memory-recall binary.");
   }
   await assertRemovedImport("@mono-agent/observability/otel", "ERR_PACKAGE_PATH_NOT_EXPORTED");
+  await assertRemovedImport("@mono-agent/observability/run-export", "ERR_PACKAGE_PATH_NOT_EXPORTED");
   if (target === "@mono-agent/agent-app") {
     await assertRemovedImport("@mono-agent/observability-phoenix", "ERR_MODULE_NOT_FOUND");
     await assertRemovedImport("@opentelemetry/otlp-transformer", "ERR_MODULE_NOT_FOUND");
@@ -49,8 +50,23 @@ if (packageNames.includes("@mono-agent/agent-runtime")) {
   );
 }
 
+if (packageNames.includes("@mono-agent/observability")) {
+  await verifyLocalRecorderRoundTrip();
+}
+
+if (packageNames.includes("@mono-agent/config")) {
+  await verifyRetiredExporterMigration();
+}
+
 const cliSmokes = [
   { packageName: "@mono-agent/agent-app", binName: "mono-agent", args: ["--help"], statuses: [0] },
+  {
+    packageName: "@mono-agent/agent-app",
+    binName: "mono-agent",
+    args: ["backfill"],
+    statuses: [2],
+    stderrIncludes: "removed with first-party Phoenix/OTLP export",
+  },
   { packageName: "@mono-agent/tui", binName: "mono-agent-tui", args: ["--help"], statuses: [0] },
   { packageName: "create-mono-agent", binName: "create-mono-agent", args: ["--help"], statuses: [0] },
 ];
@@ -90,6 +106,68 @@ console.log(
   `Packed ${scope} imported ${importSpecifiers.length} public export(s); `
   + `ran ${selectedCliSmokes.length} dist CLI smoke(s)${createInfoSummary}.`,
 );
+
+async function verifyLocalRecorderRoundTrip() {
+  const { createJsonlRunRecorder, readRecordedRun } = await import("@mono-agent/observability");
+  const artifactDir = await mkdtemp(join(tmpdir(), "mono-agent-packed-observability-"));
+  try {
+    const recorder = createJsonlRunRecorder({
+      artifactDir,
+      runId: "packed-round-trip",
+      conversationId: "packed-consumer",
+    });
+    await recorder.start?.();
+    recorder.onEvent({ type: "assistant", text: "packed recorder works" });
+    const summary = await recorder.finish({});
+    if (summary.status !== "succeeded" || summary.eventCount !== 1) {
+      throw new Error(`Packed local recorder returned an invalid summary: ${JSON.stringify(summary)}`);
+    }
+    const history = await readRecordedRun({ artifactDir }, "packed-round-trip");
+    if (history?.summary.runId !== "packed-round-trip" || history.events.length !== 1) {
+      throw new Error(`Packed local recorder round trip failed: ${JSON.stringify(history?.summary)}`);
+    }
+  } finally {
+    await rm(artifactDir, { recursive: true, force: true });
+  }
+}
+
+async function verifyRetiredExporterMigration() {
+  const { loadMonoAgentConfigWithSources } = await import("@mono-agent/config");
+  const cwd = await mkdtemp(join(tmpdir(), "mono-agent-packed-config-"));
+  const configPath = join(cwd, "mono-agent.config.json");
+  const base = {
+    runtime: { model: "pi:openai-codex:gpt-5.5" },
+    context: { identityPath: "IDENTITY.md" },
+  };
+  try {
+    await writeFile(configPath, `${JSON.stringify({ ...base, observability: { exporters: [] } })}\n`, "utf8");
+    const config = await loadMonoAgentConfigWithSources({ cwd, jsonPath: configPath, env: {} });
+    if (Object.hasOwn(config, "observability")) {
+      throw new Error("Inert exporter tombstone unexpectedly enabled observability config.");
+    }
+
+    const secret = "packed-secret-must-not-leak";
+    await writeFile(configPath, `${JSON.stringify({
+      ...base,
+      observability: { exporters: [{ type: "phoenix", endpoint: `https://${secret}@example.invalid` }] },
+    })}\n`, "utf8");
+    try {
+      await loadMonoAgentConfigWithSources({ cwd, jsonPath: configPath, env: {} });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes(secret) || message.includes("example.invalid")) {
+        throw new Error(`Retired exporter rejection leaked legacy config: ${message}`);
+      }
+      if (!message.includes("observability.exporters") || !message.includes("was removed")) {
+        throw new Error(`Retired exporter rejection lacked migration guidance: ${message}`);
+      }
+      return;
+    }
+    throw new Error("Active retired exporter config was accepted by the packed package.");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+}
 
 async function readInstalledManifest(name) {
   return JSON.parse(await readFile(join(installedPackageDirectory(name), "package.json"), "utf8"));

@@ -264,22 +264,6 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    command: "backfill",
-    group: "Observe",
-    short: "backfill",
-    summary: "Export recorded run artifacts to the Phoenix exporter.",
-    signature:
-      "mono-agent backfill (--run <id> | --all) [--since <iso>] [--until <iso>]\n" +
-      "                    [--include-memory] [--dry-run] [--config <path>] [--env-file <path>]",
-    lines: [
-      "Export already-recorded agent-run artifacts to the configured Phoenix exporter",
-      "with their historical timestamps. Trace ids are deterministic per run, so",
-      "re-running overwrites rather than duplicating. --dry-run maps and",
-      "serializes without sending. --include-memory adds memory-run artifacts",
-      "for --all; explicit --run can target a memory run directly.",
-    ],
-  },
-  {
     command: "memory",
     group: "Maintain",
     short: "memory <subcommand>",

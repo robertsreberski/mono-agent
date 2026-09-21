@@ -28,7 +28,6 @@ import {
   type ProviderCredentialState,
 } from "../provider-setup.js";
 import { isSupermemoryPluginInstalled } from "../supermemory-plugin.js";
-import { isPhoenixPluginInstalled, missingPhoenixPluginMessage } from "../phoenix-plugin.js";
 import {
   alwaysOnTools,
   composeWizardPlan,
@@ -122,12 +121,11 @@ interface DraftAnswers {
   channels: string[];
   memory: string | undefined;
   sandbox: boolean;
-  observability: boolean;
   allowedTools: string[];
   moduleInputs: Record<string, Record<string, string>>;
   /**
    * Browser-first gate intent (not part of {@link WizardAnswers}). True while the
-   * optional channels/memory/observability steps belong to the current path: a
+   * optional channels/memory steps belong to the current path: a
    * preset/seed that already selects them, an accepted gate, an accepted
    * advanced review edit, or a setup-repair session.
    */
@@ -141,12 +139,12 @@ interface DraftAnswers {
   advancedEverAccepted: boolean;
 }
 
-/** Advanced review-edit targets: channels, memory, capability details, observability. */
-const ADVANCED_EDIT_STEPS: ReadonlySet<number> = new Set([3, 4, 5, 8]);
+/** Advanced review-edit targets: channels, memory, and capability details. */
+const ADVANCED_EDIT_STEPS: ReadonlySet<number> = new Set([3, 4, 5]);
 
 /** True when the draft currently carries any optional-capability selection. */
 function hasAdvancedAnswers(draft: DraftAnswers): boolean {
-  return draft.channels.length > 0 || draft.memory !== undefined || draft.observability;
+  return draft.channels.length > 0 || draft.memory !== undefined;
 }
 
 /**
@@ -163,9 +161,7 @@ function clearAdvancedAnswers(draft: DraftAnswers): boolean {
     delete draft.moduleInputs[draft.memory];
     draft.memory = undefined;
   }
-  const hadObservability = draft.observability;
-  draft.observability = false;
-  return hadChannels || hadMemory || hadObservability;
+  return hadChannels || hadMemory;
 }
 
 const SANDBOXABLE_TOOLS = new Set(["Bash", "Exec", "Write", "Edit", "NodeRepl"]);
@@ -396,7 +392,7 @@ async function collectAnswers(ctx: WizardRunContext): Promise<CollectedAnswers> 
 /**
  * The full custom flow: name/Role → model → optional-capabilities gate (when
  * declined: tools → sandbox → review; when accepted additionally: channels →
- * memory → per-module inputs → observability) → summary.
+ * memory → per-module inputs) → summary.
  */
 async function collectCustom(ctx: WizardRunContext): Promise<CollectedAnswers> {
   return await collectInteractiveFromSeed(ctx, defaultAnswers({
@@ -607,7 +603,7 @@ function wizardStepHasInteractivePrompt(step: number, draft: DraftAnswers): bool
     case 7:
       return safetyPolicyHasInteractivePrompt(draft);
     case 8:
-      return draft.advancedRequested;
+      return false;
     default:
       return false;
   }
@@ -700,11 +696,11 @@ async function collectInteractiveFromSeed(
           break;
         }
         case 2: {
-          // Browser-first gate: channels/memory/observability are opt-in. The
+          // Browser-first gate: channels/memory are opt-in. The
           // gate defaults to Yes only when the seed (preset) or an already
           // accepted edit selected them.
           const addOptional = await confirm({
-            message: "Add optional capabilities now? (channels, memory, observability)",
+            message: "Add optional capabilities now? (channels, memory)",
             initialValue: draft.advancedRequested,
           });
           if (addOptional) {
@@ -714,16 +710,15 @@ async function collectInteractiveFromSeed(
           } else {
             // Declining keeps an already accepted selection, but it must never
             // skip mandatory consent: route through tools (6) and safety (7)
-            // before review. Observability (8) still runs when retained
-            // capabilities are part of this run, so escaping back to this gate
-            // cannot bypass the tool framing, the sandbox choice, or the
+            // before review, so escaping back to this gate cannot bypass the
+            // tool framing, the sandbox choice, or the
             // default-No high-risk confirmation (review finding F1).
             const retained = draft.advancedEverAccepted && hasAdvancedAnswers(draft);
             if (retained) {
               p.log.info("Keeping the optional capabilities you already selected.");
             } else if (clearAdvancedAnswers(draft)) {
               p.log.info(
-                "Skipped optional capabilities for now — you can add channels, memory, or observability later " +
+                "Skipped optional capabilities for now — you can add channels or memory later " +
                 "in mono-agent.config.json.",
               );
             }
@@ -802,24 +797,12 @@ async function collectInteractiveFromSeed(
             returnToReviewAfterStep = undefined;
             step = finalStep;
           } else {
-            // Observability is an optional capability; the default path goes
-            // straight to review.
-            step = draft.advancedRequested ? 8 : finalStep;
+            step = finalStep;
           }
           break;
         }
         case 8:
-          // Phoenix export is an explicitly installed, matching-version optional
-          // extra; never offer it (or claim it is on) when the plugin is absent.
-          if (isPhoenixPluginInstalled({ cwd: ctx.cwd })) {
-            draft.observability = await confirm({
-              message: "Export traces to Phoenix (best-effort OTLP, sensitive data excluded)?",
-              initialValue: draft.observability,
-            });
-          } else {
-            p.note(`${missingPhoenixPluginMessage()} Phoenix tracing stays off in this configuration.`, "Optional Phoenix tracing");
-            draft.observability = false;
-          }
+          // Compatibility index retained for setup-repair callers from older flows.
           advanceAfter(8);
           break;
         case 9: {
@@ -1519,10 +1502,9 @@ async function confirmSummary(
                 { value: "4", label: "Memory" },
                 { value: "5", label: "Capability details" },
               ]
-            : [{ value: "2", label: "Add optional capabilities (channels, memory, observability)" }]),
+            : [{ value: "2", label: "Add optional capabilities (channels, memory)" }]),
           { value: "6", label: "Tools" },
           { value: "7", label: "Route safety and sandbox" },
-          ...(draft.advancedRequested ? [{ value: "8", label: "Observability" }] : []),
           { value: "9", label: "Return to review" },
         ],
         initialValue: "1",
@@ -1709,14 +1691,12 @@ function draftFrom(answers: WizardAnswers): DraftAnswers {
     channels: [...answers.channels],
     memory: answers.memory,
     sandbox: answers.sandbox,
-    observability: answers.observability,
     allowedTools: [...answers.allowedTools],
     moduleInputs,
     // A preset/seed that already selects optional capabilities opens the gate
     // at Yes; the operator can still decline it while nothing was accepted.
     advancedRequested: answers.channels.length > 0
-      || answers.memory !== undefined
-      || answers.observability,
+      || answers.memory !== undefined,
     advancedEverAccepted: false,
   };
 }
@@ -1739,7 +1719,6 @@ function toWizardAnswers(draft: DraftAnswers): WizardAnswers {
     channels: [...draft.channels],
     ...(draft.memory === undefined ? {} : { memory: draft.memory }),
     sandbox: draft.sandbox,
-    observability: draft.observability,
     allowedTools: [...draft.allowedTools],
     moduleInputs: draft.moduleInputs,
   };

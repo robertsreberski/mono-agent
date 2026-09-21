@@ -53,7 +53,6 @@ describe("buildTuiConfigSummary", () => {
       "sandbox",
       "artifacts",
       "traceability",
-      "observability",
       "providers",
     ]);
     expect(findField(sections, "Model")).toMatchObject({

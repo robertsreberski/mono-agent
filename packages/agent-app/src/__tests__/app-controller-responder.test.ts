@@ -255,7 +255,6 @@ describe("reply artifact responder composition", () => {
       }),
       buildRuntimeForModel: () => () => runtime,
       observabilityContext: async () => ({}),
-      recordExporterWarning() {},
       recordSessionEvent() {},
     };
 
@@ -583,7 +582,6 @@ async function createRouteGuardFixture(
     },
     buildRuntimeForModel: () => () => runtime,
     observabilityContext: async () => ({}),
-    recordExporterWarning() {},
     recordSessionEvent() {},
   };
   const responder = await buildResponder(controller, coreConfig, "slack");

@@ -117,7 +117,7 @@ export interface MemoryAgentHostLlmConfig {
   /** Runtime model reference string, parsed by the host when constructing the LLM. */
   readonly model: string;
   /**
-   * Record each memory LLM `complete()` as a run through the same JSONL + Phoenix
+   * Record each memory LLM `complete()` as a run through the same local JSONL
    * pipeline as channel runs (per-ritual labelled, `mem-*` run ids). Defaults to
    * `true`; set `false` to keep memory LLM calls unrecorded.
    */
@@ -130,37 +130,6 @@ export interface MemoryAgentHostLlmConfig {
   readonly timeoutMs?: number;
 }
 export type MemoryLlmConfig = MemoryOllamaLlmConfig | MemoryAgentHostLlmConfig;
-
-/**
- * Phoenix OTLP-HTTP trace exporter config. Best-effort, additive sink: never
- * changes run outcome and never suppresses the local JSONL recorder. Header
- * values are secrets and are redacted by `redactMonoAgentConfig`.
- */
-export interface PhoenixExporterConfig {
-  readonly type: "phoenix";
-  /** OTLP/HTTP traces endpoint; defaults to Phoenix's local `/v1/traces`. */
-  readonly endpoint?: string;
-  /** Extra HTTP headers (e.g. auth) sent on the OTLP POST. Values are secrets. */
-  readonly headers?: Readonly<Record<string, string>>;
-  /** When true, redacted raw payloads are exported; default false (metadata only). */
-  readonly includeSensitiveData?: boolean;
-  /**
-   * Scan retained exported free-text values for a closed set of high-confidence
-   * credential shapes. Default false; object-key redaction remains enabled.
-   */
-  readonly contentPatternRedaction?: boolean;
-  /** Hard cap (ms) on a single export attempt; bounded {1..60000}, default 5000. */
-  readonly timeoutMs?: number;
-  /**
-   * Phoenix project the traces land in (resource attr `openinference.project.name`,
-   * also sent as the `x-project-name` header). Defaults to the run's trace source
-   * label/id, else "default". Not a secret.
-   */
-  readonly projectName?: string;
-}
-
-/** Union of supported observability exporters (future: langfuse/otlp). */
-export type ObservabilityExporterConfig = PhoenixExporterConfig;
 
 export type SessionMode = "continuous" | "per-message";
 
@@ -499,13 +468,6 @@ export interface MonoAgentConfig {
      */
     readonly globalDiscovery?: boolean;
   };
-  /**
-   * Best-effort observability sinks. Present only when at least one exporter is
-   * configured; the local JSONL recorder always runs regardless.
-   */
-  readonly observability?: {
-    readonly exporters: readonly ObservabilityExporterConfig[];
-  };
   readonly providers?: {
     readonly piAuthPath?: string;
     /** Canonical provider definitions, sorted by id after config load. */
@@ -582,17 +544,6 @@ export type RedactedMemoryConfig = Omit<
   readonly supermemory?: RedactedMemorySupermemoryConfig;
 };
 
-export type RedactedPhoenixExporterConfig = Omit<PhoenixExporterConfig, "headers"> & {
-  /** Header VALUES are secrets and replaced with the literal `[redacted]`. */
-  readonly headers?: Readonly<Record<string, "[redacted]">>;
-};
-
-export type RedactedObservabilityExporterConfig = RedactedPhoenixExporterConfig;
-
-export interface RedactedObservabilityConfig {
-  readonly exporters: readonly RedactedObservabilityExporterConfig[];
-}
-
 export interface RedactedMonoAgentConfig {
   readonly agent?: MonoAgentConfig["agent"];
   readonly runtime: MonoAgentConfig["runtime"];
@@ -603,7 +554,6 @@ export interface RedactedMonoAgentConfig {
   readonly sandbox?: MonoAgentConfig["sandbox"];
   readonly artifacts: MonoAgentConfig["artifacts"];
   readonly traceability: MonoAgentConfig["traceability"];
-  readonly observability?: RedactedObservabilityConfig;
   readonly providers?: {
     readonly piAuthPath?: string;
     readonly entries?: readonly RedactedProviderDefinition[];

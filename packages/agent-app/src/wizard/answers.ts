@@ -47,7 +47,6 @@ export interface WizardAnswers {
   /** Memory module id, or `undefined` for no memory section. */
   readonly memory?: string;
   readonly sandbox: boolean;
-  readonly observability: boolean;
   /** Final tool selection written into `tools.allowedTools`. */
   readonly allowedTools: readonly string[];
   /** Per module id → non-secret input overrides. Secret inputs are stripped by the composer. */
@@ -140,7 +139,7 @@ const ZERO_TOOLS_WARNING =
 /**
  * The module ids selected by these answers, in composer order: auto-derived
  * providers first (from an `ollama:*`/`lmstudio:*` model), then channels (in
- * answer order), then the memory tier, then sandbox, then observability.
+ * answer order), then the memory tier, then sandbox.
  */
 function selectedModuleIds(answers: WizardAnswers): readonly string[] {
   const ids: string[] = [];
@@ -159,9 +158,6 @@ function selectedModuleIds(answers: WizardAnswers): readonly string[] {
   }
   if (answers.sandbox) {
     ids.push("sandbox");
-  }
-  if (answers.observability) {
-    ids.push("observability:phoenix");
   }
   return ids;
 }
@@ -243,7 +239,6 @@ const BASE_ANSWERS: WizardAnswers = {
   // `memory` is intentionally omitted (no memory section) — with
   // exactOptionalPropertyTypes an optional key must be absent, not `undefined`.
   sandbox: false,
-  observability: false,
   allowedTools: [ALLOW_ALL_TOOLS],
   moduleInputs: {},
 };

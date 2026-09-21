@@ -173,12 +173,12 @@ Choose the lowest rung in [`docs/reference/capability-ladder.md`](./docs/referen
 
 ## Agent-app internals
 
-`app-controller.ts` owns lifecycle state and delegates operations. Each `app-controller-*.ts` module declares the narrow controller port it needs; operation modules must not import the concrete controller. Cross-cutting service logic lives in focused modules such as `background-log-maintenance.ts`, `doctor-observability.ts`, and `managed-web-logs.ts` rather than returning to the CLI/controller entrypoints.
+`app-controller.ts` owns lifecycle state and delegates operations. Each `app-controller-*.ts` module declares the narrow controller port it needs; operation modules must not import the concrete controller. Cross-cutting service logic lives in focused modules such as `background-log-maintenance.ts`, `doctor-runs.ts`, and `managed-web-logs.ts` rather than returning to the CLI/controller entrypoints.
 
 The normal lifecycle is:
 
 1. Strictly load config and resolve channel drivers.
-2. Establish sandbox, traceability, exporters, and continuation services.
+2. Establish sandbox, traceability, local recording, and continuation services.
 3. Start configured channels and their responders.
 4. Publish the completed startup snapshot.
 5. On reload or stop, block new work, stop transports, dispose responders/runtimes, and close shared services with bounded waits.

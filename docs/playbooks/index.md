@@ -7,14 +7,14 @@ sidebar:
 
 This section collects end-to-end recipes. Each one walks the same arc — **init → configure → validate → start → smoke** — using only real `mono-agent.config.json` keys and the `mono-agent` CLI, so you can copy a playbook, adapt the placeholders, and have a working agent in minutes.
 
-Every recipe ends with a concrete smoke test (a Telegram message, a `curl`, a cron tick, a Phoenix span) so you can prove the agent works before you ship it.
+Every recipe ends with a concrete smoke test (a Telegram message, a `curl`, a cron tick, or a recorded-run assertion) so you can prove the agent works before you ship it.
 
 ## How to use these
 
 1. Pick a recipe from the [selector](#pick-a-recipe) or the [full table](#all-recipes) below.
 2. Run `mono-agent init` with the suggested `--model` (and `--memory` / repeated canonical `--fallback` routes where shown).
 3. Edit `mono-agent.config.json` per the recipe — keys are cross-checked against [the config blueprint](/config/blueprint/) and [feature registry](/reference/feature-matrix/).
-4. Run `mono-agent validate` (catches missing tokens, unreachable providers, un-pulled local models, consolidation cadence, and exporter reachability), then `mono-agent start`.
+4. Run `mono-agent validate` (catches missing tokens, unreachable providers, un-pulled local models and consolidation cadence), then `mono-agent start`.
 5. Run the recipe's smoke test and inspect the JSONL run artifact under `artifacts.dir`.
 
 :::note
@@ -35,7 +35,7 @@ Choose along three axes, in order: **channel** (how messages reach the agent), t
 | Plain HTTP (sync + async jobs) | [Webhook Automation](/playbooks/webhook-automation-sync-async/) |
 | Another agent over A2A | [A2A Provider + Consumer](/playbooks/a2a-provider-and-consumer/) |
 | A scheduled prompt (no inbound channel) | [Cron Digest](/playbooks/cron-digest-proactive-notify/) |
-| The local terminal TUI only | [Local-Only Ollama Agent](/playbooks/local-only-ollama-agent/) · [Local-Only LM Studio Agent](/playbooks/local-only-lmstudio-agent/) · [Local-first Web Research](/playbooks/local-web-research/) · [Phoenix-Observed Agent](/playbooks/phoenix-observed-agent/) |
+| The local terminal TUI only | [Local-Only Ollama Agent](/playbooks/local-only-ollama-agent/) · [Local-Only LM Studio Agent](/playbooks/local-only-lmstudio-agent/) · [Local-first Web Research](/playbooks/local-web-research/) |
 
 See [Channels](/channels/) for the full per-channel reference.
 
@@ -57,7 +57,6 @@ Memory tiers, `writeMode`, embeddings, and consolidation are covered in [Memory]
 | Fully local / air-gapped (no cloud, no outbound network) | [Local-Only Ollama](/playbooks/local-only-ollama-agent/) · [Local-Only LM Studio](/playbooks/local-only-lmstudio-agent/) |
 | Reliability-hardened (ordered model fallback) | [Multi-Model Fallback Chain](/playbooks/multi-model-fallback-chain/) |
 | Composed / multi-agent (delegation) | [Multi-Agent Orchestration](/playbooks/multi-agent-orchestration/) · [A2A Pair](/playbooks/a2a-provider-and-consumer/) |
-| Observed (tracing + dashboards) | [Phoenix-Observed Agent](/playbooks/phoenix-observed-agent/) · [Backfill Historical Runs](/playbooks/backfill-historical-runs/) |
 
 ## All recipes
 
@@ -75,11 +74,9 @@ Memory tiers, `writeMode`, embeddings, and consolidation are covered in [Memory]
 | [Multi-Agent Orchestration (AskCollaborator)](/playbooks/multi-agent-orchestration/) | Workflow designer composing specialist agents | One orchestrator delegates subtasks to named collaborator responders via the loopback `AskCollaborator` MCP tool. |
 | [Sandboxed Code Agent (Loopback Only, Deny .env)](/playbooks/sandboxed-code-agent/) | Security team deploying an internal code assistant | Agent that reads repos and runs Bash inside the native sandbox with loopback-only network access and protected secrets, recalling local context. |
 | [Local-first Web Research Agent](/playbooks/local-web-research/) | Researcher wanting explicit search-provider selection and bounded public-page extraction | Pi agent using explicit Ollama or loopback SearXNG, ChatGPT-subscription Codex search, deterministic keyless fallback policy, local extraction, and optional isolated browser rendering. |
-| [Phoenix-Observed Agent with TUI](/playbooks/phoenix-observed-agent/) | Agent builder evaluating runs in a tracing dashboard | Run an agent with the TUI, attempt a best-effort terminal-batched Phoenix export, and retain a bounded local JSONL snapshot after terminal persistence; a pre-terminal crash can omit the Phoenix batch and terminal event snapshot. |
-| [Backfill Historical Runs to Phoenix](/playbooks/backfill-historical-runs/) | Operations engineer onboarding observability after the fact | Retroactively export already-recorded JSONL run artifacts to Phoenix with original timestamps, idempotently. |
 | [Multi-Model Fallback Chain with Transcript Resume](/playbooks/multi-model-fallback-chain/) | Reliability-minded builder who can't afford a single-provider outage | Primary cloud model with ordered backups the failover router tries on retryable failures, resuming from the transcript tail. |
 | [Interactive Agent with Long Jobs & Large Media](/playbooks/interactive-transcription-large-media/) | Builder whose agent must ask before acting, run multi-minute tools, and exchange large files | Telegram agent that blocks on `AskUser` for context, streams progress from a long transcription tool (keep-alive past 120s), accepts recordings over 20 MB via a self-hosted Bot API server, and returns a generated document. |
 
 :::tip
-Always run `mono-agent validate` before `start`. It is the single fastest way to catch a missing `botToken`, an un-pulled Ollama model, an unreachable Phoenix endpoint, or a duplicate webhook path before they bite you at runtime.
+Always run `mono-agent validate` before `start`. It is the single fastest way to catch a missing `botToken`, an un-pulled Ollama model, or a duplicate webhook path before they bite you at runtime.
 :::

@@ -9,13 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as agentHarness from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
-  PhoenixExporterConfig,
-  RunExporter,
   RunSummary,
-  RuntimeEventLike,
 } from "@mono-agent/observability";
 import type { MemoryStore } from "@mono-agent/agent-contracts";
-import { createPhoenixRunExporter } from "@mono-agent/observability-phoenix";
 import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import type { JournalBrowseSnapshot } from "@mono-agent/memory/store";
@@ -292,26 +288,18 @@ describe("agent host composition helpers", () => {
     ]);
   });
 
-  it("preserves failure instructions and the original exporter error through the artifact commit hook", async () => {
+  it("preserves failure instructions and the original runtime error through the artifact commit hook", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
     await writeFile(identityPath, "Stable failure recording identity.");
     const originalError = new TypeError("fixture runtime failure");
     const fake = createFakeRuntime(async () => { throw originalError; });
-    const exporter = {
-      finish: vi.fn<NonNullable<RunExporter["finish"]>>(),
-      fail: vi.fn<NonNullable<RunExporter["fail"]>>(),
-    };
     const onRunArtifactCommitted = vi.fn();
     const responder = await createConfiguredAgentResponderForApp({
-      config: monoConfig({
-        dir, identityPath, artifactDir,
-        observability: { exporters: [{ type: "phoenix" }] },
-      }),
+      config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
       createRunId: () => "run-failure-context",
-      exporterFactory: () => exporter,
     }, { onRunArtifactCommitted });
 
     await expect(responder.respond(
@@ -323,27 +311,14 @@ describe("agent host composition helpers", () => {
     expect(summary).toMatchObject({ status: "failed", failureKind: "TypeError", systemPrompt: fake.calls[0]!.prompt });
     expect(summary.systemPrompt).toContain("Stable failure recording identity.");
     expect(summary.systemPrompt).not.toContain("current-question-marker");
-    expect(exporter.finish).not.toHaveBeenCalled();
-    expect(exporter.fail).toHaveBeenCalledTimes(1);
-    expect(exporter.fail.mock.calls[0]?.[0]).toEqual(summary);
-    expect(exporter.fail.mock.calls[0]?.[1]).toBe(originalError);
     expect(onRunArtifactCommitted.mock.calls.map(([event]) => event.phase)).toEqual(["started", "finished"]);
   });
 
-  it("invalidates artifact-derived destinations at local commits without awaiting a slow exporter", async () => {
+  it("invalidates artifact-derived destinations at local recorder commits", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
     await writeFile(identityPath, "You are Mono.", "utf8");
-
-    let releaseExporterStart!: () => void;
-    let releaseExporterFinish!: () => void;
-    const exporterStart = new Promise<void>((resolve) => { releaseExporterStart = resolve; });
-    const exporterFinish = new Promise<void>((resolve) => { releaseExporterFinish = resolve; });
-    const exporter: RunExporter = {
-      start: async () => await exporterStart,
-      finish: async () => await exporterFinish,
-    };
 
     let scanCalls = 0;
     const cache = createSeenNotifyDestinationCache({
@@ -352,66 +327,35 @@ describe("agent host composition helpers", () => {
     await cache.list(artifactDir);
     expect(scanCalls).toBe(1);
 
-    let startedCommitted!: () => void;
-    let finishedCommitted!: () => void;
-    const started = new Promise<void>((resolve) => { startedCommitted = resolve; });
-    const finished = new Promise<void>((resolve) => { finishedCommitted = resolve; });
+    const committedPhases: string[] = [];
     const responder = await createConfiguredAgentResponderForApp({
-      config: monoConfig({
-        dir,
-        identityPath,
-        artifactDir,
-        observability: { exporters: [{ type: "phoenix", timeoutMs: 60_000 }] },
-      }),
+      config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: createFakeRuntime(async () => ({ text: "Done" })).runtime,
       createRunId: () => "run-artifact-cache-boundary",
-      exporterFactory: () => exporter,
     }, {
       onRunArtifactCommitted: (event) => {
-        if (isNotifyDestinationConversationId(event.conversationId)) {
-          cache.invalidate();
-        }
-        if (event.phase === "started") startedCommitted();
-        else finishedCommitted();
+        committedPhases.push(event.phase);
+        if (isNotifyDestinationConversationId(event.conversationId)) cache.invalidate();
       },
     });
 
-    let responseSettled = false;
-    const response = responder.respond(
+    await responder.respond(
       { conversationId: "telegram:42", text: "Run", abortSignal: new AbortController().signal },
       { append: async () => {} },
-    ).finally(() => { responseSettled = true; });
+    );
 
-    await started;
-    expect(JSON.parse(await readFile(join(artifactDir, "run-artifact-cache-boundary.summary.json"), "utf8")))
-      .toMatchObject({ status: "running", conversationId: "telegram:42" });
-    await cache.list(artifactDir);
-    expect(scanCalls).toBe(2);
-    expect(responseSettled).toBe(false);
-
-    releaseExporterStart();
-    await finished;
+    expect(committedPhases).toEqual(["started", "finished"]);
     expect(JSON.parse(await readFile(join(artifactDir, "run-artifact-cache-boundary.summary.json"), "utf8")))
       .toMatchObject({ status: "succeeded", conversationId: "telegram:42" });
     await cache.list(artifactDir);
-    expect(scanCalls).toBe(3);
-    expect(responseSettled).toBe(false);
-
-    releaseExporterFinish();
-    await response;
-    expect(responseSettled).toBe(true);
+    expect(scanCalls).toBe(2);
   });
 
-  it("records and exports memory persistence degradation before exporter completion", async () => {
+  it("records memory persistence degradation in local artifacts", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
     await writeFile(identityPath, "You are Mono.", "utf8");
-    const exportOrder: string[] = [];
-    const exporter: RunExporter = {
-      onEvent(event): void { exportOrder.push(`event:${String(event.type)}`); },
-      finish(): void { exportOrder.push("terminal"); },
-    };
     const memory: MemoryStore = {
       load: async () => undefined,
       persistCompletedTurn: async () => { throw new Error("memory disk became read-only"); },
@@ -423,13 +367,11 @@ describe("agent host composition helpers", () => {
         artifactDir,
         memoryPath: join(dir, "memory"),
         memoryWriteMode: "append-host-summary",
-        observability: { exporters: [{ type: "phoenix" }] },
       }),
       runtime: createFakeRuntime(async () => ({ text: "Provider answer survives" })).runtime,
       memory,
       createRunId: () => "run-memory-warning-order",
       observabilityContext: { sourceId: "src-warning" },
-      exporterFactory: () => exporter,
     });
 
     const response = await responder.respond(
@@ -438,9 +380,6 @@ describe("agent host composition helpers", () => {
     );
 
     expect(response.text).toBe("Provider answer survives");
-    const warningExportIndex = exportOrder.indexOf("event:runtime_warning");
-    expect(warningExportIndex).toBeGreaterThanOrEqual(0);
-    expect(warningExportIndex).toBeLessThan(exportOrder.indexOf("terminal"));
     const eventArtifact = await readFile(join(artifactDir, "run-memory-warning-order.events.jsonl"), "utf8");
     expect(eventArtifact).toContain("memory_persistence_degraded");
   });
@@ -1675,300 +1614,6 @@ describe("agent host composition helpers", () => {
   });
 });
 
-describe("agent host phoenix exporter wiring", () => {
-  function phoenixObservability(
-    overrides: Partial<PhoenixExporterConfig> = {},
-  ): NonNullable<MonoAgentConfig["observability"]> {
-    return {
-      exporters: [
-        {
-          type: "phoenix",
-          endpoint: "http://127.0.0.1:6006/v1/traces",
-          ...overrides,
-        },
-      ],
-    };
-  }
-
-  it("still produces a response and writes JSONL artifacts when the exporter throws in every phase", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const artifactDir = join(dir, "artifacts");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
-
-    const failing: RunExporter = {
-      start: () => { throw new Error("start boom"); },
-      onEvent: () => { throw new Error("onEvent boom"); },
-      finish: () => { throw new Error("finish boom"); },
-      fail: () => { throw new Error("fail boom"); },
-    };
-    const warnings: Array<{ phase: string; message: string }> = [];
-
-    const responder = await createConfiguredAgentResponder({
-      config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability() }),
-      runtime: fake.runtime,
-      createRunId: () => "run-failing-exporter",
-      exporterFactory: () => failing,
-      exporterWarn: (warning) => { warnings.push(warning); },
-    });
-
-    const response = await responder.respond(
-      { conversationId: "conv-exporter", text: "hi", abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
-
-    // Run outcome is unchanged by the failing exporter.
-    expect(response.text).toBe("Final answer");
-
-    // JSONL artifacts are written byte-for-byte as without an exporter.
-    const artifactFiles = await readdir(artifactDir);
-    expect(artifactFiles).toContain("run-failing-exporter.summary.json");
-    expect(artifactFiles).toContain("run-failing-exporter.events.jsonl");
-    expect(await readFile(join(artifactDir, "run-failing-exporter.summary.json"), "utf8")).toContain(
-      "run-failing-exporter",
-    );
-
-    // Exporter failures surface only as best-effort warnings.
-    expect(warnings.length).toBeGreaterThan(0);
-    expect(warnings.map((w) => w.message).join(" ")).toContain("boom");
-  });
-
-  it("a hanging exporter resolves within the bounded timeout and warns instead of stalling the run", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const artifactDir = join(dir, "artifacts");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
-
-    // start/finish never resolve — the composite's bounded timeout must win.
-    const hanging: RunExporter = {
-      start: () => new Promise<void>(() => {}),
-      finish: () => new Promise<void>(() => {}),
-    };
-    const warnings: Array<{ phase: string; message: string }> = [];
-
-    const responder = await createConfiguredAgentResponder({
-      config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability({ timeoutMs: 25 }) }),
-      runtime: fake.runtime,
-      createRunId: () => "run-hanging-exporter",
-      exporterFactory: () => hanging,
-      exporterWarn: (warning) => { warnings.push(warning); },
-    });
-
-    const started = Date.now();
-    const response = await responder.respond(
-      { conversationId: "conv-hang", text: "hi", abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
-    const elapsed = Date.now() - started;
-
-    expect(response.text).toBe("Final answer");
-    // The bounded timeout (25ms) keeps the run from hanging; allow generous slack.
-    expect(elapsed).toBeLessThan(5_000);
-    expect(warnings.some((w) => /timed out/u.test(w.message))).toBe(true);
-
-    const artifactFiles = await readdir(artifactDir);
-    expect(artifactFiles).toContain("run-hanging-exporter.summary.json");
-  });
-
-  it("does not delay startup when exporter.start hangs (harness awaits recorder.start once)", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const artifactDir = join(dir, "artifacts");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    const fake = createFakeRuntime(async () => ({ text: "ok" }));
-
-    const hangingStart: RunExporter = {
-      start: () => new Promise<void>(() => {}),
-    };
-    const warnings: Array<{ phase: string; message: string }> = [];
-
-    const harness = await createConfiguredAgentHarness({
-      config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability({ timeoutMs: 25 }) }),
-      runtime: fake.runtime,
-      createRunId: () => "run-hang-start",
-      exporterFactory: () => hangingStart,
-      exporterWarn: (warning) => { warnings.push(warning); },
-    });
-
-    const started = Date.now();
-    const response = await harness.run({ conversationId: "conv-hang-start", userMessage: "hi", abortSignal: new AbortController().signal });
-    const elapsed = Date.now() - started;
-
-    expect(response.text).toBe("ok");
-    expect(elapsed).toBeLessThan(5_000);
-    expect(warnings.some((w) => w.phase === "start" && /timed out/u.test(w.message))).toBe(true);
-  });
-
-  it("still exports best-effort AND writes JSONL when a run is cancelled", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const artifactDir = join(dir, "artifacts");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    const fake = createFakeRuntime(async () => ({ text: "ok" }));
-
-    const finishCalls: RunSummary[] = [];
-    const exporter: RunExporter = {
-      finish: (summary) => { finishCalls.push(summary); },
-    };
-
-    const controller = new AbortController();
-    controller.abort();
-
-    const harness = await createConfiguredAgentHarness({
-      config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability() }),
-      runtime: fake.runtime,
-      createRunId: () => "run-cancelled",
-      exporterFactory: () => exporter,
-    });
-
-    const response = await harness.run({ conversationId: "conv-cancelled", userMessage: "hi", abortSignal: controller.signal });
-
-    // Cancelled runs surface as a failure but the runtime is never invoked.
-    expect(response.failure?.kind).toBe("cancelled");
-    expect(fake.calls).toHaveLength(0);
-
-    // JSONL artifacts are written even for the cancelled path.
-    const artifactFiles = await readdir(artifactDir);
-    expect(artifactFiles).toContain("run-cancelled.summary.json");
-
-    // The cancelled summary was exported best-effort.
-    expect(finishCalls).toHaveLength(1);
-    expect(finishCalls[0]?.status).toBe("cancelled");
-  });
-
-  it("omits raw prompt and tool payloads from the exported body in metadata-only mode (default)", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const artifactDir = join(dir, "artifacts");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    const secret = "SUPER_SECRET_PROMPT_PAYLOAD";
-    const toolSecret = "TOOL_INPUT_SECRET_VALUE";
-
-    const fake = createFakeRuntime(async (_prompt, options) => {
-      options.onEvent?.({
-        type: "tool_use",
-        name: "Read",
-        input: { path: "/etc/passwd", note: toolSecret },
-      } as RuntimeEventLike);
-      return { text: "ok" };
-    });
-
-    const bodies: string[] = [];
-    const fetchImpl: typeof fetch = async (_url, init) => {
-      // The body is a binary OTLP protobuf; attribute keys/values are UTF-8, so
-      // decode the bytes to assert presence/absence of readable strings.
-      bodies.push(init?.body ? Buffer.from(init.body as Uint8Array).toString("utf8") : "");
-      return new Response(null, { status: 200 });
-    };
-
-    const responder = await createConfiguredAgentResponder({
-      config: monoConfig({
-        dir,
-        identityPath,
-        artifactDir,
-        // includeSensitiveData omitted -> defaults to false (metadata-only).
-        observability: phoenixObservability(),
-      }),
-      runtime: fake.runtime,
-      createRunId: () => "run-metadata-only",
-      exporterFactory: (cfg) => realPhoenixExporter(cfg, { fetch: fetchImpl }),
-    });
-
-    await responder.respond(
-      { conversationId: "conv-meta", text: secret, abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
-
-    expect(bodies.length).toBeGreaterThan(0);
-    const exported = bodies.join("\n");
-    expect(exported).not.toContain(secret);
-    expect(exported).not.toContain(toolSecret);
-    expect(exported).not.toContain("/etc/passwd");
-    // Identifiers are still exported.
-    expect(exported).toContain("run-metadata-only");
-  });
-
-  it("does NOT construct an exporter when config.observability.exporters is empty", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const artifactDir = join(dir, "artifacts");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    const fake = createFakeRuntime(async () => ({ text: "ok" }));
-
-    let factoryCalls = 0;
-
-    const responder = await createConfiguredAgentResponder({
-      config: monoConfig({ dir, identityPath, artifactDir, observability: { exporters: [] } }),
-      runtime: fake.runtime,
-      createRunId: () => "run-no-exporter",
-      exporterFactory: () => { factoryCalls += 1; return {}; },
-    });
-
-    const response = await responder.respond(
-      { conversationId: "conv-empty", text: "hi", abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
-
-    expect(response.text).toBe("ok");
-    expect(factoryCalls).toBe(0);
-
-    // JSONL is still written via the plain recorder.
-    const artifactFiles = await readdir(artifactDir);
-    expect(artifactFiles).toContain("run-no-exporter.summary.json");
-  });
-
-  it("threads source_id/source_label/config_path from observabilityContext onto root span attributes", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const artifactDir = join(dir, "artifacts");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    const fake = createFakeRuntime(async () => ({ text: "ok" }));
-
-    const bodies: string[] = [];
-    const fetchImpl: typeof fetch = async (_url, init) => {
-      // The body is a binary OTLP protobuf; attribute keys/values are UTF-8, so
-      // decode the bytes to assert presence/absence of readable strings.
-      bodies.push(init?.body ? Buffer.from(init.body as Uint8Array).toString("utf8") : "");
-      return new Response(null, { status: 200 });
-    };
-
-    const responder = await createConfiguredAgentResponder({
-      config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability() }),
-      runtime: fake.runtime,
-      createRunId: () => "run-ctx",
-      observabilityContext: {
-        sourceId: "src-123",
-        sourceLabel: "Local Agent Alpha",
-        configPath: "/home/me/mono-agent.config.json",
-      },
-      exporterFactory: (cfg) => realPhoenixExporter(cfg, { fetch: fetchImpl }),
-    });
-
-    await responder.respond(
-      { conversationId: "conv-ctx", text: "hi", abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
-
-    expect(bodies.length).toBeGreaterThan(0);
-    const exported = bodies.join("\n");
-    expect(exported).toContain("mono.agent.source_id");
-    expect(exported).toContain("src-123");
-    expect(exported).toContain("mono.agent.source_label");
-    expect(exported).toContain("Local Agent Alpha");
-    expect(exported).toContain("mono.agent.config_path");
-    expect(exported).toContain("/home/me/mono-agent.config.json");
-  });
-});
-
-function realPhoenixExporter(
-  config: PhoenixExporterConfig,
-  deps: { fetch: typeof fetch },
-): RunExporter {
-  return createPhoenixRunExporter(config, { fetch: deps.fetch });
-}
-
 /** Reads the JSONL recorder's `<runId>.summary.json` artifact for a given run. */
 async function readSummary(artifactDir: string, runId: string): Promise<RunSummary> {
   const files = await readdir(artifactDir);
@@ -2074,7 +1719,6 @@ function monoConfig(input: {
   readonly mcpCallTimeoutMs?: number;
   readonly mcpCallMaxTotalTimeoutMs?: number;
   readonly compaction?: NonNullable<MonoAgentConfig["runtime"]["compaction"]>;
-  readonly observability?: NonNullable<MonoAgentConfig["observability"]>;
 }): MonoAgentConfig {
   return {
     runtime: {
@@ -2129,7 +1773,6 @@ function monoConfig(input: {
     traceability: {
       registryDir: join(input.dir, "trace-sources"),
     },
-    ...(input.observability === undefined ? {} : { observability: input.observability }),
   };
 }
 

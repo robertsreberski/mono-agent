@@ -307,6 +307,7 @@ describe("guided init state transitions", () => {
     expect(output).toContain("mono-agent restart --config");
     expect(output).toContain("no login");
     expect(output).not.toContain("mono-agent tui");
+    expect(output).not.toContain("observability");
     expect(output).not.toContain("this computer only");
     await expect(access(join(process.cwd(), ".env"))).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -1385,6 +1386,44 @@ describe("guided init state transitions", () => {
       initialStep: 5,
     }));
     expect(mocks.runAllRouteReadinessProbe).not.toHaveBeenCalled();
+  });
+
+  it("does not offer a retired observability repair step", async () => {
+    const answers = defaultAnswers();
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers,
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      providerEnvironmentSecrets: {},
+      credentialStates: { codex: "credential_detected" },
+      piApiKeyPersistenceByProvider: {},
+      runProviderSetup: false,
+    });
+    mocks.validateMonoAgentFolder.mockResolvedValue({
+      ...readyReport(),
+      ok: false,
+      sections: [
+        ...readyReport().sections,
+        {
+          id: "observability",
+          label: "Retired exporter",
+          status: "waiting" as const,
+          details: ["Remove the retired exporter configuration."],
+        },
+      ],
+    });
+    mocks.runSetupRepairWizard.mockResolvedValue({ status: "cancelled" });
+    mocks.selectAnswers.push("edit", "cancel");
+
+    await expect(runCli(["init"])).resolves.toBe(1);
+
+    const recovery = mocks.selectCalls.find((call) =>
+      call.message === "Configuration preflight did not pass. What would you like to do?");
+    expect((recovery?.options as Array<{ label: string }>)[0]?.label).toBe("Edit setup choices");
+    const repairInput = mocks.runSetupRepairWizard.mock.calls[0]?.[0];
+    expect(repairInput).toEqual(expect.objectContaining({ answers }));
+    expect(repairInput).not.toHaveProperty("initialStep");
   });
 
   it("labels post-route staged recovery as final readiness validation", async () => {

@@ -527,27 +527,6 @@ describe("startMonoAgentApp", () => {
     expect(webhookStop).toHaveBeenCalledTimes(1);
   });
 
-  it("reports a configured exporter status when observability.exporters is set", async () => {
-    await writeConfig({
-      ...baseConfig(),
-      observability: {
-        exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces", includeSensitiveData: false }],
-      },
-    });
-
-    const app = await startMonoAgentApp({
-      cwd: dir,
-      env: {},
-    });
-
-    expect(app.exporterStatus.kind).toBe("configured");
-    if (app.exporterStatus.kind === "configured") {
-      expect(app.exporterStatus.endpoint).toBe("http://127.0.0.1:6006/v1/traces");
-      expect(app.exporterStatus.includeSensitiveData).toBe(false);
-    }
-    await app.stop();
-  });
-
   it("applies artifact retention once on startup", async () => {
     const artifactDir = join(dir, "artifacts");
     await mkdir(artifactDir, { recursive: true });
@@ -1487,80 +1466,6 @@ describe("startMonoAgentApp", () => {
     expect(managed.sandboxEngineFor(coreConfig)).toBe(managed.sandboxEngineFor(coreConfig));
     expect(unmanaged.sandboxEngineFor(coreConfig)?.id).toBe("srt");
     expect(injected.sandboxEngineFor(coreConfig)).toBe(unavailableSandboxEngine);
-  });
-
-  it("routes export warnings to lastWarning/lastError and persists them to the trace-source manifest", async () => {
-    await writeConfig({
-      ...baseConfig(),
-      observability: { exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }] },
-    });
-
-    const app = await startMonoAgentApp({
-      cwd: dir,
-      env: {},
-    });
-
-    const seam = app as unknown as {
-      recordExporterWarning(w: { phase: string; message: string }): void;
-      refreshTraceSource(reason: string): Promise<void>;
-    };
-    // Spy that calls through: lets us assert the auto-trigger AND deterministically
-    // await the otherwise fire-and-forget manifest writes (no polling, no races).
-    const refreshSpy = vi.spyOn(seam, "refreshTraceSource");
-    const flush = async (): Promise<void> => {
-      await Promise.all(refreshSpy.mock.results.map((r) => Promise.resolve(r.value).catch(() => undefined)));
-    };
-
-    // Serialize the two warnings so the stale snapshot of the first write cannot
-    // land after the second; in production at most one warning fires per run.
-    seam.recordExporterWarning({ phase: "finish", message: "export boom" });
-    await flush();
-    seam.recordExporterWarning({ phase: "fail", message: "fail boom" });
-    await flush();
-
-    // recordExporterWarning must route by phase and persist via refreshTraceSource.
-    expect(refreshSpy).toHaveBeenCalledWith("exporter-warning");
-    expect(app.exporterStatus.kind).toBe("configured");
-    if (app.exporterStatus.kind === "configured") {
-      expect(app.exporterStatus.lastWarning).toContain("export boom");
-      expect(app.exporterStatus.lastError).toContain("fail boom");
-    }
-
-    // The detached `mono-agent status` reads the manifest, not this live object,
-    // so the warning/error must reach the persisted trace-source metadata.
-    const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
-    const meta = sources[0]?.metadata?.observability as { lastWarning?: string; lastError?: string } | undefined;
-    expect(meta?.lastWarning).toContain("export boom");
-    expect(meta?.lastError).toContain("fail boom");
-
-    await app.stop();
-  });
-
-  it("reports a disabled exporter status when no exporter is configured", async () => {
-    await writeConfig({ ...baseConfig() });
-
-    const app = await startMonoAgentApp({
-      cwd: dir,
-      env: {},
-    });
-
-    expect(app.exporterStatus.kind).toBe("disabled");
-    await app.stop();
-  });
-
-  it("reports a failed exporter status for an invalid exporter config", async () => {
-    await writeConfig({
-      ...baseConfig(),
-      observability: { exporters: [{ type: "not-a-thing" }] },
-    });
-
-    const app = await startMonoAgentApp({
-      cwd: dir,
-      env: {},
-    });
-
-    expect(app.exporterStatus.kind).toBe("failed");
-    await app.stop();
   });
 
   it("reports waiting_for_config for every channel when the core config is incomplete", async () => {

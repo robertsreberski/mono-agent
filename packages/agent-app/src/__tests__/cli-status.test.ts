@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RecordedRunListItem } from "@mono-agent/observability";
 
 import { printAppStatus } from "../cli.js";
-import type { ExporterStatus, MonoAgentApp, SandboxStatus, TraceabilityStatus } from "../app.js";
+import type { MonoAgentApp, SandboxStatus, TraceabilityStatus } from "../app.js";
 import type { ChannelId, ChannelStatus } from "../channels.js";
 
 const OFF_SANDBOX_STATUS: SandboxStatus = {
@@ -19,7 +19,6 @@ const OFF_SANDBOX_STATUS: SandboxStatus = {
 };
 
 function fakeApp(
-  exporterStatus: ExporterStatus,
   traceabilityStatus?: TraceabilityStatus,
   selectedSkills: readonly string[] = [],
   sandboxStatus: SandboxStatus = OFF_SANDBOX_STATUS,
@@ -32,7 +31,6 @@ function fakeApp(
       registryDir: "/home/u/.mono-agent/trace-sources",
       artifactDir: "/work/demo/.mono-agent/artifacts",
     },
-    exporterStatus,
     sandboxStatus,
     selectedSkills,
     channelStatus: () => ({ kind: "disabled", reason: "n/a" }),
@@ -71,41 +69,10 @@ async function captureStatus(
   return chunks.join("");
 }
 
-describe("printAppStatus exporter line", () => {
-  it("prints the configured exporter endpoint, app url, and local-artifacts note", async () => {
-    const out = await captureStatus(
-      fakeApp({ kind: "configured", endpoint: "http://127.0.0.1:6006/v1/traces", includeSensitiveData: false }),
-    );
-    expect(out).toContain("observability");
-    expect(out).toContain("http://127.0.0.1:6006/v1/traces");
-    expect(out).toContain("app http://127.0.0.1:6006");
-    expect(out).toContain("JSONL artifacts remain local at /work/demo/.mono-agent/artifacts");
-    expect(out).not.toContain("[WARN] includeSensitiveData=true");
-  });
-
-  it("prints a warning when sensitive data export is enabled", async () => {
-    const endpoint = "http://127.0.0.1:6006/v1/traces";
-    const out = await captureStatus(
-      fakeApp({ kind: "configured", endpoint, includeSensitiveData: true }),
-    );
-    expect(out).toContain("[WARN] includeSensitiveData=true");
-    expect(out).toContain(endpoint);
-    expect(out).toContain("user input");
-    expect(out).toContain("assistant replies");
-    expect(out).toContain("tool args/results");
-    expect(out).toContain("system prompt");
-  });
-
-  it("prints a disabled exporter line when no exporter is configured", async () => {
-    const out = await captureStatus(fakeApp({ kind: "disabled", reason: "No observability exporter configured." }));
-    expect(out).toContain("observability");
-    expect(out).toContain("disabled: No observability exporter configured.");
-  });
-
+describe("printAppStatus", () => {
   it("prints effective sandbox state and unsafe fallback warning", async () => {
     const out = await captureStatus(
       fakeApp(
-        { kind: "disabled", reason: "No observability exporter configured." },
         undefined,
         [],
         {
@@ -135,7 +102,7 @@ describe("printAppStatus exporter line", () => {
 
   it("prints the path-free unsafe ProcessJobs protection warning", async () => {
     const app = {
-      ...fakeApp({ kind: "disabled", reason: "No observability exporter configured." }),
+      ...fakeApp(),
       processJobsProtection: {
         protection: "unsafe-unprotected" as const,
         retainedRoots: true,
@@ -155,7 +122,6 @@ describe("printAppStatus exporter line", () => {
   it("prints active skills and compact recent runs for foreground status", async () => {
     const out = await captureStatus(
       fakeApp(
-        { kind: "configured", endpoint: "http://127.0.0.1:6006/v1/traces", includeSensitiveData: false },
         undefined,
         ["context-example", "todoist-cli"],
       ),

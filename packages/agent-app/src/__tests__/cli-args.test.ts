@@ -503,7 +503,7 @@ describe("parseCliArgs", () => {
   });
 
   it("rejects --json on lifecycle/interactive commands with a usage error naming the JSON surfaces", () => {
-    for (const command of ["init", "auth", "start", "stop", "restart", "logs", "tui", "backfill"] as const) {
+    for (const command of ["init", "auth", "start", "stop", "restart", "logs", "tui"] as const) {
       expect(() => parseCliArgs([command, "--json"])).toThrow(/--json is not supported/u);
     }
     // The error names the supported surfaces so a caller knows where JSON lives.
@@ -521,24 +521,10 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["sandbox", "check", "--json"])).toThrow(/sandbox status/u);
   });
 
-  it("parses backfill flags (--run/--all/--since/--until/--include-memory/--dry-run)", () => {
-    expect(parseCliArgs(["backfill", "--all", "--dry-run"])).toMatchObject({
-      command: "backfill",
-      all: true,
-      dryRun: true,
-      includeMemory: false,
-    });
-    expect(
-      parseCliArgs(["backfill", "--run", "run-x", "--since", "2026-06-01", "--until", "2026-06-30", "--include-memory"]),
-    ).toMatchObject({
-      command: "backfill",
-      run: "run-x",
-      since: "2026-06-01",
-      until: "2026-06-30",
-      all: false,
-      dryRun: false,
-      includeMemory: true,
-    });
+  it("rejects backfill with retained local-history migration guidance", () => {
+    expect(() => parseCliArgs(["backfill", "--all"])).toThrow(/removed with first-party Phoenix\/OTLP export/u);
+    expect(() => parseCliArgs(["backfill", "--all"])).toThrow(/mono-agent runs.*runs audit.*runs report/u);
+    expect(helpTopicText("backfill")).toMatch(/known-good version you already operate/u);
   });
 
   it("parses the canonical `runs` command with report/audit modes and the merged flag surface", () => {

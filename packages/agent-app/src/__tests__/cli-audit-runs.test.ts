@@ -115,9 +115,6 @@ describe("runCli runs audit", () => {
       JSON.stringify({
         artifacts: { dir: "./custom-artifacts" },
         traceability: { staleAfterMs: 5000 },
-        observability: {
-          exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:9/v1/traces" }],
-        },
       }, null, 2),
       "utf8",
     );

@@ -83,10 +83,6 @@ describe("golden consumer config contracts", () => {
           "status": "waiting",
         },
         {
-          "id": "observability",
-          "status": "ok",
-        },
-        {
           "id": "runs",
           "status": "disabled",
         },
@@ -177,10 +173,6 @@ describe("golden consumer config contracts", () => {
         {
           "id": "sandbox",
           "status": "waiting",
-        },
-        {
-          "id": "observability",
-          "status": "ok",
         },
         {
           "id": "runs",

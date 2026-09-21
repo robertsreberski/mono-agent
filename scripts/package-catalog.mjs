@@ -147,16 +147,6 @@ export const packageCatalog = [
     publishable: true,
   },
   {
-    dir: "observability-phoenix",
-    name: "@mono-agent/observability-phoenix",
-    path: "extras/observability-phoenix",
-    category: "observability",
-    responsibility: "Exports recorded runs to Phoenix through bounded OTLP/HTTP protobuf requests when explicitly installed and configured.",
-    allowedDependencyCategories: ["core", "observability"],
-    publishable: true,
-    tier: "plugin",
-  },
-  {
     dir: "openai-api-adapter",
     name: "@mono-agent/openai-api-adapter",
     category: "communication",

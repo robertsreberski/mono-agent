@@ -73,10 +73,6 @@ The execution engine (`@mono-agent/agent-harness`) that runs a single turn again
 
 The string that names a provider and model together, in the form `<provider>:<model>`. Examples: `openai-codex:gpt-5.6-terra`, `opencode-go:kimi-k2.6`, `anthropic:claude-sonnet-4-6`, `ollama:gemma4:31b`. A legacy `pi:` prefix is canonicalized away. Set via `runtime.model` (`MONO_AGENT_MODEL`). See [Providers](/runtime/providers/).
 
-## OpenInference
-
-The semantic-convention vocabulary mono-agent uses when exporting traces (`openinference.span.kind` AGENT/LLM/TOOL/CHAIN, `input.value`/`output.value`, `openinference.project.name`). It is what makes Phoenix render runs as a semantic timeline. See [Phoenix and backfill](/observability/phoenix-and-backfill/).
-
 ## Provider session
 
 A continuous, per-conversation session against the provider, kept warm and evicted after idle time so follow-up turns resume without re-sending full history. Configured via `runtime.session.mode` and `runtime.session.idleTimeoutMs` (`MONO_AGENT_SESSION_MODE`, `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS`); pi-native sessions can be persisted to JSONL via `providers.piNative.piSessionsRoot`. See [Sessions and concurrency](/runtime/sessions-concurrency/).
@@ -123,7 +119,7 @@ SRT silently not covering it.
 
 ## Trace source
 
-The label/id identifying where a run originated (which channel or cron job), used to name the destination project on export (`openinference.project.name` defaults to the trace source). See [Artifacts and traces](/observability/artifacts-and-traces/).
+The label/id identifying where a run originated (which channel or cron job), used to correlate local run artifacts and operator discovery. See [Artifacts and traces](/observability/artifacts-and-traces/).
 
 ## Related references
 

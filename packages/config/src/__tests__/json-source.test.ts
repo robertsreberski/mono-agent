@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MonoAgentConfigError } from "../index.js";
 import { readMonoAgentConfigJson, writeMonoAgentConfigJson } from "../json-source.js";
+import type { MonoAgentConfigJson } from "../json-source.js";
 
 let dir: string;
 
@@ -98,6 +99,36 @@ describe("readMonoAgentConfigJson", () => {
    * everything left to fix. A `.find` reported one retired key per run, so a config with
    * four of them took four edit/re-run cycles to discover them all.
    */
+  it("accepts only the narrow inert observability compatibility shapes", async () => {
+    for (const observability of [{}, { exporters: [] }]) {
+      const path = join(dir, `inert-${JSON.stringify(observability).length}.json`);
+      await writeFile(path, JSON.stringify({ observability }), "utf8");
+      await expect(readMonoAgentConfigJson(path)).resolves.toMatchObject({ json: { observability } });
+    }
+  });
+
+  it.each([
+    null,
+    [],
+    "removed",
+    { exporters: null },
+    { exporters: {} },
+    { exporters: [{ type: "phoenix", headers: { authorization: "Bearer secret-token" } }] },
+    { unknown: "secret-token" },
+  ])("rejects active or malformed removed observability JSON secret-safely (%j)", async (observability) => {
+    const path = join(dir, "retired-observability.json");
+    await writeFile(path, JSON.stringify({ observability }), "utf8");
+    let rejection: unknown;
+    try {
+      await readMonoAgentConfigJson(path);
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toMatchObject({ code: "invalid_json", details: { path: "observability" } });
+    expect(String(rejection)).toContain("observability.exporters");
+    expect(String(rejection)).not.toContain("secret-token");
+  });
+
   it("reports every retired JSON key in one read, not just the first", async () => {
     const path = join(dir, "retired-many.json");
     await writeFile(
@@ -207,6 +238,30 @@ describe("writeMonoAgentConfigJson", () => {
       endpoint: "http://localhost:1234",
       apiKeyEnv: "LM_STUDIO_API_KEY",
       dim: 768,
+    });
+  });
+
+  it("preserves generic writer semantics while load rejects and an empty replacement repairs legacy exporters", async () => {
+    const path = join(dir, "config.json");
+    const activeLegacy = {
+      observability: {
+        exporters: [{ type: "phoenix", headers: { authorization: "Bearer secret-token" } }],
+      },
+    } as unknown as MonoAgentConfigJson;
+
+    await expect(writeMonoAgentConfigJson({ path, patch: activeLegacy })).resolves.toHaveProperty("version");
+    let rejection: unknown;
+    try {
+      await readMonoAgentConfigJson(path);
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toMatchObject({ code: "invalid_json", details: { path: "observability" } });
+    expect(String(rejection)).not.toContain("secret-token");
+
+    await writeMonoAgentConfigJson({ path, patch: { observability: { exporters: [] } } });
+    await expect(readMonoAgentConfigJson(path)).resolves.toMatchObject({
+      json: { observability: { exporters: [] } },
     });
   });
 

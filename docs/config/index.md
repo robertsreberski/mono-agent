@@ -73,7 +73,7 @@ Each top-level key maps to one capability area. All are optional except the two 
 | `tools` | Allow-all-by-default, runtime-enforced allow/deny policy; MCP servers | [Tool Policy](/tools/policy/), [MCP](/tools/mcp/) |
 | `continuations`, `interaction` | Durable asynchronous results, ask-the-user, and progress bridges | [Durable continuations](/tools/durable-continuations/), [Delivery and send tools](/channels/delivery-and-send-tools/) |
 | `sandbox` | Filesystem/network sandboxing for runtime commands | [Sandbox](/tools/sandbox/) |
-| `artifacts`, `traceability`, `observability` | JSONL run artifacts, trace registry, Phoenix exporter | [Observability](/observability/) |
+| `artifacts`, `traceability` | JSONL run artifacts and trace registry | [Observability](/observability/) |
 | `telegram`, `slack` | Built-in chat channels (opt-in via `enabled`) | [Channels](/channels/) |
 | `webhook`, `openaiApi`, `cron` | Built-in HTTP, OpenAI-compatible, and scheduled channels | [Channels](/channels/) |
 | `tui` | Default-on loopback operator endpoint | [Operator stream endpoint](/channels/tui/) |
