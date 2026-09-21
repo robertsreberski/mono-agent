@@ -413,6 +413,13 @@ describe("managed detached production execution", () => {
       if (ordering === "settled-before-stop") {
         releaseReasonIntent.resolve();
         await settlement;
+        // Check the failure outcome, not only the deliberately held publication.
+        expect(await f.instances.get("helper")).toMatchObject({ status: "running" });
+        await expect(send.execute("blocked-after-settlement", { id: "helper", message: "must not rerun", background: true })).rejects.toThrow();
+        await expect(f.instances.close("helper")).rejects.toThrow();
+        expect(run).toHaveBeenCalledOnce(); expect(f.wake).not.toHaveBeenCalled();
+        const failed = await f.store.get(receipt.details.jobId).catch(() => undefined);
+        if (failed) expect(failed.state).not.toBe("succeeded");
         stopping = f.service.stop();
         await expect(stopping).resolves.toBeUndefined();
       } else {
@@ -421,8 +428,10 @@ describe("managed detached production execution", () => {
         const stopError = await stopping.then(() => undefined, (error: unknown) => error);
         expect(stopError).toBeInstanceOf(AggregateError);
         expect((stopError as AggregateError).message).toBe("Process-job shutdown encountered failures.");
-        expect((stopError as AggregateError).errors).toEqual([registryFailure]);
+        expect((stopError as AggregateError).errors).toHaveLength(1);
+        expect((stopError as AggregateError).errors[0]).toBe(registryFailure);
       }
+      expect(run).toHaveBeenCalledOnce(); expect(f.wake).not.toHaveBeenCalled();
     } finally {
       releaseReasonIntent.resolve();
       if (settlement) await Promise.allSettled([settlement]);
