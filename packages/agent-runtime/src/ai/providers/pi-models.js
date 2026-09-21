@@ -126,7 +126,7 @@ export function resolvePiRuntimeModel(resolved, options) {
   }
   if (options.customProvider) return resolveCustomPiModel(resolved, options);
   // The upstream catalog is authoritative: the model resolves here exactly as
-  // pi-ai ships it (pi-ai 0.86.1 carries opencode-go:deepseek-v4.1-flash
+  // pi-ai ships it (pi-ai 0.87.0 carries opencode-go:deepseek-v4.1-flash
   // natively, retiring the mono-agent catalog backfill).
   const catalogModel = getPiModel(/** @type {*} */ (provider), model);
   if (!catalogModel) {

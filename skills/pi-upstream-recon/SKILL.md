@@ -41,7 +41,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 
 ## Version pins (keep them exact)
 
-- `packages/agent-runtime`: `@earendil-works/pi-ai` at `0.86.1`; `pi-agent-core` at `0.86.1`.
+- `packages/agent-runtime`: `@earendil-works/pi-ai` at `0.87.0`; `pi-agent-core` at `0.87.0`.
   Pi 0.85 replaces the old constructor/session surface with
   `AgentHarness.create()`, explicit operation `Context` arguments, and
   lane-scoped prompt, navigation, compaction, and event APIs. Keep that
@@ -52,7 +52,17 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   with `getCurrentTools()`/`getCurrentSystemPrompt()`, never `context.tools` /
   `context.systemPrompt`. Pi 0.86.1 also ships `opencode-go:deepseek-v4.1-flash`
   natively (the mono-agent catalog backfill is removed) and adds static `meta`
-  and `radius` provider catalogs (41 static ids).
+  and `radius` provider catalogs (41 static ids). Pi 0.87.0 removes
+  `shouldStopAfterTurn` from the low-level `AgentLoopConfig`, replaced by
+  `finishTurn` — but NEITHER hook is surfaced on `AgentHarnessOptions`
+  (`dist/harness/agent-harness.d.ts`), so the pi-native bridge keeps enforcing
+  the maxTurns ceiling locally in `stream-subscriber.js`. Pi 0.87.0 also stops
+  sending strict tool schemas to unknown OpenAI-compatible Chat Completions
+  endpoints (`supportsStrictMode` defaults false; capable built-ins keep strict
+  tools via catalog `compat`): mono-agent's custom-provider `compat` never
+  advertised strict support, so no bridge change. The new catalog
+  `inputLimits.images` resize metadata is unread by mono-agent (vision still
+  keys off `input` including `"image"`; attachment resizing stays Sharp-owned).
 - Pi's standalone OAuth registry remains unavailable at runtime.
   `packages/agent-runtime/src/ai/pi-oauth-compat.js` owns the compatibility
   surface over `provider.auth.oauth`; do not bypass it with private upstream
@@ -64,7 +74,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   `resolvePiOAuthApiKey`, and `loginPiOAuth`. The model APIs return cloned
   snapshots, and the OAuth APIs do not expose Pi provider instances.
   A consumer test that still imports Pi's faux helpers must use an isolated
-  fixture or the runtime's exact Pi AI `0.86.1` and Pi Agent Core `0.86.1`
+  fixture or the runtime's exact Pi AI `0.87.0` and Pi Agent Core `0.87.0`
   compatibility pins as development-only pins; a floating
   host range can otherwise satisfy Pi Agent Core's upstream dependency with a
   different copy.
@@ -72,7 +82,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   the upgraded representation when the resumed session next persists a turn.
   Preserve an end-to-end legacy-resume regression test instead of adding a
   second mono-agent-owned file migration.
-- A packed consumer should resolve Pi AI `0.86.1` from both the runtime and Pi
+- A packed consumer should resolve Pi AI `0.87.0` from both the runtime and Pi
   Agent Core. The release guard verifies both resolution paths independently so
   Core's upstream floating range cannot be rewired by a host dependency.
 
