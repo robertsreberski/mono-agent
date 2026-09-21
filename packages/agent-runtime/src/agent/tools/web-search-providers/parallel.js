@@ -5,7 +5,14 @@ import { canonicalizeSearchUrl } from "./shared.js";
 
 export const parallelProvider = {
   name: "parallel", batchesQueries: true,
-  filterSupport: { language: "advisory", timeRange: "advisory", country: "advisory" },
+  // domains: "operator" — the MCP web_search tool takes no structured domain
+  // filter, but honours site: tokens inside search_queries server-side
+  // (verified live 2026-09-21: a site:amazingribs.com query returned only
+  // amazingribs.com hosts while the same query without it did not). The
+  // structured source_policy/include_domains shape exists only on the keyed
+  // REST Search API, whose connection-level MCP overrides are ignored for
+  // anonymous free-tier requests, so the operator text stays the mechanism.
+  filterSupport: { language: "advisory", timeRange: "advisory", country: "advisory", domains: "operator" },
   configure: (input) => ({ value: { parallel: input?.parallel } }),
   eligibility: () => true,
   admission: () => ({ kind: "parallel", key: PARALLEL_MCP_URL, processPolicy: "endpoint" }),

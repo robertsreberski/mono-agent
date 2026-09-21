@@ -71,6 +71,28 @@ describe("Parallel Search MCP", () => {
     expect(searchPayload.results.length).toBeGreaterThan(0);
     expect(searchPayload.results.some((entry) => entry.published === "2025-07-14")).toBe(true);
   });
+  it("declares operator domain support: site: reaches search_queries verbatim and is reported", async () => {
+    const { fetchImpl, calls } = transport();
+    const result = await performWebSearch({ query: "site:docs.parallel.ai Search MCP" }, searchOptions(fetchImpl));
+    expect(result.outcome).toMatchObject({ status: "ok", backend: "parallel",
+      filterSupport: { domains: "operator", language: "not_requested", country: "not_requested", timeRange: "not_requested" } });
+    // The operator text is the enforcement mechanism over MCP: it must arrive
+    // verbatim rather than being stripped, relaxed, or mapped elsewhere.
+    expect(calls[0].arguments.search_queries).toEqual(["site:docs.parallel.ai Search MCP"]);
+    expect(calls[0].arguments.objective).toContain("Prefer these domains: docs.parallel.ai.");
+    const payload = JSON.parse(result.text);
+    expect(payload.coverage.filterSupport.domains).toBe("operator");
+    expect(payload.coverage.requestedFilters).toMatchObject({ domains: ["docs.parallel.ai"] });
+    expect(payload.coverage.requestedFilters.note).toContain("site: operators");
+  });
+  it("reports domain constraints on the failure path instead of degrading silently", async () => {
+    const { fetchImpl } = transport();
+    const result = await performWebSearch({ query: "site:elsewhere.example Search MCP" }, searchOptions(fetchImpl));
+    expect(result).toMatchObject({ error: true });
+    const payload = JSON.parse(result.text);
+    expect(payload.coverage.filterSupport).toMatchObject({ domains: "operator" });
+    expect(payload.coverage.requestedFilters).toMatchObject({ domains: ["elsewhere.example"] });
+  });
   it("counts a genuine empty answer once and never replays the batch for alternates", async () => {
     const { fetchImpl, calls } = transport({ structuredContent: { ...search, results: [] } });
     const result = await performWebSearch({ query: "nothing", alternate_queries: ["nothing else"] }, searchOptions(fetchImpl));
