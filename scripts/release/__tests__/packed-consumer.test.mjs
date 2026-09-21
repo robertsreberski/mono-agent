@@ -329,7 +329,7 @@ describe("packed consumer verification", () => {
     expect(() =>
       assertPackedDependencyResolution(fixture.consumerDir, fixture.packages),
     ).toThrow(
-      /Packed @mono-agent\/agent-app dependencies\.@earendil-works\/pi-ai must remain 0\.86\.1; found \^0\.86\.1/u,
+      /Packed @mono-agent\/agent-app dependencies\.@earendil-works\/pi-ai must remain 0\.87\.0; found \^0\.87\.0/u,
     );
   });
 
@@ -339,7 +339,7 @@ describe("packed consumer verification", () => {
     expect(() =>
       assertPackedDependencyResolution(fixture.consumerDir, fixture.packages),
     ).toThrow(
-      /resolved @earendil-works\/pi-ai@0\.80\.8 from @earendil-works\/pi-agent-core@0\.86\.1; expected 0\.86\.1/u,
+      /resolved @earendil-works\/pi-ai@0\.80\.8 from @earendil-works\/pi-agent-core@0\.87\.0; expected 0\.87\.0/u,
     );
   });
 
