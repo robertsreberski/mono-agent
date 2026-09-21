@@ -84,10 +84,9 @@ describe("wizard composer — schema + no secret leak", () => {
   it("strips secret inputs so a fake token never reaches the JSON", () => {
     const answers = defaultAnswers({
       channels: ["channel:telegram"],
-      memory: "memory:supermemory",
+      memory: "memory:lite",
       moduleInputs: {
         "channel:telegram": { telegramToken: "xoxb-FAKELEAK" },
-        "memory:supermemory": { supermemoryApiKey: "sk-FAKELEAK" },
       },
     });
     const plan = composeWizardPlan(answers, CTX);
@@ -206,9 +205,9 @@ describe("wizard composer — alwaysOnTools (auto-provisioned, not gated by allo
     expect(alwaysOnTools(defaultAnswers({ memory: "memory:bujo" }))).toEqual(["ReadSkill", "MemoryRecall"]);
   });
 
-  it("includes MemoryRecall for journal and supermemory too", () => {
+  it("includes MemoryRecall for journal and BuJo too", () => {
     expect(alwaysOnTools(defaultAnswers({ memory: "memory:journal" }))).toEqual(["ReadSkill", "MemoryRecall"]);
-    expect(alwaysOnTools(defaultAnswers({ memory: "memory:supermemory" }))).toEqual(["ReadSkill", "MemoryRecall"]);
+    expect(alwaysOnTools(defaultAnswers({ memory: "memory:bujo" }))).toEqual(["ReadSkill", "MemoryRecall"]);
   });
 
   it("includes recall for lite memory and keeps ReadSkill with no memory", () => {

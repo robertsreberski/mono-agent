@@ -42,15 +42,8 @@ export type MonoAgentMemoryEmbeddingsJson = {
   readonly circuitBreaker?: MonoAgentMemoryEmbeddingsCircuitBreakerJson;
 };
 
-/** JSON-serialisable shape for the Supermemory external-backend block. */
-export type MonoAgentMemorySupermemoryJson = {
-  readonly baseUrl?: string;
-  readonly apiKey?: string;
-  readonly apiKeyEnv?: string;
-  readonly container?: string;
-  readonly timeoutMs?: number;
-  readonly exposeMcpServer?: boolean;
-};
+/** @deprecated Compatibility tombstone. Only an exact empty object is accepted. */
+export type MonoAgentMemorySupermemoryJson = Readonly<Record<string, never>>;
 
 /** JSON-serialisable shape for memory consolidation config. */
 export type MonoAgentMemoryConsolidationJson = {

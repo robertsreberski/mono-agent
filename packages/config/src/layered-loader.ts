@@ -180,7 +180,7 @@ function remapJsonMemoryError(
 }
 
 type MemoryJson = NonNullable<MonoAgentConfigJson["memory"]>;
-type MemoryJsonBackend = "bujo" | "supermemory";
+type MemoryJsonBackend = "bujo";
 
 const MEMORY_JSON_SOURCES = {
   MONO_AGENT_MEMORY_BACKEND: jsonMemorySource("memory.backend", (memory) => memory.backend),
@@ -194,30 +194,6 @@ const MEMORY_JSON_SOURCES = {
   MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED: jsonMemorySource(
     "memory.rememberTool.enabled",
     (memory) => memory.rememberTool?.enabled,
-  ),
-  MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: jsonMemorySource(
-    "memory.supermemory.baseUrl",
-    (memory) => memory.supermemory?.baseUrl,
-  ),
-  MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY: jsonMemorySource(
-    "memory.supermemory.apiKey",
-    (memory) => memory.supermemory?.apiKey,
-  ),
-  MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV: jsonMemorySource(
-    "memory.supermemory.apiKeyEnv",
-    (memory) => memory.supermemory?.apiKeyEnv,
-  ),
-  MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER: jsonMemorySource(
-    "memory.supermemory.container",
-    (memory) => memory.supermemory?.container,
-  ),
-  MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS: jsonMemorySource(
-    "memory.supermemory.timeoutMs",
-    (memory) => memory.supermemory?.timeoutMs,
-  ),
-  MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER: jsonMemorySource(
-    "memory.supermemory.exposeMcpServer",
-    (memory) => memory.supermemory?.exposeMcpServer,
   ),
   MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: jsonMemorySource(
     "memory.embeddings.provider",
@@ -316,14 +292,6 @@ function jsonMemoryPathForSource(
 ): string | undefined {
   if (source === "MONO_AGENT_MEMORY_MODE") return undefined;
   if (
-    source === "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL"
-    && !hasValue(env.MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL)
-  ) {
-    return jsonSupermemoryRequiresBaseUrl(memory, env)
-      ? "memory.supermemory.baseUrl"
-      : undefined;
-  }
-  if (
     source === "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY"
     && !hasValue(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY)
   ) {
@@ -341,33 +309,6 @@ function jsonMemoryPathForSource(
     || mapping.read(memory) === undefined
   ) return undefined;
   return mapping.path;
-}
-
-function jsonSupermemoryRequiresBaseUrl(
-  memory: MemoryJson,
-  env: Record<string, string | undefined>,
-): boolean {
-  if (
-    !hasValue(env.MONO_AGENT_MEMORY_BACKEND)
-    && normalizeJsonEnum(memory.backend) === "supermemory"
-  ) return true;
-  const supermemory = memory.supermemory;
-  if (supermemory === undefined) return false;
-  const activatingStringLeaves = [
-    ["apiKey", "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY"],
-    ["apiKeyEnv", "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV"],
-    ["container", "MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER"],
-  ] as const;
-  if (activatingStringLeaves.some(([field, envName]) => (
-    hasJsonString(supermemory[field]) && !hasValue(env[envName])
-  ))) return true;
-  const activatingScalarLeaves = [
-    ["timeoutMs", "MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS"],
-    ["exposeMcpServer", "MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER"],
-  ] as const;
-  return activatingScalarLeaves.some(([field, envName]) => (
-    supermemory[field] !== undefined && !hasValue(env[envName])
-  ));
 }
 
 function jsonEmbeddingsCredentialPath(
@@ -488,11 +429,9 @@ function validateJsonMemoryBlocks(
     throwInvalidJsonValue("memory", "an object");
   }
 
-  // Strict BuJo tier blocks do not belong to external memory backends. Resolve
-  // backend precedence first (env wins directly here), then ignore stale
-  // local blocks exactly as the runtime and published schema do. Unknown
-  // backends are left to loadMonoAgentConfig so the authoritative invalid_env
-  // diagnostic is not masked by a lower-precedence JSON detail.
+  // Resolve backend precedence first (env wins directly here). Unknown backends
+  // are left to loadMonoAgentConfig so the authoritative invalid_env diagnostic
+  // is not masked by a lower-precedence JSON detail.
   const effectiveBackendValue: unknown = hasValue(env.MONO_AGENT_MEMORY_BACKEND)
     ? env.MONO_AGENT_MEMORY_BACKEND
     : memory?.backend;
@@ -500,7 +439,7 @@ function validateJsonMemoryBlocks(
     throwInvalidJsonValue("memory.backend", "a string");
   }
   const effectiveBackend = effectiveBackendValue?.trim() || "bujo";
-  if (effectiveBackend !== "bujo" && effectiveBackend !== "supermemory") return;
+  if (effectiveBackend !== "bujo") return;
   if (memory === undefined) return;
 
   validateJsonScalarFields(memory, "memory", env, [
@@ -524,19 +463,6 @@ function validateJsonMemoryBlocks(
       ["enabled", "MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED", "boolean"],
     ]);
   }
-
-  const supermemory = validateOptionalJsonObject(memory.supermemory, "memory.supermemory");
-  if (supermemory !== undefined) {
-    validateJsonScalarFields(supermemory, "memory.supermemory", env, [
-      ["baseUrl", "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL", "string"],
-      ["apiKey", "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY", "string"],
-      ["apiKeyEnv", "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV", "string"],
-      ["container", "MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER", "string"],
-      ["timeoutMs", "MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS", "number"],
-      ["exposeMcpServer", "MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER", "boolean"],
-    ]);
-  }
-  if (effectiveBackend === "supermemory") return;
 
   const embeddings = validateOptionalJsonObject(memory.embeddings, "memory.embeddings");
   if (embeddings !== undefined) {
@@ -908,24 +834,6 @@ export function layerJsonOntoEnv(
   }
   if (json.memory?.writeMode !== undefined) {
     fromJson.MONO_AGENT_MEMORY_WRITE_MODE = json.memory.writeMode;
-  }
-  if (json.memory?.supermemory?.baseUrl !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL = json.memory.supermemory.baseUrl;
-  }
-  if (json.memory?.supermemory?.apiKey !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY = json.memory.supermemory.apiKey;
-  }
-  if (json.memory?.supermemory?.apiKeyEnv !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV = json.memory.supermemory.apiKeyEnv;
-  }
-  if (json.memory?.supermemory?.container !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER = json.memory.supermemory.container;
-  }
-  if (json.memory?.supermemory?.timeoutMs !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS = String(json.memory.supermemory.timeoutMs);
-  }
-  if (json.memory?.supermemory?.exposeMcpServer !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER = String(json.memory.supermemory.exposeMcpServer);
   }
   if (json.memory?.embeddings?.provider !== undefined) {
     fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER = json.memory.embeddings.provider;

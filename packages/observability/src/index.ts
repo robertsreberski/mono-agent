@@ -161,7 +161,6 @@ export type {
   TraceSourceNoMemoryHealth,
   TraceSourceRegistryOptions,
   TraceSourceStatus,
-  TraceSourceSupermemoryMemoryHealth,
   UpdateTraceSourceOptions,
 } from "./types.js";
 export * from "./cache-usage.js";

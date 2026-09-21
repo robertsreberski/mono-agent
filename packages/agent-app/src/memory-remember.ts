@@ -21,8 +21,8 @@ export const REMEMBER_MAX_CHARACTERS = 500;
  *
  * `remember` alone is not enough to gate on: a read-only store still has the
  * method and would only ever throw, so the capability must be answered
- * affirmatively. Backends without a deterministic write path (Supermemory)
- * simply never implement `supportsRemember` and are excluded.
+ * affirmatively. Stores without a deterministic write path simply never
+ * implement `supportsRemember` and are excluded.
  */
 export interface RememberCapableStore {
   remember(

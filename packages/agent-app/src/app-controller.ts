@@ -727,15 +727,6 @@ export class MonoAgentAppController implements MonoAgentApp {
     service: MemoryRetrievalService | undefined,
   ): boolean { return traceabilityOperations.reportMemoryRecallStatus(this, coreConfig, service); }
 
-  /**
-   * Optional CLOUD-ONLY escape hatch: when `memory.supermemory.exposeMcpServer` is on, ALSO inject
-   * Supermemory's hosted MCP server alongside the in-app `MemoryRecall` tool. The hosted MCP cannot
-   * point at a self-hosted instance, so self-hosters rely on the in-app recall tool; this just adds
-   * the cloud server's richer tools for cloud deployments. Requires an apiKey (skipped + warned if
-   * absent).
-   */
-  supermemoryMcpRuntimeOptions(coreConfig: MonoAgentConfig): RuntimeOptionsExtension | undefined { return responderOperations.supermemoryMcpRuntimeOptions(this, coreConfig); }
-
   async adapterSendToolsRuntimeOptions(coreConfig: MonoAgentConfig): Promise<{
     readonly createExtension?: (
       targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,

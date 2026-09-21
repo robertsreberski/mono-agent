@@ -55,26 +55,7 @@ describe("memory command recall import boundary", () => {
     },
   );
 
-  it("keeps an irrelevant native recall-module import failure inside Supermemory search", async () => {
-    const dir = await agentDir({
-      backend: "supermemory",
-      mode: "lite",
-      writeMode: "capture",
-      recallTool: { enabled: false },
-      supermemory: {
-        baseUrl: "http://127.0.0.1:6767",
-        container: "agent-alpha",
-      },
-    });
 
-    const result = await capture(() => runMemoryCommand(commandInput(dir, ["search", "coffee"])));
-
-    expect(result).toEqual({
-      code: 1,
-      stdout: "",
-      stderr: expect.stringContaining(`memory search failed: ${sentinels.recallImport}`),
-    });
-  });
 });
 
 function commandInput(

@@ -208,7 +208,11 @@ describe("agent host composition helpers", () => {
         runtimeOptions: {
           allowedTools: ["CustomProposalTool"],
           mcpServers: {
-            configurator: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+            supermemory: {
+              type: "http",
+              url: "https://mcp.supermemory.ai/operator-authored",
+              headers: { Authorization: "Bearer operator-authored" },
+            },
           },
         },
       }),
@@ -222,7 +226,11 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[0]?.options.allowedTools).toEqual(["Read", "CustomProposalTool"]);
     expect(fake.calls[0]?.options.mcpServers).toMatchObject({
       "mono-agent-memory": { type: "http", url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\//u) },
-      configurator: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+      supermemory: {
+        type: "http",
+        url: "https://mcp.supermemory.ai/operator-authored",
+        headers: { Authorization: "Bearer operator-authored" },
+      },
     });
   });
 
@@ -349,6 +357,54 @@ describe("agent host composition helpers", () => {
       .toMatchObject({ status: "succeeded", conversationId: "telegram:42" });
     await cache.list(artifactDir);
     expect(scanCalls).toBe(2);
+  });
+
+  it("forwards load and completed-turn persistence to a neutral injected MemoryStore", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const load = vi.fn(async () => ({
+      kind: "markdown" as const,
+      content: "Neutral injected memory.",
+      source: "operator-store",
+      truncated: false,
+    }));
+    const persistCompletedTurn = vi.fn(async (turn: { runId: string; conversationId: string }) => ({
+      id: turn.runId,
+      runId: turn.runId,
+      conversationId: turn.conversationId,
+      source: "operator-store",
+      bytesWritten: 64,
+      admissionStatus: "admitted" as const,
+    }));
+    const memory: MemoryStore = { load, persistCompletedTurn };
+    const fake = createFakeRuntime(async () => ({ text: "Generic store answer" }));
+    const responder = await createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        artifactDir,
+        memoryPath: join(dir, "memory"),
+        memoryWriteMode: "append-host-summary",
+      }),
+      runtime: fake.runtime,
+      memory,
+      createRunId: () => "run-generic-store",
+    });
+
+    await responder.respond(
+      { conversationId: "generic-store", text: "Recall this", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(load).toHaveBeenCalledWith("generic-store", "Recall this", { turnId: "run-generic-store" });
+    expect(JSON.stringify(fake.calls[0])).toContain("Neutral injected memory.");
+    expect(persistCompletedTurn).toHaveBeenCalledWith(expect.objectContaining({
+      runId: "run-generic-store",
+      conversationId: "generic-store",
+      summary: expect.stringContaining("Generic store answer"),
+    }));
   });
 
   it("records memory persistence degradation in local artifacts", async () => {

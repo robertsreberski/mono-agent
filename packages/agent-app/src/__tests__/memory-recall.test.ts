@@ -12,7 +12,6 @@ import {
 } from "@mono-agent/memory/bujo";
 import type { BujoMemoryStore } from "@mono-agent/memory/bujo";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { SupermemoryMemoryStore } from "@mono-agent/memory-supermemory";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import { openMemoryDb } from "@mono-agent/memory/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -42,9 +41,9 @@ function configWithMemory(memory: MonoAgentConfig["memory"]): MonoAgentConfig {
   return { memory } as unknown as MonoAgentConfig;
 }
 
-/** Narrow recall settings to the bujo shape (asserts it is not the supermemory backend). */
+/** Narrow recall settings to the configured local shape. */
 function bujo(settings: MemoryRecallSettings | undefined): MemoryRecallBujoSettings {
-  if (settings === undefined || "supermemory" in settings) {
+  if (settings === undefined) {
     throw new Error("expected bujo recall settings");
   }
   return settings;
@@ -581,91 +580,7 @@ function deterministicEmbeddings(id: string, dim: number): EmbeddingProvider {
   };
 }
 
-function supermemoryConfig(overrides: {
-  readonly recallEnabled?: boolean;
-  readonly container?: string;
-  readonly apiKey?: string;
-  readonly apiKeyEnv?: string;
-  readonly timeoutMs?: number;
-  readonly sourceId?: string;
-}): MonoAgentConfig {
-  return {
-    memory: {
-      backend: "supermemory",
-      mode: "lite",
-      path: "/memory",
-      maxBytes: 64_000,
-      writeMode: "capture",
-      recallTool: { enabled: overrides.recallEnabled ?? true },
-      supermemory: {
-        baseUrl: "http://127.0.0.1:6767",
-        ...(overrides.container === undefined ? {} : { container: overrides.container }),
-        ...(overrides.apiKey === undefined ? {} : { apiKey: overrides.apiKey }),
-        ...(overrides.apiKeyEnv === undefined ? {} : { apiKeyEnv: overrides.apiKeyEnv }),
-        ...(overrides.timeoutMs === undefined ? {} : { timeoutMs: overrides.timeoutMs }),
-      },
-    },
-    traceability: { registryDir: "/trace", ...(overrides.sourceId === undefined ? {} : { sourceId: overrides.sourceId }) },
-  } as unknown as MonoAgentConfig;
-}
-
-describe("supermemory backend recall", () => {
-  it("defaults recall on when a programmatic Supermemory config omits recallTool", () => {
-    const config = supermemoryConfig({ sourceId: "agent-alpha" });
-    const memory = { ...config.memory };
-    delete memory.recallTool;
-
-    expect(resolveMemoryRecallSettings({ ...config, memory } as MonoAgentConfig)).toEqual({
-      supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
-    });
-  });
-
-  it("resolves supermemory recall settings with the container derived from the trace sourceId", () => {
-    const settings = resolveMemoryRecallSettings(supermemoryConfig({ sourceId: "agent-alpha" }));
-    expect(settings).toEqual({
-      supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
-    });
-  });
-
-  it("honors an explicit container over the trace identity", () => {
-    const settings = resolveMemoryRecallSettings(supermemoryConfig({ sourceId: "agent-alpha", container: "custom" }));
-    expect(settings).toEqual({
-      supermemory: { baseUrl: "http://127.0.0.1:6767", container: "custom" },
-    });
-  });
-
-  it("bypasses only the live tool gate for previews and preserves Supermemory precedence", () => {
-    const shared = {
-      container: "explicit-container",
-      sourceId: "trace-container",
-      apiKey: "resolved-sm-secret",
-      apiKeyEnv: "SUPERMEMORY_KEY",
-      timeoutMs: 4_500,
-    } as const;
-    const previewConfig = supermemoryConfig({
-      ...shared,
-      recallEnabled: false,
-    });
-    const liveConfig = supermemoryConfig({ ...shared, recallEnabled: true });
-
-    expect(resolveMemoryRecallSettings(previewConfig)).toBeUndefined();
-    const previewSettings = resolveMemoryRecallSettings(previewConfig, { ignoreRecallToolGate: true });
-    expect(previewSettings).toEqual(resolveMemoryRecallSettings(liveConfig));
-    expect(previewSettings).toEqual({
-      supermemory: {
-        baseUrl: "http://127.0.0.1:6767",
-        container: "explicit-container",
-        apiKey: "resolved-sm-secret",
-        timeoutMs: 4_500,
-      },
-    });
-  });
-
-  it("builds a SupermemoryMemoryStore from supermemory settings", async () => {
-    const store = await createRecallStore({ supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" } });
-    expect(store).toBeInstanceOf(SupermemoryMemoryStore);
-  });
-
+describe("backend-agnostic recall server", () => {
   it("answers a tools/call against a recall-capable store (backend-agnostic server)", async () => {
     const fakeStore = {
       recall: async () => [{ score: 0.9, record: { id: "m1", text: "user prefers dark mode" } }],

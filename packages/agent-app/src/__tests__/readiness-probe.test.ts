@@ -116,7 +116,7 @@ describe("readiness probe", () => {
       MONO_AGENT_MODEL: "openai-codex:not-the-selected-model",
       MONO_AGENT_FALLBACK_MODELS: "openai-codex:not-the-selected-fallback",
       MONO_AGENT_MEMORY_PATH: "/tmp/ambient-memory",
-      MONO_AGENT_MEMORY_BACKEND: "supermemory",
+      MONO_AGENT_MEMORY_BACKEND: "bujo",
       MONO_AGENT_SESSION_MODE: "per-message",
       MONO_AGENT_PI_SESSIONS_ROOT: "/tmp/ambient-sessions",
     };

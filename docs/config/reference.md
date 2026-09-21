@@ -85,12 +85,6 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `memory.path` | `string` | `MONO_AGENT_MEMORY_PATH` | unset | `./.mono-agent/memory` | Configures path for the memory section. |
 | `memory.recallTool.enabled` | `boolean` | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | true | `true` | Enables explicit memory reads: targeted MemoryRecall for every backend and chronological MemoryJournal when a local store supports it. Automatic recall is unchanged. |
 | `memory.rememberTool.enabled` | `boolean` | `MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED` | true | `true` | Enables the memory capability. |
-| `memory.supermemory.apiKey` | `string` | `MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY` | unset | `example` | Secret value for memory.supermemory.apiKey; prefer the env override. |
-| `memory.supermemory.apiKeyEnv` | `string` | `MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV` | unset | `example` | Secret value for memory.supermemory.apiKeyEnv; prefer the env override. |
-| `memory.supermemory.baseUrl` | `string` | `MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL` | unset | `example` | Configures supermemory.baseUrl for the memory section. |
-| `memory.supermemory.container` | `string` | `MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER` | unset | `example` | Configures supermemory.container for the memory section. |
-| `memory.supermemory.exposeMcpServer` | `boolean` | `MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER` | false | `true` | Configures supermemory.exposeMcpServer for the memory section. |
-| `memory.supermemory.timeoutMs` | `integer` | `MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS` | 10000 | `10000` | Configures supermemory.timeoutMs for the memory section. |
 | `memory.writeMode` | `string` | `MONO_AGENT_MEMORY_WRITE_MODE` | disabled | `disabled` | Configures writeMode for the memory section. |
 | `monitors` | `object` | `--` | unset | `{}` | Deprecated compatibility object. The whole object, including unknown nested keys, is accepted and ignored. Use background process jobs for finite work. |
 | `openaiApi.allowNonLoopback` | `boolean` | `MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK` | false | `true` | Configures allowNonLoopback for the openaiApi section. |

@@ -10,7 +10,6 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { MemorySearchError } from "@mono-agent/memory/search";
 import type { MemorySearchErrorCode } from "@mono-agent/memory/search";
@@ -438,8 +437,7 @@ interface MemoryImportPlan extends MemoryImportPlanPayload {
 /** Shared precondition: the built-in BuJo backend with a usable embedding provider. */
 function bundleMemorySettings(context: MemoryCommandContext): NonNullable<MonoAgentConfig["memory"]> | undefined {
   const memory = context.config.memory;
-  if (memory === undefined || (memory.backend ?? "bujo") === "supermemory"
-    || memory.mode !== "bujo" || memory.embeddings === undefined) {
+  if (memory === undefined || memory.mode !== "bujo" || memory.embeddings === undefined) {
     return undefined;
   }
   return memory;
@@ -619,7 +617,7 @@ async function applyMemoryImportPlan(
   // independently enforces the authoritative shared-root writer lease.
   await assertNoLiveConfiguredAgent(context.configPath, await memoryRegistryDirs(context));
   const settings = previewRecallSettings(context.config);
-  if (settings === undefined || "supermemory" in settings || settings.embeddings === undefined) {
+  if (settings === undefined || settings.embeddings === undefined) {
     throw new MemoryBundleOperationError("import_config_invalid");
   }
   const { createMemoryEmbeddingProvider } = await loadMemoryRecallModule();
@@ -934,8 +932,7 @@ async function runReplayAdoption(
   json: boolean,
 ): Promise<number> {
   const memory = context.config.memory;
-  if (memory === undefined || (memory.backend ?? "bujo") === "supermemory"
-    || memory.mode !== "bujo" || memory.embeddings === undefined) {
+  if (memory === undefined || memory.mode !== "bujo" || memory.embeddings === undefined) {
     writeReplayAdoptionCliFailure(json, "replay_adoption_requires_bujo");
     return 1;
   }
@@ -1067,8 +1064,7 @@ async function runMemoryForget(
 ): Promise<number> {
   const operation = rest[0] as "prepare" | "apply" | "restore";
   const memory = context.config.memory;
-  if (memory === undefined || (memory.backend ?? "bujo") === "supermemory"
-    || memory.mode !== "bujo" || memory.embeddings === undefined) {
+  if (memory === undefined || memory.mode !== "bujo" || memory.embeddings === undefined) {
     writeMemoryForgetFailure(input.json, operation, "forget_requires_bujo");
     return 1;
   }
@@ -1158,7 +1154,7 @@ async function applyMemoryForgetPlan(
   // independently enforces the authoritative shared-root writer lease.
   await assertNoLiveConfiguredAgent(context.configPath, await memoryRegistryDirs(context));
   const settings = previewRecallSettings(context.config);
-  if (settings === undefined || "supermemory" in settings || settings.embeddings === undefined) {
+  if (settings === undefined || settings.embeddings === undefined) {
     throw new MemoryForgetOperationError("forget_apply_failed");
   }
   const { createMemoryEmbeddingProvider } = await loadMemoryRecallModule();
@@ -1425,8 +1421,8 @@ type StrictMemoryHealthReport =
     }
   | {
       readonly schemaVersion: typeof MEMORY_HEALTH_SCHEMA_VERSION;
-      readonly backend: "none" | "supermemory";
-      readonly status: "not_configured" | "unknown";
+      readonly backend: "none";
+      readonly status: "not_configured";
       readonly checkedAt: string;
       readonly issues: readonly [];
       readonly counts: typeof EMPTY_HEALTH_COUNTS;
@@ -1449,18 +1445,6 @@ async function runStrictAudit(context: MemoryCommandContext, json: boolean): Pro
     const result = notConfiguredHealthReport();
     write(json, result, () => renderStrictAudit(result));
     return 0;
-  }
-  if ((memory.backend ?? "bujo") === "supermemory") {
-    const result: StrictMemoryHealthReport = {
-      schemaVersion: MEMORY_HEALTH_SCHEMA_VERSION,
-      backend: "supermemory",
-      status: "unknown",
-      checkedAt: new Date().toISOString(),
-      issues: [],
-      counts: EMPTY_HEALTH_COUNTS,
-    };
-    write(json, result, () => renderStrictAudit(result));
-    return 1;
   }
 
   let result: StrictMemoryHealthReport;
@@ -1514,10 +1498,6 @@ async function runIntakeInspect(
     writeNoMemory(context.configPath, json);
     return 0;
   }
-  if ((memory.backend ?? "bujo") === "supermemory") {
-    process.stderr.write(ui.errorLine("memory inspect is available only for the built-in memory intake."));
-    return 1;
-  }
   try {
     const { inspectCompletedTurnIntake } = await loadBujoModule();
     const inspection = inspectCompletedTurnIntake(memory.path);
@@ -1541,10 +1521,6 @@ async function runIntakeMutation(
   if (memory === undefined) {
     writeNoMemory(context.configPath, json);
     return 0;
-  }
-  if ((memory.backend ?? "bujo") === "supermemory") {
-    process.stderr.write(ui.errorLine(`memory ${operation} is available only for the built-in memory intake.`));
-    return 1;
   }
   try {
     await assertNoLiveConfiguredAgent(context.configPath, await memoryRegistryDirs(context));
@@ -1611,15 +1587,9 @@ async function runIndexTransition(
     writeNoMemory(context.configPath, json);
     return 0;
   }
-  if ((memory.backend ?? "bujo") === "supermemory") {
-    process.stderr.write(ui.errorLine(
-      `mono-agent memory ${operation} is available only for the built-in Lite, Journal, and BuJo stores; Supermemory manages its remote index.`,
-    ));
-    return 1;
-  }
 
   const settings = previewRecallSettings(context.config);
-  if (settings === undefined || "supermemory" in settings) {
+  if (settings === undefined) {
     process.stderr.write(ui.errorLine(`Unable to resolve the configured built-in memory store for ${operation}.`));
     return 1;
   }
@@ -1667,24 +1637,6 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
   const memory = context.config.memory;
   if (memory === undefined) {
     writeNoMemory(context.configPath, json);
-    return 0;
-  }
-  if ((memory.backend ?? "bujo") === "supermemory") {
-    const result = {
-      configured: true,
-      backend: "supermemory",
-      metadataOnly: true,
-      counts: null,
-      bytes: null,
-      duplicates: null,
-      vectorCoverage: null,
-      accessConcentration: null,
-      backlog: { known: false, completedTurnIntake: null, vectorIndex: null },
-      latency: { known: false, searchP50Ms: null, searchP95Ms: null, indexingMs: null },
-      cost: { known: false, totalUsd: null, embeddingCalls: null, llmCalls: null, tokens: null },
-      notes: ["Remote backend health metadata is not exposed by the configured client."],
-    };
-    write(json, result, () => renderAudit(result));
     return 0;
   }
 
@@ -1902,11 +1854,6 @@ async function runStats(context: MemoryCommandContext, input: RunMemoryCommandIn
     writeNoMemory(context.configPath, input.json);
     return 0;
   }
-  if ((memory.backend ?? "bujo") === "supermemory") {
-    const supermemory = supermemoryStats(context.config);
-    write(input.json, supermemory, () => renderSupermemoryStats(supermemory));
-    return 0;
-  }
 
   const root = memory.path;
   const { resolveActiveMemoryDbPath } = await loadBujoModule();
@@ -1973,16 +1920,6 @@ async function runShow(context: MemoryCommandContext, date: string, json: boolea
     writeNoMemory(context.configPath, json);
     return 0;
   }
-  if ((memory.backend ?? "bujo") === "supermemory") {
-    const result = {
-      configured: true,
-      backend: "supermemory",
-      available: false,
-      message: "Supermemory stores memories remotely; local daily logs are not available.",
-    };
-    write(json, result, () => `${ui.banner("mono-agent memory", "daily log")}\n${result.message}\n`);
-    return 0;
-  }
 
   const found = await findDailyFile(memory.path, date);
   if (found === undefined) {
@@ -2029,12 +1966,10 @@ async function runSearch(
     writeNoMemory(context.configPath, input.json);
     return 0;
   }
-  if (!("supermemory" in settings)) {
-    const { resolveActiveMemoryDbPath } = await loadBujoModule();
-    const dbPath = await resolveActiveMemoryDbPath(settings.root);
-    settings = { ...settings, dbPath };
-  }
-  if (!("supermemory" in settings) && !(await exists(settings.dbPath ?? join(settings.root, "memory.db")))) {
+  const { resolveActiveMemoryDbPath } = await loadBujoModule();
+  const dbPath = await resolveActiveMemoryDbPath(settings.root);
+  settings = { ...settings, dbPath };
+  if (!(await exists(settings.dbPath ?? join(settings.root, "memory.db")))) {
     const dbPath = settings.dbPath ?? join(settings.root, "memory.db");
     const result = {
       configured: true,
@@ -2063,7 +1998,7 @@ async function runSearch(
   }
   const result = {
     configured: true,
-    backend: "supermemory" in settings ? "supermemory" : "bujo",
+    backend: "bujo",
     query,
     ...(degraded === undefined ? {} : { degraded }),
     hits: hits.map((hit) => ({
@@ -2083,16 +2018,6 @@ async function runTop(context: MemoryCommandContext, input: RunMemoryCommandInpu
   const memory = context.config.memory;
   if (memory === undefined) {
     writeNoMemory(context.configPath, input.json);
-    return 0;
-  }
-  if ((memory.backend ?? "bujo") === "supermemory") {
-    const result = {
-      configured: true,
-      backend: "supermemory",
-      available: false,
-      message: "Supermemory does not expose a local salience ranking; use memory search instead.",
-    };
-    write(input.json, result, () => `${ui.banner("mono-agent memory", "top")}\n${result.message}\n`);
     return 0;
   }
   const { resolveActiveMemoryDbPath } = await loadBujoModule();
@@ -2169,7 +2094,7 @@ export function isFtsFallbackEligible(
   settings: MemoryRecallSettings,
   error: unknown,
 ): settings is MemoryRecallBujoSettings {
-  if ("supermemory" in settings || settings.embeddings === undefined) {
+  if (settings.embeddings === undefined) {
     return false;
   }
   if (isIntrinsicMemorySearchError(error)) {
@@ -2331,32 +2256,6 @@ function effectiveLocalTier(memory: NonNullable<MonoAgentConfig["memory"]>): str
   return memory.mode;
 }
 
-function supermemoryStats(config: MonoAgentConfig): {
-  readonly configured: true;
-  readonly backend: "supermemory";
-  readonly baseUrl: string | undefined;
-  readonly container: string | undefined;
-  readonly known: readonly string[];
-  readonly unavailable: readonly string[];
-} {
-  return {
-    configured: true,
-    backend: "supermemory",
-    baseUrl: config.memory?.supermemory?.baseUrl,
-    container: config.memory === undefined ? undefined : resolveSupermemoryContainer(config),
-    known: ["backend", "baseUrl", "container"],
-    unavailable: [
-      "local counts",
-      "local size",
-      "last capture",
-      "last consolidation",
-      "top entities",
-      "highest-salience memories",
-      "daily markdown logs",
-    ],
-  };
-}
-
 async function findDailyFile(root: string, date: string): Promise<string | undefined> {
   const candidates = [join(root, "daily", `${date}.md`), join(root, `${date}.md`)];
   for (const candidate of candidates) {
@@ -2508,18 +2407,6 @@ function write<T>(json: boolean, value: T, human: () => string): void {
   process.stdout.write(json ? `${JSON.stringify(value, null, 2)}\n` : human());
 }
 
-function renderSupermemoryStats(stats: ReturnType<typeof supermemoryStats>): string {
-  return [
-    ui.banner("mono-agent memory", "stats"),
-    ui.keyValue([
-      ["backend", "supermemory"],
-      ["base URL", stats.baseUrl ?? "unknown"],
-      ["container", stats.container ?? "unknown"],
-    ], 2),
-    "Remote-only fields not known locally:\n",
-    ...stats.unavailable.map((item) => `  - ${item}\n`),
-  ].join("");
-}
 
 function renderAudit(result: {
   readonly backend: string;

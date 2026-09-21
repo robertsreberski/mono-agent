@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { ALLOW_ALL_TOOLS, loadMonoAgentConfig, MonoAgentConfigError, redactMonoAgentConfig, resolveConfiguredProviders } from "../index.js";
+import type { MemoryBackend } from "../index.js";
 
 const baseEnv = {
   MONO_AGENT_MODEL: "pi:openai-codex:gpt-5.5",
@@ -30,6 +31,14 @@ const RETIRED_SUPERMEMORY_ENV_CASES = [
 ] as const;
 
 describe("loadMonoAgentConfig", () => {
+  it("exposes only BuJo as the active memory backend type", () => {
+    const supportedBackend: MemoryBackend = "bujo";
+    // @ts-expect-error Supermemory is a retired input tombstone, not an active backend.
+    const retiredBackend: MemoryBackend = "supermemory";
+    expect(supportedBackend).toBe("bujo");
+    expect(retiredBackend).toBe("supermemory");
+  });
+
   it("loads required runtime, context, tools, memory, and artifact config", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
@@ -2310,7 +2319,6 @@ describe("loadMonoAgentConfig", () => {
       env: { ...baseEnv, ...journalMemoryPrerequisite, MONO_AGENT_MEMORY_PATH: "./mem", MONO_AGENT_MEMORY_MODE: "journal" },
     });
     expect(config.memory?.backend).toBe("bujo");
-    expect(config.memory?.supermemory).toBeUndefined();
   });
 
   it.each(["supermemory", "  supermemory  "])(

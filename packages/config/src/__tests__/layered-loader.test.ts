@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MonoAgentConfigError } from "../config.js";
+import type { MonoAgentConfigJson } from "../json-source.js";
 import { loadMonoAgentConfigWithSources, layerJsonOntoEnv } from "../layered-loader.js";
 
 let dir: string;
@@ -454,7 +455,7 @@ describe("layerJsonOntoEnv", () => {
             exposeMcpServer: true,
           },
         },
-      },
+      } as unknown as MonoAgentConfigJson,
       {},
     )).toThrowError(expect.objectContaining({
       code: "invalid_json",
