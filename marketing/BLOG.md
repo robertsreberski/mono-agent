@@ -140,6 +140,8 @@ pnpm exec playwright install chromium  # once per machine
 pnpm run test:browser        # accessibility + responsive audit of the build
 ```
 
-All four gates must pass. The collection ships empty and the site builds,
+All four gates must pass. After removing or renaming a post folder, delete
+`node_modules/.astro` (Astro's content-layer data store) before rebuilding,
+otherwise the stale entry still references the deleted images. The collection ships empty and the site builds,
 tests, and reads intentionally with zero posts (“No articles yet”); the
 first post arrives as its own stacked change on top of this scaffold.
