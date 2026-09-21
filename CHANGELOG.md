@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Clamp over-long BuJo capture memory text on the host instead of rejecting the
+  whole extraction. The structured-output capture schema enforced the
+  160-code-point bound as a tool-call constraint, so one long sentence failed
+  validation and discarded every other memory submitted with it; with the
+  memory LLM limited to a single turn the model could not act on the validation
+  feedback, and the run surfaced the misleading `max turns reached`. Memory text
+  beyond the bound is now trimmed, restoring the tolerance the pre-structured
+  capture path applied. Trimming, character-class, and emptiness rules stay
+  strict, and structural fields such as entity ids are still rejected rather
+  than truncated.
+
 - Raise the configurable ceiling for `subagents.maxTurns` and
   `subagents.definitions[].maxTurns` from 200 to 400. Long single-run
   implementation work could exhaust its turn budget while an operator was

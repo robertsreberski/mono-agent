@@ -1,5 +1,6 @@
 import {
   MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS,
+  clampCaptureText,
   type CandidateMemory,
 } from "./distill.js";
 import type { ExtractedEntity, ExtractedRelation } from "./entities.js";
@@ -31,7 +32,7 @@ const SAFE_TEXT_SCHEMA = (maxLength: number): Readonly<Record<string, unknown>> 
 });
 
 /** Shape guidance only; the strict parser below remains the semantic authority. */
-const STRICT_CAPTURE_OUTPUT_SCHEMA = {
+export const STRICT_CAPTURE_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["memories", "entities", "relations"],
@@ -46,7 +47,9 @@ const STRICT_CAPTURE_OUTPUT_SCHEMA = {
         required: ["type", "text", "salience", "isInsight", "entityIds"],
         properties: {
           type: { type: "string", enum: ["task", "event", "note"] },
-          text: SAFE_TEXT_SCHEMA(MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS),
+          // No maxLength: an over-long body is clamped by the host, because a
+          // tool-call rejection would discard every sibling memory with it.
+          text: { type: "string", minLength: 1 },
           salience: { type: "number", minimum: 0, maximum: 1 },
           isInsight: { type: "boolean" },
           entityIds: {
@@ -122,7 +125,7 @@ Rules:
 - All three root arrays are required, even when empty. Every shown object field is required; emit no other fields.
 - Every memory object has exactly type, text, salience, isInsight, and entityIds. type is task, event, or note; isInsight is a JSON boolean.
 - salience MUST be a finite JSON number from 0 to 1 inclusive, such as 0.8. Never use a 0-10, 0-100, or percentage scale.
-- LENGTH IS A HARD LIMIT, NOT A TARGET: every memory text is at most ${MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS} Unicode code points. Aim for ${Math.floor(MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS * 0.75)}. One memory a single code point over discards this entire response — every other memory in it is lost too. Split a long fact into two shorter facts, or keep only its durable half. Count before you emit.
+- LENGTH: every memory text is at most ${MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS} Unicode code points. Aim for ${Math.floor(MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS * 0.75)}. Text beyond the bound is trimmed by the host, so an overrun silently loses its own tail — split a long fact into two shorter facts, or keep only its durable half, rather than relying on the trim.
 - Every memory text is one distinct durable fact: non-empty, no leading/trailing whitespace, no control, formatting, surrogate, line-separator, or paragraph-separator characters, and no reserved <!--mem delimiter.
 - Every entity object has exactly id, name, and type. id is lowercase ASCII type:name-kebab including the colon, at most 96 characters, and its 1-32 character prefix before : exactly matches type. name is non-empty, at most 160 Unicode code points, trimmed, and contains none of the unsafe character classes forbidden for memory text.
 - Every relation object has exactly src, dst, and relation. src and dst are copied entity ids. relation is non-empty, at most 96 characters, and contains lowercase ASCII letters/digits separated only by single spaces or hyphens.
@@ -230,7 +233,7 @@ function strictCandidate(value: unknown, index: number, entityIds: ReadonlySet<s
   if (value.type !== "task" && value.type !== "event" && value.type !== "note") {
     throw outputError("capture-extract", `memory ${index} has an unknown type`);
   }
-  const text = strictText(value.text, MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS, `memory ${index} text`);
+  const text = clampedCaptureText(value.text, `memory ${index} text`);
   if (text.includes("<!--mem")) throw outputError("capture-extract", `memory ${index} text contains a reserved delimiter`);
   if (typeof value.salience !== "number" || !Number.isFinite(value.salience)
     || value.salience < 0 || value.salience > 1) {
@@ -275,6 +278,23 @@ function strictRelation(value: unknown, index: number, entityIds: ReadonlySet<st
     throw outputError("capture-extract", `relation ${index} references invalid graph data`);
   }
   return { src, dst, relation };
+}
+
+/**
+ * Memory bodies are free text, so an overrun is clamped rather than rejected:
+ * rejecting one long sentence discards every sibling memory in the same
+ * response. Trimming, character classes, and emptiness stay strict, because
+ * those signal malformed or unsafe output rather than a sentence run long.
+ */
+function clampedCaptureText(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0 || value.trim().length === 0
+    || value !== value.trim()
+    || /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(value)) {
+    throw outputError("capture-extract", `${label} is invalid`);
+  }
+  const clamped = clampCaptureText(value);
+  if (clamped.length === 0) throw outputError("capture-extract", `${label} is invalid`);
+  return clamped;
 }
 
 function strictText(value: unknown, maxCodePoints: number, label: string): string {
