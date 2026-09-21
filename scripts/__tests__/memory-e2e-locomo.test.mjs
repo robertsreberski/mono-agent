@@ -2,7 +2,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { contextFor, sourceOnly } from "../lib/memory-e2e-dataset.mjs";
+import { contextFor, digest, sourceOnly } from "../lib/memory-e2e-dataset.mjs";
 import { loadReusableArtifact } from "../lib/memory-e2e-checkpoint.mjs";
 import {
   LOCOMO_ADAPTER_PROTOCOL,
@@ -140,8 +140,8 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
     expect(plan.perCall).toMatchObject({
       readerMaxTurns: 4, readerEstimatedInputTokens: 98_304, extractorEstimatedInputTokens: 8_192,
       reconciliationEstimatedInputTokens: 29_897, callTimeoutMs: 180_000,
-      captureTimeoutSettlementMs: 30_000, readinessTimeoutMs: 6_840_000,
-      captureModelOutputAttempts: 16,
+      embeddingTimeoutMs: 30_000, captureTimeoutSettlementMs: 30_000,
+      readinessTimeoutMs: 6_840_000, captureModelOutputAttempts: 16,
     });
     expect(plan.locomo.captureRecovery).toEqual({
       policy: "native_persisted_exponential_v1", maxAttempts: 16, retryBaseMs: 60_000,
@@ -152,6 +152,26 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
       timeoutPolicy: "settled_capture_runtime_only", timeoutSettlementMs: 30_000,
       timeoutPayloadPolicy: "discard_late_payload_without_partial_write",
     });
+    const protocolQuestionIdentity = corpus.groups[0].questions.map((question) => ({
+      id: question.id,
+      originalQaIndex: question.evaluation.originalQaIndex,
+      selectionHash: question.evaluation.selectionHash,
+    }));
+    expect(plan.locomo.protocolIdentity).toBe(digest({
+      adapter: LOCOMO_ADAPTER_PROTOCOL,
+      experiment: LOCOMO_DEVELOPMENT_EXPERIMENT,
+      captureRecovery: plan.locomo.captureRecovery,
+      codeRevision: "BASE",
+      corpusSha256: "fixture",
+      partitionRank: 5,
+      sourceIdentity: plan.locomo.source.identitySha256,
+      questionIdentity: protocolQuestionIdentity,
+      profile: plan.profile,
+      perCall: plan.perCall,
+      arms: plan.arms,
+      readerPrompt: plan.readerPrompt,
+      evaluator: plan.locomo.evaluator.identity,
+    }));
     expect(plan.locomo.executionGate.largestReservedPromptAndOutput).toBe(98_816);
     expect(plan.locomo.ceilings.captureAdmissions).toBe(corpus.groups[0].source.turns.length);
     expect(plan.locomo.ceilings.captureModelSteps).toBe(plan.locomo.ceilings.captureAdmissions * 32);

@@ -9,6 +9,8 @@ export const LIMITS = Object.freeze({
   development: { chatSteps: 46, embeddingCalls: 100, estimatedInputTokens: 250000, outputTokens: 50000, runtimeMs: 900000 },
   evaluation: { chatSteps: 138, embeddingCalls: 300, estimatedInputTokens: 750000, outputTokens: 150000, runtimeMs: 2400000 },
 });
+export const DEFAULT_EMBEDDING_TIMEOUT_MS = 30_000;
+
 export function digest(value) {
   return createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
 }
@@ -181,7 +183,7 @@ export function makePlan({ corpus, sha256, split = "development", profile = null
     groupIds: groups.map((group) => group.id), arms, repeats: 1, order: "fixed-listed-order",
     profile: serializableProfile(profile), limits,
     workload: { questions: questions.length, trials: questions.length * arms.length, historicalTurnsPerMemoryArm: turns, captureStepsMaximum: turns * 2, readerStepsMaximum: questions.length * arms.length * 3 },
-    perCall: { readerMaxTurns: 3, readerOutputTokens: 512, extractorOutputTokens: 2048, readerEstimatedInputTokens: 16384, extractorEstimatedInputTokens: 8192, readerHistoryHeadroomMessages: 8, framingAndToolAllowance: 4096, callTimeoutMs: 60000, embeddingTimeoutMs: 10000, readinessTimeoutMs: 120000, cleanupTimeoutMs: 10000, ...perCall },
+    perCall: { readerMaxTurns: 3, readerOutputTokens: 512, extractorOutputTokens: 2048, readerEstimatedInputTokens: 16384, extractorEstimatedInputTokens: 8192, readerHistoryHeadroomMessages: 8, framingAndToolAllowance: 4096, callTimeoutMs: 60000, embeddingTimeoutMs: DEFAULT_EMBEDDING_TIMEOUT_MS, readinessTimeoutMs: 120000, cleanupTimeoutMs: 10000, ...perCall },
     budgetEnforcement: budgetEnforcementFor(profile),
     limitations: ["controlled-text token reservations are conservative ceilings, not actual provider spend", "providerCheckMaxTokens is not a universal wire-enforced output cap", profile?.outputBudgetMode === "measured" ? "explicit measured-output mode records observed usage but does not enforce a wire output cap" : "strict real execution is refused for a selected provider known to omit that cap", "native payload/context limits require an explicit capability probe", "transport attempt count unknown unless provider reports it", "fixed arm order; cache warmth uncontrolled", "one repeat; quality/human grading unmeasured"],
   };

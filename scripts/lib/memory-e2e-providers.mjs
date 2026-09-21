@@ -552,7 +552,11 @@ export function scriptedProviders({ source } = {}) {
 }
 
 /** Called only after CLI confirmation. No configured-app root leases or consumer configuration. */
-export async function realProviders(profile, { workspace, modules }) {
+export async function realProviders(profile, { workspace, modules, plan }) {
+  const embeddingTimeoutMs = plan?.perCall?.embeddingTimeoutMs;
+  if (!Number.isSafeInteger(embeddingTimeoutMs) || embeddingTimeoutMs < 1) {
+    throw new BenchmarkError("invalid_embedding_timeout_plan");
+  }
   const { createMonoRuntime, parseMonoRuntimeModelReference, createPiOAuthApiKeyResolver, runtimeOptionsForLocalProvider } = modules.runtime;
   // Explicit OAuth credential file only: one shared framework resolver for both
   // runtimes (it reads/refreshes lazily per request — construction opens no
@@ -585,7 +589,7 @@ export async function realProviders(profile, { workspace, modules }) {
   const reader = createMonoRuntime(hostOptions);
   const extractor = createMonoRuntime(hostOptions);
   const raw = modules.search.createEmbeddingProvider({
-    provider: profile.embeddingProvider, model: profile.embeddingModel, timeoutMs: 10000,
+    provider: profile.embeddingProvider, model: profile.embeddingModel, timeoutMs: embeddingTimeoutMs,
     ...(profile.embeddingProvider === "openai" ? { apiKey: process.env.OPENAI_API_KEY } : {}),
     ...(profile.embeddingEndpoint === undefined ? {} : { endpoint: profile.embeddingEndpoint }),
   });

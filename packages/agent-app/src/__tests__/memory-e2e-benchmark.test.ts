@@ -129,7 +129,12 @@ describe("fictional E2E production-path contract, not model quality", () => {
     const plan = dataset.makePlan({ corpus, sha256: "synthetic-batch" });
     plan.readerPrompt = { id: "synthetic-reader-v1", text: "SHARED_READER_PROMPT with insufficient-evidence abstention.\n", sha256: "synthetic" };
     const providerSources: any[] = [];
-    const providerFactory = vi.fn((args: any) => { providerSources.push(args.source); return input.providers.scriptedProviders(args); });
+    const providerPlans: any[] = [];
+    const providerFactory = vi.fn((args: any) => {
+      providerSources.push(args.source);
+      providerPlans.push(args.plan);
+      return input.providers.scriptedProviders(args);
+    });
     const admissions: any[] = []; const readerInputs: any[] = [];
     const report = await input.runner.runBenchmark({ ...input, corpus, plan, providerFactory, hooks: {
       admission: (turn: unknown) => admissions.push(turn),
@@ -138,6 +143,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
     expect(report.trials).toHaveLength(4);
     expect(report.trials.every((trial: any) => trial.status === "completed")).toBe(true);
     expect(providerFactory).toHaveBeenCalledTimes(2); // once per arm, never once per question
+    expect(providerPlans).toEqual([plan, plan]);
     expect(JSON.stringify(providerSources)).not.toMatch(/First synthetic question|Second synthetic question|REFERENCE_CANARY|ADVERSARIAL_CANARY/u);
     expect(admissions).toHaveLength(4); // four sessions captured once for the single BuJo arm
     expect(report.capture.filter((row: any) => row.arm === "bujo" && row.stage === "inventory")).toHaveLength(4);
@@ -794,9 +800,34 @@ describe("fictional E2E production-path contract, not model quality", () => {
     } finally { budget.close(); await extension.cleanup(); service.releaseAllTurns(); await memory.close(); }
   }, 30000);
 
-  it.each(["deadline", "global abort"])("bounds the production embedding response body after headers: %s", async (mode) => {
+  it("accepts a slow valid production embedding within the plan-bound deadline", async () => {
+    const input = await fixture();
+    input.plan.perCall.embeddingTimeoutMs = 40;
+    const text = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return JSON.stringify({ embeddings: [[1, 0]] });
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, text } as unknown as Response);
+    const budget = new input.providers.Budget(input.plan);
+    try {
+      const raw = search.createEmbeddingProvider({
+        provider: "ollama", model: "fixture", timeoutMs: input.plan.perCall.embeddingTimeoutMs,
+      });
+      const embeddings = input.providers.meteredEmbeddings(raw, { budget, tag: {}, dimension: 2 });
+      await expect(embeddings.embed(["fictional body"])).resolves.toEqual([[1, 0]]);
+      expect(text).toHaveBeenCalledOnce();
+      expect(budget.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ stage: "embedding", status: "completed" }),
+        expect.objectContaining({ stage: "embedding_validation", status: "accepted" }),
+      ]));
+      expect(budget.admissionStopped).toBe(false);
+    } finally { budget.close(); }
+  });
+
+  it.each(["deadline", "caller abort", "global abort"])("bounds the production embedding response body after headers: %s", async (mode) => {
     const input = await fixture();
     input.plan.perCall.embeddingTimeoutMs = mode === "deadline" ? 10 : 1000;
+    const caller = new AbortController();
     let rejectBody!: (error: Error) => void;
     const body = new Promise((_, reject) => { rejectBody = reject; });
     let bodyStarted!: () => void;
@@ -805,12 +836,15 @@ describe("fictional E2E production-path contract, not model quality", () => {
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, text } as unknown as Response);
     const budget = new input.providers.Budget(input.plan);
     try {
-      const raw = search.createEmbeddingProvider({ provider: "ollama", model: "fixture", timeoutMs: 5 });
+      const raw = search.createEmbeddingProvider({
+        provider: "ollama", model: "fixture", timeoutMs: input.plan.perCall.embeddingTimeoutMs,
+      });
       const embeddings = input.providers.meteredEmbeddings(raw, { budget, tag: {} });
-      const pending = embeddings.embed(["fictional body"]);
+      const pending = embeddings.embed(["fictional body"], { abortSignal: caller.signal });
       const rejected = expect(pending).rejects.toThrow("embedding_timeout_or_cancelled");
       await started;
       expect(text).toHaveBeenCalledOnce();
+      if (mode === "caller abort") caller.abort();
       if (mode === "global abort") budget.controller.abort();
       await rejected;
       expect(fetch).toHaveBeenCalledOnce();

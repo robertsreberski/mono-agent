@@ -190,7 +190,11 @@ provider hint or output-token reservation into an enforced output cap.
 
 The dry plan binds source/question projection digests, code revision, arm,
 models/profile, prompt, metric and per-invocation capture/reader/embedding/token/time
-limits into one confirmation. Within one successful BuJo invocation, capture runs
+limits into one confirmation. Its 30-second embedding deadline matches the native
+memory provider default and is passed from the confirmed plan to both the provider
+and evaluator meter; expiration, caller cancellation, and global cancellation stay
+terminal, with no embedding retry or acceptance of unknown settlement. Within one
+successful BuJo invocation, capture runs
 once and questions then use fresh reader histories over that store, so prior
 answers cannot contaminate later questions. A completed artifact contains
 `checkpoint.json`; `--reuse-artifact` accepts it only when all checksums and the

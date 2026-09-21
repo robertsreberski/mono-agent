@@ -19,6 +19,7 @@ const dirs = [];
 afterEach(async () => { for (const b of budgets.splice(0)) b.close(); for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true }); vi.restoreAllMocks(); });
 async function setup() { const loaded = await loadCorpus(); const plan = makePlan(loaded); const budget = new Budget(plan); budgets.push(budget); return { ...loaded, plan, budget }; }
 const ready = { intake: { pending: 0, dead: 0, due: 0, transitioning: 0, retrying: 0, resolved: 1 }, shutdown: { timedOut: false, discarded: 0 } };
+const realProviderPlan = { perCall: { embeddingTimeoutMs: 23_456 } };
 
 describe("memory E2E benchmark contracts (not model quality)", () => {
   it("standalone success exits after output even when a dependency retains a handle", () => {
@@ -37,6 +38,9 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(new Set(corpus.groups.filter((g) => g.split === "evaluation").map((g) => g.evaluation.category)).size).toBe(6);
     expect(plan.arms).toEqual(ARMS);
     expect(plan.workload).toEqual({ questions: 2, trials: 10, historicalTurnsPerMemoryArm: 8, captureStepsMaximum: 16, readerStepsMaximum: 30 });
+    expect(plan.perCall.embeddingTimeoutMs).toBe(30_000);
+    const shorterEmbeddingDeadline = makePlan({ corpus, sha256, perCall: { embeddingTimeoutMs: 29_999 } });
+    expect(shorterEmbeddingDeadline.confirmation).not.toBe(plan.confirmation);
     expect(makePlan({ corpus, sha256, split: "evaluation" }).limits.chatSteps).toBe(138);
   });
   it("keeps labels and arbitrary gold fields out of the closed source projection", async () => {
@@ -412,15 +416,32 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     finish(); await budget.settle(10);
     expect(budget.pending.size).toBe(0);
   });
-  it.each(["deadline", "global abort"])("bounds an embedding body pending after headers: %s", async (mode) => {
+  it("accepts a valid embedding completion within the plan-bound deadline", async () => {
+    const { budget } = await setup();
+    budget.plan.perCall.embeddingTimeoutMs = 40;
+    const embeddings = meteredEmbeddings({
+      id: "fixture",
+      embed: async (texts) => new Promise((resolve) => setTimeout(() => resolve(texts.map(() => [1, 0])), 10)),
+    }, { budget, tag: {}, dimension: 2 });
+    await expect(embeddings.embed(["fictional"])).resolves.toEqual([[1, 0]]);
+    expect(budget.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: "embedding", status: "completed" }),
+      expect.objectContaining({ stage: "embedding_validation", status: "accepted" }),
+    ]));
+    expect(budget.admissionStopped).toBe(false);
+    expect(budget.pending.size).toBe(0);
+  });
+  it.each(["deadline", "caller abort", "global abort"])("bounds an embedding body pending after headers: %s", async (mode) => {
     const { budget } = await setup();
     budget.plan.perCall.embeddingTimeoutMs = mode === "deadline" ? 10 : 1000;
+    const caller = new AbortController();
     let rejectBody;
     const body = new Promise((_, reject) => { rejectBody = reject; });
     const headers = vi.fn(async () => ({ json: () => body }));
     const embeddings = meteredEmbeddings({ id: "fixture", embed: async () => (await headers()).json() }, { budget, tag: {} });
-    const pending = embeddings.embed(["fictional"]);
+    const pending = embeddings.embed(["fictional"], { abortSignal: caller.signal });
     const rejected = expect(pending).rejects.toThrow("embedding_timeout_or_cancelled");
+    if (mode === "caller abort") caller.abort();
     if (mode === "global abort") budget.controller.abort();
     await rejected;
     expect(headers).toHaveBeenCalledOnce();
@@ -984,7 +1005,9 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
       search: { createEmbeddingProvider: vi.fn(() => ({})), createCircuitBreakerEmbeddingProvider: vi.fn((raw) => raw) },
     };
     const profile = { reader: "fixture:reader", extractor: "fixture:extractor", embeddingProvider: "ollama", embeddingModel: "m", dimension: 8, piAuthPath: "/tmp/fixture-auth.json" };
-    const provided = await realProviders(profile, { workspace: "workspace", modules });
+    await expect(realProviders(profile, { workspace: "workspace", modules, plan: null }))
+      .rejects.toThrow("invalid_embedding_timeout_plan");
+    const provided = await realProviders(profile, { workspace: "workspace", modules, plan: realProviderPlan });
     expect(provided.kind).toBe("real");
     expect(modules.runtime.createPiOAuthApiKeyResolver).toHaveBeenCalledOnce();
     expect(modules.runtime.createPiOAuthApiKeyResolver).toHaveBeenCalledWith({ path: "/tmp/fixture-auth.json" });
@@ -992,11 +1015,12 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(modules.runtime.createMonoRuntime.mock.calls[0][0]).toMatchObject({ workspace: "workspace" });
     expect(modules.runtime.createMonoRuntime.mock.calls[0][0].resolvePiApiKey).toBe(resolver);
     expect(modules.runtime.createMonoRuntime.mock.calls[1][0].resolvePiApiKey).toBe(resolver);
+    expect(modules.search.createEmbeddingProvider).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 23_456 }));
     const ambientModules = { runtime: { createMonoRuntime: vi.fn(() => ({})), parseMonoRuntimeModelReference: (value) => ({ reference: value }) }, search: modules.search };
-    await realProviders({ ...profile, piAuthPath: undefined }, { workspace: "workspace", modules: ambientModules });
+    await realProviders({ ...profile, piAuthPath: undefined }, { workspace: "workspace", modules: ambientModules, plan: realProviderPlan });
     expect(ambientModules.runtime.createMonoRuntime.mock.calls[0][0]).toEqual({ workspace: "workspace" });
     expect(ambientModules.runtime.createMonoRuntime.mock.calls[1][0]).toEqual({ workspace: "workspace" });
-    await expect(realProviders(profile, { workspace: "workspace", modules: ambientModules })).rejects.toThrow("pi_auth_resolver_unavailable");
+    await expect(realProviders(profile, { workspace: "workspace", modules: ambientModules, plan: realProviderPlan })).rejects.toThrow("pi_auth_resolver_unavailable");
   });
   it("pins LoCoMo provider construction to explicit loopback endpoints and client context metadata", async () => {
     const optionsForLocal = vi.fn((model, providers) => ({ customProvider: providers[0], customModel: { model }, modelCapabilities: { context_window: 65_536 }, isPrivateProvider: true }));
@@ -1013,14 +1037,14 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
       embeddingProvider: "ollama", embeddingModel: "bge-m3:latest", dimension: 1024,
       ollamaEndpoint: "http://127.0.0.1:11434", embeddingEndpoint: "http://127.0.0.1:11434", clientContextWindow: 65_536,
     };
-    await realProviders(profile, { workspace: "workspace", modules });
+    await realProviders(profile, { workspace: "workspace", modules, plan: realProviderPlan });
     const runtimeOptions = modules.runtime.createMonoRuntime.mock.calls[0][0];
     expect(runtimeOptions).toMatchObject({ workspace: "workspace", resolveAttempt: expect.any(Function) });
     runtimeOptions.resolveAttempt({ model: { provider: "ollama", model: "gemma4:31b", reference: "ollama:gemma4:31b" } });
     expect(optionsForLocal.mock.calls[0][1][0]).toMatchObject({ id: "ollama", type: "ollama", baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false });
     expect(optionsForLocal.mock.calls[0][1][0].models[0].capabilities).toMatchObject({ context_window: 65_536, max_tokens: 2048 });
     expect(modules.search.createEmbeddingProvider).toHaveBeenCalledWith(expect.objectContaining({ endpoint: "http://127.0.0.1:11434", model: "bge-m3:latest" }));
-    await expect(realProviders({ ...profile, ollamaEndpoint: "http://localhost:11434" }, { workspace: "workspace", modules })).rejects.toThrow("invalid_local_ollama_profile");
+    await expect(realProviders({ ...profile, ollamaEndpoint: "http://localhost:11434" }, { workspace: "workspace", modules, plan: realProviderPlan })).rejects.toThrow("invalid_local_ollama_profile");
   });
   it("uses the existing hosted Pi resolver while keeping LoCoMo embeddings on numeric loopback", async () => {
     const resolver = async () => "fixture-key";
@@ -1039,7 +1063,7 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
       piAuthPath: "/private/existing-pi-auth.json", embeddingEndpoint: "http://127.0.0.1:11434",
       hostedChatContextWindow: 272_000, locomoDatasetTransferAck: "selected-public-locomo-projection-to-hosted-luna",
     };
-    await realProviders(profile, { workspace: "workspace", modules });
+    await realProviders(profile, { workspace: "workspace", modules, plan: realProviderPlan });
     expect(modules.runtime.createPiOAuthApiKeyResolver).toHaveBeenCalledWith({ path: "/private/existing-pi-auth.json" });
     expect(modules.runtime.createMonoRuntime).toHaveBeenCalledTimes(2);
     expect(modules.runtime.createMonoRuntime.mock.calls[0][0]).toEqual({ workspace: "workspace", resolvePiApiKey: resolver });

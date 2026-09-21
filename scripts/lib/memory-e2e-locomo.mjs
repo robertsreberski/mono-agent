@@ -470,6 +470,7 @@ export function makeLocomoPlan({ corpus, sha256, split, profile = null, codeRevi
     sourceIdentity,
     questionIdentity,
     profile: made.profile,
+    perCall: made.perCall,
     arms,
     readerPrompt,
     evaluator: LOCOMO_EVALUATOR.identity,

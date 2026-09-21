@@ -330,7 +330,7 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
         await mkdir(workspace, { mode: 0o700 });
         await mkdir(sessionsRoot, { mode: 0o700 });
         await writeFile(identityPath, plan.readerPrompt?.text ?? "You are a helpful assistant. Answer the current request concisely using available evidence. Do not invent personal details.\n", { mode: 0o600 });
-        providers = await event(tag, "provider_setup", () => providerFactory({ workspace, sessionsRoot, tag, source, modules }));
+        providers = await event(tag, "provider_setup", () => providerFactory({ workspace, sessionsRoot, tag, source, modules, plan }));
         if (providers.kind !== kind) throw new BenchmarkError("provider_mode_mismatch");
         const memoryArm = ["lite", "journal", "bujo"].includes(arm);
         const base = {
@@ -570,7 +570,7 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
         await mkdir(workspace, { mode: 0o700 });
         await mkdir(sessionsRoot, { mode: 0o700 });
         await writeFile(identityPath, plan.readerPrompt?.text ?? "You are a helpful assistant. Answer the current request concisely using available evidence. Do not invent personal details.\n", { mode: 0o600 });
-        providers = await event(baseTag, "provider_setup", () => providerFactory({ workspace, sessionsRoot, tag: baseTag, source: providerSource, modules }));
+        providers = await event(baseTag, "provider_setup", () => providerFactory({ workspace, sessionsRoot, tag: baseTag, source: providerSource, modules, plan }));
         if (providers.kind !== kind) throw new BenchmarkError("provider_mode_mismatch");
         const base = {
           identityPath, cwd: workspace, model: providers.readerModel, now: () => now,
