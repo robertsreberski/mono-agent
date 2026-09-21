@@ -14,10 +14,10 @@ describe("terminal fetch refusals", () => {
     expect(result).toMatchObject({ error: true, outcome: { code: "authentication_required", attempts: 1, attemptedProviders: ["local"] } });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
-  it.each(["parallel", "hound"])("does not repeat a 429 or forward the URL to %s", async (next) => {
+  it("does not repeat a 429 or forward the URL to parallel", async () => {
     const fetchImpl = vi.fn(async () => new Response("Too many requests", { status: 429, headers: { "retry-after": "3600" } }));
     const result = await performWebFetch({ url }, {
-      ctx, fetchImpl, retryDelaysMs: [0, 0], fetchConfig: { provider: ["local", next] },
+      ctx, fetchImpl, retryDelaysMs: [0, 0], fetchConfig: { provider: ["local", "parallel"] },
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ error: true, outcome: {
@@ -29,7 +29,7 @@ describe("terminal fetch refusals", () => {
   it.each([200, 503])("does not retry or change provider for a %i access challenge", async (status) => {
     const fetchImpl = vi.fn(async () => new Response('<html><body>Verify you are human <div id="cf-chl-widget">Challenge</div></body></html>', { status, headers: { "content-type": "text/html" } }));
     const result = await performWebFetch({ url }, {
-      ctx, fetchImpl, retryDelaysMs: [0, 0], fetchConfig: { provider: ["local", "parallel", "hound"] },
+      ctx, fetchImpl, retryDelaysMs: [0, 0], fetchConfig: { provider: ["local", "parallel"] },
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ error: true, outcome: { code: "access_challenge", attemptedProviders: ["local"], attempts: 1 } });

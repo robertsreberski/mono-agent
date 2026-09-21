@@ -1,6 +1,5 @@
 import { fetchParallelDocument, unsupportedParallelFetchOption } from "./parallel-web-fetch.js";
-import { houndEndpointError } from "./hound-local/config.js";
-import { assertHoundRobots } from "./hound-local/robots.js";
+import { localEndpointError } from "./local/config.js";
 import { parallelSessionId } from "./parallel-mcp.js";
 import { withWebDeadline, coordinatedWebRequest, webRequestFailure } from "./web-request.js";
 // @ts-check
@@ -48,7 +47,7 @@ class WebFetchError extends Error {
  * Compatibility wrapper for direct callers.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{ctx: import("./shared/tool-context.js").ToolContext, houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} options
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} options
  */
 export async function webFetchToolImpl(params, options) {
   return (await performWebFetch(params, options)).text;
@@ -58,7 +57,7 @@ export async function webFetchToolImpl(params, options) {
  * Fetch and locally extract one public URL.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{ctx: import("./shared/tool-context.js").ToolContext, houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} options
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} options
  */
 export async function performWebFetch(params, options) {
   // Direct callers own their context: reject a missing one before any network work.
@@ -81,7 +80,7 @@ export async function performWebFetch(params, options) {
  * Fetch and locally extract one public URL.
  *
  * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{houndLocal?: boolean, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: import("./shared/tool-context.js").ToolContext, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: import("./shared/tool-context.js").ToolContext, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 async function performFetch(
   {
@@ -96,7 +95,6 @@ async function performFetch(
   {
     coordinator,
     documentOnly = false,
-    houndLocal = false,
     sandboxPolicy,
     sandboxEngine,
     ctx,
@@ -219,7 +217,6 @@ async function performFetch(
     try {
       const fetched = await fetchFollowingRedirects(parsed, {
         coordinator,
-        houndLocal, robotsOwner: resolvedCtx,
         headers: requestHeaders.headers,
         sandbox,
         policy,
@@ -503,9 +500,6 @@ async function fetchFollowingRedirects(initialUrl, options) {
           : "Network access denied by sandbox policy (redirect).",
       );
     }
-    if (options.houndLocal) await assertHoundRobots(current.href, {
-      ...options, robotsOwner: options.robotsOwner, userAgent: options.headers["User-Agent"],
-    });
     const fetched = await coordinatedWebRequest(options.coordinator, "fetch", current.origin, options.signal, async () => {
       const response = await options.fetchImpl(current, {
         headers: options.headers, redirect: "manual", signal: requestSignal(options.signal),
@@ -939,37 +933,29 @@ function linksUnavailableReason(outcome) {
 
 async function performFetchChain(params, options) {
   const started = Date.now();
-  const migration = houndEndpointError(options.fetchConfig?.hound);
+  const migration = localEndpointError(options.fetchConfig?.hound);
   if (migration) return failure(migration, "invalid_fetch_config", started);
   const selection = options.fetchConfig?.provider ?? "local";
   const names = Array.isArray(selection) ? selection : [selection];
-  if (!names.length || new Set(names).size !== names.length || names.some((name) => !["local", "parallel", "hound"].includes(name))) {
+  if (names.some((name) => name === "hound")) {
+    return failure("Error: `tools.web.fetch.provider` value `hound` was renamed to `local`, which is not equivalent: `local` uses the standard fetch retry policy, performs no robots preflight, and honors the configured render mode instead of forcing document-only/render-never. Update the selection to `local` only if that posture is acceptable.", "invalid_fetch_config", started);
+  }
+  if (!names.length || new Set(names).size !== names.length || names.some((name) => !["local", "parallel"].includes(name))) {
     return failure("Error: Invalid WebFetch provider selection.", "invalid_fetch_config", started);
   }
   const parallelUnsupported = unsupportedParallelFetchOption(params);
-  const houndUnsupported = ["auto", "always"].includes(params.render) || options.fetchConfig?.render === "auto" ? "browser rendering" : undefined;
-  const remoteUnsupported = (name) => (name === "parallel" ? parallelUnsupported : houndUnsupported);
-  if (!names.includes("local") && names.every((name) => name !== "local" && remoteUnsupported(name))) {
-    const first = names.find((name) => name !== "local");
-    const unsupported = remoteUnsupported(first);
-    const label = first === "parallel" ? "Parallel" : "Hound";
-    return failure(`Error: ${label} WebFetch does not support ${unsupported}.`, "unsupported_parameter", started, { backend: first, option: unsupported });
+  if (!names.includes("local") && names.every((name) => parallelUnsupported)) {
+    return failure(`Error: Parallel WebFetch does not support ${parallelUnsupported}.`, "unsupported_parameter", started, { backend: "parallel", option: parallelUnsupported });
   }
   if (!names.includes("local") && options.fetchConfig?.render === "auto") {
     return failure('Error: fetch.render "auto" requires the local provider.', "invalid_fetch_config", started);
   }
   let result;
   const attemptedProviders = [];
-  let localAttempted = false;
   for (const name of names) {
     if (name === "parallel" && parallelUnsupported) continue;
-    if (name === "hound" && houndUnsupported) continue;
-    if (["local", "hound"].includes(name)) {
-      if (localAttempted) continue;
-      localAttempted = true;
-    }
     attemptedProviders.push(name);
-    result = name === "local" ? await performFetch(params, options) : name === "parallel" ? await performParallelFetch(params, options) : await performHoundFetch(params, options);
+    result = name === "local" ? await performFetch(params, options) : await performParallelFetch(params, options);
     if (!result.error || !fetchProviderMayAdvance(result.outcome)) break;
   }
   return { ...result, outcome: { ...result.outcome, attemptedProviders, fallbackUsed: attemptedProviders.length > 1 } };
@@ -1015,12 +1001,4 @@ async function performParallelFetch(params, options) {
   document.outcome = { ...document.outcome, queueWaitMs: result.coordinationWaitMs, backendDurationMs: result.backendDurationMs };
   return options.documentOnly ? { text: "", error: false, document, outcome: document.outcome }
     : formatWebFetchDocument(document, params, ctx);
-}
-
-async function performHoundFetch(params, options) {
-  const result = await performFetch(params, { ...options, documentOnly: true, houndLocal: true, retryDelaysMs: [], fetchConfig: { ...options.fetchConfig, render: "never" } });
-  const outcome = { ...result.outcome, backend: "hound", local: true };
-  const document = result.document ? { ...result.document, outcome } : undefined;
-  if (document && !options.documentOnly) return formatWebFetchDocument(document, params, requireToolContext(options.ctx));
-  return { ...result, outcome, ...(document ? { document } : {}) };
 }

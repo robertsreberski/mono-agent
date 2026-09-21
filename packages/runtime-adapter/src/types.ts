@@ -540,7 +540,7 @@ export interface RuntimeRunOptions {
   /** Host-owned shared web admission; never model-configurable. */
   readonly webRequestCoordinator?: {
     readonly scope: string;
-    acquire(request: { kind: "searxng" | "ollama" | "duckduckgo" | "startpage" | "codex" | "fetch" | "parallel" | "hound" | (string & {}); key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
+    acquire(request: { kind: "searxng" | "ollama" | "duckduckgo" | "startpage" | "codex" | "fetch" | "parallel" | "local" | (string & {}); key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
       readonly waitMs: number;
       complete(outcome: { status: "ok" | "rate_limited" | "unavailable" | "cancelled"; retryAfterMs?: number; retryAtMs?: number }): Promise<void | { retryAfterMs: number; retryAtMs: number }>;
     }>;
@@ -561,15 +561,15 @@ export interface RuntimeRunOptions {
       readonly trustPublicUrl?: boolean;
     };
     readonly parallel?: { readonly apiKeyEnv?: string };
-    /** @deprecated Endpoint settings are rejected: Hound search is built in. */
+    /** @deprecated Endpoint settings are rejected: local search is built in. */
     readonly hound?: { readonly endpoint?: string };
     readonly codex?: { readonly model?: string };
   };
   /** Static WebFetch extraction and optional isolated browser-render policy. */
   readonly webFetchConfig?: {
-    readonly provider?: "local" | "parallel" | "hound" | readonly ("local" | "parallel" | "hound")[];
+    readonly provider?: "local" | "parallel" | readonly ("local" | "parallel")[];
     readonly parallel?: { readonly apiKeyEnv?: string };
-    /** @deprecated Endpoint settings are rejected: Hound fetch is built in. */
+    /** @deprecated Endpoint settings are rejected: local fetch is built in. */
     readonly hound?: { readonly endpoint?: string };
     readonly render?: "never" | "auto";
     readonly browserCommand?: string;
@@ -686,4 +686,4 @@ export interface MonoRuntimeHostOptions extends RuntimeToolOptions {
 }
 
 /** Source-level built-in web search provider names; arrays are ordered fallback chains. */
-type WebSearchProviderName = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel" | "hound";
+type WebSearchProviderName = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel" | "local";
