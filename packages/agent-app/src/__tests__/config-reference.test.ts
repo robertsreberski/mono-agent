@@ -686,3 +686,52 @@ it("keeps the Anthropic retention schema default aligned with config normalizati
   expect(node.default).toBe(config.providers?.piNative?.cacheRetention);
   expect(node.enum).toEqual(["short", "long"]);
 });
+
+it("keeps the subagent maxTurns loader ceilings aligned with the generated schema", () => {
+  const root = repoRoot();
+  const schema = JSON.parse(
+    readFileSync(join(root, "packages/agent-app/schema/mono-agent.config.schema.json"), "utf8"),
+  ) as SchemaNode;
+  const subagents = schemaNode(schema, "subagents");
+  const topMaximum = subagents.properties?.maxTurns?.maximum;
+  const definitionMaximum = subagents.properties?.definitions?.items?.properties?.maxTurns?.maximum;
+  const instancesMaximum = subagents.properties?.instances?.properties?.maxTurns?.maximum;
+  if (typeof topMaximum !== "number") {
+    throw new Error("missing schema maximum for subagents.maxTurns");
+  }
+  if (typeof definitionMaximum !== "number") {
+    throw new Error("missing schema maximum for subagents.definitions[].maxTurns");
+  }
+  if (typeof instancesMaximum !== "number") {
+    throw new Error("missing schema maximum for subagents.instances.maxTurns");
+  }
+
+  const baseEnv = {
+    MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
+    MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
+  };
+  const loadSubagents = (payload: unknown) => () => loadMonoAgentConfig({
+    cwd: process.cwd(),
+    env: { ...baseEnv, MONO_AGENT_SUBAGENTS_JSON: JSON.stringify(payload) },
+  });
+  const definition = (maxTurns: unknown) => ({
+    name: "helper", description: "Help", prompt: "Help", maxTurns,
+  });
+
+  expect(loadSubagents({ maxTurns: topMaximum })()).toMatchObject({ subagents: { maxTurns: topMaximum } });
+  expect(loadSubagents({ maxTurns: topMaximum + 1 })).toThrow(
+    `maxTurns must be an integer between 1 and ${topMaximum}`,
+  );
+
+  expect(loadSubagents({ definitions: [definition(definitionMaximum)] })())
+    .toMatchObject({ subagents: { definitions: [{ maxTurns: definitionMaximum }] } });
+  expect(loadSubagents({ definitions: [definition(definitionMaximum + 1)] })).toThrow(
+    `maxTurns must be an integer between 1 and ${definitionMaximum}`,
+  );
+
+  expect(loadSubagents({ instances: { maxTurns: instancesMaximum } })())
+    .toMatchObject({ subagents: { instances: { maxTurns: instancesMaximum } } });
+  expect(loadSubagents({ instances: { maxTurns: instancesMaximum + 1 } })).toThrow(
+    `instances.maxTurns must be an integer between 1 and ${instancesMaximum}`,
+  );
+});
