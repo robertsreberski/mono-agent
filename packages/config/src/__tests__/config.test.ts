@@ -480,7 +480,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   tools: {
     web: {
       search: {
-        maxRequestsPerRun: String(invalid)
+        maxRequestsPerRun: String(invalid) as never
       }
     }
   }
@@ -731,7 +731,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   },
   providers: {
     piNative: {
-      promptCacheDiagnostics: String(value)
+      promptCacheDiagnostics: value === "true"
     }
   }
 } });
@@ -745,7 +745,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   },
   providers: {
     piNative: {
-      promptCacheDiagnostics: "invalid"
+      promptCacheDiagnostics: "invalid" as never
     }
   }
 } })).toThrow();
@@ -768,7 +768,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   context: {
     identityPath: "IDENTITY.md"
   },
-  providers: { piNative: { promptCacheDiagnostics: "true" } }
+  providers: { piNative: { promptCacheDiagnostics: "true" as never } }
 } })).toThrow("boolean");
   });
 
@@ -847,7 +847,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   },
   providers: {
     piNative: {
-      transport: "long-polling"
+      transport: "long-polling" as never
     }
   }
 },
@@ -859,7 +859,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     expect(() =>
       resolveJsonMonoAgentConfig({
         cwd: "/repo",
-        json: { ...baseJson, runtime: { ...baseJson.runtime, permissionMode: "bypassPermissions" } },
+        json: { ...baseJson, runtime: { ...baseJson.runtime, permissionMode: "bypassPermissions" } as never },
       }),
     ).toThrow(/`runtime\.permissionMode` was removed.*configure `sandbox` for enforced tool isolation/);
   });
@@ -1032,7 +1032,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   context: {
     identityPath: "IDENTITY.md"
   },
-  subagents: { instances }
+  subagents: { instances: instances as never }
 } })).toThrow(/instances/u);
   });
 
@@ -1106,7 +1106,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   context: {
     identityPath: "IDENTITY.md"
   },
-  subagents: payload
+  subagents: payload as never
 } })).toThrow(expected);
   });
 
@@ -1131,7 +1131,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   context: {
     identityPath: "IDENTITY.md"
   },
-  subagents: { commandTimeoutMs }
+  subagents: { commandTimeoutMs: commandTimeoutMs as never }
 } })).toThrow(/commandTimeoutMs must be an integer/);
   });
 
@@ -1253,7 +1253,7 @@ describe("resolveJsonMonoAgentConfig", () => {
       json: {
   runtime: {
     model: "pi:openai-codex:gpt-5.5",
-    fallbacks: [{ model: "openai-codex:gpt-5.6-sol", attempts }]
+    fallbacks: [{ model: "openai-codex:gpt-5.6-sol", attempts: attempts as never }]
   },
   context: {
     identityPath: "IDENTITY.md"
@@ -1304,7 +1304,7 @@ describe("resolveJsonMonoAgentConfig", () => {
       json: {
   runtime: {
     model: "pi:openai-codex:gpt-5.5",
-    fallbacks: [{ model: "openai-codex:gpt-5.6-sol", efffort: "max" }]
+    fallbacks: [{ model: "openai-codex:gpt-5.6-sol", efffort: "max" } as never]
   },
   context: {
     identityPath: "IDENTITY.md"
@@ -1577,7 +1577,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   runtime: {
     model: "pi:openai-codex:gpt-5.5",
     session: {
-      rolloverNotice: "sometimes"
+      rolloverNotice: "sometimes" as never
     }
   },
   context: {
@@ -1625,7 +1625,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   runtime: {
     model: "pi:openai-codex:gpt-5.5",
     session: {
-      idleTimeoutMs: String(raw)
+      idleTimeoutMs: String(raw) as never
     }
   },
   context: {
@@ -1729,7 +1729,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     identityPath: "IDENTITY.md"
   },
   traceability: {
-    globalDiscovery: "sometimes"
+    globalDiscovery: "sometimes" as never
   }
 },
       }),
@@ -2083,8 +2083,8 @@ describe("resolveJsonMonoAgentConfig", () => {
   },
   tools: {
     filesystem: {
-      readableRoots: "../framework, ../worktrees",
-      writableRoots: "../worktrees"
+      readableRoots: "../framework, ../worktrees" as never,
+      writableRoots: "../worktrees" as never
     }
   }
 },
@@ -2108,7 +2108,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   },
   tools: {
     filesystem: {
-      readableRoots: '["/projects/repo,archive"'
+      readableRoots: '["/projects/repo,archive"' as never
     }
   }
 },
@@ -2221,7 +2221,7 @@ describe("resolveJsonMonoAgentConfig", () => {
       { consolidation: { cron: "0 */2 * * *" } },
     ]) {
       try {
-        resolveJsonMonoAgentConfig({ cwd: "/repo", json: { ...baseJson, memory } });
+        resolveJsonMonoAgentConfig({ cwd: "/repo", json: { ...baseJson, memory: memory as never } });
       } catch (error) {
         expect(error).toBeInstanceOf(MonoAgentConfigError);
         expect(error).toMatchObject({ code: "invalid_json" });
@@ -2434,7 +2434,7 @@ describe("resolveJsonMonoAgentConfig", () => {
       provider: "ollama"
     },
     recallTool: {
-      enabled: "maybe"
+      enabled: "maybe" as never
     }
   }
 },
@@ -2625,7 +2625,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   },
   context: {
     identityPath: "IDENTITY.md",
-    skillMaxBytes: String(raw)
+    skillMaxBytes: String(raw) as never
   }
 } });
       } catch (error) {
@@ -2719,7 +2719,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     identityPath: "IDENTITY.md"
   },
   concurrency: {
-    maxConcurrentRuns: String(raw)
+    maxConcurrentRuns: String(raw) as never
   }
 } });
       } catch (error) {
@@ -2739,7 +2739,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     identityPath: "IDENTITY.md"
   },
   concurrency: {
-    maxPendingRuns: String(raw)
+    maxPendingRuns: String(raw) as never
   }
 } });
       } catch (error) {
@@ -3191,7 +3191,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     path: "memory-root",
     llm: {
       model: "gpt-4o",
-      provider: "openai"
+      provider: "openai" as never
     }
   }
 },
@@ -3217,7 +3217,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     path: "memory-root",
     mode: "bujo",
     llm: {
-      provider: "lmstudio",
+      provider: "lmstudio" as never,
       model: "chat-model"
     }
   }
@@ -3457,7 +3457,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   },
   memory: {
     path: "memory-root",
-    mode: "unknown-mode"
+    mode: "unknown-mode" as never
   }
 },
       }),
@@ -3477,7 +3477,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   },
   memory: {
     path: "memory-root",
-    mode: "markdown"
+    mode: "markdown" as never
   }
 },
       }),
@@ -3767,7 +3767,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     identityPath: "IDENTITY.md"
   },
   memory: {
-    backend: backend
+    backend: backend as never
   }
 },
         });
@@ -3800,7 +3800,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     try {
       resolveJsonMonoAgentConfig({
         cwd: "/repo",
-        json: { ...baseJson, memory: { path: "memory", supermemory: block } },
+        json: { ...baseJson, memory: { path: "memory", supermemory: block as never } },
       });
     } catch (error) {
       rejection = error;
@@ -3825,7 +3825,7 @@ describe("resolveJsonMonoAgentConfig", () => {
           backend: "bujo",
           path: "memory",
           mode: "lite",
-          supermemory: { baseUrl: "https://retired.invalid/" },
+          supermemory: { baseUrl: "https://retired.invalid/" } as never,
         },
       },
     })).toThrowError(expect.objectContaining({
@@ -3847,7 +3847,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     try {
       resolveJsonMonoAgentConfig({
         cwd: "/repo",
-        json: { ...baseJson, memory: { backend: "supermemory", path: "memory", supermemory } },
+        json: { ...baseJson, memory: { backend: "supermemory" as never, path: "memory", supermemory: supermemory as never } },
       });
     } catch (error) {
       rejection = error;
@@ -3887,7 +3887,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     identityPath: "IDENTITY.md"
   },
   memory: {
-    backend: backend,
+    backend: backend as never,
     path: "memory",
     mode: "lite"
   }
@@ -3910,7 +3910,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     identityPath: "IDENTITY.md"
   },
   memory: {
-    backend: backend
+    backend: backend as never
   }
 } });
       } catch (error) {
