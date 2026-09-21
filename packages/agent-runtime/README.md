@@ -1250,7 +1250,7 @@ Hosts pass the typed `RuntimeCompactionPolicy` through `runOptions.compaction`; 
 flat `runOptions.settings` inputs are rejected with migration instructions.
 The config-first host exposes this as `runtime.compaction.*` plus matching
 `MONO_AGENT_COMPACTION_*` variables. Omitted values resolve against effective window
-`W`: trigger ratio `0.70`; safety headroom `clamp(floor(W × 0.10), 16000, 48000)`;
+`W`: trigger ratio `0.90`; safety headroom `clamp(floor(W × 0.10), 16000, 48000)`;
 retained context and minimum proactive savings `clamp(floor(W × 0.10), 4000, 20000)`;
 summary output `clamp(floor(W × 0.04), 2000, 12000)`. Explicit values retain their
 scalar validation bounds. `onCompactionRecorded(record)` fires only for accepted,

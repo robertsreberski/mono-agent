@@ -34,14 +34,14 @@ describe("proactive compaction trigger — old (>=) vs new (shouldCompact) parit
   // production values, then probes the boundary. `modelWindow` feeds
   // resolveAgentCompactionPolicy's model.contextWindow (clamped to [32k, 10M]).
   const scenarios = [
-    // 128k: ratioTrigger=89.6k is below the 96k headroom trigger.
-    { name: "ratio-dominant window (128k)", modelWindow: 128_000, policies: {}, expectTrigger: 89_600 },
-    // 1M: safety headroom caps at 96k, while the 0.70 ratio fires at 700k.
-    { name: "ratio-dominant window (1M)", modelWindow: 1_000_000, policies: {}, expectTrigger: 700_000 },
-    // tiny: clamps to the 32k floor; 16k minimum headroom wins over 70%.
+    // 128k: the 16k minimum headroom sets a 112k trigger below the 115.2k ratio arm.
+    { name: "reserve-dominant window (128k)", modelWindow: 128_000, policies: {}, expectTrigger: 112_000 },
+    // 1M: safety headroom caps at 48k, while the 0.90 ratio fires at 900k.
+    { name: "ratio-dominant window (1M)", modelWindow: 1_000_000, policies: {}, expectTrigger: 900_000 },
+    // tiny: clamps to the 32k floor; 16k minimum headroom wins over 90%.
     { name: "tiny window (32k floor)", modelWindow: 1_000, policies: {}, expectTrigger: 16_000 },
-    // huge: clamps to the 10M ceiling and the 0.70 ratio remains dominant.
-    { name: "huge window (10M clamp)", modelWindow: 50_000_000, policies: {}, expectTrigger: 7_000_000 },
+    // huge: clamps to the 10M ceiling and the 0.90 ratio remains dominant.
+    { name: "huge window (10M clamp)", modelWindow: 50_000_000, policies: {}, expectTrigger: 9_000_000 },
     // custom ratio still resolves to an integer trigger via Math.floor.
     { name: "custom ratio 0.5 on 200k", modelWindow: 200_000, policies: { compaction: { triggerRatio: 0.5 } }, expectTrigger: 100_000 },
   ];

@@ -448,7 +448,7 @@ describe("resolveLiveCompactionPolicy — window recognition", () => {
     });
     expect(policy).toMatchObject({
       contextWindow: 272_000,
-      triggerTokens: 190_400,
+      triggerTokens: 244_800,
       keepRecentTokens: 20_000,
       summaryMaxTokens: 10_880,
       compactionMinSavingsTokens: 20_000,

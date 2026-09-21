@@ -104,7 +104,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "compaction": {
       "enabled": true,                     // default true
-      "triggerRatio": 0.70,                // default 0.70; capped by safety headroom (10% of W, 16k-48k tokens)
+      "triggerRatio": 0.90,                // default 0.90; capped by safety headroom (10% of W, 16k-48k tokens)
       // Omit these three to derive model-window-aware defaults.
       "keepRecentTokens": 12800,
       "summaryMaxTokens": 5120,

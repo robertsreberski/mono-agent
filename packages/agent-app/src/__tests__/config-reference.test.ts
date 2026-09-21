@@ -369,7 +369,7 @@ describe("config reference", () => {
     });
     expect(schemaNode(schema, "runtime", "compaction", "triggerRatio")).toMatchObject({
       type: "number",
-      default: 0.7,
+      default: 0.9,
       minimum: 0.2,
       maximum: 0.95,
     });

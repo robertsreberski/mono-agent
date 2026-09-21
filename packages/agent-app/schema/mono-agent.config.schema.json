@@ -161,10 +161,10 @@
             "triggerRatio": {
               "description": "Fraction of the effective model context window used for the proactive trigger, additionally capped by adaptive safety headroom (10% of the window, 16,000-48,000 tokens).",
               "examples": [
-                0.7
+                0.9
               ],
               "type": "number",
-              "default": 0.7,
+              "default": 0.9,
               "minimum": 0.2,
               "maximum": 0.95
             },

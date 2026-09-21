@@ -2011,7 +2011,7 @@ describe("pi-native auto-compaction", () => {
     // Several distinct tools so toolSchemaTokens is non-trivial too (the bridge's
     // built-in tools are also counted, but allowing a couple makes the intent
     // explicit and keeps the schemas in the overhead estimate).
-    const messages = bigHistory(28, 4000); // ~56k-token transcript, under 75000.
+    const messages = bigHistory(28, 4000); // ~56k-token transcript, under the 84k trigger.
     return { base, windowed, reference, bigSystemPrompt, messages };
   }
 
@@ -2041,7 +2041,7 @@ describe("pi-native auto-compaction", () => {
     expect(result.diagnostics.context_fixed_overhead_tokens).toBeGreaterThan(0);
     expect(result.diagnostics.context_system_prompt_tokens).toBeGreaterThan(0);
     expect(typeof result.diagnostics.context_tool_schema_tokens).toBe("number");
-    expect(result.diagnostics.context_compaction_trigger_tokens).toBe(70000);
+    expect(result.diagnostics.context_compaction_trigger_tokens).toBe(84000);
     expect(result.diagnostics.context_transcript_estimate)
       .toBeGreaterThanOrEqual(result.diagnostics.context_compaction_trigger_tokens);
     // Regression guard for the transcript double-count: only the TRAILING per-turn
