@@ -487,7 +487,8 @@ function stripInlineMarkdown(value) {
 
 function walk(path, visit) {
   for (const entry of readdirSync(path, { withFileTypes: true })) {
-    if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "dist" || entry.name === ".astro") continue;
+    if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "dist"
+      || entry.name === ".astro" || entry.name === ".worklab-tmp") continue;
     const absolutePath = join(path, entry.name);
     if (entry.isDirectory()) walk(absolutePath, visit);
     else if (entry.isFile()) visit(absolutePath);

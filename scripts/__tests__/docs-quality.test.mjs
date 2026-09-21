@@ -125,6 +125,11 @@ describe("documentation quality", () => {
 
   test("checks local targets and heading fragments across the public corpus", async () => {
     const root = await fixtureRoot();
+    await mkdir(join(root, ".worklab-tmp/snapshot"), { recursive: true });
+    await writeFile(
+      join(root, ".worklab-tmp/snapshot/README.md"),
+      "# Private snapshot\n\n[Old docs](https://mono-agent-docs.vercel.app/runtime/)\n",
+    );
     const errors = findDocumentationErrors({ root });
 
     expect(collectPublicMarkdownFiles(root)).toEqual(["docs/guide/index.md", "docs/index.md", "README.md"]);

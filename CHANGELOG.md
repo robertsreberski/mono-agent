@@ -73,6 +73,11 @@
   scope; distinguish corrected reports from actual state changes and avoid
   turning observed outcomes into causal proof, without extra model calls or a
   storage-schema change.
+- Give strict BuJo extraction the durable completed-turn admission instant as
+  host-owned observation context, reused across retries, and guide extraction
+  and reconciliation to retain material dates, relative phrases and anchors,
+  uncertainty, negation, event scope, and distinct repeated events without
+  presenting receipt time as event time or trusting timestamps in quoted text.
 - Make strict agent-host BuJo extraction and reconciliation request the runtime's
   schema-guided `StructuredOutput` result while retaining authoritative strict
   validation and whole-turn atomicity. Accept a successful terminal structured
@@ -91,8 +96,14 @@
   zero-trial run.
 - Add opt-in LoCoMo memory diagnostics with ordered source exchanges, one
   capture pass per conversation within a run, independent question histories,
-  and exact completed-result reuse. Report lexical scores separately from
-  unmeasured semantic quality and expose capture, retrieval, and budget limits.
+  source timestamp-bound admission clocks that retries cannot shift, and exact
+  completed-result reuse. Retry only positively identified local capture
+  failures, including fulfilled strict calls that omit or cannot project their
+  required structured result, through the native durable schedule without
+  accepting fallback text. Use a plan-bound 30-second embedding deadline that
+  matches the native memory provider default while keeping deadline and
+  cancellation failures terminal. Report lexical scores separately from unmeasured semantic
+  quality and expose capture, retrieval, and budget limits.
 - Keep memory E2E strict capture on the runtime's authoritative structured
   result, including reconciliation projection, and pin real requests to SSE
   with no transport retry. Report output reservations as provider hints and

@@ -10,7 +10,7 @@ import { prepareRealBuild, sourceState, verifyRealBuild } from "./lib/memory-e2e
 const ROOT = fileURLToPath(new URL("../", import.meta.url)).replace(/\/$/u, "");
 export function parseArguments(argv) {
   const flags = {};
-  const boolean = new Set(["dry-run", "real", "help", "allow-hosted-locomo-transfer"]);
+  const boolean = new Set(["dry-run", "real", "help", "allow-hosted-locomo-transfer", "allow-measured-output"]);
   const valued = new Set(["corpus", "dataset", "split", "reader", "extractor", "embedding-provider", "embedding-model", "dimension", "confirm-plan", "pi-auth-path", "locomo-experiment", "locomo-arm", "reuse-artifact"]);
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i].replace(/^--/u, "");
@@ -46,7 +46,7 @@ export function profileFrom(flags) {
 export async function main(argv = process.argv.slice(2), { stdout = console.log, prepareBuild = prepareRealBuild } = {}) {
   const flags = parseArguments(argv);
   if (flags.help) {
-    stdout("memory-e2e-benchmark [--dry-run] [--corpus fictional-v1|bujo-learning-v1|capture-fidelity-v1|locomo-v1] [--dataset PATH] [--split development|evaluation] [--pi-auth-path PATH] [--allow-hosted-locomo-transfer] [--locomo-experiment locomo-bujo-eval-v1-rank5-development-30|locomo-bujo-eval-v1-rank6-confirmation-20] [--locomo-arm full-history|bujo|both] [--reuse-artifact PATH]\nDefault: scripted offline production-path contract, NOT model quality. LoCoMo requires a separately downloaded, pinned --dataset file and is CC BY-NC 4.0 noncommercial-only input.\nReal execution: --real --reader provider:model --extractor provider:model --embedding-provider ollama|lmstudio|openai --embedding-model model --dimension N [--pi-auth-path PATH] --confirm-plan SHA256\nWithin one successful LoCoMo invocation, capture runs once and questions use independent histories. --reuse-artifact reuses only an exact completed result; it cannot resume capture or readers from an incomplete run. Frozen-set worst-case execution is not approved: a dry-plan confirmation still requires parent-controlled, materially smaller execution authorization. Hosted LoCoMo is rejected unless --allow-hosted-locomo-transfer affirmatively selects the documented Luna chat/local bge-m3 profile.\nFirst obtain SHA256 with the same profile and --dry-run. Outputs stay under .worklab-tmp/memory-e2e. The benchmark never downloads datasets or changes consumer configuration.");
+    stdout("memory-e2e-benchmark [--dry-run] [--corpus fictional-v1|bujo-learning-v1|capture-fidelity-v1|locomo-v1] [--dataset PATH] [--split development|evaluation] [--pi-auth-path PATH] [--allow-hosted-locomo-transfer] [--allow-measured-output] [--locomo-experiment locomo-bujo-eval-v1-rank5-development-30|locomo-bujo-eval-v1-rank6-confirmation-20] [--locomo-arm full-history|bujo|both] [--reuse-artifact PATH]\nDefault: scripted offline production-path contract, NOT model quality. LoCoMo requires a separately downloaded, pinned --dataset file and is CC BY-NC 4.0 noncommercial-only input.\nReal execution: --real --reader provider:model --extractor provider:model --embedding-provider ollama|lmstudio|openai --embedding-model model --dimension N [--pi-auth-path PATH] [--allow-measured-output] --confirm-plan SHA256\n--allow-measured-output is an explicit plan-bound opt-in for a provider whose output is measured but not wire-capped; ordinary strict execution keeps refusing that route. Within one successful LoCoMo invocation, capture runs once and questions use independent histories. --reuse-artifact reuses only an exact completed result; it cannot resume capture or readers from an incomplete run. A dry-plan confirmation is not execution authorization. Hosted LoCoMo is rejected unless --allow-hosted-locomo-transfer affirmatively selects the documented Luna chat/local bge-m3 profile.\nFirst obtain SHA256 with the same profile and flags in --dry-run. Outputs stay under .worklab-tmp/memory-e2e. The benchmark never downloads datasets or changes consumer configuration.");
     return 0;
   }
   const { head } = sourceState(ROOT);
@@ -59,11 +59,14 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   if (!locomo && flags["reuse-artifact"] !== undefined) throw new Error("reuse_artifact_requires_locomo");
   const split = flags.split ?? (locomo ? "evaluation" : "development");
   const profile = profileFrom(flags);
+  if (flags["allow-measured-output"] && profile === null) throw new Error("measured_output_requires_profile");
+  const selectedProfile = profile === null || !flags["allow-measured-output"]
+    ? profile : { ...profile, outputBudgetMode: "measured" };
   if (!locomo && flags["allow-hosted-locomo-transfer"]) throw new Error("hosted_locomo_transfer_ack_requires_locomo");
   const locomoAdapter = locomo ? await import("./lib/memory-e2e-locomo.mjs") : null;
   const executionProfile = locomo
-    ? locomoAdapter.locomoExecutionProfile(profile, { allowHostedTransfer: flags["allow-hosted-locomo-transfer"] === true })
-    : profile;
+    ? locomoAdapter.locomoExecutionProfile(selectedProfile, { allowHostedTransfer: flags["allow-hosted-locomo-transfer"] === true })
+    : selectedProfile;
   const experiment = locomo ? flags["locomo-experiment"] ?? locomoAdapter.LOCOMO_DEVELOPMENT_EXPERIMENT : null;
   const loaded = locomo
     ? await locomoAdapter.loadLocomo(flags.dataset, { experiment })
@@ -86,7 +89,8 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   // A confirmed plan is not permission to pretend a reservation is a hard cap.
   // Refuse known-unsupported strict providers before build, credentials, or any
   // provider construction; the dry-run manifest carries the same limitation.
-  if (flags.real && plan.budgetEnforcement?.outputTokens?.strictRealExecutionSupported === false) {
+  if (flags.real && plan.budgetEnforcement?.outputTokens?.strictRealExecutionSupported === false
+    && plan.budgetEnforcement.outputTokens.executionMode !== "measured_output_explicit_opt_in") {
     throw new Error("strict_output_budget_unsupported");
   }
   // Fresh source-pinned build precedes ALL production imports and provider construction.

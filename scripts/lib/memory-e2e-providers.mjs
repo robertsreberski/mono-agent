@@ -157,6 +157,94 @@ export function usageOf(value) {
   };
 }
 
+function settledCaptureTimeoutRecovery(plan, stage) {
+  return ["extraction", "reconciliation"].includes(stage)
+    && plan.locomo?.captureRecovery?.timeoutPolicy === "settled_capture_runtime_only"
+    && Number.isSafeInteger(plan.perCall.captureTimeoutSettlementMs)
+    && plan.perCall.captureTimeoutSettlementMs > 0;
+}
+
+async function waitForCaptureRuntimeSettlement(runtimePromise, {
+  budget, signal, timeoutSignal, callerSignal, settlementTimeoutMs, event, compactionObserved,
+}) {
+  const tracked = budget.track(runtimePromise);
+  try {
+    return await bounded(tracked, { signal, code: "provider_timeout_or_cancelled" });
+  } catch (error) {
+    if (!signal.aborted) throw error;
+    const localTimeout = timeoutSignal.aborted
+      && !budget.controller.signal.aborted && callerSignal?.aborted !== true;
+    if (!localTimeout) {
+      budget.stopAdmission();
+      if (!budget.controller.signal.aborted) budget.controller.abort(new BenchmarkError("provider_timeout_or_cancelled"));
+      throw new BenchmarkError("provider_timeout_or_cancelled");
+    }
+    let settlement;
+    try {
+      [settlement] = await bounded(Promise.allSettled([tracked]), {
+        timeoutMs: settlementTimeoutMs,
+        code: "provider_settlement_unknown",
+      });
+    } catch {
+      event.timeoutScope = "capture_call_local";
+      event.timeoutSettlement = "unknown";
+      event.timeoutUsage = "unknown";
+      event.latePayloadAccepted = false;
+      budget.stopAdmission();
+      budget.controller.abort(new BenchmarkError("provider_settlement_unknown"));
+      throw new BenchmarkError("provider_settlement_unknown");
+    }
+    event.timeoutScope = "capture_call_local";
+    event.timeoutSettlement = settlement.status === "fulfilled" ? "fulfilled_discarded" : "rejected";
+    event.timeoutUsage = "unknown";
+    event.latePayloadAccepted = false;
+    // Local timeout may have won first, but caller/global cancellation during
+    // settlement still forbids recovery once the original runtime has ended.
+    if (budget.controller.signal.aborted || callerSignal?.aborted === true) {
+      budget.stopAdmission();
+      if (!budget.controller.signal.aborted) budget.controller.abort(new BenchmarkError("provider_timeout_or_cancelled"));
+      throw new BenchmarkError("provider_timeout_or_cancelled");
+    }
+    if (compactionObserved()) throw new BenchmarkError("unexpected_compaction");
+    if (settlement.status === "fulfilled") {
+      const stopReason = settlement.value?.diagnostics?.pi_stop_reason;
+      const failureKind = canonicalFailureKind(settlement.value?.failureKind);
+      event.providerReportedFailureKind = failureKind;
+      event.maxTurnsHit = settlement.value?.diagnostics?.max_turns_hit === true;
+      if (["length", "max_tokens"].includes(stopReason)) throw new BenchmarkError("output_limit_reached");
+      // Pi's local finite-turn guard reports both facts. A max-turn diagnostic
+      // alone must not mask provider auth/quota or an unknown provider failure.
+      if (failureKind === "usage_limit" && event.maxTurnsHit) {
+        throw new BenchmarkError("capture_step_budget_exhausted", { failureKind: "budget_exceeded" });
+      }
+      if (settlement.value?.failureKind || settlement.value?.error) {
+        if (failureKind !== null) {
+          event.failureKind = failureKind;
+          if (isFatalFailureKind(failureKind)) budget.stopProviders("provider_failed", failureKind);
+        }
+        throw failureKind === null
+          ? new BenchmarkError("provider_failed")
+          : new BenchmarkError("provider_failed", { failureKind });
+      }
+    } else {
+      const failureKind = canonicalFailureKind(settlement.reason?.failureKind);
+      if (failureKind !== null) {
+        event.failureKind = failureKind;
+        event.providerReportedFailureKind = failureKind;
+        if (isFatalFailureKind(failureKind)) budget.stopProviders("provider_failed", failureKind);
+        throw new BenchmarkError("provider_failed", { failureKind });
+      }
+      // Only a standard abort rejection is positive evidence that the local
+      // timeout cancelled this runtime. Any other settled rejection is an
+      // unknown provider failure, not a recoverable timeout completion.
+      if (!(settlement.reason instanceof Error && settlement.reason.name === "AbortError")) {
+        throw new BenchmarkError("provider_failed");
+      }
+    }
+    throw new BenchmarkError("capture_timeout_settled");
+  }
+}
+
 export function meteredRuntime(runtime, { budget, stage, tag, clock = performance.now.bind(performance) }) {
   return {
     async run(system, options) {
@@ -187,6 +275,7 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
       const started = clock();
       const timeout = AbortSignal.timeout(budget.plan.perCall.callTimeoutMs);
       const signal = AbortSignal.any([options.abortSignal, budget.controller.signal, timeout].filter(Boolean));
+      const recoverSettledCaptureTimeout = settledCaptureTimeoutRecovery(budget.plan, stage);
       const event = {
         ...tag,
         stage,
@@ -215,14 +304,23 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
       let compacted = false;
       try {
         if (signal.aborted) throw new BenchmarkError("provider_timeout_or_cancelled");
-        const result = await budget.wait(runtime.run(system, {
+        const runtimePromise = Promise.resolve(runtime.run(system, {
           ...options, ...cap, abortSignal: signal,
           onEvent: (value) => {
             if (/compact/iu.test(String(value?.type ?? ""))) compacted = true;
             if (value?.type === "context_usage") event.observedContext.push({ ...usageOf(value.tokens), contextWindow: finite(value.contextWindow), totalContextTokens: finite(value.tokens?.total), providerCostUsd: finite(value.providerCostUsd) });
             options.onEvent?.(value);
           },
-        }), { signal, timeoutMs: budget.plan.perCall.callTimeoutMs, code: "provider_timeout_or_cancelled" });
+        }));
+        const result = recoverSettledCaptureTimeout
+          ? await waitForCaptureRuntimeSettlement(runtimePromise, {
+              budget, signal, timeoutSignal: timeout, callerSignal: options.abortSignal,
+              settlementTimeoutMs: budget.plan.perCall.captureTimeoutSettlementMs, event,
+              compactionObserved: () => compacted,
+            })
+          : await budget.wait(runtimePromise, {
+              signal, timeoutMs: budget.plan.perCall.callTimeoutMs, code: "provider_timeout_or_cancelled",
+            });
         event.usage = usageOf(result.usage);
         event.runtimeReportedCostUsd = finite(typeof result.cost === "number" ? result.cost : result.cost?.totalCost);
         // Runtime cost may be estimated. Only explicitly provider-labelled costs enter this field.
@@ -265,14 +363,30 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
           throw new BenchmarkError("unfinished_tool_loop", { failureKind: event.failureKind });
         }
         if (structuredOutputRequested) {
-          if (!hasStructuredResult) throw new BenchmarkError("structured_result_missing", { failureKind: event.failureKind });
+          if (!hasStructuredResult) {
+            // The runtime fulfilled this exact call without provider/cancellation
+            // evidence, but omitted the strict payload required by production.
+            // Preserve that positive settled boundary for capture recovery; never
+            // substitute the free-form text as a successful completion.
+            event.runtimeSettlement = "fulfilled";
+            event.structuredOutputFailure = "structured_result_missing";
+            throw new BenchmarkError("structured_result_missing", { failureKind: event.failureKind });
+          }
         } else if (typeof result.text !== "string" || !result.text.trim()) {
           throw new BenchmarkError("provider_failed", { failureKind: event.failureKind });
         }
         event.status = "completed";
         return result;
       } catch (error) {
-        const code = signal.aborted ? "provider_timeout_or_cancelled" : error instanceof BenchmarkError ? error.code : "provider_failed";
+        const explicitCode = error instanceof BenchmarkError ? error.code : null;
+        const timeoutSettlementCodes = [
+          "capture_timeout_settled", "provider_settlement_unknown", "unexpected_compaction",
+          "output_limit_reached", "capture_step_budget_exhausted", "provider_failed",
+        ];
+        const preserveSettlementCode = event.timeoutScope === "capture_call_local"
+          && timeoutSettlementCodes.includes(explicitCode);
+        const code = preserveSettlementCode
+          ? explicitCode : signal.aborted ? "provider_timeout_or_cancelled" : explicitCode ?? "provider_failed";
         // Prefer a structured kind carried by the thrown failure; otherwise keep
         // the result-derived kind. Anything untrusted stays generic.
         const failureKind = canonicalFailureKind(error?.failureKind) ?? event.failureKind;
@@ -308,12 +422,42 @@ export function captureLlm(runtime, { model, workspace, sessionsRoot, budget, ta
     id: `agent-host:${model.reference}`,
     async complete(prompt, options = {}) {
       const stage = options.label === "capture:reconcile-batch" ? "reconciliation" : "extraction";
-      const result = await meteredRuntime(runtime, { budget, stage, tag }).run(MEMORY_SYSTEM, {
-        model, messages: [{ role: "user", content: prompt }], abortSignal: options.abortSignal ?? new AbortController().signal,
-        cwd: workspace, piSessionsRoot: sessionsRoot, allowedTools: [], disallowedTools: [], mcpServers: {},
-        ...(options.outputSchema === undefined ? {} : { outputSchema: options.outputSchema }),
-      });
-      const output = captureCompletionText(result, options);
+      let result;
+      try {
+        result = await meteredRuntime(runtime, { budget, stage, tag }).run(MEMORY_SYSTEM, {
+          model, messages: [{ role: "user", content: prompt }], abortSignal: options.abortSignal ?? new AbortController().signal,
+          cwd: workspace, piSessionsRoot: sessionsRoot, allowedTools: [], disallowedTools: [], mcpServers: {},
+          ...(options.outputSchema === undefined ? {} : { outputSchema: options.outputSchema }),
+        });
+      } catch (error) {
+        if (error instanceof BenchmarkError && error.code === "capture_timeout_settled"
+          && settledCaptureTimeoutRecovery(budget.plan, stage)) {
+          // Strict production capture owns attempt accounting. An isolated call
+          // that timed out and then settled contributes no accepted payload; an
+          // invalid completion sends the unchanged pending record through its
+          // native model_output retry schedule.
+          return "";
+        }
+        throw error;
+      }
+      let output;
+      try {
+        output = captureCompletionText(result, options);
+      } catch (error) {
+        if (error instanceof BenchmarkError
+          && ["structured_result_key_missing", "structured_result_unserializable"].includes(error.code)) {
+          // meteredRuntime already recorded a completed, settled provider call.
+          // This second event truthfully records rejection at the strict host
+          // projection boundary without rewriting the completed transport event.
+          budget.events.push({
+            ...tag, stage: "capture_projection", captureStage: stage,
+            status: error.code, runtimeSettlement: "fulfilled",
+            structuredOutputFailure: error.code, failureKind: null,
+            providerReportedFailureKind: null, maxTurnsHit: false, durationMs: 0,
+          });
+        }
+        throw error;
+      }
       capture?.({ ...tag, stage, prompt, output });
       return output;
     },
@@ -433,7 +577,11 @@ export function scriptedProviders({ source } = {}) {
 }
 
 /** Called only after CLI confirmation. No configured-app root leases or consumer configuration. */
-export async function realProviders(profile, { workspace, modules }) {
+export async function realProviders(profile, { workspace, modules, plan }) {
+  const embeddingTimeoutMs = plan?.perCall?.embeddingTimeoutMs;
+  if (!Number.isSafeInteger(embeddingTimeoutMs) || embeddingTimeoutMs < 1) {
+    throw new BenchmarkError("invalid_embedding_timeout_plan");
+  }
   const { createMonoRuntime, parseMonoRuntimeModelReference, createPiOAuthApiKeyResolver, runtimeOptionsForLocalProvider } = modules.runtime;
   // Explicit OAuth credential file only: one shared framework resolver for both
   // runtimes (it reads/refreshes lazily per request — construction opens no
@@ -466,7 +614,7 @@ export async function realProviders(profile, { workspace, modules }) {
   const reader = createMonoRuntime(hostOptions);
   const extractor = createMonoRuntime(hostOptions);
   const raw = modules.search.createEmbeddingProvider({
-    provider: profile.embeddingProvider, model: profile.embeddingModel, timeoutMs: 10000,
+    provider: profile.embeddingProvider, model: profile.embeddingModel, timeoutMs: embeddingTimeoutMs,
     ...(profile.embeddingProvider === "openai" ? { apiKey: process.env.OPENAI_API_KEY } : {}),
     ...(profile.embeddingEndpoint === undefined ? {} : { endpoint: profile.embeddingEndpoint }),
   });

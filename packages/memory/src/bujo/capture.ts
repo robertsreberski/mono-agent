@@ -44,15 +44,23 @@ async function captureTurnUnlocked(
   deps.abortSignal?.throwIfAborted();
   // One batched extraction call yields candidates + their precise entity ids;
   // one optional batched reconcile call classifies every near neighbour.
+  // Strict capture samples the host-owned clock once, before extraction, and
+  // uses that same instant for the observation anchor and capture metadata.
+  // Durable intake retries replace this clock with immutable admittedAt.
   const knownEntities = knownEntityHints(deps.root, text);
-  const extraction = await extractCapturePlanStrict(text, deps.llm, deps.abortSignal, knownEntities);
+  const observedAt = deps.now();
+  const extraction = await extractCapturePlanStrict(text, deps.llm, deps.abortSignal, knownEntities, {
+    observedAt: observedAt.toISOString(),
+  });
   deps.abortSignal?.throwIfAborted();
-  const now = deps.now();
-  const createdAt = now.toISOString();
+  const createdAt = observedAt.toISOString();
   let intentHandle: CaptureIntentHandle | undefined;
   let preparedActions: readonly CaptureIntentAction[] = [];
   await reconcileBatch(extraction.candidates, {
     ...deps,
+    // Reconciliation must reuse the same host-owned observation sample; it
+    // cannot observe a later wall clock or reinterpret relative-time anchors.
+    now: () => observedAt,
     strictModelOutput: true,
     // Once the intent exists it is the single commit owner. Writing the same
     // records directly here and then replaying the intent would duplicate the

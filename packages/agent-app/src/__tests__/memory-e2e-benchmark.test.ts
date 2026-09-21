@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -129,7 +129,12 @@ describe("fictional E2E production-path contract, not model quality", () => {
     const plan = dataset.makePlan({ corpus, sha256: "synthetic-batch" });
     plan.readerPrompt = { id: "synthetic-reader-v1", text: "SHARED_READER_PROMPT with insufficient-evidence abstention.\n", sha256: "synthetic" };
     const providerSources: any[] = [];
-    const providerFactory = vi.fn((args: any) => { providerSources.push(args.source); return input.providers.scriptedProviders(args); });
+    const providerPlans: any[] = [];
+    const providerFactory = vi.fn((args: any) => {
+      providerSources.push(args.source);
+      providerPlans.push(args.plan);
+      return input.providers.scriptedProviders(args);
+    });
     const admissions: any[] = []; const readerInputs: any[] = [];
     const report = await input.runner.runBenchmark({ ...input, corpus, plan, providerFactory, hooks: {
       admission: (turn: unknown) => admissions.push(turn),
@@ -138,6 +143,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
     expect(report.trials).toHaveLength(4);
     expect(report.trials.every((trial: any) => trial.status === "completed")).toBe(true);
     expect(providerFactory).toHaveBeenCalledTimes(2); // once per arm, never once per question
+    expect(providerPlans).toEqual([plan, plan]);
     expect(JSON.stringify(providerSources)).not.toMatch(/First synthetic question|Second synthetic question|REFERENCE_CANARY|ADVERSARIAL_CANARY/u);
     expect(admissions).toHaveLength(4); // four sessions captured once for the single BuJo arm
     expect(report.capture.filter((row: any) => row.arm === "bujo" && row.stage === "inventory")).toHaveLength(4);
@@ -460,7 +466,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
       });
       // Product structured-reconciliation guidance adds schema-bound prompt text;
       // pin the integrated prompt's actual conservative estimate.
-      expect(oldPreflight.estimatedInputTokens).toBe(27_928);
+      expect(oldPreflight.estimatedInputTokens).toBe(28_105);
 
       const corrected = await runAtLimit(locomo.LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS);
       expect(corrected.error).toBeNull();
@@ -504,10 +510,20 @@ describe("fictional E2E production-path contract, not model quality", () => {
     const corpus = { schemaVersion: 1, name: "locomo-v1", arms: ["bujo"], groups: [group] };
     dataset.validateCorpus(corpus);
     const plan = dataset.makePlan({ corpus, sha256: "synthetic-recovery", split: "evaluation" });
-    plan.locomo = { experiment: {
-      protocol, captureModelOutputAttempts: 2,
-      captureModelOutputRetryDelayMs: 60_000,
-    } };
+    plan.locomo = {
+      captureRecovery: {
+        policy: "native_persisted_exponential_v1",
+        maxAttempts: 2,
+        retryBaseMs: 60_000,
+        retryMaxMs: 60_000,
+        scheduleSource: "durable_pending_record_nextAttemptAt",
+        virtualClock: "advance_exactly_to_persisted_schedule",
+        retryableFailure: "model_output_settled_timeout_or_proven_finite_capture_step",
+        finiteStepPolicy: "current_attempt_capture_max_turns_only",
+        timeoutPolicy: "settled_capture_runtime_only",
+      },
+      experiment: { protocol },
+    };
     plan.perCall.readinessTimeoutMs = 5_000;
     plan.limits.chatSteps += 8;
     plan.limits.embeddingCalls += 8;
@@ -530,13 +546,176 @@ describe("fictional E2E production-path contract, not model quality", () => {
     const report = await input.runner.runBenchmark({ ...input, corpus, plan, providerFactory });
     expect(report.trials).toMatchObject([{ status: "completed", cleanup: "removed_owned_store" }]);
     expect(extractionCalls).toBe(original.source.turns.length + 1);
-    expect(report.events.filter((event: any) => event.stage === "capture_recovery")).toEqual([
-      expect.objectContaining({ status: "scheduled", attempt: 1, failureKind: "model_output", delayMs: 60_000 }),
+    const recoveryEvents = report.events.filter((event: any) => event.stage === "capture_recovery");
+    expect(recoveryEvents.slice(0, 2)).toEqual([
+      expect.objectContaining({
+        status: "scheduled",
+        attempt: 1,
+        failureKind: "model_output",
+        recoveryCause: "model_output",
+        advanceMs: 60_000,
+        nextAttemptAt: expect.any(String),
+      }),
+      expect.objectContaining({ status: "recovered_success", attempt: 2, priorFailures: 1 }),
     ]);
+    expect(recoveryEvents.slice(2)).toHaveLength(original.source.turns.length - 1);
+    expect(recoveryEvents.slice(2)).toEqual(expect.arrayContaining(
+      Array.from({ length: original.source.turns.length - 1 }, () => expect.objectContaining({
+        status: "first_attempt_success", attempt: 1, priorFailures: 0,
+      })),
+    ));
     expect(report.summary.locomoOfficial.byArm.bujo.overall).toMatchObject({
       status: "invalid_incomplete", scheduled: 1, completed: 0,
     }); // Scripted answers are never scored as provider quality.
     expect((await readdir(input.directory)).filter((name) => name.startsWith("work-"))).toEqual([]);
+  }, 30000);
+
+  it("recovers a settled missing structured result through the actual durable provider schedule", async () => {
+    const input = await fixture();
+    const dataset = await script("memory-e2e-dataset");
+    const original = input.corpus.groups[0];
+    const group = {
+      id: "structured-recovery",
+      split: "evaluation",
+      source: { turns: original.source.turns.slice(0, 1), contextPolicy: "memory-only" },
+      questions: [{
+        id: "q-structured-recovery", source: original.source.question,
+        evaluation: { ...original.evaluation, category: "multi-hop", locomoCategory: 1 },
+      }],
+    };
+    const corpus = { schemaVersion: 1, name: "locomo-v1", turnsPerGroup: { min: 1, max: 64 }, arms: ["bujo"], groups: [group] };
+    dataset.validateCorpus(corpus);
+    const plan = dataset.makePlan({ corpus, sha256: "synthetic-structured-recovery", split: "evaluation" });
+    plan.locomo = {
+      captureRecovery: {
+        policy: "native_persisted_exponential_v1",
+        maxAttempts: 2,
+        retryBaseMs: 60_000,
+        retryMaxMs: 60_000,
+        scheduleSource: "durable_pending_record_nextAttemptAt",
+        virtualClock: "advance_exactly_to_persisted_schedule",
+        retryableFailure: "model_output_settled_timeout_proven_finite_step_or_settled_structured_contract",
+        finiteStepPolicy: "current_attempt_capture_max_turns_only",
+        timeoutPolicy: "settled_capture_runtime_only",
+        structuredOutputPolicy: "current_attempt_fulfilled_required_projection_only",
+      },
+      experiment: { protocol: "synthetic-structured-recovery" },
+    };
+    plan.perCall.readinessTimeoutMs = 5_000;
+    let extractionCalls = 0;
+    const providerFactory = (args: any) => {
+      const value = input.providers.scriptedProviders(args);
+      return { ...value, extractor: { run: async () => {
+        extractionCalls += 1;
+        return extractionCalls === 1
+          ? { text: "plausible fallback" }
+          : { text: "", structuredResult: { memories: [], entities: [], relations: [] } };
+      } } };
+    };
+    const report = await input.runner.runBenchmark({ ...input, corpus, plan, providerFactory });
+    expect(report.trials).toMatchObject([{ status: "completed", cleanup: "removed_owned_store" }]);
+    expect(extractionCalls).toBe(2);
+    expect(report.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: "extraction", status: "structured_result_missing",
+        runtimeSettlement: "fulfilled", structuredOutputFailure: "structured_result_missing",
+      }),
+      expect.objectContaining({
+        stage: "capture_recovery", status: "scheduled", attempt: 1,
+        failureKind: "provider", recoveryCause: "settled_structured_output",
+      }),
+      expect.objectContaining({
+        stage: "capture_recovery", status: "recovered_success", attempt: 2, priorFailures: 1,
+      }),
+    ]));
+    expect((await readdir(input.directory)).filter((name) => name.startsWith("work-"))).toEqual([]);
+  }, 30000);
+
+  it("resets adjacent source admissions after a virtual retry advances the recovery clock", async () => {
+    const input = await fixture();
+    const dataset = await script("memory-e2e-dataset");
+    const timestamp = "2025-01-10T12:00:00.000Z";
+    const turns = [
+      { id: "same-t-1", sessionId: "same-t", speaker: "Mira", timestamp, user: "First source turn.", assistant: "First source response." },
+      { id: "same-t-2", sessionId: "same-t", speaker: "Mira", timestamp, user: "Second source turn.", assistant: "Second source response." },
+    ];
+    const corpus = {
+      schemaVersion: 1,
+      name: "locomo-v1",
+      turnsPerGroup: { min: 1, max: 64 },
+      arms: ["bujo"],
+      groups: [{
+        id: "source-clock",
+        split: "evaluation",
+        source: { turns, contextPolicy: "memory-only" },
+        questions: [{
+          id: "q-source-clock",
+          source: { text: "What was captured?", timestamp },
+          evaluation: {
+            answerable: false, accepted: [], forbidden: [], evidenceTurnIds: [],
+            category: "adversarial", locomoCategory: 5,
+          },
+        }],
+      }],
+    };
+    dataset.validateCorpus(corpus);
+    const plan = dataset.makePlan({ corpus, sha256: "synthetic-source-clock", split: "evaluation" });
+    plan.locomo = {
+      captureRecovery: {
+        policy: "native_persisted_exponential_v1",
+        maxAttempts: 2,
+        retryBaseMs: 60_000,
+        retryMaxMs: 60_000,
+        scheduleSource: "durable_pending_record_nextAttemptAt",
+        virtualClock: "advance_exactly_to_persisted_schedule",
+        retryableFailure: "model_output_settled_timeout_or_proven_finite_capture_step",
+        finiteStepPolicy: "current_attempt_capture_max_turns_only",
+        timeoutPolicy: "settled_capture_runtime_only",
+      },
+      experiment: { protocol: "synthetic-source-clock" },
+    };
+    plan.perCall.readinessTimeoutMs = 5_000;
+    plan.limits.chatSteps += 8;
+    plan.limits.embeddingCalls += 8;
+    plan.limits.estimatedInputTokens += 100_000;
+    plan.limits.embeddingInputTokens += 100_000;
+    plan.limits.outputTokens += 20_000;
+    const extractionPrompts: string[] = [];
+    let extractionCalls = 0;
+    const providerFactory = (args: any) => {
+      const value = input.providers.scriptedProviders(args);
+      return { ...value, extractor: { run: async (_system: string, options: any) => {
+        extractionCalls += 1;
+        extractionPrompts.push(options.messages[0].content);
+        return extractionCalls === 1
+          ? { text: "", structuredResult: { malformed: true } }
+          : { text: "", structuredResult: { memories: [], entities: [], relations: [] } };
+      } } };
+    };
+    const admittedAt: string[] = [];
+    const report = await input.runner.runBenchmark({
+      ...input, corpus, plan, providerFactory,
+      hooks: { store: (memory: bujo.BujoMemoryStore) => {
+        const persist = memory.persistCompletedTurn.bind(memory);
+        memory.persistCompletedTurn = async (completed) => {
+          const result = await persist(completed);
+          const record = JSON.parse(await readFile(result.source, "utf8"));
+          admittedAt.push(record.admittedAt);
+          return result;
+        };
+      } },
+    });
+
+    expect(report.trials).toMatchObject([{ status: "completed", cleanup: "removed_owned_store" }]);
+    expect(extractionCalls).toBe(3);
+    expect(admittedAt).toEqual([timestamp, timestamp]);
+    expect(extractionPrompts).toHaveLength(3);
+    expect(extractionPrompts.every((prompt) => prompt.includes(`admitted at ${timestamp}.`))).toBe(true);
+    expect(report.events.filter((event: any) => event.stage === "capture_recovery")).toEqual([
+      expect.objectContaining({ status: "scheduled", advanceMs: 60_000 }),
+      expect.objectContaining({ status: "recovered_success", attempt: 2 }),
+      expect.objectContaining({ status: "first_attempt_success", attempt: 1 }),
+    ]);
   }, 30000);
 
   it.each(["reader", "capture"])("reports terminal provider admission after clean %s failure cleanup", async (stage) => {
@@ -682,9 +861,34 @@ describe("fictional E2E production-path contract, not model quality", () => {
     } finally { budget.close(); await extension.cleanup(); service.releaseAllTurns(); await memory.close(); }
   }, 30000);
 
-  it.each(["deadline", "global abort"])("bounds the production embedding response body after headers: %s", async (mode) => {
+  it("accepts a slow valid production embedding within the plan-bound deadline", async () => {
+    const input = await fixture();
+    input.plan.perCall.embeddingTimeoutMs = 40;
+    const text = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return JSON.stringify({ embeddings: [[1, 0]] });
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, text } as unknown as Response);
+    const budget = new input.providers.Budget(input.plan);
+    try {
+      const raw = search.createEmbeddingProvider({
+        provider: "ollama", model: "fixture", timeoutMs: input.plan.perCall.embeddingTimeoutMs,
+      });
+      const embeddings = input.providers.meteredEmbeddings(raw, { budget, tag: {}, dimension: 2 });
+      await expect(embeddings.embed(["fictional body"])).resolves.toEqual([[1, 0]]);
+      expect(text).toHaveBeenCalledOnce();
+      expect(budget.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ stage: "embedding", status: "completed" }),
+        expect.objectContaining({ stage: "embedding_validation", status: "accepted" }),
+      ]));
+      expect(budget.admissionStopped).toBe(false);
+    } finally { budget.close(); }
+  });
+
+  it.each(["deadline", "caller abort", "global abort"])("bounds the production embedding response body after headers: %s", async (mode) => {
     const input = await fixture();
     input.plan.perCall.embeddingTimeoutMs = mode === "deadline" ? 10 : 1000;
+    const caller = new AbortController();
     let rejectBody!: (error: Error) => void;
     const body = new Promise((_, reject) => { rejectBody = reject; });
     let bodyStarted!: () => void;
@@ -693,12 +897,15 @@ describe("fictional E2E production-path contract, not model quality", () => {
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, text } as unknown as Response);
     const budget = new input.providers.Budget(input.plan);
     try {
-      const raw = search.createEmbeddingProvider({ provider: "ollama", model: "fixture", timeoutMs: 5 });
+      const raw = search.createEmbeddingProvider({
+        provider: "ollama", model: "fixture", timeoutMs: input.plan.perCall.embeddingTimeoutMs,
+      });
       const embeddings = input.providers.meteredEmbeddings(raw, { budget, tag: {} });
-      const pending = embeddings.embed(["fictional body"]);
+      const pending = embeddings.embed(["fictional body"], { abortSignal: caller.signal });
       const rejected = expect(pending).rejects.toThrow("embedding_timeout_or_cancelled");
       await started;
       expect(text).toHaveBeenCalledOnce();
+      if (mode === "caller abort") caller.abort();
       if (mode === "global abort") budget.controller.abort();
       await rejected;
       expect(fetch).toHaveBeenCalledOnce();
