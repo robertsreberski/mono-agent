@@ -1627,7 +1627,7 @@ function descriptionFor(id: string): string {
   }
   const compactionDescriptions: Record<string, string> = {
     "runtime.compaction.enabled": "Enables adaptive proactive compaction and one-shot reactive overflow recovery.",
-    "runtime.compaction.triggerRatio": "Fraction of the effective model context window used for the proactive trigger, additionally capped by adaptive safety headroom.",
+    "runtime.compaction.triggerRatio": "Fraction of the effective model context window used for the proactive trigger, additionally capped by adaptive safety headroom (10% of the window, 16,000-48,000 tokens).",
     "runtime.compaction.keepRecentTokens": "Explicit recent-context retention override; omitted derives 10% of the effective context window, clamped to 4,000-20,000 tokens.",
     "runtime.compaction.summaryMaxTokens": "Explicit combined summary-output budget override; omitted derives 4% of the effective context window, clamped to 2,000-12,000 tokens.",
     "runtime.compaction.minSavingsTokens": "Minimum verified token reduction required for proactive compaction; omitted derives 10% of the effective window, clamped to 4,000-20,000. Reactive recovery accepts any positive reduction.",
