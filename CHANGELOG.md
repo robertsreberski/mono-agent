@@ -26,8 +26,12 @@
 
 - Let a configured `runtime.compaction.triggerRatio` up to `0.95` take effect on
   large context windows by deriving the safety headroom as 10% of the window
-  (`16,000`-`48,000` tokens) instead of 25% (`16,000`-`96,000`), and raise
-  the default ratio from `0.70` to `0.90` so large-window models compact later.
+  (`16,000`-`48,000` tokens) instead of 25% (`16,000`-`96,000`).
+
+- Let omitted `runtime.compaction.triggerRatio` settings default to `0.90` so
+  large-window models compact later; the 16,000-token headroom floor still sets
+  the trigger to 112,000 tokens at a 128,000-token window and 16,000 tokens at a
+  32,000-token window.
 
 - Replace the marketing site’s inactive PostHog integration with native Astro Vercel Web Analytics, preserving explicit opt-in, browser privacy signals and withdrawal controls; simplify reporting to basic page views.
 
