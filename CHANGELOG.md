@@ -303,6 +303,14 @@
   effort levels low/high/max, and agent-level retry delays are capped at 60
   seconds.
 
+- Fix persistent subagent instances created with `Agent` `verification` on
+  hosts without a working sandbox engine so closing the instance and
+  continuing it with an acknowledgement no longer fail with
+  `subagent_recovery_policy_unavailable`. Verification observation still
+  withholds workdir and report facts without a working sandbox, and recovery
+  inspection no longer claims parent verification is required when the
+  observation policy is unavailable.
+
 
 ## 0.22.0 — Persistent subagents and Projects (2026-09-16)
 
