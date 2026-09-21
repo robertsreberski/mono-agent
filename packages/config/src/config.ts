@@ -125,6 +125,31 @@ function retiredObservabilityEnvIsActive(value: string | undefined): boolean {
   }
 }
 
+function retiredSupermemorySelectorIsActive(value: unknown): boolean {
+  return typeof value === "string" && normalizeOptionalString(value) === "supermemory";
+}
+
+function retiredSupermemoryBlockIsActive(value: unknown): boolean {
+  return !isRecord(value) || Array.isArray(value) || Object.keys(value).length !== 0;
+}
+
+function retiredSupermemoryEnvIsActive(value: string | undefined): boolean {
+  return normalizeOptionalString(value) !== undefined;
+}
+
+function retiredJsonValueIsInactive(): boolean {
+  return false;
+}
+
+const RETIRED_SUPERMEMORY_SELECTOR_JSON_MESSAGE =
+  "`memory.backend` no longer accepts `supermemory`: first-party Supermemory support was removed. Remove the selector before upgrading. mono-agent does not select a replacement or migrate remote data; remote data remains untouched.";
+const RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE =
+  "`memory.supermemory` was removed with first-party Supermemory support. Remove the block before upgrading. mono-agent does not select a replacement or migrate remote data; remote data remains untouched.";
+
+function retiredSupermemoryEnvMessage(env: string): string {
+  return `\`${env}\` was removed with first-party Supermemory support. Remove the variable from your environment and .env before upgrading. mono-agent does not select a replacement or migrate remote data; remote data remains untouched.`;
+}
+
 export const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
   {
     path: "runtime.permissionMode",
@@ -161,6 +186,62 @@ export const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
     env: "MONO_AGENT_FALLBACK_MODELS",
     message: "`runtime.fallbackModels` was replaced by `runtime.fallbacks: [{ \"model\": \"...\" }]`. Replace the key with that shape.",
     envMessage: "`MONO_AGENT_FALLBACK_MODELS` was replaced by `MONO_AGENT_FALLBACKS_JSON`, a JSON array of `{ \"model\": \"...\" }` objects. Remove the variable and re-express the chain there, or drop it into `runtime.fallbacks` in mono-agent.config.json.",
+  },
+  {
+    path: "memory.backend",
+    env: "MONO_AGENT_MEMORY_BACKEND",
+    message: RETIRED_SUPERMEMORY_SELECTOR_JSON_MESSAGE,
+    envMessage: "`MONO_AGENT_MEMORY_BACKEND=supermemory` was removed with first-party Supermemory support. Remove or change the selector before upgrading. mono-agent does not select a replacement or migrate remote data; remote data remains untouched.",
+    jsonValueIsActive: retiredSupermemorySelectorIsActive,
+    envValueIsActive: retiredSupermemorySelectorIsActive,
+  },
+  {
+    path: "memory.supermemory",
+    env: "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL",
+    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
+    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL"),
+    jsonValueIsActive: retiredSupermemoryBlockIsActive,
+    envValueIsActive: retiredSupermemoryEnvIsActive,
+  },
+  {
+    path: "memory.supermemory.apiKey",
+    env: "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY",
+    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
+    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY"),
+    jsonValueIsActive: retiredJsonValueIsInactive,
+    envValueIsActive: retiredSupermemoryEnvIsActive,
+  },
+  {
+    path: "memory.supermemory.apiKeyEnv",
+    env: "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV",
+    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
+    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV"),
+    jsonValueIsActive: retiredJsonValueIsInactive,
+    envValueIsActive: retiredSupermemoryEnvIsActive,
+  },
+  {
+    path: "memory.supermemory.container",
+    env: "MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER",
+    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
+    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER"),
+    jsonValueIsActive: retiredJsonValueIsInactive,
+    envValueIsActive: retiredSupermemoryEnvIsActive,
+  },
+  {
+    path: "memory.supermemory.timeoutMs",
+    env: "MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS",
+    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
+    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS"),
+    jsonValueIsActive: retiredJsonValueIsInactive,
+    envValueIsActive: retiredSupermemoryEnvIsActive,
+  },
+  {
+    path: "memory.supermemory.exposeMcpServer",
+    env: "MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER",
+    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
+    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER"),
+    jsonValueIsActive: retiredJsonValueIsInactive,
+    envValueIsActive: retiredSupermemoryEnvIsActive,
   },
   {
     path: "memory.llm.executionMode",

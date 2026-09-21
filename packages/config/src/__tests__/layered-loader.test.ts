@@ -440,8 +440,8 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED).toBe("true");
   });
 
-  it("translates the JSON memory.backend + supermemory block to env keys", () => {
-    const layered = layerJsonOntoEnv(
+  it("rejects active JSON Supermemory before projecting it to env keys", () => {
+    expect(() => layerJsonOntoEnv(
       {
         memory: {
           backend: "supermemory",
@@ -456,13 +456,10 @@ describe("layerJsonOntoEnv", () => {
         },
       },
       {},
-    );
-    expect(layered.MONO_AGENT_MEMORY_BACKEND).toBe("supermemory");
-    expect(layered.MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL).toBe("http://127.0.0.1:8080");
-    expect(layered.MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV).toBe("SM_KEY");
-    expect(layered.MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER).toBe("agent-alpha");
-    expect(layered.MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS).toBe("5000");
-    expect(layered.MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER).toBe("true");
+    )).toThrowError(expect.objectContaining({
+      code: "invalid_json",
+      details: expect.objectContaining({ path: "memory.backend" }),
+    }));
   });
 
   it("translates JSON runtime.session to env keys", () => {
@@ -1451,56 +1448,57 @@ describe("loadMonoAgentConfigWithSources", () => {
     });
   });
 
-  it("ignores stale empty BuJo blocks when JSON selects the Supermemory backend", async () => {
+  it.each([
+    ["supermemory", "bujo"],
+    ["supermemory", ""],
+    ["  supermemory  ", "bujo"],
+    ["  supermemory  ", "   "],
+  ])("rejects retired JSON backend %j before env override %j can hide it", async (backend, envBackend) => {
     const path = join(dir, "config.json");
     await writeFile(path, JSON.stringify({
       runtime: { model: "pi:openai-codex:gpt-5.5" },
       context: { identityPath: "IDENTITY.md" },
-      memory: {
-        backend: "supermemory",
-        mode: "bujo",
-        writeMode: "capture",
-        supermemory: { baseUrl: "http://127.0.0.1:6767" },
-        embeddings: {},
-        llm: {},
-      },
+      memory: { backend },
+    }), "utf8");
+
+    await expect(loadMonoAgentConfigWithSources({
+      env: { MONO_AGENT_MEMORY_BACKEND: envBackend },
+      cwd: dir,
+      jsonPath: path,
+    })).rejects.toMatchObject({
+      code: "invalid_json",
+      details: { path: "memory.backend", paths: ["memory.backend"] },
+    });
+  });
+
+  it("rejects a retired env selector even when JSON selects valid local memory", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: { backend: "bujo", mode: "lite", path: ".mono-agent/memory" },
+    }), "utf8");
+
+    await expect(loadMonoAgentConfigWithSources({
+      env: { MONO_AGENT_MEMORY_BACKEND: " supermemory " },
+      cwd: dir,
+      jsonPath: path,
+    })).rejects.toMatchObject({
+      code: "invalid_env",
+      details: { env: "MONO_AGENT_MEMORY_BACKEND", envs: ["MONO_AGENT_MEMORY_BACKEND"] },
+    });
+  });
+
+  it("keeps an exact empty legacy block inert without creating memory config", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: { supermemory: {} },
     }), "utf8");
 
     const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
-    expect(config.memory).toMatchObject({
-      backend: "supermemory",
-      writeMode: "capture",
-      supermemory: { baseUrl: "http://127.0.0.1:6767" },
-    });
-    expect(config.memory?.embeddings).toBeUndefined();
-    expect(config.memory?.llm).toBeUndefined();
-  });
-
-  it("uses env backend precedence before validating stale empty JSON BuJo blocks", async () => {
-    const path = join(dir, "config.json");
-    await writeFile(path, JSON.stringify({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
-      context: { identityPath: "IDENTITY.md" },
-      memory: {
-        backend: "bujo",
-        mode: "journal",
-        path: ".mono-agent/memory",
-        embeddings: {},
-        llm: {},
-      },
-    }), "utf8");
-
-    const config = await loadMonoAgentConfigWithSources({
-      env: {
-        MONO_AGENT_MEMORY_BACKEND: "supermemory",
-        MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:6767",
-      },
-      cwd: dir,
-      jsonPath: path,
-    });
-    expect(config.memory?.backend).toBe("supermemory");
-    expect(config.memory?.embeddings).toBeUndefined();
-    expect(config.memory?.llm).toBeUndefined();
+    expect(config.memory).toBeUndefined();
   });
 
   it("attributes a non-string JSON memory backend to memory.backend", async () => {
@@ -1519,21 +1517,31 @@ describe("loadMonoAgentConfigWithSources", () => {
     });
   });
 
-  it("attributes an unsupported JSON memory backend to memory.backend", async () => {
-    const path = join(dir, "config.json");
-    await writeFile(path, JSON.stringify({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
-      context: { identityPath: "IDENTITY.md" },
-      memory: { backend: "not-a-backend", path: ".mono-agent/memory" },
-    }), "utf8");
+  it.each(["not-a-backend", "Supermemory", "none", "off"])(
+    "keeps unsupported JSON memory backend %j on ordinary validation",
+    async (backend) => {
+      const path = join(dir, "config.json");
+      await writeFile(path, JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: { backend, path: ".mono-agent/memory" },
+      }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
-      name: "MonoAgentConfigError",
-      code: "invalid_json",
-      message: expect.stringContaining("memory.backend"),
-      details: { path: "memory.backend", code: "invalid_json" },
-    });
-  });
+      let rejection: unknown;
+      try {
+        await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+      } catch (error) {
+        rejection = error;
+      }
+      expect(rejection).toMatchObject({
+        name: "MonoAgentConfigError",
+        code: "invalid_json",
+        message: expect.stringContaining("memory.backend"),
+        details: { path: "memory.backend", code: "invalid_json" },
+      });
+      expect(String(rejection)).not.toContain("removed with first-party Supermemory support");
+    },
+  );
 
   it("attributes a null JSON memory LLM block to memory.llm", async () => {
     const path = join(dir, "config.json");
@@ -1625,33 +1633,36 @@ describe("loadMonoAgentConfigWithSources", () => {
   });
 
   it.each([
-    ["baseUrl", { baseUrl: [] }, "memory.supermemory.baseUrl"],
-    ["apiKey", { baseUrl: "http://127.0.0.1:6767", apiKey: {} }, "memory.supermemory.apiKey"],
-    ["apiKeyEnv", { baseUrl: "http://127.0.0.1:6767", apiKeyEnv: [] }, "memory.supermemory.apiKeyEnv"],
-    ["container", { baseUrl: "http://127.0.0.1:6767", container: {} }, "memory.supermemory.container"],
-    ["timeoutMs", { baseUrl: "http://127.0.0.1:6767", timeoutMs: [1_000] }, "memory.supermemory.timeoutMs"],
-    [
-      "exposeMcpServer",
-      { baseUrl: "http://127.0.0.1:6767", exposeMcpServer: [true] },
-      "memory.supermemory.exposeMcpServer",
-    ],
-    ["block", [], "memory.supermemory"],
-  ] as const)("attributes malformed JSON memory.supermemory %s before env coercion", async (
+    ["empty-valued key", { baseUrl: "" }],
+    ["credential key", { apiKey: "secret-api-key" }],
+    ["disabled-looking key", { exposeMcpServer: false }],
+    ["unknown key", { unknown: "secret-value" }],
+    ["null block", null],
+    ["array block", []],
+    ["scalar block", "removed"],
+  ] as const)("rejects active or malformed JSON memory.supermemory %s before env coercion", async (
     _name,
     supermemory,
-    expectedPath,
   ) => {
     const path = join(dir, "config.json");
     await writeFile(path, JSON.stringify({
       runtime: { model: "pi:openai-codex:gpt-5.5" },
       context: { identityPath: "IDENTITY.md" },
-      memory: { backend: "supermemory", supermemory },
+      memory: { supermemory },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    let rejection: unknown;
+    try {
+      await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toMatchObject({
       code: "invalid_json",
-      details: { path: expectedPath, code: "invalid_json" },
+      details: { path: "memory.supermemory", code: "invalid_json" },
     });
+    expect(String(rejection)).not.toContain("secret-api-key");
+    expect(String(rejection)).not.toContain("secret-value");
   });
 
   it.each([
@@ -1733,11 +1744,6 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
       "memory.embeddings.circuitBreaker.failureThreshold",
     ],
-    [
-      "Supermemory timeout",
-      { backend: "supermemory", supermemory: { baseUrl: "http://127.0.0.1:6767", timeoutMs: 0 } },
-      "memory.supermemory.timeoutMs",
-    ],
     ["root mode", { mode: "not-a-mode", path: ".mono-agent/memory" }, "memory.mode"],
     ["root writeMode", { mode: "lite", path: ".mono-agent/memory", writeMode: "wrong" }, "memory.writeMode"],
     ["root maxBytes", { mode: "lite", path: ".mono-agent/memory", maxBytes: 0 }, "memory.maxBytes"],
@@ -1760,16 +1766,6 @@ describe("loadMonoAgentConfigWithSources", () => {
   });
 
   it.each([
-    [
-      "JSON-selected Supermemory without a base URL",
-      { backend: "supermemory" },
-      "memory.supermemory.baseUrl",
-    ],
-    [
-      "a partial JSON Supermemory block",
-      { mode: "lite", path: ".mono-agent/memory", supermemory: { container: "agent" } },
-      "memory.supermemory.baseUrl",
-    ],
     [
       "JSON-selected OpenAI embeddings without credentials",
       { mode: "journal", path: ".mono-agent/memory", embeddings: { provider: "openai" } },
@@ -1800,12 +1796,6 @@ describe("loadMonoAgentConfigWithSources", () => {
 
   it.each([
     [
-      "Supermemory backend",
-      { mode: "lite", path: ".mono-agent/memory" },
-      { MONO_AGENT_MEMORY_BACKEND: "supermemory" },
-      "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL",
-    ],
-    [
       "OpenAI embeddings provider",
       { mode: "journal", path: ".mono-agent/memory", embeddings: { dim: 384 } },
       { MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai" },
@@ -1829,35 +1819,6 @@ describe("loadMonoAgentConfigWithSources", () => {
       details: { env: expectedEnv, code: "invalid_env" },
     });
   });
-
-  it.each(["", "   "])(
-    "does not treat a %j JSON Supermemory container as activating a JSON-owned base URL requirement",
-    async (container) => {
-      const path = join(dir, "config.json");
-      await writeFile(path, JSON.stringify({
-        runtime: { model: "pi:openai-codex:gpt-5.5" },
-        context: { identityPath: "IDENTITY.md" },
-        memory: {
-          backend: "bujo",
-          mode: "lite",
-          path: ".mono-agent/memory",
-          supermemory: { container },
-        },
-      }), "utf8");
-
-      await expect(loadMonoAgentConfigWithSources({
-        env: { MONO_AGENT_MEMORY_BACKEND: "supermemory" },
-        cwd: dir,
-        jsonPath: path,
-      })).rejects.toMatchObject({
-        code: "invalid_env",
-        details: {
-          env: "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL",
-          code: "invalid_env",
-        },
-      });
-    },
-  );
 
   it.each(["", "   "])(
     "does not treat a %j JSON embeddings credential reference as JSON-owned",
@@ -1903,7 +1864,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "Supermemory backend",
       { backend: " supermemory " },
       {},
-      "memory.supermemory.baseUrl",
+      "memory.backend",
     ],
     [
       "OpenAI embeddings provider",
@@ -2018,7 +1979,7 @@ describe("loadMonoAgentConfigWithSources", () => {
     });
   });
 
-  it("lets non-empty env leaves override malformed lower-precedence embeddings and Supermemory JSON", async () => {
+  it("lets a non-empty env leaf override malformed lower-precedence embeddings JSON", async () => {
     const embeddingsPath = join(dir, "embeddings.json");
     await writeFile(embeddingsPath, JSON.stringify({
       runtime: { model: "pi:openai-codex:gpt-5.5" },
@@ -2035,22 +1996,6 @@ describe("loadMonoAgentConfigWithSources", () => {
       jsonPath: embeddingsPath,
     });
     expect(embeddingsConfig.memory?.embeddings?.dim).toBe(384);
-
-    const supermemoryPath = join(dir, "supermemory.json");
-    await writeFile(supermemoryPath, JSON.stringify({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
-      context: { identityPath: "IDENTITY.md" },
-      memory: {
-        backend: "supermemory",
-        supermemory: { baseUrl: "http://127.0.0.1:6767", timeoutMs: [1_000] },
-      },
-    }), "utf8");
-    const supermemoryConfig = await loadMonoAgentConfigWithSources({
-      env: { MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS: "2000" },
-      cwd: dir,
-      jsonPath: supermemoryPath,
-    });
-    expect(supermemoryConfig.memory?.supermemory?.timeoutMs).toBe(2_000);
   });
 
   it("keeps invalid non-empty env scalar overrides attributed to env", async () => {
@@ -2089,83 +2034,6 @@ describe("loadMonoAgentConfigWithSources", () => {
     })).rejects.toMatchObject({
       code: "invalid_json",
       details: { path: "memory.embeddings.dim", code: "invalid_json" },
-    });
-  });
-
-  it("ignores malformed stale BuJo scalar leaves after switching to Supermemory", async () => {
-    const path = join(dir, "config.json");
-    await writeFile(path, JSON.stringify({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
-      context: { identityPath: "IDENTITY.md" },
-      memory: {
-        backend: "bujo",
-        mode: "bujo",
-        path: ".mono-agent/memory",
-        embeddings: { dim: [2] },
-        llm: { provider: "ollama", model: "qwen3:4b", trace: [false] },
-        consolidation: { enabled: [true] },
-      },
-    }), "utf8");
-
-    const config = await loadMonoAgentConfigWithSources({
-      env: {
-        MONO_AGENT_MEMORY_BACKEND: "supermemory",
-        MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:6767",
-      },
-      cwd: dir,
-      jsonPath: path,
-    });
-    expect(config.memory?.backend).toBe("supermemory");
-    expect(config.memory?.embeddings).toBeUndefined();
-    expect(config.memory?.llm).toBeUndefined();
-    expect(config.memory?.consolidation).toBeUndefined();
-  });
-
-  it("validates the Supermemory block activated by an env backend switch", async () => {
-    const path = join(dir, "config.json");
-    await writeFile(path, JSON.stringify({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
-      context: { identityPath: "IDENTITY.md" },
-      memory: {
-        backend: "bujo",
-        mode: "journal",
-        path: ".mono-agent/memory",
-        embeddings: { dim: 384 },
-        supermemory: { baseUrl: "http://127.0.0.1:6767", timeoutMs: [1_000] },
-      },
-    }), "utf8");
-
-    await expect(loadMonoAgentConfigWithSources({
-      env: { MONO_AGENT_MEMORY_BACKEND: "supermemory" },
-      cwd: dir,
-      jsonPath: path,
-    })).rejects.toMatchObject({
-      code: "invalid_json",
-      details: { path: "memory.supermemory.timeoutMs", code: "invalid_json" },
-    });
-  });
-
-  it("validates configured Supermemory scalars even when BuJo remains the effective backend", async () => {
-    const path = join(dir, "config.json");
-    await writeFile(path, JSON.stringify({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
-      context: { identityPath: "IDENTITY.md" },
-      memory: {
-        backend: "supermemory",
-        mode: "journal",
-        path: ".mono-agent/memory",
-        embeddings: { dim: 384 },
-        supermemory: { baseUrl: "http://127.0.0.1:6767", timeoutMs: [1_000] },
-      },
-    }), "utf8");
-
-    await expect(loadMonoAgentConfigWithSources({
-      env: { MONO_AGENT_MEMORY_BACKEND: "bujo" },
-      cwd: dir,
-      jsonPath: path,
-    })).rejects.toMatchObject({
-      code: "invalid_json",
-      details: { path: "memory.supermemory.timeoutMs", code: "invalid_json" },
     });
   });
 
@@ -2396,7 +2264,23 @@ describe("loadMonoAgentConfigWithSources", () => {
     expect(config.memory?.llm).toMatchObject({ provider: "ollama", model: "qwen3:4b" });
   });
 
-  it("lets an env backend override a malformed lower-precedence JSON backend", async () => {
+  it("lets a retained env backend override a malformed lower-precedence JSON backend", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: { backend: 123, mode: "lite", path: ".mono-agent/memory" },
+    }), "utf8");
+
+    const config = await loadMonoAgentConfigWithSources({
+      env: { MONO_AGENT_MEMORY_BACKEND: "bujo" },
+      cwd: dir,
+      jsonPath: path,
+    });
+    expect(config.memory?.backend).toBe("bujo");
+  });
+
+  it("rejects an active JSON Supermemory block before an env backend can override it", async () => {
     const path = join(dir, "config.json");
     await writeFile(path, JSON.stringify({
       runtime: { model: "pi:openai-codex:gpt-5.5" },
@@ -2407,12 +2291,14 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    const config = await loadMonoAgentConfigWithSources({
-      env: { MONO_AGENT_MEMORY_BACKEND: "supermemory" },
+    await expect(loadMonoAgentConfigWithSources({
+      env: { MONO_AGENT_MEMORY_BACKEND: "bujo" },
       cwd: dir,
       jsonPath: path,
+    })).rejects.toMatchObject({
+      code: "invalid_json",
+      details: { path: "memory.supermemory", code: "invalid_json" },
     });
-    expect(config.memory?.backend).toBe("supermemory");
   });
 
   it("keeps an invalid env backend authoritative over malformed lower-precedence JSON", async () => {
@@ -2434,28 +2320,7 @@ describe("loadMonoAgentConfigWithSources", () => {
     });
   });
 
-  it("ignores a stale null BuJo LLM block for the effective external backend", async () => {
-    const path = join(dir, "config.json");
-    await writeFile(path, JSON.stringify({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
-      context: { identityPath: "IDENTITY.md" },
-      memory: {
-        backend: "bujo",
-        supermemory: { baseUrl: "http://127.0.0.1:6767" },
-        llm: null,
-      },
-    }), "utf8");
-
-    const config = await loadMonoAgentConfigWithSources({
-      env: { MONO_AGENT_MEMORY_BACKEND: "supermemory" },
-      cwd: dir,
-      jsonPath: path,
-    });
-    expect(config.memory?.backend).toBe("supermemory");
-    expect(config.memory?.llm).toBeUndefined();
-  });
-
-  it("re-enables strict empty-block validation when env overrides Supermemory with BuJo", async () => {
+  it("rejects a retired JSON selector before a BuJo env override can hide it", async () => {
     const path = join(dir, "config.json");
     await writeFile(path, JSON.stringify({
       runtime: { model: "pi:openai-codex:gpt-5.5" },
@@ -2475,7 +2340,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       jsonPath: path,
     })).rejects.toMatchObject({
       code: "invalid_json",
-      details: { path: "memory.embeddings", code: "invalid_json" },
+      details: { path: "memory.backend", code: "invalid_json" },
     });
   });
 

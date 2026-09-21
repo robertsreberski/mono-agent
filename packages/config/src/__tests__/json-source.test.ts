@@ -129,6 +129,79 @@ describe("readMonoAgentConfigJson", () => {
     expect(String(rejection)).not.toContain("secret-token");
   });
 
+  it("accepts only an exact empty Supermemory block as inert JSON compatibility", async () => {
+    const path = join(dir, "inert-supermemory.json");
+    const json = { memory: { supermemory: {} } };
+    await writeFile(path, JSON.stringify(json), "utf8");
+
+    await expect(readMonoAgentConfigJson(path)).resolves.toMatchObject({ json });
+  });
+
+  it.each(["supermemory", "  supermemory  "])(
+    "rejects the retired JSON backend selector before projection (%j)",
+    async (backend) => {
+      const path = join(dir, "retired-supermemory-selector.json");
+      await writeFile(path, JSON.stringify({ memory: { backend, supermemory: {} } }), "utf8");
+
+      await expect(readMonoAgentConfigJson(path)).rejects.toMatchObject({
+        code: "invalid_json",
+        details: { path: "memory.backend", paths: ["memory.backend"] },
+      });
+    },
+  );
+
+  it("reports the retired selector and active block once each without echoing values", async () => {
+    const path = join(dir, "retired-supermemory-combined.json");
+    await writeFile(path, JSON.stringify({
+      memory: { backend: "supermemory", supermemory: { apiKey: "secret-api-key" } },
+    }), "utf8");
+    let rejection: unknown;
+    try {
+      await readMonoAgentConfigJson(path);
+    } catch (error) {
+      rejection = error;
+    }
+
+    expect(rejection).toMatchObject({
+      code: "invalid_json",
+      details: {
+        path: "memory.backend",
+        paths: ["memory.backend", "memory.supermemory"],
+      },
+    });
+    expect(String(rejection)).not.toContain("secret-api-key");
+  });
+
+  it.each([
+    null,
+    [],
+    "removed",
+    42,
+    { baseUrl: "" },
+    { apiKey: "secret-api-key" },
+    { exposeMcpServer: false },
+    { unknown: "secret-unknown-value" },
+  ])("rejects nonempty or malformed Supermemory JSON secret-safely (%j)", async (supermemory) => {
+    const path = join(dir, "retired-supermemory-block.json");
+    const original = JSON.stringify({ memory: { supermemory } });
+    await writeFile(path, original, "utf8");
+    let rejection: unknown;
+    try {
+      await readMonoAgentConfigJson(path);
+    } catch (error) {
+      rejection = error;
+    }
+
+    expect(rejection).toMatchObject({
+      code: "invalid_json",
+      details: { path: "memory.supermemory", paths: ["memory.supermemory"] },
+    });
+    expect(String(rejection)).toContain("first-party Supermemory support");
+    expect(String(rejection)).not.toContain("secret-api-key");
+    expect(String(rejection)).not.toContain("secret-unknown-value");
+    expect(await readFile(path, "utf8")).toBe(original);
+  });
+
   it("reports every retired JSON key in one read, not just the first", async () => {
     const path = join(dir, "retired-many.json");
     await writeFile(
@@ -262,6 +335,30 @@ describe("writeMonoAgentConfigJson", () => {
     await writeMonoAgentConfigJson({ path, patch: { observability: { exporters: [] } } });
     await expect(readMonoAgentConfigJson(path)).resolves.toMatchObject({
       json: { observability: { exporters: [] } },
+    });
+  });
+
+  it("preserves generic writes while reads reject active Supermemory and accept an explicit empty repair", async () => {
+    const path = join(dir, "config.json");
+    const activeLegacy = {
+      memory: { supermemory: { apiKey: "secret-api-key" } },
+    } as unknown as MonoAgentConfigJson;
+
+    await expect(writeMonoAgentConfigJson({ path, patch: activeLegacy })).resolves.toHaveProperty("version");
+    let rejection: unknown;
+    try {
+      await readMonoAgentConfigJson(path);
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toMatchObject({ code: "invalid_json", details: { path: "memory.supermemory" } });
+    expect(String(rejection)).not.toContain("secret-api-key");
+
+    // Repair is an explicit replacement, not an automatic loader mutation or a
+    // special case in the generic deep-merge writer.
+    await writeFile(path, `${JSON.stringify({ memory: { supermemory: {} } }, null, 2)}\n`, "utf8");
+    await expect(readMonoAgentConfigJson(path)).resolves.toMatchObject({
+      json: { memory: { supermemory: {} } },
     });
   });
 
