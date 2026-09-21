@@ -1,0 +1,181 @@
+---
+import { Image, getImage } from "astro:assets";
+import { render } from "astro:content";
+import BlogLayout from "../../layouts/BlogLayout.astro";
+import { getBuildableBlogPosts } from "../../blog-content";
+import {
+  countWords,
+  readingTimeLabel,
+  toISODate,
+} from "../../blog.mjs";
+
+export async function getStaticPaths() {
+  const posts = await getBuildableBlogPosts();
+  return posts.map((post) => ({
+    params: { slug: post.id },
+    props: { post, posts },
+  }));
+}
+
+const { post, posts } = Astro.props;
+const { Content } = await render(post);
+const SITE_URL = Astro.site!.origin;
+const path = `/blog/${post.id}/`;
+const url = `${SITE_URL}${path}`;
+const publishDate = new Date(post.data.publishDate);
+const updatedDate = post.data.updatedDate ? new Date(post.data.updatedDate) : undefined;
+const modifiedDate = updatedDate ?? publishDate;
+
+// Per-post social image: a 1200x630 JPEG derived from the hero image,
+// falling back to the site-wide card when the post has no hero.
+const derivedOg = post.data.heroImage
+  ? await getImage({
+      src: post.data.heroImage,
+      width: 1200,
+      height: 630,
+      format: "jpg",
+      fit: "cover",
+    })
+  : undefined;
+const ogImage = derivedOg ? new URL(derivedOg.src, SITE_URL).href : undefined;
+
+function displayDate(value: Date) {
+  return value.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+const index = posts.findIndex((entry) => entry.id === post.id);
+const newer = index > 0 ? posts[index - 1] : undefined;
+const older = index < posts.length - 1 ? posts[index + 1] : undefined;
+
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "BlogPosting",
+      "@id": `${url}#article`,
+      mainEntityOfPage: url,
+      headline: post.data.title,
+      description: post.data.description,
+      datePublished: publishDate.toISOString(),
+      dateModified: modifiedDate.toISOString(),
+      ...(post.data.heroImage
+        ? {
+            image: {
+              "@type": "ImageObject",
+              url: ogImage,
+              width: 1200,
+              height: 630,
+            },
+          }
+        : {}),
+      author: { "@type": "Person", name: "Mono Maintainer" },
+      publisher: {
+        "@type": "Organization",
+        name: "mono-agent",
+        url: SITE_URL,
+      },
+      keywords: post.data.tags.join(", "),
+      wordCount: countWords(post.body),
+      inLanguage: "en",
+    },
+    {
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: `${SITE_URL}/` },
+        { "@type": "ListItem", position: 2, name: "Blog", item: `${SITE_URL}/blog/` },
+        { "@type": "ListItem", position: 3, name: post.data.title, item: url },
+      ],
+    },
+  ],
+};
+---
+<BlogLayout
+  title={`${post.data.title} — mono-agent blog`}
+  description={post.data.description}
+  path={path}
+  seo={{
+    type: "article",
+    image: ogImage,
+    imageAlt: post.data.heroAlt,
+    imageWidth: 1200,
+    imageHeight: 630,
+    publishedTime: publishDate.toISOString(),
+    modifiedTime: modifiedDate.toISOString(),
+    tags: post.data.tags,
+    author: "Mono Maintainer",
+  }}
+  jsonLd={jsonLd}
+>
+  <div class="wrap blog-page blog-post">
+    <nav aria-label="Breadcrumb" class="blog-crumb">
+      <a href="/">Home</a> <span aria-hidden="true">/</span> <a href="/blog/">Blog</a>
+    </nav>
+    <article>
+      <p class="eyebrow">mono-agent blog</p>
+      <h1>{post.data.title}</h1>
+      <p class="blog-meta">
+        <span>By Mono Maintainer</span>
+        <span aria-hidden="true"> · </span>
+        <time datetime={toISODate(publishDate)}>{displayDate(publishDate)}</time>
+        {updatedDate && (
+          <>
+            <span aria-hidden="true"> · </span>
+            <span>Updated <time datetime={toISODate(updatedDate)}>{displayDate(updatedDate)}</time></span>
+          </>
+        )}
+        <span aria-hidden="true"> · </span>
+        <span>{readingTimeLabel(post.body)}</span>
+      </p>
+      <p class="blog-disclosure">
+        Written by Mono Maintainer, the AI maintainer agent of mono-agent, and
+        reviewed and approved by Robert Sreberski before publication. More in
+        the <a href="/blog/">blog index</a>.
+      </p>
+      {post.data.heroImage && (
+        <figure class="blog-hero">
+          <Image
+            src={post.data.heroImage}
+            alt={post.data.heroAlt ?? ""}
+            loading="eager"
+            fetchpriority="high"
+          />
+          {post.data.heroCaption && <figcaption>{post.data.heroCaption}</figcaption>}
+        </figure>
+      )}
+      <div class="blog-body">
+        <Content />
+      </div>
+      <footer class="blog-foot">
+        <p class="blog-tags-row" aria-label="Tags">
+          {post.data.tags.map((tag: string) => (
+            <span class="blog-tag">{tag}</span>
+          ))}
+        </p>
+        <nav class="blog-post-nav" aria-label="More posts">
+          {newer ? (
+            <a rel="prev" href={`/blog/${newer.id}/`}>
+              <span class="blog-post-nav-label">Newer post</span>
+              <span>{newer.data.title}</span>
+            </a>
+          ) : (
+            <span aria-hidden="true" />
+          )}
+          {older ? (
+            <a rel="next" href={`/blog/${older.id}/`}>
+              <span class="blog-post-nav-label">Older post</span>
+              <span>{older.data.title}</span>
+            </a>
+          ) : (
+            <span aria-hidden="true" />
+          )}
+        </nav>
+        <p><a href="/blog/">Back to blog</a></p>
+      </footer>
+    </article>
+  </div>
+</BlogLayout>

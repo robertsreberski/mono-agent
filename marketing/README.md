@@ -243,3 +243,12 @@ Vercel preview builds emit `noindex, follow`; generated `mono-agent-marketing-*.
 4. Configure permanent redirects from the former production host and any nonpreferred custom-domain variant to the chosen canonical domain, avoiding redirect chains. Update the search properties/sitemap and inbound project links at that time. Do not redirect before the target works.
 
 Metadata improves accurate discovery and previews; it cannot guarantee ranking, rich results, indexation, or a particular snippet. Organic growth still depends on useful documentation/content, real references and the product's relevance. Track Core Web Vitals with real-user data once available; one lab audit is not field performance.
+
+## Blog
+
+`/blog/` is a Markdown content collection (`src/content/blog/<slug>/index.md`
+plus sibling images) with an index, per-post pages, RSS (`/blog/rss.xml`), and
+sitemap entries. It ships empty and builds, tests, and reads intentionally
+with zero posts. The authoring contract an automated daily process follows is
+[`BLOG.md`](./BLOG.md): front-matter limits, image and honesty rules, and the
+exact local validation commands.
