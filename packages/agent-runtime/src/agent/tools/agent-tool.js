@@ -48,6 +48,14 @@ const DEFAULT_MAX_CONCURRENT = 5;
 const DEFAULT_MAX_PER_TURN = 20;
 const DEFAULT_MAX_TURNS = 100;
 const DEFAULT_TIMEOUT_MS = 300_000;
+/**
+ * Fixed turn budget for the single post-max-turns wrap-up continuation (issue
+ * #994). Deliberately not configurable in this change: the behaviour ships
+ * first, a `subagents.wrapUp` knob can follow once it has proven itself. Three
+ * turns cover inspect → commit + report → spare without giving the child room
+ * to resume real work.
+ */
+const WRAP_UP_MAX_TURNS = 3;
 /** Shape an authored subagent's name must take, mirroring a configured one. */
 const INLINE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/u;
 /** Effort levels a caller may pin on an authored subagent. Mirrors EFFORT_LEVELS in @mono-agent/config. */
@@ -535,38 +543,109 @@ export function createAgentTool(subagents, context = {}, continuation) {
         let thrown;
         let abandoned = false;
         let recoveryUnavailable = false;
+        // One max-turns wrap-up continuation per Agent call, never recursive:
+        // set before the wrap-up run starts so even a re-entrant path cannot
+        // issue a second one.
+        let wrapUpAttempted = false;
+        /**
+         * Issue one child turn against the same instance (or lack of one) with
+         * the same route, tools and activity sink. The wrap-up reuses this so
+         * its spend, tool calls and detached-job accounting behave exactly
+         * like the main turn's.
+         */
+        const invokeChildRun = (childPrompt, childMaxTurns) => subagents.run({
+          ...(detached && execution ? { detached: true, deadlineAt: execution.deadlineAt } : {}),
+          ...(execution?.managed ? { ownedForegroundProcesses: execution.managed.ownedForegroundProcesses, turnToken: instance?.activeTurn?.token } : {}),
+          ...(instance ? { instance: { id: instance.id, sessionId: instance.sessionId, sessionsRoot: instance.sessionsRoot } } : {}),
+          systemPrompt: instance?.systemPrompt ?? profile.systemPrompt,
+          prompt: childPrompt,
+          definition: instance?.definition ?? profile,
+          ...(context.model === undefined ? {} : { model: context.model }),
+          ...(context.effort === undefined ? {} : { effort: context.effort }),
+          ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
+          ...(context.parentRunId === undefined ? {} : { parentRunId: context.parentRunId }),
+          // Inherited, never widened: a profile cannot loosen confinement.
+          ...(context.sandboxPolicy === undefined ? {} : { sandboxPolicy: context.sandboxPolicy }),
+          ...(context.sandboxEngine === undefined ? {} : { sandboxEngine: context.sandboxEngine }),
+          // The parent's disclosed skills. Offered, not imposed — the host's
+          // `run` decides whether this child may have them, since only it knows
+          // the child's resolved route and deny lists.
+          ...(context.skills === undefined ? {} : { skills: context.skills }),
+          ...(context.skillsRoot === undefined ? {} : { skillsRoot: context.skillsRoot }),
+          ...(context.toolEnvironment === undefined ? {} : { toolEnvironment: context.toolEnvironment }),
+          ...(context.webSearchConfig === undefined ? {} : { webSearchConfig: context.webSearchConfig }),
+          ...(context.webRequestCoordinator === undefined ? {} : { webRequestCoordinator: context.webRequestCoordinator }),
+          ...(context.webFetchConfig === undefined ? {} : { webFetchConfig: context.webFetchConfig }),
+          abortSignal: controller.signal,
+          maxTurns: childMaxTurns,
+          callId: toolCallId,
+          callIndex,
+          depth: positiveInt(subagents.depth, 0) + 1,
+          onEvent: collector.observe,
+        });
+        /**
+         * The issue-#994 wrap-up: when the main turn exhausted its per-run
+         * maxTurns budget, give it one bounded continuation carrying a
+         * commit-and-report instruction instead of cutting it off with nothing.
+         * Runs inside the same wall-clock timeout (the guard timer keeps
+         * running; the wrap-up never extends it), on the same instance turn,
+         * and never recurses. Returns null when no wrap-up applies.
+         * @param {*} first The main turn's result.
+         * @returns {Promise<*|null>} The wrap-up record, merged onto the result.
+         */
+        const maybeRunWrapUp = async (first) => {
+          if (wrapUpAttempted || !isMaxTurnsExhaustion(first)) return null;
+          // Wall-clock exhaustion and cancellation own this result, not the
+          // turn budget: a wrap-up would either have no time left or defy an
+          // explicit stop.
+          if (timedOut || controller.signal.aborted || first?.cancelled === true) return null;
+          wrapUpAttempted = true;
+          const turnsUsed = turnCountOf(first);
+          try {
+            const prompt = buildWrapUpPrompt({
+              prompt: params.prompt,
+              turnsUsed,
+              turnsAllowed: maxTurns,
+              activity: collector.entries(),
+              ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
+              ...(params.verification?.reportPath === undefined ? {} : { reportPath: params.verification.reportPath }),
+              persistent: instance !== undefined,
+            });
+            const wrapResult = await invokeChildRun(prompt, WRAP_UP_MAX_TURNS);
+            return attachWrapUpSignals(toWrapUpRecord(wrapResult, { turnsUsed, turnsAllowed: maxTurns }), first, wrapResult);
+          } catch (error) {
+            return attachWrapUpSignals({
+              budget: "maxTurns",
+              turnsUsed,
+              turnsAllowed: maxTurns,
+              status: "unavailable",
+              reason: `the wrap-up continuation could not start: ${error instanceof Error ? error.message : String(error)}`,
+              answer: "",
+              wrapUpTurnsUsed: null,
+              wrapUpTurnsAllowed: WRAP_UP_MAX_TURNS,
+            }, first, undefined);
+          }
+        };
         try {
           await execution?.managed?.started();
-          const underlying = Promise.resolve().then(() => subagents.run({
-            ...(detached && execution ? { detached: true, deadlineAt: execution.deadlineAt } : {}),
-            ...(execution?.managed ? { ownedForegroundProcesses: execution.managed.ownedForegroundProcesses, turnToken: instance?.activeTurn?.token } : {}),
-            ...(instance ? { instance: { id: instance.id, sessionId: instance.sessionId, sessionsRoot: instance.sessionsRoot } } : {}),
-            systemPrompt: instance?.systemPrompt ?? profile.systemPrompt,
-            prompt: params.prompt,
-            definition: instance?.definition ?? profile,
-            ...(context.model === undefined ? {} : { model: context.model }),
-            ...(context.effort === undefined ? {} : { effort: context.effort }),
-            ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
-            ...(context.parentRunId === undefined ? {} : { parentRunId: context.parentRunId }),
-            // Inherited, never widened: a profile cannot loosen confinement.
-            ...(context.sandboxPolicy === undefined ? {} : { sandboxPolicy: context.sandboxPolicy }),
-            ...(context.sandboxEngine === undefined ? {} : { sandboxEngine: context.sandboxEngine }),
-            // The parent's disclosed skills. Offered, not imposed — the host's
-            // `run` decides whether this child may have them, since only it knows
-            // the child's resolved route and deny lists.
-            ...(context.skills === undefined ? {} : { skills: context.skills }),
-            ...(context.skillsRoot === undefined ? {} : { skillsRoot: context.skillsRoot }),
-            ...(context.toolEnvironment === undefined ? {} : { toolEnvironment: context.toolEnvironment }),
-            ...(context.webSearchConfig === undefined ? {} : { webSearchConfig: context.webSearchConfig }),
-            ...(context.webRequestCoordinator === undefined ? {} : { webRequestCoordinator: context.webRequestCoordinator }),
-            ...(context.webFetchConfig === undefined ? {} : { webFetchConfig: context.webFetchConfig }),
-            abortSignal: controller.signal,
-            maxTurns,
-            callId: toolCallId,
-            callIndex,
-            depth: positiveInt(subagents.depth, 0) + 1,
-            onEvent: collector.observe,
-          }));
+          const underlying = Promise.resolve().then(async () => {
+            const first = await invokeChildRun(params.prompt, maxTurns);
+            const wrapUp = await maybeRunWrapUp(first);
+            if (!wrapUp || first === null || typeof first !== "object") return first;
+            // The host sets session-continuity signals per run
+            // (configured-agent.ts): without propagating the wrap-up's, a
+            // wrap-up that answered outside the instance session would leave
+            // the instance recorded retained on the first run's fields and the
+            // next AgentSend would resume a lost session. An ordinary failed
+            // or unavailable wrap-up carries no such signal, so the merged
+            // result still reads as a max-turns exhaustion.
+            return {
+              ...first,
+              ...(wrapUp.continuity !== undefined ? { subagentContinuity: wrapUp.continuity } : {}),
+              ...(wrapUp.continuityLost ? { failureKind: "session_continuity_lost" } : {}),
+              wrapUp,
+            };
+          });
           // Observe the actual provider promise before racing reporting/deadline.
           const running = execution?.managed ? Promise.resolve(underlying).then(async (value) => {
             const actual = classifyOutcome({ result: value, thrown: undefined, timedOut });
@@ -614,7 +693,12 @@ export function createAgentTool(subagents, context = {}, continuation) {
         }
         if (instance && !abandoned) {
           const state = classifyOutcome({ result, thrown, timedOut });
-          const usage = result?.usage ?? {};
+          // The non-detached instance outcome sums both provider runs: the
+          // parent budget already accumulates across them via recordUsage and
+          // the detached path via collector.usage(), but `result.usage` alone
+          // is the first run's. (The detached usage there already includes the
+          // wrap-up, so this stays scoped to this path.)
+          const usage = sumRunUsage(result?.usage, result?.wrapUp?.wrapUsage ?? null);
           const instanceOutcome = { ...(result?.subagentContinuity ? { continuity: result.subagentContinuity } : {}), ...(execution?.managed && continuation?.close && state.status === "ok" && !signal?.aborted ? { closeAfterSuccess: true } : {}), status: timedOut ? "timeout" : signal?.aborted ? "cancelled" : state.status,
             ...(result?.failureKind === "session_continuity_lost" ? { failureKind: "session_continuity_lost" } : {}),
             answerHead: state.answer, ...(state.question ? { question: state.question } : {}), usage: detached ? detachedUsage(result, collector.usage()) : { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
@@ -642,6 +726,18 @@ export function createAgentTool(subagents, context = {}, continuation) {
           ? { status: "cancelled", answer: "", reason: "subagent cancelled" }
           : classifyOutcome({ result, thrown, timedOut, abandoned });
         collector.finished({ status: outcome.status, durationMs, result });
+        const wrapUp = result !== null && typeof result === "object" && result.wrapUp !== null && typeof result.wrapUp === "object"
+          ? result.wrapUp
+          : null;
+        // The wrap-up's salvaged text is what the parent can act on; the
+        // `failed` status and the `usage_limit` reason still say the budget —
+        // not the work — is what ended the run.
+        const outcomeWithWrapUp = wrapUp !== null && typeof wrapUp.answer === "string" && wrapUp.answer.length > 0
+          ? { ...outcome, answer: wrapUp.answer }
+          : outcome;
+        const wrapUpNote = wrapUp === null
+          ? undefined
+          : `max-turns budget exhausted (${wrapUp.turnsUsed ?? "?"} of ${wrapUp.turnsAllowed ?? "?"} turns); wrap-up ${wrapUp.status}: ${wrapUp.reason}`;
         // Each result is individually capped, but the parent's context sees the
         // SUM. The description encourages parallel calls, so twenty valid results
         // would otherwise land ~480KB in one batch. Later calls get whatever
@@ -652,7 +748,8 @@ export function createAgentTool(subagents, context = {}, continuation) {
           ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}),
           label: params.description,
           ...(routeLabel ? { routeLabel } : {}),
-          outcome,
+          outcome: outcomeWithWrapUp,
+          ...(wrapUpNote === undefined ? {} : { wrapUpNote }),
           durationMs,
           activity: collector.entries(),
           maxBytes: Math.min(RESULT_MAX_BYTES, remaining),
@@ -672,11 +769,20 @@ export function createAgentTool(subagents, context = {}, continuation) {
         // artifact references from (the bloat guard sets the same one), so a
         // spilled subagent result is recorded in tool history like any other.
         return {
-          ...(detached ? { answer: outcome.answer } : {}),
+          ...(detached ? { answer: outcomeWithWrapUp.answer } : {}),
           content: [{ type: "text", text }],
           details: {
             tool: continuation ? "AgentSend" : "Agent",
             subagent: { ...(recoveryUnavailable ? { recoveryUnavailable: true } : {}), ...(detached ? { childStillBusy: abandoned, usage: detachedUsage(result, collector.usage()) } : {}), ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}), name: profile.name, callIndex, status: outcome.status, ...(outcome.question ? { question: outcome.question } : {}), toolCalls: collector.entries().length,
+              ...(wrapUp === null ? {} : { wrapUp: {
+                budget: "maxTurns",
+                turnsUsed: wrapUp.turnsUsed ?? null,
+                turnsAllowed: wrapUp.turnsAllowed ?? null,
+                status: wrapUp.status,
+                reason: wrapUp.reason,
+                wrapUpTurnsUsed: wrapUp.wrapUpTurnsUsed ?? null,
+                wrapUpTurnsAllowed: WRAP_UP_MAX_TURNS,
+              } }),
               ...(routeLabel ? { requested, ...(collector.attribution()?.executed === undefined ? {} : { executed: collector.attribution().executed }) } : {}),
             },
             ...(truncated ? { tool_payload_truncated: true } : {}),
@@ -1157,6 +1263,182 @@ function safeJson(value) {
 }
 
 /**
+ * Whether a child result is a per-run maxTurns exhaustion (issue #994) rather
+ * than any other failure. The precise signal is the pi-native bridge's
+ * `max_turns_hit` diagnostic; the `usage_limit` kind plus the max-turns error
+ * text covers host-supplied `run` implementations that do not forward
+ * diagnostics. `usage_limit` alone is not enough — it must name the turn
+ * budget, not some other quota.
+ * @param {*} result
+ * @returns {boolean}
+ */
+function isMaxTurnsExhaustion(result) {
+  if (result === null || typeof result !== "object" || result.cancelled === true) return false;
+  if (result.diagnostics !== null && typeof result.diagnostics === "object" && result.diagnostics.max_turns_hit === true) return true;
+  return result.failureKind === "usage_limit" && /max turns?/i.test(String(result.error ?? ""));
+}
+
+/**
+ * Turns the child reports having used, for the truncation marker. The bridge
+ * reports it as `numTurns`; fall back to the diagnostic the result builder
+ * records alongside `max_turns_hit`.
+ * @param {*} result
+ * @returns {number|null}
+ */
+function turnCountOf(result) {
+  if (result !== null && typeof result === "object") {
+    if (Number.isInteger(result.numTurns)) return result.numTurns;
+    if (result.diagnostics !== null && typeof result.diagnostics === "object" && Number.isInteger(result.diagnostics.turn_count)) {
+      return result.diagnostics.turn_count;
+    }
+  }
+  return null;
+}
+
+/**
+ * Classify one wrap-up continuation into the record the parent reads. Never
+ * throws for a settled result; a rejected `run` is handled by the caller as
+ * `unavailable`. A wrap-up that exhausts its own budget is `failed`, never
+ * re-wrapped: the caller issues exactly one continuation per Agent call.
+ * @param {*} wrapResult
+ * @param {{turnsUsed: number|null, turnsAllowed: number}} budget
+ * @returns {{budget: string, turnsUsed: number|null, turnsAllowed: number, status: string, reason: string, answer: string, wrapUpTurnsUsed: number|null, wrapUpTurnsAllowed: number}}
+ */
+function toWrapUpRecord(wrapResult, { turnsUsed, turnsAllowed }) {
+  const base = {
+    budget: "maxTurns",
+    turnsUsed,
+    turnsAllowed,
+    wrapUpTurnsUsed: turnCountOf(wrapResult),
+    wrapUpTurnsAllowed: WRAP_UP_MAX_TURNS,
+  };
+  const wrapOutcome = classifyOutcome({ result: wrapResult, thrown: undefined, timedOut: false });
+  const answer = typeof wrapOutcome.answer === "string" ? wrapOutcome.answer : "";
+  if (isMaxTurnsExhaustion(wrapResult)) {
+    return {
+      ...base,
+      status: "failed",
+      reason: `the wrap-up exhausted its own ${WRAP_UP_MAX_TURNS}-turn budget${answer ? "; its partial text is reported below" : " without producing final text"}`,
+      answer,
+    };
+  }
+  if (wrapOutcome.status === "cancelled") {
+    return {
+      ...base,
+      status: "failed",
+      reason: "the wrap-up was cancelled (parent abort or wall-clock budget exhausted)",
+      answer,
+    };
+  }
+  if (answer.length > 0) {
+    return {
+      ...base,
+      status: "ok",
+      reason: wrapOutcome.status === "awaiting_reply"
+        ? "the wrap-up ended awaiting a parent reply; its question is reported below"
+        : "the wrap-up produced a final statement of position",
+      answer,
+    };
+  }
+  return {
+    ...base,
+    status: "failed",
+    reason: `the wrap-up ended as ${wrapOutcome.status}${wrapOutcome.reason ? `: ${wrapOutcome.reason}` : " without producing final text"}`,
+    answer: "",
+  };
+}
+
+/**
+ * The instruction carried by the single post-limit continuation. Explicit
+ * about what the budget situation is, what is forbidden (new work), and what
+ * protects the run (commit in-progress work, write the assignment's report,
+ * state the position). The original task and the previous turn's recent tool
+ * calls ride along because a stateless continuation starts a fresh session
+ * without the prior transcript — and a resumed persistent session was rolled
+ * back to its pre-turn leaf, so neither wrap-up can rely on seeing the work
+ * in the transcript.
+ * @param {{prompt: string, turnsUsed: number|null, turnsAllowed: number, activity: ReadonlyArray<{name: string, args: unknown, isError: boolean}>, cwd?: string, reportPath?: string, persistent: boolean}} input
+ * @returns {string}
+ */
+function buildWrapUpPrompt({ prompt, turnsUsed, turnsAllowed, activity, cwd, reportPath, persistent }) {
+  const used = turnsUsed ?? "all";
+  const recent = Array.isArray(activity) ? activity.slice(-12) : [];
+  const lines = recent.map((entry) => {
+    const args = summarizeArgs(entry?.name, entry?.args, cwd);
+    return `- ${entry?.name ?? "unknown"}${args ? ` ${args}` : ""} → ${entry?.isError ? "error" : "ok"}`;
+  });
+  return [
+    `MAX-TURNS WRAP-UP — your per-run turn budget is exhausted (${used} of ${turnsAllowed} turns used). Do not start or continue new work.`,
+    "",
+    `This is one bounded continuation of at most ${WRAP_UP_MAX_TURNS} turns, ${persistent
+      ? "on the same persistent instance (the stopped turn's transcript may not be visible, so work from the task and activity below)"
+      : "in a fresh session without the prior transcript (stateless run), so work only from the task and activity below"}.`,
+    "",
+    "Original task:",
+    prompt,
+    "",
+    "Previous turn's most recent tool calls:",
+    ...(lines.length > 0 ? lines : ["(none recorded)"]),
+    ...(cwd === undefined ? [] : ["", `Worktree: ${cwd}`]),
+    ...(reportPath === undefined ? [] : [`The assignment names its report file: ${reportPath}`]),
+    "",
+    "Do exactly this, in order:",
+    "1. Inspect the current state of the work (git status/diff where your tools allow; otherwise re-read the files touched above).",
+    "2. Commit work already in progress with a clear message. Do not start new work or try to finish the task.",
+    "3. Write the assignment's report file summing up what was completed, the current position (committed vs uncommitted), and precisely what remains undone.",
+    "4. End with a concise final statement of position: where you got to, what is committed vs uncommitted, the report path, and what remains.",
+    "",
+    "If your tools do not permit committing or writing files, say so plainly and put the full statement of position in your final reply text.",
+  ].join("\n");
+}
+
+/**
+ * Carry the wrap-up run's session-continuity signal and raw usage onto its
+ * record. `continuity` prefers the wrap-up's own `subagentContinuity` when it
+ * reported one (otherwise the merged result keeps the first run's), and
+ * `continuityLost` is true when EITHER run reported `session_continuity_lost`
+ * — never for a merely failed or unavailable wrap-up. `wrapUsage` is the
+ * wrap-up's raw usage bag for the instance-outcome sum; it is not surfaced in
+ * `details.subagent.wrapUp`, which keeps its fixed seven fields.
+ * @param {*} record The record from `toWrapUpRecord` or the unavailable path.
+ * @param {*} first The main turn's result.
+ * @param {*} wrapResult The wrap-up run's raw result, or undefined when it never started.
+ * @returns {*}
+ */
+function attachWrapUpSignals(record, first, wrapResult) {
+  const wrapObject = wrapResult !== null && typeof wrapResult === "object" ? wrapResult : null;
+  const continuity = wrapObject?.subagentContinuity !== null && typeof wrapObject?.subagentContinuity === "object"
+    ? wrapObject.subagentContinuity
+    : undefined;
+  return {
+    ...record,
+    ...(continuity === undefined ? {} : { continuity }),
+    continuityLost: first?.failureKind === "session_continuity_lost" || wrapObject?.failureKind === "session_continuity_lost",
+    wrapUsage: wrapObject?.usage ?? null,
+  };
+}
+
+/**
+ * Sum two provider-run usage bags field-wise. Only finite-number values
+ * accumulate, so an unexpected shape never corrupts the total; keys present in
+ * only one bag pass through. The bridge reports both runs in the same
+ * spelling, which is the case that matters (instance token/cost accounting).
+ * @param {*} firstUsage
+ * @param {*} secondUsage
+ * @returns {Record<string, *>}
+ */
+function sumRunUsage(firstUsage, secondUsage) {
+  const base = firstUsage !== null && typeof firstUsage === "object" ? { ...firstUsage } : {};
+  if (secondUsage === null || typeof secondUsage !== "object") return base;
+  for (const [key, value] of Object.entries(secondUsage)) {
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    const current = base[key];
+    base[key] = (typeof current === "number" && Number.isFinite(current) ? current : 0) + value;
+  }
+  return base;
+}
+
+/**
  * @param {{result: *, thrown: unknown, timedOut: boolean, abandoned?: boolean}} input
  * @returns {{status: string, answer: string, reason?: string, question?: {question: string, options?: string[]}}}
  */
@@ -1204,10 +1486,10 @@ function classifyOutcome({ result, thrown, timedOut, abandoned = false }) {
  * cut it off. Without a sink (or when the write fails) the text says so instead,
  * so the caller does not go looking for a file that was never written.
  *
- * @param {{profileName: string, instance?: {id: string, turns: number, status: string}, label?: string, routeLabel?: string, outcome: {status: string, answer: string, reason?: string}, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>, maxBytes?: number, cwd?: string, notice?: string, persist?: (fullText: string) => string|null}} input
+ * @param {{profileName: string, instance?: {id: string, turns: number, status: string}, label?: string, routeLabel?: string, outcome: {status: string, answer: string, reason?: string}, wrapUpNote?: string, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>, maxBytes?: number, cwd?: string, notice?: string, persist?: (fullText: string) => string|null}} input
  * @returns {{text: string, savedPath: string|null, truncated: boolean}}
  */
-export function formatSubagentResult({ profileName, instance, label, routeLabel, outcome, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice, persist }) {
+export function formatSubagentResult({ profileName, instance, label, routeLabel, outcome, wrapUpNote, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice, persist }) {
   const seconds = (durationMs / 1000).toFixed(1);
   const calls = `${activity.length} tool call${activity.length === 1 ? "" : "s"}`;
   const header = `<subagent: ${profileName}${instance ? ` · instance ${instance.id} · turn ${instance.turns}${instance.status === "closed" ? " · closed" : ""}` : ""}${label ? ` · ${label}` : ""}${routeLabel ? ` · ${routeLabel}` : ""} · ${outcome.status} · ${calls} · ${seconds}s>`;
@@ -1216,6 +1498,9 @@ export function formatSubagentResult({ profileName, instance, label, routeLabel,
   const preamble = [
     ...(notice === undefined ? [] : [`note: ${truncate(notice, 300)}`]),
     ...(outcome.reason === undefined ? [] : [`reason: ${truncate(outcome.reason, 500)}`]),
+    // The max-turns truncation marker (issue #994): which budget was hit, how
+    // much of it was used, and what the single wrap-up continuation achieved.
+    ...(wrapUpNote === undefined ? [] : [`wrap-up: ${truncate(wrapUpNote, 500)}`]),
   ];
   const body = (/** @type {string} */ answer, /** @type {string[]} */ activityLines) => [
     ...(answer.length > 0 ? ["", answer] : []),
