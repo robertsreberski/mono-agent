@@ -13,7 +13,7 @@ vi.mock("../managed-runtime-publication.js", async (importOriginal) => {
   return { ...actual, waitForManagedRuntimePublication: mocks.waitForManagedRuntimePublication };
 });
 
-import { JSON_CAPABLE_COMMANDS } from "../cli-args.js";
+import { firstCliPositional, JSON_CAPABLE_COMMANDS } from "../cli-args.js";
 import { describeChannelStatus, loadCliEnvFile, monoAgentVersion, parseCliArgs, renderHelp, renderHelpTopic, runCli, shouldLoadCommandDotenv } from "../cli.js";
 
 /** Resolve a help topic to its rendered detail text, failing if it is not a valid topic. */
@@ -556,6 +556,13 @@ describe("parseCliArgs", () => {
     // --consumer / --include-memory now accept `runs`; they still reject unrelated commands.
     expect(() => parseCliArgs(["start", "--consumer", "../agent"])).toThrow(/--consumer/u);
     expect(() => parseCliArgs(["start", "--include-memory"])).toThrow(/--include-memory/u);
+  });
+
+  it("extracts the first positional without mistaking known option values for modes", () => {
+    expect(firstCliPositional(["--artifacts", "report", "show", "run-1", "--json"])).toBe("show");
+    expect(firstCliPositional(["--config", "show", "audit", "--json"])).toBe("audit");
+    expect(firstCliPositional(["--json", "--include-memory", "list"])).toBe("list");
+    expect(firstCliPositional(["--unknown", "show", "--json"])).toBeUndefined();
   });
 
   it("parses validate --consumer and keeps it validate/runs scoped", () => {

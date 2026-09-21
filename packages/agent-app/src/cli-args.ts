@@ -194,6 +194,94 @@ interface CliFallbackArg {
   readonly effort?: EffortLevel;
 }
 
+// Keep the lightweight pre-parse mode probe aligned with the value-consuming
+// rules below. It is used only to preserve a JSON error envelope after parsing
+// fails; the real parser remains authoritative for validation and dispatch.
+const CLI_VALUE_FLAGS = new Set([
+  "--config",
+  "--since",
+  "--until",
+  "--artifacts",
+  "--by",
+  "--consumer",
+  "--agent",
+  "--conversation",
+  "--stale-after-ms",
+  "--limit",
+  "--cursor",
+  "--ids-file",
+  "--reason",
+  "--plan",
+  "--backup",
+  "--bundle",
+  "--on-conflict",
+  "--entity-conflict",
+  "--host",
+  "--port",
+  "--theme",
+  "--source-id",
+  "--model",
+  "--name",
+  "--fallback",
+  "--fallback-effort",
+  "--effort",
+  "--memory",
+  "--preset",
+  "--pi-auth-path",
+  "--with",
+  "--env-file",
+  "--controller-cli",
+  "--agent-cwd",
+  "--agent-path",
+  "--expected-background-snapshot",
+  "--expected-managed-runtime-launch",
+  "--expected-web-plist-identity",
+  "--target",
+  "--lines",
+]);
+
+const CLI_BOOLEAN_FLAGS = new Set([
+  "--all",
+  "--dry-run",
+  "--include-memory",
+  "--local",
+  "--project",
+  "--check",
+  "--update",
+  "--no-docs-mcp",
+  "--json",
+  "--strict",
+  "--include-extras",
+  "--allow-pending",
+  "--accept-derived-association-drift",
+  "--loopback",
+  "--share-tailnet",
+  "--discover",
+  "--require-tool-environment",
+  "--yes",
+  "--auth",
+  "--api-key-stdin",
+  "--force",
+  "--clear-sessions",
+  "--foreground",
+  "--follow",
+  "-f",
+]);
+
+export function firstCliPositional(tokens: readonly string[]): string | undefined {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (CLI_VALUE_FLAGS.has(token)) {
+      index += 1;
+      continue;
+    }
+    if (CLI_BOOLEAN_FLAGS.has(token)) continue;
+    if (/^-./u.test(token)) return undefined;
+    return token;
+  }
+  return undefined;
+}
+
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const [command, ...rest] = argv;
   // `--help`/`-h` and a bare invocation render the plain grouped summary (no topic).

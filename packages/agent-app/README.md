@@ -144,6 +144,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   `mono-agent runs show <run-id>`. Output keeps at most 50 rows or 500 first/last
   events, caps strings at 32 KiB, and applies sensitive-key plus high-confidence
   credential-shape redaction without claiming comprehensive secret detection.
+  An explicit `--artifacts` directory is trusted local input, not a filesystem
+  sandbox or a symlink-containment boundary.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
   `mono-agent web`, including persisted curated host themes and a console label
   that defaults to the hostname and can be restored with `--name -`; on macOS

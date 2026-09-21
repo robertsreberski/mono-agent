@@ -91,8 +91,16 @@ describe("runs list/show diagnostics", () => {
       conversationId: "conversation\u001b[2J\u202e",
       source: "web\u2028source",
       userInput: `credential ${CREDENTIAL}`,
-      usage: { input_tokens: 123, output_tokens: 45 },
-      diagnostics: { password: "do-not-print", note: longText },
+      usage: { input_tokens: 123, output_tokens: 45, totalTokens: 168 },
+      diagnostics: {
+        password: 987_654_321,
+        authorization: 876_543_210,
+        api_key: 765_432_109,
+        credentialCount: 2,
+        bearerCount: 1,
+        tokenCount: 3,
+        note: longText,
+      },
       eventCount: 502,
     });
     const events = Array.from({ length: 502 }, (_, index) => JSON.stringify({
@@ -100,7 +108,8 @@ describe("runs list/show diagnostics", () => {
       timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
       message: index === 0 ? `first\u001b]8;;bad\u0007 ${CREDENTIAL}` : index === 501 ? "last\u202e" : `event-${String(index)}`,
       usage: { input_tokens: index },
-      authorization: "Bearer should-not-print",
+      authorization: 654_321_098,
+      api_key: "Bearer should-not-print",
       nested: { secret: CREDENTIAL, value: index },
       ...(index === 0 ? {
         collection: Array.from({ length: 1_002 }, (_, item) => item),
@@ -121,7 +130,10 @@ describe("runs list/show diagnostics", () => {
     const body = JSON.parse(result.stdout) as {
       readonly ok: boolean;
       readonly run: {
-        readonly summary: Record<string, unknown> & { readonly usage: { readonly input_tokens: number }; readonly diagnostics: { readonly password: string; readonly note: string } };
+        readonly summary: Record<string, unknown> & {
+          readonly usage: { readonly input_tokens: number; readonly totalTokens: number };
+          readonly diagnostics: Record<string, unknown> & { readonly password: string; readonly note: string };
+        };
         readonly events: readonly { readonly index: number; readonly summary: string; readonly payload: Record<string, unknown> }[];
         readonly warnings: readonly string[];
       };
@@ -133,16 +145,30 @@ describe("runs list/show diagnostics", () => {
     expect(body.run.events[0]?.index).toBe(0);
     expect(body.run.events.at(-1)?.index).toBe(501);
     expect(body.run.warnings).toContain("Event list was capped at 500 events using first-and-last selection.");
-    expect(body.run.summary.usage.input_tokens).toBe(123);
-    expect(body.run.summary.diagnostics.password).toBe("[redacted]");
-    const firstPayload = body.run.events[0]!.payload as { readonly collection: readonly unknown[] };
+    expect(body.run.summary.usage).toMatchObject({ input_tokens: 123, totalTokens: 168 });
+    expect(body.run.summary.diagnostics).toMatchObject({
+      password: "[redacted]",
+      authorization: "[redacted]",
+      api_key: "[redacted]",
+      credentialCount: 2,
+      bearerCount: 1,
+      tokenCount: 3,
+    });
+    const firstPayload = body.run.events[0]!.payload as {
+      readonly authorization: string;
+      readonly collection: readonly unknown[];
+    };
+    expect(firstPayload.authorization).toBe("[redacted]");
     expect(firstPayload.collection).toHaveLength(1_001);
     expect(firstPayload.collection.at(-1)).toBe("[max-items]");
     expect(Object.keys(firstPayload)).toContain("unsafe\\u001bkey");
     expect(Object.keys(firstPayload)).toContain("[redacted]");
     expect(Buffer.byteLength(body.run.summary.diagnostics.note, "utf8")).toBeLessThanOrEqual(32 * 1_024);
     expect(result.stdout).not.toContain(CREDENTIAL);
-    expect(result.stdout).not.toContain("do-not-print");
+    expect(result.stdout).not.toContain("987654321");
+    expect(result.stdout).not.toContain("876543210");
+    expect(result.stdout).not.toContain("765432109");
+    expect(result.stdout).not.toContain("654321098");
     expect(result.stdout).not.toContain("Bearer should-not-print");
     expect(result.stdout).not.toMatch(/[\u001b\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u);
     expect(JSON.stringify(body)).toContain("[redacted]");
@@ -152,18 +178,69 @@ describe("runs list/show diagnostics", () => {
     await expect(readFile(join(artifacts, "safe-run.events.jsonl"), "utf8")).resolves.toBe(beforeEvents);
   });
 
+  it("scans credentials before the final string cap and omits legacy prefixes cut at a prior boundary", async () => {
+    const artifacts = await tempDir();
+    const maxBytes = 32 * 1_024;
+    const longestCredential = `sk-svcacct-${"A".repeat(511)}B`;
+    const beforeCap = `${"x".repeat(maxBytes - longestCredential.length - 17)} ${longestCredential} ${"z".repeat(700)}`;
+    const acrossCap = `${"x".repeat(maxBytes - 50)}${CREDENTIAL}`;
+    const longestAcrossCap = `${"x".repeat(maxBytes - 101)} ${longestCredential}`;
+    const afterCap = `${"x".repeat(maxBytes + 10)} ${CREDENTIAL}`;
+    // Reproduce a legacy source value that was already truncated one byte before
+    // the scanner could see the complete 51-byte credential.
+    const cutCredentialPrefix = CREDENTIAL.slice(0, -1);
+    const alreadyTruncated = `${"x".repeat(maxBytes - cutCredentialPrefix.length)}${cutCredentialPrefix}…[truncated 1 bytes]`;
+    await writeSummary(artifacts, "boundary-run", {
+      userInput: beforeCap,
+      systemPrompt: acrossCap,
+      error: afterCap,
+      sourceDetail: alreadyTruncated,
+      runtimeWarnings: { longestAcrossCap },
+      eventCount: 5,
+    });
+    await writeFile(join(artifacts, "boundary-run.events.jsonl"), [
+      beforeCap,
+      acrossCap,
+      longestAcrossCap,
+      afterCap,
+      alreadyTruncated,
+    ].map((message) => JSON.stringify({ type: "runtime_warning", message })).join("\n") + "\n", "utf8");
+
+    const list = await captureCli(() => runCli([
+      "runs", "list", "--artifacts", artifacts, "--json",
+    ]));
+    const show = await captureCli(() => runCli([
+      "runs", "show", "boundary-run", "--artifacts", artifacts, "--json",
+    ]));
+    const listBody = JSON.parse(list.stdout) as unknown;
+    const showBody = JSON.parse(show.stdout) as unknown;
+
+    expect(list.code).toBe(0);
+    expect(show.code).toBe(0);
+    for (const output of [list.stdout, show.stdout]) {
+      expect(output).not.toContain(longestCredential);
+      expect(output).not.toContain(CREDENTIAL);
+      expect(output).not.toContain(CREDENTIAL.slice(0, 20));
+      expect(output).not.toContain(cutCredentialPrefix);
+      expect(output).toContain("[redacted]");
+    }
+    expect(maxStringBytes(listBody)).toBeLessThanOrEqual(maxBytes);
+    expect(maxStringBytes(showBody)).toBeLessThanOrEqual(maxBytes);
+  });
+
   it("renders human list/show output with inert controls and redacted credentials", async () => {
     const artifacts = await tempDir();
     await writeSummary(artifacts, "human-run", {
       conversationId: "human\u001b[31m",
       source: "web\u202e",
       userInput: CREDENTIAL,
+      diagnostics: { password: 3_141_592_653, input_tokens: 55 },
       eventCount: 1,
     });
     await writeFile(join(artifacts, "human-run.events.jsonl"), `${JSON.stringify({
       type: "runtime_warning",
       message: `warning\u001b[2J ${CREDENTIAL}`,
-      payload: { api_key: "plaintext" },
+      payload: { api_key: 2_718_281_828, input_tokens: 89 },
     })}\n`, "utf8");
 
     const list = await captureCli(() => runCli(["runs", "list", "--artifacts", artifacts]));
@@ -176,6 +253,10 @@ describe("runs list/show diagnostics", () => {
     expect(show.stdout).toContain("Run summary");
     expect(show.stdout).toContain("\\u001b");
     expect(show.stdout).toContain("[redacted]");
+    expect(show.stdout).toContain('"input_tokens": 55');
+    expect(show.stdout).toContain('"input_tokens":89');
+    expect(show.stdout).not.toContain("3141592653");
+    expect(show.stdout).not.toContain("2718281828");
     expect(`${list.stdout}${show.stdout}`).not.toContain(CREDENTIAL);
     expect(`${list.stdout}${show.stdout}`).not.toMatch(/[\u001b\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u);
   });
@@ -340,13 +421,33 @@ describe("runs list/show diagnostics", () => {
     expect(readerFailure.stdout).not.toContain(CREDENTIAL);
   });
 
-  it("keeps report/audit parse failures on their existing human help path", async () => {
-    const result = await captureCli(() => runCli(["runs", "report", "--unknown", "--json"]));
+  it("finds the actual inspection mode without treating option values as modes", async () => {
+    const secretArg = `unsafe-${CREDENTIAL}`;
+    for (const argv of [
+      ["runs", "--artifacts", "report", "show", "run-1", "--not-a-real-flag", secretArg, "--json"],
+      ["runs", "--config", "audit", "--json", "list", "--not-a-real-flag", secretArg],
+      ["runs", "show", "run-1", "--artifacts", "list", "--not-a-real-flag", secretArg, "--json"],
+    ]) {
+      const result = await captureCli(() => runCli(argv));
+      expect(result.code).toBe(2);
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)).toMatchObject({ ok: false, error: { code: "runs_usage" } });
+      expect(result.stdout).not.toContain(secretArg);
+    }
+  });
 
-    expect(result.code).toBe(2);
-    expect(result.stderr).toContain("Unknown flag");
-    expect(result.stdout).toContain("mono-agent — config-first agent host");
-    expect(() => JSON.parse(result.stdout)).toThrow();
+  it("keeps report/audit parse failures on their existing human help path when option values name inspections", async () => {
+    for (const argv of [
+      ["runs", "report", "--unknown", "--json"],
+      ["runs", "--artifacts", "list", "report", "--unknown", "--json"],
+      ["runs", "--config", "show", "audit", "--unknown", "--json"],
+    ]) {
+      const result = await captureCli(() => runCli(argv));
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("Unknown flag");
+      expect(result.stdout).toContain("mono-agent — config-first agent host");
+      expect(() => JSON.parse(result.stdout)).toThrow();
+    }
   });
 });
 
@@ -368,6 +469,17 @@ async function writeSummary(
     ...overrides,
   };
   await writeFile(join(artifactDir, `${runId}.summary.json`), `${JSON.stringify(summary)}\n`, "utf8");
+}
+
+function maxStringBytes(value: unknown): number {
+  if (typeof value === "string") return Buffer.byteLength(value, "utf8");
+  if (Array.isArray(value)) return Math.max(0, ...value.map((entry) => maxStringBytes(entry)));
+  if (value === null || typeof value !== "object") return 0;
+  return Math.max(
+    0,
+    ...Object.entries(value as Record<string, unknown>)
+      .flatMap(([key, entryValue]) => [Buffer.byteLength(key, "utf8"), maxStringBytes(entryValue)]),
+  );
 }
 
 async function captureCli(run: () => Promise<number>): Promise<{

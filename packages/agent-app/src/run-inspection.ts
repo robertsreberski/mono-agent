@@ -16,12 +16,89 @@ import type {
 
 import { resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
+import { firstCliPositional } from "./cli-args.js";
 import * as ui from "./ui.js";
 
 export const RUN_INSPECTION_MAX_RUNS = 50;
 export const RUN_INSPECTION_MAX_EVENTS = 500;
 export const RUN_INSPECTION_MAX_STRING_BYTES = 32 * 1_024;
 const RUN_INSPECTION_MAX_WARNINGS = 50;
+
+// The longest public high-confidence pattern is 523 ASCII bytes
+// (`github_pat_`/`sk-svcacct-` plus the maximum bounded body). Let the reader
+// retain that much lookahead so the output scanner sees a credential crossing
+// the final 32 KiB display boundary before this module applies the final cap.
+const MAX_CREDENTIAL_PATTERN_BYTES = 523;
+const RUN_INSPECTION_READER_MAX_STRING_BYTES =
+  RUN_INSPECTION_MAX_STRING_BYTES + MAX_CREDENTIAL_PATTERN_BYTES;
+const TRUNCATED_BYTES_MARKER = /…\[truncated [1-9]\d* bytes\]$/u;
+const SENSITIVE_KEY_PATTERN =
+  /(token|password|authorization|api[_-]?key|cookie|credentials?|private[_-]?key|client[_-]?secret|bearer|secret)/iu;
+const SENSITIVE_COMPOUND_KEY_PATTERN = /(?:^|_)(?:encryption_key|database_url)$/u;
+
+// These are the closed numeric observability/count fields that remain useful
+// and cannot carry a credential. Numeric values under every other sensitive
+// key are redacted by this CLI boundary, overriding the shared telemetry-safe
+// numeric exemption without changing shared redactor behavior.
+const SAFE_SENSITIVE_NUMERIC_KEYS = new Set([
+  "input",
+  "input_tokens",
+  "inputTokens",
+  "output",
+  "output_tokens",
+  "outputTokens",
+  "cachedInput",
+  "cached_input",
+  "cachedInputTokens",
+  "cached_input_tokens",
+  "cacheRead",
+  "cache_read",
+  "cacheCreation",
+  "cache_creation",
+  "cacheReadTokens",
+  "cache_read_tokens",
+  "cacheCreationTokens",
+  "cache_creation_tokens",
+  "cacheWrite",
+  "cache_write",
+  "cacheWriteTokens",
+  "cache_write_tokens",
+  "total",
+  "total_tokens",
+  "totalTokens",
+  "reasoning",
+  "reasoning_tokens",
+  "reasoningTokens",
+  "generatedSummaryTokens",
+  "tailEstimateTokens",
+  "credentialCount",
+  "credential_count",
+  "bearerCount",
+  "bearer_count",
+  "tokenCount",
+  "token_count",
+]);
+
+interface CredentialPrefixShape {
+  readonly prefix: string;
+  readonly body: RegExp;
+  readonly maxBodyCharacters: number;
+}
+
+const CREDENTIAL_PREFIX_SHAPES: readonly CredentialPrefixShape[] = [
+  { prefix: "sk-", body: /^[A-Za-z0-9]*$/u, maxBodyCharacters: 48 },
+  { prefix: "sk-proj-", body: /^[A-Za-z0-9_-]*$/u, maxBodyCharacters: 512 },
+  { prefix: "sk-svcacct-", body: /^[A-Za-z0-9_-]*$/u, maxBodyCharacters: 512 },
+  { prefix: "ghp_", body: /^[A-Za-z0-9]*$/u, maxBodyCharacters: 36 },
+  { prefix: "github_pat_", body: /^[A-Za-z0-9_]*$/u, maxBodyCharacters: 512 },
+  { prefix: "AKIA", body: /^[A-Z0-9]*$/u, maxBodyCharacters: 16 },
+  { prefix: "xoxb-", body: /^[A-Za-z0-9-]*$/u, maxBodyCharacters: 512 },
+  { prefix: "xoxa-", body: /^[A-Za-z0-9-]*$/u, maxBodyCharacters: 512 },
+  { prefix: "xoxp-", body: /^[A-Za-z0-9-]*$/u, maxBodyCharacters: 512 },
+  { prefix: "xoxr-", body: /^[A-Za-z0-9-]*$/u, maxBodyCharacters: 512 },
+  { prefix: "xoxs-", body: /^[A-Za-z0-9-]*$/u, maxBodyCharacters: 512 },
+  { prefix: "xapp-", body: /^[A-Za-z0-9-]*$/u, maxBodyCharacters: 512 },
+];
 
 interface RunInspectionCommonArgs {
   readonly configPath?: string;
@@ -76,7 +153,7 @@ export async function runInspection(
         artifactDir,
         scope: args.includeMemory === true ? "all" : "agent",
         maxRuns: RUN_INSPECTION_MAX_RUNS,
-        maxStringBytes: RUN_INSPECTION_MAX_STRING_BYTES,
+        maxStringBytes: RUN_INSPECTION_READER_MAX_STRING_BYTES,
       });
       const output = {
         ok: true,
@@ -101,7 +178,7 @@ export async function runInspection(
       artifactDir,
       maxEventsPerRun: RUN_INSPECTION_MAX_EVENTS,
       eventSelection: "head-tail",
-      maxStringBytes: RUN_INSPECTION_MAX_STRING_BYTES,
+      maxStringBytes: RUN_INSPECTION_READER_MAX_STRING_BYTES,
     } as const;
     // A root-level agent run wins an identical-id collision. The memory namespace
     // is consulted only when explicitly requested and the agent scope had no hit.
@@ -139,7 +216,7 @@ export async function runInspection(
 
 export function isRunInspectionInvocation(argv: readonly string[]): boolean {
   if (argv[0] !== "runs") return false;
-  const mode = argv.slice(1).find((token) => ["report", "audit", "list", "show"].includes(token));
+  const mode = firstCliPositional(argv.slice(1));
   return mode === "list" || mode === "show";
 }
 
@@ -228,19 +305,75 @@ function safeString(value: string): string {
   const redacted = redactJsonValue(value, RUN_INSPECTION_MAX_STRING_BYTES, {
     contentPatternRedaction: true,
   });
-  return truncateVisibleText(escapeOutputControls(String(redacted)), RUN_INSPECTION_MAX_STRING_BYTES);
+  const boundarySafe = omitPotentialCredentialAtTruncationBoundary(String(redacted));
+  return truncateVisibleText(escapeOutputControls(boundarySafe), RUN_INSPECTION_MAX_STRING_BYTES);
 }
 
 /** Apply the public structured-key redactor and closed credential scanner first. */
 function safeRunOutput(value: unknown): unknown {
-  const redacted = redactJsonValue(value, RUN_INSPECTION_MAX_STRING_BYTES, {
+  const sharedRedacted = redactJsonValue(value, RUN_INSPECTION_MAX_STRING_BYTES, {
     contentPatternRedaction: true,
   });
-  return escapeOutputValue(redacted);
+  return escapeOutputValue(redactNumericCredentialValues(sharedRedacted));
+}
+
+function redactNumericCredentialValues(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => redactNumericCredentialValues(entry));
+  if (value === null || typeof value !== "object") return value;
+
+  const output: Record<string, unknown> = {};
+  for (const [key, entryValue] of Object.entries(value as Record<string, unknown>)) {
+    const nextValue = typeof entryValue === "number"
+      && isSensitiveOutputKey(key)
+      && !SAFE_SENSITIVE_NUMERIC_KEYS.has(key)
+      ? "[redacted]"
+      : redactNumericCredentialValues(entryValue);
+    Object.defineProperty(output, key, {
+      value: nextValue,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return output;
+}
+
+function isSensitiveOutputKey(key: string): boolean {
+  if (SENSITIVE_KEY_PATTERN.test(key)) return true;
+  const normalized = key
+    .trim()
+    .replace(/([A-Z])([A-Z][a-z])/gu, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/gu, "$1_$2")
+    .toLocaleLowerCase("en-US")
+    .replace(/[\s.-]+/gu, "_");
+  return SENSITIVE_COMPOUND_KEY_PATTERN.test(normalized);
+}
+
+/**
+ * A legacy artifact can already end in a canonical truncation marker with only
+ * a credential prefix retained. The public scanner cannot match an incomplete
+ * token, so conservatively redact a supported prefix touching that boundary.
+ */
+function omitPotentialCredentialAtTruncationBoundary(value: string): string {
+  const marker = TRUNCATED_BYTES_MARKER.exec(value);
+  if (marker === null) return value;
+  const head = value.slice(0, marker.index);
+  for (const shape of CREDENTIAL_PREFIX_SHAPES) {
+    const start = head.lastIndexOf(shape.prefix);
+    if (start < 0) continue;
+    const body = head.slice(start + shape.prefix.length);
+    if (body.length <= shape.maxBodyCharacters && shape.body.test(body)) {
+      return `${head.slice(0, start)}[redacted]${marker[0]}`;
+    }
+  }
+  return value;
 }
 
 function escapeOutputValue(value: unknown): unknown {
-  if (typeof value === "string") return truncateVisibleText(escapeOutputControls(value), RUN_INSPECTION_MAX_STRING_BYTES);
+  if (typeof value === "string") {
+    const boundarySafe = omitPotentialCredentialAtTruncationBoundary(value);
+    return truncateVisibleText(escapeOutputControls(boundarySafe), RUN_INSPECTION_MAX_STRING_BYTES);
+  }
   if (Array.isArray(value)) return value.map((entry) => escapeOutputValue(entry));
   if (value === null || typeof value !== "object") return value;
 
