@@ -2808,6 +2808,38 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("breaks equal job completion ties by non-success state, then newest message ordinal", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const olderFailure = fakeProcessJob({ state: "failed", conversationId: `web:${thread.id}` });
+    const newerSuccess = fakeProcessJob({ state: "succeeded", conversationId: `web:${thread.id}`,
+      jobId: "22222222-2222-4222-8222-222222222222" });
+    const newestFailure = fakeProcessJob({ state: "failed", conversationId: `web:${thread.id}`,
+      jobId: "33333333-3333-4333-8333-333333333333" });
+    const upsert = (job: ReturnType<typeof fakeProcessJob>, responseText?: string) => store.upsertProcessJobCard({
+      sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+      ...(responseText === undefined ? {} : { responseText }),
+    });
+    try {
+      upsert(olderFailure, "older failure");
+      upsert(newerSuccess, "newer success");
+      expect(olderFailure.timestamps.completedAt).toBe(newerSuccess.timestamps.completedAt);
+      expect(store.getThread(thread.id)?.jobActivity?.latestTerminal).toEqual({
+        state: "failed", completedAt: olderFailure.timestamps.completedAt, replyPreview: "older failure",
+      });
+      upsert(newestFailure, "newest failure");
+      expect(newestFailure.timestamps.completedAt).toBe(olderFailure.timestamps.completedAt);
+      // A later wake update must not change the older message's ordinal.
+      upsert({ ...olderFailure, wake: { ...olderFailure.wake, state: "delivered", attempts: 1,
+        lastAttemptAt: "2026-07-21T09:00:06.000Z" } });
+      expect(store.getThread(thread.id)?.jobActivity?.latestTerminal).toEqual({
+        state: "failed", completedAt: newestFailure.timestamps.completedAt, replyPreview: "newest failure",
+      });
+    } finally { store.close(); }
+  });
+
   it("uses a completed job response as its message preview", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -4776,6 +4808,92 @@ describe("WebStore message sequence and part deltas", () => {
     read.mockRestore();
     context.store.close();
   });
+
+  /** Release the first writer's lock before injecting a genuine second-connection commit. */
+  function interleaveAfterStreamConflict(
+    context: StreamingStore, change: (writer: DatabaseSync) => void, afterCommit?: () => void,
+  ): {
+    readonly count: () => number; readonly close: () => void;
+  } {
+    const db = (context.store as unknown as { database: DatabaseSync }).database;
+    const writer = new DatabaseSync(join(context.stateDir, "state.sqlite"));
+    writer.exec("PRAGMA foreign_keys = ON");
+    // Make the cached sequence stale so the first guarded attempt must roll back.
+    writer.prepare("UPDATE messages SET seq = seq + 1 WHERE id = ?").run(context.messageId);
+    const exec = db.exec.bind(db);
+    let count = 0;
+    const spy = vi.spyOn(db, "exec").mockImplementation((sql) => {
+      exec(sql);
+      if (sql === "ROLLBACK" && count === 0) {
+        count++;
+        writer.exec("BEGIN IMMEDIATE");
+        try { change(writer); writer.exec("COMMIT"); }
+        catch (error) { writer.exec("ROLLBACK"); throw error; }
+        afterCommit?.();
+      }
+    });
+    return { count: () => count, close: () => { spy.mockRestore(); writer.close(); } };
+  }
+
+  it("does not replay frames when a second writer settles between conflict and retry", async () => {
+    const context = await openStreamingStore();
+    context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "cached" }]);
+    const interleave = interleaveAfterStreamConflict(context, (writer) => {
+      writer.prepare("UPDATE turns SET status = 'complete', finished_at = ? WHERE id = ?")
+        .run("2026-09-21T00:00:00.000Z", context.turnId);
+      writer.prepare("UPDATE messages SET status = 'complete', parts_json = ?, seq = seq + 1 WHERE id = ?")
+        .run(JSON.stringify([{ type: "text", text: "settled by second writer" }]), context.messageId);
+    });
+    try {
+      const write = context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "must not append" }]);
+      expect(interleave.count()).toBe(1);
+      expect(write.delta).toBeUndefined();
+      expect(write.message).toEqual(context.store.getMessage(context.messageId));
+      expect(write.message).toMatchObject({ seq: 3, status: "complete",
+        parts: [{ type: "text", text: "settled by second writer" }] });
+      expect((context.store as unknown as { streamSnapshots: Map<string, WebMessage> }).streamSnapshots.has(context.turnId)).toBe(false);
+    } finally { interleave.close(); context.store.close(); }
+  });
+
+  it.each(["thread", "turn", "both"] as const)(
+    "rejects a second writer reparenting the assistant %s between conflict and retry", async (moved) => {
+      const context = await openStreamingStore();
+      context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "cached" }]);
+      const otherThread = context.store.createThread("agent-one");
+      const other = context.store.beginTurn({ threadId: otherThread.id, text: "other turn", attachmentIds: [] });
+      let reparented: WebMessage | undefined;
+      const interleave = interleaveAfterStreamConflict(context, (writer) => {
+        writer.prepare("UPDATE messages SET thread_id = ?, turn_id = ?, seq = seq + 1 WHERE id = ?")
+          .run(moved === "turn" ? context.threadId : otherThread.id,
+            moved === "thread" ? context.turnId : other.turnId, context.messageId);
+      }, () => { reparented = context.store.getMessage(context.messageId); });
+      try {
+        expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "must not append" }]))
+          .toThrow(expect.objectContaining({ code: "storage_corrupt" }));
+        expect(interleave.count()).toBe(1);
+        expect(context.store.getMessage(context.messageId)).toEqual(reparented);
+        expect(reparented).toMatchObject({ seq: 3, parts: [{ type: "text", text: "cached" }] });
+      } finally { interleave.close(); context.store.close(); }
+    },
+  );
+
+  it.each(["thread", "turn"] as const)(
+    "guards cached ownership when a second writer moves only the %s without changing seq", async (moved) => {
+      const context = await openStreamingStore();
+      context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "cached" }]);
+      const otherThread = context.store.createThread("agent-one");
+      const other = context.store.beginTurn({ threadId: otherThread.id, text: "other turn", attachmentIds: [] });
+      const writer = new DatabaseSync(join(context.stateDir, "state.sqlite"));
+      try {
+        writer.prepare(`UPDATE messages SET ${moved === "thread" ? "thread_id" : "turn_id"} = ? WHERE id = ?`)
+          .run(moved === "thread" ? otherThread.id : other.turnId, context.messageId);
+        const reparented = context.store.getMessage(context.messageId);
+        expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "must not append" }]))
+          .toThrow(expect.objectContaining({ code: "storage_corrupt" }));
+        expect(context.store.getMessage(context.messageId)).toEqual(reparented);
+      } finally { writer.close(); context.store.close(); }
+    },
+  );
 
   it("indexes a large settled snapshot exactly once and rolls search back with a failed settlement", async () => {
     const context = await openStreamingStore();

@@ -4314,20 +4314,18 @@ export class WebStore {
   }
 
   applyStreamFrames(turnId: string, frames: readonly AgentStreamWireFrame[]): StoredMessageWrite {
-    const turn = this.requireTurn(turnId);
-    // Nothing is written for a turn that already settled, so there is no
-    // version for a delta to name.
-    if (turn.status !== "running") {
-      this.streamSnapshots.delete(turnId);
-      return { message: this.requireMessage(turn.assistant_message_id) };
-    }
-    // The base read, the frames applied to it and the write are ONE atomic
-    // span, as they already are on the finish path. A delta whose ops were
-    // diffed against a version other than the one its `baseSeq` names is
-    // self-consistent and WRONG -- the one corruption a sequence number cannot
-    // expose, because the console would apply it without complaint.
+    // Each attempt validates turn lifecycle and message ownership under the
+    // same writer lock as the sequence guard. A different SQLite writer may
+    // settle or reparent the assistant between a conflict rollback and retry.
     const persist = (): StoredMessageWrite => this.transaction(() => {
-      const message = this.streamSnapshots.get(turnId) ?? this.requireMessage(turn.assistant_message_id);
+      let turn = this.requireTurn(turnId);
+      const message = (turn.status === "running" ? this.streamSnapshots.get(turnId) : undefined)
+        ?? this.requireMessage(turn.assistant_message_id);
+      if (message.id !== turn.assistant_message_id || message.turnId !== turn.id || message.threadId !== turn.thread_id) {
+        throw new WebConsoleError("storage_corrupt", "A streaming assistant message does not belong to its turn and thread.", 500);
+      }
+      // A settled turn has no write (and therefore no delta) to announce.
+      if (turn.status !== "running") return { message };
       const parts = [...message.parts];
       let actualModel: string | undefined;
       let actualEffort: string | undefined;
@@ -4416,14 +4414,14 @@ export class WebStore {
         }
       }
       if (actualModel !== undefined || actualEffort !== undefined || actualEffectiveEffort !== undefined || attributionChanged) {
-        this.database.prepare(`
+        turn = this.database.prepare(`
           UPDATE turns SET
             model = CASE WHEN ? IS NULL THEN model ELSE ? END,
             effort = CASE WHEN ? = 1 THEN NULL WHEN ? IS NULL THEN effort ELSE ? END,
             effective_effort = CASE WHEN ? = 1 THEN NULL WHEN ? IS NULL THEN effective_effort ELSE ? END,
             routing_json = ?
-          WHERE id = ?
-        `).run(
+          WHERE id = ? RETURNING *
+        `).get(
           actualModel ?? null,
           actualModel ?? null,
           clearEffort ? 1 : 0,
@@ -4434,7 +4432,7 @@ export class WebStore {
           actualEffectiveEffort ?? null,
           serializeRoutingState(routing),
           turnId,
-        );
+        ) as unknown as TurnRow;
       }
       // Diffed on the parts already in hand, before and after: a text delta
       // moves neither the tool-call count nor the phase nor the cost, and it is
@@ -4459,9 +4457,10 @@ export class WebStore {
       // The cache is optimistic, never authoritative. A stale sequence writes
       // nothing; roll back routing changes too, reread, and replay the frames.
       const changed = this.database.prepare(`UPDATE messages SET parts_json = ?, updated_at = ?, seq = seq + 1
-        WHERE id = ? AND seq = ? RETURNING seq`).get(serialized, now, message.id, message.seq) as { seq: number } | undefined;
+        WHERE id = ? AND turn_id = ? AND thread_id = ? AND seq = ? RETURNING seq`)
+        .get(serialized, now, message.id, turn.id, turn.thread_id, message.seq) as { seq: number } | undefined;
       if (changed === undefined) throw STREAM_SEQUENCE_CONFLICT;
-      const attribution = runAttribution(this.requireTurn(turnId));
+      const attribution = runAttribution(turn);
       const committed: WebMessage = { ...message, parts, updatedAt: now, seq: changed.seq, ...(attribution === undefined ? {} : { attribution }) };
       return {
         message: committed,
@@ -4479,7 +4478,8 @@ export class WebStore {
         if (error !== STREAM_SEQUENCE_CONFLICT) throw error;
         write = persist(); // One fresh read under BEGIN IMMEDIATE; no unbounded retry.
       }
-      this.streamSnapshots.set(turnId, write.message);
+      if (write.delta === undefined) this.streamSnapshots.delete(turnId);
+      else this.streamSnapshots.set(turnId, write.message);
       return write;
     } catch (error) {
       this.streamSnapshots.delete(turnId);
