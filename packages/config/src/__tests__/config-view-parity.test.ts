@@ -30,7 +30,7 @@ function loaderEnvKeys(): Set<string> {
  *   input encoding the view summarizes under the `providers.local` field.
  * - The retired pre-v2 memory keys are tolerated (warned, not honored), so they
  *   are intentionally absent from the view.
- * - Newly retired runtime keys are read only to fail with migration guidance,
+ * - Retired runtime and exporter keys are read only for migration handling,
  *   so they must not reappear as selectable view fields.
  */
 const LOADER_ONLY_ALLOWLIST = new Set<string>([
@@ -56,6 +56,7 @@ const LOADER_ONLY_ALLOWLIST = new Set<string>([
   "MONO_AGENT_ROUTE_SAFETY",
   "MONO_AGENT_FALLBACK_MODELS",
   "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
+  "MONO_AGENT_OBSERVABILITY_EXPORTERS",
 ]);
 
 describe("config view <-> loader parity", () => {
