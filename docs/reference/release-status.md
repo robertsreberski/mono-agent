@@ -10,7 +10,7 @@ This documentation and this repository describe the current `main` source. The p
 | | Version |
 | --- | --- |
 | Latest published npm release (registry rechecked 2026-09-21) | `create-mono-agent@0.22.0` and its lockstep `@mono-agent/*` release, published 2026-09-16 |
-| Documented source revision | `main` (comparison audited at `b8f9c081ddda009c1b1e61eb43c7a11d527c3e03`) |
+| Documented source revision | `main` (comparison audited at [`b8f9c081`](https://github.com/robertsreberski/mono-agent/commit/b8f9c081ddda009c1b1e61eb43c7a11d527c3e03)) |
 | Minimum Node.js for both | `>=24.15.0` |
 
 ## Published baseline
