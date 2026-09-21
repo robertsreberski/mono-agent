@@ -4532,14 +4532,18 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
       provider: { apiKeyEnv: "LOCAL_PROVIDER_API_KEY" },
       env: { LOCAL_PROVIDER_API_KEY: "env-secret-sentinel" },
       secret: "env-secret-sentinel",
+      // JSON-only configs carry the reference while the value stays in env, so
+      // doctor names the resolving variable (never the value).
+      expected: "with LOCAL_PROVIDER_API_KEY present in the resolved environment",
     },
     {
       name: "an inline fallback when apiKeyEnv is absent",
       provider: { apiKeyEnv: "LOCAL_PROVIDER_API_KEY", apiKey: "inline-secret-sentinel" },
       env: {},
       secret: "inline-secret-sentinel",
+      expected: "(API key configured)",
     },
-  ])("reports $name generically without exposing the key", async ({ provider, env, secret }) => {
+  ])("reports $name generically without exposing the key", async ({ provider, env, secret, expected }) => {
     const configPath = await writeCredConfig({
       runtime: { model: "local-secure:private-model" },
       providers: {
@@ -4557,7 +4561,8 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const creds = sectionById(report, "credentials");
     expect(creds.status).toBe("ok");
     const text = creds.details.join("\n");
-    expect(text).toContain("provider `local-secure` configured via config providers.local (API key configured)");
+    expect(text).toContain("provider `local-secure` configured via config providers.local");
+    expect(text).toContain(expected);
     expect(text).not.toContain(secret);
     expect(text).not.toContain("keyless local provider");
     expect(report.ok).toBe(true);
