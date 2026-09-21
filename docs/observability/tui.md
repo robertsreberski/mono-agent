@@ -13,7 +13,7 @@ This source change does not alter already installed releases, migrate consumer f
 
 | Previous use | Maintained replacement |
 | --- | --- |
-| Live terminal chat and operator controls | Use [`mono-agent web`](/observability/web-console/) for the browser console. |
+| Live terminal chat and operator controls | Use [`mono-agent web run --loopback`](/observability/web-console/) for the browser console. |
 | Recorded-run browsing | Use `mono-agent runs list`, then `mono-agent runs show <run-id>` for bounded offline diagnostics. |
 | Resolved configuration view | Use `mono-agent config` or `mono-agent config --json`. |
 | Direct `@mono-agent/tui` imports or `mono-agent-tui` embedding | Remove them and compose against the maintained package that owns the required capability; no renderer compatibility exports were relocated. |

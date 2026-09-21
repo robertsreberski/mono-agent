@@ -50,8 +50,8 @@ const JSON_CAPABLE_COMMANDS_DISPLAY =
 // `renderHelpTopic` reuses these so `help <removed>` prints the same pointer.
 export const REMOVED_COMMANDS = new Map<string, string>([
   ["recipes", "`recipes` was removed; use `mono-agent presets`."],
-  ["sessions", "`sessions` was removed; use `mono-agent runs list|show` for recorded-run diagnostics or `mono-agent web` for live conversations."],
-  ["tui", "`tui` was removed; use `mono-agent web` for live conversations, `mono-agent runs list|show` for bounded recorded-run diagnostics, and `mono-agent config` for resolved configuration."],
+  ["sessions", "`sessions` was removed; use `mono-agent runs list|show` for recorded-run diagnostics or `mono-agent web run --loopback` for live conversations."],
+  ["tui", "`tui` was removed; use `mono-agent web run --loopback` for live conversations, `mono-agent runs list|show` for bounded recorded-run diagnostics, and `mono-agent config` for resolved configuration."],
   ["metrics", "`metrics` was removed; use `mono-agent runs` (or `mono-agent runs report`)."],
   ["audit-runs", "`audit-runs` was removed; use `mono-agent runs audit`."],
   ["backfill", "`backfill` was removed with first-party Phoenix/OTLP export; use `mono-agent runs`, `mono-agent runs audit`, or `mono-agent runs report` for retained local artifacts. If a final export is required, perform it before upgrading with the known-good version you already operate."],

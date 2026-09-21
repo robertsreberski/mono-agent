@@ -802,7 +802,7 @@ describe("parseCliArgs", () => {
 
     const tuiDetail = helpTopicText("tui");
     expect(tuiDetail).toContain("`tui` was removed");
-    expect(tuiDetail).toContain("mono-agent web");
+    expect(tuiDetail).toContain("mono-agent web run --loopback");
     expect(tuiDetail).toContain("mono-agent runs list|show");
     expect(tuiDetail).toContain("mono-agent config");
 
@@ -848,7 +848,7 @@ describe("parseCliArgs", () => {
     expect(sessions.ok).toBe(true);
     if (sessions.ok) {
       expect(sessions.text).toContain("mono-agent runs list|show");
-      expect(sessions.text).toContain("mono-agent web");
+      expect(sessions.text).toContain("mono-agent web run --loopback");
       expect(sessions.text).not.toContain("mono-agent tui");
     }
 
@@ -961,7 +961,7 @@ describe("removed CLI surfaces", () => {
     expect(sessions.code).toBe(2);
     expect(sessions.stderr).toContain("`sessions` was removed");
     expect(sessions.stderr).toContain("mono-agent runs list|show");
-    expect(sessions.stderr).toContain("mono-agent web");
+    expect(sessions.stderr).toContain("mono-agent web run --loopback");
     expect(sessions.stderr).not.toContain("mono-agent tui");
     // The unknown-command enumeration must no longer advertise `sessions`.
     const unknown = await captureCli(() => runCli(["definitely-not-a-command"]));
@@ -985,7 +985,7 @@ describe("removed CLI surfaces", () => {
 
     expect(direct.code).toBe(2);
     expect(direct.stderr).toContain("`tui` was removed");
-    expect(direct.stderr).toContain("mono-agent web");
+    expect(direct.stderr).toContain("mono-agent web run --loopback");
     expect(direct.stderr).toContain("mono-agent runs list|show");
     expect(direct.stderr).toContain("mono-agent config");
     expect(`${direct.stdout}${direct.stderr}`).not.toContain(secret);

@@ -139,7 +139,7 @@ tools, and configured external memory services can still use the network.
 The first-party terminal renderer is removed on the current unreleased source
 branch: `mono-agent tui`, `mono-agent help tui`, the standalone
 `mono-agent-tui` binary, and direct `@mono-agent/tui` imports no longer provide a
-renderer. Use `mono-agent web` for live operation, `mono-agent runs list` and
+renderer. Use `mono-agent web run --loopback` for live operation, `mono-agent runs list` and
 `mono-agent runs show <run-id>` for bounded offline run diagnostics, and
 `mono-agent config` for the resolved configuration view.
 

@@ -3,7 +3,7 @@
 ## Unreleased
 
 - **Breaking: remove the first-party terminal renderer.** Remove `mono-agent tui`,
-  the `mono-agent-tui` binary, and `@mono-agent/tui`; use `mono-agent web` for
+  the `mono-agent-tui` binary, and `@mono-agent/tui`; use `mono-agent web run --loopback` for
   live operation, `mono-agent runs list|show` for bounded offline diagnostics,
   and `mono-agent config` for resolved configuration. Keep the shared `tui.*`
   operator endpoint and wire identifiers used by web, ACP, and jobs clients.
