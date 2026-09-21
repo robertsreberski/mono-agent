@@ -18,11 +18,12 @@ existing docs site is secondary.
   claim must be source-grounded; source-only showcases must be explicitly
   labelled and linked to release availability. The honesty rules live in a comment at
   the top of that file — read them before editing copy.
-  The v0.22.0 release notes and published app/web tarballs confirm projects, tags,
-  and persistent subagents are released (checked 2026-09-20). The repository
-  `docs/reference/release-status.md` still describes the older 0.21.1 boundary;
-  do not repeat its stale source-only labels for these capabilities. Never present
-  source-only capabilities as published, never promise setup speed or security properties, and never present
+  The pinned release notes and published app/web tarballs summarized by the canonical
+  `docs/reference/release-status.md` confirm projects, tags, persistent subagents,
+  browser-first setup, and the loopback/explicit-sharing console defaults are released.
+  That page records the current published-versus-source boundary. Never present
+  source-only capabilities as published, never promise setup speed or security
+  properties, and never present
   the brand artwork as a screenshot.
 - **Artwork is decorative.** The transparent matte basalt-stone stack
   is used once in the hero. `public/hero-*.webp` preserve alpha;
