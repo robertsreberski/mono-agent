@@ -703,6 +703,14 @@ or decision, `MemoryJournal` for a broad retrospective over explicit local
 calendar dates, and `RunHistory`/`SessionHistory` for exact execution evidence.
 Unhinted interrupted-work recovery still begins with `RunHistory {}`.
 
+The configured, request-scoped `MemoryRecall` endpoint can deliberately reuse the
+current logical turn's original automatic-lookup question with
+`useOriginalQuery: true`. This exposes the unchanged bounded lookup after an
+automatic safety abstention without unioning candidates or changing ordinary
+`query` searches. The two modes are mutually exclusive. Standalone and
+capability-free programmatic recall servers do not advertise original-query mode
+because they do not own that per-turn lookup.
+
 For built-in local memory, a narrowly recognized embedding request, circuit, or
 response failure preserves already-computed lexical hits instead of silently
 returning no memory. The automatic block is headed

@@ -67,10 +67,27 @@ export interface SharedMemoryRecallRuntimeExtensionOptions {
   readonly listen?: (server: Server) => Promise<void>;
 }
 
+type OriginalRecallUnavailableReason =
+  | "empty"
+  | "conversation_relative"
+  | "lookup_failed";
+
+type OriginalRecallSelection =
+  | {
+      readonly available: true;
+      readonly query: string;
+      readonly outcome: Promise<MemoryRecallOutcome>;
+    }
+  | {
+      readonly available: false;
+      readonly reason: OriginalRecallUnavailableReason;
+    };
+
 interface TurnCache {
   readonly queries: Map<string, Promise<MemoryRecallOutcome>>;
   readonly expansions: Map<string, Promise<MemoryRecallOutcome>>;
   readonly accessedIds: Set<string>;
+  original?: OriginalRecallSelection;
 }
 
 interface SharedRecallHit {
@@ -118,18 +135,48 @@ export class MemoryRetrievalService implements MemoryStore {
     options: MemoryLoadOptions = {},
   ): Promise<MemoryBlock | undefined> {
     const evidenceQuery = normalizeEvidenceQuery(query ?? conversationId);
-    if (evidenceQuery.length === 0) return undefined;
-    // Current/last-message questions belong to the active channel transcript.
-    // Abstain before constructing a turn cache or paying for embeddings/search;
-    // an older semantically similar durable record must never displace history.
-    if (isConversationRelativeQuery(evidenceQuery)) return undefined;
+    const originalQuestion = query === undefined ? "" : normalizeEvidenceQuery(query);
     const ephemeral = options.turnId === undefined;
     const turnId = options.turnId ?? `uncached:${randomUUID()}`;
+    if (evidenceQuery.length === 0) {
+      if (!ephemeral) this.setOriginalUnavailable(turnId, "empty");
+      return undefined;
+    }
+    // Current/last-message questions belong to the active channel transcript.
+    // Clear any earlier selection for a repeated context load and abstain before
+    // paying for embeddings/search; durable memory must not displace history.
+    if (isConversationRelativeQuery(evidenceQuery)) {
+      if (!ephemeral) this.setOriginalUnavailable(turnId, "conversation_relative");
+      return undefined;
+    }
     try {
-      const outcome = await this.recallOutcomeForTurn(turnId, evidenceQuery, {
-        topK: AUTO_RECALL_BACKEND_HITS,
-        trackAccess: false,
-      });
+      let outcome: MemoryRecallOutcome;
+      if (ephemeral || originalQuestion.length === 0) {
+        if (!ephemeral) this.setOriginalUnavailable(turnId, "empty");
+        outcome = await this.recallOutcomeForTurn(turnId, evidenceQuery, {
+          topK: AUTO_RECALL_BACKEND_HITS,
+          trackAccess: false,
+        });
+      } else {
+        const turn = this.turnCache(turnId);
+        const selection: OriginalRecallSelection = {
+          available: true,
+          query: originalQuestion,
+          outcome: this.recallOutcomeInTurn(turn, evidenceQuery, {
+            topK: AUTO_RECALL_BACKEND_HITS,
+          }),
+        };
+        // The latest load owns the selection. Explicit tool calls never replace it.
+        turn.original = selection;
+        try {
+          outcome = await selection.outcome;
+        } catch (error) {
+          if (this.turns.get(turnId) === turn && turn.original === selection) {
+            turn.original = { available: false, reason: "lookup_failed" };
+          }
+          throw error;
+        }
+      }
       const hits = selectAutomaticRecallHits(outcome.hits, { query: evidenceQuery });
       if (hits.length === 0) {
         if (outcome.degradation?.code === "embedding_unavailable") {
@@ -169,52 +216,42 @@ export class MemoryRetrievalService implements MemoryStore {
     query: string,
     options: { readonly topK?: number; readonly trackAccess?: boolean; readonly expandHops?: 0 | 1 } = {},
   ): Promise<MemoryRecallOutcome> {
-    const evidenceQuery = normalizeEvidenceQuery(query);
-    const backendQuery = normalizeQuery(evidenceQuery);
-    if (backendQuery.length === 0) return { hits: [], retrievalMode: "lexical_only" };
     const turn = this.turnCache(turnId);
-    // Raw backend lookup remains normalized/shared, while graph expansion has
-    // its own evidence-preserving key below. Capitalization is a precision
-    // signal for query-local entity references and must reach graph policy.
-    let lookup = turn.queries.get(backendQuery);
-    if (lookup === undefined) {
-      lookup = this.store.recallWithOutcome === undefined
-        ? Promise.resolve(
-            this.store.recall(backendQuery, { topK: AUTO_RECALL_BACKEND_HITS, trackAccess: false }),
-          ).then((hits) => ({ hits, retrievalMode: "hybrid" as const }))
-        : Promise.resolve(
-            this.store.recallWithOutcome(backendQuery, {
-              topK: AUTO_RECALL_BACKEND_HITS,
-              trackAccess: false,
-            }),
-          );
-      turn.queries.set(backendQuery, lookup);
-    }
-    const limit = clampLimit(options.topK, 8);
-    const direct = await lookup;
-    let outcome: MemoryRecallOutcome;
-    if (options.expandHops === 1 && this.supportsGraphExpansion() && this.store.expandGraph !== undefined) {
-      const expansionKey = `${evidenceQuery}\0${limit}`;
-      let expanded = turn.expansions.get(expansionKey);
-      if (expanded === undefined) {
-        expanded = Promise.resolve(this.store.expandGraph(evidenceQuery, direct.hits, { topK: limit }))
-          .then((hits) => ({
-            hits,
-            retrievalMode: direct.retrievalMode,
-            ...(direct.degradation === undefined ? {} : { degradation: direct.degradation }),
-          }));
-        turn.expansions.set(expansionKey, expanded);
-      }
-      outcome = await expanded;
-    } else {
-      outcome = {
-        hits: direct.hits.slice(0, limit),
-        retrievalMode: direct.retrievalMode,
-        ...(direct.degradation === undefined ? {} : { degradation: direct.degradation }),
-      };
-    }
+    const outcome = await this.recallOutcomeInTurn(turn, query, options);
     if (options.trackAccess !== false) this.recordServed(turnId, outcome.hits);
     return outcome;
+  }
+
+  async recallOriginalOutcomeForTurn(
+    turnId: string,
+    options: { readonly topK?: number; readonly expandHops?: 0 | 1 } = {},
+  ): Promise<
+    | { readonly available: true; readonly query: string; readonly outcome: MemoryRecallOutcome }
+    | { readonly available: false; readonly reason: "not_loaded" | OriginalRecallUnavailableReason | "replaced" }
+  > {
+    const turn = this.turns.get(turnId);
+    const selection = turn?.original;
+    if (turn === undefined || selection === undefined) {
+      return { available: false, reason: "not_loaded" };
+    }
+    if (!selection.available) return selection;
+    try {
+      // Re-enter the same turn cache so graph-capable explicit recall can apply
+      // its existing one-hop policy without repeating the backend lookup.
+      const outcome = await this.recallOutcomeInTurn(turn, selection.query, options);
+      if (this.turns.get(turnId) !== turn) {
+        return { available: false, reason: "not_loaded" };
+      }
+      if (turn.original !== selection) {
+        return { available: false, reason: "replaced" };
+      }
+      return { available: true, query: selection.query, outcome };
+    } catch (error) {
+      if (this.turns.get(turnId) === turn && turn.original === selection) {
+        turn.original = { available: false, reason: "lookup_failed" };
+      }
+      throw error;
+    }
   }
 
   releaseTurn(turnId: string): void {
@@ -255,7 +292,9 @@ export class MemoryRetrievalService implements MemoryStore {
 
   recordAccessIdsForTurn(turnId: string, ids: readonly string[]): void {
     if (this.store.recordAccess === undefined) return;
-    const turn = this.turnCache(turnId);
+    // A late tool request must not recreate a cache after endpoint/turn cleanup.
+    const turn = this.turns.get(turnId);
+    if (turn === undefined) return;
     const fresh = ids.filter((id) => {
       if (turn.accessedIds.has(id)) return false;
       turn.accessedIds.add(id);
@@ -301,6 +340,58 @@ export class MemoryRetrievalService implements MemoryStore {
     await this.store.flush?.();
   }
 
+  private async recallOutcomeInTurn(
+    turn: TurnCache,
+    query: string,
+    options: { readonly topK?: number; readonly expandHops?: 0 | 1 } = {},
+  ): Promise<MemoryRecallOutcome> {
+    const evidenceQuery = normalizeEvidenceQuery(query);
+    const backendQuery = normalizeQuery(evidenceQuery);
+    if (backendQuery.length === 0) return { hits: [], retrievalMode: "lexical_only" };
+    // Raw backend lookup remains normalized/shared, while graph expansion has
+    // its own evidence-preserving key below. Capitalization is a precision
+    // signal for query-local entity references and must reach graph policy.
+    let lookup = turn.queries.get(backendQuery);
+    if (lookup === undefined) {
+      lookup = this.store.recallWithOutcome === undefined
+        ? Promise.resolve(
+            this.store.recall(backendQuery, { topK: AUTO_RECALL_BACKEND_HITS, trackAccess: false }),
+          ).then((hits) => ({ hits, retrievalMode: "hybrid" as const }))
+        : Promise.resolve(
+            this.store.recallWithOutcome(backendQuery, {
+              topK: AUTO_RECALL_BACKEND_HITS,
+              trackAccess: false,
+            }),
+          );
+      turn.queries.set(backendQuery, lookup);
+    }
+    const limit = clampLimit(options.topK, 8);
+    const direct = await lookup;
+    if (options.expandHops === 1 && this.supportsGraphExpansion() && this.store.expandGraph !== undefined) {
+      const expansionKey = `${evidenceQuery}\0${limit}`;
+      let expanded = turn.expansions.get(expansionKey);
+      if (expanded === undefined) {
+        expanded = Promise.resolve(this.store.expandGraph(evidenceQuery, direct.hits, { topK: limit }))
+          .then((hits) => ({
+            hits,
+            retrievalMode: direct.retrievalMode,
+            ...(direct.degradation === undefined ? {} : { degradation: direct.degradation }),
+          }));
+        turn.expansions.set(expansionKey, expanded);
+      }
+      return await expanded;
+    }
+    return {
+      hits: direct.hits.slice(0, limit),
+      retrievalMode: direct.retrievalMode,
+      ...(direct.degradation === undefined ? {} : { degradation: direct.degradation }),
+    };
+  }
+
+  private setOriginalUnavailable(turnId: string, reason: OriginalRecallUnavailableReason): void {
+    this.turnCache(turnId).original = { available: false, reason };
+  }
+
   private turnCache(turnId: string): TurnCache {
     let cache = this.turns.get(turnId);
     if (cache !== undefined) return cache;
@@ -325,6 +416,10 @@ export function createSharedMemoryRecallRuntimeExtension(
     const boundStore: RecallCapableStore = {
       recall: (query, options) => service.recallForTurn(runId, query, options),
       recallWithOutcome: (query, options) => service.recallOutcomeForTurn(runId, query, options),
+      recallOriginalWithOutcome: (originalOptions) => service.recallOriginalOutcomeForTurn(runId, {
+        ...(originalOptions?.topK === undefined ? {} : { topK: originalOptions.topK }),
+        expandHops: graphEnabled ? 1 : 0,
+      }),
       ...(graphEnabled ? {
         supportsGraphExpansion: () => true,
         expandGraph: async (query: string, _directHits: readonly SharedRecallHit[], graphOptions?: { readonly topK?: number }) => (
@@ -334,8 +429,10 @@ export function createSharedMemoryRecallRuntimeExtension(
             expandHops: 1,
           })
         ).hits,
-        recordAccess: (ids: readonly string[]) => service.recordAccessIdsForTurn(runId, ids),
       } : {}),
+      // Non-graph stores need the same served-only accounting. The service
+      // deduplicates IDs across automatic and deliberate delivery in this turn.
+      recordAccess: (ids: readonly string[]) => service.recordAccessIdsForTurn(runId, ids),
       close: async () => {},
     };
     let port: number | undefined;

@@ -247,6 +247,17 @@ memory searches for evidence owned by run history.
 
 The configured harness auto-provisions `MemoryRecall` from the single `config.memory` block unless `config.memory.recallTool.enabled` is explicitly `false`. This default applies both to config loaded from disk and to direct `createConfiguredAgentHarness` / `createConfiguredAgentResponder` composition whose typed memory block omits `recallTool`. It exposes a request-scoped loopback MCP endpoint backed by the **same open store and retrieval service** as automatic recall. Identical normalized automatic/tool queries share one per-turn lookup; a different tool query may search again. No second SQLite handle, embedding request, or hand-maintained MCP config is involved. Caller-supplied request extensions are composed with the default tool instead of replacing it.
 
+On this request-scoped configured-harness path, the tool also offers a deliberate
+`useOriginalQuery: true` mode. It returns the bounded result already looked up for
+the current logical turn's original user question, even when the finite automatic
+evidence gate correctly abstained and a later rephrased search would retrieve a
+different set. This mode does not union candidates, rerank, widen automatic
+injection, or perform another backend lookup. Supply either `query` for an ordinary
+query-local search or `useOriginalQuery: true`, never both. The mode is unavailable
+after an in-turn nonduplicate memory write, for active-conversation-relative or
+empty questions, after turn cleanup, and on standalone or capability-free
+programmatic recall servers that do not own the bound automatic lookup.
+
 The endpoint is allocated only after the turn acquires a provider-concurrency slot, so queued turns do not accumulate listeners. If endpoint startup fails, the host warns and omits the explicit tool for that turn; automatic recall and the provider response continue. If the memory backend itself fails during a tool call, `MemoryRecall` returns an explicit degraded result instead of fabricated hits.
 
 ```json
