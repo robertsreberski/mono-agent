@@ -11,7 +11,7 @@ The `providers` config map declares which model providers the agent supports, an
 - every provider named by `runtime.model` or a `runtime.fallbacks[]` entry — routing through a provider you did not mean to support is not possible, so those count as declared,
 - `ollama` and `lmstudio` when zero-config discovery finds them running.
 
-Declaring a provider widens selection to that provider's **whole advertised catalog** (up to `maxAdvertisedModels`, default 100), not just the models you route to. A Pi built-in that nobody declared and no route uses is not offered at all: advertising all 39 would let an operator pick a provider the agent holds no credential for, and the failure would surface only when the turn ran.
+Declaring a provider widens selection to that provider's **whole advertised catalog** (up to `maxAdvertisedModels`, default 100), not just the models you route to. A Pi built-in that nobody declared and no route uses is not offered at all: advertising all 41 would let an operator pick a provider the agent holds no credential for, and the failure would surface only when the turn ran.
 
 Coverage: **config**. Configure the map in `mono-agent.config.json` under `providers`, or via `MONO_AGENT_PROVIDERS_JSON` as a JSON object with the same shape.
 
@@ -100,7 +100,7 @@ an invalid expiry, an unsafe/unreadable store, or ambient file existence alone
 needs action. Environment API-key presence may establish only
 `present/not_verified`; it never establishes live health.
 
-The headless login flow is provider-owned by Pi 0.85.1:
+The headless login flow is provider-owned by Pi 0.86.1:
 
 - GitHub Copilot and OpenAI Codex use native device authorization: open the
   displayed URL on any browser, enter the displayed code, and leave the dialog

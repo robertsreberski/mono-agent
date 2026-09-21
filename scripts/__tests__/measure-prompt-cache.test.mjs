@@ -35,6 +35,7 @@ describe("prompt cache measurement", () => {
     expect(first.systemBytes).toBeGreaterThan(0);
     expect(first.systemFingerprint).toMatch(/^[a-f0-9]{16}$/u);
     expect(second.systemFingerprint).toBe(first.systemFingerprint);
+    expect(second.toolDefinitionsFingerprint).toBe(first.toolDefinitionsFingerprint);
     expect(first.messageCount).toBeGreaterThan(0);
     expect(second.messageCount).toBeGreaterThan(first.messageCount);
     expect(second.toolDefinitionCount).toBe(1);

@@ -316,8 +316,7 @@ export function buildProviderModelCatalog(
     ...configuredRoutes.map((ref) => ref.provider),
   ]);
 
-  // The authoritative 39-entry static catalog. The dynamic "radius" gateway is
-  // already excluded by the facade.
+  // The authoritative 41-entry static catalog (pi-ai 0.86.1) via the facade.
   let builtinProviders: readonly { readonly id: string; readonly label: string }[] = [];
   try {
     builtinProviders = listPiBuiltinProviders();
@@ -347,7 +346,7 @@ export function buildProviderModelCatalog(
   // `providers` is a support gate, not a hint: an agent advertises exactly the
   // providers it declared, the providers its own routes use, and whatever local
   // discovery found. A Pi built-in nobody declared is NOT selectable — offering
-  // all 39 would let an operator pick a provider the agent holds no credential
+  // all 41 would let an operator pick a provider the agent holds no credential
   // for, and the failure would only surface at turn time.
   //
   // Deterministic order: declared providers (config order, id-sorted at load),

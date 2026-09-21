@@ -165,11 +165,14 @@ function collectRun(events, response, labels) {
 
 async function fakeProvider(fixturePath) {
   const piRoot = join(piAiPackageRoot(), "dist", "index.js");
-  const { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } = await import(pathToFileURL(piRoot).href);
+  const { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, getCurrentSystemPrompt, getCurrentTools } = await import(pathToFileURL(piRoot).href);
   const faux = fauxProvider({ api: "openai-responses", provider: "benchmark-faux", models: [{ id: "cache-model", reasoning: false }], tokensPerSecond: undefined });
   faux.setResponses(Array.from({ length: 2_000 }, () => (context, _options, state) => {
+    // pi-ai 0.86.0 folds the request prompt and tools into the transcript's
+    // leading system message: replay them from the messages, as
+    // Models.streamSimple does before provider dispatch.
     const last = context.messages.at(-1);
-    return last?.role === "user" && context.tools?.some((tool) => tool.name === "Read")
+    return last?.role === "user" && getCurrentTools(context.messages ?? []).some((tool) => tool.name === "Read")
       ? fauxAssistantMessage([fauxToolCall("Read", { file_path: fixturePath }, { id: `fixture-read-${state.callCount}` })])
       : fauxAssistantMessage([fauxText("fixture observed")]);
   }));
@@ -177,7 +180,8 @@ async function fakeProvider(fixturePath) {
   const provider = {
     ...base,
     streamSimple(model, context, options) {
-      void options?.onPayload?.({ model: model.id, instructions: context.systemPrompt, input: context.messages, tools: context.tools ?? [], prompt_cache_key: options?.sessionId }, model);
+      const messages = context.messages ?? [];
+      void options?.onPayload?.({ model: model.id, instructions: getCurrentSystemPrompt(messages), input: messages, tools: getCurrentTools(messages), prompt_cache_key: options?.sessionId }, model);
       return base.streamSimple(model, context, options);
     },
   };

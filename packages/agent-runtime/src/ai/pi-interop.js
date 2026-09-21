@@ -9,7 +9,6 @@ import {
   getBuiltinModels,
   getBuiltinProviders,
 } from "@earendil-works/pi-ai/providers/all";
-import { getPiSupplementModel, listPiSupplementModels } from "./pi-supplement.js";
 import { getPiOAuthAuth, resolveOAuthApiKey, toAuthInteraction } from "./pi-oauth-compat.js";
 import { reasoningLevelsForPiModel as resolveReasoningLevels } from "./providers/pi-models.js";
 
@@ -121,30 +120,21 @@ function cloneInteropValue(value) {
 }
 
 /**
- * List defensive snapshots of Pi's built-in models for one provider, plus any
- * mono-agent catalog-supplement rows for that provider (see pi-supplement.js).
- * Upstream rows always win: a supplement id already present upstream is never
- * duplicated. The merged list is snapshot-cloned exactly like before, so
- * callers cannot mutate shared upstream OR supplement state.
+ * List defensive snapshots of Pi's built-in models for one provider, exactly
+ * as the upstream catalog reports them. The list is snapshot-cloned, so
+ * callers cannot mutate shared upstream state.
  *
  * @param {string} providerId
  * @returns {PiBuiltinModelSnapshot[]}
  */
 export function listPiBuiltinModels(providerId) {
   const models = getBuiltinModels(/** @type {any} */ (providerId));
-  const seen = new Set(models.map((model) => model?.id));
-  const merged = [...models];
-  for (const extra of listPiSupplementModels(providerId)) {
-    if (seen.has(extra.id)) continue;
-    seen.add(extra.id);
-    merged.push(/** @type {*} */ (extra));
-  }
-  return /** @type {PiBuiltinModelSnapshot[]} */ (cloneInteropValue(merged));
+  return /** @type {PiBuiltinModelSnapshot[]} */ (cloneInteropValue(models));
 }
 
 /**
- * Read a defensive snapshot of one Pi built-in model, falling back to the
- * mono-agent catalog supplement on an upstream miss (upstream wins).
+ * Read a defensive snapshot of one Pi built-in model, or `undefined` on an
+ * upstream miss.
  *
  * @param {string} providerId
  * @param {string} modelId
@@ -154,7 +144,7 @@ export function getPiBuiltinModel(providerId, modelId) {
   const model = getBuiltinModel(
     /** @type {any} */ (providerId),
     /** @type {any} */ (modelId),
-  ) ?? getPiSupplementModel(providerId, modelId);
+  );
   return model === undefined
     ? undefined
     : /** @type {PiBuiltinModelSnapshot} */ (cloneInteropValue(model));
@@ -162,13 +152,13 @@ export function getPiBuiltinModel(providerId, modelId) {
 
 let builtinProviderLabels;
 function builtinProviderLabelMap() {
-  // `getBuiltinProviders()` is the authoritative static catalog set (39 ids),
-  // but it returns bare ids — the human display label lives on the constructed
-  // `Provider.name`, which only `builtinProviders()` exposes. Build the name
-  // lookup once from the constructed providers and gate what we ADVERTISE on
-  // the static id set below, so the dynamic "radius" gateway (present in
-  // `builtinProviders()` but absent from `getBuiltinProviders()`) never enters
-  // the advertised catalog. A throwing construction degrades to id-as-label.
+  // `getBuiltinProviders()` is the authoritative static catalog set (41 ids in
+  // pi-ai 0.86.1), but it returns bare ids — the human display label lives on
+  // the constructed `Provider.name`, which only `builtinProviders()` exposes.
+  // Build the name lookup once from the constructed providers and gate what we
+  // ADVERTISE on the static id set below, so providers without a generated
+  // catalog entry never enter the advertised catalog. A throwing construction
+  // degrades to id-as-label.
   builtinProviderLabels ??= (() => {
     try {
       return new Map(builtinProviders().map((provider) => [provider.id, provider.name]));
@@ -181,8 +171,7 @@ function builtinProviderLabelMap() {
 
 /**
  * List defensive snapshots of Pi's static built-in providers (id + display
- * label). The dynamic "radius" gateway is deliberately excluded: it has no
- * static catalog and must not be advertised as a browsable provider.
+ * label), gated on the generated catalog set above.
  *
  * @returns {PiBuiltinProviderSnapshot[]}
  */
@@ -196,7 +185,7 @@ export function listPiBuiltinProviders() {
 
 /**
  * Describe one static Pi built-in provider by id, or `undefined` for unknown
- * ids (including the dynamic "radius" gateway).
+ * ids (including providers with no generated catalog entry).
  *
  * @param {string} providerId
  * @returns {PiBuiltinProviderSnapshot|undefined}
