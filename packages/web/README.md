@@ -1080,6 +1080,12 @@ failed or deleted rows cannot expose or resurrect a conversation. Stop the Web
 service and make a compatible database backup before migration. A schema-24
 binary refuses a schema-25 database; rollback requires
 restoring that compatible pre-upgrade backup and loses writes made afterward.
+Schema 33 backfills validated process-job state from retained cards in bounded
+batches, without scanning conversation transcripts; invalid cards fail and roll
+back the migration. Schema 34 adds a transaction-local search-write marker so
+settlement indexes already-parsed text once, atomically with the message. Neither
+upgrade prunes history or requires vacuuming. Older binaries refuse these schemas;
+use a compatible pre-upgrade backup to roll back, not a schema-version edit.
 Upgrade the operator-adapter before the Web producer so `liveInputTargeting`
 is available; an older operator is not guessed through and the receipt visibly
 queues `unsupported_targeting`. Deployment remains a separate operation.

@@ -22,6 +22,15 @@
   publication is durably rearmed after an older publication finishes, without
   releasing capacity or waking the parent early.
 
+- Keep active console conversation refreshes responsive by reading validated job
+  summaries instead of repeatedly parsing retained transcripts.
+- Keep large console responses responsive with adaptive streaming batches capped
+  at 250 ms, while retaining immediate search visibility after settlement.
+  Keep retries from modifying messages that another writer settled or reassigned.
+
+- Fix the web console to keep events responsive as transcripts grow and preserve
+  SSE connections through ordinary socket backpressure with bounded memory.
+
 - **Breaking: remove first-party Phoenix/OTLP export.** Remove the bundled
   exporter package, `observability.exporters`,
   `MONO_AGENT_OBSERVABILITY_EXPORTERS`, `mono-agent backfill`, exporter status,

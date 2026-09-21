@@ -2315,7 +2315,9 @@ export class WebService {
   ): Promise<void> {
     const coalescer = new StreamFrameCoalescer(
       async (frames) => {
-        this.emitMessageWrite(started.thread.id, this.store.applyStreamFrames(started.turnId, frames));
+        const write = this.store.applyStreamFrames(started.turnId, frames);
+        this.emitMessageWrite(started.thread.id, write);
+        return write.serializedBytes ?? 0;
       },
       (error) => controller.abort(error),
     );
@@ -4473,7 +4475,8 @@ class WebTurnCancellation extends Error {
   }
 }
 
-class StreamFrameCoalescer {
+export class StreamFrameCoalescer {
+  private intervalMs = STREAM_FLUSH_INTERVAL_MS;
   private pending: AgentStreamWireFrame[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
   private tail: Promise<void> = Promise.resolve();
@@ -4481,7 +4484,7 @@ class StreamFrameCoalescer {
   private closed = false;
 
   constructor(
-    private readonly persist: (frames: readonly AgentStreamWireFrame[]) => Promise<void>,
+    private readonly persist: (frames: readonly AgentStreamWireFrame[]) => Promise<number>,
     private readonly onFailure: (error: unknown) => void,
   ) {}
 
@@ -4496,7 +4499,7 @@ class StreamFrameCoalescer {
           this.failure = error;
           this.onFailure(error);
         });
-      }, STREAM_FLUSH_INTERVAL_MS);
+      }, this.intervalMs);
       this.timer.unref();
     }
   }
@@ -4509,7 +4512,16 @@ class StreamFrameCoalescer {
     const frames = this.pending;
     this.pending = [];
     if (frames.length > 0) {
-      this.tail = this.tail.then(async () => this.persist(frames));
+      this.tail = this.tail.then(async () => {
+        const started = performance.now();
+        const bytes = await this.persist(frames);
+        // Ordinary replies stay at 50 ms. Large snapshots buy idle time (4x
+        // persistence cost, or 50 ms per MiB), capped at 250 ms batching latency.
+        // The cap is a scheduling bound, not a promise that synchronous I/O is fast.
+        const duration = performance.now() - started;
+        this.intervalMs = Math.min(250, Math.max(STREAM_FLUSH_INTERVAL_MS,
+          Math.ceil(duration * 4), Math.ceil(bytes / (1024 * 1024)) * 50));
+      });
     }
     await this.tail;
     if (this.failure !== undefined) throw this.failure;

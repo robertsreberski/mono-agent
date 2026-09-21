@@ -15,7 +15,7 @@ import {
 import { WebStore } from "../store.js";
 import { prepareWebStatePaths } from "../state-paths.js";
 import * as migrationsModule from "../store-migrations.js";
-import { temporaryRoot } from "./helpers.js";
+import { fakeProcessJob, temporaryRoot } from "./helpers.js";
 import { seedLegacyStorage, seedLegacySilentCron } from "./fixtures/storage-layouts.js";
 
 const roots: string[] = [];
@@ -59,6 +59,68 @@ const historical = [...Array.from({ length: 21 }, (_, version) => ({ version, se
   { version: 17, sequenced17: true }];
 
 describe("web storage migration history", () => {
+  it.each(["valid", "invalid-state", "missing-message", "thread-mismatch", "non-array-parts", "no-job-part",
+    "duplicate-job-parts", "job-id-mismatch"] as const)("backfills legacy cards transactionally (shape=%s)", async (shape) => {
+    const stateDir = await seeded(18);
+    (await WebStore.open({ stateDir })).close();
+    const db = new DatabaseSync(join(stateDir, "state.sqlite"));
+    const thread = db.prepare("SELECT id, source_id FROM threads LIMIT 1").get() as { id: string; source_id: string };
+    // Deliberately seed a corrupt retained reference on this private fixture;
+    // production initialization re-enables foreign keys before migration.
+    if (shape === "missing-message") db.exec("PRAGMA foreign_keys = OFF");
+    db.exec(`DROP INDEX process_job_cards_by_state; DROP INDEX process_job_cards_by_thread;
+      ALTER TABLE process_job_cards DROP COLUMN state;
+      ALTER TABLE process_job_cards DROP COLUMN completed_at; PRAGMA user_version = 32;`);
+    db.prepare(`INSERT INTO threads (id, source_id, conversation_id, title, created_at, updated_at)
+      VALUES ('other-thread', ?, 'web:other-thread', 'Other thread', 'now', 'now')`).run(thread.source_id);
+    // Cross the batch boundary, with a malformed final card to prove earlier
+    // batches and ALTERs roll back, not just the offending row.
+    for (let index = 0; index < 130; index++) {
+      const job = fakeProcessJob({ jobId: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+        conversationId: `web:${thread.id}`, state: index % 2 ? "succeeded" : "running" });
+      const malformed = index === 129 && shape !== "valid";
+      const part = { type: "process-job", job: malformed && shape === "invalid-state" ? { ...job, state: "bogus" }
+        : malformed && shape === "job-id-mismatch" ? { ...job, jobId: "99999999-9999-4999-8999-999999999999" } : job };
+      const parts = JSON.stringify(malformed && shape === "non-array-parts" ? part
+        : malformed && shape === "no-job-part" ? [{ type: "text", text: "not a job" }]
+          : malformed && shape === "duplicate-job-parts" ? [part, part] : [part]);
+      if (!(malformed && shape === "missing-message")) {
+        db.prepare(`INSERT INTO messages (id, thread_id, role, parts_json, created_at, updated_at, status)
+          VALUES (?, ?, 'assistant', ?, 'now', 'now', ?)`).run(`legacy-card-${index}`,
+            malformed && shape === "thread-mismatch" ? "other-thread" : thread.id, parts,
+            malformed && shape === "non-array-parts" ? "running" : "complete");
+      }
+      db.prepare(`INSERT INTO process_job_cards (source_id, job_id, delivery_key, thread_id, message_id,
+        projection_sha256, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'unused', 'now', 'now')`)
+        .run(thread.source_id, job.jobId, job.wake.deliveryKey, thread.id, `legacy-card-${index}`);
+    }
+    const before = db.prepare("SELECT id, thread_id, status, parts_json FROM messages ORDER BY id").all();
+    const beforeCards = db.prepare("SELECT * FROM process_job_cards ORDER BY rowid").all();
+    db.close();
+    if (shape !== "valid") {
+      await expect(WebStore.open({ stateDir })).rejects.toThrow("migration 33 (process-job-state-projection) failed");
+      const failed = new DatabaseSync(join(stateDir, "state.sqlite"));
+      expect(failed.prepare("PRAGMA user_version").get()).toEqual({ user_version: 32 });
+      const columns = failed.prepare("PRAGMA table_info(process_job_cards)").all().map((row) => row.name);
+      expect(columns).not.toContain("state");
+      expect(columns).not.toContain("completed_at");
+      expect(failed.prepare("SELECT * FROM process_job_cards ORDER BY rowid").all()).toEqual(beforeCards);
+      expect(failed.prepare("SELECT id, thread_id, status, parts_json FROM messages ORDER BY id").all()).toEqual(before);
+      failed.close();
+    } else {
+      for (let reopen = 0; reopen < 2; reopen++) {
+        (await WebStore.open({ stateDir })).close();
+        const migrated = new DatabaseSync(join(stateDir, "state.sqlite"));
+        expect(migrated.prepare("SELECT state, count(*) AS n FROM process_job_cards GROUP BY state ORDER BY state").all())
+          .toEqual([{ state: "running", n: 65 }, { state: "succeeded", n: 65 }]);
+        expect(migrated.prepare("SELECT count(*) AS n FROM process_job_cards WHERE completed_at IS NOT NULL").get()).toEqual({ n: 65 });
+        expect(migrated.prepare("SELECT id, thread_id, status, parts_json FROM messages ORDER BY id").all()).toEqual(before);
+        expect(() => migrated.prepare("UPDATE process_job_cards SET state = 'bogus'").run()).toThrow();
+        migrated.close();
+      }
+    }
+  });
+
   it("upgrades schema 30 without inventing an origin for old turns and retains new origins on reopen", async () => {
     const stateDir = await seeded(18);
     (await WebStore.open({ stateDir })).close();
@@ -493,8 +555,8 @@ describe("web storage migration history", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 32 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(32);
+  it("is immutable and derives schema 34 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(34);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);
@@ -518,7 +580,7 @@ describe("named migration registry", () => {
     const cron = vi.fn();
     const monitor = vi.fn();
     const search = vi.fn();
-    const context = { database, originalVersion: 1, migrateCronChannels: cron, migrateMonitorWakeDeliveries: monitor, backfillMessageSearch: search, suppressSilentCronHistory: vi.fn() };
+    const context = { database, originalVersion: 1, migrateCronChannels: cron, migrateMonitorWakeDeliveries: monitor, refreshMessageSearch: () => {}, backfillMessageSearch: search, suppressSilentCronHistory: vi.fn() };
     try {
       database.exec("BEGIN IMMEDIATE");
       runWebStorageMigrations(context);

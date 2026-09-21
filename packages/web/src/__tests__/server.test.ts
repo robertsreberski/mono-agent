@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { lstat, readFile, readdir, writeFile } from "node:fs/promises";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { hostname } from "node:os";
@@ -5,10 +6,16 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { WEB_API_VERSION, type WebEvent } from "../contracts.js";
-import { createWebEventDispatch, isAllowedWebHostname, startWebServer, type WebServerHandle } from "../server.js";
+import {
+  createBoundedSseWriter,
+  createWebEventDispatch,
+  isAllowedWebHostname,
+  startWebServer,
+  type WebServerHandle,
+} from "../server.js";
 import { deliverWebNotification } from "../notification-client.js";
 import { prepareWebStatePaths } from "../state-paths.js";
 import { fakeDiscoveredAgent, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
@@ -478,6 +485,54 @@ describe("web HTTP server", () => {
     expect(stream.headers["content-encoding"]).toBeUndefined();
     expect(stream.headers["cache-control"]).toBe("no-cache, no-transform");
     expect(stream.first).toContain("event: ready");
+  });
+
+  it("keeps a draining event stream alive after a frame larger than the writable high-water mark", async () => {
+    const encoder = new TextEncoder();
+    let operatorStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const frame = (value: unknown) => encoder.encode(`${JSON.stringify(value)}\n`);
+    const { baseUrl } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { operatorStream = controller; },
+        }),
+      }),
+    });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const stream = await fetch(`${baseUrl}/api/v1/events?thread=${encodeURIComponent(threadId)}`);
+    const reader = stream.body?.getReader();
+    if (reader === undefined) throw new Error("Expected an SSE response body.");
+    const next = sseEventReader(reader);
+    expect(await next()).toMatchObject({ type: "ready" });
+    try {
+      await fetch(`${baseUrl}/api/v1/threads/${threadId}/turns`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "stream a large frame" }),
+      });
+      await waitFor(() => operatorStream !== undefined);
+      // Clear start events so the next delta is the oversized write itself.
+      for (;;) {
+        const event = await next();
+        if (event.type === "turn.changed") break;
+      }
+      operatorStream!.enqueue(frame({ kind: "append", delta: "x".repeat(64 * 1024) }));
+      let large: Record<string, unknown>;
+      do { large = await next(); } while (large.type !== "message.delta");
+      expect(JSON.stringify(large).length).toBeGreaterThan(64 * 1024);
+
+      // Receipt of the large frame means the client drained it. A later delta
+      // must use the SAME stream; the old close-on-false policy ended it here.
+      operatorStream!.enqueue(frame({ kind: "append", delta: "tail" }));
+      let tail: Record<string, unknown>;
+      do { tail = await next(); } while (tail.type !== "message.delta");
+      expect(JSON.stringify(tail)).toContain("tail");
+    } finally {
+      operatorStream?.enqueue(frame({ kind: "finish", finalText: `${"x".repeat(64 * 1024)}tail` }));
+      operatorStream?.close();
+      await reader.cancel();
+    }
   });
 
   it("serves the fixed MCP App proxy with a route-local executable CSP", async () => {
@@ -3109,12 +3164,128 @@ async function waitForFreeSseSlot(baseUrl: string, timeoutMs = 5_000): Promise<R
   }
 }
 
+class SyntheticSseWritable extends EventEmitter {
+  writableEnded = false;
+  readonly written: string[] = [];
+  readonly outcomes: Array<boolean | Error> = [];
+
+  write(frame: string): boolean {
+    this.written.push(frame);
+    const outcome = this.outcomes.shift() ?? true;
+    if (outcome instanceof Error) throw outcome;
+    return outcome;
+  }
+}
+
+describe("bounded SSE writer", () => {
+  it("waits for drain and preserves every queued frame in order", () => {
+    const target = new SyntheticSseWritable();
+    target.outcomes.push(false, true, true);
+    let terminals = 0;
+    const writer = createBoundedSseWriter({ target, onTerminal: () => { terminals += 1; } });
+
+    // False accepted "one" into Node's writable. "two" stays behind it rather
+    // than overtaking it or making the connection disappear.
+    expect(writer.write("one")).toBe(true);
+    expect(writer.write("two")).toBe(true);
+    expect(target.written).toEqual(["one"]);
+    target.emit("drain");
+    expect(target.written).toEqual(["one", "two"]);
+    expect(writer.write("three")).toBe(true);
+    expect(target.written).toEqual(["one", "two", "three"]);
+    expect(terminals).toBe(0);
+    writer.close();
+  });
+
+  it("skips heartbeats under pressure without dropping real frames", () => {
+    const target = new SyntheticSseWritable();
+    target.outcomes.push(false, true);
+    const writer = createBoundedSseWriter({ target, onTerminal: () => undefined });
+    writer.write("delta-1");
+    expect(writer.writeHeartbeat("heartbeat")).toBe(true);
+    writer.write("delta-2");
+    target.emit("drain");
+    expect(target.written).toEqual(["delta-1", "delta-2"]);
+    writer.close();
+  });
+
+  it("closes exactly once when the bounded queue overflows", () => {
+    const target = new SyntheticSseWritable();
+    target.outcomes.push(false);
+    const failures: unknown[] = [];
+    let terminals = 0;
+    const writer = createBoundedSseWriter({
+      target,
+      maxQueuedFrames: 1,
+      maxQueuedBytes: 64,
+      onFailure: (error) => failures.push(error),
+      onTerminal: () => { terminals += 1; },
+    });
+    expect(writer.write("accepted")).toBe(true);
+    expect(writer.write("queued")).toBe(true);
+    expect(writer.write("overflow")).toBe(false);
+    expect(writer.write("after-close")).toBe(false);
+    target.emit("drain");
+    expect(terminals).toBe(1);
+    expect(failures).toHaveLength(1);
+    expect(target.written).toEqual(["accepted"]);
+
+    const byteTarget = new SyntheticSseWritable();
+    byteTarget.outcomes.push(false);
+    let byteTerminals = 0;
+    const byteBounded = createBoundedSseWriter({
+      target: byteTarget,
+      maxQueuedFrames: 10,
+      maxQueuedBytes: 5,
+      onTerminal: () => { byteTerminals += 1; },
+    });
+    expect(byteBounded.write("accepted")).toBe(true);
+    expect(byteBounded.write("12345")).toBe(true);
+    expect(byteBounded.write("6")).toBe(false);
+    expect(byteTerminals).toBe(1);
+  });
+
+  it("closes exactly once on a drain deadline or real write throw", () => {
+    vi.useFakeTimers();
+    try {
+      const stalled = new SyntheticSseWritable();
+      stalled.outcomes.push(false);
+      let stalledTerminals = 0;
+      const timed = createBoundedSseWriter({
+        target: stalled,
+        drainTimeoutMs: 25,
+        onTerminal: () => { stalledTerminals += 1; },
+      });
+      timed.write("accepted");
+      vi.advanceTimersByTime(25);
+      vi.advanceTimersByTime(25);
+      expect(stalledTerminals).toBe(1);
+
+      const throwing = new SyntheticSseWritable();
+      throwing.outcomes.push(new Error("socket failed"));
+      let throwTerminals = 0;
+      const failures: unknown[] = [];
+      const failed = createBoundedSseWriter({
+        target: throwing,
+        onTerminal: () => { throwTerminals += 1; },
+        onFailure: (error) => failures.push(error),
+      });
+      expect(failed.write("frame")).toBe(false);
+      expect(failed.write("again")).toBe(false);
+      expect(throwTerminals).toBe(1);
+      expect(failures).toEqual([expect.objectContaining({ message: "socket failed" })]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 /**
  * The per-connection view of the event stream, exercised without a socket.
  *
  * Neither of the two things that matter here is observable through an HTTP
- * fixture: the rate limit is a clock decision, and a frame a connection cannot
- * write must close it rather than leave a socket that reads live.
+ * fixture: the rate limit is a clock decision, and a malformed frame must close
+ * rather than leave a socket that reads live.
  */
 describe("web event dispatch", () => {
   const AT = "2026-09-05T10:00:00.000Z";

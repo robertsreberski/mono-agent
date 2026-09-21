@@ -105,6 +105,28 @@ function measureStatements<T>(store: WebStore, read: () => T): { statements: num
   }
 }
 
+function capturePreparedSql<T>(store: WebStore, read: () => T): { sql: readonly string[]; value: T } {
+  const sql: string[] = [];
+  const holder = store as unknown as { database: DatabaseSync };
+  const real = holder.database;
+  holder.database = new Proxy(real, {
+    get(target, property) {
+      const value = Reflect.get(target, property) as unknown;
+      if (typeof value !== "function") return value;
+      if (property !== "prepare") return value.bind(target);
+      return (text: string) => {
+        sql.push(text);
+        return (value as (statement: string) => object).call(target, text);
+      };
+    },
+  }) as DatabaseSync;
+  try {
+    return { sql, value: read() };
+  } finally {
+    holder.database = real;
+  }
+}
+
 function transcriptMarkers(store: WebStore, threadId: string, kind: "model" | "project" | "resumed") {
   return store.getThreadDetail(threadId)!.messages.flatMap((message) => message.parts.flatMap((part) =>
     part.type === "conversation-marker" && part.kind === kind ? [{ ...part, turnId: message.turnId }] : []));
@@ -133,6 +155,103 @@ describe("WebStore", () => {
       expect(raw.prepare("SELECT parts_json FROM messages WHERE id = ?").get(turn.assistantMessageId))
         .toEqual({ parts_json: historical });
     } finally { raw.close(); store.close(); }
+  });
+
+  it("preserves every message-page tie-breaker, filtered part and attachment order across cursors", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const raw = new DatabaseSync(store.paths.database);
+    const at = "2026-09-21T10:00:00.000Z";
+    const rows = [
+      ["assistant-a", "assistant", [{ type: "text", text: "assistant a" }]],
+      ["user-a", "user", [{ type: "text", text: "user a" }]],
+      ["system-a", "system", [{ type: "conversation-marker", kind: "resumed", previousMessageAt: at, idleMs: 3_600_001, at }, { type: "monitor-activity", monitors: [] }]],
+      ["assistant-b", "assistant", [{ type: "text", text: "assistant b" }]],
+      ["user-b", "user", [{ type: "text", text: "user b" }]],
+      ["system-b", "system", [{ type: "text", text: "system b" }]],
+    ] as const;
+    try {
+      raw.prepare(`INSERT INTO turns
+        (id, thread_id, status, text, assistant_message_id, started_at, finished_at)
+        VALUES ('tie-turn', ?, 'complete', 'tied', 'assistant-a', ?, ?)`)
+        .run(thread.id, at, at);
+      const insert = raw.prepare(`INSERT INTO messages
+        (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, 'tie-turn', ?, ?, ?, ?, 'complete')`);
+      for (const [id, role, parts] of rows) insert.run(id, thread.id, role, JSON.stringify(parts), at, at);
+      const insertAttachment = raw.prepare(`INSERT INTO attachments
+        (id, thread_id, message_id, name, content_type, size_bytes, kind, status, uploaded, origin, storage_name, created_at, updated_at)
+        VALUES (?, ?, 'user-a', ?, 'text/plain', 1, 'document', 'committed', 1, 'upload', ?, ?, ?)`);
+      insertAttachment.run("attachment-b", thread.id, "b.txt", "attachment-b.txt", at, at);
+      insertAttachment.run("attachment-a", thread.id, "a.txt", "attachment-a.txt", at, at);
+
+      const expected = ["system-a", "user-a", "user-b", "system-b", "assistant-a", "assistant-b"];
+      expect(store.listMessagesPage(thread.id).messages.map((message) => message.id)).toEqual(expected);
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = store.listMessagesPage(thread.id, { limit: 2, ...(cursor === undefined ? {} : { before: cursor }) });
+        ids.unshift(...page.messages.map((message) => message.id));
+        cursor = page.nextCursor;
+      } while (cursor !== undefined);
+      expect(ids).toEqual(expected);
+      expect(store.getMessage("system-a")?.parts).toEqual([
+        { type: "conversation-marker", kind: "resumed", previousMessageAt: at, idleMs: 3_600_001, at },
+      ]);
+      expect(store.getMessage("user-a")?.attachments.map((attachment) => attachment.id))
+        .toEqual(["attachment-a", "attachment-b"]);
+    } finally {
+      raw.close();
+      store.close();
+    }
+  });
+
+  it("hydrates one and thirty message rows with a constant statement count", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      for (let index = 0; index < 15; index += 1) {
+        const turn = store.beginTurn({ threadId: thread.id, text: `request ${String(index)}`, attachmentIds: [] });
+        store.completeTurn(turn.turnId, `answer ${String(index)}`);
+      }
+      const one = measureStatements(store, () => store.listMessagesPage(thread.id, { limit: 1 }));
+      const thirty = measureStatements(store, () => store.listMessagesPage(thread.id, { limit: 30 }));
+      expect(one.value.messages).toHaveLength(1);
+      expect(thirty.value.messages).toHaveLength(30);
+      expect(thirty.statements).toBe(one.statements);
+    } finally { store.close(); }
+  });
+
+  it("fetches message blobs only after the bounded page and preview key sets", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: "request", attachmentIds: [] });
+      store.completeTurn(turn.turnId, "answer");
+
+      const pageSql = capturePreparedSql(store, () => store.listMessagesPage(thread.id)).sql
+        .find((sql) => sql.includes("WITH page AS MATERIALIZED"));
+      expect(pageSql).toBeDefined();
+      expect(pageSql!.indexOf("LIMIT ?")).toBeLessThan(pageSql!.indexOf("SELECT m.*, page.ordered_at"));
+
+      const previewSql = capturePreparedSql(store, () => store.listThreadsPage({
+        sourceId: "agent-one",
+        archived: false,
+      })).sql.find((sql) => sql.includes("WITH latest AS MATERIALIZED"));
+      expect(previewSql).toBeDefined();
+      expect(previewSql).not.toContain("SELECT m.*, ROW_NUMBER()");
+      expect(previewSql!.indexOf("WHERE latest.rn = 1"))
+        .toBeGreaterThan(previewSql!.indexOf("SELECT latest.thread_id, m.parts_json"));
+    } finally { store.close(); }
   });
 
   it("discards unrenderable retired activity when recovery rewrites an interrupted historical message", async () => {
@@ -2591,6 +2710,33 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("plans active membership and job summaries from cards without scanning message JSON", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const job = fakeProcessJob({ conversationId: `web:${thread.id}` });
+    store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey });
+    const db = (store as unknown as { database: DatabaseSync }).database;
+    const prepare = db.prepare.bind(db);
+    const plans: string[][] = [];
+    const spy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+      if (sql.includes("WITH active AS") || sql.includes("WITH jobs AS")) {
+        expect(sql).not.toContain("parts_json");
+        const bindings = sql.includes("WITH jobs AS") ? [JSON.stringify([thread.id])] : [];
+        plans.push(prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...bindings).map((row) => String(row.detail)));
+      }
+      return prepare(sql);
+    });
+    expect(store.listActiveThreads().total).toBe(1);
+    spy.mockRestore();
+    expect(plans).toHaveLength(2);
+    expect(plans[0]!.join("\n")).toContain("process_job_cards_by_state");
+    expect(plans[1]!.join("\n")).toContain("process_job_cards_by_thread");
+    for (const plan of plans) expect(plan.join("\n")).not.toMatch(/SCAN m\b/);
+    store.close();
+  });
+
   it.each(["succeeded", "failed", "timed_out", "cancelled", "spawn_failed", "queue_expired", "interrupted"] as const)(
     "projects terminal job state %s without marking the foreground as running", async (state) => {
       const base = await temporaryRoot();
@@ -2602,6 +2748,10 @@ describe("WebStore", () => {
       store.upsertProcessJobCard({
         sourceId: "agent-one", threadId: thread.id, processJob, deliveryKey: processJob.wake.deliveryKey,
       });
+      const db = (store as unknown as { database: DatabaseSync }).database;
+      expect(db.prepare("SELECT state, completed_at FROM process_job_cards").get())
+        .toEqual({ state, completed_at: processJob.timestamps.completedAt });
+      expect(store.getThreadDetail(thread.id)?.messages[0]?.parts[0]).toMatchObject({ type: "process-job", job: { state } });
       expect(store.getThread(thread.id)).toMatchObject({
         runState: { status: "idle" },
         jobActivity: {
@@ -2656,6 +2806,38 @@ describe("WebStore", () => {
     expect(store.getThread(thread.id)?.jobActivity?.latestTerminal)
       .toEqual({ state: "succeeded", completedAt: "2026-07-21T09:00:05.000Z" });
     store.close();
+  });
+
+  it("breaks equal job completion ties by non-success state, then newest message ordinal", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const olderFailure = fakeProcessJob({ state: "failed", conversationId: `web:${thread.id}` });
+    const newerSuccess = fakeProcessJob({ state: "succeeded", conversationId: `web:${thread.id}`,
+      jobId: "22222222-2222-4222-8222-222222222222" });
+    const newestFailure = fakeProcessJob({ state: "failed", conversationId: `web:${thread.id}`,
+      jobId: "33333333-3333-4333-8333-333333333333" });
+    const upsert = (job: ReturnType<typeof fakeProcessJob>, responseText?: string) => store.upsertProcessJobCard({
+      sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+      ...(responseText === undefined ? {} : { responseText }),
+    });
+    try {
+      upsert(olderFailure, "older failure");
+      upsert(newerSuccess, "newer success");
+      expect(olderFailure.timestamps.completedAt).toBe(newerSuccess.timestamps.completedAt);
+      expect(store.getThread(thread.id)?.jobActivity?.latestTerminal).toEqual({
+        state: "failed", completedAt: olderFailure.timestamps.completedAt, replyPreview: "older failure",
+      });
+      upsert(newestFailure, "newest failure");
+      expect(newestFailure.timestamps.completedAt).toBe(olderFailure.timestamps.completedAt);
+      // A later wake update must not change the older message's ordinal.
+      upsert({ ...olderFailure, wake: { ...olderFailure.wake, state: "delivered", attempts: 1,
+        lastAttemptAt: "2026-07-21T09:00:06.000Z" } });
+      expect(store.getThread(thread.id)?.jobActivity?.latestTerminal).toEqual({
+        state: "failed", completedAt: newestFailure.timestamps.completedAt, replyPreview: "newest failure",
+      });
+    } finally { store.close(); }
   });
 
   it("uses a completed job response as its message preview", async () => {
@@ -4541,6 +4723,7 @@ describe("WebStore message sequence and part deltas", () => {
     expect(delta.baseSeq).toBe(before.seq);
     expect(delta.seq).toBe(before.seq + 1);
     expect(message.seq).toBe(delta.seq);
+    expect(message).toEqual(context.store.getMessage(context.messageId));
     expect(delta.updatedAt).toBe(message.updatedAt);
     expect(delta.status).toBe(message.status);
     expect(applyDeltaOps(before.parts, delta.ops)).toEqual(message.parts);
@@ -4579,9 +4762,9 @@ describe("WebStore message sequence and part deltas", () => {
       return write(id, parts, now, columns);
     });
     try {
-      expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "b" }]))
+      expect(() => context.store.completeTurn(context.turnId, "ab"))
         .toThrow(WebConsoleError);
-      expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "b" }]))
+      expect(() => context.store.completeTurn(context.turnId, "ab"))
         .toThrow(/moved from 1 to 2 while its delta was built/u);
     } finally {
       spy.mockRestore();
@@ -4592,6 +4775,148 @@ describe("WebStore message sequence and part deltas", () => {
     const message = context.store.getMessage(context.messageId);
     expect(message?.seq).toBe(1);
     expect(message?.parts).toEqual([{ type: "text", text: "a" }]);
+    context.store.close();
+  });
+
+  it("invalidates a stale stream snapshot and replays once against the durable sequence", async () => {
+    const context = await openStreamingStore();
+    const first = context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "cached" }]);
+    const db = (context.store as unknown as { database: DatabaseSync }).database;
+    db.prepare("UPDATE messages SET parts_json = ?, seq = seq + 1 WHERE id = ?")
+      .run(JSON.stringify([{ type: "text", text: "external" }]), context.messageId);
+    const durable = context.store.getMessage(context.messageId)!;
+    const prepare = db.prepare.bind(db);
+    let guardedWrites = 0;
+    let rereads = 0;
+    const spy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+      if (sql.includes("AND seq = ? RETURNING seq")) guardedWrites++;
+      if (sql === "SELECT * FROM messages WHERE id = ?") rereads++;
+      return prepare(sql);
+    });
+    const next = context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "+new" }]);
+    spy.mockRestore();
+    expect(guardedWrites).toBe(2);
+    expect(rereads).toBe(1);
+    expect(next.delta).toMatchObject({ baseSeq: durable.seq, seq: durable.seq + 1 });
+    expect(applyDeltaOps(durable.parts, next.delta!.ops)).toEqual(next.message.parts);
+    expect(next.message).toEqual(context.store.getMessage(context.messageId));
+    expect(next.message.parts).toEqual([{ type: "text", text: "external+new" }]);
+    expect(first.message.parts).toEqual([{ type: "text", text: "cached" }]);
+    const read = vi.spyOn(db, "prepare");
+    context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "+cached-again" }]);
+    expect(read.mock.calls.some(([sql]) => sql === "SELECT * FROM messages WHERE id = ?")).toBe(false);
+    read.mockRestore();
+    context.store.close();
+  });
+
+  /** Release the first writer's lock before injecting a genuine second-connection commit. */
+  function interleaveAfterStreamConflict(
+    context: StreamingStore, change: (writer: DatabaseSync) => void, afterCommit?: () => void,
+  ): {
+    readonly count: () => number; readonly close: () => void;
+  } {
+    const db = (context.store as unknown as { database: DatabaseSync }).database;
+    const writer = new DatabaseSync(join(context.stateDir, "state.sqlite"));
+    writer.exec("PRAGMA foreign_keys = ON");
+    // Make the cached sequence stale so the first guarded attempt must roll back.
+    writer.prepare("UPDATE messages SET seq = seq + 1 WHERE id = ?").run(context.messageId);
+    const exec = db.exec.bind(db);
+    let count = 0;
+    const spy = vi.spyOn(db, "exec").mockImplementation((sql) => {
+      exec(sql);
+      if (sql === "ROLLBACK" && count === 0) {
+        count++;
+        writer.exec("BEGIN IMMEDIATE");
+        try { change(writer); writer.exec("COMMIT"); }
+        catch (error) { writer.exec("ROLLBACK"); throw error; }
+        afterCommit?.();
+      }
+    });
+    return { count: () => count, close: () => { spy.mockRestore(); writer.close(); } };
+  }
+
+  it("does not replay frames when a second writer settles between conflict and retry", async () => {
+    const context = await openStreamingStore();
+    context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "cached" }]);
+    const interleave = interleaveAfterStreamConflict(context, (writer) => {
+      writer.prepare("UPDATE turns SET status = 'complete', finished_at = ? WHERE id = ?")
+        .run("2026-09-21T00:00:00.000Z", context.turnId);
+      writer.prepare("UPDATE messages SET status = 'complete', parts_json = ?, seq = seq + 1 WHERE id = ?")
+        .run(JSON.stringify([{ type: "text", text: "settled by second writer" }]), context.messageId);
+    });
+    try {
+      const write = context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "must not append" }]);
+      expect(interleave.count()).toBe(1);
+      expect(write.delta).toBeUndefined();
+      expect(write.message).toEqual(context.store.getMessage(context.messageId));
+      expect(write.message).toMatchObject({ seq: 3, status: "complete",
+        parts: [{ type: "text", text: "settled by second writer" }] });
+      expect((context.store as unknown as { streamSnapshots: Map<string, WebMessage> }).streamSnapshots.has(context.turnId)).toBe(false);
+    } finally { interleave.close(); context.store.close(); }
+  });
+
+  it.each(["thread", "turn", "both"] as const)(
+    "rejects a second writer reparenting the assistant %s between conflict and retry", async (moved) => {
+      const context = await openStreamingStore();
+      context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "cached" }]);
+      const otherThread = context.store.createThread("agent-one");
+      const other = context.store.beginTurn({ threadId: otherThread.id, text: "other turn", attachmentIds: [] });
+      let reparented: WebMessage | undefined;
+      const interleave = interleaveAfterStreamConflict(context, (writer) => {
+        writer.prepare("UPDATE messages SET thread_id = ?, turn_id = ?, seq = seq + 1 WHERE id = ?")
+          .run(moved === "turn" ? context.threadId : otherThread.id,
+            moved === "thread" ? context.turnId : other.turnId, context.messageId);
+      }, () => { reparented = context.store.getMessage(context.messageId); });
+      try {
+        expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "must not append" }]))
+          .toThrow(expect.objectContaining({ code: "storage_corrupt" }));
+        expect(interleave.count()).toBe(1);
+        expect(context.store.getMessage(context.messageId)).toEqual(reparented);
+        expect(reparented).toMatchObject({ seq: 3, parts: [{ type: "text", text: "cached" }] });
+      } finally { interleave.close(); context.store.close(); }
+    },
+  );
+
+  it.each(["thread", "turn"] as const)(
+    "guards cached ownership when a second writer moves only the %s without changing seq", async (moved) => {
+      const context = await openStreamingStore();
+      context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "cached" }]);
+      const otherThread = context.store.createThread("agent-one");
+      const other = context.store.beginTurn({ threadId: otherThread.id, text: "other turn", attachmentIds: [] });
+      const writer = new DatabaseSync(join(context.stateDir, "state.sqlite"));
+      try {
+        writer.prepare(`UPDATE messages SET ${moved === "thread" ? "thread_id" : "turn_id"} = ? WHERE id = ?`)
+          .run(moved === "thread" ? otherThread.id : other.turnId, context.messageId);
+        const reparented = context.store.getMessage(context.messageId);
+        expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "must not append" }]))
+          .toThrow(expect.objectContaining({ code: "storage_corrupt" }));
+        expect(context.store.getMessage(context.messageId)).toEqual(reparented);
+      } finally { writer.close(); context.store.close(); }
+    },
+  );
+
+  it("indexes a large settled snapshot exactly once and rolls search back with a failed settlement", async () => {
+    const context = await openStreamingStore();
+    const db = (context.store as unknown as { database: DatabaseSync }).database;
+    const text = "searchneedle " + "x".repeat(4_000_000) + "\u0002 final\u0003";
+    context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: text }]);
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'searchneedle'").get()).toEqual({ n: 0 });
+    db.exec(`CREATE TRIGGER force_settle_failure BEFORE UPDATE OF status ON messages
+      WHEN new.status = 'complete' BEGIN SELECT RAISE(ABORT, 'forced failure'); END;`);
+    expect(() => context.store.completeTurn(context.turnId)).toThrow("forced failure");
+    expect(db.prepare("SELECT * FROM message_search_writes").all()).toEqual([]);
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'searchneedle'").get()).toEqual({ n: 0 });
+    db.exec("DROP TRIGGER force_settle_failure");
+    context.store.completeTurn(context.turnId);
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'searchneedle'").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT body FROM message_search WHERE message_search MATCH 'searchneedle'").get())
+      .toEqual({ body: text.replace(/[\u0002\u0003]/gu, "") });
+    expect(db.prepare("SELECT * FROM message_search_writes").all()).toEqual([]);
+    // Direct SQL callers still get the trigger-owned fallback, never a stale body.
+    db.prepare("UPDATE messages SET parts_json = ? WHERE id = ?")
+      .run(JSON.stringify([{ type: "text", text: "replacementneedle" }]), context.messageId);
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'searchneedle'").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'replacementneedle'").get()).toEqual({ n: 1 });
     context.store.close();
   });
 
