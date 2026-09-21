@@ -22,7 +22,7 @@ describe("prompt cache diagnostics", () => {
     ["openai-responses", { api: "openai-responses", provider: "openai", id: "gpt" }, { input: [{ role: "user", content: "PRIVATE" }], tools: [{ name: "Read" }], prompt_cache_key: "KEY" }, "keyed"],
     ["openai-codex", { api: "openai-codex-responses", provider: "openai-codex", id: "gpt" }, { instructions: "SYS", input: [{ role: "user", content: "PRIVATE" }], tools: [{ name: "Read" }], prompt_cache_key: "KEY" }, "keyed"],
     ["google", { api: "google-generative-ai", provider: "google", id: "gemini" }, { contents: [{ role: "user", parts: [{ text: "PRIVATE" }] }], config: { systemInstruction: "SYS", tools: [{ functionDeclarations: [{ name: "Read" }] }] } }, "provider-default"],
-    ["pi-messages", { api: "pi-messages", provider: "custom", id: "model" }, { context: { systemPrompt: "SYS", tools: [{ name: "Read" }], messages: [{ role: "user", content: "PRIVATE" }] }, options: { sessionId: "KEY" } }, "keyed"],
+    ["pi-messages", { api: "pi-messages", provider: "custom", id: "model" }, { context: { messages: [{ role: "system", content: "SYS", toolsAdded: [{ name: "Read" }], timestamp: 0 }] }, options: { sessionId: "KEY" } }, "keyed"],
     ["bedrock", { api: "bedrock-converse-stream", provider: "amazon-bedrock", id: "claude" }, { system: [{ text: "SYS", cachePoint: { type: "default" } }], messages: [{ role: "user", content: [{ text: "PRIVATE" }] }], toolConfig: { tools: [{ toolSpec: { name: "Read" } }] } }, "explicit"],
   ])("normalizes %s without emitting content", (family, model, payload, cacheMode) => {
     const state = fixture();

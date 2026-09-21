@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
+import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall, getCurrentTools } from "@earendil-works/pi-ai";
 import * as harness from "@mono-agent/agent-harness";
 import * as bujo from "@mono-agent/memory/bujo";
 import * as store from "@mono-agent/memory/store";
@@ -830,7 +830,9 @@ describe("fictional E2E production-path contract, not model quality", () => {
     try {
       faux.setResponses([
         (context) => {
-          const tool = context.tools?.find((value) => value.name.includes("MemoryRecall"));
+          // pi-ai 0.86.0 folds request tools into the transcript's leading
+          // system message: replay them with getCurrentTools().
+          const tool = getCurrentTools(context.messages).find((value) => value.name.includes("MemoryRecall"));
           expect(tool).toBeDefined();
           return fauxAssistantMessage([fauxToolCall(tool!.name, { query: "What color did Mira select?" }, { id: "cap-tool" })]);
         },

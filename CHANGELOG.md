@@ -286,6 +286,14 @@
   canonical implementations. See the [migration guide](./docs/reference/framework-simplification-migration.md)
   before upgrading an existing consumer.
 
+- Upgrade the pinned Pi AI and Agent Core dependencies to 0.86.1 with no
+  config change. Pi now carries request prompts and tool declarations in the
+  transcript's system messages; the runtime replays them through Pi's
+  transcript helpers. The Meta (Muse Spark) and Radius providers join the
+  advertised catalog, `opencode-go:deepseek-v4.1-flash` resolves natively with
+  effort levels low/high/max, and agent-level retry delays are capped at 60
+  seconds.
+
 
 ## 0.22.0 — Persistent subagents and Projects (2026-09-16)
 

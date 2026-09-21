@@ -127,12 +127,12 @@ describe("resolvePiRuntimeModel — OpenAI Codex GPT-5.6 metadata", () => {
   });
 });
 
-describe("resolvePiRuntimeModel — OpenCode Go DeepSeek V4.1 Flash supplement", () => {
-  // pi-ai 0.85.1 does not ship this model; the row below is the mono-agent
-  // catalog supplement (ai/pi-supplement.js) mirroring the v4-flash row with
-  // vision added. If pi-ai ever ships the id upstream, the upstream row wins
-  // and this test pins THAT behavior instead — update the expectations to the
-  // upstream row rather than deleting the coverage.
+describe("resolvePiRuntimeModel — OpenCode Go DeepSeek V4.1 Flash upstream builtin", () => {
+  // pi-ai 0.86.1 ships this model natively (retiring the mono-agent catalog
+  // backfill): the row below is the upstream row, and the resolution pins THAT
+  // behavior. Upstream's thinkingLevelMap pins `off`/`minimal`/`medium`/
+  // `xhigh` to null, so — unlike the retired backfill, which left `off`
+  // unmapped — the derived levels carry no `none` entry.
   it("resolves opencode-go:deepseek-v4.1-flash exactly like a pi builtin", () => {
     const resolved = resolvePiRuntimeModel({
       provider: "opencode-go",
@@ -157,17 +157,16 @@ describe("resolvePiRuntimeModel — OpenCode Go DeepSeek V4.1 Flash supplement",
       },
       contextWindow: 1000000,
       maxTokens: 384000,
-      thinkingLevelMap: { minimal: null, low: "low", medium: null, high: "high", max: "max" },
+      thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
       cost: { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 },
     });
     // The levels below are whatever `reasoningLevelsForPiModel` actually
-    // derives from the mirrored thinkingLevelMap (off -> none, plus
-    // low/high/max) — asserted, not forced.
+    // derives from the upstream thinkingLevelMap — asserted, not forced.
     expect(resolved.capabilities).toMatchObject({
       tool_use: true,
       reasoning: true,
       reasoning_mode: "effort",
-      reasoning_levels: ["none", "low", "high", "max"],
+      reasoning_levels: ["low", "high", "max"],
       reasoning_disable_supported: true,
       vision: true,
       json_mode: true,

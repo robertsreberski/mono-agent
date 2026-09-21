@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 
 const activeRequests = new WeakMap();
 export const promptCacheRequest = (harness) => activeRequests.get(harness);
@@ -24,7 +25,21 @@ function normalizedPayload(event) {
   if (api === "pi-messages") {
     const context = record(payload.context);
     if (context && ("messages" in context || "systemPrompt" in context || "tools" in context)) {
-      return { family: "pi-messages", system: context.systemPrompt ?? null, tools: list(context.tools), messages: list(context.messages), payload };
+      // pi-ai 0.86.0 folds the request prompt and tools into the transcript's
+      // leading system message: replay them from the messages, falling back to
+      // the legacy Context fields only when the transcript carries neither.
+      const messages = list(context.messages);
+      const prompt = getCurrentSystemPrompt(messages);
+      const replayedTools = getCurrentTools(messages);
+      return {
+        family: "pi-messages",
+        system: prompt === ""
+          ? (typeof context.systemPrompt === "string" ? context.systemPrompt : null)
+          : prompt,
+        tools: replayedTools.length > 0 ? replayedTools : list(context.tools),
+        messages,
+        payload,
+      };
     }
   }
   if (api === "bedrock-converse-stream") {

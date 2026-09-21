@@ -725,11 +725,15 @@ falls back to its own env vars, exactly as returning `undefined` from the old ho
 did). **No host action needed** — `resolvePiApiKey` behaves as before.
 
 Current dependency pins: **`@earendil-works/pi-ai` and
-`@earendil-works/pi-agent-core` are both `0.85.1`** (the initial Pi 0.80
+`@earendil-works/pi-agent-core` are both `0.86.1`** (the initial Pi 0.80
 migration landed at `0.80.5`, from `^0.79.1`). Pi 0.85's durable lane harness is
-adapted behind the runtime's existing public API. Compaction remains owned by
-mono-agent policy, and model-native `max` reasoning plus Pi's request-wide
-pricing tiers are preserved.
+adapted behind the runtime's existing public API. Pi 0.86 folds request prompts
+and tool declarations into the transcript's leading system message (providers
+read them back with `getCurrentSystemPrompt()`/`getCurrentTools()`), ships
+`opencode-go:deepseek-v4.1-flash` natively (retiring the mono-agent catalog
+backfill), and adds static `meta` and `radius` provider catalogs. Compaction
+remains owned by mono-agent policy, and model-native `max` reasoning plus Pi's
+request-wide pricing tiers are preserved.
 
 Packed npm consumers resolve the runtime-owned exact Pi AI 0.85.1 copy for both
 the runtime and Agent Core's `^0.85.1` dependency. The release guard verifies
@@ -810,7 +814,7 @@ Worklab's runtime fork:
    `@earendil-works/pi-ai`, its separate Pi version constraint, and local copies
    of provider bridge code. Move tests off Pi's faux-provider helpers too; until
    that is complete, isolate the fixture or pin its development-only dependencies
-  to the exact Pi AI `0.85.1` and Pi Agent Core `0.85.1` compatibility pins
+  to the exact Pi AI `0.86.1` and Pi Agent Core `0.86.1` compatibility pins
    rather than floating ranges. Do not restore the
    removed `pi-sdk.js` subpath.
 3. **Use the public Pi surfaces.** Run models through
@@ -818,7 +822,7 @@ Worklab's runtime fork:
    `listPiBuiltinModels`, `getPiBuiltinModel`,
    `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
    catalog and OAuth integration. Those façades keep Pi provider objects and the
-  exact Pi AI `0.85.1` and Pi Agent Core `0.85.1` compatibility pins inside the runtime. OAuth login adapters
+  exact Pi AI `0.86.1` and Pi Agent Core `0.86.1` compatibility pins inside the runtime. OAuth login adapters
    must supply `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; the façade
    rejects an incomplete callback contract before starting provider login.
 4. **Inject Claude tests.** Replace package-level mocks of

@@ -10,7 +10,7 @@
 // robustness problem. The trigger itself is unchanged; this module only makes
 // the existing trigger observable BETWEEN completed model/tool rounds.
 //
-// MECHANISM (validated against @earendil-works/pi-agent-core 0.85.1 in
+// MECHANISM (validated against @earendil-works/pi-agent-core 0.86.1 in
 // node_modules, citations are to its `dist/`):
 //
 //   * Pi already evaluates compaction at every durable run boundary:

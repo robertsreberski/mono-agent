@@ -24,6 +24,7 @@ import {
   fauxText,
   fauxThinking,
   fauxToolCall,
+  getCurrentTools,
 } from "@earendil-works/pi-ai";
 import { MemorySessionRepo } from "@earendil-works/pi-agent-core";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
@@ -684,11 +685,12 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.failureKind).toBe("provider_auth");
   });
 
-  it("routes the supplemented opencode-go model through the run collection to provider_auth", async () => {
+  it("routes the upstream opencode-go model through the run collection to provider_auth", async () => {
     // No `piResolvedModel`/`piResolvedModels` seam: production resolution
     // (`resolvePiRuntimeModel`) plus the real `builtinModels()` run collection
-    // (with the supplement registered) serve this turn. With no credential the
-    // run must reach the auth stage — only possible if the harness resolved
+    // serve this turn — pi-ai 0.86.1 ships `deepseek-v4.1-flash` natively, so no
+    // backfill registration is needed. With no credential the run must reach
+    // the auth stage — only possible if the harness resolved
     // `deepseek-v4.1-flash` by id inside the collection. The env is stubbed so
     // a ambient OPENCODE_API_KEY can never turn this into a live request.
     vi.stubEnv("OPENCODE_API_KEY", "");
@@ -1649,7 +1651,10 @@ describe("pi-native typed policy objects", () => {
       const advertised = [];
       faux.setResponses([
         (context) => {
-          advertised.push(...context.tools);
+          // pi-ai 0.86.0 folds the request tools into the transcript's leading
+          // system message: provider-facing factories see a TranscriptContext
+          // and must replay tools with getCurrentTools(), not context.tools.
+          advertised.push(...getCurrentTools(context.messages));
           return fauxAssistantMessage([
             fauxToolCall("Bash", { command: "echo bash", timeout_ms: 3_600_000 }, { id: "budget-bash" }),
             fauxToolCall("Exec", { executable: process.execPath, args: ["--version"], timeout_ms: 3_600_000 }, { id: "budget-exec" }),

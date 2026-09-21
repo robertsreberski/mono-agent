@@ -258,7 +258,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       });
     } else if (event.type === "turn_end") {
       runState.turnCount += 1;
-      // NON-DELEGABLE (verified against @earendil-works/pi-agent-core 0.85.1).
+      // NON-DELEGABLE (verified against @earendil-works/pi-agent-core 0.86.1).
       // pi's only after-turn stop hook is `shouldStopAfterTurn` on the LOW-LEVEL
       // `AgentLoopConfig` (dist/types.d.ts) — the config passed to the raw
       // `agentLoop`. It is NOT surfaced on `AgentHarnessOptions`
