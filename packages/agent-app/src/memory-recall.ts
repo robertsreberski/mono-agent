@@ -65,6 +65,18 @@ export interface RecallCapableStore {
     query: string,
     options?: { readonly topK?: number; readonly trackAccess?: boolean },
   ): Promise<MemoryRecallOutcome>;
+  /**
+   * App-owned per-logical-turn capability. Standalone and capability-free
+   * programmatic stores omit it, so they never advertise an original-query mode
+   * they cannot fulfill.
+   */
+  recallOriginalWithOutcome?(options?: { readonly topK?: number }): Promise<
+    | { readonly available: true; readonly query: string; readonly outcome: MemoryRecallOutcome }
+    | {
+        readonly available: false;
+        readonly reason: "not_loaded" | "empty" | "conversation_relative" | "lookup_failed" | "replaced";
+      }
+  >;
   /** Optional deterministic one-hop expansion, used only by the explicit tool. */
   expandGraph?(
     query: string,
@@ -155,41 +167,87 @@ export async function createMemoryEmbeddingProvider(
   return createCircuitBreakerEmbeddingProvider(createEmbeddingProvider(providerConfig), breakerOptions);
 }
 
-/** Register the single read-only `MemoryRecall` tool against a store (bujo or external backend). */
+/** Register the single read-only `MemoryRecall` tool against a structurally compatible store. */
 export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
   const server = new McpServer({ name: "agent-memory", version: "0.3.0" });
-  server.registerTool(
-    "MemoryRecall",
-    {
-      title: "Recall from memory",
-      description: "Read-only hybrid (keyword + semantic) targeted search over intentionally captured durable preferences, facts, decisions, and qualified archived history. For a broad retrospective over an explicit period, use MemoryJournal when available; its curated chronology is distinct from targeted search and exact execution evidence. For a request to pick up, continue, or recover interrupted work, do not search MemoryRecall: call RunHistory with {} first when that tool is available, because exact prior-run evidence does not belong to durable memory. Do not use MemoryRecall for unqualified questions about what you or the user just said or sent in the current or last message; use the active conversation history for those questions.",
-      inputSchema: {
-        query: z.string().min(1).describe("Natural-language description of what to recall."),
-        limit: z.number().int().min(1).max(50).optional().describe("Max results (default 8)."),
-      },
-    },
-    async (args) => {
-      if (isConversationRelativeQuery(args.query)) {
-        const guidance = "This question refers to the active conversation, not long-term memory. Use the current conversation history to identify the last message.";
+  const supportsOriginalQuery = store.recallOriginalWithOutcome !== undefined;
+  const baseDescription = "Read-only hybrid (keyword + semantic) targeted search over intentionally captured durable preferences, facts, decisions, and qualified archived history. For a broad retrospective over an explicit period, use MemoryJournal when available; its curated chronology is distinct from targeted search and exact execution evidence. For a request to pick up, continue, or recover interrupted work, do not search MemoryRecall: call RunHistory with {} first when that tool is available, because exact prior-run evidence does not belong to durable memory. Do not use MemoryRecall for unqualified questions about what you or the user just said or sent in the current or last message; use the active conversation history for those questions.";
+  const description = supportsOriginalQuery
+    ? `${baseDescription} When a rephrased targeted search loses relevant candidates, use original-query mode deliberately to inspect the current logical turn's unchanged automatic lookup question; this does not broaden automatic memory injection.`
+    : baseDescription;
+  const limitSchema = z.number().int().min(1).max(50).optional().describe("Max results (default 8).");
+  type ToolArgs =
+    | { readonly query: string; readonly useOriginalQuery?: false; readonly limit?: number }
+    | { readonly useOriginalQuery: true; readonly limit?: number };
+
+  const handleRecall = async (args: ToolArgs) => {
+    const originalMode = args.useOriginalQuery === true;
+    let effectiveQuery: string;
+    let originalOutcome: MemoryRecallOutcome | undefined;
+    if (originalMode) {
+      let original: Awaited<ReturnType<NonNullable<RecallCapableStore["recallOriginalWithOutcome"]>>> | undefined;
+      try {
+        original = await store.recallOriginalWithOutcome?.({ topK: clampLimit(args.limit, 8) });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
         return {
-          content: [{ type: "text", text: guidance }],
-          structuredContent: { hits: [], conversationRelative: true, guidance },
+          content: [{ type: "text" as const, text: `Original-query memory recall is temporarily unavailable: ${reason}` }],
+          structuredContent: { hits: [], queryMode: "original", degraded: true, reason },
         };
       }
-      const topK = clampLimit(args.limit, 8);
-      let hits: readonly MemoryRecallHit[];
-      let degradation: MemoryRecallOutcome["degradation"];
-      try {
-        const graphEnabled = store.expandGraph !== undefined && store.supportsGraphExpansion?.() !== false;
+      if (original === undefined || !original.available) {
+        const reason = original?.reason ?? "not_loaded";
+        const guidance = "The current logical turn has no eligible original automatic-lookup question. Use an explicit durable-memory query or the active conversation history as appropriate.";
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: `Original-query memory recall is unavailable (${reason}). ${guidance}` }],
+          structuredContent: {
+            hits: [],
+            queryMode: "original",
+            originalQueryUnavailable: true,
+            reason,
+            guidance,
+          },
+        };
+      }
+      effectiveQuery = original.query;
+      originalOutcome = original.outcome;
+    } else {
+      effectiveQuery = args.query;
+    }
+    const originalMetadata = originalMode
+      ? { queryMode: "original" as const, effectiveQuery }
+      : {};
+    const originalPrefix = originalMode
+      ? `Memory recall used this logical turn's original query: "${effectiveQuery}".\n`
+      : "";
+    if (isConversationRelativeQuery(effectiveQuery)) {
+      const guidance = "This question refers to the active conversation, not long-term memory. Use the current conversation history to identify the last message.";
+      return {
+        content: [{ type: "text" as const, text: `${originalPrefix}${guidance}` }],
+        structuredContent: { hits: [], conversationRelative: true, guidance, ...originalMetadata },
+      };
+    }
+    const topK = clampLimit(args.limit, 8);
+    let hits: readonly MemoryRecallHit[];
+    let degradation: MemoryRecallOutcome["degradation"];
+    try {
+      const graphEnabled = store.expandGraph !== undefined && store.supportsGraphExpansion?.() !== false;
+      if (originalOutcome !== undefined) {
+        degradation = originalOutcome.degradation;
+        // The bound capability already applies the same graph policy while
+        // reusing its original direct lookup, so never expand it a second time.
+        hits = originalOutcome.hits.slice(0, topK);
+      } else {
         const direct = store.recallWithOutcome === undefined
           ? {
-              hits: await store.recall(args.query, {
+              hits: await store.recall(effectiveQuery, {
                 topK: graphEnabled ? 50 : topK,
                 trackAccess: false,
               }),
               retrievalMode: "hybrid" as const,
             }
-          : await store.recallWithOutcome(args.query, {
+          : await store.recallWithOutcome(effectiveQuery, {
               topK: graphEnabled ? 50 : topK,
               // The bundled recall process opens the active generation read-only.
               // Never ask a store to mutate access telemetry on this path.
@@ -198,70 +256,108 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         degradation = direct.degradation;
         hits = !graphEnabled || store.expandGraph === undefined
           ? direct.hits.slice(0, topK)
-          : await store.expandGraph(args.query, direct.hits, { topK });
-        // Record only the final served set. Read-only BuJo recall stores make
-        // this a no-op; shared writable stores retain their access telemetry.
-        store.recordAccess?.(hits.map((hit) => hit.record.id));
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        return {
-          content: [{ type: "text", text: `Memory recall is temporarily unavailable: ${reason}` }],
-          structuredContent: { hits: [], degraded: true, reason },
-        };
+          : await store.expandGraph(effectiveQuery, direct.hits, { topK });
       }
-      const degraded = degradation?.code === "embedding_unavailable";
-      if (hits.length === 0) {
-        const guidance = "If this request is to pick up, continue, or recover interrupted work and RunHistory is available, call RunHistory with {} first. Do not keep rephrasing MemoryRecall queries for exact prior-run evidence.";
-        const text = degraded
-          ? `Memory recall is degraded: semantic retrieval is unavailable and lexical-only search returned no matches. ${guidance}`
-          : `No memories matched "${args.query}". ${guidance}`;
-        return {
-          content: [{ type: "text", text }],
-          structuredContent: {
-            hits: [],
-            ...(degraded ? {
-              degraded: true,
-              retrievalMode: "lexical_only" as const,
-              degradation: { code: "embedding_unavailable" as const },
-            } : {}),
-            navigation: {
-              guidance,
-              relatedTools: [{
-                tool: "RunHistory",
-                description: "Discover settled prior runs before asking for missing interrupted-work context.",
-                arguments: {},
-              }],
-            },
-          },
-        };
-      }
-      const hitText = hits
-        .map((hit) => `${hit.score.toFixed(3)}  ${lifecyclePrefix(hit)}${hit.record.text}`)
-        .join("\n");
-      const text = degraded
-        ? `Memory recall is degraded: showing lexical-only matches because semantic retrieval is unavailable.\n${hitText}`
-        : hitText;
+      // Record only the final served set. Read-only BuJo recall stores make
+      // this a no-op; shared writable stores deduplicate it for the turn.
+      store.recordAccess?.(hits.map((hit) => hit.record.id));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
       return {
-        content: [{ type: "text", text }],
+        content: [{ type: "text" as const, text: `${originalPrefix}Memory recall is temporarily unavailable: ${reason}` }],
+        structuredContent: { hits: [], degraded: true, reason, ...originalMetadata },
+      };
+    }
+    const degraded = degradation?.code === "embedding_unavailable";
+    if (hits.length === 0) {
+      const guidance = "If this request is to pick up, continue, or recover interrupted work and RunHistory is available, call RunHistory with {} first. Do not keep rephrasing MemoryRecall queries for exact prior-run evidence.";
+      const text = degraded
+        ? `Memory recall is degraded: semantic retrieval is unavailable and lexical-only search returned no matches. ${guidance}`
+        : `No memories matched "${effectiveQuery}". ${guidance}`;
+      return {
+        content: [{ type: "text" as const, text: `${originalPrefix}${text}` }],
         structuredContent: {
-          hits: hits.map((hit) => ({
-            id: hit.record.id,
-            score: hit.score,
-            text: hit.record.text,
-            // Optional on the hit contract: a remote backend that supplies
-            // neither keeps exactly its previous result shape.
-            ...(hit.record.type === undefined ? {} : { type: hit.record.type }),
-            ...(hit.record.status === undefined ? {} : { status: hit.record.status }),
-          })),
+          hits: [],
+          ...originalMetadata,
           ...(degraded ? {
             degraded: true,
             retrievalMode: "lexical_only" as const,
             degradation: { code: "embedding_unavailable" as const },
           } : {}),
+          navigation: {
+            guidance,
+            relatedTools: [{
+              tool: "RunHistory",
+              description: "Discover settled prior runs before asking for missing interrupted-work context.",
+              arguments: {},
+            }],
+          },
         },
       };
-    },
-  );
+    }
+    const hitText = hits
+      .map((hit) => `${hit.score.toFixed(3)}  ${lifecyclePrefix(hit)}${hit.record.text}`)
+      .join("\n");
+    const text = degraded
+      ? `Memory recall is degraded: showing lexical-only matches because semantic retrieval is unavailable.\n${hitText}`
+      : hitText;
+    return {
+      content: [{ type: "text" as const, text: `${originalPrefix}${text}` }],
+      structuredContent: {
+        hits: hits.map((hit) => ({
+          id: hit.record.id,
+          score: hit.score,
+          text: hit.record.text,
+          // Optional on the hit contract: a remote backend that supplies
+          // neither keeps exactly its previous result shape.
+          ...(hit.record.type === undefined ? {} : { type: hit.record.type }),
+          ...(hit.record.status === undefined ? {} : { status: hit.record.status }),
+        })),
+        ...originalMetadata,
+        ...(degraded ? {
+          degraded: true,
+          retrievalMode: "lexical_only" as const,
+          degradation: { code: "embedding_unavailable" as const },
+        } : {}),
+      },
+    };
+  };
+
+  if (supportsOriginalQuery) {
+    server.registerTool(
+      "MemoryRecall",
+      {
+        title: "Recall from memory",
+        description,
+        inputSchema: z.object({
+          query: z.string().min(1).optional().describe("Natural-language description to recall; required unless useOriginalQuery is true."),
+          useOriginalQuery: z.boolean().optional().describe("Use this logical turn's original automatic-lookup question; omit query when true."),
+          limit: limitSchema,
+        }).strict().superRefine((value, context) => {
+          if (value.useOriginalQuery === true ? value.query !== undefined : value.query === undefined) {
+            context.addIssue({
+              code: "custom",
+              message: "Supply exactly one recall mode: query, or useOriginalQuery: true.",
+            });
+          }
+        }),
+      },
+      (args) => handleRecall(args as ToolArgs),
+    );
+  } else {
+    server.registerTool(
+      "MemoryRecall",
+      {
+        title: "Recall from memory",
+        description,
+        inputSchema: {
+          query: z.string().min(1).describe("Natural-language description of what to recall."),
+          limit: limitSchema,
+        },
+      },
+      (args) => handleRecall(args as ToolArgs),
+    );
+  }
   return server;
 }
 

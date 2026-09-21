@@ -240,6 +240,14 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
       const tools = await client.listTools();
       expect(tools.tools[0]?.description).toMatch(/Do not use MemoryRecall.*current or last message/iu);
       expect(tools.tools[0]?.description).toMatch(/pick up, continue, or recover interrupted work.*RunHistory with \{\} first/iu);
+      expect(tools.tools[0]?.description).not.toMatch(/original.*automatic lookup/iu);
+      expect(tools.tools[0]?.inputSchema).toMatchObject({
+        type: "object",
+        required: ["query"],
+        properties: { query: expect.any(Object), limit: expect.any(Object) },
+      });
+      expect((tools.tools[0]?.inputSchema as { properties?: Record<string, unknown> }).properties)
+        .not.toHaveProperty("useOriginalQuery");
       for (const query of [
         "What did you send in the last message?",
         "What was your previous reply?",
