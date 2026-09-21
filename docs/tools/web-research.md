@@ -270,11 +270,37 @@ or search budget. For sequential providers, the primary query runs first. Suppli
 relevant result has been accepted. A transport failure, quota skip or block ends
 that stage immediately; alternate wording cannot repair it. Codex gets at most
 one exact-query turn. Quotes and `site:` operators are never
-stripped or relaxed. Results are normalized, tracking parameters are removed,
+stripped or relaxed: a `site:` token in the query text, or a `domains` entry
+(which is appended to the dispatched query as `(site:a OR site:b)`), reaches
+every provider as query text. Results are normalized, tracking parameters are removed,
 duplicates are fused with reciprocal-rank fusion, and include/exclude domain
 filters plus a deterministic query-term/quoted-phrase relevance gate are
 enforced before a provider can end the chain. Parallel batches the primary and
 alternates once; Codex receives only the primary query.
+
+### Domain constraints (`site:`)
+
+There is no structured domain filter on the transports in use: Parallel's
+`source_policy`/`include_domains` shape exists only on the keyed REST Search
+API, whose connection-level MCP overrides are ignored for anonymous free-tier
+requests, so the `site:` query operator stays the mechanism everywhere. What
+each provider does with it is declared in its `filterSupport.domains` and
+reported per call in coverage `filterSupport.domains` (with the effective include
+list in `requestedFilters.domains`; excluded names stay out of the envelope so
+a blocked domain never leaks into result text):
+
+| Provider | Domain behavior |
+| --- | --- |
+| `parallel` | Honours `site:` inside `search_queries` server-side (verified live); the natural-language objective additionally steers with `Prefer these domains: …`. `filterSupport.domains` is `operator`. |
+| `duckduckgo`, `startpage`, `local` | Receive the operator text verbatim; these keyword backends honour `site:` as documented query syntax. The `local` provider searches DuckDuckGo's HTML endpoint, so it inherits that engine's operator support. `filterSupport.domains` is `operator`. |
+| `codex` | The query text (including `site:`) is passed through verbatim, but the subscription search is model-mediated through the Codex app-server's unpublished server-side search tool, so server-side support is unverified: only the client-side domain filter can be relied on. `filterSupport.domains` is `unverified`. |
+| `searxng` | The operator text is forwarded verbatim, but the endpoint is operator-owned and `site:` support is a property of its configured upstream engines, not of this adapter. `filterSupport.domains` is `unverified`. |
+| `ollama` | Ollama's `web_search` API documents only a raw query string with no operator syntax, so support is unverified: the text is still sent, but only the client-side domain filter can be relied on. `filterSupport.domains` is `unverified`. |
+
+Regardless of provider, include/exclude domain filtering is always enforced
+client-side after retrieval, so an unhonoured operator degrades to a filtered
+result set rather than a wrong one. `site:example.com/path` forms match at the
+domain level only; path prefixes are not enforced.
 
 ### Country localization
 

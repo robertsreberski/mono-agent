@@ -31,6 +31,12 @@
   indistinct, only the colliding candidate is dropped; memories the model
   itself authored as indistinct still fail the whole attempt.
 
+- Let `WebSearch` report how domain constraints are handled per provider.
+  `site:` operators in the query text and the `domains`/`exclude_domains`
+  parameters keep travelling as query-text operators, which Parallel honours
+  server-side; coverage now reports the per-provider mechanism in
+  `filterSupport.domains` with the effective lists in `requestedFilters`.
+
 - Raise the configurable ceiling for `subagents.maxTurns` and
   `subagents.definitions[].maxTurns` from 200 to 400. Long single-run
   implementation work could exhaust its turn budget while an operator was

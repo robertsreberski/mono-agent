@@ -98,6 +98,7 @@ async function performSearch(
   const explicitDomains = normalizeDomains(Array.isArray(domains) ? domains : []);
   const includeDomains = normalizeDomains([...explicitDomains, ...querySiteDomains(normalizedQuery)]);
   const excludeDomains = normalizeDomains(exclude_domains);
+  const domainsRequested = includeDomains.length > 0 || excludeDomains.length > 0;
   const config = normalizeSearchConfig(searchConfig);
   if ("error" in config) return searchFailure(
     `Error: ${config.error}`,
@@ -283,11 +284,18 @@ async function performSearch(
       retryInRun: false,
       nextAction: "use_available_evidence",
       providerAttempts: providerAttemptMetadata(providerFailures),
-      ...(country ? {
-        filterSupport: { country: providerFailures.length > 0 && providerFailures.every((entry) => entry.code === "unsupported_country_filter") ? "unsupported" : "not_applied" },
+      ...(country || domainsRequested ? {
+        filterSupport: {
+          ...(country ? { country: providerFailures.length > 0 && providerFailures.every((entry) => entry.code === "unsupported_country_filter") ? "unsupported" : "not_applied" } : {}),
+          ...(domainsRequested ? { domains: domainFilterMechanism(config.backend) } : {}),
+        },
         requestedFilters: {
-          country,
-          note: "Country is a provider-dependent localization preference, not a guarantee that results are located there; IP-based ranking may still apply.",
+          ...(country ? { country } : {}),
+          ...(domainsRequested ? { domains: includeDomains } : {}),
+          note: [
+            country ? "Country is a provider-dependent localization preference, not a guarantee that results are located there; IP-based ranking may still apply." : null,
+            domainsRequested ? domainFilterNote(config.backend, domainFilterMechanism(config.backend)) : null,
+          ].filter(Boolean).join(" "),
         },
       } : {}),
     });
@@ -334,14 +342,19 @@ async function performSearch(
       language: language ? (webSearchProviders.get(backend)?.filterSupport.language ?? "advisory") : "not_requested",
       country: country ? (webSearchProviders.get(backend)?.filterSupport.country ?? "provider_dependent") : "not_requested",
       timeRange: time_range ? (webSearchProviders.get(backend)?.filterSupport.timeRange ?? "provider") : "not_requested",
+      domains: domainsRequested ? domainFilterMechanism(backend) : "not_requested",
     },
-    ...(language || country || time_range ? { requestedFilters: {
+    ...(language || country || time_range || domainsRequested ? { requestedFilters: {
       ...(language ? { language: collapseWhitespace(language).slice(0, 100) } : {}),
       ...(country ? { country } : {}),
       ...(time_range ? { timeRange: collapseWhitespace(time_range).slice(0, 100) } : {}),
-      note: country
-        ? "Country is a provider-dependent localization preference, not a guarantee that results are located there; IP-based ranking may still apply. Verify dates in sources."
-        : "Provider-dependent; verify dates in sources.",
+      ...(domainsRequested ? { domains: includeDomains } : {}),
+      note: [
+        country
+          ? "Country is a provider-dependent localization preference, not a guarantee that results are located there; IP-based ranking may still apply. Verify dates in sources."
+          : "Provider-dependent; verify dates in sources.",
+        domainsRequested ? domainFilterNote(backend, domainFilterMechanism(backend)) : null,
+      ].filter(Boolean).join(" "),
     } } : {}),
     ...budget,
     retryInRun,
@@ -607,6 +620,34 @@ function queryWithDomains(query, domains) {
 function querySiteDomains(query) {
   return [...String(query).matchAll(/\bsite:([a-z0-9.-]+)(?:\/\S*)?/giu)]
     .map((match) => match[1]);
+}
+
+// Domain constraints travel as site: operators in the query text; the
+// per-provider mechanism is declared in each adapter's filterSupport.domains:
+// "operator" means the provider honours site: server-side, "unverified" means
+// only the client-side domain filter can be relied on. Results are always
+// filtered client-side by filterByDomains as well.
+function domainFilterMechanism(backend) {
+  const names = Array.isArray(backend) ? backend : [backend];
+  const mechanisms = names
+    .flatMap((name) => name === "keyless" ? expandSearchProvider(name) : [name])
+    .map((name) => webSearchProviders.get(name)?.filterSupport.domains)
+    .filter((mechanism) => typeof mechanism === "string");
+  if (mechanisms.length === 0) return "provider_dependent";
+  if (mechanisms.every((mechanism) => mechanism === "operator")) return "operator";
+  if (mechanisms.every((mechanism) => mechanism === "unverified")) return "unverified";
+  return "provider_dependent";
+}
+
+function domainFilterNote(backend, mechanism) {
+  const target = Array.isArray(backend) ? backend.join(", ") : String(backend);
+  if (mechanism === "operator") {
+    return `Domain constraints travel as site: operators in the query text, which ${target} honours server-side; results are additionally filtered client-side by domain.`;
+  }
+  if (mechanism === "unverified") {
+    return `Domain support is unverified for ${target}: site: operators travel in the query text and results are enforced client-side by domain filtering.`;
+  }
+  return "Domain constraints are enforced client-side by domain filtering; provider-side handling is provider-dependent.";
 }
 
 function sanitizeFailureMetadata(failures) {
