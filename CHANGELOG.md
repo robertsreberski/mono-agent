@@ -74,6 +74,14 @@
   publication is durably rearmed after an older publication finishes, without
   releasing capacity or waking the parent early.
 
+- Give a subagent run that exhausts its per-run `maxTurns` budget one bounded
+  wrap-up continuation (3 turns, inside the existing `timeoutMs` guard) with
+  an explicit commit-and-report instruction, instead of ending with no report,
+  no commit and no statement of position. The parent's tool result carries the
+  wrap-up's final text, which budget was hit with turns used vs. allowed, and
+  whether the wrap-up succeeded, failed, or was unavailable. The `usage_limit`
+  classification, defaults, ceilings, and timeouts are unchanged.
+
 - Keep active console conversation refreshes responsive by reading validated job
   summaries instead of repeatedly parsing retained transcripts.
 - Keep large console responses responsive with adaptive streaming batches capped
