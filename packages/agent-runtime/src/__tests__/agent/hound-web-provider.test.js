@@ -4,6 +4,8 @@ import { once } from "node:events";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 import { performWebSearch } from "../../agent/tools/web-search.js";
 import { performWebFetch } from "../../agent/tools/web-fetch.js";
+import { registerSearchProvider } from "../../agent/tools/web-search-providers/registry.js";
+import { claimWebSearchRequest } from "../../agent/tools/web-search-state.js";
 import { createWebToolController, __resetSharedSearchCacheForTests } from "../../agent/tools/web-controller.js";
 import { createWebSearchRunState } from "../../agent/tools/web-search-state.js";
 import { __resetWebSearchThrottleForTests } from "../../agent/tools/web-search-providers/shared.js";
@@ -20,8 +22,7 @@ function context(allow = () => true) { return { workspace: process.cwd(), sandbo
 function response(text, status = 200) { return new Response(text, { status, headers: { "content-type": "text/html; charset=utf-8" } }); }
 function engineHtml(name, url = target) {
   if (name === "duckduckgo") return `<div class="result"><h2><a class="result__a" href="${url}">Mono agent evidence</a></h2><p class="result__snippet">Mono agent native evidence</p></div>`;
-  if (name === "brave") return `<div data-type="web"><a href="${url}"><div class="title">Mono agent evidence</div></a><div class="snippet"><div class="content">Independent native research evidence</div></div></div>`;
-  return `<ul class="results"><li><h2><a href="${url}">Mono agent evidence</a></h2><p class="s">Independent index evidence</p></li></ul>`;
+  throw new Error(`Unsupported test engine ${name}`);
 }
 function searchFetch() {
   return vi.fn(async (url) => {
@@ -36,23 +37,24 @@ function searchOptions(overrides = {}) { return { ctx: context(), searchConfig: 
 beforeEach(() => { __resetWebSearchThrottleForTests({ minSpacingMs: 0 }); __resetSharedSearchCacheForTests(); });
 
 describe("native Hound search", () => {
-  it("runs real local DOM adapters, not MCP, with one answer and six cold network dispatches", async () => {
+  it("runs a real local DOM adapter, not MCP, with one answer and two cold network dispatches", async () => {
     const options = searchOptions();
     const result = await performWebSearch({ query: "mono agent evidence" }, options);
-    expect(result).toMatchObject({ error: false, outcome: { backend: "hound", status: "ok", requestsThisCall: 1, dispatchesUsed: 6, resultCount: 1 } });
-    expect(options.fetchImpl).toHaveBeenCalledTimes(6);
-    expect(JSON.parse(result.text).coverage.engineOutcomes).toEqual(HOUND_ENGINES.map(({ name }) => ({ engine: name, code: "ok" })));
+    expect(result).toMatchObject({ error: false, outcome: { backend: "hound", status: "ok", requestsThisCall: 1, dispatchesUsed: 2, resultCount: 1 } });
+    expect(options.fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(result.text).coverage.engineOutcomes).toEqual([{ engine: "duckduckgo", code: "ok" }]);
+    expect(JSON.parse(result.text).coverage).toMatchObject({ partialEngines: false, searchStopped: false });
     expect(options.fetchImpl.mock.calls.every(([url]) => !String(url).includes("/mcp"))).toBe(true);
   });
-  it("owns both per-target policy and per-request host admission for partial allowlists", async () => {
+  it("owns both per-target policy and per-request host admission", async () => {
     const acquire = vi.fn(async () => ({ complete: vi.fn(), waitMs: 0 }));
     const options = searchOptions({ ctx: context((_policy, url) => new URL(url).hostname === "html.duckduckgo.com"), coordinator: { acquire } });
     const result = await performWebSearch({ query: "mono agent evidence" }, options);
-    expect(result).toMatchObject({ error: false, outcome: { status: "partial", requestsThisCall: 1, dispatchesUsed: 2 } });
+    expect(result).toMatchObject({ error: false, outcome: { status: "ok", requestsThisCall: 1, dispatchesUsed: 2 } });
     expect(acquire).toHaveBeenCalledTimes(2);
     expect(acquire.mock.calls.every(([request]) => request.kind === "duckduckgo" && request.key === "duckduckgo")).toBe(true);
     expect(options.fetchImpl).toHaveBeenCalledTimes(2);
-    expect(result.outcome.engineOutcomes.filter((entry) => entry.code === "network_denied")).toHaveLength(2);
+    expect(result.outcome.engineOutcomes).toEqual([{ engine: "duckduckgo", code: "ok" }]);
   });
   it("denies all targets before admission, robots or request reservation", async () => {
     const acquire = vi.fn();
@@ -61,21 +63,18 @@ describe("native Hound search", () => {
     expect(result.outcome).toMatchObject({ code: "network_denied", requestsUsed: 0, dispatchesUsed: 0 });
     expect(acquire).not.toHaveBeenCalled(); expect(options.fetchImpl).not.toHaveBeenCalled();
   });
-  it("keeps useful results partial when sibling dispatches exhaust the budget", async () => {
-    const result = await performWebSearch({ query: "mono agent evidence" }, searchOptions({ searchConfig: { backend: "hound", maxRequestsPerRun: 1 } }));
-    expect(result).toMatchObject({ error: false, outcome: { status: "partial", requestsUsed: 1, dispatchesUsed: 4, resultCount: 1, providerFailureCount: 0 } });
-    expect(result.outcome.engineOutcomes.some((entry) => entry.code === "search_budget_exhausted")).toBe(true);
-  });
   it("refunds only failed answered reservations, never robot or engine dispatches", async () => {
     const fetchImpl = vi.fn(async (url) => response(new URL(url).pathname === "/robots.txt" ? robots : "<html>Changed layout</html>"));
     const result = await performWebSearch({ query: "mono agent evidence" }, searchOptions({ fetchImpl }));
-    expect(result.outcome).toMatchObject({ code: "invalid_response", requestsUsed: 0, dispatchesUsed: 6 });
+    expect(result.outcome).toMatchObject({ code: "invalid_response", requestsUsed: 0, dispatchesUsed: 2 });
   });
   it("keeps aggregate budget exhaustion terminal without useful results", async () => {
-    const fetchImpl = vi.fn(async (url) => response(new URL(url).pathname === "/robots.txt" ? robots : "<html>Changed layout</html>"));
-    const result = await performWebSearch({ query: "mono agent evidence" }, searchOptions({ fetchImpl, searchConfig: { backend: ["hound", "parallel"], maxRequestsPerRun: 1 } }));
-    expect(result.outcome).toMatchObject({ code: "search_budget_exhausted", requestsUsed: 0, dispatchesUsed: 4 });
-    expect(fetchImpl.mock.calls.every(([url]) => !String(url).includes("parallel"))).toBe(true);
+    const state = createWebSearchRunState({ maxRequestsPerRun: 1 }); state.requestsUsed = 1;
+    const fetchImpl = vi.fn(async (url) => response(robots));
+    const result = await performWebSearch({ query: "mono agent" }, searchOptions({ fetchImpl, searchState: state, searchConfig: { backend: ["hound", "parallel"], maxRequestsPerRun: 1 } }));
+    expect(result.outcome).toMatchObject({ code: "search_budget_exhausted", requestsUsed: 1, dispatchesUsed: 0 });
+    expect(result.outcome.attemptedBackends).toEqual(["hound"]);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
   it("stops before all dispatch when the answered budget is already exhausted", async () => {
     const state = createWebSearchRunState({ maxRequestsPerRun: 1 }); state.requestsUsed = 1;
@@ -88,60 +87,79 @@ describe("native Hound search", () => {
     const result = await performWebSearch({ query: "none" }, searchOptions({ fetchImpl }));
     expect(result).toMatchObject({ error: false, outcome: { code: "no_results", requestsUsed: 1 } });
   });
-  it.each([403, 429])("does not switch providers, alternate queries, or retry a robots refusal %i", async (status) => {
-    const fetchImpl = vi.fn(async () => response("refused", status));
-    const result = await performWebSearch({ query: "mono agent", alternate_queries: ["another"] }, searchOptions({ fetchImpl, searchConfig: { backend: ["hound", "parallel"] } }));
-    expect(result.error).toBe(true); expect(fetchImpl).toHaveBeenCalledTimes(3);
-    expect(fetchImpl.mock.calls.every(([url]) => new URL(url).pathname === "/robots.txt")).toBe(true);
+  it("advances to the next backend when the local provider is throttled", async () => {
+    const unregister = registerSearchProvider({
+      name: "test-fallback", batchesQueries: false,
+      filterSupport: { language: "advisory", timeRange: "advisory", country: "advisory" },
+      configure: () => ({ value: {} }),
+      eligibility: () => true,
+      admission: () => ({ kind: "test-fallback", key: "test-fallback", processPolicy: "endpoint" }),
+      networkTargets: () => [],
+      search: async (query, options) => {
+        claimWebSearchRequest(options.searchState, "test-fallback", options.callClaims);
+        return { ok: true, backend: "test-fallback", actualQuery: query, results: [{ url: target, title: "Mono agent evidence from test fallback", snippet: "Mono agent native evidence", backend: "test-fallback" }] };
+      },
+    });
+    try {
+      const fetchImpl = vi.fn(async () => new Response("limited", { status: 429, headers: { "retry-after": "120" } }));
+      const result = await performWebSearch({ query: "mono agent evidence" }, searchOptions({ fetchImpl, searchConfig: { backend: ["hound", "test-fallback"] } }));
+      expect(result).toMatchObject({ error: false, outcome: { backend: "test-fallback", status: "ok", resultCount: 1 } });
+      expect(result.outcome.attemptedBackends).toEqual(["hound", "test-fallback"]);
+      expect(result.outcome.engineOutcomes).toEqual([{ engine: "duckduckgo", code: "rate_limited", retryAfterMs: 120_000 }]);
+      expect(result.outcome.fallbackUsed).toBe(true);
+    } finally { unregister(); }
+  });
+  it("still runs alternate queries after a terminal local refusal", async () => {
+    const unregister = registerSearchProvider({
+      name: "test-alternate", batchesQueries: false,
+      filterSupport: { language: "advisory", timeRange: "advisory", country: "advisory" },
+      configure: () => ({ value: {} }),
+      eligibility: () => true,
+      admission: () => ({ kind: "test-alternate", key: "test-alternate", processPolicy: "endpoint" }),
+      networkTargets: () => [],
+      search: async (query, options) => {
+        claimWebSearchRequest(options.searchState, "test-alternate", options.callClaims);
+        if (query === "mono agent") return { ok: true, backend: "test-alternate", actualQuery: query, results: [] };
+        return { ok: true, backend: "test-alternate", actualQuery: query, results: [{ url: target, title: "Another mono agent evidence query from test alternate", snippet: "Another mono agent evidence snippet", backend: "test-alternate" }] };
+      },
+    });
+    try {
+      const fetchImpl = vi.fn(async () => response("refused", 403));
+      const result = await performWebSearch({ query: "mono agent", alternate_queries: ["another evidence query"] }, searchOptions({ fetchImpl, searchConfig: { backend: ["hound", "test-alternate"] } }));
+      expect(result).toMatchObject({ error: false, outcome: { status: "ok", resultCount: 1 } });
+      expect(result.outcome.attemptedBackends).toEqual(["hound", "test-alternate"]);
+      expect(result.outcome.actualQueries).toEqual(["mono agent", "another evidence query"]);
+    } finally { unregister(); }
   });
   it("propagates aggregate Retry-After and defers the run without another send", async () => {
     const state = createWebSearchRunState({ maxRequestsPerRun: 4 });
     const fetchImpl = vi.fn(async () => new Response("limited", { status: 429, headers: { "retry-after": "120" } }));
     const options = searchOptions({ fetchImpl, searchState: state });
     const result = await performWebSearch({ query: "mono agent" }, options);
-    expect(result.outcome).toMatchObject({ code: "rate_limited", rateLimited: true, retryAfterMs: 120_000, requestsUsed: 0, dispatchesUsed: 3, retryInRun: false });
+    expect(result.outcome).toMatchObject({ code: "rate_limited", rateLimited: true, retryAfterMs: 120_000, requestsUsed: 0, dispatchesUsed: 1, retryInRun: false });
     expect(state.deferredProviders.get("hound").retryAtMs).toBeGreaterThan(Date.now() + 119_000);
     expect(JSON.parse(result.text).coverage).toMatchObject({ rateLimited: true, retryAfterMs: 120_000 });
     expect(JSON.parse(result.text).next_actions?.some((entry) => entry.tool === "WebSearch")).not.toBe(true);
     await performWebSearch({ query: "another query" }, options);
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
-  it("keeps a useful mixed pool partial without applying one child's cooldown to the whole provider", async () => {
-    const native = searchFetch();
-    const fetchImpl = vi.fn(async (url, init) => String(url).includes("brave") ? new Response("limited", { status: 429, headers: { "retry-after": "120" } }) : native(url, init));
-    const state = createWebSearchRunState({ maxRequestsPerRun: 4 });
-    const result = await performWebSearch({ query: "mono agent evidence" }, searchOptions({ fetchImpl, searchState: state }));
-    expect(result).toMatchObject({ error: false, outcome: { status: "partial", rateLimited: false } });
-    expect(result.outcome.engineOutcomes).toContainEqual({ engine: "brave", code: "rate_limited", retryAfterMs: 120_000 });
-    expect(state.deferredProviders.has("hound")).toBe(false);
-    expect(fetchImpl).toHaveBeenCalledTimes(5);
-  });
-  it("retains refusal cooldowns across calls without dispatching or advancing the chain", async () => {
+  it("retains refusal cooldowns across calls without redispatching", async () => {
     const fetchImpl = vi.fn(async () => response("refused", 429));
-    const options = searchOptions({ fetchImpl, searchConfig: { backend: ["hound", "parallel"] } });
+    const options = searchOptions({ fetchImpl });
     await performWebSearch({ query: "mono agent" }, options);
     const result = await performWebSearch({ query: "different mono agent query" }, options);
-    expect(result.outcome).toMatchObject({ code: "rate_limited", requestsUsed: 0, dispatchesUsed: 0 });
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(result.outcome).toMatchObject({ code: "rate_limited", requestsUsed: 0, dispatchesUsed: 0, rateLimited: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
-  it("marks unsupported time-filter engines explicitly and preserves provider filter metadata", async () => {
-    const options = searchOptions();
-    const result = await performWebSearch({ query: "mono agent evidence", time_range: "day" }, options);
-    expect(result).toMatchObject({ error: false, outcome: { status: "partial", dispatchesUsed: 4 } });
-    expect(result.outcome.engineOutcomes).toContainEqual({ engine: "mojeek", code: "unsupported_filter" });
-    expect(options.fetchImpl.mock.calls.some(([url]) => String(url).includes("mojeek"))).toBe(false);
-  });
-  it("targets a supported country only through DDG and reports skipped Hound engines", async () => {
+  it("targets a supported country through DDG and preserves provider filter metadata", async () => {
     const options = searchOptions();
     const result = await performWebSearch({ query: "mono agent evidence", country: "pl", language: "en" }, options);
     expect(result).toMatchObject({ error: false, outcome: {
-      status: "partial", dispatchesUsed: 2,
+      status: "ok", dispatchesUsed: 2,
       filterSupport: { language: "advisory", country: "provider", timeRange: "not_requested" },
     } });
     expect(result.outcome.engineOutcomes).toEqual([
       { engine: "duckduckgo", code: "ok", countryRegion: "pl-pl" },
-      { engine: "brave", code: "unsupported_country_filter" },
-      { engine: "mojeek", code: "unsupported_country_filter" },
     ]);
     const searchCall = options.fetchImpl.mock.calls.find(([url]) => new URL(url).pathname === "/html/");
     expect(searchCall[1].body.get("l")).toBe("pl-pl");
@@ -158,10 +176,10 @@ describe("native Hound search", () => {
       filterSupport: { country: "unsupported" }, requestedFilters: { country: "AD" },
     });
   });
-  it("does not spend an answer for irrelevant partial results at the dispatch ceiling", async () => {
+  it("reports irrelevant results without spending the dispatch ceiling", async () => {
     const fetchImpl = vi.fn(async (url) => response(new URL(url).pathname === "/robots.txt" ? robots : engineHtml("duckduckgo").replaceAll("Mono agent", "Different material").replaceAll("Mono", "Different")));
     const result = await performWebSearch({ query: "uniqueunmatchedterm", domains: ["example.com"] }, searchOptions({ fetchImpl, searchConfig: { backend: "hound", maxRequestsPerRun: 1 } }));
-    expect(result.outcome).toMatchObject({ code: "search_budget_exhausted", requestsUsed: 0, dispatchesUsed: 4 });
+    expect(result.outcome).toMatchObject({ code: "backend_unavailable", requestsUsed: 1, dispatchesUsed: 2 });
   });
   it("makes coordinator failure fatal and never dispatches uncoordinated", async () => {
     const options = searchOptions({ coordinator: { acquire: async () => { throw Object.assign(new Error("unsafe"), { code: "coordination_unavailable" }); } } });
@@ -187,12 +205,11 @@ describe("Hound engine algorithms and attribution adaptations", () => {
     const valid = "https://duckduckgo.com/l/?uddg=" + encodeURIComponent("https://example.com/article");
     expect(parseHoundEngine(HOUND_ENGINES[0], engineHtml("duckduckgo", valid))[0].url).toBe("https://example.com/article");
   });
-  it("ports request/date fields, defaults DDG to no region, and parses the three reviewed layouts", () => {
+  it("ports request/date fields, defaults DDG to no region, and parses the reviewed layout", () => {
     for (const engine of HOUND_ENGINES) expect(parseHoundEngine(engine, engineHtml(engine.name))).toHaveLength(1);
     const ddg = houndEngineRequest(HOUND_ENGINES[0], 'exact "query"', "day");
     expect(ddg.init.method).toBe("POST"); expect(ddg.init.body.get("q")).toBe('exact "query"'); expect(ddg.init.body.get("df")).toBe("d");
     expect(ddg.init.body.get("l")).toBe("wt-wt");
-    expect(houndEngineRequest(HOUND_ENGINES[1], "query", "month").url).toContain("tf=pm");
   });
   it.each([
     ["PL", "en", "pl-pl"],

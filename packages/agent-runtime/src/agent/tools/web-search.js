@@ -163,7 +163,10 @@ async function performSearch(
     if (result.backend === "hound" && Array.isArray(result.engineOutcomes)) {
       engineOutcomes.push(...result.engineOutcomes.slice(0, 3));
       partialEngines ||= result.partial === true;
-      houndStopped ||= result.engineOutcomes.some((entry) => ["robots_denied", "robots_unavailable", "robots_crawl_delay", "access_challenge", "authentication_required", "rate_limited", "search_budget_exhausted", "network_denied"].includes(entry.code));
+      // Only a terminal local-provider failure (no answer possible now) marks
+      // the provider stopped. A per-engine denial on a search that still
+      // answered must never gate the chain or the remaining query variants.
+      houndStopped ||= result.ok === false && result.engineOutcomes.some((entry) => ["robots_denied", "robots_unavailable", "robots_crawl_delay", "access_challenge", "authentication_required", "rate_limited", "search_budget_exhausted", "network_denied"].includes(entry.code));
     }
     if (result.ok) {
       if (typeof result.actualQuery === "string" && result.actualQuery.trim()) {
@@ -216,9 +219,13 @@ async function performSearch(
         break;
       }
       if (!result.ok && !result.relevance) disabledForCall.add(backend);
-      if (houndStopped || providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
+      // A stopped local provider only stops further local attempts (via
+      // disabledForCall above); the chain still advances to the next
+      // configured backend, and alternate queries still run against it. Only
+      // run-wide terminal conditions stop the whole call.
+      if (providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
     }
-    if (houndStopped || providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
+    if (providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
   }
   rememberRunProviderFailures(searchState, providerFailures);
   if (signal?.aborted) {
