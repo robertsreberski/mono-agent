@@ -590,8 +590,7 @@
           "type": "string",
           "default": "bujo",
           "enum": [
-            "bujo",
-            "supermemory"
+            "bujo"
           ]
         },
         "mode": {
@@ -634,56 +633,6 @@
             "append-host-summary",
             "capture"
           ]
-        },
-        "supermemory": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "baseUrl": {
-              "description": "Configures supermemory.baseUrl for the memory section.",
-              "examples": [
-                "example"
-              ],
-              "type": "string"
-            },
-            "apiKey": {
-              "description": "Secret value for memory.supermemory.apiKey; prefer the env override.",
-              "examples": [
-                "example"
-              ],
-              "type": "string"
-            },
-            "apiKeyEnv": {
-              "description": "Secret value for memory.supermemory.apiKeyEnv; prefer the env override.",
-              "examples": [
-                "example"
-              ],
-              "type": "string"
-            },
-            "container": {
-              "description": "Configures supermemory.container for the memory section.",
-              "examples": [
-                "example"
-              ],
-              "type": "string"
-            },
-            "timeoutMs": {
-              "description": "Configures supermemory.timeoutMs for the memory section.",
-              "examples": [
-                10000
-              ],
-              "type": "integer",
-              "default": 10000
-            },
-            "exposeMcpServer": {
-              "description": "Configures supermemory.exposeMcpServer for the memory section.",
-              "examples": [
-                true
-              ],
-              "type": "boolean",
-              "default": false
-            }
-          }
         },
         "embeddings": {
           "type": "object",
@@ -864,6 +813,13 @@
               "default": "0 */2 * * *"
             }
           }
+        },
+        "supermemory": {
+          "type": "object",
+          "deprecated": true,
+          "additionalProperties": false,
+          "properties": {},
+          "description": "Retired Supermemory configuration. Only an inert empty object is accepted; remove this key."
         },
         "reflection": {
           "type": "object",

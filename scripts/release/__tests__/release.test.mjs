@@ -581,7 +581,6 @@ describe("current launch manifest", () => {
     expect(publishable).toHaveLength(expectedPublishablePackageCount);
     expect([...publishableNames].sort()).toEqual(expectedPublishablePackageNames);
     expect(publishableNames).toContain("@mono-agent/tui");
-    expect(publishableNames).toContain("@mono-agent/memory-supermemory");
     expect(publishableNames).not.toContain(`@mono-agent/${"agent"}-${"host"}`);
     // memory-mcp was retired: the BuJo recall tool is now auto-provisioned in-app
     // from the single config.memory block (no separate stdio MCP package).
@@ -597,23 +596,6 @@ describe("current launch manifest", () => {
     expect(publishableNames).toContain("@mono-agent/runtime-adapter");
     expect(publishableNames).toContain("@mono-agent/agent-app");
     expect(publishableNames).toContain("@mono-agent/observability");
-  });
-
-  test.each(["memory-supermemory"])("keeps %s publishable but outside the default app dependency closure", (name) => {
-    const plugin = packageCatalog.find((entry) => entry.name === `@mono-agent/${name}`);
-    expect(plugin).toMatchObject({
-      path: `extras/${name}`,
-      publishable: true,
-      tier: "plugin",
-    });
-
-    const app = JSON.parse(fs.readFileSync(
-      new URL("../../../packages/agent-app/package.json", import.meta.url),
-      "utf8",
-    ));
-    for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
-      expect(app[section]?.[`@mono-agent/${name}`]).toBeUndefined();
-    }
   });
 
   test("validates the repository for its current release tag", async () => {

@@ -199,7 +199,7 @@ async function seedPrivateConsumerMemoryGeneration(
   config: Awaited<ReturnType<typeof loadAppCoreConfig>>,
 ): Promise<void> {
   const memory = config.memory;
-  if (memory === undefined || (memory.backend ?? "bujo") === "supermemory") return;
+  if (memory === undefined) return;
 
   const privateRoot = resolve(privateFixtureRoot);
   const memoryRoot = resolve(memory.path);

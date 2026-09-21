@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as agentHarness from "@mono-agent/agent-harness";
+import { MonoAgentConfigError } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
   RunSummary,
@@ -43,9 +44,8 @@ const fakeSandboxEngine: SandboxEngine = {
 // These composition tests exercise harness/runtime wiring, not the real
 // cooperative owner. Dedicated coordinator and configured-root suites cover
 // the filesystem-backed lifetime contract.
-vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../agent-root-coordinator.js")>(),
-  acquireAgentRootOwnership: async (root: string | undefined) => ({
+const agentRootOwnershipSpies = vi.hoisted(() => ({
+  acquire: vi.fn(async (root: string | undefined) => ({
     agentRoot: root ?? process.cwd(),
     coordinator: {
       synchronizeGeneration() {},
@@ -55,7 +55,12 @@ vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
       }),
     },
     release() {},
-  }),
+  })),
+}));
+
+vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../agent-root-coordinator.js")>(),
+  acquireAgentRootOwnership: agentRootOwnershipSpies.acquire,
   releaseAgentRootOwnershipWhenIdle: async (ownership: { release(): void }) => {
     ownership.release();
     return true;
@@ -86,6 +91,44 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => closeServer(server)));
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
+
+const RETIRED_MEMORY_CONFIG_CASES = [
+  {
+    label: "a plain retired selector",
+    backend: "supermemory",
+    supermemory: {},
+    path: "memory.backend",
+    secrets: [],
+  },
+  {
+    label: "a padded retired selector",
+    backend: "  supermemory  ",
+    supermemory: {},
+    path: "memory.backend",
+    secrets: [],
+  },
+  {
+    label: "an active retired block with BuJo",
+    backend: "bujo",
+    supermemory: { baseUrl: "https://retired.invalid/private", apiKey: "retired-key" },
+    path: "memory.supermemory",
+    secrets: ["https://retired.invalid/private", "retired-key"],
+  },
+  {
+    label: "an active retired block without a selector",
+    backend: undefined,
+    supermemory: { baseUrl: "https://retired.invalid/private", apiKeyEnv: "PRIVATE_RETIRED_KEY" },
+    path: "memory.supermemory",
+    secrets: ["https://retired.invalid/private", "PRIVATE_RETIRED_KEY"],
+  },
+] as const;
+
+const RETIRED_COMPOSITION_CASES = [
+  ["configured harness without injected memory", "harness", false],
+  ["configured harness with injected memory", "harness", true],
+  ["configured responder without injected memory", "responder", false],
+  ["configured responder with injected memory", "responder", true],
+] as const;
 
 describe("agent host composition helpers", () => {
   it("creates a responder from MonoAgentConfig with runtime, tools, local providers, request extensions, and recording", async () => {
@@ -208,7 +251,11 @@ describe("agent host composition helpers", () => {
         runtimeOptions: {
           allowedTools: ["CustomProposalTool"],
           mcpServers: {
-            configurator: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+            supermemory: {
+              type: "http",
+              url: "https://mcp.supermemory.ai/operator-authored",
+              headers: { Authorization: "Bearer operator-authored" },
+            },
           },
         },
       }),
@@ -222,7 +269,11 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[0]?.options.allowedTools).toEqual(["Read", "CustomProposalTool"]);
     expect(fake.calls[0]?.options.mcpServers).toMatchObject({
       "mono-agent-memory": { type: "http", url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\//u) },
-      configurator: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+      supermemory: {
+        type: "http",
+        url: "https://mcp.supermemory.ai/operator-authored",
+        headers: { Authorization: "Bearer operator-authored" },
+      },
     });
   });
 
@@ -349,6 +400,252 @@ describe("agent host composition helpers", () => {
       .toMatchObject({ status: "succeeded", conversationId: "telegram:42" });
     await cache.list(artifactDir);
     expect(scanCalls).toBe(2);
+  });
+
+  it.each([
+    ["a trim-normalized retired selector", "  supermemory  ", {}],
+    ["an active retired block with BuJo", "bujo", { baseUrl: "https://retired.invalid/private", apiKey: "retired-key" }],
+    ["an active retired block without a selector", undefined, { baseUrl: "https://retired.invalid/private", apiKeyEnv: "PRIVATE_RETIRED_KEY" }],
+  ] as const)("rejects %s before direct configured-memory composition creates local state", async (_label, backend, supermemory) => {
+    const dir = await tempDir();
+    const memoryPath = join(dir, "store");
+    const config = monoConfig({
+      dir,
+      identityPath: join(dir, "IDENTITY.md"),
+      artifactDir: join(dir, "artifacts"),
+      memoryPath,
+    });
+    const legacyConfig = {
+      ...config,
+      memory: {
+        ...config.memory,
+        ...(backend === undefined ? {} : { backend }),
+        supermemory,
+      },
+    } as unknown as MonoAgentConfig;
+
+    let rejection: unknown;
+    try {
+      await createConfiguredMemory(legacyConfig, { cwd: dir });
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toBeInstanceOf(MonoAgentConfigError);
+    expect(rejection).toMatchObject({
+      code: "invalid_json",
+      details: {
+        path: backend?.trim() === "supermemory" ? "memory.backend" : "memory.supermemory",
+      },
+    });
+    const diagnostic = rejection instanceof Error
+      ? JSON.stringify({ message: rejection.message, ...(rejection instanceof MonoAgentConfigError ? { details: rejection.details } : {}) })
+      : "";
+    expect([
+      "https://retired.invalid/private",
+      "retired-key",
+      "PRIVATE_RETIRED_KEY",
+    ].some((value) => diagnostic.includes(value))).toBe(false);
+    await expect(access(memoryPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(RETIRED_COMPOSITION_CASES.flatMap(([factoryLabel, factory, injectMemory]) =>
+    RETIRED_MEMORY_CONFIG_CASES.map((configCase) => [
+      factoryLabel,
+      configCase.label,
+      factory,
+      injectMemory,
+      configCase,
+    ] as const),
+  ))("rejects %s with %s before composition side effects", async (
+    _factoryLabel,
+    _configLabel,
+    factory,
+    injectMemory,
+    configCase,
+  ) => {
+    const dir = await tempDir();
+    const base = monoConfig({
+      dir,
+      identityPath: join(dir, "IDENTITY.md"),
+      artifactDir: join(dir, "artifacts"),
+      memoryPath: join(dir, "memory"),
+    });
+    const config = {
+      ...base,
+      memory: {
+        ...base.memory,
+        ...(configCase.backend === undefined ? {} : { backend: configCase.backend }),
+        supermemory: configCase.supermemory,
+      },
+    } as unknown as MonoAgentConfig;
+    const configureTools = vi.fn();
+    const run = vi.fn(async () => ({ text: "must not run" }));
+    const load = vi.fn(async () => undefined);
+    const persistCompletedTurn = vi.fn(async (turn: { runId: string; conversationId: string }) => ({
+      id: turn.runId,
+      runId: turn.runId,
+      conversationId: turn.conversationId,
+      source: "test",
+      bytesWritten: 0,
+      admissionStatus: "admitted" as const,
+    }));
+    const memory: MemoryStore = { load, persistCompletedTurn };
+    const options = {
+      config,
+      cwd: dir,
+      runtime: { configureTools, run },
+      ...(injectMemory ? { memory } : {}),
+    };
+    agentRootOwnershipSpies.acquire.mockClear();
+
+    let rejection: unknown;
+    try {
+      if (factory === "harness") {
+        await createConfiguredAgentHarness(options);
+      } else {
+        await createConfiguredAgentResponder(options);
+      }
+    } catch (error) {
+      rejection = error;
+    }
+
+    expect(rejection).toBeInstanceOf(MonoAgentConfigError);
+    expect(rejection).toMatchObject({
+      code: "invalid_json",
+      details: { path: configCase.path },
+    });
+    const diagnostic = rejection instanceof Error
+      ? JSON.stringify({
+          message: rejection.message,
+          ...(rejection instanceof MonoAgentConfigError ? { details: rejection.details } : {}),
+        })
+      : "";
+    expect(diagnostic).toContain("first-party Supermemory support");
+    expect(diagnostic).toContain("remote data remains untouched");
+    expect(configCase.secrets.some((secret) => diagnostic.includes(secret))).toBe(false);
+    expect(configureTools).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+    expect(persistCompletedTurn).not.toHaveBeenCalled();
+    expect(agentRootOwnershipSpies.acquire).not.toHaveBeenCalled();
+    await expect(readdir(dir)).resolves.toEqual([]);
+  });
+
+  it.each(RETIRED_MEMORY_CONFIG_CASES)(
+    "rejects $label before standalone configured-runtime setup",
+    (configCase) => {
+      const dir = join(tmpdir(), "retired-runtime-boundary");
+      const base = monoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        artifactDir: join(dir, "artifacts"),
+        memoryPath: join(dir, "memory"),
+      });
+      const providerReads = vi.fn(() => base.providers);
+      const config = {
+        ...base,
+        memory: {
+          ...base.memory,
+          ...(configCase.backend === undefined ? {} : { backend: configCase.backend }),
+          supermemory: configCase.supermemory,
+        },
+      } as unknown as MonoAgentConfig;
+      Object.defineProperty(config, "providers", {
+        enumerable: true,
+        get: providerReads,
+      });
+
+      let rejection: unknown;
+      try {
+        createConfiguredAgentRuntime(config);
+      } catch (error) {
+        rejection = error;
+      }
+
+      expect(rejection).toBeInstanceOf(MonoAgentConfigError);
+      expect(rejection).toMatchObject({
+        code: "invalid_json",
+        details: { path: configCase.path },
+      });
+      const diagnostic = rejection instanceof Error
+        ? JSON.stringify({
+            message: rejection.message,
+            ...(rejection instanceof MonoAgentConfigError ? { details: rejection.details } : {}),
+          })
+        : "";
+      expect(diagnostic).toContain("first-party Supermemory support");
+      expect(diagnostic).toContain("remote data remains untouched");
+      expect(configCase.secrets.some((secret) => diagnostic.includes(secret))).toBe(false);
+      expect(providerReads).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps an inert retired block compatible with direct local-memory composition", async () => {
+    const dir = await tempDir();
+    const memoryPath = join(dir, "store");
+    const config = monoConfig({
+      dir,
+      identityPath: join(dir, "IDENTITY.md"),
+      artifactDir: join(dir, "artifacts"),
+      memoryPath,
+    });
+    const compatibleConfig = {
+      ...config,
+      memory: { ...config.memory, backend: "bujo", supermemory: {} },
+    } as unknown as MonoAgentConfig;
+
+    const memory = await createConfiguredMemory(compatibleConfig, { cwd: dir });
+    expect(memory).toBeDefined();
+    await expect(access(memoryPath)).resolves.toBeUndefined();
+    await (memory as unknown as { close(): Promise<void> }).close();
+  });
+
+  it("forwards load and completed-turn persistence to a neutral injected MemoryStore", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const load = vi.fn(async () => ({
+      kind: "markdown" as const,
+      content: "Neutral injected memory.",
+      source: "operator-store",
+      truncated: false,
+    }));
+    const persistCompletedTurn = vi.fn(async (turn: { runId: string; conversationId: string }) => ({
+      id: turn.runId,
+      runId: turn.runId,
+      conversationId: turn.conversationId,
+      source: "operator-store",
+      bytesWritten: 64,
+      admissionStatus: "admitted" as const,
+    }));
+    const memory: MemoryStore = { load, persistCompletedTurn };
+    const fake = createFakeRuntime(async () => ({ text: "Generic store answer" }));
+    const responder = await createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        artifactDir,
+        memoryPath: join(dir, "memory"),
+        memoryWriteMode: "append-host-summary",
+      }),
+      runtime: fake.runtime,
+      memory,
+      createRunId: () => "run-generic-store",
+    });
+
+    await responder.respond(
+      { conversationId: "generic-store", text: "Recall this", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(load).toHaveBeenCalledWith("generic-store", "Recall this", { turnId: "run-generic-store" });
+    expect(JSON.stringify(fake.calls[0])).toContain("Neutral injected memory.");
+    expect(persistCompletedTurn).toHaveBeenCalledWith(expect.objectContaining({
+      runId: "run-generic-store",
+      conversationId: "generic-store",
+      summary: expect.stringContaining("Generic store answer"),
+    }));
   });
 
   it("records memory persistence degradation in local artifacts", async () => {

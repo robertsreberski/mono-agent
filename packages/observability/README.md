@@ -268,7 +268,6 @@ TraceSourceRegistryErrorCode
 TraceSourceRegistryErrorDetails
 TraceSourceRegistryOptions
 TraceSourceStatus
-TraceSourceSupermemoryMemoryHealth
 UpdateTraceSourceOptions
 VisibleTextSanitizationOptions
 auditRecordedRuns

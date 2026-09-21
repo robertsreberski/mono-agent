@@ -57,12 +57,6 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "memory.path": "string",
   "memory.maxBytes": "integer",
   "memory.writeMode": "string",
-  "memory.supermemory.baseUrl": "string",
-  "memory.supermemory.apiKey": "string",
-  "memory.supermemory.apiKeyEnv": "string",
-  "memory.supermemory.container": "string",
-  "memory.supermemory.timeoutMs": "integer",
-  "memory.supermemory.exposeMcpServer": "boolean",
   "memory.embeddings.provider": "string",
   "memory.embeddings.model": "string",
   "memory.embeddings.endpoint": "string",
@@ -403,7 +397,14 @@ describe("config reference", () => {
       minimum: 32_000,
       maximum: 10_000_000,
     });
-    expect(schemaNode(schema, "memory", "backend").enum).toEqual(["bujo", "supermemory"]);
+    expect(schemaNode(schema, "memory", "backend").enum).toEqual(["bujo"]);
+    expect(schemaNode(schema, "memory", "supermemory")).toEqual({
+      type: "object",
+      deprecated: true,
+      additionalProperties: false,
+      properties: {},
+      description: expect.stringContaining("Only an inert empty object is accepted"),
+    });
     expect(schemaNode(schema, "memory", "mode").enum).toEqual(["lite", "journal", "bujo"]);
     expect(schemaNode(schema, "memory", "writeMode").enum).toEqual(["disabled", "append-host-summary", "capture"]);
     expect(schemaNode(schema, "memory", "embeddings", "provider").enum).toEqual(["ollama", "lmstudio", "openai"]);

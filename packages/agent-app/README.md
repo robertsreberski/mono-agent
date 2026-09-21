@@ -310,7 +310,7 @@ harness MCP configuration.
 
 Before the first macOS background launch, the CLI copies the exact package and
 already-resolved dependency closure it is currently executing—including configured
-channel plugins and the optional Supermemory backend—into an owner-only,
+channel plugins—into an owner-only,
 version/Node-ABI/CLI/closure-digest runtime under `~/.mono-agent/runtimes/agent-app/`.
 It does not invoke npm or lifecycle scripts, so provider secrets never reach an
 installer and pnpm `workspace:` links do not require registry resolution. A
@@ -711,12 +711,11 @@ explicit tool returns the same closed `embedding_unavailable` status, including
 when lexical search has no matches. One status-bearing lookup is shared across
 the automatic and explicit paths for the turn; graph expansion cannot erase the
 status, and only final served IDs update access telemetry. Lite mode remains
-normal lexical service. External and legacy array-only backends keep their
-existing behavior.
+normal lexical service.
 
 `MemoryJournal` is request-scoped and read-only. It is offered only for a local
 Lite, Journal, or BuJo store when `memory.recallTool.enabled` is on and normal
-tool policy allows it. Supermemory has search but no chronological capability.
+tool policy allows it.
 A first call requires `fromDate`, `throughDate`, and an IANA `timeZone`; the
 inclusive range is capped at 31 calendar days. Pages default to 10 and cap at
 25 entries, 8 KiB projected data, and 2 KiB per entry text. The frozen snapshot

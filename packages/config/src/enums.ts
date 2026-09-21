@@ -9,8 +9,8 @@
  */
 export const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 
-/** Built-in and external memory store implementations. */
-export const MEMORY_BACKENDS = ["bujo", "supermemory"] as const;
+/** Built-in memory store implementation. */
+export const MEMORY_BACKENDS = ["bujo"] as const;
 
 /** Strict capability tiers for the built-in BuJo memory backend. */
 export const MEMORY_MODES = ["lite", "journal", "bujo"] as const;

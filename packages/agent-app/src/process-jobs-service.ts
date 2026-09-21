@@ -283,6 +283,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private managedRegistry: ManagedSubagentRegistry | undefined;
   private readonly managedCommands = new Map<string, ReturnType<typeof createSubagentOwnedCommands>>();
   private readonly managedPublications = new Map<string, Promise<void>>();
+  /** Coalesces a durable publication edge observed while this job's publisher is busy. */
+  private readonly managedPublicationRearmPending = new Set<string>();
   private readonly managedRegistryOperations = new Set<Promise<unknown>>();
   private readonly pending = new Map<string, PendingProcessJob>();
   private readonly active = new Map<string, ActiveProcessJob>();
@@ -836,11 +838,24 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       this.scheduleWake(jobId);
     });
     this.managedPublications.set(jobId, task);
-    try { await task; } finally { if (this.managedPublications.get(jobId) === task) this.managedPublications.delete(jobId); }
+    try { await task; } finally {
+      if (this.managedPublications.get(jobId) === task) {
+        this.managedPublications.delete(jobId);
+        // A terminal transition can advance publication.sequence while an older
+        // unreleased snapshot is still publishing. Consume the coalesced edge only
+        // after the latest queued publisher leaves the map, then reread durable
+        // state; never recurse inside the service lock or retry an error forever.
+        if (this.managedPublicationRearmPending.delete(jobId)) this.scheduleManagedPublication(jobId);
+      }
+    }
   }
 
   private scheduleManagedPublication(jobId: string): void {
-    if (this.stopping || this.managedWritesClosed || !this.managedRegistry || this.managedPublications.has(jobId)) return;
+    if (this.stopping || this.managedWritesClosed || !this.managedRegistry) return;
+    if (this.managedPublications.has(jobId)) {
+      this.managedPublicationRearmPending.add(jobId);
+      return;
+    }
     void Promise.resolve().then(async () => {
       if (this.stopping || this.managedWritesClosed) return;
       const record = await this.storeGet(jobId, "subagent.pending_publication");
@@ -1977,6 +1992,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       await Promise.allSettled([...this.wakeTasks.values()]);
     } finally {
       await this.withLock(async () => { this.managedWritesClosed = true; });
+      this.managedPublicationRearmPending.clear();
       // Entered registry transactions may call back into service proof lookup.
       // Drain them outside the service lock, before transferring the owner lock.
       // Closed admission above makes this a stable set; provider promises are not included.

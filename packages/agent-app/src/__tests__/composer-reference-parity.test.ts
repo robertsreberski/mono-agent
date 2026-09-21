@@ -321,7 +321,6 @@ describe("mono-agent-composer reference parity", () => {
       '"maxConcurrentRuns"',
       '"maxPendingRuns"',
       '"backend": "bujo"',
-      '"supermemory"',
       '"interaction"',
       '"endpoints"',
       '"model"',
@@ -336,9 +335,9 @@ describe("mono-agent-composer reference parity", () => {
     }
   });
 
-  it("maps the optional memory backend and browser surface to their owning packages", () => {
-    expect(packageMap).toContain("@mono-agent/memory-supermemory");
-    expect(packageMap).toContain('memory.backend: "supermemory"');
+  it("maps current browser surfaces without a retired memory package", () => {
+    expect(packageMap).not.toContain("@mono-agent/memory-supermemory");
+    expect(packageMap).not.toContain('memory.backend: "supermemory"');
     expect(packageMap).toContain("@mono-agent/web");
     expect(packageMap).not.toContain("@mono-agent/session-web");
     expect(packageMap).not.toContain("mono-agent sessions");

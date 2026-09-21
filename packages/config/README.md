@@ -401,7 +401,6 @@ MemoryLlmConfig
 MemoryLlmProvider
 MemoryMode
 MemoryOllamaLlmConfig
-MemorySupermemoryConfig
 MemoryWriteMode
 MonoAgentArtifactRetentionJson
 MonoAgentConfig
@@ -426,7 +425,6 @@ ReadMonoAgentConfigJsonResult
 RedactedLocalProviderDefinition
 RedactedMemoryConfig
 RedactedMemoryEmbeddingsConfig
-RedactedMemorySupermemoryConfig
 RedactedMonoAgentConfig
 RedactedProviderDefinition
 RemovedConfigWarningsInput
@@ -434,6 +432,7 @@ ResolvedProviders
 RuntimeFallbackConfig
 SessionMode
 assertConfiguredProviderCoverage
+assertNoRetiredMonoAgentConfig
 buildMonoAgentConfigView
 findJsonSecretConfigWarnings
 findRemovedConfigWarnings
@@ -442,7 +441,6 @@ loadMonoAgentConfigWithSources
 readMonoAgentConfigJson
 redactMonoAgentConfig
 resolveConfiguredProviders
-resolveSupermemoryContainer
 writeMonoAgentConfigJson
 ```
 

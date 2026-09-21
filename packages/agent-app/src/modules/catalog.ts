@@ -406,55 +406,6 @@ const memoryBujo: CapabilityModule = {
   ],
 };
 
-const memorySupermemory: CapabilityModule = {
-  id: "memory:supermemory",
-  kind: "memory",
-  title: "Supermemory (external server)",
-  summary: "External Supermemory instance for server-side extraction + recall.",
-  riskLevel: "medium",
-  // The package is optional and no longer part of agent-app's dependency
-  // closure. Existing presets/config composition can still resolve the module
-  // explicitly, but the core interactive wizard must not advertise an
-  // unavailable backend as though it were built in.
-  wizardSelectable: false,
-  inputs: [
-    {
-      id: "supermemoryBaseUrl",
-      label: "Supermemory base URL",
-      description: "REST URL of your supermemory-server (local default http://127.0.0.1:6767) or the hosted cloud.",
-      default: "http://127.0.0.1:6767",
-    },
-    {
-      id: "supermemoryApiKey",
-      label: "Supermemory API key (optional)",
-      description: "Bearer key for hosted or authenticated instances. Omit it for a keyless local service. Saved to .env; .env.example contains only a placeholder.",
-      secret: true,
-      envVar: "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY",
-      required: false,
-    },
-  ],
-  configFragment: (values) => ({
-    memory: {
-      backend: "supermemory",
-      writeMode: "capture",
-      supermemory: { baseUrl: values.supermemoryBaseUrl ?? "http://127.0.0.1:6767" },
-      recallTool: { enabled: true },
-      rememberTool: { enabled: false }, // no durable write surface on this backend
-    },
-  }),
-  envExampleLines: () => [
-    "# Supermemory bearer key (printed by supermemory-server on first boot)",
-    "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY=",
-  ],
-  validateExpectations: [
-    {
-      sectionId: "memory",
-      mustBe: "ok",
-      note: "Run `supermemory-server` (or point baseUrl at your instance) before sending turns.",
-    },
-  ],
-};
-
 // ---------------------------------------------------------------------------
 // Sandbox
 // ---------------------------------------------------------------------------
@@ -532,7 +483,6 @@ export const CAPABILITY_MODULES: readonly CapabilityModule[] = [
   memoryLite,
   memoryJournal,
   memoryBujo,
-  memorySupermemory,
   sandbox,
   providerOllama,
   providerLmStudio,

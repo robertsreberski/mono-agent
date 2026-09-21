@@ -6,7 +6,7 @@ import {
 import type { SettingsJson, SettingsJsonValue } from "@mono-agent/agent-contracts";
 import type { PiTransport } from "@mono-agent/runtime-adapter";
 
-import { MonoAgentConfigError, RETIRED_CONFIG_FIELDS } from "./config.js";
+import { assertNoRetiredMonoAgentConfig, MonoAgentConfigError } from "./config.js";
 import type { MemoryBackend, MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";
 
 /** JSON form of one canonical runtime fallback route. */
@@ -42,15 +42,8 @@ export type MonoAgentMemoryEmbeddingsJson = {
   readonly circuitBreaker?: MonoAgentMemoryEmbeddingsCircuitBreakerJson;
 };
 
-/** JSON-serialisable shape for the Supermemory external-backend block. */
-export type MonoAgentMemorySupermemoryJson = {
-  readonly baseUrl?: string;
-  readonly apiKey?: string;
-  readonly apiKeyEnv?: string;
-  readonly container?: string;
-  readonly timeoutMs?: number;
-  readonly exposeMcpServer?: boolean;
-};
+/** @deprecated Compatibility tombstone. Only an exact empty object is accepted. */
+export type MonoAgentMemorySupermemoryJson = Readonly<Record<string, never>>;
 
 /** JSON-serialisable shape for memory consolidation config. */
 export type MonoAgentMemoryConsolidationJson = {
@@ -344,26 +337,7 @@ export async function readMonoAgentConfigJson(path: string): Promise<ReadMonoAge
  * `paths` carries the full set.
  */
 export function assertNoRetiredMonoAgentConfigJson(json: object): void {
-  const retired = RETIRED_CONFIG_FIELDS.filter((field) => {
-    const found = ownJsonPathValue(json, field.path);
-    if (!found.present) return false;
-    return field.jsonValueIsActive?.(found.value) ?? true;
-  });
-  if (retired.length === 0) return;
-  throw new MonoAgentConfigError("invalid_json", retired.map((field) => field.message).join(" "), {
-    path: retired[0]!.path,
-    paths: retired.map((field) => field.path),
-  });
-}
-
-function ownJsonPathValue(json: object, path: string): { readonly present: boolean; readonly value?: unknown } {
-  let current: unknown = json;
-  for (const segment of path.split(".")) {
-    if (typeof current !== "object" || current === null || Array.isArray(current)) return { present: false };
-    if (!Object.prototype.hasOwnProperty.call(current, segment)) return { present: false };
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return { present: true, value: current };
+  assertNoRetiredMonoAgentConfig(json);
 }
 
 /**

@@ -44,7 +44,7 @@ import {
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
 } from "./enums.js";
-import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, PiNativeProviderConfig, RedactedMonoAgentConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentModelChoice, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
+import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryWriteMode, MonoAgentConfig, PiNativeProviderConfig, RedactedMonoAgentConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentModelChoice, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -125,6 +125,31 @@ function retiredObservabilityEnvIsActive(value: string | undefined): boolean {
   }
 }
 
+function retiredSupermemorySelectorIsActive(value: unknown): boolean {
+  return typeof value === "string" && normalizeOptionalString(value) === "supermemory";
+}
+
+function retiredSupermemoryBlockIsActive(value: unknown): boolean {
+  return !isRecord(value) || Array.isArray(value) || Object.keys(value).length !== 0;
+}
+
+function retiredSupermemoryEnvIsActive(value: string | undefined): boolean {
+  return normalizeOptionalString(value) !== undefined;
+}
+
+function retiredJsonValueIsInactive(): boolean {
+  return false;
+}
+
+const RETIRED_SUPERMEMORY_SELECTOR_JSON_MESSAGE =
+  "`memory.backend` no longer accepts `supermemory`: first-party Supermemory support was removed. Remove the selector before upgrading. mono-agent does not select a replacement or migrate remote data; remote data remains untouched.";
+const RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE =
+  "`memory.supermemory` was removed with first-party Supermemory support. Remove the block before upgrading. mono-agent does not select a replacement or migrate remote data; remote data remains untouched.";
+
+function retiredSupermemoryEnvMessage(env: string): string {
+  return `\`${env}\` was removed with first-party Supermemory support. Remove the variable from your environment and .env before upgrading. mono-agent does not select a replacement or migrate remote data; remote data remains untouched.`;
+}
+
 export const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
   {
     path: "runtime.permissionMode",
@@ -163,6 +188,62 @@ export const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
     envMessage: "`MONO_AGENT_FALLBACK_MODELS` was replaced by `MONO_AGENT_FALLBACKS_JSON`, a JSON array of `{ \"model\": \"...\" }` objects. Remove the variable and re-express the chain there, or drop it into `runtime.fallbacks` in mono-agent.config.json.",
   },
   {
+    path: "memory.backend",
+    env: "MONO_AGENT_MEMORY_BACKEND",
+    message: RETIRED_SUPERMEMORY_SELECTOR_JSON_MESSAGE,
+    envMessage: "`MONO_AGENT_MEMORY_BACKEND=supermemory` was removed with first-party Supermemory support. Remove or change the selector before upgrading. mono-agent does not select a replacement or migrate remote data; remote data remains untouched.",
+    jsonValueIsActive: retiredSupermemorySelectorIsActive,
+    envValueIsActive: retiredSupermemorySelectorIsActive,
+  },
+  {
+    path: "memory.supermemory",
+    env: "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL",
+    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
+    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL"),
+    jsonValueIsActive: retiredSupermemoryBlockIsActive,
+    envValueIsActive: retiredSupermemoryEnvIsActive,
+  },
+  {
+    path: "memory.supermemory.apiKey",
+    env: "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY",
+    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
+    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY"),
+    jsonValueIsActive: retiredJsonValueIsInactive,
+    envValueIsActive: retiredSupermemoryEnvIsActive,
+  },
+  {
+    path: "memory.supermemory.apiKeyEnv",
+    env: "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV",
+    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
+    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV"),
+    jsonValueIsActive: retiredJsonValueIsInactive,
+    envValueIsActive: retiredSupermemoryEnvIsActive,
+  },
+  {
+    path: "memory.supermemory.container",
+    env: "MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER",
+    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
+    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER"),
+    jsonValueIsActive: retiredJsonValueIsInactive,
+    envValueIsActive: retiredSupermemoryEnvIsActive,
+  },
+  {
+    path: "memory.supermemory.timeoutMs",
+    env: "MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS",
+    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
+    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS"),
+    jsonValueIsActive: retiredJsonValueIsInactive,
+    envValueIsActive: retiredSupermemoryEnvIsActive,
+  },
+  {
+    path: "memory.supermemory.exposeMcpServer",
+    env: "MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER",
+    message: RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE,
+    envMessage: retiredSupermemoryEnvMessage("MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER"),
+    jsonValueIsActive: retiredJsonValueIsInactive,
+    envValueIsActive: retiredSupermemoryEnvIsActive,
+  },
+  {
     path: "memory.llm.executionMode",
     env: "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
     message: "`memory.llm.executionMode` was removed for the same reason as `runtime.executionMode`: mono-agent runs only the Pi runtime (SDK). Delete the key.",
@@ -177,6 +258,35 @@ export const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
     envValueIsActive: retiredObservabilityEnvIsActive,
   },
 ] as const;
+
+/**
+ * Reject active retired fields on any config-shaped object, including direct
+ * JavaScript callers that bypass the JSON/environment loaders. Diagnostics name
+ * only stable field paths and migration guidance; retired values are never
+ * included because they may contain credentials or private service locations.
+ */
+export function assertNoRetiredMonoAgentConfig(config: object): void {
+  const retired = RETIRED_CONFIG_FIELDS.filter((field) => {
+    const found = ownConfigPathValue(config, field.path);
+    if (!found.present) return false;
+    return field.jsonValueIsActive?.(found.value) ?? true;
+  });
+  if (retired.length === 0) return;
+  throw new MonoAgentConfigError("invalid_json", retired.map((field) => field.message).join(" "), {
+    path: retired[0]!.path,
+    paths: retired.map((field) => field.path),
+  });
+}
+
+function ownConfigPathValue(config: object, path: string): { readonly present: boolean; readonly value?: unknown } {
+  let current: unknown = config;
+  for (const segment of path.split(".")) {
+    if (!isRecord(current) || Array.isArray(current)) return { present: false };
+    if (!Object.prototype.hasOwnProperty.call(current, segment)) return { present: false };
+    current = current[segment];
+  }
+  return { present: true, value: current };
+}
 
 const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MEMORY_MAX_BYTES = 64_000;
@@ -548,6 +658,7 @@ function assertNoRetiredConfigEnv(env: Record<string, string | undefined>): void
 }
 
 export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgentConfig {
+  assertNoRetiredMonoAgentConfig(config);
   const { web: configuredWeb, ...toolsWithoutWeb } = config.tools;
   const configuredSearch = configuredWeb?.search;
   const {
@@ -591,32 +702,19 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
     traceability: { ...config.traceability },
   };
   if (config.memory !== undefined) {
-    const { embeddings, supermemory, ...memory } = config.memory;
+    // The only tolerated direct legacy shape is an inert empty tombstone. It is
+    // compatibility input, not resolved output, so never carry it into views.
+    const { embeddings, supermemory: _retiredSupermemory, ...memory } = config.memory as
+      NonNullable<MonoAgentConfig["memory"]> & { readonly supermemory?: unknown };
     return withRedactedProviders({
       ...redacted,
       memory: {
         ...memory,
         ...(embeddings === undefined ? {} : { embeddings: redactApiKeyBlock(embeddings) }),
-        ...(supermemory === undefined ? {} : { supermemory: redactApiKeyBlock(supermemory) }),
       },
     }, config);
   }
   return withRedactedProviders(redacted, config);
-}
-
-/**
- * Resolve the Supermemory container/namespace tag for an agent: an explicit
- * `memory.supermemory.container` wins, else the trace identity, else a shared default. SINGLE source
- * of truth — both the store (write path) and the recall tool (read path) must agree on this, or
- * recall would search a different namespace than captures were written to.
- */
-export function resolveSupermemoryContainer(config: MonoAgentConfig): string {
-  return (
-    config.memory?.supermemory?.container ??
-    config.traceability.sourceId ??
-    config.traceability.sourceLabel ??
-    "mono-agent"
-  );
 }
 
 /** Replace an `apiKey` literal with a redacted secret marker, leaving the rest of the block intact. */
@@ -1497,15 +1595,11 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     "bujo",
     invalidEnv,
   );
-  const supermemory = readMemorySupermemoryConfig(env);
   const rawPath = normalizeOptionalString(env.MONO_AGENT_MEMORY_PATH);
 
-  // The bujo backend stores to a local path; an external backend (supermemory) keeps no local store
-  // and therefore does NOT require a path. For bujo, any memory env set without a path is a
-  // misconfiguration — fail closed rather than silently ignoring it. Backend selection and the
-  // supermemory block are routing concerns (not path-gated) and are excluded from this check. The
-  // retired memory keys stay tolerated (warned, not thrown) for stale configs.
-  if (backend !== "supermemory" && rawPath === undefined) {
+  // Every configured local memory setting requires a durable path. Retired memory keys
+  // stay tolerated by their existing compatibility warning and are not path-gated.
+  if (rawPath === undefined) {
     const orphaned = [
       "MONO_AGENT_MEMORY_MODE",
       "MONO_AGENT_MEMORY_WRITE_MODE",
@@ -1536,14 +1630,6 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     }
     return undefined;
   }
-  if (backend === "supermemory" && supermemory === undefined) {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      `MONO_AGENT_MEMORY_BACKEND "supermemory" requires MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL (or memory.supermemory.baseUrl).`,
-      { env: "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL" },
-    );
-  }
-
   const mode = readChoice<MemoryMode>(
     env.MONO_AGENT_MEMORY_MODE,
     "MONO_AGENT_MEMORY_MODE",
@@ -1558,32 +1644,24 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     "disabled",
     invalidEnv,
   );
-  // "capture" needs server-side or LLM-driven extraction. The bujo backend gets it from a chat
-  // LLM (so it requires mode "bujo"); external backends (e.g. supermemory) extract server-side,
-  // so capture is valid for them regardless of mode.
-  if (writeMode === "capture" && backend === "bujo" && mode !== "bujo") {
+  // Capture requires the local BuJo tier and its chat LLM.
+  if (writeMode === "capture" && mode !== "bujo") {
     throw new MonoAgentConfigError(
       "invalid_env",
-      `MONO_AGENT_MEMORY_WRITE_MODE "capture" requires MONO_AGENT_MEMORY_MODE "bujo" (it needs a chat LLM) or an external MONO_AGENT_MEMORY_BACKEND that extracts server-side.`,
+      `MONO_AGENT_MEMORY_WRITE_MODE "capture" requires MONO_AGENT_MEMORY_MODE "bujo" (it needs a chat LLM).`,
       { env: "MONO_AGENT_MEMORY_WRITE_MODE" },
     );
   }
-  // embeddings / llm / dim / consolidation are BuJo-only and ignored by external backends. Skip parsing
-  // them for supermemory so a stale BuJo env (e.g. an openai embeddings provider with no key) does
-  // not throw and block switching an existing BuJo config over to Supermemory.
-  const isBujo = backend === "bujo";
-  if (isBujo && (mode === "lite" || mode === "journal") && hasMemoryLlmConfig(env)) {
+  if ((mode === "lite" || mode === "journal") && hasMemoryLlmConfig(env)) {
     const message = mode === "lite"
       ? 'MONO_AGENT_MEMORY_MODE "lite" is lexical-only and cannot configure memory.llm. Remove it or select journal/bujo.'
       : 'MONO_AGENT_MEMORY_MODE "journal" is semantic-only and cannot configure a capture LLM or BuJo consolidation.';
     throw new MonoAgentConfigError("invalid_env", message, { env: "MONO_AGENT_MEMORY_MODE" });
   }
-  const embeddings = isBujo ? readMemoryEmbeddingsConfig(env) : undefined;
-  const llm = isBujo ? readMemoryLlmConfig(env) : undefined;
-  const dim = isBujo
-    ? readOptionalInteger(env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM, "MONO_AGENT_MEMORY_EMBEDDINGS_DIM", { min: 1, max: 16_384 })
-    : undefined;
-  const consolidation = isBujo ? readMemoryConsolidationConfig(env) : undefined;
+  const embeddings = readMemoryEmbeddingsConfig(env);
+  const llm = readMemoryLlmConfig(env);
+  const dim = readOptionalInteger(env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM, "MONO_AGENT_MEMORY_EMBEDDINGS_DIM", { min: 1, max: 16_384 });
+  const consolidation = readMemoryConsolidationConfig(env);
 
   const embeddingsWithDim =
     embeddings === undefined
@@ -1595,63 +1673,61 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   // Built-in tiers are capability contracts, not best-effort hints.  Keeping
   // the matrix strict prevents a configured Journal/BuJo agent from silently
   // running as a cheaper tier when a prerequisite was omitted.
-  if (isBujo) {
-    if (mode === "lite") {
-      const incompatible = embeddingsWithDim !== undefined
-        ? "memory.embeddings"
-        : dim !== undefined
-          ? "memory.embeddings.dim"
-          : llm !== undefined
-            ? "memory.llm"
-            : consolidation !== undefined
-              ? "memory.consolidation"
-              : undefined;
-      if (incompatible !== undefined) {
-        throw new MonoAgentConfigError(
-          "invalid_env",
-          `MONO_AGENT_MEMORY_MODE "lite" is lexical-only and cannot configure ${incompatible}. Remove it or select journal/bujo.`,
-          { env: "MONO_AGENT_MEMORY_MODE" },
-        );
-      }
-    } else if (mode === "journal") {
-      if (embeddingsWithDim === undefined) {
-        throw new MonoAgentConfigError(
-          "invalid_env",
-          'MONO_AGENT_MEMORY_MODE "journal" requires an explicit memory.embeddings block.',
-          { env: "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL" },
-        );
-      }
-      if (llm !== undefined || consolidation !== undefined) {
-        throw new MonoAgentConfigError(
-          "invalid_env",
-          'MONO_AGENT_MEMORY_MODE "journal" is semantic-only and cannot configure a capture LLM or BuJo consolidation.',
-          { env: "MONO_AGENT_MEMORY_MODE" },
-        );
-      }
-    } else {
-      if (embeddingsWithDim === undefined) {
-        throw new MonoAgentConfigError(
-          "invalid_env",
-          'MONO_AGENT_MEMORY_MODE "bujo" requires an explicit memory.embeddings block.',
-          { env: "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL" },
-        );
-      }
-      if (llm === undefined) {
-        throw new MonoAgentConfigError(
-          "invalid_env",
-          'MONO_AGENT_MEMORY_MODE "bujo" requires an explicit memory.llm block.',
-          { env: "MONO_AGENT_MEMORY_LLM_MODEL" },
-        );
-      }
+  if (mode === "lite") {
+    const incompatible = embeddingsWithDim !== undefined
+      ? "memory.embeddings"
+      : dim !== undefined
+        ? "memory.embeddings.dim"
+        : llm !== undefined
+          ? "memory.llm"
+          : consolidation !== undefined
+            ? "memory.consolidation"
+            : undefined;
+    if (incompatible !== undefined) {
+      throw new MonoAgentConfigError(
+        "invalid_env",
+        `MONO_AGENT_MEMORY_MODE "lite" is lexical-only and cannot configure ${incompatible}. Remove it or select journal/bujo.`,
+        { env: "MONO_AGENT_MEMORY_MODE" },
+      );
+    }
+  } else if (mode === "journal") {
+    if (embeddingsWithDim === undefined) {
+      throw new MonoAgentConfigError(
+        "invalid_env",
+        'MONO_AGENT_MEMORY_MODE "journal" requires an explicit memory.embeddings block.',
+        { env: "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL" },
+      );
+    }
+    if (llm !== undefined || consolidation !== undefined) {
+      throw new MonoAgentConfigError(
+        "invalid_env",
+        'MONO_AGENT_MEMORY_MODE "journal" is semantic-only and cannot configure a capture LLM or BuJo consolidation.',
+        { env: "MONO_AGENT_MEMORY_MODE" },
+      );
+    }
+  } else {
+    if (embeddingsWithDim === undefined) {
+      throw new MonoAgentConfigError(
+        "invalid_env",
+        'MONO_AGENT_MEMORY_MODE "bujo" requires an explicit memory.embeddings block.',
+        { env: "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL" },
+      );
+    }
+    if (llm === undefined) {
+      throw new MonoAgentConfigError(
+        "invalid_env",
+        'MONO_AGENT_MEMORY_MODE "bujo" requires an explicit memory.llm block.',
+        { env: "MONO_AGENT_MEMORY_LLM_MODEL" },
+      );
     }
   }
 
-  // Every configured backend has targeted read-only recall: lite uses FTS,
-  // journal/bujo add semantic ranking, and external backends provide search.
+  // Every configured local tier has targeted read-only recall: lite uses FTS,
+  // and journal/bujo add semantic ranking.
   // The same switch also gates policy-allowed chronological browsing on local
   // tiers that affirm that separate capability. Explicit false is the shared
   // explicit-read opt-out; it does not disable automatic context recall.
-  const recallToolDefault = backend === "supermemory" ? supermemory !== undefined : true;
+  const recallToolDefault = true;
   const recallToolEnabled = readBoolean(
     env.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED,
     "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
@@ -1659,10 +1735,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     invalidEnv,
   );
 
-  // The explicit write surface is bujo-backend only: an external backend
-  // implements the shared MemoryStore contract but no deterministic remember
-  // path, so it never advertises the capability and defaults off here.
-  const rememberToolDefault = backend !== "supermemory";
+  const rememberToolDefault = true;
   const rememberToolEnabled = readBoolean(
     env.MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED,
     "MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED",
@@ -1673,12 +1746,9 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   return {
     backend,
     mode,
-    // bujo always has a path here (else we returned above); the supermemory backend keeps no local
-    // store, so a default placeholder satisfies the type without the operator having to set one.
     path: readPath(rawPath ?? "./.mono-agent/memory", cwd),
     maxBytes: readInteger(env.MONO_AGENT_MEMORY_MAX_BYTES, "MONO_AGENT_MEMORY_MAX_BYTES", DEFAULT_MEMORY_MAX_BYTES, invalidEnv, { min: 1, max: 1_000_000 }),
     writeMode,
-    ...(supermemory === undefined ? {} : { supermemory }),
     ...(embeddingsWithDim === undefined ? {} : { embeddings: embeddingsWithDim }),
     ...(llm === undefined ? {} : { llm }),
     recallTool: { enabled: recallToolEnabled },
@@ -1763,53 +1833,6 @@ function readMemoryEmbeddingsCircuitBreakerConfig(
   return {
     ...(failureThreshold === undefined ? {} : { failureThreshold }),
     ...(cooldownMs === undefined ? {} : { cooldownMs }),
-  };
-}
-
-function readMemorySupermemoryConfig(env: Record<string, string | undefined>): MemorySupermemoryConfig | undefined {
-  const hasSupermemoryEnv = [
-    env.MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL,
-    env.MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY,
-    env.MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV,
-    env.MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER,
-    env.MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS,
-    env.MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER,
-  ].some((value) => normalizeOptionalString(value) !== undefined);
-  if (!hasSupermemoryEnv) {
-    return undefined;
-  }
-  const baseUrl = normalizeOptionalString(env.MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL);
-  if (baseUrl === undefined) {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL is required when any memory.supermemory.* value is set.",
-      { env: "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL" },
-    );
-  }
-  // Same secret pattern as embeddings: prefer reading the key from the named env var (so only the
-  // NAME is persisted in resolved config), falling back to an inline literal.
-  const apiKeyEnv = normalizeOptionalString(env.MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV);
-  const apiKey = (apiKeyEnv === undefined ? undefined : normalizeOptionalString(env[apiKeyEnv]))
-    ?? normalizeOptionalString(env.MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY);
-  const container = normalizeOptionalString(env.MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER);
-  const timeoutMs = readOptionalInteger(
-    env.MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS,
-    "MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS",
-    { min: 1, max: 600_000 },
-  );
-  const exposeMcpServer = readBoolean(
-    env.MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER,
-    "MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER",
-    false,
-    invalidEnv,
-  );
-  return {
-    baseUrl,
-    ...(apiKey === undefined ? {} : { apiKey }),
-    ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
-    ...(container === undefined ? {} : { container }),
-    ...(timeoutMs === undefined ? {} : { timeoutMs }),
-    ...(exposeMcpServer ? { exposeMcpServer } : {}),
   };
 }
 

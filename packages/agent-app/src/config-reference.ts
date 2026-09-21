@@ -711,6 +711,13 @@ function setRemovedConfigSchemas(root: Record<string, JsonSchema>): void {
     deprecated: true,
     description: "Deprecated and ignored. Monitors were removed; use background process jobs for finite work.",
   };
+  setSchemaPath(root, ["memory", "supermemory"], {
+    type: "object",
+    deprecated: true,
+    additionalProperties: false,
+    properties: {},
+    description: "Retired Supermemory configuration. Only an inert empty object is accepted; remove this key.",
+  });
   for (const key of ["reflection", "migration"] as const) {
     setSchemaPath(root, ["memory", key], {
       type: "object",
@@ -1322,7 +1329,7 @@ function inferType(id: string): ConfigReferenceType {
   if (id.endsWith("Models") || id.endsWith("Tools") || id.endsWith("Servers") || id.endsWith("Roots") || id.endsWith("allowlist") || id.endsWith("denyWrite") || id.endsWith("selectedSkills") || id.endsWith("Ids") || id.endsWith("Aliases")) {
     return "string[]";
   }
-  if (id.endsWith("enabled") || id.endsWith("allowAllChats") || id.endsWith("allowAllChannels") || id.endsWith("allowNonLoopback") || id.endsWith("trustPublicUrl") || id.endsWith("dryRun") || id.endsWith("globalDiscovery") || id.endsWith("rolloverNotice") || id.endsWith("isolateProactive") || id.endsWith("unsafeAllowHostProcess") || id.endsWith("trace") || id.endsWith("exposeMcpServer")) {
+  if (id.endsWith("enabled") || id.endsWith("allowAllChats") || id.endsWith("allowAllChannels") || id.endsWith("allowNonLoopback") || id.endsWith("trustPublicUrl") || id.endsWith("dryRun") || id.endsWith("globalDiscovery") || id.endsWith("rolloverNotice") || id.endsWith("isolateProactive") || id.endsWith("unsafeAllowHostProcess") || id.endsWith("trace")) {
     return "boolean";
   }
   if (/(Ms|Bytes|Count|Days|Turns|Retries|Attempts|Delay|port|dim|threshold|Hours|Runs)$/iu.test(id) || id.endsWith(".port")) {
@@ -1385,8 +1392,6 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "memory.mode": "lite",
     "memory.maxBytes": 64_000,
     "memory.writeMode": "disabled",
-    "memory.supermemory.timeoutMs": 10_000,
-    "memory.supermemory.exposeMcpServer": false,
     "memory.embeddings.timeoutMs": 10_000,
     "memory.embeddings.circuitBreaker.failureThreshold": 3,
     "memory.embeddings.circuitBreaker.cooldownMs": 30_000,

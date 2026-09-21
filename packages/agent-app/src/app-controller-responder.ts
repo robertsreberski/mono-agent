@@ -112,7 +112,6 @@ export interface ResponderControllerPort {
     store: ConfiguredMemory,
   ): MemoryRetrievalService | undefined;
   reportMemoryRecallStatus(coreConfig: MonoAgentConfig, service: MemoryRetrievalService | undefined): boolean;
-  supermemoryMcpRuntimeOptions(coreConfig: MonoAgentConfig): RuntimeOptionsExtension | undefined;
   adapterSendToolsRuntimeOptions(coreConfig: MonoAgentConfig): Promise<{
     readonly createExtension?: (
       targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,
@@ -213,7 +212,6 @@ export async function buildResponder(
   const memoryRetrieval = controller.ensureSharedMemoryRetrieval(coreConfig, memoryBackend);
   const memory = memoryRetrieval ?? memoryBackend;
   controller.reportMemoryRecallStatus(coreConfig, memoryRetrieval);
-  const supermemoryMcp = controller.supermemoryMcpRuntimeOptions(coreConfig);
   const adapterSendTools = await controller.adapterSendToolsRuntimeOptions(coreConfig);
   const historyToolSupport = historyToolRouteSupport(coreConfig);
   const replyPartBudget = createReplyPartBudget();
@@ -315,7 +313,6 @@ export async function buildResponder(
   const usage = controller.providerUsageFor?.(coreConfig);
   const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
     usage === undefined ? undefined : createProviderUsageRuntimeExtension(usage, coreConfig.tools),
-    supermemoryMcp,
     runHistoryExtension,
     sessionHistoryExtension,
     conversationTitleExtension,
@@ -479,29 +476,6 @@ export function buildRuntimeForModel(
     controller.activeRuntimes.push(runtime);
     return runtime;
   };
-}
-
-export function supermemoryMcpRuntimeOptions(controller: ResponderControllerPort, coreConfig: MonoAgentConfig): RuntimeOptionsExtension | undefined {
-  const memory = coreConfig.memory;
-  if (memory?.backend !== "supermemory" || memory.supermemory?.exposeMcpServer !== true) {
-    return undefined;
-  }
-  const apiKey = memory.supermemory.apiKey;
-  if (apiKey === undefined) {
-    controller.logger?.warn?.(
-      "memory.supermemory.exposeMcpServer is on but no apiKey is set; the hosted Supermemory MCP server (cloud-only) was not injected.",
-    );
-    return undefined;
-  }
-  controller.logger?.info?.("Supermemory hosted MCP server injected (cloud-only).");
-  const entry = {
-    supermemory: {
-      type: "http",
-      url: "https://mcp.supermemory.ai/mcp",
-      headers: { Authorization: `Bearer ${apiKey}` },
-    },
-  };
-  return async () => ({ runtimeOptions: { mcpServers: entry }, cleanup: async () => {} });
 }
 
 export async function adapterSendToolsRuntimeOptions(controller: ResponderControllerPort, coreConfig: MonoAgentConfig): Promise<{

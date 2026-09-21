@@ -327,7 +327,7 @@ export function reportMemoryRecallStatus(
     return false;
   }
   controller.logger?.info?.("Read-only MemoryRecall tool enabled.", {
-    provider: "supermemory" in settings ? "supermemory" : settings.embeddings?.provider ?? "fts-only",
+    provider: settings.embeddings?.provider ?? "fts-only",
   });
   return true;
 }

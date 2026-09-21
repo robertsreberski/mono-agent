@@ -195,7 +195,7 @@ const MEMORY_RECALL_TOOL = "MemoryRecall";
 /**
  * True when the selected memory tier auto-provisions the read-only `MemoryRecall`
  * tool (its fragment sets `memory.recallTool.enabled`). Derived from the catalog so
- * it never drifts from the memory modules themselves — lite/journal/bujo/supermemory
+ * it never drifts from the memory modules themselves — lite/journal/bujo
  * all do (Lite is FTS-only).
  */
 function memoryProvisionsRecall(memoryId: string | undefined): boolean {
@@ -216,7 +216,7 @@ function memoryProvisionsRecall(memoryId: string | undefined): boolean {
  * The tools this agent auto-provisions regardless of `tools.allowedTools` — the
  * "always on" set the wizard surfaces so the operator understands they are NOT gated
  * by the allow-list choice. Today that is `MemoryRecall` when the memory tier enables
- * recall (lite/journal/bujo/supermemory). `ReadSkill` (skills configured) and MCP-server
+ * recall (lite/journal/bujo). `ReadSkill` (skills configured) and MCP-server
  * tools are also always-on when present, but the basic wizard authors neither, so they
  * never appear here.
  */

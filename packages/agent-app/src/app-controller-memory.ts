@@ -119,7 +119,7 @@ export function ensureSharedMemoryRetrieval(
   if (coreConfig.memory === undefined || !isSharedRecallStore(store)) return undefined;
   controller.sharedMemoryRetrieval = new MemoryRetrievalService(store, {
     maxBytes: coreConfig.memory.maxBytes,
-    source: (coreConfig.memory.backend ?? "bujo") === "supermemory" ? "supermemory" : "memory-bujo",
+    source: "memory-bujo",
   });
   return controller.sharedMemoryRetrieval;
 }

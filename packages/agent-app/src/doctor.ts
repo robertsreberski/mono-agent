@@ -38,7 +38,6 @@ import {
   findRemovedConfigWarnings,
   readMonoAgentConfigJson,
   redactMonoAgentConfig,
-  resolveSupermemoryContainer,
 } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
@@ -133,7 +132,6 @@ import {
 } from "./project-skills.js";
 import { runtimeProvenanceDetail } from "./runtime-provenance.js";
 import { resolveAdvertisedModelEffort } from "./model-effort-capabilities.js";
-import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 import {
   DEFAULT_LAUNCHD_LOG_POLICY,
   inspectLaunchdLogs,
@@ -198,7 +196,7 @@ export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput 
    */
   readonly allowFilesystemWrites?: boolean;
   /**
-   * When false, skip live probes (Ollama and Supermemory reachability, the
+   * When false, skip live probes (Ollama reachability, the
    * local run health and local tool version checks) and validate
    * only structure/shape. Those probes can only ever downgrade a section to
    * `waiting`, never `error`, so skipping them leaves the pass/fail verdict
@@ -1072,73 +1070,6 @@ async function memorySection(
       ],
     };
   }
-  // External backend (e.g. supermemory): mode/embeddings/llm are bujo-only and
-  // ignored, so validate the plugin-owned shape before any soft liveness probe.
-  if ((config.memory.backend ?? "bujo") === "supermemory") {
-    const sm = config.memory.supermemory;
-    if (sm === undefined) {
-      return {
-        id: "memory",
-        label: "Memory",
-        status: "error",
-        details: ["[ERROR] backend 'supermemory' requires a memory.supermemory block."],
-      };
-    }
-    try {
-      const plugin = await loadSupermemoryPlugin({ cwd, preferAppInstall: preferAppPluginInstall });
-      const validation = plugin.validateSupermemoryConfig({
-        baseUrl: sm.baseUrl,
-        container: resolveSupermemoryContainer(config),
-        ...(sm.apiKey === undefined ? {} : { apiKey: sm.apiKey }),
-        ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
-        ...(config.memory.maxBytes === undefined ? {} : { maxBytes: config.memory.maxBytes }),
-      });
-      if (!validation.valid) {
-        return {
-          id: "memory",
-          label: "Memory",
-          status: "error",
-          details: validation.errors.map((detail) => `[ERROR] ${detail}`),
-        };
-      }
-    } catch (error) {
-      return {
-        id: "memory",
-        label: "Memory",
-        status: "error",
-        details: [`[ERROR] ${error instanceof Error ? error.message : String(error)}`],
-      };
-    }
-    const details = [
-      `Backend: supermemory, writeMode: ${config.memory.writeMode}.`,
-      `Endpoint: ${sm.baseUrl} (container "${resolveSupermemoryContainer(config)}").`,
-      sm.apiKey === undefined
-        ? "Auth: no API key configured (keyless — works only if the instance allows it)."
-        : "Auth: API key configured.",
-      config.memory.recallTool?.enabled === false
-        ? "Explicit memory read tools are disabled by memory.recallTool.enabled. Chronological journal browsing is also unsupported by Supermemory."
-        : "Chronological journal: unsupported by Supermemory; MemoryJournal is not offered.",
-    ];
-    if (!liveness) {
-      details.push("Supermemory liveness probe skipped; ingestion is async.");
-      return { id: "memory", label: "Memory", status: "ok", details };
-    }
-
-    const probe = await probeSupermemoryEndpoint(sm.baseUrl);
-    if (!probe.reachable) {
-      details.push(
-        `[WARN] Supermemory is not reachable at ${sm.baseUrl} (${probe.reason}). ` +
-        "Start Supermemory or fix memory.supermemory.baseUrl, then re-run `mono-agent validate`; " +
-        "capture and recall will degrade until it is reachable.",
-      );
-      return { id: "memory", label: "Memory", status: "waiting", details };
-    }
-
-    details.push(
-      `Supermemory transport reachable at ${sm.baseUrl} (HTTP ${probe.status}); ingestion is async.`,
-    );
-    return { id: "memory", label: "Memory", status: "ok", details };
-  }
   const details: string[] = [
     `Mode: ${config.memory.mode}, path: ${config.memory.path}, writeMode: ${config.memory.writeMode}.`,
     config.memory.recallTool?.enabled === false
@@ -1349,37 +1280,6 @@ async function liteRootWritableWarning(memoryPath: string, allowFilesystemWrites
 }
 
 const LIVENESS_PROBE_TIMEOUT_MS = 3_000;
-
-type SupermemoryProbeResult =
-  | { readonly reachable: true; readonly status: number }
-  | { readonly reachable: false; readonly reason: string };
-
-/**
- * Read-only transport probe for a configured Supermemory service root. Neither
- * the hosted nor self-hosted base URL has a documented health response, so any
- * HTTP status proves reachability; only transport failure or timeout degrades
- * validation. Manual redirects and omitted auth keep the probe on the exact
- * configured endpoint without sending memory data or credentials.
- */
-async function probeSupermemoryEndpoint(endpoint: string): Promise<SupermemoryProbeResult> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => { ctrl.abort(); }, LIVENESS_PROBE_TIMEOUT_MS);
-  try {
-    const response = await fetch(endpoint, {
-      method: "HEAD",
-      redirect: "manual",
-      signal: ctrl.signal,
-    });
-    return { reachable: true, status: response.status };
-  } catch (error) {
-    return {
-      reachable: false,
-      reason: error instanceof Error ? error.message : String(error),
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 /** Probes Ollama /api/tags and returns a sorted list of model names, or throws. */
 async function fetchOllamaModels(endpoint: string): Promise<string[]> {
@@ -1615,11 +1515,6 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
           details.push(
             `${name} is in allowedTools but memory.recallTool.enabled is off - explicit memory read tools will not work.`,
           );
-        } else if ((config.memory.backend ?? "bujo") === "supermemory") {
-          status = "waiting";
-          details.push(
-            `${name} is in allowedTools but the Supermemory backend exposes no chronological journal surface - the tool will not be offered.`,
-          );
         }
         continue;
       }
@@ -1646,11 +1541,6 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
           status = "waiting";
           details.push(
             `${name} is in allowedTools but memory.rememberTool.enabled is off - durable writes will not work. Enable memory.rememberTool (or remove this entry).`,
-          );
-        } else if (config.memory.backend === "supermemory") {
-          status = "waiting";
-          details.push(
-            `${name} is in allowedTools but the supermemory backend exposes no durable write surface - the tool will not be offered.`,
           );
         }
         continue;

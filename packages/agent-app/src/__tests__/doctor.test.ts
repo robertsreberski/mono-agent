@@ -3050,127 +3050,6 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(memory.details.join("\n")).toMatch(/Chronological journal: supported/iu);
   });
 
-  it("reports the supermemory backend as reachable for any HTTP response without sending auth or data", async () => {
-    const fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 405 }));
-    vi.stubGlobal("fetch", fetchSpy);
-    const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
-    const configPath = await writeMinimalConfig({
-      memory: {
-        backend: "supermemory",
-        mode: "lite",
-        path: dir,
-        writeMode: "capture",
-        supermemory: {
-          baseUrl: "http://127.0.0.1:6767",
-          container: "agent-alpha",
-          apiKey: "fixture-key",
-        },
-      },
-    });
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const memory = sectionById(report, "memory");
-    expect(memory.status).toBe("ok");
-    const text = memory.details.join("\n");
-    expect(text).toContain("Backend: supermemory");
-    expect(text).toContain("http://127.0.0.1:6767");
-    expect(text).toContain("agent-alpha");
-    expect(text).toContain("transport reachable");
-    expect(text).toContain("HTTP 405");
-    expect(text).toMatch(/Chronological journal: unsupported by Supermemory/iu);
-    // bujo-only "Mode:" line is not used for external backends.
-    expect(text).not.toMatch(/^Mode:/mu);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [endpoint, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(endpoint).toBe("http://127.0.0.1:6767");
-    expect(init.method).toBe("HEAD");
-    expect(init.redirect).toBe("manual");
-    expect(init.signal).toBeInstanceOf(AbortSignal);
-    expect(init.headers).toBeUndefined();
-    expect(init.body).toBeUndefined();
-    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 3_000);
-  });
-
-  it.each([
-    ["connection refusal", new Error("ECONNREFUSED"), "ECONNREFUSED"],
-    ["abort", new DOMException("probe timed out", "AbortError"), "probe timed out"],
-  ])("reports Supermemory %s as non-fatal waiting", async (_case, failure, expectedReason) => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(failure));
-    const configPath = await writeMinimalConfig({
-      memory: {
-        backend: "supermemory",
-        mode: "lite",
-        path: dir,
-        writeMode: "capture",
-        supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
-      },
-    });
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const memory = sectionById(report, "memory");
-    expect(memory.status).toBe("waiting");
-    expect(report.ok).toBe(true);
-    const text = memory.details.join("\n");
-    expect(text).toContain("[WARN] Supermemory is not reachable");
-    expect(text).toContain(expectedReason);
-    expect(text).toContain("memory.supermemory.baseUrl");
-    expect(text).toContain("mono-agent validate");
-    expect(text).toContain("capture and recall will degrade");
-  });
-
-  it("resolves the Supermemory validator from the explicit agent folder", async () => {
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-    const packageRoot = join(
-      dir,
-      "node_modules",
-      "@mono-agent",
-      "memory-supermemory",
-    );
-    await mkdir(join(packageRoot, "dist"), { recursive: true });
-    await writeFile(
-      join(packageRoot, "package.json"),
-      JSON.stringify({
-        name: "@mono-agent/memory-supermemory",
-        version: agentAppPackageVersion(),
-        type: "module",
-        exports: {
-          ".": { import: "./dist/index.js" },
-          "./package.json": "./package.json",
-        },
-      }),
-      "utf8",
-    );
-    await writeFile(
-      join(packageRoot, "dist", "index.js"),
-      [
-        "export const createSupermemoryStore = () => ({});",
-        "export const validateSupermemoryConfig = () => ({",
-        "  valid: false, errors: ['agent-local-validator'],",
-        "});",
-      ].join("\n"),
-      "utf8",
-    );
-    const configPath = await writeMinimalConfig({
-      memory: {
-        backend: "supermemory",
-        mode: "lite",
-        path: dir,
-        writeMode: "capture",
-        supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
-      },
-    });
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const memory = sectionById(report, "memory");
-    expect(memory.status).toBe("error");
-    expect(memory.details.join("\n")).toContain("agent-local-validator");
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
   it("warns (status=waiting, no throw) when Ollama is unreachable", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
 
@@ -3842,32 +3721,6 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
     expect(memory.details.join("\n")).not.toMatch(/WARN/iu);
     // The descriptive (non-probe) detail lines still render.
     expect(memory.details.join("\n")).toContain("bujo");
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it("skips the Supermemory probe — config stays ok and fetch is never called", async () => {
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
-    const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
-      context: { identityPath: "./IDENTITY.md" },
-      memory: {
-        backend: "supermemory",
-        mode: "lite",
-        path: dir,
-        writeMode: "capture",
-        supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
-      },
-    });
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
-
-    const memory = sectionById(report, "memory");
-    expect(memory.status).toBe("ok");
-    expect(memory.details.join("\n")).toContain("liveness probe skipped");
-    expect(memory.details.join("\n")).not.toMatch(/WARN/iu);
-    expect(report.ok).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -5317,24 +5170,7 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(sectionById(disabled, "memory").details.join("\n")).toMatch(/Explicit memory read tools are disabled/iu);
   });
 
-  it("reports allowed Supermemory chronology as unsupported and honors deny-wins", async () => {
-    const supermemoryPath = await writeToolsConfig(
-      { allowedTools: ["MemoryJournal"] },
-      {
-        memory: {
-          backend: "supermemory",
-          mode: "lite",
-          path: dir,
-          supermemory: { baseUrl: "http://127.0.0.1:6767", container: "synthetic" },
-        },
-      },
-    );
-    const unsupported = await validateMonoAgentFolder({
-      env: {}, cwd: dir, configPath: supermemoryPath, liveness: false,
-    });
-    expect(sectionById(unsupported, "tools")).toMatchObject({ status: "waiting" });
-    expect(sectionById(unsupported, "tools").details.join("\n")).toMatch(/Supermemory.*no chronological journal surface/iu);
-
+  it("honors deny-wins for the local memory journal tool", async () => {
     const deniedPath = await writeToolsConfig(
       { allowedTools: ["MemoryJournal"], disallowedTools: ["mcp__mono-agent-memory-journal__*"] },
       { memory: { mode: "lite", path: dir, recallTool: { enabled: true } } },

@@ -152,8 +152,7 @@ wildcard `mcp__mono-agent-memory-journal__*`. Exact, server, or global deny wins
 There is no legacy alias.
 
 The tool is omitted when memory is absent, explicit reads are disabled, or the
-backend is unsupported. Supermemory does not fall back to broad search or return
-a fake empty result. A supported empty date range is instead a successful
+store is unsupported. A supported empty date range is a successful
 `noData: true` result. See [MCP servers](/tools/mcp/#memoryjournal-curated-chronology)
 for its strict range, snapshot, cursor, privacy, and evidence contracts.
 
@@ -179,8 +178,7 @@ automatically, a restrictive `allowedTools` must name `Remember`, and
 
 Policy is necessary but not sufficient. The tool also requires a configured
 memory block with `memory.rememberTool.enabled` left on, and a store that can
-actually accept writes — which excludes read-only stores and the Supermemory
-backend. See [MCP servers](/tools/mcp/#remember-durable-memory-writes) for the
+actually accept writes, excluding read-only stores. See [MCP servers](/tools/mcp/#remember-durable-memory-writes) for the
 storage contract and the credential-rejection boundary.
 
 ## Tools not gated by allowedTools

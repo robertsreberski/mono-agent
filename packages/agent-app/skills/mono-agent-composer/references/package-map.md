@@ -53,9 +53,8 @@ Use this path when the agent needs identity, selected skills, history, and optio
 | Memory engine (all tiers: lite/journal/bujo) | `@mono-agent/memory/bujo` | `BujoMemoryStore` — tier-aware: FTS recall (lite), hybrid recall + static salience (journal), LLM capture/reconcile + entity graph + projection-only scheduled consolidation (bujo); all tiers affirm bounded canonical chronological browse |
 | Embedding providers | `@mono-agent/memory/search` | Exclusive Ollama/LM Studio/OpenAI embedding providers used by the store subpath for vector recall; `agent-app` owns guided typed discovery and the real readiness probe |
 | Composer documentation search + guided reading | `@mono-agent/docs-mcp` (optional plugin) | Exact-version offline hybrid semantic/BM25 `mono_agent_docs` search plus anchored reads, cross-link resolution, and continuation windows over canonical docs and composer references; paired by `mono-agent install-skill`, outside the composed agent's own `mcp.json` |
-| External Supermemory backend | `@mono-agent/memory-supermemory` (optional plugin) | Explicitly installed lockstep package selected by `memory.backend: "supermemory"`; proxies the shared `MemoryStore` / `MemoryRecall` contracts to local or hosted Supermemory for server-side extraction, consolidation, and hybrid recall |
 | Recall tool surface | `@mono-agent/agent-app` (bundled) | Auto-provisions read-only `MemoryRecall` for every configured tier and direct configured responder; automatic/tool recall share the same store and per-turn query cache |
-| Chronological journal tool surface | `@mono-agent/agent-app` (bundled) | Auto-provisions policy-gated `MemoryJournal` only for affirmative local Lite/Journal/BuJo capability; strict explicit dates/zone, frozen request snapshots, safe provenance, no Supermemory/search fallback |
+| Chronological journal tool surface | `@mono-agent/agent-app` (bundled) | Auto-provisions policy-gated `MemoryJournal` only for affirmative local Lite/Journal/BuJo capability; strict explicit dates/zone, frozen request snapshots, safe provenance, and no search fallback |
 
 Mono-agent selected skills are not auto-selected by description. The host chooses `context.selectedSkills`, and the harness loads those exact bodies.
 
@@ -90,8 +89,7 @@ key. `SetConversationTitle` appears only for writable interactive web threads;
 it keeps automatic semantic titles current, while a user rename permanently
 wins. Allow-all exposes eligible tools; a specific allowlist must name each one.
 `MemoryJournal` also requires `memory.recallTool.enabled` and an affirmative local
-browse capability; Supermemory never acquires it through policy alone. Every route is
-Pi-native, so no route family suppresses any of these tools; the
+browse capability. Every route is Pi-native, so no route family suppresses any of these tools; the
 surface conditions above (writable interactive web thread, retained managed-tool
 calls) are the only gates.
 `@mono-agent/agent-app` also owns rich reply composition. `PublishReplyFile`

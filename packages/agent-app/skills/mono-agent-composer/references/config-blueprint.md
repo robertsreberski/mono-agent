@@ -107,19 +107,18 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     "skillMaxBytes": 48000                 // per-skill byte cap (256-1,000,000)
   },
 
-  // Memory strategy. Omit the section for no memory. The built-in "bujo"
-  // backend owns the three local tiers below; "supermemory" selects the
-  // separately installed, lockstep @mono-agent/memory-supermemory plugin.
+  // Memory strategy. Omit the section for no memory. The "bujo" backend owns
+  // the three local tiers below.
   // Three tiers over one substrate (@mono-agent/memory store + bujo subpaths):
   //   lite    — FTS keyword recall + rapid-log; no external deps.
   //   journal — + hybrid recall (BM25+vector) + static, non-decaying salience; needs embeddings.
   //   bujo    — + LLM capture/reconcile + entity graph + auto-scheduled
   //             lightweight consolidation; needs embeddings + an app-level memory.llm for capture/tier selection.
   "memory": {
-    "backend": "bujo",                    // bujo (default) | supermemory
+    "backend": "bujo",                    // default and only supported config backend
     "mode": "bujo",                        // lite | journal | bujo
     "path": "./.mono-agent/memory",        // root directory for all tiers
-    "writeMode": "capture",                // disabled | append-host-summary | capture (bujo tier or external backend)
+    "writeMode": "capture",                // disabled | append-host-summary | capture (bujo tier only)
     "maxBytes": 64000,
     "embeddings": {                        // required for journal and bujo
       "provider": "ollama",                // ollama | lmstudio | openai; exclusive, no fallback
@@ -141,16 +140,6 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     // Bujo auto-scheduler — override the default or disable it.
     // Consolidation runs in-app; no external cron or launchd needed.
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" }, // default: every two hours
-    // For backend: "supermemory", omit path/mode/embeddings/llm/consolidation
-    // and configure the external service instead. Keep API keys in env.
-    // "supermemory": {
-    //   "baseUrl": "http://127.0.0.1:6767",
-    //   Inline "apiKey" remains schema-compatible; source configs use apiKeyEnv.
-    //   "apiKeyEnv": "SUPERMEMORY_API_KEY",
-    //   "container": "my-agent",
-    //   "timeoutMs": 10000,
-    //   "exposeMcpServer": false
-    // }
   },
 
   // Tool policy (allow-all by default) + MCP servers. Deny wins; overlap is rejected.

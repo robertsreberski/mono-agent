@@ -203,29 +203,9 @@ const orchestrator = await createConfiguredAgentResponder({
 `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired in 0.21.0
 and are rejected at load; emit `runtime.fallbacks[]` only.
 
-## 11. Personal Telegram assistant with Supermemory
-**For:** a power user trying an external memory layer while keeping the agent local.
-**Goal:** a Telegram bot captures turns into a local or hosted Supermemory instance and recalls through the same `MemoryRecall` tool.
-**Features:** `telegram.long-polling`, `memory.backend-supermemory`, `memory.per-turn-capture`, `memory.recall-tool`.
-
-```json
-{
-  "runtime": { "model": "anthropic:claude-sonnet-4-6" },
-  "telegram": { "enabled": true, "allowedChatIds": ["123456789"] },
-  "memory": {
-    "backend": "supermemory", "mode": "lite", "path": "./.mono-agent/memory",
-    "writeMode": "capture",
-    "supermemory": { "baseUrl": "http://127.0.0.1:6767", "container": "my-telegram-agent" },
-    "recallTool": { "enabled": true }
-  }
-}
-```
-**Steps:** install the exact `@mono-agent/memory-supermemory` version matching agent-app, run `supermemory-server`, save its `sm_...` key in `.env`, add the explicit memory block plus Telegram token/chat id, `validate`, `start`.
-**Smoke:** send a fact, wait for ingestion, then ask a paraphrased question; confirm the run shows `MemoryRecall` returning Supermemory hits.
-
-## 12. Fully local LM Studio agent
+## 11. Fully local LM Studio agent
 **For:** a privacy-focused user who prefers LM Studio's GUI local server.
-**Goal:** a local LM Studio model answers through the webhook channel with lite memory and no cloud calls.
+**Goal:** a local LM Studio model answers through the webhook channel with lite memory; network-capable tools remain governed separately.
 **Features:** `runtime.local-providers`, `runtime.multi-backend`, `memory.lite`, `webhook.http-invoke`.
 
 ```json
@@ -239,7 +219,7 @@ and are rejected at load; emit `runtime.fallbacks[]` only.
 **Steps:** start LM Studio's local server with the chosen model loaded → `mono-agent init --model lmstudio:qwen3.6-32b --memory lite` (the `lmstudio:*` model auto-adds the LM Studio provider block; there is no LM Studio preset — `local-private` is Ollama-based) → adjust `runtime.model` if the displayed model id differs → `validate` → `start`.
 **Smoke:** `curl` the webhook invoke URL and confirm the response comes from the local LM Studio model.
 
-## 13. Interactive agent with long jobs and large media
+## 12. Interactive agent with long jobs and large media
 **For:** a builder whose Telegram agent needs to ask before acting, run multi-minute tools, and exchange large files.
 **Goal:** one Telegram agent uses `AskUser`, long-running MCP tool progress, a self-hosted Bot API server, and `TelegramSendFile`.
 **Features:** `telegram.long-polling`, `agent-app.adapter-send-tools`, `agent-app.rich-replies`, `interaction.ask-user`, `interaction.progress`, `tool-policy.mcp-servers`.
@@ -260,7 +240,7 @@ minutes.
 **Steps:** run a loopback self-hosted Bot API server if files exceed 20 MB, wire a long-running MCP tool in `.mcp.json`, `validate`, `start`.
 **Smoke:** send media with no caption, answer the `AskUser` question, watch progress update during the long job, and receive both an explicit `TelegramSendFile` send and a final generated reply file published with `PublishReplyFile` as native documents.
 
-## 14. Local-first web research agent
+## 13. Local-first web research agent
 **For:** a researcher wanting operator-owned search infrastructure and bounded public-page extraction.
 **Goal:** discover through explicit Ollama or loopback SearXNG, extract pages locally, and optionally render JavaScript HTML in an isolated anonymous browser.
 **Features:** `runtime.web-research`, `runtime.webfetch-retry`, `runtime.builtin-tools`, `sandbox.network-policy`.

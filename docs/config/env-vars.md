@@ -119,17 +119,11 @@ See [local provider configuration](/runtime/local-providers/) for the local prov
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_MEMORY_BACKEND` | `memory.backend` | Memory engine: `bujo` (default, homegrown SQLite) or `supermemory` (external). External backends ignore `mode`/`embeddings`/`llm`. |
-| `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo` (bujo backend only). |
-| `MONO_AGENT_MEMORY_PATH` | `memory.path` | Storage root for built-in memory; relative paths resolve from the agent folder. Required when the built-in memory backend is configured. |
+| `MONO_AGENT_MEMORY_BACKEND` | `memory.backend` | Memory engine: `bujo` (default and only supported config value). |
+| `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo`. |
+| `MONO_AGENT_MEMORY_PATH` | `memory.path` | Local storage root; relative paths resolve from the agent folder. Required when memory is configured. |
 | `MONO_AGENT_MEMORY_MAX_BYTES` | `memory.maxBytes` | Maximum bytes returned in an automatic recalled-memory block; default `64000`. |
-| `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture` (`capture` requires `mode: bujo` for the bujo backend, or an external backend that extracts server-side). See [memory capture and recall](/memory/capture-and-recall/). |
-| `MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL` | `memory.supermemory.baseUrl` | Required when `backend: supermemory`. REST base URL of the local OSS binary or hosted cloud. |
-| `MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY` | `memory.supermemory.apiKey` | Inline API key (optional for no-auth local). Prefer `_API_KEY_ENV`. |
-| `MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV` | `memory.supermemory.apiKeyEnv` | Name of the env var holding the key; only the name is persisted in resolved config. |
-| `MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER` | `memory.supermemory.container` | Container/namespace tag scoping this agent's memories. Defaults to the trace `sourceId`. |
-| `MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS` | `memory.supermemory.timeoutMs` | Per-call HTTP timeout (`1`–`600000`, default `10000`). |
-| `MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER` | `memory.supermemory.exposeMcpServer` | Also inject Supermemory's official MCP server alongside the in-app `MemoryRecall` tool. Default `false`. |
+| `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture`; `capture` requires `mode: bujo`. See [memory capture and recall](/memory/capture-and-recall/). |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama`, `lmstudio`, or `openai`. The configured provider is exclusive; there is no cross-provider fallback. See [memory embeddings](/memory/embeddings/). |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Embedding model string. |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Embedding dimension. |
@@ -139,8 +133,8 @@ See [local provider configuration](/runtime/local-providers/) for the local prov
 | `MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS` | `memory.embeddings.timeoutMs` | Per-request embedding timeout (`1`–`600000`); default `10000`. |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | `memory.embeddings.circuitBreaker.failureThreshold` | Consecutive embedding failures before the circuit opens (`1`–`100`); default `3`. |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS` | `memory.embeddings.circuitBreaker.cooldownMs` | Cooldown before an open embedding circuit permits a trial request (`1`–`3600000`); default `30000`. |
-| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Explicit memory-read tools; default on. Enables targeted `MemoryRecall` for every configured backend and local-only chronological `MemoryJournal` when supported; explicit false opts out of both without disabling automatic recall. |
-| `MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED` | `memory.rememberTool.enabled` | Agent-callable `Remember` durable write tool; default on for the bujo backend, off for external backends, explicit false opts out. Also requires `Remember` under a restrictive `tools.allowedTools`. |
+| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Explicit memory-read tools; default on. Enables targeted `MemoryRecall` and chronological `MemoryJournal` for every local tier; explicit false opts out of both without disabling automatic recall. |
+| `MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED` | `memory.rememberTool.enabled` | Agent-callable `Remember` durable write tool; default on for local memory, explicit false opts out. Also requires `Remember` under a restrictive `tools.allowedTools`. |
 | `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED` | `memory.consolidation.enabled` | Scheduled BuJo consolidation; default on. |
 | `MONO_AGENT_MEMORY_CONSOLIDATION_CRON` | `memory.consolidation.cron` | Default `0 */2 * * *`. See [memory rituals and scheduling](/memory/rituals/). |
 | `MONO_AGENT_MEMORY_LLM_PROVIDER` | `memory.llm.provider` | `ollama` or `agent-host`. Strictly required for BuJo capture and tier selection; projection-only consolidation itself makes no model call. Missing prerequisites fail instead of downshifting tiers. |
@@ -149,6 +143,14 @@ See [local provider configuration](/runtime/local-providers/) for the local prov
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama-only endpoint override. |
 | `MONO_AGENT_MEMORY_LLM_TRACE` | `memory.llm.trace` | Enables trace recording for an `agent-host` memory LLM; default `true`. |
 | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | In-app per-call memory-LLM timeout (`1000`–`600000`, **default `60000`**); see [the memory-LLM timeout](/memory/validation-and-cli/#the-memory-llm-timeout). |
+
+:::caution[Retired Supermemory variables]
+`MONO_AGENT_MEMORY_BACKEND=supermemory` and every nonblank
+`MONO_AGENT_MEMORY_SUPERMEMORY_*` assignment are retired and fail closed with
+secret-safe migration guidance. Remove them before upgrading. Blank assignments are
+tolerated only as inert tombstones and enable nothing. See the
+[retirement checklist](/reference/framework-simplification-migration/#retired-first-party-supermemory-support).
+:::
 
 :::note
 The standalone `memory-bujo` maintenance CLI that read these `MONO_AGENT_MEMORY_*` variables directly against a memory root has been removed. All memory maintenance now runs config-aware through `mono-agent memory` from the agent folder, which reads these values from `mono-agent.config.json`. See [the removed standalone memory CLI](/memory/validation-and-cli/#memory-bujo-cli--removed).

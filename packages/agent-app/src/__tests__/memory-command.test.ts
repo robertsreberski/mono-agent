@@ -333,8 +333,5 @@ describe("isFtsFallbackEligible", () => {
     const providerError = new MemorySearchError("embedding_request_failed", "provider unavailable");
 
     expect(isFtsFallbackEligible({ root: "/memory" }, providerError)).toBe(false);
-    expect(isFtsFallbackEligible({
-      supermemory: { baseUrl: "https://example.invalid", container: "agent" },
-    }, providerError)).toBe(false);
   });
 });

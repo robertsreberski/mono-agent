@@ -203,10 +203,11 @@ describe("trace source registry", () => {
       } as never,
     });
     expect(source.manifest.memoryHealth).toEqual({
-      backend: "supermemory",
+      backend: "none",
       status: "unknown",
       checkedAt: "2026-07-12T12:15:17.000Z",
     });
+    expect(source.manifest.sourceId).toBe("agent-memory-health");
   });
 
   it("normalizes hostile memory-health data read from manifests and fails invalid known counts closed", async () => {
@@ -963,7 +964,7 @@ describe("mergeTraceSources", () => {
     expect(merged?.label).toBe("manifest-winner");
     expect(merged?.updatedAt).toBe("2026-07-03T00:00:00.000Z");
     expect(merged?.memoryHealth).toEqual({
-      backend: "supermemory",
+      backend: "none",
       status: "unknown",
       checkedAt: "2026-07-04T00:00:00.000Z",
     });
@@ -988,7 +989,7 @@ describe("mergeTraceSources", () => {
       sourceId: "both",
       label: "other",
       updatedAt: "2026-07-02T00:00:00.000Z",
-      memoryHealth: { backend: "supermemory", status: "unknown", checkedAt },
+      memoryHealth: { backend: "supermemory", status: "unknown", checkedAt } as never,
     });
 
     const [merged] = mergeTraceSources([manifestWinner], [other]);
