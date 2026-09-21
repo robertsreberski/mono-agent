@@ -47,7 +47,7 @@ describe("buildMonoAgentConfigView", () => {
       .toMatchObject({ source: "json", restatesDefault: true });
   });
 
-  it("does not recommend a removed core env override for JSON secrets", () => {
+  it("flags an inline JSON secret with its conventional .env name", () => {
     const sections = buildView({
       memory: {
         mode: "journal",
@@ -55,13 +55,16 @@ describe("buildMonoAgentConfigView", () => {
         embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "secret" },
       },
     });
-    expect(findJsonSecretConfigWarnings(sections)).toEqual([]);
+    expect(findJsonSecretConfigWarnings(sections)).toEqual([
+      "[WARN] memory.embeddings.apiKey is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY).",
+    ]);
     expect(field(sections, "memory.embeddings.apiKey")).toMatchObject({ value: "set", redacted: true });
   });
 
   it("keeps removed JSON warnings but silently ignores stale env names", () => {
     expect(findRemovedConfigWarnings({
       json: { memory: { reflection: { enabled: true } } },
+      env: {},
     })).toEqual(["[WARN] memory.reflection is removed and ignored; use memory.consolidation instead."]);
   });
 });

@@ -210,6 +210,7 @@ describe("runCli validate --consumer", () => {
     await writeFile(join(consumerDir, ".env"), "MONO_AGENT_MODEL=openai-codex:gpt-5.5\n", "utf8");
     await writeFile(join(consumerDir, "IDENTITY.md"), "# Consumer\n", "utf8");
     await writeConsumerConfig(consumerDir, "mono-agent.config.json", {
+      runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
     });
 
@@ -232,6 +233,7 @@ describe("runCli validate --consumer", () => {
     await writeFile(join(consumerDir, ".env"), "MONO_AGENT_MODEL=openai-codex:gpt-5.5\n", "utf8");
     await writeFile(join(consumerDir, "IDENTITY.alt.md"), "# Consumer\n", "utf8");
     const configPath = await writeConsumerConfig(consumerDir, "alternate.config.json", {
+      runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.alt.md" },
     });
 

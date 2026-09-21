@@ -177,6 +177,8 @@ interface FieldSpec {
   readonly defaultValue?: unknown;
   readonly source?: ConfigViewFieldSource;
   readonly redacted?: boolean;
+  /** Conventional `.env` name suggested when an inline JSON secret is flagged. */
+  readonly envKey?: string;
 }
 
 function toField(
@@ -192,6 +194,7 @@ function toField(
       ? { restatesDefault: true }
       : {}),
     ...(spec.redacted === true ? { redacted: true } : {}),
+    ...(spec.envKey === undefined ? {} : { envKey: spec.envKey }),
   };
 }
 
@@ -570,6 +573,7 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
         value: embeddings.apiKey?.present === true ? "set" : "unset",
         jsonPresent: json.memory?.embeddings?.apiKey !== undefined,
         redacted: true,
+        envKey: "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
       }),
       toField({
         id: "memory.embeddings.apiKeyEnv",
@@ -1145,19 +1149,42 @@ export function findJsonSecretConfigWarnings(
 
 export interface RemovedConfigWarningsInput {
   readonly json: MonoAgentConfigJson;
+  readonly env: Record<string, string | undefined>;
 }
+
+const REMOVED_MEMORY_ENV_KEYS = [
+  "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
+  "MONO_AGENT_MEMORY_REFLECTION_CRON",
+  "MONO_AGENT_MEMORY_MIGRATION_ENABLED",
+  "MONO_AGENT_MEMORY_MIGRATION_CRON",
+] as const;
 
 /**
  * Find advisory migration warnings for removed or one-release deprecated
  * config surfaces. Warnings mention only stable paths/names, never values.
+ * Removed env keys still warn (migration diagnostics only — they never affect
+ * the resolved config, which is JSON-only).
  */
 export function findRemovedConfigWarnings(input: RemovedConfigWarningsInput): readonly string[] {
   const warnings: string[] = [];
+  if (envHas(input.env, "MONO_AGENT_LOCAL_PROVIDERS_JSON")) {
+    warnings.push("[WARN] MONO_AGENT_LOCAL_PROVIDERS_JSON is deprecated; use MONO_AGENT_PROVIDERS_JSON with the provider-map shape instead.");
+  }
   if (input.json.memory?.reflection !== undefined) {
     warnings.push("[WARN] memory.reflection is removed and ignored; use memory.consolidation instead.");
   }
   if (input.json.memory?.migration !== undefined) {
     warnings.push("[WARN] memory.migration is removed and ignored; use memory.consolidation instead.");
   }
+  for (const key of REMOVED_MEMORY_ENV_KEYS) {
+    if (envHas(input.env, key)) {
+      warnings.push(`[WARN] ${key} is removed and ignored; use MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED or MONO_AGENT_MEMORY_CONSOLIDATION_CRON instead.`);
+    }
+  }
   return warnings;
+}
+
+function envHas(env: Record<string, string | undefined>, key: string): boolean {
+  const value = env[key];
+  return value !== undefined && value.trim().length > 0;
 }

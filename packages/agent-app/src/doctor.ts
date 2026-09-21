@@ -259,7 +259,7 @@ export async function validateMonoAgentFolder(
         }),
         ...(await collectChannelConfigViews(drivers, options)),
       ]),
-      ...findRemovedConfigWarnings({ json: jsonResult.json }),
+      ...findRemovedConfigWarnings({ json: jsonResult.json, env: options.env }),
     ];
     if (configWarnings.length > 0) {
       sections.push({ id: "secret-placement", label: "Config warnings", status: "waiting", details: configWarnings });

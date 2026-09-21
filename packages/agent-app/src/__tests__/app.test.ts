@@ -1483,7 +1483,7 @@ describe("startMonoAgentApp", () => {
     const webhookStatus = app.channelStatus("webhook");
     expect(webhookStatus.kind).toBe("waiting_for_config");
     if (webhookStatus.kind === "waiting_for_config") {
-      expect(webhookStatus.reason).toContain("MONO_AGENT_MODEL");
+      expect(webhookStatus.reason).toContain("runtime.model");
     }
     await app.stop();
   });

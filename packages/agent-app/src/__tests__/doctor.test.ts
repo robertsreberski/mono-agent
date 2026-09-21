@@ -1878,7 +1878,7 @@ describe("validateMonoAgentFolder", () => {
     expect(report.ok).toBe(false);
     const core = sectionById(report, "core");
     expect(core.status).toBe("error");
-    expect(core.details.join("\n")).toContain("MONO_AGENT_MODEL");
+    expect(core.details.join("\n")).toContain("runtime.model");
   });
 
   it("warns non-fatally when a secret is sourced from JSON", async () => {
@@ -1928,6 +1928,7 @@ describe("validateMonoAgentFolder", () => {
         embeddings: {
           provider: "openai",
           model: "text-embedding-3-small",
+          apiKeyEnv: "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
         },
       },
     });
