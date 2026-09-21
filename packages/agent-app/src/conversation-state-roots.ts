@@ -82,8 +82,9 @@ export async function resolveConversationStatePurgeRoots(
     ])
     : resolveSnapshotRoots(input, snapshot.json);
   const json = snapshot?.json ?? (await readMonoAgentConfigJson(input.configPath)).json;
-  const configured = input.env.MONO_AGENT_SUBAGENTS_JSON?.trim();
-  const subagents = optionalObject(configured ? JSON.parse(configured) : json.subagents, "subagents");
+  // Core configuration comes only from JSON: a stale MONO_AGENT_SUBAGENTS_JSON
+  // left in the environment is silently ignored.
+  const subagents = optionalObject(json.subagents, "subagents");
   const instances = optionalObject(subagents?.instances, "subagents.instances");
   const instanceRoot = optionalPath(instances?.root, "subagents.instances.root");
   return {
@@ -314,20 +315,18 @@ function resolveSnapshotRoots(
   input: MonoAgentAppConfigInput,
   json: Readonly<Record<string, unknown>>,
 ): readonly [string | undefined, string] {
-  const envSessions = input.env.MONO_AGENT_PI_SESSIONS_ROOT?.trim();
-  const envArtifacts = input.env.MONO_AGENT_ARTIFACT_DIR?.trim();
+  // Snapshot roots bind the destructive preflight to the same JSON-only inputs
+  // as the live resolvers: stale MONO_AGENT_PI_SESSIONS_ROOT and
+  // MONO_AGENT_ARTIFACT_DIR values in the environment are silently ignored so
+  // `restart --clear-sessions` purges exactly what the runtime uses.
   const providers = optionalObject(json.providers, "providers");
   const piNative = optionalObject(providers?.piNative, "providers.piNative");
   const artifacts = optionalObject(json.artifacts, "artifacts");
   const configuredSessions = optionalPath(piNative?.piSessionsRoot, "providers.piNative.piSessionsRoot");
   const configuredArtifacts = optionalPath(artifacts?.dir, "artifacts.dir");
   return [
-    envSessions === undefined || envSessions.length === 0
-      ? (configuredSessions === undefined ? undefined : resolve(input.cwd, configuredSessions))
-      : resolve(input.cwd, envSessions),
-    envArtifacts === undefined || envArtifacts.length === 0
-      ? resolve(input.cwd, configuredArtifacts ?? ".mono-agent/artifacts")
-      : resolve(input.cwd, envArtifacts),
+    configuredSessions === undefined ? undefined : resolve(input.cwd, configuredSessions),
+    resolve(input.cwd, configuredArtifacts ?? ".mono-agent/artifacts"),
   ];
 }
 
