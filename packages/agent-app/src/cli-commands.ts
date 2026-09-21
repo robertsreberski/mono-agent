@@ -53,6 +53,7 @@ export type {
   PrintAppStatusOptions,
 } from "./cli-background-command.js";
 import { runRunsCommand } from "./cli-runs-command.js";
+import { isRunInspectionInvocation, writeRunInspectionUsageFailure } from "./run-inspection.js";
 import {
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
@@ -89,6 +90,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   try {
     args = parseCliArgs(argv);
   } catch (error) {
+    if (isRunInspectionInvocation(argv)) {
+      writeRunInspectionUsageFailure(argv.includes("--json"));
+      return 2;
+    }
     if (argv[0] === "memory" && argv.includes("adopt-replay")) {
       const { writeReplayAdoptionCliFailure } = await import("./memory-command.js");
       writeReplayAdoptionCliFailure(argv.includes("--json"), "replay_adoption_usage");

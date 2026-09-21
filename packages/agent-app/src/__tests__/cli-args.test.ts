@@ -746,7 +746,7 @@ describe("parseCliArgs", () => {
     expect(runHeading).toContain("(macOS launchd or Linux systemd user services; elsewhere use start --foreground)");
 
     // Short, one-line-per-command signatures — not the full flag detail.
-    expect(help).toContain("runs [report|audit]");
+    expect(help).toContain("runs [report|audit|list|show]");
     expect(help).toContain("web [start|stop|status|...]");
     expect(help).toContain("presets list|show <id>");
     expect(help).not.toContain("mono-agent init [--preset");
@@ -763,7 +763,7 @@ describe("parseCliArgs", () => {
     // Every JSON-capable surface carry a [--json] marker.
     expect(help.split("[--json]").length - 1).toBe(JSON_CAPABLE_COMMANDS.length);
     const lineFor = (short: string): string => lines.find((line) => line.includes(short)) ?? "";
-    expect(lineFor("runs [report|audit]")).toContain("[--json]");
+    expect(lineFor("runs [report|audit|list|show]")).toContain("[--json]");
     expect(lineFor("memory <subcommand>")).toContain("[--json]");
     expect(lineFor("web [start|stop|status|...]")).toContain("[--json]");
     expect(lineFor("backfill")).not.toContain("[--json]");

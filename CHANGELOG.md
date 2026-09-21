@@ -8,6 +8,8 @@
   tools. Preserve existing graph expansion and count delivered IDs once per turn,
   including explicit recall through shared non-graph writable stores.
 
+- Add read-only `mono-agent runs list` and `mono-agent runs show <run-id>` diagnostics for trusted local run artifacts. Output is capped, terminal-safe, scans high-confidence credential shapes, is available as stable JSON, and remains offline without starting providers.
+
 - **Breaking: retire first-party Supermemory integration.** Remove the
   `@mono-agent/memory-supermemory` package, active backend/config/env surfaces,
   backend-specific runtime/CLI/doctor/trace/fleet behavior, and automatic official
