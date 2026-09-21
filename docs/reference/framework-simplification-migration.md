@@ -41,7 +41,7 @@ await store.persistCompletedTurn({
 });
 ```
 
-Retain the same `runId` when retrying admission. Omit `captureText` for summary-only writes. BuJo and Supermemory implement this boundary; the store owns deduplication and admission. Provider responses remain valid when memory persistence fails.
+Retain the same `runId` when retrying admission. Omit `captureText` for summary-only writes. BuJo and injected custom stores can implement this boundary; the store owns deduplication and admission. Provider responses remain valid when memory persistence fails.
 
 Direct BuJo callers must migrate from `capture`, loose `captureTurn`, and the legacy capture queue to completed-turn persistence. Await `flush` for queued processing before closing an offline process. Strict extraction, durable intake and replay, Journal indexing, explicit forgetting, backup recovery, and graph expansion remain supported.
 
@@ -50,6 +50,49 @@ The legacy `MemoryWriteResult` and loose-parser `Extraction` types are removed. 
 The memory audit JSON field `backlog.captureQueue` is replaced by `backlog.completedTurnIntake`, which counts pending durable intake rather than legacy best-effort captures. Update scripts that inspect this field.
 
 The `mono-agent-memory-recall` compatibility binary is removed. For agent requests, use the injected `MemoryRecall` tool backed by the shared per-turn retrieval service. For operator queries, use `mono-agent memory recall`. Remove MCP configurations that start the old executable and its binary-only environment setup.
+
+## Retired first-party Supermemory support
+
+The first-party Supermemory backend, `@mono-agent/memory-supermemory` package,
+backend-specific CLI/doctor surfaces, and automatic official MCP injection are
+removed without replacement. Generic `MemoryStore` injection and manually authored
+MCP servers remain supported.
+
+Before upgrading:
+
+1. Stop the agent and retain the complete known-good version set you already
+   operate if you may need its export or service-management workflow. Repository
+   version `0.22.0` is not evidence of a separately published plugin pin, so this
+   guide does not invent one.
+2. Remove `memory.backend: "supermemory"` and every active
+   `memory.supermemory` block. Remove `MONO_AGENT_MEMORY_BACKEND=supermemory` and
+   all `MONO_AGENT_MEMORY_SUPERMEMORY_*` assignments from the process environment
+   and `.env`.
+3. Decide explicitly whether the upgraded agent should use no memory, one of the
+   local Lite/Journal/BuJo tiers, or a custom programmatically injected store.
+   Mono-agent never chooses for you.
+4. Run `mono-agent validate` before starting the upgraded agent.
+
+Active selector values, nonempty or malformed backend blocks, and nonblank retired
+environment variables fail closed with fixed, secret-safe guidance. A literal empty
+`memory.supermemory: {}` object and blank retired environment assignments are
+accepted only as inert migration tombstones; they enable no backend. Direct
+JavaScript composition and public redaction enforce the same boundary, so bypassing
+the file loader cannot silently create a local store or expose a legacy credential.
+
+There is no automatic fallback to BuJo, config rewrite, local import, replacement
+selection, export, remote migration, or remote cleanup. Existing remote data is
+untouched. Any export, retention, or deletion requires a separate operator-authorized
+workflow against the service and known-good software already in use.
+
+Manual generic MCP configuration is independent of this retirement. Mono-agent does
+not inspect or rewrite an operator-authored server merely because its key or URL uses
+the same vendor name or domain. Only the former synthesized official server and its
+synthesized bearer header are gone.
+
+Local memory also does not imply whole-app network isolation: providers, channels,
+web tools, embedding services, and manually configured MCP servers may still use the
+network.
 
 ## Retired Phoenix/OTLP export
 

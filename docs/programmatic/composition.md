@@ -60,7 +60,7 @@ For building the driver itself, see [Write your own channel adapter](/programmat
 
 ## The bare responder: `createConfiguredAgentResponder`
 
-When you do not want any built-in transport — you are embedding the agent in your own HTTP server, queue worker, or test — combine `@mono-agent/config` with `@mono-agent/agent-app`. `createConfiguredAgentResponder` turns a loaded `MonoAgentConfig` into a ready `AgentResponder`. It starts no channel, trace-registry, service, retention, or consolidation-scheduler lifecycle, but each turn still uses the configured JSONL recorder and per-run exporters. It is **async** (as is `createConfiguredAgentHarness`/`createConfiguredMemory`): memory backends are imported lazily, so a config without a `memory` section never loads the SQLite/BuJo stack and a Supermemory config never loads it either.
+When you do not want any built-in transport — you are embedding the agent in your own HTTP server, queue worker, or test — combine `@mono-agent/config` with `@mono-agent/agent-app`. `createConfiguredAgentResponder` turns a loaded `MonoAgentConfig` into a ready `AgentResponder`. It starts no channel, trace-registry, service, retention, or consolidation-scheduler lifecycle, but each turn still uses the configured JSONL recorder and per-run exporters. It is **async** (as is `createConfiguredAgentHarness`/`createConfiguredMemory`): local memory modules are imported lazily, so a config without a `memory` section never loads the SQLite/BuJo stack.
 
 ```ts
 import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
@@ -77,11 +77,6 @@ const responder = await createConfiguredAgentResponder({
   cwd: process.cwd(),
 });
 ```
-
-For `memory.backend: "supermemory"`, install the exact matching
-`@mono-agent/memory-supermemory` plugin first. The app imports it only when that
-backend is selected and reports the exact matching-version install command when
-it is absent; other configurations keep it outside the app dependency closure.
 
 `ConfiguredAgentResponderOptions` (a superset of `ConfiguredAgentHarnessOptions`) lets you override the dependencies the config would otherwise build:
 
@@ -135,7 +130,7 @@ Notes:
 
 ## Custom memory stores
 
-The built-in memory tiers are config-driven through `memory.mode: "lite" | "journal" | "bujo"` for local storage. The optional Supermemory plugin retains its config-first route at `memory.backend: "supermemory"` after its matching package is installed. Anything else is a code capability: implement the structural `MemoryStore` contract from `@mono-agent/agent-contracts` and inject it into the configured composition layer.
+The built-in memory tiers are config-driven through `memory.mode: "lite" | "journal" | "bujo"` for local storage. Other memory implementations remain a code capability: implement the structural `MemoryStore` contract from `@mono-agent/agent-contracts` and inject it into the configured composition layer.
 
 ```ts
 import type { MemoryStore } from "@mono-agent/agent-contracts";
@@ -153,7 +148,7 @@ The injected store wins over anything `config.memory` would otherwise build, and
 
 ## Per-request runtime options (`runtimeOptionsForRequest`)
 
-`runtimeOptionsForRequest` is a callback invoked once per turn to compute run options scoped to that request. A configured memory backend attaches the per-turn `MemoryRecall` endpoint at the shared configured-harness boundary and composes it with your callback; supplying custom tools does not replace the default recall tool. The full app uses the same composition path for adapter send tools and request overrides.
+`runtimeOptionsForRequest` is a callback invoked once per turn to compute run options scoped to that request. Configured memory attaches the per-turn `MemoryRecall` endpoint at the shared configured-harness boundary and composes it with your callback; supplying custom tools does not replace the default recall tool. The full app uses the same composition path for adapter send tools and request overrides.
 
 ```ts
 import { createConfiguredAgentResponder } from "@mono-agent/agent-app";

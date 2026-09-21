@@ -11,9 +11,9 @@ The memory subsystem **never silently downshifts**: invalid tier prerequisites a
 
 ## `mono-agent memory` — config-aware preview
 
-`mono-agent memory` is the operator preview for the memory configured in the current agent folder. It loads the same `mono-agent.config.json` and `.env` resolution path as the app, so it sees the active memory mode, backend, root path, embeddings provider, and Supermemory settings without a separate root argument.
+`mono-agent memory` is the operator preview for the memory configured in the current agent folder. It loads the same `mono-agent.config.json` and `.env` resolution path as the app, so it sees the active memory mode, local root path, and embeddings provider without a separate root argument.
 
-This operator surface remains available when `memory.recallTool.enabled` is `false`. That setting removes both live memory-read tools (`MemoryRecall` and, on local tiers, `MemoryJournal`) from the agent; it does not disable explicit operator inspection or maintenance. Preview and live recall share the same backend, Supermemory-container, embeddings, and credential resolution, with bypassing the live-tool gate as the only preview-specific behavior.
+This operator surface remains available when `memory.recallTool.enabled` is `false`. That setting removes both live memory-read tools (`MemoryRecall` and, on local tiers, `MemoryJournal`) from the agent; it does not disable explicit operator inspection or maintenance. Preview and live recall share the same local store, embeddings, and credential resolution, with bypassing the live-tool gate as the only preview-specific behavior.
 
 Coverage: cli.
 
@@ -74,14 +74,14 @@ Plain `audit` is the detailed local operator report: its JSON contains counts, s
 
 While the configured store runs, it atomically publishes a coalesced metadata-only snapshot at `.index/runtime.json` (plus a 30-second heartbeat). `audit` uses that snapshot for queue capacity/backlog/high-water/drain/failure/discard counts and embedding/LLM call counts since that store start. It marks a closed, dead-process, invalid, or older-than-90-seconds snapshot as stale. Monetary cost, tokens, and search percentiles remain `null` unless another telemetry surface records them; audit does not guess them from memory content.
 
-`search` uses the same recall path as the `MemoryRecall` tool. When local semantic embeddings are configured but unavailable, it prints a warning and falls back to FTS-only recall instead of pretending semantic search succeeded. For Supermemory-backed agents, `search` queries Supermemory and `stats` reports the known configured container/base URL while marking local SQLite-only counts as unknown.
+`search` uses the same recall path as the `MemoryRecall` tool. When local semantic embeddings are configured but unavailable, it prints a warning and falls back to FTS-only recall instead of pretending semantic search succeeded.
 
 The CLI's `today` and `show <date>` commands remain local operator inspection: they
 print raw daily Markdown and are not the model-facing chronological API. The configured
 host instead offers bounded `MemoryJournal` pages for Lite, Journal, and BuJo. Validation
-reports local chronology as supported, disabled when `recallTool.enabled` is false, and
-unsupported for Supermemory. A restrictive policy that mentions `MemoryJournal` while
-its memory capability is absent also reports that mismatch; no state is represented as
+reports local chronology as supported or disabled when `recallTool.enabled` is
+false. A restrictive policy that mentions `MemoryJournal` while its memory
+capability is absent also reports that mismatch; no state is represented as
 a successful empty journal.
 
 ### Reversible explicit BuJo forget plans
@@ -160,7 +160,7 @@ prepared backup left before transaction publication is safely reused. Read-only
 stores never run the repair, and any other invalid or ambiguous intent remains
 a hard failure for operator review.
 
-`mono-agent memory audit --strict --json` is the closed, provider-free health contract. It makes no embedding, chat-model, Ollama, LM Studio, OpenAI, or Supermemory request. For the built-in backend it takes a bounded, snapshot-coherent view of managed identity, SQLite integrity and metadata, FTS/vector coverage, canonical source parity (including BuJo's exact replay projection), rollback-source freshness, durable completed-turn intake, capture outbox, temporary artifacts, and the runtime snapshot. SQLite still requires the native modules built for the Node runtime that invokes the command; an unavailable native module reports `unknown` rather than leaking the loader error.
+`mono-agent memory audit --strict --json` is the closed, provider-free health contract. It makes no embedding, chat-model, Ollama, LM Studio, or OpenAI request. For the local backend it takes a bounded, snapshot-coherent view of managed identity, SQLite integrity and metadata, FTS/vector coverage, canonical source parity (including BuJo's exact replay projection), rollback-source freshness, durable completed-turn intake, capture outbox, temporary artifacts, and the runtime snapshot. SQLite still requires the native modules built for the Node runtime that invokes the command; an unavailable native module reports `unknown` rather than leaking the loader error.
 
 Fresh durable work is `in_progress`, but it cannot remain successful forever after its owner disappears. A due intake item with no active retry, or a published capture intent awaiting replay, becomes `work_stalled` after the same 90-second grace used for runtime staleness. The timestamps and stability digests used for that decision remain private; the public report carries only the stable issue and aggregate counts. A live/fresh Journal write lock is similarly distinguished from a stale or malformed owner without mutating the lock during audit.
 
@@ -169,7 +169,7 @@ The JSON object has exactly these fields (the `mode` field exists only for `back
 | Field | Contract |
 | --- | --- |
 | `schemaVersion` | Integer `1`. |
-| `backend` | `bujo`, `supermemory`, or `none`. |
+| `backend` | `bujo` or `none`. |
 | `mode` | For `bujo` only: `lite`, `journal`, or `bujo`. |
 | `status` | `healthy`, `in_progress`, `degraded`, `unhealthy`, `unknown`, or `not_configured`. |
 | `checkedAt` | ISO-8601 instant for this audit. |
@@ -184,7 +184,7 @@ The statuses and process exit codes are deliberately different dimensions:
 | `in_progress` | Durable or snapshot-coherent work is actively pending, with no degraded/unhealthy/unknown condition. | `0` |
 | `degraded` | Dead letters, stalled durable work, or missing, stale, or invalid runtime telemetry needs attention. | `1` |
 | `unhealthy` | Managed identity, database/index, canonical source, intake/outbox, or temporary-artifact integrity failed. | `1` |
-| `unknown` | The built-in database/native module or health check could not be inspected, or a remote Supermemory index cannot be inspected locally. | `1` |
+| `unknown` | The local database/native module or health check could not be inspected. | `1` |
 | `not_configured` | No memory backend is configured (`backend: "none"`; no `mode`). | `0` |
 
 For `backend: "bujo"`, classification uses this exact precedence:
@@ -209,7 +209,7 @@ intake_invalid intake_pending dead_letters outbox_invalid outbox_pending
 work_stalled temporary_artifacts runtime_missing runtime_stale runtime_invalid
 ```
 
-The strict report is metadata-only by construction. It never publishes paths, filenames, record or run ids, model text, payloads, raw provider/native errors, or arbitrary extra fields. `backend: "supermemory"` therefore reports `unknown` with empty issues and zeroed counts instead of pretending to know remote health; an absent backend reports `not_configured` with the same closed empty shape.
+The strict report is metadata-only by construction. It never publishes paths, filenames, record or run ids, model text, payloads, raw provider/native errors, or arbitrary extra fields. An absent backend reports `not_configured` with a closed empty shape.
 
 ### BuJo replay projection and explicit legacy adoption
 
@@ -303,7 +303,7 @@ projection safely.
 
 ### Completed-turn intake inspection and recovery
 
-The config-aware intake commands operate only on the built-in Lite/Journal/BuJo intake; Supermemory rejects them. `inspect` is read-only and may be used while the agent is running. It returns only the stable 64-character item id, state, admission timestamp, attempt/revision, due flag, and bounded failure category (`model_output`, `provider`, or `processing`), plus aggregate state counts. It never returns `runId`, `conversationId`, summary/capture text, payload hash, filesystem path, or raw model/provider error.
+The config-aware intake commands operate only on the local Lite/Journal/BuJo intake. `inspect` is read-only and may be used while the agent is running. It returns only the stable 64-character item id, state, admission timestamp, attempt/revision, due flag, and bounded failure category (`model_output`, `provider`, or `processing`), plus aggregate state counts. It never returns `runId`, `conversationId`, summary/capture text, payload hash, filesystem path, or raw model/provider error.
 
 `retry` and `resolve` acquire the memory writer lease and refuse to run while the trace registries show a live process for the same canonical config. Stop the agent first:
 
@@ -479,9 +479,15 @@ The logical digest is an integrity/CAS commitment under mono-agent's owner-only 
 
 Rebuild output and `audit --json` report the generation name, indexed count, raw/unstructured/missing-identity/legacy-source/Journal-duplicate skips, source locations that require review, and legacy associations derived by exact unique whole-name matching. BuJo raw audit files are never promoted automatically into the curated index, and no command replays history through a paid chat model.
 
-Supermemory owns its remote index, so `mono-agent memory rebuild`, `rollback`, and `adopt-replay` reject that backend explicitly.
-
 ## Enable v1 on an existing agent
+
+:::caution
+This historical v1 cutover procedure now applies only to local Lite, Journal, and
+BuJo stores. If the existing agent still declares the retired first-party
+Supermemory backend, complete the [retirement checklist](/reference/framework-simplification-migration/#retired-first-party-supermemory-support)
+before running any current CLI command. No automatic export, replacement, or
+remote cleanup is performed.
+:::
 
 `0.8.0` is the first product-v1 lockstep release published to npm. The immutable
 `0.7.0` source tag introduced the milestone but was not published. Product v1 is
@@ -527,14 +533,7 @@ for an existing local agent, with one backend-specific branch in step 6.
 
    For a new global install, prefer `create-mono-agent`. To switch package
    owners, uninstall the currently listed package before installing the other
-   one. If this agent's existing configuration selects Supermemory as
-   `memory.backend`, install the matching plugin in the agent folder now,
-   before any new CLI command loads the configured responder:
-
-   ```bash
-   VERSION="0.8.0"
-   npm install --save-exact "@mono-agent/memory-supermemory@$VERSION"
-   ```
+   one.
 
 3. Check or refresh the managed memory skill. Reconcile any operator-modified
    skill before using `--update`; the updater also reports and safely retires
@@ -599,19 +598,6 @@ for an existing local agent, with one backend-specific branch in step 6.
    instruction, run `adopt-replay` and then rerun the rebuild without starting
    another writer between them.
 
-   If `memory.backend` is `supermemory`, the matching plugin was installed in
-   step 2. Skip `adopt-replay`, `memory rebuild`, and `rollback`: Supermemory
-   owns its remote index and those built-in index-transition commands
-   intentionally reject it.
-
-   ```bash
-   mono-agent validate
-   mono-agent start
-   mono-agent status
-   ```
-
-   `memory audit --json` is safe for Supermemory but reports local integration
-   metadata only; it cannot inspect the remote index.
 
 7. Verify all evidence routes in the TUI or an enabled conversational channel without
    restarting between messages. For Telegram, send `Reply exactly with this token:

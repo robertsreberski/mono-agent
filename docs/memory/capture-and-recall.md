@@ -15,9 +15,9 @@ For tier selection (lite / journal / bujo) and embeddings setup, start at the [M
 
 | Mode | What it does | Backend / tiers | LLM |
 |------|--------------|-------|-----|
-| `disabled` | Never persist turns. Recall still works over existing backend state. | all | no |
-| `append-host-summary` | Admit one deterministic host observation by provider run id. The built-in backend fsyncs and projects it; Supermemory awaits a remote upsert. | built-in Lite/Journal/BuJo; Supermemory | built-in: no; Supermemory: service-owned |
-| `capture` | Admit the host summary plus full approved capture text by provider run id. Built-in BuJo curates in the background; Supermemory sends it for server-side extraction. | built-in BuJo; Supermemory | BuJo: configured chat model; Supermemory: service-owned |
+| `disabled` | Never persist turns. Recall still works over existing memory state. | Lite/Journal/BuJo | no |
+| `append-host-summary` | Admit one deterministic host observation by provider run id, then fsync and project it. | Lite/Journal/BuJo | no |
+| `capture` | Admit the host summary plus full approved capture text by provider run id, then curate it in the background. | BuJo | configured chat model |
 
 The host deliberately skips memory writes for two low-signal successful turns, in every write mode: final answers that are `NOTHING_TO_REPORT` (the cron/webhook no-op sentinel), or that end with it on their final line, and tiny explicit test/ping probes such as `test` / `test ok`. Short contextual acknowledgements are not skipped by this default.
 
@@ -79,21 +79,10 @@ Lite or Journal is refused before source mutation, because those tiers cannot pr
 BuJo run-derived ids and provider-bound replay contract. Start the current BuJo configuration to
 finish the durable intake before changing tiers.
 
-External writable `MemoryStore` implementations must implement `persistCompletedTurn`.
-Read-only stores may omit it; the harness rejects enabled writing when the method is absent. The bundled Supermemory backend implements the strong method as one
-awaited, run-id-keyed remote upsert and propagates admission failure to the harness warning path.
-Within one store process, the 10,000 most recently completed or exactly retried run fingerprints
-are retained in a bounded LRU by default. An exact retained retry is returned as a duplicate
-without a second request and refreshes its position; a retained run id reused with different
-payload bytes fails before any request. Failed and still-in-flight admissions do not consume the
-completed-entry budget, while concurrent exact retries remain coalesced separately. Each retained
-entry is only two SHA-256 digests, without raw ids or content. After LRU eviction or process
-restart, the remote stable custom id still makes a retry converge on one logical upsert, but the
-remote API does not expose a conditional create/read result that lets mono-agent classify that
-request as a duplicate or detect an older conflicting payload. A different post-eviction payload
-can therefore replace the remote document at the same stable id. That first request becomes the
-new in-flight/local fingerprint, so its exact concurrent retries coalesce and concurrent
-alternatives still fail as conflicts.
+External writable `MemoryStore` implementations must implement `persistCompletedTurn`
+and own stable `runId` admission and deduplication semantics. Read-only stores may
+omit it; the harness rejects enabled writing when the method is absent. Mono-agent
+does not infer, provision, or configure an external service.
 
 ### Direct integrations
 
@@ -192,11 +181,9 @@ Key properties:
 - **Crash-idempotent semantic commit.** Run-derived fact ids, a retained semantic plan, and the exact replay projection make a post-commit/pre-receipt replay converge without another model call, duplicate fact, or unattested lifecycle/edge.
 - **Associations are precise.** Each curated fact carries only the entity IDs explicitly extracted for that fact; the implementation never creates a turn-wide memory/entity Cartesian product.
 
-On the built-in backend, this path uses a chat LLM, so `writeMode: "capture"`
-**requires `mode: "bujo"`** and fails config validation otherwise—there is no
-silent fallback or tier downshift. The external Supermemory backend accepts
-`capture` independently of the compatibility `mode` value because extraction is
-owned by the service.
+This path uses a chat LLM, so `writeMode: "capture"` **requires
+`mode: "bujo"`** and fails config validation otherwise—there is no silent fallback
+or tier downshift.
 
 ```json
 {
@@ -358,10 +345,10 @@ Coverage says whether the range scan completed and why it stopped. A complete
 empty range is successful with `noData: true`; backend failure is the generic
 `journal_unavailable` error; unsupported backends do not advertise the tool.
 
-Lite, Journal, and BuJo are supported, including read-only local stores.
-Supermemory is explicitly unsupported because targeted external search has no
-stable local chronology. Results include canonical daily source references and
-stored validity/supersession state at snapshot time. Dropped records, raw BuJo
+Lite, Journal, and BuJo are supported, including read-only local stores. Custom
+stores must affirm chronological support before the tool is advertised. Results
+include canonical daily source references and stored validity/supersession state
+at snapshot time. Dropped records, raw BuJo
 audit observations, session ids, memory-root paths, embeddings, salience,
 access telemetry, and raw backend errors are excluded. Unsafe text and ids are
 replaced with fixed markers, and all returned content is untrusted historical
@@ -383,7 +370,7 @@ carrying a credential is rejected and nothing is written. See
 ### Tool policy for explicit memory reads
 
 `memory.recallTool.enabled` is the shared opt-out for both explicit read tools.
-It defaults on for every configured backend. `MemoryRecall` is gated by that
+It defaults on for configured memory. `MemoryRecall` is gated by that
 declaration rather than `tools.allowedTools`, so a restrictive or empty
 allowlist still leaves targeted search available. `MemoryJournal` enumerates a
 date range and has the additional normal app-tool policy gate: under a
@@ -402,8 +389,8 @@ See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provi
 
 | Env var | Config key | Notes |
 |---------|-----------|-------|
-| `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture`; built-in `capture` requires `mode: bujo`, while Supermemory extraction is service-owned |
-| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Explicit memory-read family: targeted `MemoryRecall` for every backend plus policy-allowed `MemoryJournal` on local tiers; default on |
+| `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture`; `capture` requires `mode: bujo` |
+| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Explicit memory-read family: targeted `MemoryRecall` plus policy-allowed `MemoryJournal` on local tiers; default on |
 | `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo` |
 | `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline |
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama chat endpoint (default `http://localhost:11434`) |

@@ -53,7 +53,6 @@ flowchart TB
 
   subgraph PromptContext["Context layer"]
     Memory["@mono-agent/memory<br/>./store SQLite, ./search embeddings, ./bujo engine"]
-    MemorySupermemory["@mono-agent/memory-supermemory<br/>extra plugin: Supermemory-backed store"]
   end
 
   subgraph AppLayer["App layer"]
@@ -104,13 +103,11 @@ flowchart TB
   AgentApp --> Config
   AgentApp --> Harness
   AgentApp --> Memory
-  AgentApp -. optional backend .-> MemorySupermemory
   AgentApp --> RuntimeAdapter
   AgentApp --> Observability
   Config --> Contracts
   Config --> RuntimeAdapter
   Harness --> Contracts
-  MemorySupermemory --> Contracts
   Harness --> RuntimeAdapter
   Harness --> Observability
 
@@ -140,7 +137,6 @@ Runtime-only composition (not manifest dependency edges)
 
 tui / web ── HTTP operator protocol ──> operator-adapter
 agent-app ── channels.plugins[] ──> a2a-adapter / whatsapp-adapter / messenger-adapter
-agent-app ── selected memory backend ──> memory-supermemory
 custom host ── request-scoped extension ──> agent-orchestrator
 authoring harness ── explicit MCP companion ──> docs-mcp
 ```

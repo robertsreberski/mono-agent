@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Breaking: retire first-party Supermemory integration.** Remove the
+  `@mono-agent/memory-supermemory` package, active backend/config/env surfaces,
+  backend-specific runtime/CLI/doctor/trace/fleet behavior, and automatic official
+  MCP injection without selecting a replacement. Active legacy intent fails closed
+  with secret-safe migration guidance, including direct programmatic composition;
+  an exact empty JSON tombstone and blank retired env assignments remain inert.
+  Generic `MemoryStore` injection, manually configured MCP servers, and local
+  none/Lite/Journal/BuJo behavior remain. The upgrade performs no fallback, export,
+  remote data migration, or remote cleanup; existing remote data is untouched.
+
 - **Breaking: remove first-party Phoenix/OTLP export.** Remove the bundled
   exporter package, `observability.exporters`,
   `MONO_AGENT_OBSERVABILITY_EXPORTERS`, `mono-agent backfill`, exporter status,

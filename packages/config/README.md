@@ -432,6 +432,7 @@ ResolvedProviders
 RuntimeFallbackConfig
 SessionMode
 assertConfiguredProviderCoverage
+assertNoRetiredMonoAgentConfig
 buildMonoAgentConfigView
 findJsonSecretConfigWarnings
 findRemovedConfigWarnings

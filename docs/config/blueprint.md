@@ -174,7 +174,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   //   bujo    — raw audit + bounded LLM curation + precise entity graph + auto-scheduled
   //             lightweight consolidation; strictly needs embeddings + an app-level memory.llm.
   "memory": {
-    "backend": "bujo",                     // bujo (built in) | supermemory (external package + server)
+    "backend": "bujo",                     // only supported config backend
     "mode": "bujo",                        // lite | journal | bujo
     "path": "./.mono-agent/memory",        // root directory for all tiers
     "writeMode": "capture",                // disabled | append-host-summary | capture (bujo only)
@@ -194,8 +194,8 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       "timeoutMs": 60000                   // in-app per-call timeout; 1000-600000, default 60000. Raise for slow local models.
       // For agent-host, use: "model": "openai-codex:gpt-5.6-terra"; omit endpoint.
     },
-    "recallTool": { "enabled": true },      // explicit reads: MemoryRecall everywhere + local MemoryJournal; default on
-    "rememberTool": { "enabled": true },    // agent-callable Remember write tool; bujo backend only, also allowlist-gated
+    "recallTool": { "enabled": true },      // explicit reads: MemoryRecall + MemoryJournal; default on
+    "rememberTool": { "enabled": true },    // agent-callable Remember write tool; local memory only, also allowlist-gated
     // Bujo auto-scheduler — override the default or disable it.
     // Consolidation runs in-app; no external cron or launchd needed.
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" } // default: every two hours
