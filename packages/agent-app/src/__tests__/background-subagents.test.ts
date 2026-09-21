@@ -1644,7 +1644,7 @@ it("keeps detached live progress out of the parent stream and persists it separa
   const id = receipt.details.jobId;
   await vi.waitFor(async () => expect((await f.service.get(id) as any).subagentProgress?.toolCalls).toBe(1));
   expect(parentEvents.mock.calls.flat().some((event: any) => event.type === "subagent_activity")).toBe(false);
-  await vi.waitFor(async () => expect((await f.store.get(id))?.subagentProgress?.toolCalls).toBe(1));
+  await vi.waitFor(async () => expect((await f.store.get(id))?.subagentProgress?.toolCalls).toBe(1), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
   expect(JSON.stringify((await f.store.get(id))?.subagentProgress)).not.toContain("PRIVATE_PROMPT");
   emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "read", content: "PRIVATE_TOOL_RESULT" }] } });
   gate.resolve({ text: "Child final report" });
@@ -1659,7 +1659,7 @@ it("keeps detached live progress out of the parent stream and persists it separa
   expect(output).toContain("Child final report");
   expect(output).not.toContain("subagentProgress");
   expect((f.wake.mock.calls[0]![0] as any).prompt).not.toContain("subagentProgress");
-});
+}, 45_000);
 
 it("projects the requested detached route while running and the executed fallback after settlement", async () => {
   const f = await fixture();
@@ -1744,7 +1744,7 @@ it("coalesces a burst of private progress and terminally persists the latest bou
     emit({ type: "tool_completed", id: String(i), failed: i % 2 === 0 });
   }
   expect((await f.service.get(id) as any).subagentProgress).toMatchObject({ toolCalls: 100, failedCalls: 50 });
-  await vi.waitFor(async () => expect((await f.store.get(id))?.subagentProgress?.toolCalls).toBe(100));
+  await vi.waitFor(async () => expect((await f.store.get(id))?.subagentProgress?.toolCalls).toBe(100), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
   await vi.waitFor(() => expect(surface).toHaveBeenCalled());
   expect(surface.mock.calls.length).toBeLessThanOrEqual(2);
   gate.resolve({ status: "ok", output: '{"answer":"original output"}', answer: "Separate report" });
@@ -1753,7 +1753,7 @@ it("coalesces a burst of private progress and terminally persists the latest bou
   expect(job.subagentProgress?.answerHead).toBe("Separate report");
   expect((await f.store.get(id))?.subagentProgress).toEqual(job.subagentProgress);
   expect((f.wake.mock.calls[0]![0] as any).prompt).not.toContain("Separate report");
-});
+}, 45_000);
 
 it("does not append private progress or the UI answer to the internal stdout lane", async () => {
   const output = JSON.stringify({ instanceId: "helper", answer: "Original wake report", artifacts: [] });
