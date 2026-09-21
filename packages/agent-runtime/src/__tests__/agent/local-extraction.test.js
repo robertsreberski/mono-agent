@@ -1,24 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { extractHoundHtml, htmlToMarkdown } from "../../agent/tools/hound-local/extract.js";
-import { extractHtmlLinks } from "../../agent/tools/hound-local/links.js";
+import { extractLocalHtml, htmlToMarkdown } from "../../agent/tools/local/extract.js";
+import { extractHtmlLinks } from "../../agent/tools/local/links.js";
 import { performWebFetch } from "../../agent/tools/web-fetch.js";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 
 const url = "https://example.com/docs/intro";
 const article = "Native document extraction must retain useful article prose and citations rather than just a tiny navigation label. ".repeat(6);
 
-describe("native Hound-derived extraction", () => {
+describe("native local extraction", () => {
   it("rejects image destinations with no visible text but preserves labels, short prose and code", async () => {
     const parsers = { primary: async () => { throw new Error("failed"); }, article: () => null };
-    await expect(extractHoundHtml('<img src="/tracking.png">', url, parsers)).rejects.toMatchObject({ code: "extraction_failed" });
+    await expect(extractLocalHtml('<img src="/tracking.png">', url, parsers)).rejects.toMatchObject({ code: "extraction_failed" });
     for (const source of ['<img alt="Evidence" src="/tracking.png">', '<a href="/long-url">OK</a>', '<p>Hi.</p>', '<pre><code>---\n</code></pre>', '<pre><code>![](tracking.png)\n</code></pre>']) {
-      expect((await extractHoundHtml(source, url, parsers)).markdown).toBeTruthy();
+      expect((await extractLocalHtml(source, url, parsers)).markdown).toBeTruthy();
     }
   });
   it("rejects a tiny primary candidate when a real article is available", async () => {
-    const output = await extractHoundHtml(`<html><head><title>Article title</title></head><body><main>${article}</main></body></html>`, url, {
+    const output = await extractLocalHtml(`<html><head><title>Article title</title></head><body><main>${article}</main></body></html>`, url, {
       primary: async () => ({ contentMarkdown: "Menu", title: "Bad candidate" }), article: () => null,
     });
     expect(output).toMatchObject({ title: "Article title", stage: "main", failures: ["defuddle", "readability"] });
@@ -27,13 +27,13 @@ describe("native Hound-derived extraction", () => {
   });
 
   it("preserves truly short pages and standalone HTML fragments", async () => {
-    expect(await extractHoundHtml("<p>Hi.</p>", url, { primary: async () => ({ contentMarkdown: "Hi." }) }))
+    expect(await extractLocalHtml("<p>Hi.</p>", url, { primary: async () => ({ contentMarkdown: "Hi." }) }))
       .toMatchObject({ markdown: "Hi.", stage: "defuddle" });
     expect(htmlToMarkdown('<p>See <a href="../ref">reference</a>.</p>', url)).toBe("See [reference](https://example.com/ref).");
   });
 
   it("retains code and links inside fallback Markdown tables", async () => {
-    const output = await extractHoundHtml('<main><table><tr><th>Name</th><th>Value</th></tr><tr><td><a href="/ref">Reference</a></td><td><code>a|b</code></td></tr></table><pre><code>const answer = 42;\n</code></pre></main>', url, {
+    const output = await extractLocalHtml('<main><table><tr><th>Name</th><th>Value</th></tr><tr><td><a href="/ref">Reference</a></td><td><code>a|b</code></td></tr></table><pre><code>const answer = 42;\n</code></pre></main>', url, {
       primary: async () => { throw new Error("primary failed"); }, article: () => null,
     });
     expect(output.markdown).toContain("| Name | Value |\n| --- | --- |");
@@ -43,7 +43,7 @@ describe("native Hound-derived extraction", () => {
   });
 
   it("does not return noise or raw HTML as successful extraction", async () => {
-    await expect(extractHoundHtml('<html><body><script>secret()</script><nav>Menu</nav><svg>icon</svg></body></html>', url, {
+    await expect(extractLocalHtml('<html><body><script>secret()</script><nav>Menu</nav><svg>icon</svg></body></html>', url, {
       primary: async () => { throw new Error("failed"); }, article: () => null,
     })).rejects.toMatchObject({ code: "extraction_failed" });
   });

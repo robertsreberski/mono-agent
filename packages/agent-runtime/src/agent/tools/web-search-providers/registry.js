@@ -1,6 +1,6 @@
 // @ts-check
 import { parallelProvider } from "./parallel.js";
-import { houndProvider } from "./hound.js";
+import { localProvider } from "./local.js";
 import { searxngProvider } from "./searxng.js";
 import { ollamaProvider } from "./ollama.js";
 import { codexProvider } from "./codex.js";
@@ -52,7 +52,7 @@ export function registerSearchProvider(provider) {
   return () => { webSearchProviders.delete(provider.name); };
 }
 
-for (const provider of [searxngProvider, ollamaProvider, codexProvider, duckduckgoProvider, startpageProvider, parallelProvider, houndProvider]) {
+for (const provider of [searxngProvider, ollamaProvider, codexProvider, duckduckgoProvider, startpageProvider, parallelProvider, localProvider]) {
   registerSearchProvider(provider);
 }
 

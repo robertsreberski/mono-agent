@@ -160,14 +160,14 @@ export const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
   {
     path: "tools.web.search.hound.endpoint",
     env: "MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT",
-    message: "`tools.web.search.hound.endpoint` was removed: Hound is built in. Delete the endpoint setting; no external Hound service is contacted.",
-    envMessage: "`MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT` was removed: Hound is built in. Remove the variable.",
+    message: "`tools.web.search.hound.endpoint` was removed: local search is built in. Delete the endpoint setting; no external service is contacted.",
+    envMessage: "`MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT` was removed: local search is built in. Remove the variable.",
   },
   {
     path: "tools.web.fetch.hound.endpoint",
     env: "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT",
-    message: "`tools.web.fetch.hound.endpoint` was removed: Hound is built in. Delete the endpoint setting; no external Hound service is contacted.",
-    envMessage: "`MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT` was removed: Hound is built in. Remove the variable.",
+    message: "`tools.web.fetch.hound.endpoint` was removed: local fetch is built in. Delete the endpoint setting; no external service is contacted.",
+    envMessage: "`MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT` was removed: local fetch is built in. Remove the variable.",
   },
   {
     path: "runtime.executionMode",
@@ -389,8 +389,9 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   );
   const webSearchBackend = readWebProviderSelection<WebSearchBackend>(
     input.env.MONO_AGENT_WEB_SEARCH_BACKEND, "MONO_AGENT_WEB_SEARCH_BACKEND",
-    ["searxng", "ollama", "codex", "keyless", "duckduckgo", "startpage", "parallel", "hound"],
+    ["searxng", "ollama", "codex", "keyless", "duckduckgo", "startpage", "parallel", "local"],
     ["parallel", "ollama"], input.env,
+    { hound: "`tools.web.search.backend` value `hound` was renamed to `local`; use `local` instead." },
   );
   const legacyWebSearchEndpoint = readWebSearchEndpoint(
     input.env.MONO_AGENT_WEB_SEARCH_ENDPOINT,
@@ -431,10 +432,11 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const webSearchParallel = readParallelWebConfig(input.env, "MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV");
   const webFetchParallel = readParallelWebConfig(input.env, "MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV");
   for (const source of ["MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT", "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT"]) {
-    if (input.env[source] !== undefined) throw new MonoAgentConfigError("invalid_env", `${source} was removed: Hound is built in. Remove the endpoint setting; no external Hound service is contacted.`, { env: source });
+    if (input.env[source] !== undefined) throw new MonoAgentConfigError("invalid_env", `${source} was removed: the local web provider is built in and needs no endpoint. Remove the endpoint setting.`, { env: source });
   }
-  const webFetchProvider = readWebProviderSelection<"local" | "parallel" | "hound">(
-    input.env.MONO_AGENT_WEB_FETCH_PROVIDER, "MONO_AGENT_WEB_FETCH_PROVIDER", ["local", "parallel", "hound"], "local", input.env,
+  const webFetchProvider = readWebProviderSelection<"local" | "parallel">(
+    input.env.MONO_AGENT_WEB_FETCH_PROVIDER, "MONO_AGENT_WEB_FETCH_PROVIDER", ["local", "parallel"], "local", input.env,
+    { hound: "`tools.web.fetch.provider` value `hound` was renamed to `local`, which is not equivalent: `local` uses the standard fetch retry policy, performs no robots preflight, and honors the configured render mode instead of forcing document-only/render-never. Update the selection to `local` only if that posture is acceptable." },
   );
   const webFetchRender = readChoice<WebFetchRenderMode>(
     input.env.MONO_AGENT_WEB_FETCH_RENDER,
@@ -2530,7 +2532,7 @@ function selectedWebProvider(selection: string | readonly string[], name: string
 
 function readWebProviderSelection<T extends string>(
   raw: string | undefined, source: string, names: readonly T[], fallback: T | readonly T[],
-  env: Record<string, string | undefined>,
+  env: Record<string, string | undefined>, renamed?: Record<string, string>,
 ): T | readonly T[] {
   if (raw === undefined) return fallback;
   const value = raw.trim();
@@ -2546,6 +2548,10 @@ function readWebProviderSelection<T extends string>(
   try { selection = value.startsWith("[") ? JSON.parse(value) : value.includes(",") ? value.split(",").map((name) => name.trim()) : value; }
   catch { selection = null; }
   const list = Array.isArray(selection) ? selection : [selection];
+  if (renamed) {
+    const retired = list.find((name) => typeof name === "string" && Object.hasOwn(renamed, name));
+    if (typeof retired === "string") throw new MonoAgentConfigError("invalid_env", renamed[retired]!, { env: source });
+  }
   if (!list.length || list.some((name) => typeof name !== "string" || !names.includes(name as T))) {
     throw new MonoAgentConfigError("invalid_env", `${source} must be one provider or a non-empty ordered chain of: ${names.join(", ")}.`, { env: source });
   }

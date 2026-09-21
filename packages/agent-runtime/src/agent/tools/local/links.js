@@ -28,8 +28,8 @@ export function sanitizeDocumentLinks(document, baseUrl) {
 }
 
 /**
- * Hound's container classification and fragment dedupe, adapted to Mono's
- * bounded flat link contract. Content citations win over earlier chrome links,
+ * Container classification and fragment dedupe adapted from the upstream
+ * links.py (see provenance above) to Mono's bounded flat link contract. Content citations win over earlier chrome links,
  * including duplicates; neither canonical metadata nor host popularity confers
  * source authority. No network work is performed here.
  * @param {unknown} html

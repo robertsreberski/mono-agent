@@ -114,15 +114,16 @@ set `"short"` instead.
 
 ## Architecture
 
-The opt-in `hound` providers run native Node search (fixed DDG/Brave/Mojeek HTML
-engines) and HTTP-only fetch with per-request policy/admission and fail-closed
-robots. No Hound service or Python runtime is used; retired endpoint settings
-are rejected. `inspectHoundWeb()` reports local capability, not engine liveness.
+The opt-in `local` search provider runs native Node search (fixed DuckDuckGo
+HTML engine) with per-request policy/admission and fail-closed robots. No
+external service or Python runtime is used; retired endpoint settings
+are rejected. `inspectLocalWeb()` reports local capability, not engine liveness.
 
-Local web extraction uses native Hound-derived title/stage fallback and content
-link classification, with Defuddle/Readability/Turndown as the parser equivalents.
-The default `local` fetch provider needs no Python or Hound service and gains no
-new robots.txt prerequisite. See `THIRD_PARTY_NOTICES.md` for source provenance
+Local web extraction uses native title/stage fallback and content
+link classification adapted from Hound's MIT-licensed code, with
+Defuddle/Readability/Turndown as the parser equivalents.
+The `local` fetch provider needs no Python or external service and performs no
+robots.txt preflight. See `THIRD_PARTY_NOTICES.md` for source provenance
 and licenses. Fetch rate limits and access refusals are terminal across provider
 fallback; ordinary transient failures remain bounded.
 
@@ -414,7 +415,7 @@ execToolRun
 globToolImpl
 grepToolImpl
 inspectCodexSubscriptionSearch
-inspectHoundWeb
+inspectLocalWeb
 inspectParallelWeb
 isPathAllowed
 isWorkdirAllowed
@@ -802,8 +803,8 @@ Per-call options (a non-exhaustive selection):
 | `skills` / `skillsRoot` | `{name, description}[]` / `string` | Skills disclosed to the run and the directory holding `<name>/SKILL.md`. |
 | `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http). |
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
-| `webSearchConfig` | `{ backend?, maxRequestsPerRun?, searxng?: { endpoint? }, hound?: { endpoint? /* deprecated; rejected */ }, ollama?: { baseUrl?, apiKey?, apiKeyEnv?, trustPublicUrl? }, codex?: { model? } }` | Run-scoped ordered WebSearch selection and a 1–20 answered-search budget (default 4), including empty answers. Failed attempts are refunded; network dispatches are capped at four times the budget. The default chain is Parallel then local Ollama; names are strict and arrays are ordered fallback chains. Keyless and Hound are opt-in; `auto` is rejected. The deprecated top-level `endpoint` remains a SearXNG compatibility alias. Hound is native Node metasearch with per-engine policy/admission and proactive robots checks; retired endpoint settings are rejected. Restricted policies gate each actual destination instead of rejecting the entire provider. |
-| `webFetchConfig` | `{ provider?, hound?: { endpoint? /* deprecated; rejected */ }, render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. The default provider is local; `parallel` selects remote extraction; `hound` selects native HTTP-only acquisition/extraction with proactive robots checks and policy checks at each redirect. Hound supports raw output and allowed headers, not browser rendering; retired endpoint settings are rejected. |
+| `webSearchConfig` | `{ backend?, maxRequestsPerRun?, searxng?: { endpoint? }, hound?: { endpoint? /* deprecated; rejected */ }, ollama?: { baseUrl?, apiKey?, apiKeyEnv?, trustPublicUrl? }, codex?: { model? } }` | Run-scoped ordered WebSearch selection and a 1–20 answered-search budget (default 4), including empty answers. Failed attempts are refunded; network dispatches are capped at four times the budget. The default chain is Parallel then local Ollama; names are strict and arrays are ordered fallback chains. Keyless and local search are opt-in; `auto` is rejected and `hound` is rejected with a rename-to-`local` migration error. The deprecated top-level `endpoint` remains a SearXNG compatibility alias. Local search is native Node DuckDuckGo with per-request policy/admission and proactive robots checks; a refused local attempt advances the chain instead of stopping the call. Retired endpoint settings are rejected. Restricted policies gate each actual destination instead of rejecting the entire provider. |
+| `webFetchConfig` | `{ provider?, hound?: { endpoint? /* deprecated; rejected */ }, render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. The default provider is local; `parallel` selects remote extraction. `hound` is rejected with a migration error: `local` is not equivalent (standard retries, no robots preflight, configured render mode honored). Local supports raw output and allowed headers; retired endpoint settings are rejected. |
 | `piToolExecutionMode` | `"safe-parallel" \| "sequential"` | Pi built-in scheduling. Safe parallelism is the default; read-only tools may overlap only when the offered tool set contains no stateful/mutating or MCP tool. Otherwise Pi 0.85 serializes the whole batch. |
 | `maxTurns` | `number` | Hard cap on agent turns. |
 | `outputSchema` | `JSONSchema` | Requests structured JSON; see “Structured output” below. |
@@ -919,8 +920,7 @@ primary/alternate queries once and supports optional remote WebFetch extraction.
 WebSearch calls may request a case-insensitive ISO 3166-1 alpha-2 `country`
 localization preference. Omission requests no country/global mode where the
 provider supports one, without claiming IP-neutral ranking. Parallel treats it
-as advisory; DuckDuckGo applies its documented region token; native Hound skips
-Brave and Mojeek for that call. Providers without a reviewed per-call transport
+as advisory; DuckDuckGo applies its documented region token for local search. Providers without a reviewed per-call transport
 are skipped before dispatch and budget instead of silently ignoring it. Country
 is separate from language and does not guarantee the location of each result.
 `fetch.provider` defaults to local; Parallel cannot serve raw/header/browser

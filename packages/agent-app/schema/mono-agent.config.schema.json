@@ -1164,7 +1164,7 @@
                         "duckduckgo",
                         "startpage",
                         "parallel",
-                        "hound"
+                        "local"
                       ]
                     },
                     {
@@ -1181,7 +1181,7 @@
                           "duckduckgo",
                           "startpage",
                           "parallel",
-                          "hound"
+                          "local"
                         ]
                       }
                     }
@@ -1293,7 +1293,7 @@
                   }
                 },
                 "provider": {
-                  "description": "WebFetch provider name or ordered chain: local (default), parallel, hound. Parallel cannot serve raw format, custom headers, or browser rendering. Hound is built-in HTTP-only local acquisition/extraction with proactive robots checks; it supports raw format and allowed headers but not browser rendering.",
+                  "description": "WebFetch provider name or ordered chain: local (default), parallel. Parallel cannot serve raw format, custom headers, or browser rendering. Local is built-in HTTP static acquisition/extraction; it enforces sandbox network policy but performs no robots.txt preflight. It supports raw format and allowed headers; browser rendering follows tools.web.fetch.render.",
                   "examples": [
                     "local"
                   ],
@@ -1307,8 +1307,7 @@
                       "type": "string",
                       "enum": [
                         "local",
-                        "parallel",
-                        "hound"
+                        "parallel"
                       ]
                     },
                     {
@@ -1319,8 +1318,7 @@
                         "type": "string",
                         "enum": [
                           "local",
-                          "parallel",
-                          "hound"
+                          "parallel"
                         ]
                       }
                     }

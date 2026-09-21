@@ -28,10 +28,11 @@ function cleanedDocument(html, url) {
   return document;
 }
 
-/** Hound title/staged extraction with native JS parser equivalents.
+/** Local title/staged extraction with native JS parser equivalents
+ * (algorithms adapted from the upstream sources above).
  * Parser overrides are a source-level fixture seam, never tool/config input.
  */
-export async function extractHoundHtml(html, url, {
+export async function extractLocalHtml(html, url, {
   primary = async (document, sourceUrl) => parseDefuddle(document, sourceUrl, { markdown: true, separateMarkdown: true, useAsync: false }),
   article = (document) => new Readability(document).parse(),
 } = {}) {
