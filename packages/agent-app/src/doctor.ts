@@ -8,10 +8,10 @@ import { isIP } from "node:net";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
-// `BuiltinProvider`, not the root `KnownProvider`: since pi-ai 0.83.0 the
-// latter also covers purely dynamic providers (e.g. "radius") that have no
-// generated catalog entry, so it no longer keys `getBuiltinModels`. This guard
-// is built from `getBuiltinProviders()`, which is exactly the catalog set.
+// `BuiltinProvider`, not the root `KnownProvider`: the latter also covers
+// providers without a generated catalog entry, so it does not key
+// `getBuiltinModels`. This guard is built from `getBuiltinProviders()`, which
+// is exactly the catalog set.
 import {
   type BuiltinProvider as PiBuiltinProvider,
   getBuiltinProviders as getPiBuiltinProviders,
@@ -700,10 +700,10 @@ function piModelResolutionIssue(
     return undefined;
   }
 
-  // pi-supplement: validate against the runtime's supplement-aware facade, not
-  // pi-ai directly, so a supplemented model (see agent-runtime's
-  // ai/pi-supplement.js) validates exactly like a pi builtin. Unknown refs
-  // still fail with the same diagnostic.
+  // Validate against the runtime's upstream catalog facade, not pi-ai directly,
+  // so a pi builtin validates through the same snapshot-cloned view the
+  // runtime resolves and prices with. Unknown refs still fail with the same
+  // diagnostic.
   if (
     isPiBuiltinProvider(model.provider)
     && getPiBuiltinModel(model.provider, model.model) !== undefined

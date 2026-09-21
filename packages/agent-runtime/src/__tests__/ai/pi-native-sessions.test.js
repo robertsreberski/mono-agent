@@ -24,6 +24,7 @@ import {
   fauxText,
   fauxThinking,
   fauxToolCall,
+  getCurrentSystemPrompt,
 } from "@earendil-works/pi-ai";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as sessionAdapter from "../../ai/providers/pi-native/harness-adapter.js";
@@ -1675,8 +1676,10 @@ describe("durable primary sessions through the fallback router", () => {
       expect(result.failoverHistory.some((attempt) => attempt.failureKind === "session_busy")).toBe(false);
       // Accepted policy: warm failover carries this turn's snapshot, not older history.
       expect(JSON.stringify(backupContext)).not.toContain("first answer");
-      expect(backupContext.systemPrompt).toContain("Tool call: Read");
-      expect(backupContext.systemPrompt).toContain("durable failure evidence");
+      // pi-ai 0.86.0 folds the prompt into the transcript's leading system
+      // message: replay it with getCurrentSystemPrompt(), not context.systemPrompt.
+      expect(getCurrentSystemPrompt(backupContext.messages)).toContain("Tool call: Read");
+      expect(getCurrentSystemPrompt(backupContext.messages)).toContain("durable failure evidence");
       expect(findJsonlFiles(sessionsRoot)).toHaveLength(1);
       // This still-syncable primary is why the routed success must withhold id.
       await expect(router.syncSession(id)).resolves.toBe(true);
@@ -1736,7 +1739,9 @@ describe("stable native replay with host envelopes", () => {
         if (sessionId !== undefined) expect(result.providerSessionId).toBe(sessionId);
         sessionId = result.providerSessionId;
         if (execution === "fallback-configured") await expect(router.syncSession(sessionId)).resolves.toBe(true);
-        expect(captured.systemPrompt).toBe("stable system");
+        // pi-ai 0.86.0 folds the prompt into the transcript's leading system
+        // message: replay it with getCurrentSystemPrompt().
+        expect(getCurrentSystemPrompt(captured.messages)).toBe("stable system");
         expect(JSON.stringify(captured)).not.toContain("MUST-NOT-RESEED");
         if (previous) expect(JSON.stringify(captured.messages.slice(0, previous.length))).toBe(JSON.stringify(previous));
         previous = captured.messages;

@@ -41,11 +41,18 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 
 ## Version pins (keep them exact)
 
-- `packages/agent-runtime`: `@earendil-works/pi-ai` at `0.85.1`; `pi-agent-core` at `0.85.1`.
+- `packages/agent-runtime`: `@earendil-works/pi-ai` at `0.86.1`; `pi-agent-core` at `0.86.1`.
   Pi 0.85 replaces the old constructor/session surface with
   `AgentHarness.create()`, explicit operation `Context` arguments, and
   lane-scoped prompt, navigation, compaction, and event APIs. Keep that
   translation inside `src/ai/providers/pi-native/harness-adapter.js`.
+  Pi 0.86 folds request prompts and tool declarations into the transcript's
+  leading system message: provider-facing code (including faux response
+  factories in tests) sees a `TranscriptContext` and must replay tools/prompt
+  with `getCurrentTools()`/`getCurrentSystemPrompt()`, never `context.tools` /
+  `context.systemPrompt`. Pi 0.86.1 also ships `opencode-go:deepseek-v4.1-flash`
+  natively (the mono-agent catalog backfill is removed) and adds static `meta`
+  and `radius` provider catalogs (41 static ids).
 - Pi's standalone OAuth registry remains unavailable at runtime.
   `packages/agent-runtime/src/ai/pi-oauth-compat.js` owns the compatibility
   surface over `provider.auth.oauth`; do not bypass it with private upstream
@@ -57,7 +64,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   `resolvePiOAuthApiKey`, and `loginPiOAuth`. The model APIs return cloned
   snapshots, and the OAuth APIs do not expose Pi provider instances.
   A consumer test that still imports Pi's faux helpers must use an isolated
-  fixture or the runtime's exact Pi AI `0.85.1` and Pi Agent Core `0.85.1`
+  fixture or the runtime's exact Pi AI `0.86.1` and Pi Agent Core `0.86.1`
   compatibility pins as development-only pins; a floating
   host range can otherwise satisfy Pi Agent Core's upstream dependency with a
   different copy.
@@ -65,7 +72,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   the upgraded representation when the resumed session next persists a turn.
   Preserve an end-to-end legacy-resume regression test instead of adding a
   second mono-agent-owned file migration.
-- A packed consumer should resolve Pi AI `0.85.1` from both the runtime and Pi
+- A packed consumer should resolve Pi AI `0.86.1` from both the runtime and Pi
   Agent Core. The release guard verifies both resolution paths independently so
   Core's upstream floating range cannot be rewired by a host dependency.
 

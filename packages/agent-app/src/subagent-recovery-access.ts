@@ -29,7 +29,9 @@ export function createSubagentRecoveryAccess(options: {
         const current = await registerSubagentVerification({ workdir: target.workdir, ...(target.reportPath ? { reportPath: target.reportPath } : {}) }, access, roots);
         if (!sameSubagentVerificationTargetIdentity(current, target)) return false;
         await authorizeSubagentVerificationMetadata(target, access, roots);
-        if (!input.sandboxPolicy || !input.sandboxEngine || !await input.sandboxEngine.isAvailable()) return "unavailable";
+        // No sandbox precondition here: continuation and closure never perform
+        // an observation, and observeSubagentVerification independently refuses
+        // to disclose facts without a working sandbox engine.
       }
       for (const command of state?.commands?.commands ?? []) await authorizeSubagentObservationPath(command.cwd, access, roots);
       return true;

@@ -22,7 +22,7 @@ interface Entry { identity: string; value?: ProviderUsage; nextAt: number; fligh
 class UsageFailure extends Error {
   constructor(readonly code: ProviderUsageErrorCode, readonly retryAt?: number) { super(PROVIDER_USAGE_ERRORS[code]); }
 }
-/** Match Pi 0.85.1 normalizeDomain, but reject malformed persisted markers instead of defaulting them. */
+/** Match Pi 0.86.1 normalizeDomain, but reject malformed persisted markers instead of defaulting them. */
 function copilotHost(marker: unknown): string | undefined {
   if (marker === undefined) return "github.com";
   if (typeof marker !== "string") return undefined;

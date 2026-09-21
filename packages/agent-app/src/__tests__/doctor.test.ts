@@ -4155,7 +4155,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(report.ok).toBe(false);
   });
 
-  it("accepts the supplemented opencode-go DeepSeek V4.1 Flash model", async () => {
+  it("accepts the upstream opencode-go DeepSeek V4.1 Flash model", async () => {
     const authPath = await writeAuthStore({ "opencode-go": { type: "api_key", key: "sk-opencode" } });
     const configPath = await writeCredConfig({
       runtime: { model: "opencode-go:deepseek-v4.1-flash" },

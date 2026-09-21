@@ -1079,7 +1079,7 @@ describe("tui channel driver — info composition", () => {
     // 1 MiB body cap takes the agent offline rather than degrading it.
     expect(JSON.stringify(info).length).toBeLessThan(8_192);
     // `providers` is a support gate: the agent advertises the provider its
-    // route uses plus the one the fallback declares, not all 39 Pi built-ins.
+    // route uses plus the one the fallback declares, not all 41 Pi built-ins.
     expect(info.providers?.map((provider) => provider.id).sort())
       .toEqual(["anthropic", "openrouter"]);
   });

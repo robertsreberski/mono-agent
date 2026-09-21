@@ -7,6 +7,15 @@
   silently ignore stale `MONO_AGENT_*` core variables. Environment values remain
   available for adapter settings, secret references, and process plumbing.
 
+- Raise the configurable ceiling for `subagents.maxTurns` and
+  `subagents.definitions[].maxTurns` from 200 to 400. Long single-run
+  implementation work could exhaust its turn budget while an operator was
+  already configured at the previous maximum, leaving no configuration
+  response available. Wall-clock runaway remains bounded by
+  `subagents.timeoutMs`, and turns per persistent instance remain bounded by
+  `subagents.instances.maxTurns`. No default changes, so existing deployments
+  behave identically.
+
 - **Breaking: remove the first-party terminal renderer.** Remove `mono-agent tui`,
   the `mono-agent-tui` binary, and `@mono-agent/tui`; use `mono-agent web run --loopback` for
   live operation, `mono-agent runs list|show` for bounded offline diagnostics,
@@ -290,6 +299,22 @@
   extra. Operator streaming, wire types, previews and channel redaction share
   canonical implementations. See the [migration guide](./docs/reference/framework-simplification-migration.md)
   before upgrading an existing consumer.
+
+- Upgrade the pinned Pi AI and Agent Core dependencies to 0.86.1 with no
+  config change. Pi now carries request prompts and tool declarations in the
+  transcript's system messages; the runtime replays them through Pi's
+  transcript helpers. The Meta (Muse Spark) and Radius providers join the
+  advertised catalog, `opencode-go:deepseek-v4.1-flash` resolves natively with
+  effort levels low/high/max, and agent-level retry delays are capped at 60
+  seconds.
+
+- Fix persistent subagent instances created with `Agent` `verification` on
+  hosts without a working sandbox engine so closing the instance and
+  continuing it with an acknowledgement no longer fail with
+  `subagent_recovery_policy_unavailable`. Verification observation still
+  withholds workdir and report facts without a working sandbox, and recovery
+  inspection no longer claims parent verification is required when the
+  observation policy is unavailable.
 
 
 ## 0.22.0 — Persistent subagents and Projects (2026-09-16)

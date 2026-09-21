@@ -117,14 +117,14 @@ describe("provider-model-catalog", () => {
     }
   });
 
-  it("advertises the supplemented opencode-go DeepSeek V4.1 Flash like a builtin", () => {
+  it("advertises the upstream opencode-go DeepSeek V4.1 Flash like a builtin", () => {
     const catalog = buildProviderModelCatalog({ providers: [{ id: "opencode-go" }] });
     const provider = catalog.listProviders().find((entry) => entry.id === "opencode-go");
 
     const full = listPiBuiltinModels("opencode-go");
     expect(full.some((model) => model.id === "deepseek-v4.1-flash")).toBe(true);
-    // 27 upstream rows plus the one supplement: far below the 100 default cap,
-    // so maxAdvertisedModels behavior is unchanged (no totalModelCount).
+    // 27 upstream rows: far below the 100 default cap, so maxAdvertisedModels
+    // behavior is unchanged (no totalModelCount).
     expect(provider?.modelCount).toBe(full.length);
     expect(provider?.totalModelCount).toBeUndefined();
 
