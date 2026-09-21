@@ -65,6 +65,13 @@ const done = async (service: ProcessJobsServiceHandle, id: string) => {
   return job;
 };
 
+function processJobSettlement(service: ProcessJobsServiceHandle, jobId: string): Promise<void> {
+  const settlement = (service as unknown as { readonly settlements: ReadonlyMap<string, Promise<void>> })
+    .settlements.get(jobId);
+  if (settlement === undefined) throw new Error(`Expected active settlement for process job ${jobId}.`);
+  return settlement;
+}
+
 async function managedFixture(retireSession: (id: string, root: string) => Promise<unknown> = async () => {}, overrides = {}, realOwner = false, writeRegistry?: typeof writeJsonAtomic) {
   const f = await fixture({ maxConcurrent: 1, maxQueued: 0, ...overrides }, retireSession, undefined, realOwner);
   const registry = createSubagentInstanceRegistry({ root: resolve(f.root, "children"), retireSession, ...(writeRegistry ? { writeRegistry } : {}),
@@ -366,15 +373,21 @@ describe("managed detached production execution", () => {
     expect(run).not.toHaveBeenCalled(); expect(f.wake).not.toHaveBeenCalled();
   });
 
-  it.each(["registry-reason-intent", "job-reason-write"])("G05: %s failure never exposes resumable idle or wakes before a durable reason", async (fault) => {
+  it.each([
+    { fault: "registry-reason-intent", ordering: "settled-before-stop" },
+    { fault: "registry-reason-intent", ordering: "during-stop" },
+    { fault: "job-reason-write", ordering: "settled-before-stop" },
+  ] as const)("G05: $fault failure never exposes resumable idle or wakes before a durable reason ($ordering)", async ({ fault, ordering }) => {
     const f = await managedFixture(); const run = vi.fn(async () => { throw new Error("provider failed once"); });
-    let reasonIntent = false;
+    const reasonIntentEntered = deferred<void>(); const releaseReasonIntent = deferred<void>();
+    const registryFailure = new Error("injected registry reason-intent failure");
     f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
       verify: async (identity) => await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
       publish: async (phase, publication) => {
         if (phase === "intent" && publication.disposition.reason) {
-          reasonIntent = true;
-          if (fault === "registry-reason-intent") throw new Error("injected registry reason-intent failure");
+          reasonIntentEntered.resolve();
+          await releaseReasonIntent.promise;
+          if (fault === "registry-reason-intent") throw registryFailure;
         }
         await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
       },
@@ -383,20 +396,41 @@ describe("managed detached production execution", () => {
       failMutationOnce(f, (records) => [...records.values()].some((record) => record.subagentOwnership?.disposition?.reason));
     }
     const { agent, send } = tools(f, run);
-    const receipt = await agent.execute(`reason-write-${fault}`, { persist: true, background: true, id: "helper", prompt: "fail once" });
-    await vi.waitFor(() => expect(reasonIntent).toBe(true), { timeout: 10_000 });
-    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: 10_000 });
-    expect(f.wake).not.toHaveBeenCalled();
-    const instance = await f.instances.get("helper");
-    expect(instance).toMatchObject({ status: "running" });
-    await expect(send.execute("blocked-after-reason-fault", { id: "helper", message: "must not rerun", background: true })).rejects.toThrow();
-    await expect(f.instances.close("helper")).rejects.toThrow();
-    expect(run).toHaveBeenCalledOnce(); expect(f.wake).not.toHaveBeenCalled();
-    const stored = await f.store.get(receipt.details.jobId).catch(() => undefined);
-    if (stored) expect(stored.state).not.toBe("succeeded");
-    if (fault === "registry-reason-intent") {
-      await expect(f.service.stop()).resolves.toBeUndefined();
-      services.splice(services.indexOf(f.service), 1);
+    let settlement: Promise<void> | undefined; let stopping: Promise<void> | undefined;
+    try {
+      const receipt = await agent.execute(`reason-write-${fault}`, { persist: true, background: true, id: "helper", prompt: "fail once" });
+      await reasonIntentEntered.promise;
+      settlement = processJobSettlement(f.service, receipt.details.jobId);
+      expect(run).toHaveBeenCalledOnce(); expect(f.wake).not.toHaveBeenCalled();
+      const instance = await f.instances.get("helper");
+      expect(instance).toMatchObject({ status: "running" });
+      await expect(send.execute("blocked-after-reason-fault", { id: "helper", message: "must not rerun", background: true })).rejects.toThrow();
+      await expect(f.instances.close("helper")).rejects.toThrow();
+      expect(run).toHaveBeenCalledOnce(); expect(f.wake).not.toHaveBeenCalled();
+      const stored = await f.store.get(receipt.details.jobId).catch(() => undefined);
+      if (stored) expect(stored.state).not.toBe("succeeded");
+
+      if (ordering === "settled-before-stop") {
+        releaseReasonIntent.resolve();
+        await settlement;
+        stopping = f.service.stop();
+        await expect(stopping).resolves.toBeUndefined();
+      } else {
+        stopping = f.service.stop();
+        releaseReasonIntent.resolve();
+        const stopError = await stopping.then(() => undefined, (error: unknown) => error);
+        expect(stopError).toBeInstanceOf(AggregateError);
+        expect((stopError as AggregateError).message).toBe("Process-job shutdown encountered failures.");
+        expect((stopError as AggregateError).errors).toEqual([registryFailure]);
+      }
+    } finally {
+      releaseReasonIntent.resolve();
+      if (settlement) await Promise.allSettled([settlement]);
+      if (stopping) {
+        await Promise.allSettled([stopping]);
+        const serviceIndex = services.indexOf(f.service);
+        if (serviceIndex >= 0) services.splice(serviceIndex, 1);
+      }
     }
   });
 
