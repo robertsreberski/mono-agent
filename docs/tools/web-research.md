@@ -292,7 +292,7 @@ a blocked domain never leaks into result text):
 | Provider | Domain behavior |
 | --- | --- |
 | `parallel` | Honours `site:` inside `search_queries` server-side (verified live); the natural-language objective additionally steers with `Prefer these domains: …`. `filterSupport.domains` is `operator`. |
-| `duckduckgo`, `startpage`, `hound` | Receive the operator text verbatim; these keyword backends honour `site:` as documented query syntax. `filterSupport.domains` is `operator`. |
+| `duckduckgo`, `startpage`, `local` | Receive the operator text verbatim; these keyword backends honour `site:` as documented query syntax. The `local` provider searches DuckDuckGo's HTML endpoint, so it inherits that engine's operator support. `filterSupport.domains` is `operator`. |
 | `codex` | The query text (including `site:`) is passed through verbatim, but the subscription search is model-mediated through the Codex app-server's unpublished server-side search tool, so server-side support is unverified: only the client-side domain filter can be relied on. `filterSupport.domains` is `unverified`. |
 | `searxng` | The operator text is forwarded verbatim, but the endpoint is operator-owned and `site:` support is a property of its configured upstream engines, not of this adapter. `filterSupport.domains` is `unverified`. |
 | `ollama` | Ollama's `web_search` API documents only a raw query string with no operator syntax, so support is unverified: the text is still sent, but only the client-side domain filter can be relied on. `filterSupport.domains` is `unverified`. |
