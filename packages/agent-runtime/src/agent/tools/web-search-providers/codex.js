@@ -2,7 +2,7 @@
 import { claimWebSearchRequest } from "../web-search-state.js";
 export const codexProvider = {
   name: "codex", batchesQueries: false, primaryOnly: true,
-  filterSupport: { language: "advisory", timeRange: "advisory", country: "unsupported" },
+  filterSupport: { language: "advisory", timeRange: "advisory", country: "unsupported", domains: "operator" },
   configure(input) {
     const model = typeof input?.codex?.model === "string" && input.codex.model.trim()
       ? input.codex.model.trim() : "gpt-5.6-luna";

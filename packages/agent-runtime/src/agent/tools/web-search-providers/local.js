@@ -8,7 +8,9 @@ import { duckDuckGoRegion, unsupportedCountryFilter } from "../web-search-countr
  */
 export const localProvider = {
   name: "local", batchesQueries: false, ownsRequests: true,
-  filterSupport: { language: "advisory", timeRange: "provider", country: "provider" },
+  // domains: "operator" — the single DuckDuckGo engine honours site: as
+  // documented query syntax; the operator text is forwarded verbatim.
+  filterSupport: { language: "advisory", timeRange: "provider", country: "provider", domains: "operator" },
   configure: (input) => {
     const error = localEndpointError(input?.hound);
     return error ? { error, code: "invalid_local_config" } : { value: {} };
