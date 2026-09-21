@@ -289,7 +289,7 @@ describe("resolveJsonMonoAgentConfig", () => {
       }
     }
   }
-} })).toThrow(/TRUST_PUBLIC_URL=true/u);
+} })).toThrow(/tools\.web\.search\.ollama\.trustPublicUrl/u);
     expect(resolveJsonMonoAgentConfig({ cwd: "/repo", json: {
   runtime: {
     model: "pi:openai-codex:gpt-5.5"
@@ -2952,7 +2952,7 @@ describe("resolveJsonMonoAgentConfig", () => {
 },
     })).toThrowError(expect.objectContaining({
       code: "invalid_json",
-      details: expect.objectContaining({ path: "memory.llm" }),
+      details: expect.objectContaining({ path: "memory.llm.model" }),
     }));
   });
 
@@ -3312,7 +3312,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     expect(config.memory?.embeddings?.apiKey).toBeUndefined();
   });
 
-  it("does not substitute a generic literal when a declared LM Studio apiKeyEnv is unresolved", () => {
+  it("keeps both values when a declared LM Studio apiKeyEnv is unresolved", () => {
     const config = resolveJsonMonoAgentConfig({
       cwd: "/repo",
       json: {
@@ -3335,11 +3335,11 @@ describe("resolveJsonMonoAgentConfig", () => {
     });
 
     expect(config.memory?.embeddings?.apiKeyEnv).toBe("LM_STUDIO_API_KEY");
-    expect(config.memory?.embeddings?.apiKey).toBeUndefined();
+    expect(config.memory?.embeddings?.apiKey).toBe("stale-provider-secret");
   });
 
-  it("does not let a generic literal satisfy an unresolved OpenAI apiKeyEnv", () => {
-    expect(() => resolveJsonMonoAgentConfig({
+  it("keeps an inline literal alongside an unresolved OpenAI apiKeyEnv", () => {
+    const config = resolveJsonMonoAgentConfig({
       cwd: "/repo",
       json: {
   runtime: {
@@ -3358,7 +3358,11 @@ describe("resolveJsonMonoAgentConfig", () => {
     }
   }
 },
-    })).toThrow(/openai memory embeddings require/u);
+    });
+    expect(config.memory?.embeddings).toMatchObject({
+      apiKey: "stale-provider-secret",
+      apiKeyEnv: "OPENAI_EMBEDDINGS_KEY",
+    });
   });
 
   it("keeps an inline apiKey literal alongside an apiKeyEnv reference without resolving either", () => {
@@ -3918,9 +3922,9 @@ describe("resolveJsonMonoAgentConfig", () => {
       }
       expect(rejection).toMatchObject({
         code: "invalid_json",
-        details: { path: "memory.backend", paths: ["memory.backend"] },
+        details: { path: "memory.backend" },
       });
-      expect(String(rejection)).toContain("no longer accepts `supermemory`");
+      expect(String(rejection)).toContain("must be one of");
     },
   );
 
