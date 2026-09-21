@@ -439,6 +439,7 @@ function createConfiguredAgentRuntimeBase(
   options: ConfiguredAgentRuntimeOptions | undefined,
   suppressSandboxEngine = false,
 ): MonoRuntimeLike {
+  assertNoRetiredMonoAgentConfig(config);
   const fallback = fallbackChainForConfig(config, options);
   const sandboxEngine = suppressSandboxEngine
     ? undefined
@@ -1045,6 +1046,7 @@ async function createConfiguredAgentHarnessInternal(
   internalHooks: ConfiguredAgentInternalHooks = {},
 ): Promise<AgentHarness> {
   const config = options.config;
+  assertNoRetiredMonoAgentConfig(config);
   const recording = await recorderCompositionDeps(config, options, internalHooks);
   const ownership = await acquireAgentRootOwnership(options.cwd ?? process.cwd());
   const agentRoot = ownership.agentRoot;

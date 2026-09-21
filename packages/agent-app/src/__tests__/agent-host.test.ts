@@ -44,9 +44,8 @@ const fakeSandboxEngine: SandboxEngine = {
 // These composition tests exercise harness/runtime wiring, not the real
 // cooperative owner. Dedicated coordinator and configured-root suites cover
 // the filesystem-backed lifetime contract.
-vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../agent-root-coordinator.js")>(),
-  acquireAgentRootOwnership: async (root: string | undefined) => ({
+const agentRootOwnershipSpies = vi.hoisted(() => ({
+  acquire: vi.fn(async (root: string | undefined) => ({
     agentRoot: root ?? process.cwd(),
     coordinator: {
       synchronizeGeneration() {},
@@ -56,7 +55,12 @@ vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
       }),
     },
     release() {},
-  }),
+  })),
+}));
+
+vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../agent-root-coordinator.js")>(),
+  acquireAgentRootOwnership: agentRootOwnershipSpies.acquire,
   releaseAgentRootOwnershipWhenIdle: async (ownership: { release(): void }) => {
     ownership.release();
     return true;
@@ -87,6 +91,44 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => closeServer(server)));
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
+
+const RETIRED_MEMORY_CONFIG_CASES = [
+  {
+    label: "a plain retired selector",
+    backend: "supermemory",
+    supermemory: {},
+    path: "memory.backend",
+    secrets: [],
+  },
+  {
+    label: "a padded retired selector",
+    backend: "  supermemory  ",
+    supermemory: {},
+    path: "memory.backend",
+    secrets: [],
+  },
+  {
+    label: "an active retired block with BuJo",
+    backend: "bujo",
+    supermemory: { baseUrl: "https://retired.invalid/private", apiKey: "retired-key" },
+    path: "memory.supermemory",
+    secrets: ["https://retired.invalid/private", "retired-key"],
+  },
+  {
+    label: "an active retired block without a selector",
+    backend: undefined,
+    supermemory: { baseUrl: "https://retired.invalid/private", apiKeyEnv: "PRIVATE_RETIRED_KEY" },
+    path: "memory.supermemory",
+    secrets: ["https://retired.invalid/private", "PRIVATE_RETIRED_KEY"],
+  },
+] as const;
+
+const RETIRED_COMPOSITION_CASES = [
+  ["configured harness without injected memory", "harness", false],
+  ["configured harness with injected memory", "harness", true],
+  ["configured responder without injected memory", "responder", false],
+  ["configured responder with injected memory", "responder", true],
+] as const;
 
 describe("agent host composition helpers", () => {
   it("creates a responder from MonoAgentConfig with runtime, tools, local providers, request extensions, and recording", async () => {
@@ -405,6 +447,138 @@ describe("agent host composition helpers", () => {
     ].some((value) => diagnostic.includes(value))).toBe(false);
     await expect(access(memoryPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it.each(RETIRED_COMPOSITION_CASES.flatMap(([factoryLabel, factory, injectMemory]) =>
+    RETIRED_MEMORY_CONFIG_CASES.map((configCase) => [
+      factoryLabel,
+      configCase.label,
+      factory,
+      injectMemory,
+      configCase,
+    ] as const),
+  ))("rejects %s with %s before composition side effects", async (
+    _factoryLabel,
+    _configLabel,
+    factory,
+    injectMemory,
+    configCase,
+  ) => {
+    const dir = await tempDir();
+    const base = monoConfig({
+      dir,
+      identityPath: join(dir, "IDENTITY.md"),
+      artifactDir: join(dir, "artifacts"),
+      memoryPath: join(dir, "memory"),
+    });
+    const config = {
+      ...base,
+      memory: {
+        ...base.memory,
+        ...(configCase.backend === undefined ? {} : { backend: configCase.backend }),
+        supermemory: configCase.supermemory,
+      },
+    } as unknown as MonoAgentConfig;
+    const configureTools = vi.fn();
+    const run = vi.fn(async () => ({ text: "must not run" }));
+    const load = vi.fn(async () => undefined);
+    const persistCompletedTurn = vi.fn(async (turn: { runId: string; conversationId: string }) => ({
+      id: turn.runId,
+      runId: turn.runId,
+      conversationId: turn.conversationId,
+      source: "test",
+      bytesWritten: 0,
+      admissionStatus: "admitted" as const,
+    }));
+    const memory: MemoryStore = { load, persistCompletedTurn };
+    const options = {
+      config,
+      cwd: dir,
+      runtime: { configureTools, run },
+      ...(injectMemory ? { memory } : {}),
+    };
+    agentRootOwnershipSpies.acquire.mockClear();
+
+    let rejection: unknown;
+    try {
+      if (factory === "harness") {
+        await createConfiguredAgentHarness(options);
+      } else {
+        await createConfiguredAgentResponder(options);
+      }
+    } catch (error) {
+      rejection = error;
+    }
+
+    expect(rejection).toBeInstanceOf(MonoAgentConfigError);
+    expect(rejection).toMatchObject({
+      code: "invalid_json",
+      details: { path: configCase.path },
+    });
+    const diagnostic = rejection instanceof Error
+      ? JSON.stringify({
+          message: rejection.message,
+          ...(rejection instanceof MonoAgentConfigError ? { details: rejection.details } : {}),
+        })
+      : "";
+    expect(diagnostic).toContain("first-party Supermemory support");
+    expect(diagnostic).toContain("remote data remains untouched");
+    expect(configCase.secrets.some((secret) => diagnostic.includes(secret))).toBe(false);
+    expect(configureTools).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+    expect(persistCompletedTurn).not.toHaveBeenCalled();
+    expect(agentRootOwnershipSpies.acquire).not.toHaveBeenCalled();
+    await expect(readdir(dir)).resolves.toEqual([]);
+  });
+
+  it.each(RETIRED_MEMORY_CONFIG_CASES)(
+    "rejects $label before standalone configured-runtime setup",
+    (configCase) => {
+      const dir = join(tmpdir(), "retired-runtime-boundary");
+      const base = monoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        artifactDir: join(dir, "artifacts"),
+        memoryPath: join(dir, "memory"),
+      });
+      const providerReads = vi.fn(() => base.providers);
+      const config = {
+        ...base,
+        memory: {
+          ...base.memory,
+          ...(configCase.backend === undefined ? {} : { backend: configCase.backend }),
+          supermemory: configCase.supermemory,
+        },
+      } as unknown as MonoAgentConfig;
+      Object.defineProperty(config, "providers", {
+        enumerable: true,
+        get: providerReads,
+      });
+
+      let rejection: unknown;
+      try {
+        createConfiguredAgentRuntime(config);
+      } catch (error) {
+        rejection = error;
+      }
+
+      expect(rejection).toBeInstanceOf(MonoAgentConfigError);
+      expect(rejection).toMatchObject({
+        code: "invalid_json",
+        details: { path: configCase.path },
+      });
+      const diagnostic = rejection instanceof Error
+        ? JSON.stringify({
+            message: rejection.message,
+            ...(rejection instanceof MonoAgentConfigError ? { details: rejection.details } : {}),
+          })
+        : "";
+      expect(diagnostic).toContain("first-party Supermemory support");
+      expect(diagnostic).toContain("remote data remains untouched");
+      expect(configCase.secrets.some((secret) => diagnostic.includes(secret))).toBe(false);
+      expect(providerReads).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps an inert retired block compatible with direct local-memory composition", async () => {
     const dir = await tempDir();
