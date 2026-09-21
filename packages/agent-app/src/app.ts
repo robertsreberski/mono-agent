@@ -8,7 +8,6 @@
 export { startMonoAgentApp } from "./app-controller.js";
 export type {
   ConfigApplyResult,
-  ExporterStatus,
   MonoAgentApp,
   MonoAgentAppOptions,
   SandboxStatus,

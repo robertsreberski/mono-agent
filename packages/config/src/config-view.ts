@@ -4,7 +4,6 @@ import type {
   RedactedProviderDefinition,
   RedactedMemoryConfig,
   RedactedMonoAgentConfig,
-  RedactedObservabilityExporterConfig,
 } from "./types.js";
 
 /**
@@ -168,7 +167,6 @@ export const CONFIG_ENV_KEYS = {
   "traceability.heartbeatMs": "MONO_AGENT_TRACE_HEARTBEAT_MS",
   "traceability.staleAfterMs": "MONO_AGENT_TRACE_STALE_AFTER_MS",
   "traceability.globalDiscovery": "MONO_AGENT_TRACE_GLOBAL_DISCOVERY",
-  "observability.exporters": "MONO_AGENT_OBSERVABILITY_EXPORTERS",
   "providers": "MONO_AGENT_PROVIDERS_JSON",
   "providers.piAuthPath": "MONO_AGENT_PI_AUTH_PATH",
   "providers.piNative.transport": "MONO_AGENT_PI_TRANSPORT",
@@ -1100,41 +1098,6 @@ function buildTraceabilitySection(input: BuildMonoAgentConfigViewInput): ConfigV
   };
 }
 
-function formatExporters(
-  exporters: readonly RedactedObservabilityExporterConfig[],
-): string {
-  if (exporters.length === 0) {
-    return "none";
-  }
-  return exporters.map((exporter) => exporter.type).join(", ");
-}
-
-function buildObservabilitySection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
-  const { redacted, json, env } = input;
-  const observability = redacted.observability;
-  if (observability === undefined) {
-    return {
-      id: "observability",
-      label: "Observability",
-      status: "disabled",
-      fields: [{ id: "observability.exporters", label: "Exporters", value: "none (local JSONL only)", source: "default" }],
-    };
-  }
-  return {
-    id: "observability",
-    label: "Observability",
-    status: "active",
-    fields: [
-      toField(env, {
-        id: "observability.exporters",
-        label: "Exporters",
-        value: formatExporters(observability.exporters),
-        jsonPresent: json.observability?.exporters !== undefined,
-      }),
-    ],
-  };
-}
-
 function formatProviders(
   providers: readonly RedactedProviderDefinition[],
 ): string {
@@ -1216,7 +1179,7 @@ function buildProvidersSection(input: BuildMonoAgentConfigViewInput): ConfigView
 /**
  * Build the single, complete, source-annotated view of a resolved
  * `MonoAgentConfig`. Every core section and field is represented exactly once,
- * including the `observability.exporters` and `providers` blocks that the
+ * including nested `providers` blocks that the
  * retired field-group registry omitted. Drives both the read-only TUI config
  * pane and the `mono-agent config` CLI command, so the two surfaces can never
  * disagree about what the loader produced.
@@ -1234,7 +1197,6 @@ export function buildMonoAgentConfigView(
     buildSandboxSection(input),
     buildArtifactsSection(input),
     buildTraceabilitySection(input),
-    buildObservabilitySection(input),
     buildProvidersSection(input),
   ];
 }

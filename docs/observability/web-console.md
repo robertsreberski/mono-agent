@@ -549,10 +549,10 @@ what was said rather than the machine payloads behind it.
 
 Message text and titles match differently, because they are matched by different
 means. Message text is tokenized: each query word matches from the start of a
-word, so `deploy phoen` finds "deploy the phoenix exporter" but `hoenix` does
+word, so `deploy retr` finds "deploy the retry monitor" but `onitor` does
 not, and accents are folded so an unaccented query still matches accented prose.
-Titles are matched as a plain substring, so `hoenix` does find a conversation
-*titled* "deploy the phoenix exporter", and title matching folds ASCII case only
+Titles are matched as a plain substring, so `onitor` does find a conversation
+*titled* "deploy the retry monitor", and title matching folds ASCII case only
 — `reunion` will not match a title spelled "Réunion". Adding a word narrows the
 results either way.
 

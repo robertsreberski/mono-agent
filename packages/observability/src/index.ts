@@ -44,20 +44,6 @@ export type {
   SessionTurnContext,
 } from "./session-mapping.js";
 export {
-  buildEventSpanAttributes,
-  buildRootSpanAttributes,
-  countRuntimeWarnings,
-  spanKindHint,
-  spanStatusFor,
-} from "./run-export-mapping.js";
-export type {
-  EventSpanMapping,
-  SpanAttributeValue,
-  SpanAttributes,
-  SpanKindHint,
-  SpanStatusHint,
-} from "./run-export-mapping.js";
-export {
   auditRecordedRuns,
 } from "./artifact-audit.js";
 export type {
@@ -135,8 +121,6 @@ export type {
   JsonlRunReaderOptions,
   JsonlRunRecorderOptions,
   KnownArtifactFailureKind,
-  ObservabilityExporterConfig,
-  PhoenixExporterConfig,
   PruneTraceSourcesOptions,
   PruneTraceSourcesResult,
   RunArtifactKind,

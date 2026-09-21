@@ -2,7 +2,6 @@
 // Internal command implementation; `cli.ts` remains the stable public/bin facade.
 import { basename, resolve } from "node:path";
 import process from "node:process";
-import { runBackfill } from "./backfill.js";
 import {
   MANAGED_BACKGROUND_WORKER_ENV,
   sanitizeManagedBackgroundWorkerEnvironment,
@@ -329,16 +328,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.json === true ? { json: true } : {}),
       });
     }
-    case "backfill":
-      return await runBackfill({
-        ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
-        ...(args.run === undefined ? {} : { run: args.run }),
-        all: args.all,
-        ...(args.since === undefined ? {} : { since: args.since }),
-        ...(args.until === undefined ? {} : { until: args.until }),
-        dryRun: args.dryRun,
-        includeMemory: args.includeMemory,
-      });
     case "runs":
       return await runRunsCommand(args);
     case "memory": {

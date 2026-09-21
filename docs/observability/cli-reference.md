@@ -7,7 +7,7 @@ sidebar:
 
 This page documents every `mono-agent` command and its flags, verified against the CLI implementation. It also covers the two cross-cutting behaviors you hit on most invocations: automatic `.env` loading and the per-section reports `validate` and `start` print.
 
-Run `mono-agent help` (or bare `mono-agent`, `--help`, `-h`) for a grouped, one-line-per-command summary under the **Setup / Check / Run / Console / Observe / Maintain** headings, with a `[--json]` marker on the commands that accept it. Drill in with `mono-agent help <command>` for that command's full flags and behavior notes, or `mono-agent help notes` for model references, fallback chains, and env-file rules. `mono-agent help <alias>` resolves the permanent aliases (`doctor` → `validate`, `setup` → `init`), and a removed command (`recipes`, `sessions`, `metrics`, or `audit-runs`) prints its replacement pointer. An unknown command or an unknown flag prints the error plus the grouped summary and exits with code `2`; `help <unknown-topic>` prints a stderr usage error listing the valid topics (without the summary) and also exits `2`.
+Run `mono-agent help` (or bare `mono-agent`, `--help`, `-h`) for a grouped, one-line-per-command summary under the **Setup / Check / Run / Console / Observe / Maintain** headings, with a `[--json]` marker on the commands that accept it. Drill in with `mono-agent help <command>` for that command's full flags and behavior notes, or `mono-agent help notes` for model references, fallback chains, and env-file rules. `mono-agent help <alias>` resolves the permanent aliases (`doctor` → `validate`, `setup` → `init`), and a removed command (`recipes`, `sessions`, `metrics`, `audit-runs`, or `backfill`) prints its replacement pointer. An unknown command or an unknown flag prints the error plus the grouped summary and exits with code `2`; `help <unknown-topic>` prints a stderr usage error listing the valid topics (without the summary) and also exits `2`.
 
 ## Exit codes and `--json`
 
@@ -26,7 +26,7 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 - Hints, warnings, and deprecation notices go to stderr, never stdout.
 - Secrets are redacted exactly as the human view redacts them; a raw secret value never appears in JSON output.
 
-`--json` is rejected with a usage error (`2`) on the lifecycle/interactive commands (`init`, `auth`, `start`, `stop`, `restart`, `logs`, `tui`, `web`, `backfill`) and on `sandbox setup`/`sandbox check` and `install-skill` without `--project --check`, rather than being silently ignored.
+`--json` is rejected with a usage error (`2`) on the lifecycle/interactive commands (`init`, `auth`, `start`, `stop`, `restart`, `logs`, `tui`, `web`) and on `sandbox setup`/`sandbox check` and `install-skill` without `--project --check`, rather than being silently ignored.
 
 ## Command summary
 
@@ -50,7 +50,7 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 | `sessions` (removed) | The Session Recorder launcher was removed; it now errors with a pointer and exits `2`. Use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). | — |
 | `tui` | Open remote discovery/chat or use ordinary in-process local chat. | `--agent`, `--conversation`, `--local` |
 | `install-skill` | Copy the authoring composer to coding harnesses and pair its documentation MCP companion, or check/update managed project-local skills. | `--target claude\|codex\|both`, `--force`, `--no-docs-mcp`, `--project`, `--check`, `--update`, `--json` (with `--project --check`) |
-| `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
+| `backfill` (removed) | Fails with migration guidance. Use `runs`, `runs audit`, or `runs report` for retained local artifacts; perform any final legacy export before upgrading with the complete version set you already operate. | — |
 | `runs` | Read-only, offline reporting over local run summaries. `report` (default) aggregates status/failure-kind rates, duration percentiles, and cost totals; `audit` reports parse/status/failure-kind/stale-running totals without rewriting anything. | `report`, `audit`; `--artifacts <path>`, `--consumer <path>`, `--since <iso>`, `--until <iso>`, `--by model\|channel\|failureKind`, `--stale-after-ms <n>`, `--include-memory`, `--json`, `--config <path>`, `--env-file <path>` |
 | `help` | Print the grouped command summary, a single command's detail (`help <command>`), or the notes block (`help notes`). | `<command>`, `notes` |
 
@@ -121,7 +121,7 @@ Failures and refusals instead persist in bounded owner-private state shown by
 
 Scaffolds a new agent in the current folder. Existing `mono-agent.config.json`, `IDENTITY.md`, and `.mono-agent/` scaffold files are kept, not overwritten. The wizard names `IDENTITY.md` → `## Role` as the one Role destination. Its result distinguishes a created Role from a preserved identity; when preserved, the entered Role was not written anywhere and the summary says to add or edit that heading manually. Generated scaffold targets and their parent chain must remain inside the agent directory and cannot be symbolic links; this write-time check also applies to **Save incomplete**, so recovery cannot bypass staging through a linked capability directory. Guided secret setup is the deliberate exception: after masked entry and review, it may harden/update `.env` and `.gitignore` under the transaction below.
 
-On an interactive terminal with **no flags**, `init` launches the readiness-proven wizard. Pick a preset or custom setup, choose the public display name, enter the exact Role text for `IDENTITY.md` → `## Role`, choose model, effort, and fallback routes, answer the optional-capabilities gate (channels, memory, observability — default **No** for the custom journey; a seeded preset opens it at Yes), and confirm the tool/access and sandbox choices before the concrete creation review. Declining the gate at any point still runs the tool framing, the sandbox choice, and the default-No high-risk confirmation. Escape moves back one logical step; Ctrl-C asks before exiting. Primary and fallback pickers are real autocomplete fields over every bundled model for the guided Pi providers (Anthropic, GitHub Copilot, OpenAI Codex, OpenCode-Go, and local Ollama/LM Studio). Catalog availability, credential detection, and live verification are separate. The bundled Pi catalog entry leads whenever that catalog is readable; the curated static `openai-codex:gpt-5.6-terra` candidate is the offline fallback. That offline entry exposes no guessed effort metadata, so it offers only **Provider default** until catalog or local discovery supplies the model's real effort levels.
+On an interactive terminal with **no flags**, `init` launches the readiness-proven wizard. Pick a preset or custom setup, choose the public display name, enter the exact Role text for `IDENTITY.md` → `## Role`, choose model, effort, and fallback routes, answer the optional-capabilities gate (channels and memory — default **No** for the custom journey; a seeded preset opens it at Yes), and confirm the tool/access and sandbox choices before the concrete creation review. Declining the gate at any point still runs the tool framing, the sandbox choice, and the default-No high-risk confirmation. Escape moves back one logical step; Ctrl-C asks before exiting. Primary and fallback pickers are real autocomplete fields over every bundled model for the guided Pi providers (Anthropic, GitHub Copilot, OpenAI Codex, OpenCode-Go, and local Ollama/LM Studio). Catalog availability, credential detection, and live verification are separate. The bundled Pi catalog entry leads whenever that catalog is readable; the curated static `openai-codex:gpt-5.6-terra` candidate is the offline fallback. That offline entry exposes no guessed effort metadata, so it offers only **Provider default** until catalog or local discovery supplies the model's real effort levels.
 
 The default **Allow all tools** choice means every built-in shell/file/web tool and every enabled channel's send/ask tool. The wizard states that scope before confirmation and requires a second explicit confirmation when no enforceable sandbox constrains it. Use Pi when exact mono-agent roots, deny-write globs, or network policy must cover every attempt.
 
@@ -267,11 +267,11 @@ Each section prints a status badge, a label, and its details. The statuses are:
 | Status | Meaning |
 | --- | --- |
 | `ok` | The section is configured and ready. |
-| `waiting` | Configured but a runtime dependency is not up yet (e.g. Ollama or Phoenix not reachable), or a credential is missing/expired. Runtime-soft — never blocks start. Advisory detail lines are prefixed `[WARN]`. |
+| `waiting` | Configured but a runtime dependency is not up yet (for example Ollama), or a credential is missing/expired. Runtime-soft — never blocks start. Advisory detail lines are prefixed `[WARN]`. |
 | `disabled` | The section is intentionally off — a channel with `enabled: false`, or no models of a kind that needs this check. Never blocks start. |
 | `error` | A structural problem that must be fixed; any `error` section fails the run. |
 
-`validate` runs liveness probes, so it can show `waiting` for unreachable network dependencies. The Phoenix exporter check additionally POSTs an empty protobuf to confirm export compatibility, not just reachability — see [Phoenix & backfill](/observability/phoenix-and-backfill/).
+`validate` runs liveness probes, so it can show `waiting` for configured network dependencies. First-party Phoenix/OTLP probing was removed with the bundled exporter.
 
 For built-in memory, Journal and BuJo require a valid managed `.index/manifest.json`; only Lite
 may remain unmanaged. A missing/corrupt manifest, configured-versus-active tier/provider/model/dimension
@@ -504,7 +504,6 @@ mono-agent start --foreground
 On start the CLI prints per-section status blocks:
 
 - **instance** — the resolved config path and traceability status (`running (source <id>)`, or `<kind>: <reason>`).
-- **observability** — the exporter status: when configured, the Phoenix endpoint, the Phoenix app URL, any last warning/error, and where JSONL artifacts remain local. When `includeSensitiveData` is enabled it surfaces an explicit yellow `[WARN] includeSensitiveData=true exports user input, assistant replies, tool args/results, and system prompt to Phoenix at <endpoint>; non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned by default. contentPatternRedaction=true replaces a closed set of high-confidence credential shapes. Strings are capped. Substantive run content leaves this machine.` line (also emitted across `validate` / `status` / background output). The export remains a valid opt-in — this warning does not flip `report.ok` or the `validate` status.
 - **channels** — active communication channels keep one line each; disabled channel ids are folded into one compact line while warnings retain their full reason. A channel rendered `degraded: <reason>` carries a warning badge — it is a non-fatal, still-serving state where the live transport dropped but the responder is kept alive and the adapter is self-recovering (e.g. a Telegram poll crash on a network switch). `degraded` counts as an active/serving transport (not idle, not failed) and flips back to `running` once the transport recovers.
 - **operator** — the local operator transport is separated from communication channels. The stable `tui` metadata id is shown as `gui` with `TUI + Web` and its discovered `/gui` URL. JSON output keeps the original `tui` id unchanged.
 - **runs health** — in foreground mode, the active selected skills, local artifact directory, total recorded summaries, last runs with relative ages, status counts, stale/process-gone `running` summaries, and compact failure-kind counts with explanations.
@@ -741,51 +740,19 @@ Audits run summaries for structural integrity. Use it when you need a structural
 
 It only reads `*.summary.json` files. A malformed summary is reported as a parse failure, and a stale `running` summary is reported without being rewritten. Startup reconciliation is still the only path that changes stale `running` summaries to `interrupted`.
 
-## `backfill`
+## `backfill` (removed)
 
-Exports already-recorded run artifacts to the configured Phoenix exporter with their historical timestamps. `--all` defaults to agent runs only; add `--include-memory` to export memory-maintenance runs from both the legacy mixed namespace and the `memory/` namespace. Explicit `--run mem-*` reads the requested memory run even without `--include-memory`. Trace ids are deterministic per run, so re-running overwrites rather than duplicating. Honors `--config <path>` and `--env-file <path>`.
+First-party Phoenix/OTLP export and `mono-agent backfill` were removed. Both
+`mono-agent backfill` and `mono-agent help backfill` return migration guidance:
+use `mono-agent runs`, `mono-agent runs audit`, or `mono-agent runs report` for
+retained local artifacts. If a final export through the legacy path is required,
+perform it before upgrading with the complete currently working version set that
+the consumer already operates.
 
-| Flag | Effect |
-| --- | --- |
-| `--run <id>` | Export exactly this run id. |
-| `--all` | Export every recorded run. |
-| `--since <iso>` | Only runs whose `startedAt` is ≥ this ISO instant. |
-| `--until <iso>` | Only runs whose `startedAt` is ≤ this ISO instant. |
-| `--include-memory` | With `--all`, include memory-maintenance runs in addition to agent runs. |
-| `--dry-run` | Map and serialize but do not POST. |
-| `--config <path>` | Use a non-default config. |
-| `--env-file <path>` | Load secrets from a non-default dotenv file. |
-
-```bash
-# one run
-mono-agent backfill --run 2026-06-21T10-15-03Z-abcd
-
-# a window, mapped but not sent
-mono-agent backfill --all --since 2026-06-01T00:00:00Z \
-  --until 2026-06-21T00:00:00Z --dry-run
-```
-
-The exporter is configured under `observability.exporters[]` (env `MONO_AGENT_OBSERVABILITY_EXPORTERS`, a JSON array):
-
-```json
-{
-  "observability": {
-    "exporters": [
-      {
-        "type": "phoenix",
-        "endpoint": "http://localhost:6006",
-        "projectName": "support-agent",
-        "includeSensitiveData": false,
-        "contentPatternRedaction": false,
-        "headers": {},
-        "timeoutMs": 5000
-      }
-    ]
-  }
-}
-```
-
-Full backfill semantics and the JSONL artifact format live in [Phoenix & backfill](/observability/phoenix-and-backfill/) and [Artifacts & traces](/observability/artifacts-and-traces/).
+An upgrade does not export, rewrite, convert, or delete local artifacts, and it
+does not delete remote traces. Active `observability.exporters` or
+`MONO_AGENT_OBSERVABILITY_EXPORTERS` values fail config loading rather than being
+silently ignored. See [Framework simplification migration](/reference/framework-simplification-migration/#retired-phoenixotlp-export).
 
 ## See also
 

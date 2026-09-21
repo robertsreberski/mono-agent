@@ -1525,7 +1525,6 @@ function focusedConfigurationRepairStep(sectionIds: readonly string[]): number |
     else if (id === "context" || id.startsWith("channel:")) mapped.add(5);
     else if (id === "tools") mapped.add(6);
     else if (id === "sandbox") mapped.add(7);
-    else if (id === "observability") mapped.add(8);
   }
   return mapped.size === 1 ? [...mapped][0] : undefined;
 }
@@ -1538,7 +1537,6 @@ function configurationRecoveryEditLabel(step: number | undefined): string {
     case 5: return "Edit capability details";
     case 6: return "Edit tools";
     case 7: return "Edit route safety and sandbox";
-    case 8: return "Edit observability";
     default: return "Edit setup choices";
   }
 }
@@ -2194,7 +2192,7 @@ function printNextSteps(configPath: string): void {
     `  ${ui.style.bold("2.")} ${startCommand} ${ui.style.dim("(add --foreground where no user service manager exists)")}\n`,
     `  ${ui.style.bold("3.")} ${BROWSER_CONSOLE_COMMAND} ${ui.style.dim("(keep this terminal open)")}\n`,
     `  ${ui.style.bold("4.")} Open ${ui.style.cyan(BROWSER_CONSOLE_URL)} and send a message ${ui.style.dim(`(add --port <n> if ${String(BROWSER_CONSOLE_PORT)} is taken)`)}\n`,
-    ui.style.dim(`Edit ${configPath} to change model, channels, skills, memory, sandbox, or observability.\n`),
+    ui.style.dim(`Edit ${configPath} to change model, channels, skills, memory, or sandbox.\n`),
     browserConsoleBoundaryLine(),
     ...remoteSessionHintLines(),
   ];

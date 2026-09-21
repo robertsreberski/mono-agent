@@ -743,8 +743,8 @@ describe("check-consumer-docs-consistency", () => {
       "The local JSONL artifacts remain the local fallback and source of truth.",
       "",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "docs/observability/phoenix-and-backfill.md", [
-      "# Phoenix",
+    await writeRepoDoc(repoRoot, "docs/observability/artifacts-and-traces.md", [
+      "# Artifacts",
       "",
       "Read from the always-on run record.",
       "See the always-on JSONL run record for backfill.",
@@ -841,11 +841,11 @@ describe("check-consumer-docs-consistency", () => {
       "live chat with full stream-event insight",
       "every structured `AgentStreamEvent` verbatim",
       "Serialized event frames over 256 KiB receive field-level reduction.",
-      "Rich traces are exported on every run.",
+      "Removing the trace exporter deletes every local artifact.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "docs/playbooks/phoenix-observed-agent.md", [
-      "# Phoenix",
-      "Every run lifecycle streams to a [Phoenix] dashboard.",
+    await writeRepoDoc(repoRoot, "docs/reference/framework-simplification-migration.md", [
+      "# Migration",
+      "Without the Phoenix exporter this application is fully offline.",
       "Redacted JSONL artifacts are always written locally as the fallback.",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "docs/config/blueprint.md", [
@@ -863,7 +863,7 @@ describe("check-consumer-docs-consistency", () => {
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/playbooks.md", [
       "# Playbooks",
-      "stream every run to Phoenix as OpenInference spans",
+      "Retirement of OTLP deletes the retained local run artifacts",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/config-blueprint.md", [
       "# Blueprint",
@@ -918,8 +918,8 @@ describe("check-consumer-docs-consistency", () => {
     expect(result.userDocsChecked).toBe(10);
     expect(result.artifactContractSourcesChecked).toBe(6);
     expect(reported).toContain("full stream-event insight");
-    expect(reported).toContain("guaranteed every-run Phoenix stream");
-    expect(reported).toContain("guaranteed every-run Phoenix export");
+    expect(reported).toContain("exporter retirement deletes local artifacts");
+    expect(reported).toContain("exporter retirement implies network isolation");
     expect(reported).toContain("always-written JSONL artifacts");
     expect(result.issues).toContain(
       `${join(repoRoot, "packages/agent-app/src/cli-background-command.ts")}:2:11: ` +
@@ -936,7 +936,7 @@ describe("check-consumer-docs-consistency", () => {
     expect(reported).toContain("guaranteed tool-output artifact persistence");
     for (const relativePath of [
       "docs/reference/feature-registry.md",
-      "docs/playbooks/phoenix-observed-agent.md",
+      "docs/reference/framework-simplification-migration.md",
       "docs/config/blueprint.md",
       "docs/runtime/tools-and-guards.md",
       "packages/agent-app/skills/mono-agent-composer/references/package-map.md",
@@ -976,7 +976,7 @@ describe("check-consumer-docs-consistency", () => {
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md", [
       "# Discovery",
-      "Phoenix provides best-effort export of every run lifecycle at the terminal boundary.",
+      "A caller-supplied exporter is best-effort and cannot change the local run outcome.",
       "JSONL artifacts are not always written to a terminal state; a crash can lose buffered events.",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "docs/runtime/tools-and-guards.md", [

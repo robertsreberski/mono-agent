@@ -153,7 +153,7 @@ export interface RunSummary {
   readonly diagnostics?: unknown;
   readonly capabilitiesUsed?: unknown;
   /**
-   * The user's prompt for this run, persisted so backfill can show it as input.
+   * The user's prompt for this run, persisted so replay can show it as input.
    * Retained free text: bounded at recorder/reader boundaries and content-scanned
    * by the recorder for a closed set of high-confidence credential shapes.
    */
@@ -212,17 +212,15 @@ export interface RunExportContext {
   /**
    * The user's prompt for this run, used as the root span's `input.value` so the
    * trace shows what was asked. Live export threads the request value directly;
-   * backfill forwards persisted `summary.userInput` when the artifact carries
-   * it (older artifacts may omit it). This retained free text is bounded at the
-   * Phoenix span boundary. It is not content-scanned by default;
-   * `contentPatternRedaction` enables the closed high-confidence scan.
+   * replay callers can forward persisted `summary.userInput` when the artifact
+   * carries it (older artifacts may omit it). Exporters must bound retained free
+   * text. It is not content-scanned by default; `contentPatternRedaction`
+   * enables the closed high-confidence scan.
    */
   readonly userInput?: string;
   /**
-   * Classifies the run so memory runs are distinguishable from channel runs in
-   * Phoenix: drives the root `openinference.span.kind` ("memory" vs "AGENT") and
-   * the `mono.agent.run.kind` attribute. Threaded explicitly rather than sniffed
-   * from the run-id prefix.
+   * Classifies the run so generic exporters can distinguish memory runs from
+   * channel runs without inferring the kind from a run-id prefix.
    */
   readonly runKind?: "memory" | "channel";
   /** Memory sub-operation for memory runs: distill|reconcile|entities|reflect|migrate. */
@@ -241,26 +239,6 @@ export interface RunExporter {
   flush?(): Promise<void>;
   close?(): Promise<void>;
 }
-
-export interface PhoenixExporterConfig {
-  readonly type: "phoenix";
-  readonly endpoint?: string;
-  readonly headers?: Readonly<Record<string, string>>;
-  readonly includeSensitiveData?: boolean;
-  /**
-   * Scan retained exported free-text values for a closed set of high-confidence
-   * credential shapes. Defaults to false; key redaction remains enabled.
-   */
-  readonly contentPatternRedaction?: boolean;
-  readonly timeoutMs?: number;
-  /**
-   * Phoenix project the traces land in (resource attr `openinference.project.name`).
-   * Defaults to the run's trace source label/id, else "default".
-   */
-  readonly projectName?: string;
-}
-
-export type ObservabilityExporterConfig = PhoenixExporterConfig;
 
 export interface JsonlRunRecorderOptions {
   readonly runId: string;
@@ -341,7 +319,7 @@ export interface RecordedRunListItem {
   /** Trigger name for `source`, e.g. the cron job id or webhook endpoint name. */
   readonly sourceDetail?: string;
   /**
-   * The user's prompt for this run, persisted so backfill/replay can show it as
+   * The user's prompt for this run, persisted so replay can show it as
    * input. Retained free text is re-bounded by the reader. Current recorder
    * artifacts were content-scanned for high-confidence credential shapes; the
    * reader does not retroactively scan legacy artifacts.

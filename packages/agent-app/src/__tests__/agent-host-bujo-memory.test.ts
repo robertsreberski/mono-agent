@@ -14,12 +14,7 @@ import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import type { MemoryCompletedTurn, MemoryCompletedTurnResult } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createBujoMemoryStore, inspectCompletedTurnIntake } from "@mono-agent/memory/bujo";
-import type {
-  PhoenixExporterConfig,
-  RunExportContext,
-  RunExporter,
-  RunSummary,
-} from "@mono-agent/observability";
+import type { RunSummary } from "@mono-agent/observability";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import { createConfiguredAgentHarness, createConfiguredMemory } from "../index.js";
@@ -426,35 +421,6 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     expect(extract?.sourceDetail).toBe("extract");
   });
 
-  it("exports memory runs through the configured exporter", async () => {
-    const dir = await tempDir();
-    const spy = createSpyExporter();
-    const store = await createConfiguredMemory(
-      bujoConfig({
-        dir,
-        identityPath: join(dir, "IDENTITY.md"),
-        memoryRoot: join(dir, "m"),
-        llm: agentHostLlm,
-        observabilityExporters: [{ type: "phoenix" }],
-      }),
-      {
-        memoryRuntime: createRecordingRuntime(),
-        observability: { observabilityContext: { sourceId: "s1" }, exporterFactory: () => spy.exporter },
-      },
-    ) as unknown as WritableMemoryStore;
-
-    await completeTurn(store, "some text");
-    await store.close();
-
-    expect(spy.finished).toHaveLength(1);
-    expect(spy.finished.map((s) => s.conversationId)).toContain("memory:capture:extract");
-    // Every memory run is tagged as a "memory" kind, and the extract run carries
-    // its operation — these drive the Phoenix span kind + memory.operation attribute.
-    expect(spy.contexts.every((c) => c.runKind === "memory")).toBe(true);
-    const extract = spy.contexts.find((c) => c.conversationId === "memory:capture:extract");
-    expect(extract?.memoryOperation).toBe("extract");
-  });
-
   it("retains a durable retry after the memory LLM timeout aborts its provider call", async () => {
     const dir = await tempDir();
     const runtime = createAbortAwareRuntime();
@@ -570,29 +536,12 @@ async function readSummaries(artifactsDir: string): Promise<RunSummary[]> {
   return summaries;
 }
 
-function createSpyExporter(): {
-  exporter: RunExporter;
-  finished: RunSummary[];
-  contexts: RunExportContext[];
-} {
-  const finished: RunSummary[] = [];
-  const contexts: RunExportContext[] = [];
-  const exporter: RunExporter = {
-    finish(summary: RunSummary, context: RunExportContext) {
-      finished.push(summary);
-      contexts.push(context);
-    },
-  };
-  return { exporter, finished, contexts };
-}
-
 function bujoConfig(input: {
   readonly dir: string;
   readonly identityPath: string;
   readonly memoryRoot: string;
   readonly embeddings?: NonNullable<MonoAgentConfig["memory"]>["embeddings"];
   readonly llm?: NonNullable<MonoAgentConfig["memory"]>["llm"];
-  readonly observabilityExporters?: readonly PhoenixExporterConfig[];
 }): MonoAgentConfig {
   return {
     runtime: {
@@ -617,9 +566,6 @@ function bujoConfig(input: {
       memoryRetention: { maxAgeDays: 7, maxCount: 5000, dryRun: false },
     },
     traceability: { registryDir: join(input.dir, "trace-sources") },
-    ...(input.observabilityExporters === undefined
-      ? {}
-      : { observability: { exporters: input.observabilityExporters } }),
   };
 }
 

@@ -24,7 +24,6 @@ export interface MemoryControllerPort {
     readonly sourceLabel?: string;
     readonly configPath?: string;
   }>;
-  recordExporterWarning(warning: { readonly phase: string; readonly message: string }): void;
   ensureSharedMemoryRetrieval(
     coreConfig: MonoAgentConfig,
     store: ConfiguredMemory,
@@ -46,10 +45,10 @@ export async function memoryStore(
     const logger = appLogger?.warn !== undefined
       ? { warn: (message: string) => { appLogger.warn?.(message); } }
       : undefined;
-    // Thread the per-app observability context so the bujo memory LLM records
-    // capture and consolidation runs through the same JSONL + Phoenix pipeline
-    // as channel runs (gated by `memory.llm.trace`, default on). The context is
-    // per-app (not per-request), so caching it into the shared store is correct.
+    // Preserve the per-app observability context contract across memory and
+    // channel composition while memory LLM runs remain locally recorded (gated
+    // by `memory.llm.trace`, default on). The context is per-app, not per-request,
+    // so caching it into the shared store is correct.
     //
     // The channel runtime is intentionally NOT passed: the memory LLM must run
     // on `config.memory.llm.model`, but the channel runtime carries the channel
@@ -59,7 +58,6 @@ export async function memoryStore(
     const observabilityContext = await controller.observabilityContext();
     const observability = {
       observabilityContext,
-      exporterWarn: (warning: { readonly phase: string; readonly message: string }) => controller.recordExporterWarning(warning),
     };
     const deps = {
       cwd: controller.cwd,

@@ -1626,50 +1626,6 @@
         }
       }
     },
-    "observability": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "exporters": {
-          "type": "array",
-          "maxItems": 1,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "type": {
-                "const": "phoenix"
-              },
-              "endpoint": {
-                "type": "string"
-              },
-              "headers": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "includeSensitiveData": {
-                "type": "boolean"
-              },
-              "contentPatternRedaction": {
-                "type": "boolean"
-              },
-              "timeoutMs": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 60000
-              },
-              "projectName": {
-                "type": "string",
-                "minLength": 1
-              }
-            }
-          }
-        }
-      }
-    },
     "providers": {
       "type": "object",
       "additionalProperties": {
@@ -3335,6 +3291,18 @@
       "type": "object",
       "deprecated": true,
       "description": "Deprecated and ignored. Monitors were removed; use background process jobs for finite work."
+    },
+    "observability": {
+      "type": "object",
+      "deprecated": true,
+      "additionalProperties": false,
+      "description": "First-party Phoenix/OTLP export was removed. Only this inert empty compatibility shape is accepted.",
+      "properties": {
+        "exporters": {
+          "type": "array",
+          "maxItems": 0
+        }
+      }
     }
   }
 }

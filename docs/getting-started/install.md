@@ -128,7 +128,7 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 
 | Command | Purpose |
 | --- | --- |
-| `init` | Non-destructive scaffold of a config, `IDENTITY.md`, and `.mono-agent/`. A fresh built-in Journal/BuJo selection also gets one empty provider-free managed generation; pre-existing memory roots are never changed. On a TTY with no flags it runs the step-by-step **wizard** (preset or custom; name/Role, model routes, an optional-capabilities gate for channels/memory/observability that defaults to No, then tools and sandbox); any flag or a non-TTY writes the scaffold silently. `setup` is an alias. |
+| `init` | Non-destructive scaffold of a config, `IDENTITY.md`, and `.mono-agent/`. A fresh built-in Journal/BuJo selection also gets one empty provider-free managed generation; pre-existing memory roots are never changed. On a TTY with no flags it runs the step-by-step **wizard** (preset or custom; name/Role, model routes, an optional-capabilities gate for channels/memory that defaults to No, then tools and sandbox); any flag or a non-TTY writes the scaffold silently. `setup` is an alias. |
 | `presets` | List the built-in setup presets (`list`) or show a preset's generated config, `.env.example`, and checklist (`show <id>`). Replaces the removed `recipes` command. |
 | `validate` | Validate `mono-agent.config.json` and live checks that can be tested safely before starting. |
 | `start` | Start the host for every configured channel as a macOS `launchd` or Linux systemd user service; use `--foreground` where no service manager exists. |
@@ -137,7 +137,7 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 | `tui` | Open the terminal operator console and connect to any running agent. |
 | `sessions` (removed) | Removed — use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). |
 | `install-skill` | Install the authoring composer and its documentation MCP companion, or maintain managed project skills. |
-| `backfill` | Replay historical runs into observability. |
+| `backfill` (removed) | Fails with pre-upgrade migration guidance; retained artifacts remain available through `runs`. |
 
 ## Next: scaffold your first agent
 
@@ -149,7 +149,7 @@ cd my-agent
 mono-agent init
 ```
 
-On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: name the agent, enter the exact Role destined for `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure any number of fallbacks and their exact efforts, then decide whether to add optional capabilities (channels, memory, observability — default No for a custom start; seeded presets open the gate at Yes) and confirm the tool/access and sandbox choices. The review says whether that Role will be written or an existing identity preserved. Escape goes back. A concrete creation review precedes provider/SRT mutations.
+On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: name the agent, enter the exact Role destined for `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure any number of fallbacks and their exact efforts, then decide whether to add optional capabilities (channels and memory — default No for a custom start; seeded presets open the gate at Yes) and confirm the tool/access and sandbox choices. The review says whether that Role will be written or an existing identity preserved. Escape goes back. A concrete creation review precedes provider/SRT mutations.
 
 Bare `init` behaves differently per platform and input mode, and the docs do not hide it:
 

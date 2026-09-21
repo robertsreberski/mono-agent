@@ -805,39 +805,51 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MAX_TURNS).toBe("4");
   });
 
-  it("translates JSON observability.exporters to MONO_AGENT_OBSERVABILITY_EXPORTERS", () => {
-    const exporters = [
-      {
-        type: "phoenix",
-        endpoint: "http://127.0.0.1:6006/v1/traces",
-        includeSensitiveData: true,
-        contentPatternRedaction: true,
-      },
-    ];
-    const layered = layerJsonOntoEnv({ observability: { exporters } }, {});
-    expect(JSON.parse(layered.MONO_AGENT_OBSERVABILITY_EXPORTERS ?? "[]")).toEqual(exporters);
-  });
-
-  it("lets env override JSON observability exporters", () => {
-    const layered = layerJsonOntoEnv(
-      {
-        observability: {
-          exporters: [{ type: "phoenix", endpoint: "http://json-host:6006/v1/traces" }],
-        },
-      },
-      {
-        MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
-          { type: "phoenix", endpoint: "http://env-host:6006/v1/traces" },
-        ]),
-      },
-    );
-    expect(JSON.parse(layered.MONO_AGENT_OBSERVABILITY_EXPORTERS ?? "[]")).toEqual([
-      { type: "phoenix", endpoint: "http://env-host:6006/v1/traces" },
-    ]);
+  it("does not project the inert removed observability shape onto env", () => {
+    const layered = layerJsonOntoEnv({ observability: { exporters: [] } }, {});
+    expect(layered.MONO_AGENT_OBSERVABILITY_EXPORTERS).toBeUndefined();
   });
 });
 
 describe("loadMonoAgentConfigWithSources", () => {
+  it("rejects active legacy JSON before an inert env value can mask it", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      observability: {
+        exporters: [{ type: "phoenix", headers: { authorization: "Bearer secret-token" } }],
+      },
+    }), "utf8");
+
+    try {
+      await loadMonoAgentConfigWithSources({
+        env: { MONO_AGENT_OBSERVABILITY_EXPORTERS: "[]" },
+        cwd: dir,
+        jsonPath: path,
+      });
+    } catch (error) {
+      expect(error).toMatchObject({ code: "invalid_json", details: { path: "observability" } });
+      expect(String(error)).toContain("observability.exporters");
+      expect(String(error)).not.toContain("secret-token");
+      return;
+    }
+    throw new Error("Expected active legacy JSON to fail before env projection.");
+  });
+
+  it("accepts the narrow empty JSON compatibility shapes", async () => {
+    for (const observability of [{}, { exporters: [] }]) {
+      const path = join(dir, `config-${JSON.stringify(observability).length}.json`);
+      await writeFile(path, JSON.stringify({ observability }), "utf8");
+      await expect(loadMonoAgentConfigWithSources({
+        env: {
+          MONO_AGENT_MODEL: "pi:openai-codex:gpt-5.5",
+          MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
+        },
+        cwd: dir,
+        jsonPath: path,
+      })).resolves.not.toHaveProperty("observability");
+    }
+  });
+
   it("attributes strict Journal prerequisites to the JSON path that needs repair", async () => {
     const path = join(dir, "config.json");
     await writeFile(path, JSON.stringify({

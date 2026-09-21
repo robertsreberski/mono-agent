@@ -122,10 +122,6 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Check managed launchd logs with bounded metadata reads every five minutes,
   reconcile installed macOS LaunchAgents at login and hourly, and make `status`
   require agreement between the cached trace and launchd's live PID.
-- Resolve and surface any configured `observability.exporters` (the Phoenix
-  preset): `start`/`status` report the configured endpoint and a note that JSONL
-  artifacts remain local; `validate` performs the live reachability probe. Export
-  is best-effort and never changes a run outcome.
 - Preview, strictly audit, and safely maintain the configured memory backend
   from the same config/env resolution path via `mono-agent memory` (including
   provider-free strict health and payload-free intake inspect/retry/resolve).
@@ -1040,7 +1036,7 @@ path:
    input and enters only the exact app-owned TUI driver through a private
    composition hook. The TUI driver primes its skill registry before binding
    and refreshes changed `SKILL.md` metadata in memory while it runs.
-4. Publish traceability, exporter, sandbox, process-job, continuation, and memory-health
+4. Publish traceability, sandbox, process-job, continuation, and memory-health
    state while the controller tracks channel states as `disabled`,
    `waiting_for_config`, `running`, `degraded`, or `failed`.
 5. On stop or reload, stop the transport first, then dispose its responder so
@@ -1058,7 +1054,7 @@ path:
 | Configured agent | `configured-agent.ts`, `app-controller-responder.ts` | Runtime, harness, memory, history, tools, and recorder composition. |
 | Channel integration | `channels.ts`, `channel-drivers/` | Built-in drivers plus config-loaded plugin resolution. |
 | Interaction and send tools | `interaction-bridge.ts`, `adapter-send-tools*.ts` | Structured `AskUser` state, channel sinks, progress, adapter-send tools, and bounded interaction-history projection. |
-| Operator CLI | `cli*.ts`, `jobs-command.ts`, `init.ts`, `doctor.ts`, `doctor-observability.ts`, `background*.ts`, `launchd*.ts`, `managed-web-logs.ts`, `web-*.ts` | Setup, focused validation sections, paired managed service/log lifecycle, process-job operation, and diagnostics. |
+| Operator CLI | `cli*.ts`, `jobs-command.ts`, `init.ts`, `doctor.ts`, `doctor-runs.ts`, `background*.ts`, `launchd*.ts`, `managed-web-logs.ts`, `web-*.ts` | Setup, focused validation sections, paired managed service/log lifecycle, process-job operation, and diagnostics. |
 | Host services | `run-history.ts`, `session-history.ts`, `conversation-title.ts`, `request-scoped-mcp.ts`, `process-jobs*.ts`, `continuation*.ts`, `memory-*.ts` | Shared request-scoped guards, bounded prior-run/tool-lifecycle evidence, bounded local memory chronology, automatic web conversation titles, local process-job ownership/wake/recovery, durable continuations, and memory operations. |
 
 ## Public API
@@ -1139,7 +1135,6 @@ ContinuationTerminalState
 CronChannelOverrides
 DEFAULT_CONTINUATION_LIMITS
 DEFAULT_CONTINUATION_SERVICE_PORT
-ExporterStatus
 InitFileChange
 InitFileChangeKind
 InitMonoAgentFolderOptions
@@ -1175,7 +1170,6 @@ OpenAIApiChannelOverrides
 PreflightResult
 RUN_HISTORY_MCP_SERVER_NAME
 RUN_HISTORY_TOOL_NAME
-ResolvedExporter
 ResolvedMemoryJournalRange
 RunContinuationCommandOptions
 RunHistoryBinding
@@ -1254,11 +1248,9 @@ loadContinuationSettings
 managedSrtInstallRoot
 normalizeContinuationReplyTarget
 parseCliArgs
-phoenixAppBaseUrl
 printAppStatus
 renderHelp
 resolveAppArtifactDir
-resolveAppObservabilityExporters
 resolveAppTraceHeartbeatMs
 resolveAppTraceRegistryDir
 resolveAppTraceSourceId

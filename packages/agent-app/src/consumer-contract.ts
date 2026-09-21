@@ -262,9 +262,6 @@ function consumerContractIssues(fixture: ConsumerFixture): readonly ConsumerCont
   if (typeof fixture.sourceJson.artifacts?.dir !== "string" || fixture.sourceJson.artifacts.dir.trim().length === 0) {
     issues.push(issue("artifacts.dir", "Source fixture must explicitly include artifacts.dir."));
   }
-  if (fixture.config.observability?.exporters[0]?.type !== "phoenix") {
-    issues.push(issue("observability.exporters", "Expected first observability exporter type to be phoenix."));
-  }
   issues.push(...retiredMcpMemorySurfaceIssues(fixture));
 
   return issues;

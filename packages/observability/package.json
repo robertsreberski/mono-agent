@@ -23,10 +23,6 @@
     "./event-timeline": {
       "types": "./dist/event-timeline.d.ts",
       "import": "./dist/event-timeline.js"
-    },
-    "./run-export": {
-      "types": "./dist/run-export-mapping.d.ts",
-      "import": "./dist/run-export-mapping.js"
     }
   },
   "files": [

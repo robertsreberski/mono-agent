@@ -243,7 +243,8 @@ Opted project stdio MCPs also receive host-owned filesystem context after all MC
 | `MONO_AGENT_TRACE_HEARTBEAT_MS` | `traceability.heartbeatMs` | Heartbeat publication interval (`250`–`86400000`); default `10000`. |
 | `MONO_AGENT_TRACE_STALE_AFTER_MS` | `traceability.staleAfterMs` | Age at which a heartbeat is treated as stale (`1000`–`604800000`); default `30000`. |
 | `MONO_AGENT_TRACE_GLOBAL_DISCOVERY` | `traceability.globalDiscovery` | Publish to the shared discovery registry; default `true`. |
-| `MONO_AGENT_OBSERVABILITY_EXPORTERS` | `observability.exporters[]` | JSON array; Phoenix OTLP exporter entries. See [Phoenix export and backfill](/observability/phoenix-and-backfill/). |
+
+`MONO_AGENT_OBSERVABILITY_EXPORTERS` is retired. Blank values and the inert JSON array `[]` are accepted only for upgrade compatibility; any active or malformed value fails with secret-safe removal guidance.
 
 ## Channels
 

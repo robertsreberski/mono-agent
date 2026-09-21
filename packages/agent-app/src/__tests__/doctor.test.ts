@@ -2561,136 +2561,6 @@ describe("validateMonoAgentFolder", () => {
   });
 });
 
-describe("validateMonoAgentFolder — observability exporter section", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  async function writeExporterConfig(exporters?: unknown): Promise<string> {
-    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
-    return writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
-      context: { identityPath: "./IDENTITY.md" },
-      ...(exporters === undefined ? {} : { observability: { exporters } }),
-    });
-  }
-
-  it("reports disabled when no exporter is configured", async () => {
-    const configPath = await writeExporterConfig();
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const section = sectionById(report, "observability");
-    expect(section.status).toBe("disabled");
-    expect(section.details.join("\n")).toMatch(/no observability exporter/iu);
-    expect(report.ok).toBe(true);
-  });
-
-  it("reports ok when the Phoenix endpoint is reachable", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200 }));
-    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const section = sectionById(report, "observability");
-    expect(section.status).toBe("ok");
-    const text = section.details.join("\n");
-    expect(text).toContain("http://127.0.0.1:6006/v1/traces");
-    expect(text).toMatch(/JSONL artifacts remain local/iu);
-    expect(text).not.toContain("[WARN] includeSensitiveData=true");
-    expect(report.ok).toBe(true);
-  });
-
-  it("warns when sensitive data export is enabled but keeps the report ok", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200 }));
-    const endpoint = "http://127.0.0.1:6006/v1/traces";
-    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint, includeSensitiveData: true }]);
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const section = sectionById(report, "observability");
-    expect(section.status).toBe("ok");
-    const text = section.details.join("\n");
-    expect(text).toContain("[WARN] includeSensitiveData=true");
-    expect(text).toContain(endpoint);
-    expect(text).toContain("user input");
-    expect(text).toContain("assistant replies");
-    expect(text).toContain("tool args/results");
-    expect(text).toContain("system prompt");
-    expect(text).toMatch(/JSONL artifacts remain local/iu);
-    expect(report.ok).toBe(true);
-  });
-
-  it("reports waiting (not error) when the endpoint is unreachable", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
-    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const section = sectionById(report, "observability");
-    expect(section.status).toBe("waiting");
-    const text = section.details.join("\n");
-    expect(text).toMatch(/WARN/u);
-    expect(text).toMatch(/ECONNREFUSED|not reachable|unreachable/iu);
-    expect(text).toMatch(/JSONL artifacts remain local/iu);
-    expect(report.ok).toBe(true);
-  });
-
-  it("reports waiting (not a false ok) when the endpoint rejects the protobuf POST with 415", async () => {
-    // The old OPTIONS probe treated this endpoint as healthy; the real export
-    // POST returns 415 (wrong content type). The probe now POSTs protobuf, so it
-    // catches the export incompatibility instead of reporting a false ok.
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 415 }));
-    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const section = sectionById(report, "observability");
-    expect(section.status).toBe("waiting");
-    const text = section.details.join("\n");
-    expect(text).toMatch(/WARN/u);
-    expect(text).toContain("HTTP 415");
-    expect(report.ok).toBe(true);
-  });
-
-  it("POSTs application/x-protobuf when probing (exercises the real export wire format)", async () => {
-    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, status: 200 });
-    vi.stubGlobal("fetch", fetchSpy);
-    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
-
-    await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
-    expect(init.method).toBe("POST");
-    expect((init.headers as Record<string, string>)["content-type"]).toBe("application/x-protobuf");
-  });
-
-  it("reports waiting when the endpoint responds but with a non-ok status (wrong path)", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
-    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/wrong" }]);
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const section = sectionById(report, "observability");
-    expect(section.status).toBe("waiting");
-    const text = section.details.join("\n");
-    expect(text).toMatch(/WARN/u);
-    expect(text).toContain("HTTP 404");
-    // Still non-fatal: a wrong/unready endpoint never fails the report.
-    expect(report.ok).toBe(true);
-  });
-
-  it("reports error (fails the report) for an invalid exporter type", async () => {
-    const configPath = await writeExporterConfig([{ type: "bogus", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const section = sectionById(report, "observability");
-    expect(section.status).toBe("error");
-    expect(report.ok).toBe(false);
-  });
-});
-
 describe("validateMonoAgentFolder — runs health section", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -3944,23 +3814,6 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
     vi.unstubAllGlobals();
   });
 
-  it("skips the Phoenix probe — exporter stays ok and fetch is never called", async () => {
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
-    const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
-      context: { identityPath: "./IDENTITY.md" },
-      observability: { exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }] },
-    });
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
-
-    expect(sectionById(report, "observability").status).toBe("ok");
-    expect(report.ok).toBe(true);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
   it("skips the Ollama probe — memory stays ok, no WARNs, fetch never called", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
@@ -4044,25 +3897,7 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("yields the same ok verdict as a full run when only waiting differs", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
-    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
-    const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
-      context: { identityPath: "./IDENTITY.md" },
-      observability: { exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }] },
-    });
 
-    const live = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
-    const fast = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
-
-    expect(live.ok).toBe(true);
-    expect(fast.ok).toBe(true);
-    // The full run downgrades the exporter to waiting; the fast run keeps it ok —
-    // either way the report passes, which is what the gate relies on.
-    expect(sectionById(live, "observability").status).toBe("waiting");
-    expect(sectionById(fast, "observability").status).toBe("ok");
-  });
 });
 
 describe("validateMonoAgentFolder — web tools", () => {

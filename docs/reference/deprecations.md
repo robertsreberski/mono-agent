@@ -37,6 +37,16 @@ programmatic surfaces are simply no longer exported.
 | `memory-bujo` standalone CLI bin | `mono-agent memory <subcommand>` from the agent folder |
 | Runtime compatibility exports `./ai/backend.js`, `./ai/registry.js`, `findProviderForModel`, `listProviders`, and backend capability/provider constants | `resolveRuntimeBridge` and `listRuntimeBridges` |
 | Memory helpers `reflect`, `ReflectDeps`, `ReflectResult`, and no-op `applyDecay` | Supported capture, consolidate, reconcile, and store APIs |
+| First-party Phoenix/OTLP package, `observability.exporters`, `MONO_AGENT_OBSERVABILITY_EXPORTERS`, `mono-agent backfill`, exporter status/probing, and `@mono-agent/observability/run-export` | Bounded local JSONL artifacts, `mono-agent runs` / `runs audit` / `runs report`, trace-source discovery, and provider-neutral `RunExporter` composition. Perform any final legacy export before upgrading with the complete working version set already in use. |
+
+First-party Phoenix/OTLP support is removed without an automatic replacement.
+Active legacy JSON/env values fail with fixed secret-safe guidance; absent, blank,
+and structurally empty tombstones are accepted only to avoid breaking consumers
+that had already disabled export. The upgrade does not export, rewrite, convert,
+or delete local artifacts and does not delete remote traces. The public registry
+does not provide a separately published Phoenix plugin, so retain only a complete
+currently working version set already in use when a final pre-upgrade export is
+required.
 
 The three run/lifecycle compatibility spellings were removed in v0.14.0 after
 their scheduled sunset. `--force` on `install-skill` and `web reset` is a

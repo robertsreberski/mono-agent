@@ -29,7 +29,7 @@ The groups below are documented in this repository but are not in 0.21.1. Each o
 | Subscription usage meters | Provider-reported quota meters in Agent settings, and the `ProviderUsage` tool that reports supported quotas | Not included |
 | Console dashboard refresh | The dashboard layout that replaced the earlier agent rail and conversation sidebar, plus mobile and PWA refinements | Earlier layout |
 | Linux service hardening | systemd session-environment attestation and published dotenv snapshots | Not included |
-| Browser-first guided setup | The shorter wizard: name/Role, provider routes, an optional-capabilities gate for channels/memory/observability (default No), tools, and sandbox, with the browser handoff instead of a terminal-first continuation | Earlier wizard; still writes the webhook smoke channel by default |
+| Browser-first guided setup | The shorter wizard: name/Role, provider routes, an optional-capabilities gate for channels/memory (default No), tools, and sandbox, with the browser handoff instead of a terminal-first continuation | Earlier wizard; still writes the webhook smoke channel by default |
 | Loopback console default | Fresh CLI console installs bind `127.0.0.1:5050`; `--host <addr>` widens explicitly | Managed installs bind `0.0.0.0:5050` |
 | Explicit `--share-tailnet` | macOS managed start/restart publishes a mono-agent-owned Tailscale Serve route only on request; an existing exact owned route is re-verified, and `web status --json` reports the listener and owned route separately | Managed macOS start claims a Serve route automatically |
 | Report-ready `web status --json` | Machine-readable listener/service/owned-route split | Not included |

@@ -17,7 +17,7 @@ import type {
 import { createSrtSandboxEngine } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
-import type { AppTraceDefaults, ResolvedExporter } from "./app-config.js";
+import type { AppTraceDefaults } from "./app-config.js";
 import type { createConfiguredMemory } from "./configured-agent.js";
 import type { ConfiguredAgentSessionEvent } from "./configured-agent.js";
 import { resolveChannelDrivers } from "./channels.js";
@@ -76,7 +76,6 @@ import type {
 import { unsafeProcessJobsProtectionStatus } from "./process-jobs-protection.js";
 import type {
   ConfigApplyResult,
-  ExporterStatus,
   SandboxStatus,
   SessionTraceMetadata,
   TraceabilityStatus,
@@ -85,7 +84,6 @@ import { createProviderAuthObservationTracker } from "./provider-auth-observatio
 
 export type {
   ConfigApplyResult,
-  ExporterStatus,
   SandboxStatus,
   TraceabilityStatus,
 } from "./app-controller-types.js";
@@ -121,16 +119,9 @@ export interface MonoAgentAppOptions {
   readonly memoryHealthWorkerTimeoutMs?: number;
 }
 
-/**
- * Best-effort observability exporter status. `configured` does not assert
- * reachability (Phoenix may start later — only `validate` probes); export
- * failures during runs surface as `lastWarning`/`lastError` without changing the
- * run outcome.
- */
 export interface MonoAgentApp {
   readonly configPath: string;
   readonly traceabilityStatus: TraceabilityStatus;
-  readonly exporterStatus: ExporterStatus;
   readonly sandboxStatus: SandboxStatus;
   readonly processJobsProtection?: ProcessJobsProtectionStatus | undefined;
   readonly memoryHealth?: TraceSourceMemoryHealth;
@@ -224,7 +215,6 @@ async function startMonoAgentAppInternal(
     await measure("sandbox", () => startedController.refreshSandboxStatus("startup"));
     await measure("traceability", () => startedController.startTraceability("startup"));
     await measure("services", async () => {
-      await startedController.startExporters("startup");
       await startedController.startContinuationServiceIfConfigured("startup");
       await startedController.startProcessJobsIfConfigured("startup");
     });
@@ -329,10 +319,6 @@ export class MonoAgentAppController implements MonoAgentApp {
     kind: "disabled",
     reason: "Traceability has not started yet.",
   };
-  exporterStatusValue: ExporterStatus = {
-    kind: "disabled",
-    reason: "No observability exporter configured.",
-  };
   sandboxStatusValue: SandboxStatus = DEFAULT_SANDBOX_STATUS;
   memoryHealthValue: TraceSourceMemoryHealth = {
     backend: "none",
@@ -357,8 +343,6 @@ export class MonoAgentAppController implements MonoAgentApp {
   } | undefined;
   selectedSkillsValue: readonly string[] | undefined;
   sessionMetadataValue: SessionTraceMetadata | undefined;
-  /** The exporter the responder threads into agent-host (first configured exporter). */
-  resolvedExporter: ResolvedExporter | undefined;
   traceSource: TraceSourceHandle | undefined;
   /**
    * Whole-publication single flight. A slow health probe must not let periodic
@@ -453,10 +437,6 @@ export class MonoAgentAppController implements MonoAgentApp {
 
   get traceabilityStatus(): TraceabilityStatus {
     return this.traceabilityStatusValue;
-  }
-
-  get exporterStatus(): ExporterStatus {
-    return this.exporterStatusValue;
   }
 
   get sandboxStatus(): SandboxStatus {
@@ -555,17 +535,6 @@ export class MonoAgentAppController implements MonoAgentApp {
    * reload (which re-runs startTraceability) does not repeat the scan. Best-effort: never fatal.
    */
   async reconcileStaleRunsOnce(artifactDir: string): Promise<void> { return traceabilityOperations.reconcileStaleRunsOnce(this, artifactDir); }
-
-  /**
-   * Resolve the configured observability exporter(s) and publish the export
-   * status. No reachability probe runs here — Phoenix may start after the agent,
-   * so an unreachable endpoint must not block startup (that probe runs in
-   * `validate`). A present-but-invalid exporter config surfaces as `failed`.
-   */
-  async startExporters(reason: string): Promise<ExporterStatus> { return traceabilityOperations.startExporters(this, reason); }
-
-  /** Record a best-effort export warning so `status` can surface it without failing the run. */
-  recordExporterWarning(warning: { phase: string; message: string }): void { return traceabilityOperations.recordExporterWarning(this, warning); }
 
   refreshTraceSource(reason: string): Promise<void> { return traceabilityOperations.refreshTraceSource(this, reason); }
 
@@ -742,7 +711,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   ): (model: RuntimeModelReference) => MonoRuntimeLike { return responderOperations.buildRuntimeForModel(this, coreConfig); }
 
   /**
-   * Run-identifying context threaded onto exported spans (Phoenix shows the same
+   * Run-identifying context retained across local recording callers (the same
    * source/run identifiers as the local trace-source registry, so local artifact
    * lookup stays possible). Resolved with the same source-id/label resolvers the
    * trace source uses.

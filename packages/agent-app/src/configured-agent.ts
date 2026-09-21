@@ -36,11 +36,8 @@ import type { AgentResponder, MemoryStore } from "@mono-agent/agent-contracts";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { LlmComplete, LlmCompleteOptions } from "@mono-agent/memory/bujo";
-import { createCompositeRunRecorder, createJsonlRunRecorder } from "@mono-agent/observability";
+import { createJsonlRunRecorder } from "@mono-agent/observability";
 import type {
-  PhoenixExporterConfig,
-  RunExportContext,
-  RunExporter,
   RunRecorder,
   RunSummary,
   RuntimeResultLike,
@@ -125,7 +122,6 @@ import {
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import { activeProjectSkillSelections, isRetiredProjectSkillName } from "./project-skills.js";
 import { isReadSkillDenied } from "./skill-registry.js";
-import { loadPhoenixPlugin } from "./phoenix-plugin.js";
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
 type StaticRuntimeOptions = NonNullable<AgentHarnessOptions["runtimeOptions"]>;
@@ -219,19 +215,14 @@ export interface ConfiguredAgentHarnessOptions {
    */
   readonly runtimeForModel?: AgentHarnessOptions["runtimeForModel"];
   /**
-   * Exporter-context fields the factory input cannot supply. Surfaced on the
-   * exported root span so Phoenix traces map back to the running host and its
-   * local artifacts.
+   * App-owned trace-source identity and config-path context retained for local
+   * recording callers and host correlation.
    */
   readonly observabilityContext?: {
     readonly sourceId?: string;
     readonly sourceLabel?: string;
     readonly configPath?: string;
   };
-  /** Best-effort exporter warnings (timeouts, transport failures). */
-  readonly exporterWarn?: (warning: { phase: string; message: string }) => void;
-  /** Injection seam (tests); production loads the configured optional Phoenix plugin. */
-  readonly exporterFactory?: (config: PhoenixExporterConfig) => RunExporter;
 }
 
 export interface ConfiguredAgentResponderOptions extends ConfiguredAgentHarnessOptions {}
@@ -249,7 +240,7 @@ type RunArtifactCommitHook = (event: RunArtifactCommitEvent) => void | Promise<v
 interface ConfiguredAgentInternalHooks {
   /**
    * App-owned hook invoked after the local JSONL running/terminal summary is
-   * committed. Invocation runs before best-effort exporter work; a returned
+   * committed. A returned
    * promise is not awaited and all hook failures are ignored.
    */
   readonly onRunArtifactCommitted?: RunArtifactCommitHook;
@@ -283,26 +274,21 @@ interface ConfiguredAgentInternalHooks {
 }
 
 /**
- * Inputs the recorder composition needs that are stable across a run: the
- * artifact directory, the configured exporters, and the per-host export
- * context. Shared by the channel-run `recorderFactory` and the memory LLM so
- * both produce identical JSONL artifacts + Phoenix spans.
+ * Inputs local recording needs that are stable across a run. Shared by the
+ * channel-run `recorderFactory` and the memory LLM so both produce identical
+ * JSONL artifacts. The app-owned observability context remains available to
+ * callers for trace-source identity and config-path correlation.
  */
 interface RecorderCompositionDeps {
   readonly artifactDir: string;
-  readonly exporters: readonly PhoenixExporterConfig[];
   readonly observabilityContext?: ConfiguredAgentHarnessOptions["observabilityContext"];
-  readonly exporterWarn?: ConfiguredAgentHarnessOptions["exporterWarn"];
-  readonly exporterFactory?: ConfiguredAgentHarnessOptions["exporterFactory"];
   readonly onRunArtifactCommitted?: RunArtifactCommitHook;
 }
 
 /**
  * Build a recorder for one run. The JSONL recorder is always built first and is
- * returned unchanged when neither an artifact hook nor exporter is configured.
- * The optional artifact hook wraps only its commit boundary. When an exporter is
- * present the result is wrapped again so export is best-effort and additive —
- * exporter failures only surface as warnings and never change the run outcome.
+ * returned unchanged when no artifact hook is configured. The optional artifact
+ * hook wraps only its commit boundary.
  */
 function composeRunRecorder(
   deps: RecorderCompositionDeps,
@@ -331,47 +317,12 @@ function composeRunRecorder(
     ...(args.source === undefined ? {} : { source: args.source }),
     ...(args.sourceDetail === undefined ? {} : { sourceDetail: args.sourceDetail }),
   }), deps.onRunArtifactCommitted, args);
-  const exporterCfg = deps.exporters[0];
-  if (exporterCfg === undefined) {
-    return jsonl;
-  }
-  if (deps.exporterFactory === undefined) {
-    throw new Error("Configured Phoenix exporter was not loaded before recorder creation.");
-  }
-  const exporter = deps.exporterFactory(exporterCfg);
-  const context: RunExportContext = {
-    runId: args.runId,
-    conversationId: args.conversationId,
-    ...(deps.observabilityContext?.sourceId === undefined
-      ? {}
-      : { sourceId: deps.observabilityContext.sourceId }),
-    ...(deps.observabilityContext?.sourceLabel === undefined
-      ? {}
-      : { sourceLabel: deps.observabilityContext.sourceLabel }),
-    ...(deps.observabilityContext?.configPath === undefined
-      ? {}
-      : { configPath: deps.observabilityContext.configPath }),
-    artifactDir: deps.artifactDir,
-    includeSensitiveData: exporterCfg.includeSensitiveData ?? false,
-    contentPatternRedaction: exporterCfg.contentPatternRedaction ?? false,
-    ...(args.userInput === undefined ? {} : { userInput: args.userInput }),
-    ...(args.runKind === undefined ? {} : { runKind: args.runKind }),
-    ...(args.memoryOperation === undefined ? {} : { memoryOperation: args.memoryOperation }),
-  };
-  const composite = createCompositeRunRecorder({
-    recorder: jsonl,
-    exporter,
-    context,
-    timeoutMs: exporterCfg.timeoutMs ?? 5000,
-    ...(deps.exporterWarn === undefined ? {} : { onWarning: deps.exporterWarn }),
-  });
-  return composite;
+  return jsonl;
 }
 
 /**
- * Notify the app at the exact local-artifact boundary. This wrapper sits inside
- * the exporter composite, so slow exporter start/finish
- * work cannot leave artifact-derived caches stale after JSONL has committed.
+ * Notify the app at the exact local-artifact boundary so artifact-derived caches
+ * update after JSONL has committed.
  */
 function withArtifactCommitHook(
   recorder: RunRecorder,
@@ -386,7 +337,7 @@ function withArtifactCommitHook(
     try {
       // The cache invalidation used by the app is synchronous. Promise.resolve
       // also contains an async implementation without delaying
-      // the JSONL/export pipeline or leaking an unhandled rejection.
+      // the JSONL pipeline or leaking an unhandled rejection.
       void Promise.resolve(onCommitted({
         phase,
         runId: args.runId,
@@ -440,21 +391,9 @@ function withArtifactCommitHook(
 /** Collect the recorder-composition deps from the host config + harness options. */
 async function recorderCompositionDeps(
   config: MonoAgentConfig,
-  options: Pick<
-    ConfiguredAgentHarnessOptions,
-    "observabilityContext" | "exporterWarn" | "exporterFactory" | "cwd" | "preferAppPluginInstall"
-  >,
+  options: Pick<ConfiguredAgentHarnessOptions, "observabilityContext">,
   internalHooks: ConfiguredAgentInternalHooks = {},
 ): Promise<RecorderCompositionDeps> {
-  const exporters = config.observability?.exporters ?? [];
-  const exporterFactory = options.exporterFactory ?? (exporters.length === 0
-    ? undefined
-    : (await loadPhoenixPlugin({
-        ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-        ...(options.preferAppPluginInstall === undefined
-          ? {}
-          : { preferAppInstall: options.preferAppPluginInstall }),
-      })).createPhoenixRunExporter);
   const sourceLabel = options.observabilityContext?.sourceLabel ?? config.agent?.name;
   const observabilityContext = options.observabilityContext === undefined && sourceLabel === undefined
     ? undefined
@@ -464,12 +403,7 @@ async function recorderCompositionDeps(
       };
   return {
     artifactDir: config.artifacts.dir,
-    exporters,
-    ...(observabilityContext === undefined
-      ? {}
-      : { observabilityContext }),
-    ...(options.exporterWarn === undefined ? {} : { exporterWarn: options.exporterWarn }),
-    ...(exporterFactory === undefined ? {} : { exporterFactory }),
+    ...(observabilityContext === undefined ? {} : { observabilityContext }),
     ...(internalHooks.onRunArtifactCommitted === undefined
       ? {}
       : { onRunArtifactCommitted: internalHooks.onRunArtifactCommitted }),
@@ -1953,7 +1887,7 @@ interface ConfiguredMemoryDependencies {
   /** Optional app-owned recording context for memory LLM calls. */
   readonly observability?: Pick<
     ConfiguredAgentHarnessOptions,
-    "observabilityContext" | "exporterWarn" | "exporterFactory"
+    "observabilityContext"
   >;
 }
 
@@ -2341,7 +2275,7 @@ function createAgentHostMemoryLlm(options: {
   readonly timeoutMs?: number;
   /**
    * When set, each `complete()` is recorded as one run through the shared
-   * JSONL + Phoenix pipeline. The per-call `label` (e.g. "capture:extract")
+   * local JSONL pipeline. The per-call `label` (e.g. "capture:extract")
    * selects the run's conversation id and id slug. Omitted → bare, unrecorded run.
    */
   readonly recording?: {

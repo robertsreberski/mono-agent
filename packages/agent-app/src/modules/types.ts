@@ -3,7 +3,7 @@ import type { MonoAgentConfigJson } from "@mono-agent/config";
 import type { ValidationStatus } from "../doctor.js";
 
 /** The kind of capability a module contributes, used to group the wizard's steps. */
-export type ModuleKind = "channel" | "memory" | "sandbox" | "observability" | "provider";
+export type ModuleKind = "channel" | "memory" | "sandbox" | "provider";
 
 /**
  * A value a module templates against. Non-secret inputs carry a default and may
@@ -68,7 +68,7 @@ export interface ModuleValidateExpectation {
  * emits JSON the existing loader already accepts.
  */
 export interface CapabilityModule {
-  /** `channel:telegram`, `memory:bujo`, `sandbox`, `observability:phoenix`, ... */
+  /** `channel:telegram`, `memory:bujo`, `sandbox`, `provider:ollama`, ... */
   readonly id: string;
   readonly kind: ModuleKind;
   readonly title: string;

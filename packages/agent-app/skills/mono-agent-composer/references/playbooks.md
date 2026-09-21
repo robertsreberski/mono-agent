@@ -189,35 +189,7 @@ const orchestrator = await createConfiguredAgentResponder({
 **Steps:** `mono-agent init --memory journal` → leave tools at the allow-all default (`["*"]`); the **sandbox**, not an allowlist, is what constrains the code tools → `sandbox.mode native` + `network localhost` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
 **Smoke:** ask it to read a file, use Exec for one argv-safe command, run one Bash pipeline, then use NodeRepl twice to retain a variable and produce `42` (all work); next fetch an external URL or write `.env` (both blocked in the artifact). Every route is Pi-native, so this sandbox policy applies uniformly to the primary, every fallback, and every per-trigger override.
 
-## 10. Phoenix-observed agent with the TUI
-**For:** an agent builder evaluating runs in a tracing dashboard.
-**Goal:** run locally with the TUI, attempt a best-effort terminal-batched Phoenix export, and retain a sensitive-key-redacted, credential-scanned, capped local JSONL snapshot after terminal persistence. A pre-terminal crash can omit the Phoenix batch and lose RAM-buffered JSONL events.
-**Features:** `observability.phoenix-exporter`, `observability.jsonl-artifacts`, `observability.trace-registry`, `tui.chat`.
-
-```json
-{
-  "runtime": { "model": "anthropic:claude-sonnet-4-6" },
-  "artifacts": { "dir": ".mono-agent/artifacts" },
-  "traceability": { "registryDir": ".mono-agent/trace-sources", "sourceId": "my-agent", "heartbeatMs": 10000 },
-  "observability": { "exporters": [{ "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces", "projectName": "my-project", "includeSensitiveData": false, "contentPatternRedaction": false, "timeoutMs": 5000 }] }
-}
-```
-**Steps:** start Phoenix (6006) → `init` → add artifacts/traceability/exporter → `validate` (POSTs an empty protobuf) → `start` (prints the Phoenix endpoint) → `mono-agent tui`.
-**Smoke:** complete a TUI prompt; confirm a JSONL artifact AND a Phoenix trace with merged tool spans under the project. Strings are capped. For local artifacts, non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; retained free text is scanned for a closed set of high-confidence credential shapes. Phoenix applies that scan only when `contentPatternRedaction` is true.
-
-## 11. Backfill historical runs to Phoenix
-**For:** an ops engineer onboarding observability after the fact.
-**Goal:** retroactively export recorded JSONL runs to Phoenix with original timestamps, idempotently.
-**Features:** `observability.backfill`, `observability.phoenix-exporter`, `observability.jsonl-artifacts`.
-
-```json
-{ "artifacts": { "dir": ".mono-agent/artifacts" }, "observability": { "exporters": [{ "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces", "projectName": "my-project" }] } }
-```
-**Steps:** ensure `run-*.summary.json` + `run-*.events.jsonl` exist and Phoenix is reachable → `mono-agent backfill --all --since <iso> --until <iso> --dry-run` → `mono-agent backfill --all --since <iso>`.
-**Smoke:** dry-run then real export; historical timestamps preserved in Phoenix and a second run does not duplicate spans (deterministic ids).
-
-
-## 12. Multi-model fallback chain with transcript resume
+## 10. Multi-model fallback chain with transcript resume
 **For:** a reliability-minded builder who can't afford a single-provider outage.
 **Goal:** a primary model with ordered backups the native failover router tries on retryable failures, resuming from the transcript tail — reported, never silent.
 **Features:** `runtime.multi-backend`, `runtime.fallback-models`, `runtime.pi-native-tuning`, `runtime.provider-sessions`.
@@ -231,7 +203,7 @@ const orchestrator = await createConfiguredAgentResponder({
 `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired in 0.21.0
 and are rejected at load; emit `runtime.fallbacks[]` only.
 
-## 13. Personal Telegram assistant with Supermemory
+## 11. Personal Telegram assistant with Supermemory
 **For:** a power user trying an external memory layer while keeping the agent local.
 **Goal:** a Telegram bot captures turns into a local or hosted Supermemory instance and recalls through the same `MemoryRecall` tool.
 **Features:** `telegram.long-polling`, `memory.backend-supermemory`, `memory.per-turn-capture`, `memory.recall-tool`.
@@ -251,7 +223,7 @@ and are rejected at load; emit `runtime.fallbacks[]` only.
 **Steps:** install the exact `@mono-agent/memory-supermemory` version matching agent-app, run `supermemory-server`, save its `sm_...` key in `.env`, add the explicit memory block plus Telegram token/chat id, `validate`, `start`.
 **Smoke:** send a fact, wait for ingestion, then ask a paraphrased question; confirm the run shows `MemoryRecall` returning Supermemory hits.
 
-## 14. Fully local LM Studio agent
+## 12. Fully local LM Studio agent
 **For:** a privacy-focused user who prefers LM Studio's GUI local server.
 **Goal:** a local LM Studio model answers through the webhook channel with lite memory and no cloud calls.
 **Features:** `runtime.local-providers`, `runtime.multi-backend`, `memory.lite`, `webhook.http-invoke`.
@@ -267,7 +239,7 @@ and are rejected at load; emit `runtime.fallbacks[]` only.
 **Steps:** start LM Studio's local server with the chosen model loaded → `mono-agent init --model lmstudio:qwen3.6-32b --memory lite` (the `lmstudio:*` model auto-adds the LM Studio provider block; there is no LM Studio preset — `local-private` is Ollama-based) → adjust `runtime.model` if the displayed model id differs → `validate` → `start`.
 **Smoke:** `curl` the webhook invoke URL and confirm the response comes from the local LM Studio model.
 
-## 15. Interactive agent with long jobs and large media
+## 13. Interactive agent with long jobs and large media
 **For:** a builder whose Telegram agent needs to ask before acting, run multi-minute tools, and exchange large files.
 **Goal:** one Telegram agent uses `AskUser`, long-running MCP tool progress, a self-hosted Bot API server, and `TelegramSendFile`.
 **Features:** `telegram.long-polling`, `agent-app.adapter-send-tools`, `agent-app.rich-replies`, `interaction.ask-user`, `interaction.progress`, `tool-policy.mcp-servers`.
@@ -288,7 +260,7 @@ minutes.
 **Steps:** run a loopback self-hosted Bot API server if files exceed 20 MB, wire a long-running MCP tool in `.mcp.json`, `validate`, `start`.
 **Smoke:** send media with no caption, answer the `AskUser` question, watch progress update during the long job, and receive both an explicit `TelegramSendFile` send and a final generated reply file published with `PublishReplyFile` as native documents.
 
-## 16. Local-first web research agent
+## 14. Local-first web research agent
 **For:** a researcher wanting operator-owned search infrastructure and bounded public-page extraction.
 **Goal:** discover through explicit Ollama or loopback SearXNG, extract pages locally, and optionally render JavaScript HTML in an isolated anonymous browser.
 **Features:** `runtime.web-research`, `runtime.webfetch-retry`, `runtime.builtin-tools`, `sandbox.network-policy`.

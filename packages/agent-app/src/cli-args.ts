@@ -15,7 +15,7 @@ import { parseWebLogMaintenanceArguments } from "./web-log-maintenance-command.j
 
 const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80 satisfies typeof import("@mono-agent/web").WEB_CONSOLE_NAME_MAX_CHARACTERS;
 
-export const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "backfill", "runs", "memory", "continuations", "jobs", "web-control"] as const;
+export const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "runs", "memory", "continuations", "jobs", "web-control"] as const;
 const KNOWN_COMMANDS = [
   ...PUBLIC_COMMANDS,
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
@@ -53,6 +53,7 @@ export const REMOVED_COMMANDS = new Map<string, string>([
   ["sessions", "`sessions` was removed; use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console)."],
   ["metrics", "`metrics` was removed; use `mono-agent runs` (or `mono-agent runs report`)."],
   ["audit-runs", "`audit-runs` was removed; use `mono-agent runs audit`."],
+  ["backfill", "`backfill` was removed with first-party Phoenix/OTLP export; use `mono-agent runs`, `mono-agent runs audit`, or `mono-agent runs report` for retained local artifacts. If a final export is required, perform it before upgrading with the known-good version you already operate."],
 ]);
 
 // `doctor`/`setup` never reach routing: parseCliArgs normalizes them to
@@ -110,17 +111,15 @@ export interface ParsedCliArgs {
   readonly follow: boolean;
   /** logs: number of trailing lines to print. */
   readonly lines?: number;
-  /** backfill: export exactly this run id. */
-  readonly run?: string;
-  /** backfill: export every recorded run. */
+  /** web: apply to every managed console. */
   readonly all: boolean;
-  /** backfill: only runs whose startedAt is >= this ISO instant. */
+  /** runs: only runs whose startedAt is >= this ISO instant. */
   readonly since?: string;
-  /** backfill: only runs whose startedAt is <= this ISO instant. */
+  /** runs: only runs whose startedAt is <= this ISO instant. */
   readonly until?: string;
-  /** backfill: map + serialize but do not POST. */
+  /** init: preview generated files without writing. */
   readonly dryRun: boolean;
-  /** runs/backfill: include memory-run artifacts. */
+  /** runs: include memory-run artifacts. */
   readonly includeMemory: boolean;
   /** runs: read this artifact directory directly. */
   readonly artifactDir?: string;
@@ -270,7 +269,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let foreground = false;
   let follow = false;
   let lines: number | undefined;
-  let run: string | undefined;
   let all = false;
   let since: string | undefined;
   let until: string | undefined;
@@ -316,9 +314,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     switch (flag) {
       case "--config":
         configPath = requireValue(rest, ++i, flag);
-        break;
-      case "--run":
-        run = requireValue(rest, ++i, flag);
         break;
       case "--all":
         all = true;
@@ -679,8 +674,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (cmd === "web" && (configPath !== undefined || envFile !== undefined)) {
     throw new Error("The machine-wide `mono-agent web` console does not load an agent --config or --env-file.");
   }
-  if (includeMemory && cmd !== "runs" && cmd !== "backfill") {
-    throw new Error("--include-memory is only supported for `mono-agent runs` and `mono-agent backfill`.");
+  if (includeMemory && cmd !== "runs") {
+    throw new Error("--include-memory is only supported for `mono-agent runs`.");
   }
   if (limit !== undefined && cmd !== "memory" && cmd !== "continuations") {
     throw new Error("--limit is only supported for `mono-agent memory` and `mono-agent continuations list`.");
@@ -731,7 +726,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   }
   // `--json` is uniform on the read/status surfaces only. Reject it on the
   // lifecycle/interactive commands (init, auth, start, stop, restart, logs, tui,
-  // web, backfill) rather than silently ignoring it. `doctor`/`setup` already
+  // web) rather than silently ignoring it. `doctor`/`setup` already
   // normalized to their canonical `cmd` above.
   if (json && !(JSON_CAPABLE_COMMANDS as readonly string[]).includes(cmd)) {
     throw new Error(`--json is not supported for \`mono-agent ${cmd}\`; it is available on ${JSON_CAPABLE_COMMANDS_DISPLAY}.`);
@@ -751,11 +746,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   }
   assertFlagCommand(configPath !== undefined, "--config", cmd, [
     "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs", "tui",
-    "runs", "backfill", "memory", "continuations", "jobs", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+    "runs", "memory", "continuations", "jobs", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   ]);
   assertFlagCommand(envFile !== undefined, "--env-file", cmd, [
     "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs", "tui",
-    "runs", "backfill", "memory", "continuations", "jobs", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+    "runs", "memory", "continuations", "jobs", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   ]);
   assertFlagCommand(name !== undefined, "--name", cmd, ["init", "web"]);
   assertFlagCommand(model !== undefined, "--model", cmd, ["init"]);
@@ -765,11 +760,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   assertFlagCommand(preset !== undefined, "--preset", cmd, ["init", "validate"]);
   assertFlagCommand(withChannels !== undefined, "--with", cmd, ["init"]);
   assertFlagCommand(yes, "--yes", cmd, ["init", "web"]);
-  assertFlagCommand(dryRun, "--dry-run", cmd, ["init", "backfill"]);
-  assertFlagCommand(run !== undefined, "--run", cmd, ["backfill"]);
-  assertFlagCommand(all, "--all", cmd, ["backfill", "web"]);
-  assertFlagCommand(since !== undefined, "--since", cmd, ["runs", "backfill"]);
-  assertFlagCommand(until !== undefined, "--until", cmd, ["runs", "backfill"]);
+  assertFlagCommand(dryRun, "--dry-run", cmd, ["init"]);
+  assertFlagCommand(all, "--all", cmd, ["web"]);
+  assertFlagCommand(since !== undefined, "--since", cmd, ["runs"]);
+  assertFlagCommand(until !== undefined, "--until", cmd, ["runs"]);
   assertFlagCommand(artifactDir !== undefined, "--artifacts", cmd, ["runs"]);
   assertFlagCommand(groupBy !== undefined, "--by", cmd, ["runs"]);
   assertFlagCommand(staleAfterMs !== undefined, "--stale-after-ms", cmd, ["runs"]);
@@ -839,7 +833,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     foreground,
     follow,
     ...(lines === undefined ? {} : { lines }),
-    ...(run === undefined ? {} : { run }),
     all,
     ...(since === undefined ? {} : { since }),
     ...(until === undefined ? {} : { until }),
