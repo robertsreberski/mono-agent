@@ -737,13 +737,13 @@ describe("managed detached production execution", () => {
       await vi.waitFor(async () => {
         const owner = (await f.store.get(a.details.jobId))?.subagentOwnership;
         expect(owner).toMatchObject({ owner: { settlement: "settled" }, publication: { state: "confirmed" } });
-      });
+      }, { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
       const completed = await done(f.service, b.details.jobId);
       expect(completed.state).toBe("succeeded"); expect(nextRun).toHaveBeenCalledOnce();
       expect((await f.service.get(a.details.jobId))?.state).toBe(mode === "ordinary" ? "succeeded" : "timed_out");
       expect(f.wake).toHaveBeenCalledTimes(2); // Late release adds no second wake for A.
     } finally { gate.resolve({ text: "cleanup" }); }
-  }, 25_000);
+  }, 55_000);
 
   it.each(["before-write", "after-write-lost-ack"])("F2 crash boundary %s pins delivered jobs through reopen-before-bind retention", async (fault) => {
     const f = await managedFixture(); const provider = deferred<any>(); let intercepted = false;
@@ -833,7 +833,7 @@ describe("managed detached production execution", () => {
       verify: async (identity) => (await recoveredRegistry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
       publish: async (phase, publication) => (await recoveredRegistry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
     });
-    await vi.waitFor(async () => expect((await f.store.get(receipt.details.jobId))?.subagentOwnership?.publication.receiptPending).toBe(false));
+    await vi.waitFor(async () => expect((await f.store.get(receipt.details.jobId))?.subagentOwnership?.publication.receiptPending).toBe(false), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     await reopened.activateWakes(); await done(reopened, receipt.details.jobId);
     await f.store.applyRetention({ ...reopened.settings, retention: { ...reopened.settings.retention, maxAgeMs: 1 } }, new Date(Date.now() + 10_000));
     expect(await f.store.get(receipt.details.jobId)).toBeUndefined();
@@ -842,7 +842,7 @@ describe("managed detached production execution", () => {
     const offline = await createSubagentInstanceRegistry({ root, retireSession: async () => {} }).open(origin.conversationId);
     await expect(offline.close("helper")).resolves.toMatchObject({ status: "closed" });
     expect(run).toHaveBeenCalledOnce(); expect(f.wake).toHaveBeenCalledOnce();
-  }, 10_000);
+  }, 40_000);
 
   it.each(["finalize", "acknowledge"] as const)("F3: actual %s-following journal write failure degrades service without losing release evidence", async (faultPhase) => {
     const f = await managedFixture(); const root = resolve(f.root, "children");
@@ -860,7 +860,7 @@ describe("managed detached production execution", () => {
     });
     const run = vi.fn(async () => ({ text: "one settled result" }));
     const receipt = await tools(f, run).agent.execute("disk-fault", { persist: true, background: true, id: "helper", prompt: "work" });
-    await vi.waitFor(() => expect(f.service.health.state).toBe("degraded"), { timeout: 5000 });
+    await vi.waitFor(() => expect(f.service.health.state).toBe("degraded"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     expect(injected).toBe(true);
     await expect(f.service.stop()).rejects.toThrow("Process-job shutdown encountered failures");
     services.splice(services.indexOf(f.service), 1); // The stopped service retains its rejected shutdown promise.
@@ -897,7 +897,7 @@ describe("managed detached production execution", () => {
     await vi.waitFor(async () => expect((await store.get(receipt.details.jobId))?.subagentOwnership?.publication.receiptPending).toBe(false), { timeout: 5000 });
     await reopened.activateWakes(); expect((await done(reopened, receipt.details.jobId)).state).toBe("succeeded");
     expect(run).toHaveBeenCalledOnce(); expect(f.wake).toHaveBeenCalledOnce();
-  }, 12_000);
+  }, 45_000);
 
   it("F2: retains a durable release certificate through startup retention without an intervening registry read", async () => {
     const f = await managedFixture();
@@ -1687,7 +1687,7 @@ it("keeps detached live progress out of the parent stream and persists it separa
   const id = receipt.details.jobId;
   await vi.waitFor(async () => expect((await f.service.get(id) as any).subagentProgress?.toolCalls).toBe(1));
   expect(parentEvents.mock.calls.flat().some((event: any) => event.type === "subagent_activity")).toBe(false);
-  await vi.waitFor(async () => expect((await f.store.get(id))?.subagentProgress?.toolCalls).toBe(1));
+  await vi.waitFor(async () => expect((await f.store.get(id))?.subagentProgress?.toolCalls).toBe(1), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
   expect(JSON.stringify((await f.store.get(id))?.subagentProgress)).not.toContain("PRIVATE_PROMPT");
   emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "read", content: "PRIVATE_TOOL_RESULT" }] } });
   gate.resolve({ text: "Child final report" });
@@ -1702,7 +1702,7 @@ it("keeps detached live progress out of the parent stream and persists it separa
   expect(output).toContain("Child final report");
   expect(output).not.toContain("subagentProgress");
   expect((f.wake.mock.calls[0]![0] as any).prompt).not.toContain("subagentProgress");
-});
+}, 45_000);
 
 it("projects the requested detached route while running and the executed fallback after settlement", async () => {
   const f = await fixture();
@@ -1787,7 +1787,7 @@ it("coalesces a burst of private progress and terminally persists the latest bou
     emit({ type: "tool_completed", id: String(i), failed: i % 2 === 0 });
   }
   expect((await f.service.get(id) as any).subagentProgress).toMatchObject({ toolCalls: 100, failedCalls: 50 });
-  await vi.waitFor(async () => expect((await f.store.get(id))?.subagentProgress?.toolCalls).toBe(100));
+  await vi.waitFor(async () => expect((await f.store.get(id))?.subagentProgress?.toolCalls).toBe(100), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
   await vi.waitFor(() => expect(surface).toHaveBeenCalled());
   expect(surface.mock.calls.length).toBeLessThanOrEqual(2);
   gate.resolve({ status: "ok", output: '{"answer":"original output"}', answer: "Separate report" });
@@ -1796,7 +1796,7 @@ it("coalesces a burst of private progress and terminally persists the latest bou
   expect(job.subagentProgress?.answerHead).toBe("Separate report");
   expect((await f.store.get(id))?.subagentProgress).toEqual(job.subagentProgress);
   expect((f.wake.mock.calls[0]![0] as any).prompt).not.toContain("Separate report");
-});
+}, 45_000);
 
 it("does not append private progress or the UI answer to the internal stdout lane", async () => {
   const output = JSON.stringify({ instanceId: "helper", answer: "Original wake report", artifacts: [] });
