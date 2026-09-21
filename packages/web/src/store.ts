@@ -289,6 +289,8 @@ export type CronReplyReservationResult =
   | { readonly kind: "tombstoned"; readonly operation: StoredCronReplyOperation };
 
 interface ProcessJobCardRow {
+  state: ProcessJobState;
+  completed_at: string | null;
   source_id: string;
   job_id: string;
   delivery_key: string;
@@ -2171,8 +2173,8 @@ export class WebStore {
         this.database.prepare(`
           INSERT INTO process_job_cards (
             source_id, job_id, delivery_key, thread_id, message_id,
-            projection_sha256, response_text, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            projection_sha256, response_text, created_at, updated_at, state, completed_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           input.sourceId,
           projection.jobId,
@@ -2183,6 +2185,8 @@ export class WebStore {
           input.responseText ?? null,
           now,
           now,
+          projection.state,
+          projection.timestamps.completedAt ?? null,
         );
         this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
           .run(now, input.threadId);
@@ -2212,6 +2216,10 @@ export class WebStore {
       || priorPart.job.jobId !== projection.jobId
       || priorParts.length !== 1 + priorReplyParts.length) {
       throw new WebConsoleError("storage_corrupt", "A retained process-job card has invalid content.", 500);
+    }
+    if (existing.state !== priorPart.job.state
+      || existing.completed_at !== (priorPart.job.timestamps.completedAt ?? null)) {
+      throw new WebConsoleError("storage_corrupt", "A retained process-job projection disagrees with its message.", 500);
     }
     assertProcessJobCardTransition(priorPart.job, projection);
     if (priorPart.job.kind === "internal" && projection.kind === "internal" && priorPart.job.subagentProgress
@@ -2257,9 +2265,10 @@ export class WebStore {
       );
       this.database.prepare(`
         UPDATE process_job_cards
-        SET projection_sha256 = ?, response_text = ?, updated_at = ?
+        SET projection_sha256 = ?, response_text = ?, updated_at = ?, state = ?, completed_at = ?
         WHERE source_id = ? AND job_id = ?
-      `).run(projectionSha256, responseText ?? null, now, input.sourceId, projection.jobId);
+      `).run(projectionSha256, responseText ?? null, now, projection.state,
+        projection.timestamps.completedAt ?? null, input.sourceId, projection.jobId);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, input.threadId);
       this.recordThreadRevision(input.threadId, "process_job_card_updated", now);
@@ -2756,11 +2765,8 @@ export class WebStore {
         SELECT thread_id FROM turns WHERE status = 'running'
         UNION
         SELECT c.thread_id
-          FROM messages m
-          JOIN process_job_cards c ON c.message_id = m.id AND c.thread_id = m.thread_id
-          JOIN json_each(m.parts_json) part
-         WHERE json_extract(part.value, '$.type') = 'process-job'
-           AND json_extract(part.value, '$.job.state') IN ('queued', 'starting', 'running')
+          FROM process_job_cards c
+         WHERE c.state IN ('queued', 'starting', 'running')
       )
       SELECT t.id AS id, t.source_id AS source_id
         FROM active a
@@ -6208,15 +6214,10 @@ export class WebStore {
   private jobActivities(threadIds: readonly string[]): Map<string, WebJobActivity> {
     const rows = this.database.prepare(`
       WITH jobs AS (
-        SELECT m.thread_id AS thread_id,
-               json_extract(part.value, '$.job.state') AS state,
-               json_extract(part.value, '$.job.timestamps.completedAt') AS completed_at,
-               c.response_text, m.rowid AS ordinal
-        FROM messages m
-        JOIN process_job_cards c ON c.message_id = m.id AND c.thread_id = m.thread_id
-        JOIN json_each(m.parts_json) part
-        WHERE m.thread_id IN (SELECT value FROM json_each(?))
-          AND json_extract(part.value, '$.type') = 'process-job'
+        SELECT c.thread_id, c.state, c.completed_at, c.response_text, m.rowid AS ordinal
+        FROM process_job_cards c
+        CROSS JOIN messages m ON m.id = c.message_id
+        WHERE c.thread_id IN (SELECT value FROM json_each(?))
       )
       SELECT g.thread_id AS thread_id,
              count(*) FILTER (WHERE g.state = 'queued') AS queued,

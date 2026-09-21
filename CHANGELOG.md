@@ -22,6 +22,9 @@
   publication is durably rearmed after an older publication finishes, without
   releasing capacity or waking the parent early.
 
+- Keep active console conversation refreshes responsive by reading validated job
+  summaries instead of repeatedly parsing retained transcripts.
+
 - Fix the web console to keep events responsive as transcripts grow and preserve
   SSE connections through ordinary socket backpressure with bounded memory.
 

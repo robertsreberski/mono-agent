@@ -2710,6 +2710,33 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("plans active membership and job summaries from cards without scanning message JSON", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const job = fakeProcessJob({ conversationId: `web:${thread.id}` });
+    store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey });
+    const db = (store as unknown as { database: DatabaseSync }).database;
+    const prepare = db.prepare.bind(db);
+    const plans: string[][] = [];
+    const spy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+      if (sql.includes("WITH active AS") || sql.includes("WITH jobs AS")) {
+        expect(sql).not.toContain("parts_json");
+        const bindings = sql.includes("WITH jobs AS") ? [JSON.stringify([thread.id])] : [];
+        plans.push(prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...bindings).map((row) => String(row.detail)));
+      }
+      return prepare(sql);
+    });
+    expect(store.listActiveThreads().total).toBe(1);
+    spy.mockRestore();
+    expect(plans).toHaveLength(2);
+    expect(plans[0]!.join("\n")).toContain("process_job_cards_by_state");
+    expect(plans[1]!.join("\n")).toContain("process_job_cards_by_thread");
+    for (const plan of plans) expect(plan.join("\n")).not.toMatch(/SCAN m\b/);
+    store.close();
+  });
+
   it.each(["succeeded", "failed", "timed_out", "cancelled", "spawn_failed", "queue_expired", "interrupted"] as const)(
     "projects terminal job state %s without marking the foreground as running", async (state) => {
       const base = await temporaryRoot();
@@ -2721,6 +2748,10 @@ describe("WebStore", () => {
       store.upsertProcessJobCard({
         sourceId: "agent-one", threadId: thread.id, processJob, deliveryKey: processJob.wake.deliveryKey,
       });
+      const db = (store as unknown as { database: DatabaseSync }).database;
+      expect(db.prepare("SELECT state, completed_at FROM process_job_cards").get())
+        .toEqual({ state, completed_at: processJob.timestamps.completedAt });
+      expect(store.getThreadDetail(thread.id)?.messages[0]?.parts[0]).toMatchObject({ type: "process-job", job: { state } });
       expect(store.getThread(thread.id)).toMatchObject({
         runState: { status: "idle" },
         jobActivity: {

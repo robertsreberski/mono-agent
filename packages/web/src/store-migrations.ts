@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { parseProcessJobProjection } from "@mono-agent/agent-contracts";
 
 import { WebConsoleError } from "./errors.js";
 
@@ -210,6 +211,36 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
     addColumn(database, "turns", "conversation_markers_json", "TEXT");
     addColumn(database, "turns", "dispatch_started_at", "TEXT");
   } },
+  { version: 33, name: "process-job-state-projection", up: ({ database }) => {
+    addColumn(database, "process_job_cards", "state", "TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','starting','running','succeeded','failed','timed_out','cancelled','spawn_failed','queue_expired','interrupted'))");
+    addColumn(database, "process_job_cards", "completed_at", "TEXT");
+    // Bounded keyset batches of cards, never a scan of transcript blobs. The
+    // enclosing initialization transaction rolls back DDL and all earlier
+    // batches together if even one canonical card is invalid.
+    const page = database.prepare(`SELECT rowid AS ordinal, job_id, thread_id, message_id
+      FROM process_job_cards WHERE rowid > ? ORDER BY rowid LIMIT 128`);
+    const message = database.prepare("SELECT thread_id, parts_json FROM messages WHERE id = ?");
+    const update = database.prepare("UPDATE process_job_cards SET state = ?, completed_at = ? WHERE rowid = ?");
+    let after = 0;
+    while (true) {
+      const cards = page.all(after) as Array<{ ordinal: number; job_id: string; thread_id: string; message_id: string }>;
+      if (cards.length === 0) break;
+      for (const card of cards) {
+        const row = message.get(card.message_id) as { thread_id: string; parts_json: string } | undefined;
+        if (row === undefined || row.thread_id !== card.thread_id) throw new Error("Invalid retained job reference.");
+        const parts: unknown = JSON.parse(row.parts_json);
+        if (!Array.isArray(parts)) throw new Error("Invalid retained job parts.");
+        const jobs = parts.filter((part) => part?.type === "process-job");
+        if (jobs.length !== 1) throw new Error("Invalid retained job count.");
+        const job = parseProcessJobProjection(jobs[0].job);
+        if (job.jobId !== card.job_id) throw new Error("Invalid retained job identity.");
+        update.run(job.state, job.timestamps.completedAt ?? null, card.ordinal);
+        after = card.ordinal;
+      }
+    }
+    database.exec(`CREATE INDEX IF NOT EXISTS process_job_cards_by_state ON process_job_cards(state, thread_id);
+      CREATE INDEX IF NOT EXISTS process_job_cards_by_thread ON process_job_cards(thread_id);`);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -268,6 +299,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       notification_deliveries: ["message_id", "job_id", "run_id"],
       agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
       messages: ["seq", "cron_suppressed"],
+      process_job_cards: ["state", "completed_at"],
       turns: ["conversation_markers_json", "dispatch_started_at", "cancel_origin", "project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
       live_inputs: ["dispatch_started_at"],
       web_submissions: [
@@ -293,6 +325,14 @@ export function validateWebStorageShape(database: DatabaseSync): void {
     if (!/UNIQUE\s*\(\s*source_id\s*,\s*name\s*\)/iu.test(tagDdl.sql)
       || !/\bname\s+TEXT\s+NOT\s+NULL\s+COLLATE\s+NOCASE\b/iu.test(tagDdl.sql)) {
       throw new Error("Invalid tag name uniqueness.");
+    }
+    const cardState = (database.prepare("PRAGMA table_info(process_job_cards)").all() as Array<{
+      name: string; type: string; notnull: number;
+    }>).find((column) => column.name === "state");
+    const cardDdl = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'process_job_cards'").get() as { sql: string };
+    if (cardState?.type !== "TEXT" || cardState.notnull !== 1
+      || !cardDdl.sql.includes("CHECK (state IN ('queued','starting','running','succeeded','failed','timed_out','cancelled','spawn_failed','queue_expired','interrupted'))")) {
+      throw new Error("Invalid process-job state projection.");
     }
     const seq = (database.prepare("PRAGMA table_info(messages)").all() as Array<{
       name: string; type: string; notnull: number; dflt_value: string | null;
@@ -322,6 +362,8 @@ export function validateWebStorageShape(database: DatabaseSync): void {
     }
     for (const [index, expected] of [
       ["messages_by_thread", ["thread_id", "created_at"]],
+      ["process_job_cards_by_state", ["state", "thread_id"]],
+      ["process_job_cards_by_thread", ["thread_id"]],
       ["cron_run_messages_by_order", ["source_id", "job_id", "ordered_at", "sequence", "run_id"]],
       ["monitor_wake_deliveries_by_thread", ["thread_id", "created_at"]],
       ["notification_deliveries_by_thread", ["thread_id"]],
