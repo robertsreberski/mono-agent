@@ -15,7 +15,6 @@ const userDocRoots = [
   "packages/memory/README.md",
   "packages/observability/README.md",
   "packages/operator-adapter/README.md",
-  "packages/tui/README.md",
   "packages/agent-app/skills/mono-agent-composer/references",
 ];
 const catalogDemoOnlyReadmes = packageCatalog
@@ -28,11 +27,6 @@ const artifactContractSourcePaths = [
   "packages/operator-adapter/package.json",
   "packages/operator-adapter/src/tui/constants.ts",
   "packages/operator-adapter/src/tui/server.ts",
-  "packages/tui/src/ui/app.ts",
-  "packages/tui/src/ui/components/tool-panel.ts",
-  "packages/tui/src/ui/views/replay-detail.ts",
-  "packages/tui/src/ui/views/replay.ts",
-  "packages/tui/package.json",
   "scripts/package-catalog.mjs",
 ];
 
@@ -784,7 +778,7 @@ function usage() {
     "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, selected package READMEs,",
     "and mono-agent-composer references) for retired pre-v1 surfaces; applies the demo retirement",
     "guards to every catalog package/extras README; and rejects the exact retired demo roots and root commands",
-    "and scans those docs plus TUI source text for absolute artifact/replay claims",
+    "and scans those docs plus operator-adapter source text for absolute artifact/replay claims",
     "that contradict wire truncation, best-effort export, recorder redaction, or terminal persistence.",
     "Each optional consumer folder should contain README.md and mono-agent.config.json.",
   ].join("\n");

@@ -270,8 +270,8 @@ scans retained free text for high-confidence credential shapes, and caps event
 strings. It schedules bounded checkpoints and writes a terminal snapshot at
 finish/fail; a crash can still lose an unsaved tail. The framework supplies no
 bundled trace exporter. Providers, channels, MCP servers, web tools, and external
-memory may still use the network. For operator views, mention `mono-agent tui`,
-`mono-agent web`, and the read-only `mono-agent runs` commands.
+memory may still use the network. For operator views, mention `mono-agent web`
+and the read-only `mono-agent runs` commands.
 
 ## 9. Acceptance Smoke Test
 

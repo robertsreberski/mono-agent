@@ -137,8 +137,8 @@ export interface ResponderControllerPort {
 
 /**
  * The channel whose conversations the reader already owns a session boundary
- * for. `tui` is the gui/operator channel behind both `mono-agent tui` and the
- * web console: each console thread has a permanent conversation id and an
+ * for. `tui` is the compatibility-named gui/operator channel behind the web
+ * console and other maintained operator clients: each console thread has a permanent conversation id and an
  * explicit "new thread" action, so a daily bucket on top of it just severs a
  * live conversation at midnight — the next morning's follow-up woke with no
  * transcript and had to reconstruct it through RunHistory.

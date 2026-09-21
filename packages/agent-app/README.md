@@ -3,7 +3,7 @@
 Config-first mono-agent host. Reads one `mono-agent.config.json` in a folder,
 builds the configured responder, and starts every configured communication
 channel plus traceability. Ships the
-`mono-agent` CLI (`init`, `auth`, `sandbox`, `validate`, `memory`, `tui`, `web`, `start`) so an agent folder works without
+`mono-agent` CLI (`init`, `auth`, `sandbox`, `validate`, `memory`, `runs`, `web`, `start`) so an agent folder works without
 hand-written composition code.
 
 Setup has two deliberate wall-clock paths: flags or non-TTY input use the fast scaffold-only path (unless explicit `--auth` adds provider setup) and never claim readiness. Bare `mono-agent init` on a TTY makes one real no-tool model call per selected route before committing the scaffold, with timeouts of 90s for each cloud route and 240s for each local route.
@@ -152,8 +152,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   pair its worker with one helper-only,
   stopped-writer log controller while the worker remains wake-only; publish a
   bounded, refreshable skill registry through each running operator endpoint so
-  the web composer can discover valid `$skill-name` references; use
-  `mono-agent tui` for bounded recorded-run replay.
+  the web composer can discover valid `$skill-name` references; use `mono-agent runs
+  list|show` for bounded recorded-run diagnostics.
 - Discover and expose one exact running agent through the ACP core-session
   profile with `mono-agent bridge acp`, including durable session resume, while
   preserving agent-owned configuration, workspace, sandbox, tools, MCP servers,
@@ -277,13 +277,13 @@ true. The worker publishes that proof only after channels, memory rituals, and
 final memory-health work complete; later trace refreshes change the diagnostic
 `metadata.reason` without revoking readiness. Once ready, init prints the manual
 continuation: edit `mono-agent.config.json` or `IDENTITY.md`, run
-`mono-agent validate`, restart, and open the ordinary TUI. A readiness timeout
+`mono-agent validate`, restart, and open the browser console. A readiness timeout
 preserves the committed files, then unloads the worker plus scheduled
 maintenance and removes their definitions only when stopped state is proven. If
 cleanup cannot be proven, the command says that a process may still be running
 and prints exact `start`, `status`, and `logs --follow` recovery commands plus
 log paths. On Linux the next steps use the systemd background service and
-ordinary TUI; platforms without a background backend use foreground start. Any
+the browser console; platforms without a background backend use foreground start. Any
 flag or non-TTY invocation remains scaffold-only and never starts a process.
 
 ### Managed skills and documentation companion

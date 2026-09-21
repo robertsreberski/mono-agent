@@ -17,7 +17,7 @@ channel adapter
 optional side paths
   -> memory
   -> observability
-  -> operator TUI/web surfaces
+  -> operator endpoint/web surfaces
 ```
 
 The exact workspace graph and package ownership descriptions are generated in [`PACKAGES.md`](./PACKAGES.md). The rules are enforced by `pnpm run check:architecture`.
@@ -31,7 +31,6 @@ flowchart TB
   Host["Config-first app host<br/>mono-agent CLI or custom host"]
 
   subgraph Surfaces["Operator-surface choices"]
-    Tui["@mono-agent/tui<br/>Terminal chat + read-only config"]
     Web["@mono-agent/web<br/>Always-on browser console"]
   end
 
@@ -71,7 +70,6 @@ flowchart TB
     PiSdk["Pi providers<br/>&lt;provider&gt;:&lt;model&gt;"]
   end
 
-  Host -. optional .-> Tui
   Host -. optional .-> Web
   Host --> Telegram
   Host -. plugin .-> A2A
@@ -85,8 +83,6 @@ flowchart TB
   Host --> Config
   Host --> AgentApp
 
-  Tui --> Contracts
-  Tui --> Config
   Web --> Contracts
   Web --> Config
   Telegram --> Contracts

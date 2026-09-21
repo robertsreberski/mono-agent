@@ -1,7 +1,7 @@
 # @mono-agent/operator-adapter
 
 Serve the local bidirectional NDJSON operator protocol used by mono-agent's
-terminal and browser consoles.
+web console, ACP bridge, and jobs client.
 
 ## Category
 
@@ -10,15 +10,15 @@ terminal and browser consoles.
 
 Category: `communication`
 Tier: `core`
-Catalog responsibility: Exposes the structured local TUI NDJSON endpoint used by the terminal and browser operator consoles.
+Catalog responsibility: Exposes the structured local operator NDJSON endpoint used by the browser console, ACP bridge, and jobs client.
 
 <!-- package-metadata:end -->
 
 ## Responsibility
 
 This communication package exposes a host-provided responder over the `tui`
-HTTP lane. It accepts turns from `mono-agent tui` and `mono-agent web` while
-preserving structured `AgentStreamEvent` frames. The endpoint defaults to
+HTTP lane. It accepts turns from `mono-agent web` and other maintained clients
+while preserving structured `AgentStreamEvent` frames. The endpoint defaults to
 loopback and refuses a non-loopback bind unless the host explicitly opts in.
 
 ## Install / Usage
@@ -186,7 +186,7 @@ An app-owned `ProviderUsageOperator` enables bearer-protected `GET ${basePath}/v
 
 1. The host passes an `AgentResponder` to `startTuiAdapter` and publishes the
    returned conversational base URL through its trace-source metadata.
-2. A TUI or web client reads `/v1/info` (including additive live skill, exact
+2. A web or ACP client reads `/v1/info` (including additive live skill, exact
    ask, and cron capabilities when provided), submits a turn, consumes
    structured NDJSON frames until `finish` or `error`, and may offer live input
    while that turn is active; disconnecting the turn stream aborts the request.
@@ -199,7 +199,7 @@ cannot become prompt, history, or JSON wire content.
 
 The `@mono-agent/operator-adapter/client` subpath owns shared Node transport
 mechanics. Callers retain authentication, URL trust policy, error presentation,
-and their compatibility frame ceilings (1 MiB in TUI, 8 MiB in web).
+and their compatibility frame ceilings (1 MiB in legacy clients, 8 MiB in web).
 
 ### Package structure
 
@@ -310,7 +310,6 @@ loopback is a host decision guarded by `allowNonLoopback`.
 ## Related Documentation
 
 - [Operator stream endpoint](https://docs.mono-agent.dev/channels/tui/)
-- [Terminal UI](https://docs.mono-agent.dev/observability/tui/)
 - [Always-on web console](https://docs.mono-agent.dev/observability/web-console/)
 - [Artifacts and traces](https://docs.mono-agent.dev/observability/artifacts-and-traces/)
 - [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)

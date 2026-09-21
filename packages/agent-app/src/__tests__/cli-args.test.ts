@@ -322,6 +322,11 @@ describe("parseCliArgs", () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toContain("cannot authorize another CLI command");
       expect(result.stdout).toBe("");
+
+      const retiredHelp = await captureCli(() => runCli(["help", "tui"]));
+      expect(retiredHelp.code).toBe(2);
+      expect(retiredHelp.stderr).toContain("cannot authorize another CLI command");
+      expect(retiredHelp.stdout).toBe("");
     } finally {
       if (previous === undefined) delete process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV];
       else process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV] = previous;
@@ -503,7 +508,7 @@ describe("parseCliArgs", () => {
   });
 
   it("rejects --json on lifecycle/interactive commands with a usage error naming the JSON surfaces", () => {
-    for (const command of ["init", "auth", "start", "stop", "restart", "logs", "tui"] as const) {
+    for (const command of ["init", "auth", "start", "stop", "restart", "logs"] as const) {
       expect(() => parseCliArgs([command, "--json"])).toThrow(/--json is not supported/u);
     }
     // The error names the supported surfaces so a caller knows where JSON lives.
@@ -636,9 +641,9 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["version"]).command).toBe("version");
   });
 
-  it("rejects the removed `sessions` command with a tui/web pointer", () => {
+  it("rejects the removed `sessions` command with runs/web pointers", () => {
     expect(() => parseCliArgs(["sessions"])).toThrow(/`sessions` was removed/u);
-    expect(() => parseCliArgs(["sessions"])).toThrow(/mono-agent tui/u);
+    expect(() => parseCliArgs(["sessions"])).toThrow(/mono-agent runs list\|show/u);
     expect(() => parseCliArgs(["sessions"])).toThrow(/mono-agent web/u);
     // Its former Session Recorder flags no longer exist on any command.
     expect(() => parseCliArgs(["web", "--no-open"])).toThrow(/Unknown flag/u);
@@ -796,9 +801,10 @@ describe("parseCliArgs", () => {
     expect(validateDetail).toContain("`mono-agent doctor` is an alias for this command.");
 
     const tuiDetail = helpTopicText("tui");
-    expect(tuiDetail).toContain("live chat with structured");
-    expect(tuiDetail).not.toContain("live chat with full");
-    expect(tuiDetail).not.toContain("--configure");
+    expect(tuiDetail).toContain("`tui` was removed");
+    expect(tuiDetail).toContain("mono-agent web");
+    expect(tuiDetail).toContain("mono-agent runs list|show");
+    expect(tuiDetail).toContain("mono-agent config");
 
     const webDetail = helpTopicText("web");
     expect(webDetail).toContain("web reset --all --yes");
@@ -841,8 +847,9 @@ describe("parseCliArgs", () => {
     const sessions = renderHelpTopic("sessions");
     expect(sessions.ok).toBe(true);
     if (sessions.ok) {
-      expect(sessions.text).toContain("mono-agent tui");
+      expect(sessions.text).toContain("mono-agent runs list|show");
       expect(sessions.text).toContain("mono-agent web");
+      expect(sessions.text).not.toContain("mono-agent tui");
     }
 
     // An unknown topic is a usage error listing valid topics.
@@ -949,16 +956,43 @@ describe("removed CLI surfaces", () => {
     expect(unknown.stderr).not.toContain("recipes");
   });
 
-  it("exits with the usage-error code and a tui/web pointer for the removed sessions command", async () => {
+  it("exits with the usage-error code and runs/web pointers for the removed sessions command", async () => {
     const sessions = await captureCli(() => runCli(["sessions"]));
     expect(sessions.code).toBe(2);
     expect(sessions.stderr).toContain("`sessions` was removed");
-    expect(sessions.stderr).toContain("mono-agent tui");
+    expect(sessions.stderr).toContain("mono-agent runs list|show");
     expect(sessions.stderr).toContain("mono-agent web");
+    expect(sessions.stderr).not.toContain("mono-agent tui");
     // The unknown-command enumeration must no longer advertise `sessions`.
     const unknown = await captureCli(() => runCli(["definitely-not-a-command"]));
     expect(unknown.code).toBe(2);
     expect(unknown.stderr).not.toContain("sessions");
+  });
+
+  it("retires tui with one secret-free pointer before config or dotenv loading", async () => {
+    const dir = await tempDir();
+    const marker = "RETIRE_TUI_MUST_NOT_LOAD";
+    await writeFile(join(dir, "mono-agent.config.json"), "{malformed", "utf8");
+    await writeFile(join(dir, ".env.retired"), `${marker}=loaded\n`, "utf8");
+    delete process.env[marker];
+    const secret = `secret-${"A".repeat(48)}`;
+
+    const direct = await captureCli(() => withCwd(dir, () => runCli([
+      "tui", "--local", "--conversation", secret, "--agent", secret,
+      "--config", "mono-agent.config.json", "--env-file", ".env.retired",
+    ])));
+    const help = await captureCli(() => withCwd(dir, () => runCli(["help", "tui", "--env-file", ".env.retired"])));
+
+    expect(direct.code).toBe(2);
+    expect(direct.stderr).toContain("`tui` was removed");
+    expect(direct.stderr).toContain("mono-agent web");
+    expect(direct.stderr).toContain("mono-agent runs list|show");
+    expect(direct.stderr).toContain("mono-agent config");
+    expect(`${direct.stdout}${direct.stderr}`).not.toContain(secret);
+    expect(help.code).toBe(0);
+    expect(help.stdout).toContain("`tui` was removed");
+    expect(help.stderr).toBe("");
+    expect(process.env[marker]).toBeUndefined();
   });
 
   it("routes help topics through runCli with the right output stream and exit code", async () => {

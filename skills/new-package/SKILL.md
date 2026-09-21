@@ -113,16 +113,6 @@ When the new package is a channel driver, or adds a new `ChannelId`:
   runtime (like `managed-runtime-packages.ts`'s app-vs-cwd resolution), add a
   `doctor`/`validate` detail line naming what was resolved and from where —
   otherwise the resolution is invisible when it picks the wrong one.
-- **Sibling test-shape parity.** When the package has two structurally-parallel
-  sub-modules, diff their `__tests__/` listings and add any missing counterpart;
-  a gap there is an untested path. `operator-adapter`'s `live/` was missing the
-  `config.test.ts` that `tui/` has, so `live/config.ts`'s secret-redaction path
-  went untested.
-
-  ```bash
-  diff <(ls packages/<pkg>/src/tui/__tests__) <(ls packages/<pkg>/src/live/__tests__)
-  ```
-
 - **MCP stateless-HTTP cleanup ordering.** For a rung-4 MCP server/tool using
   `@modelcontextprotocol/sdk`, register the response close listener **before**
   calling `handleRequest`, not after — the SDK examples show this order and

@@ -134,8 +134,28 @@ installed-consumer migration. Removing the bundled trace exporter also does not
 make the application network-isolated: providers, channels, MCP servers, web
 tools, and configured external memory services can still use the network.
 
+## Retired terminal renderer
+
+The first-party terminal renderer is removed on the current unreleased source
+branch: `mono-agent tui`, `mono-agent help tui`, the standalone
+`mono-agent-tui` binary, and direct `@mono-agent/tui` imports no longer provide a
+renderer. Use `mono-agent web` for live operation, `mono-agent runs list` and
+`mono-agent runs show <run-id>` for bounded offline run diagnostics, and
+`mono-agent config` for the resolved configuration view.
+
+This source change does not mutate consumer folders or runtime data and does not
+deprecate or remove the historical npm artifact. Version `0.22.0` still contains
+the renderer, so keep the complete known-good version set already in use until
+consumer scripts and imports have been migrated. No compatibility exports were
+relocated merely to preserve old renderer API names.
+
+The shared endpoint is not retired. Keep `tui.*`, `MONO_AGENT_TUI_*`, the `tui`
+channel/source id, `metadata.channels.tui`, `/gui`, and the public operator wire
+names unchanged. Web, ACP, jobs, and proactive delivery continue to use those
+compatibility identifiers. Validate the updated consumer before restarting it.
+
 ## Operator integrations
 
-The shared Node client transport is available at `@mono-agent/operator-adapter/client`. Web and TUI reuse its stream parsing and long-lived fetch implementation while retaining their own endpoint/authentication rules and frame ceilings. Multipart terminal replies and bounded final frames without a trailing newline are handled consistently.
+The shared Node client transport is available at `@mono-agent/operator-adapter/client`. Web and ACP clients reuse its stream parsing and long-lived fetch implementation while retaining their own endpoint/authentication rules and frame ceilings. Multipart terminal replies and bounded final frames without a trailing newline are handled consistently.
 
 Browser wire types use canonical type-only imports. UI-only types stay in the frontend, and server runtime code is not imported into browser bundles. Notification previews and channel log sanitizers share their respective generic implementations while preserving channel-specific credential handling.

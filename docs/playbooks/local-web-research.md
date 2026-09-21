@@ -334,7 +334,7 @@ falls through to another search provider.
 
 ## 5. Smoke the real tools
 
-From an enabled channel or the TUI, ask:
+From an enabled channel or the web console, ask:
 
 ```text
 Search for the current SearXNG settings documentation using two query variants.

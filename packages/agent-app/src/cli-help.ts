@@ -190,21 +190,6 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     lines: ["Print (and optionally follow) log files on macOS or the user journal on Linux."],
   },
   {
-    command: "tui",
-    group: "Console",
-    short: "tui",
-    summary: "Operator console: live chat, recorded-run replay, config view.",
-    signature: "mono-agent tui [--agent <label|sourceId>] [--conversation <id>]\n" +
-      "               [--local]",
-    lines: [
-      "Open the operator console from any directory: live chat with structured",
-      "thinking/tool/telemetry insight, recorded-run replay, and config view.",
-      "Discovers running agents via the trace-source registry; one running",
-      "agent connects directly, several open a picker. --local starts an",
-      "ordinary in-process chat for the current agent folder.",
-    ],
-  },
-  {
     command: "web",
     group: "Console",
     short: "web [start|stop|status|...]",
@@ -358,7 +343,7 @@ loginctl enable-linger for this user to keep the service alive across logins. Se
 .env file in the working directory, the same as foreground mode. The background
 commands require macOS or Linux with a running systemd user manager; elsewhere use start --foreground.
 Edit mono-agent.config.json and the configured identity document directly, then
-run mono-agent validate and restart the agent before opening ordinary TUI chat.
+run mono-agent validate and restart the agent before opening ordinary web chat.
 
 Init model references use <provider>:<model>, for example
 openai-codex:gpt-5.6-terra or anthropic:claude-sonnet-4-6. The init wizard

@@ -178,8 +178,8 @@ evidence rather than comparing their own model-selector state.
 ⚠️ Failed over: openai-codex:gpt-5.6-sol → opencode-go:kimi-k2.7-code (overloaded)
 ```
 
-Chat channels (Slack, Telegram) render these alongside tool activity; the TUI shows
-them as inline warning notices. Both respect the channel's activity-hint setting, so
+Chat channels (Slack, Telegram) render these alongside tool activity; the web
+console shows them as inline warning notices. Both respect the channel's activity-hint setting, so
 a channel with hints turned off shows neither.
 
 **On the answer**, a run that did not execute on its configured route appends one

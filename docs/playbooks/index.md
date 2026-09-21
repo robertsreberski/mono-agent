@@ -35,7 +35,7 @@ Choose along three axes, in order: **channel** (how messages reach the agent), t
 | Plain HTTP (sync + async jobs) | [Webhook Automation](/playbooks/webhook-automation-sync-async/) |
 | Another agent over A2A | [A2A Provider + Consumer](/playbooks/a2a-provider-and-consumer/) |
 | A scheduled prompt (no inbound channel) | [Cron Digest](/playbooks/cron-digest-proactive-notify/) |
-| The local terminal TUI only | [Local-Only Ollama Agent](/playbooks/local-only-ollama-agent/) · [Local-Only LM Studio Agent](/playbooks/local-only-lmstudio-agent/) · [Local-first Web Research](/playbooks/local-web-research/) |
+| A local-model agent | [Local-Only Ollama Agent](/playbooks/local-only-ollama-agent/) · [Local-Only LM Studio Agent](/playbooks/local-only-lmstudio-agent/) · [Local-first Web Research](/playbooks/local-web-research/) |
 
 See [Channels](/channels/) for the full per-channel reference.
 

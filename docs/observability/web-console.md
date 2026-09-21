@@ -7,9 +7,9 @@ sidebar:
 
 `mono-agent web` is the browser operator console for every running agent discovered on this computer. It is a separate `@mono-agent/web` application built on assistant-ui's External Store Runtime and native Thread, ThreadList, Message, Composer, Attachment, GroupedParts, and ToolFallback primitives, with the assistant-ui Reasoning disclosure adapted for structured runtime parts. The service owns conversations and in-flight turns, so refreshing or closing a browser tab does not abort work.
 
-This is the chat-first companion to [`mono-agent tui`](/observability/tui/). The former `mono-agent sessions` read-only run browser [was removed](#session-recorder-removed); recorded-run replay now lives in `mono-agent tui`.
+This is the maintained first-party operator console. The former `mono-agent sessions` read-only run browser and terminal renderer were removed; use `mono-agent runs list|show` for bounded offline run diagnostics.
 
-The web service does not run the terminal UI. Both consoles discover and connect to each agent's `metadata.channels.tui.baseUrl`, whose default path is `/gui`; they merely share the same bidirectional operator protocol.
+The web service discovers and connects to each agent's `metadata.channels.tui.baseUrl`, whose default path is `/gui`. Those legacy names remain the stable bidirectional operator-protocol identifiers.
 
 Successful cron runs suppressed by the shared `NOTHING_TO_REPORT` classifier have
 no visible message row. Compact run history remains available separately from the
@@ -784,7 +784,7 @@ The header never calls an in-flight measurement current. A running turn is label
 
 The popover keeps aggregate last-turn processed tokens and accumulated conversation cost separate from context occupancy. Older conversations without exact telemetry show **—** and may still show their processed-token breakdown and cost; no aggregate number is converted into a context percentage.
 
-Reported cost and processed tokens include what the run's subagents spent. A delegation is work the run asked for and is billed to the same account, so the Pi runtime folds each subagent's reported usage into the parent run's own before publishing it — which is also why the TUI status bar and the exported metrics agree with the console. The trade is attribution: a subagent running on a different model has its spend reported under the parent run's model, which is the right answer for a run total and the wrong one for a per-model breakdown.
+Reported cost and processed tokens include what the run's subagents spent. A delegation is work the run asked for and is billed to the same account, so the Pi runtime folds each subagent's reported usage into the parent run's own before publishing it — which is also why exported metrics agree with the console. The trade is attribution: a subagent running on a different model has its spend reported under the parent run's model, which is the right answer for a run total and the wrong one for a per-model breakdown.
 
 Assistant reasoning, routine tool calls, subagent delegations, and context compactions share one compact **Activity** disclosure without changing their order. Each compaction is one row that updates from running to succeeded, skipped, failed, or interrupted instead of producing duplicate start/end rows. Pi's before/after token counts are estimates and carry a `~` prefix; provider summary text is never displayed. Activity opens while the message is running and force-collapses when the message completes, fails, is cancelled, or is interrupted; it can be reopened afterward, and individual tool payloads remain collapsed inside it. Standalone interactive tools remain outside the group.
 
@@ -1027,25 +1027,25 @@ cron channels rebuild from the running agents.
 
 The web console covers discovery, configurable console identity, curated host themes, persistent multi-conversation chat, first-class cron channels, marked webhook notification conversations, structured `AskUser` forms, quoting, durable Web Push with a page-notification fallback, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a console-named PWA when served from a secure browser context.
 
-General recorded-run replay and source-annotated configuration remain in the TUI. Use:
+Recorded-run and resolved-configuration inspection remain available as bounded offline commands:
 
 ```bash
-mono-agent tui
+mono-agent runs list
+mono-agent runs show <run-id>
+mono-agent config
 ```
 
 To change an agent, edit `mono-agent.config.json` or `IDENTITY.md`, run
-`mono-agent validate`, restart the agent, and open the ordinary TUI if you want
-to continue chatting.
+`mono-agent validate`, restart the agent, and return to the web console.
 
 ## Session Recorder removed
 
-The `mono-agent sessions` command that launched the read-only Session Recorder was removed. Use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console) for operator run inspection.
+The `mono-agent sessions` command that launched the read-only Session Recorder was removed. Use `mono-agent runs list|show` for bounded offline diagnostics or `mono-agent web` for live operation.
 
 `@mono-agent/session-web`, the read-only `live` event relay, and their config/env surface have also been removed. `MONO_AGENT_WEB_AUTH_TOKEN` is no longer read by any code. See the [deprecation tracker](/reference/deprecations/#removed-surfaces).
 
 ## Related
 
 - [CLI command reference](/observability/cli-reference/#web) — lifecycle and flags.
-- [Terminal UI](/observability/tui/) — replay, live chat, and the config view.
-- [TUI stream endpoint](/channels/tui/) — the default-on agent endpoint used for web chat.
+- [Operator stream endpoint](/channels/tui/) — the default-on agent endpoint used for web chat.
 - [Sessions and concurrency](/runtime/sessions-concurrency/) — how web threads map to harness conversations and provider sessions.

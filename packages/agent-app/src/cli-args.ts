@@ -15,7 +15,7 @@ import { parseWebLogMaintenanceArguments } from "./web-log-maintenance-command.j
 
 const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80 satisfies typeof import("@mono-agent/web").WEB_CONSOLE_NAME_MAX_CHARACTERS;
 
-export const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "runs", "memory", "continuations", "jobs", "web-control"] as const;
+export const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "web", "bridge", "install-skill", "runs", "memory", "continuations", "jobs", "web-control"] as const;
 const KNOWN_COMMANDS = [
   ...PUBLIC_COMMANDS,
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
@@ -50,7 +50,8 @@ const JSON_CAPABLE_COMMANDS_DISPLAY =
 // `renderHelpTopic` reuses these so `help <removed>` prints the same pointer.
 export const REMOVED_COMMANDS = new Map<string, string>([
   ["recipes", "`recipes` was removed; use `mono-agent presets`."],
-  ["sessions", "`sessions` was removed; use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console)."],
+  ["sessions", "`sessions` was removed; use `mono-agent runs list|show` for recorded-run diagnostics or `mono-agent web` for live conversations."],
+  ["tui", "`tui` was removed; use `mono-agent web` for live conversations, `mono-agent runs list|show` for bounded recorded-run diagnostics, and `mono-agent config` for resolved configuration."],
   ["metrics", "`metrics` was removed; use `mono-agent runs` (or `mono-agent runs report`)."],
   ["audit-runs", "`audit-runs` was removed; use `mono-agent runs audit`."],
   ["backfill", "`backfill` was removed with first-party Phoenix/OTLP export; use `mono-agent runs`, `mono-agent runs audit`, or `mono-agent runs report` for retained local artifacts. If a final export is required, perform it before upgrading with the known-good version you already operate."],
@@ -127,12 +128,8 @@ export interface ParsedCliArgs {
   readonly groupBy?: "model" | "channel" | "failureKind";
   /** validate/runs audit: resolve config, env, artifacts, and checks relative to this consumer folder. */
   readonly consumerPath?: string;
-  /** tui: connect to this running agent (label or sourceId) directly. */
+  /** jobs: connect to this running agent (label or sourceId) directly. */
   readonly agent?: string;
-  /** tui: conversation id to chat under. */
-  readonly conversation?: string;
-  /** tui: build the current-folder responder in-process. */
-  readonly local?: boolean;
   /** install-skill: operate on the current agent's managed project skills. */
   readonly project?: boolean;
   /** install-skill --project: report drift without writing. */
@@ -205,7 +202,6 @@ const CLI_VALUE_FLAGS = new Set([
   "--by",
   "--consumer",
   "--agent",
-  "--conversation",
   "--stale-after-ms",
   "--limit",
   "--cursor",
@@ -244,7 +240,6 @@ const CLI_BOOLEAN_FLAGS = new Set([
   "--all",
   "--dry-run",
   "--include-memory",
-  "--local",
   "--project",
   "--check",
   "--update",
@@ -366,8 +361,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let groupBy: "model" | "channel" | "failureKind" | undefined;
   let consumerPath: string | undefined;
   let agent: string | undefined;
-  let conversation: string | undefined;
-  let local = false;
   let project = false;
   let check = false;
   let update = false;
@@ -436,12 +429,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--agent":
         agent = requireValue(rest, ++i, flag);
-        break;
-      case "--conversation":
-        conversation = requireValue(rest, ++i, flag);
-        break;
-      case "--local":
-        local = true;
         break;
       case "--project":
         project = true;
@@ -717,9 +704,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (consumerPath !== undefined && cmd !== "validate" && cmd !== "runs") {
     throw new Error("--consumer is only supported for `mono-agent validate` and `mono-agent runs`.");
   }
-  if (local && cmd !== "tui") {
-    throw new Error("--local is only supported for `mono-agent tui`.");
-  }
   if (project && cmd !== "install-skill") {
     throw new Error("--project is only supported for `mono-agent install-skill`.");
   }
@@ -813,7 +797,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     throw new Error("--clear-sessions is only supported for `mono-agent restart`.");
   }
   // `--json` is uniform on the read/status surfaces only. Reject it on the
-  // lifecycle/interactive commands (init, auth, start, stop, restart, logs, tui,
+  // lifecycle/interactive commands (init, auth, start, stop, restart, logs,
   // web) rather than silently ignoring it. `doctor`/`setup` already
   // normalized to their canonical `cmd` above.
   if (json && !(JSON_CAPABLE_COMMANDS as readonly string[]).includes(cmd)) {
@@ -833,11 +817,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     throw new Error("--json is only supported for `mono-agent sandbox status`, not setup or check.");
   }
   assertFlagCommand(configPath !== undefined, "--config", cmd, [
-    "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs", "tui",
+    "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs",
     "runs", "memory", "continuations", "jobs", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   ]);
   assertFlagCommand(envFile !== undefined, "--env-file", cmd, [
-    "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs", "tui",
+    "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs",
     "runs", "memory", "continuations", "jobs", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   ]);
   assertFlagCommand(name !== undefined, "--name", cmd, ["init", "web"]);
@@ -855,8 +839,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   assertFlagCommand(artifactDir !== undefined, "--artifacts", cmd, ["runs"]);
   assertFlagCommand(groupBy !== undefined, "--by", cmd, ["runs"]);
   assertFlagCommand(staleAfterMs !== undefined, "--stale-after-ms", cmd, ["runs"]);
-  assertFlagCommand(agent !== undefined, "--agent", cmd, ["tui", "jobs"]);
-  assertFlagCommand(conversation !== undefined, "--conversation", cmd, ["tui"]);
+  assertFlagCommand(agent !== undefined, "--agent", cmd, ["jobs"]);
   assertFlagCommand(target !== undefined, "--target", cmd, ["install-skill"]);
   assertFlagCommand(force, "--force", cmd, ["install-skill", "restart"]);
   assertFlagCommand(foreground, "--foreground", cmd, ["start"]);
@@ -945,8 +928,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(entityConflict === undefined ? {} : { entityConflict }),
     ...(acceptDerivedAssociationDrift ? { acceptDerivedAssociationDrift } : {}),
     ...(agent === undefined ? {} : { agent }),
-    ...(conversation === undefined ? {} : { conversation }),
-    ...(local ? { local } : {}),
     ...(project ? { project } : {}),
     ...(check ? { check } : {}),
     ...(update ? { update } : {}),

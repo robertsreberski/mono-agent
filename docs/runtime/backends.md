@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-mono-agent runs only the Pi runtime. Every turn — across Telegram, Slack, webhook, cron, TUI, web, or the programmatic API — executes through the Pi SDK provider gateway. There are no alternate runtime bridges, no `sdk`/`cli` execution-mode switch, and no backend dispatch table. You pick a model by setting one config key — `runtime.model` — to a `<provider>:<model>` reference; the Pi runtime resolves the reference to a concrete provider.
+mono-agent runs only the Pi runtime. Every turn — across Telegram, Slack, webhook, cron, web, or the programmatic API — executes through the Pi SDK provider gateway. There are no alternate runtime bridges, no `sdk`/`cli` execution-mode switch, and no backend dispatch table. You pick a model by setting one config key — `runtime.model` — to a `<provider>:<model>` reference; the Pi runtime resolves the reference to a concrete provider.
 
 Coverage: **config**. Set the model reference in `runtime.model` (env `MONO_AGENT_MODEL`).
 

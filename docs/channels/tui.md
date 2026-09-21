@@ -1,19 +1,18 @@
 ---
 title: "Operator stream endpoint"
-description: "Configure the conversational NDJSON operator endpoint used by local mono-agent consoles."
+description: "Configure the bounded local NDJSON endpoint used by the web console, ACP bridge, and jobs client."
 sidebar:
-  order: 9
+  order: 8
 ---
 
-This channel serves the loopback NDJSON stream used by the [`mono-agent tui`](/observability/tui/) and [always-on web console](/observability/web-console/). Unlike the [OpenAI-compatible API](/channels/openai-api/) (which flattens events into Chat Completions chunks), it preserves structured `AgentStreamEvent` kinds — thinking deltas, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover, warnings — subject to the serialized event-frame cap described below.
+The built-in operator endpoint carries authenticated, bounded NDJSON turns for the
+web console and other maintained operator clients. The terminal renderer and
+`mono-agent tui` command are removed on the current unreleased source branch; the protocol remains because
+web, ACP, and jobs behavior depends on it.
 
-The configuration and registry id remains `tui` for compatibility, but human status output calls this shared endpoint **gui** and its default HTTP path is `/gui`. It does not mean the web service embeds or launches the terminal UI: `mono-agent tui` and `mono-agent web` are two independent clients of the same conversational operator endpoint.
-
-Coverage: `config` (the `tui` section of `mono-agent.config.json`).
-
-:::note
-**This operator surface is ON by default.** It binds loopback with an ephemeral port and needs no credentials by default, so the TUI/web console can chat without a per-agent config edit. Set `"tui": { "enabled": false }` to opt out; everything else about the channel lifecycle (status lines, `degraded`/`failed` reporting) matches the other channels.
-:::
+Coverage: **config**. The compatibility identifier remains `tui` in configuration,
+environment variables, discovery metadata, channel/source ids, traces, and wire
+schema. It is a protocol identifier, not an available terminal product.
 
 ## Configuration
 
@@ -23,97 +22,39 @@ Coverage: `config` (the `tui` section of `mono-agent.config.json`).
     "enabled": true,
     "host": "127.0.0.1",
     "port": 0,
-    "basePath": "/gui",
+    "basePath": "",
     "allowNonLoopback": false
   }
 }
 ```
 
-| Key | Type | Default | Purpose |
-| --- | --- | --- | --- |
-| `enabled` | boolean | **`true`** | Deliberate exception to the channels-off convention (see the note above). |
-| `host` | string | `127.0.0.1` | Bind address. Loopback by default. |
-| `port` | integer | `0` | `0` = ephemeral. The bound port is published to the trace-source registry, so nothing needs to be fixed. |
-| `basePath` | string | `/gui` | Path prefix for all endpoints. |
-| `allowNonLoopback` | boolean | `false` | Required guard before binding a non-loopback `host`. |
-| `apiKey` | string | _unset_ | Optional bearer token. Inline config remains accepted for compatibility, but new source configs should omit it and set `MONO_AGENT_TUI_API_KEY` in `.env`; the registry never carries secrets. |
+The endpoint defaults on, binds loopback, and chooses an ephemeral port. Set
+`tui.enabled` to `false` to disable it. `MONO_AGENT_TUI_*` remains the supported
+environment-variable family; use `MONO_AGENT_TUI_API_KEY` rather than placing a
+secret in source configuration.
 
-## Environment variables
+Do not widen `host` without also setting `allowNonLoopback: true` and supplying an
+API key. Non-loopback exposure is an explicit trust-boundary decision. The
+endpoint preserves existing authentication, history, cancellation, attachment,
+structured AskUser, and agent-owned cron capability behavior.
 
-| Env var | Maps to |
-| --- | --- |
-| `MONO_AGENT_TUI_ENABLED` | `tui.enabled` |
-| `MONO_AGENT_TUI_HOST` | `tui.host` |
-| `MONO_AGENT_TUI_PORT` | `tui.port` |
-| `MONO_AGENT_TUI_BASE_PATH` | `tui.basePath` |
-| `MONO_AGENT_TUI_ALLOW_NON_LOOPBACK` | `tui.allowNonLoopback` |
-| `MONO_AGENT_TUI_API_KEY` | `tui.apiKey` |
+## Compatibility contract
 
-Keep the bearer value in `.env` (or an exported environment variable). `mono-agent tui` resolves the effective value automatically without putting it in the trace-source registry.
+The following names intentionally remain stable for existing clients and data:
 
-## Conversational endpoints
+- config keys under `tui.*` and environment keys under `MONO_AGENT_TUI_*`;
+- discovery metadata at `metadata.channels.tui` and the `tui` channel/source id;
+- `/gui`, `TUI_WIRE_SCHEMA`, `startTuiAdapter`, `TuiAdapter*`, and
+  `TUI_CONFIG_FIELDS` in their existing public APIs;
+- bounded event frames, owner authentication, history import, cancellation,
+  attachment handling, and capability negotiation.
 
-`GET {basePath}/v1/info` advertises transport capabilities. In addition to the
-existing attachment fields, `capabilities.askUser` tells browser clients that
-the agent supports structured pending-question exchange and
-`capabilities.liveInput` advertises active-turn follow-up settlement.
-`capabilities.liveInputTargeting: { version: 1 }` additionally advertises exact
-Web-operation ownership. It is omitted for older/custom responders.
+Serialized remote event frames remain capped at 256 KiB after UTF-8 NDJSON
+encoding. Oversized assistant-thought and tool-call payload fields are reduced
+and remeasured; another oversized event variant, or a minimal reducible event
+that still does not fit, becomes a bounded `oversized_event` marker. This does
+not imply complete artifact persistence.
 
-- `POST {basePath}/v1/turns` starts a streamed turn.
-- `GET {basePath}/v1/conversations/:id/ask` returns the pending `AskUser`
-  snapshot or `{ "ask": null }`.
-- `POST {basePath}/v1/conversations/:id/ask` submits the snapshot's interaction
-  id plus one or more consecutive complete answers, resuming the existing turn.
-- `POST {basePath}/v1/conversations/:id/cancel` cancels the turn and any pending
-  AskUser interaction.
-- `POST {basePath}/v1/conversations/:id/live-input` offers one bounded
-  `{ id, text, receivedAt, targetTurnId?, targetRunId? }` follow-up to the active
-  run and waits for its
-  `applied`, `requeue`, `discarded`, or `uncertain` settlement.
-
-An `applied` settlement confirms exact transcript consumption and is also visible on the still-open turn stream as one
-completed synthetic tool lifecycle named `↪️ Steered: “<safe preview>”`, with
-result `Consumed by current run`. The full guidance text is not repeated in the
-event metadata or tool arguments. Other settlements emit no such lifecycle.
-`uncertain` means delivery may have happened and must not be retried
-automatically. It is distinct from provider receipt, use, or adherence.
-
-Ask submission is conversation-bound and rejects expired, completed, or
-mismatched interaction ids. The endpoint remains subject to the same loopback,
-non-loopback opt-in, and optional bearer-key policy as streamed turns.
-
-## Endpoints & wire protocol
-
-| Endpoint | Purpose |
-| --- | --- |
-| `GET {basePath}/v1/info` | `{ schema, pid, capabilities:{attachments:true,liveInput?:true,liveInputTargeting?:{version:1},historyAppend?:true,contextImport?:{version:1,maxTextBytes:32768},askUser?:true}, label?, model?, models?, modelOptions?, effort?, skills? }` — identity, additive transport support, model choices, a bounded live skill-registry snapshot, and wire-schema version for skew detection. `skills` is additive and absent on older agents; it reports `ready` items as `inlined`, `on-demand`, or `unavailable`, or an isolated `error` without failing the operator connection. `effort` is the statically configured reasoning-effort level; per-run overrides arrive via the `run_config` runtime_telemetry event instead. |
-| `POST {basePath}/v1/turns` | Body `{ conversationId, text, attachments?, metadata? }`. Responds with chunked `application/x-ndjson`, one frame per stream callback: `status`, `append`, `replace`, `event` (any `AgentStreamEvent`), then a terminal `finish` (final text + response metadata) or `error` (`cancelled` flagged). Attachment-only turns are accepted when advertised by `/v1/info`. A web client's `metadata.web.model` / `effort` values are preserved and mirrored into the shared `metadata.tui` request-override lane. Closing the socket aborts the in-flight turn. |
-| `POST {basePath}/v1/conversations/:id/live-input` | Authenticated body `{ id, text, receivedAt, targetTurnId?, targetRunId? }`, with text capped at 8,000 characters. A targeted request waits at most ten minutes for that exact Web operation to publish its harness-owned run id; per-operation and global waiter bounds fail safely. Closure, disconnect, abort, timeout, or stop detaches the waiter before reporting non-delivery. Returns `unavailable` immediately when there is no compatible active responder, otherwise holds the request until the offer settles as `applied`, `requeue`, `discarded`, or `uncertain`. A rejected settlement promise serializes as `uncertain`; it does not produce a retryable transport error. |
-| `POST {basePath}/v1/conversations/:id/cancel` | Explicit cancel (`202`; `501` if the responder has no cancel). |
-| `POST {basePath}/v1/conversations/:id/verbatim` | Authenticated body `{ text, idempotencyKey }`. Appends an already-delivered assistant message to durable history without a model turn (`200`; `501` if the responder has no history-append surface). Used by the web console's host-owned notification path. |
-| `POST {basePath}/v1/conversations/:id/context-imports` | Authenticated exact body `{ text, idempotencyKey }`. When positively advertised, atomically imports fixed system provenance and an immutable assistant snapshot without a model turn. Decoded limits are 32 KiB text, 512-byte source-qualified key, and 4096-byte conversation id; the exact sixfold-escaping body ceiling is 199711 bytes. Whitespace-only values are rejected without trimming accepted opaque values. Returns `appended` or retained-pair `duplicate` (`200`), `context_import_conflict` with `conversation_not_empty`/`idempotency_conflict` (`409`), `context_import_unsupported` (`501`), or sanitized `context_import_failed` (`500`), always with private no-store caching. |
-
-Frames are defined in `@mono-agent/agent-contracts` (`stream-wire`); parsing is tolerant in both directions, so version-skewed console/agent pairs keep talking (unknown frame kinds and event types pass through). A serialized event frame is capped at 256 KiB for its complete UTF-8 NDJSON line, including the newline. Above that cap, `assistant_thought` and `tool_call_started`/`tool_call_progress`/`tool_call_completed` payload fields are reduced, marked truncated, and remeasured. Any other oversized event variant — including `runtime_warning` or `runtime_telemetry` — and any reducible event whose minimal form still does not fit because of metadata or invariant fields becomes a small `oversized_event` marker instead. Other frame kinds do not use this cap. Replay does not restore the omitted tail: the JSONL recorder separately applies sensitive-key redaction, scans retained free text for high-confidence credential shapes, and caps each event string at 4,096 bytes by default. It buffers events in RAM and replaces the events file only at terminal `finish()`/`fail()`. A crash before that boundary can therefore leave no in-flight events to replay. The tool-bloat guard may separately save raw oversized tool-result blocks under the run-specific `tool-output/` subtree when its persistence callback succeeds; those owner-private files are not the run's JSONL event stream, do not recover arbitrary streamed payloads, and have no automatic cleanup owner. See the [artifact write-boundary contract](/observability/artifacts-and-traces/).
-
-How the endpoint is discovered: the running channel's summary (`baseUrl`) is folded into the agent's trace-source manifest at `metadata.channels.tui.baseUrl`, which `mono-agent tui` reads from the registry.
-
-## Concurrency & security
-
-- A console conversation uses its own `conversationId`, so it runs concurrently with every other channel; reusing an existing id (e.g. a Telegram conversation's) is possible and queues behind that conversation's in-flight turn.
-- Context import and an explicit Send for the same conversation are ordered
-  across processes. Non-provider and durable-provider turns retain logical/exact
-  keyed claims during runtime; neither holds a physical shard transaction.
-  Publication uses the root lock, so unrelated shard collisions do not serialize
-  turns, but root-locked maintenance and fail-closed retirement can still delay
-  publication. Cancellation and failure release or transfer the same owner;
-  there is no unlocked append fallback. Shared-root writers must be claim-aware
-  (v0.20.0 or later); stop older writers before sharing the directory. This is a
-  support boundary, not a technical fence against old binaries.
-- Loopback-only by default; binding further requires `allowNonLoopback` **and** should always pair with `apiKey`. Remember this endpoint streams tool arguments and results: the event-frame cap reduces oversized payloads but is not a redaction boundary, so this remains an operator surface by design.
-
-## Related
-
-- [Terminal UI](/observability/tui/) and [web console](/observability/web-console/) — the consoles that consume this endpoint.
-- [Channels overview](/channels/) — shared lifecycle and status lines.
-- [OpenAI-compatible API](/channels/openai-api/) — the lossy-but-standard HTTP alternative for third-party clients.
+For browser operation, see the [web console](/observability/web-console/). For
+offline diagnostics, use `mono-agent runs list`, `mono-agent runs show <run-id>`,
+and `mono-agent config`.

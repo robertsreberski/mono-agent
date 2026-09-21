@@ -33,7 +33,7 @@ template encodes the corresponding discipline.
 |---|---|---|
 | `implementer` | Repo-disciplined feature/fix implementation (TDD, worktree, capability ladder) | high |
 | `adversarial-reviewer` | Defect-hunting review loops until a clean round; read-only | high |
-| `live-smoke-operator` | Drives throwaway-agent / tmux TUI / web curl smoke, reports with evidence | medium |
+| `live-smoke-operator` | Drives throwaway-agent / web API / worker-contract smoke, reports with evidence | medium |
 | `docs-curator` | Docs + website sync and PR-range audits | medium |
 | `release-engineer` | Lockstep release preflight, tag, CI watch, post-verify | high |
 

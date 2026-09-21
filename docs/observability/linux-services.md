@@ -88,7 +88,7 @@ provide the copied-runtime integrity proofs or managed configuration authority
 of the macOS backend. Fleet verification must not treat these as managed
 LaunchAgents. Linux `restart --clear-sessions`, automatic guided-init startup,
 remain outside this first operator-commands PR.
-After guided initialization, use `mono-agent start` and ordinary `mono-agent tui`.
+After guided initialization, use `mono-agent start`, then open the browser console with `mono-agent web run --loopback`.
 
 Existing hand-written services are not adopted or stopped automatically. Stop
 and disable the exact old service before installing a Mono-owned replacement;

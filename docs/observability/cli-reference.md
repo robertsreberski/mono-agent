@@ -47,8 +47,8 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 | `status` | Show this config's service and readiness; macOS also lists other running instances. | `--config <path>`, `--env-file <path>`, `--json` |
 | `logs` | Print and optionally follow the macOS log files or Linux user journal. | `--config <path>`, `--env-file <path>`, `--follow` / `-f`, `--lines <n>` |
 | `web` | Operate the always-on browser conversation console for every discovered running agent. Bare `web` is read-only status/help; managed macOS start also installs its paired fixed-policy log-maintenance helper. | `start`, `restart`, `stop`, `status [--json]`, `logs`, `run`, `reset`; `--host <addr>`, `--loopback`, `--port <n>`, `--share-tailnet` |
-| `sessions` (removed) | The Session Recorder launcher was removed; it now errors with a pointer and exits `2`. Use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). | — |
-| `tui` | Open remote discovery/chat or use ordinary in-process local chat. | `--agent`, `--conversation`, `--local` |
+| `sessions` (removed) | The Session Recorder launcher was removed; it now errors with a pointer and exits `2`. Use `mono-agent runs list|show` (recorded-run diagnostics) or `mono-agent web` (live console). | — |
+| `tui` (removed) | The terminal renderer was removed on the current unreleased source branch; it now errors with migration pointers and exits `2`. | — |
 | `install-skill` | Copy the authoring composer to coding harnesses and pair its documentation MCP companion, or check/update managed project-local skills. | `--target claude\|codex\|both`, `--force`, `--no-docs-mcp`, `--project`, `--check`, `--update`, `--json` (with `--project --check`) |
 | `backfill` (removed) | Fails with migration guidance. Use `runs`, `runs audit`, or `runs report` for retained local artifacts; perform any final legacy export before upgrading with the complete version set you already operate. | — |
 | `runs` | Read-only, offline reporting over local run summaries. `report` (default) aggregates status/failure-kind rates, duration percentiles, and cost totals; `audit` reports parse/status/failure-kind/stale-running totals without rewriting anything. | `report`, `audit`; `--artifacts <path>`, `--consumer <path>`, `--since <iso>`, `--until <iso>`, `--by model\|channel\|failureKind`, `--stale-after-ms <n>`, `--include-memory`, `--json`, `--config <path>`, `--env-file <path>` |
@@ -141,7 +141,7 @@ Before setup, **Creation review** names the agent, labels the exact Role target 
 
 After committed-file validation on macOS, guided init materializes the exact already-resolved executing dependency closure, including configured channel plugins, into a private, versioned runtime under `~/.mono-agent/runtimes/agent-app/`, never an npm-cache path. This path does not invoke npm, re-resolve package ranges, inherit provider secrets into lifecycle scripts, or hand `workspace:` ranges to another installer; the full source-closure digest plus a relative-path/type/mode/content-hash installed manifest are bound to the runtime marker. First installation and fallback verification recheck that content, while warm reuse validates the marker-bound owner-private inode/stat proof described below. The LaunchAgent enters Node through `/usr/bin/env -i`, restoring only the reviewed operational allowlist, so ambient launchd variables such as `NODE_OPTIONS` cannot run before worker sanitization. It creates or fully reloads the canonical per-config LaunchAgent. The worker holds an owner-only lifetime lease for that canonical config across HOME, symlink-parent, filename-case aliases, and PID reuse, preventing a second launchd or manual foreground host, and freezes the attested config, Identity, optional Soul, and external MCP authority file as private read-only startup inputs while continuing to advertise the canonical config path.
 
-Start and restart print progress for durable-runtime verification, worker replacement, and readiness. A matching v5 managed runtime uses an owner-private inode/stat proof; any mismatch falls back to the full content verifier and repair path. The command reports whether it used warm reuse, full verification, installation, or repair and how long that phase took. Launchctl control operations retain their own bounded wait, followed by up to 60 seconds for worker readiness. The worker publishes durable `metadata.lifecycle.startupCompleted: true` only after channels, memory rituals, and final memory-health work complete, alongside content-free total and per-phase startup timings. Later trace refreshes retain that proof while `metadata.reason` remains the latest diagnostic publication reason. A ready result additionally requires the trace PID to be alive and launchd-owned, the committed config/`.env`/Identity/Soul/MCP authority and operational-environment fingerprints to match, configured channels and current memory health not to have failed, and the TUI endpoint to be reachable when configuration is requested. Start, restart, and configuration attach reconstruct registry/config values from the same durable dotenv-plus-operational environment as the worker, so shell-only overrides cannot select a different instance. Workers without the durable marker must restart once before configuration can attach.
+Start and restart print progress for durable-runtime verification, worker replacement, and readiness. A matching v5 managed runtime uses an owner-private inode/stat proof; any mismatch falls back to the full content verifier and repair path. The command reports whether it used warm reuse, full verification, installation, or repair and how long that phase took. Launchctl control operations retain their own bounded wait, followed by up to 60 seconds for worker readiness. The worker publishes durable `metadata.lifecycle.startupCompleted: true` only after channels, memory rituals, and final memory-health work complete, alongside content-free total and per-phase startup timings. Later trace refreshes retain that proof while `metadata.reason` remains the latest diagnostic publication reason. A ready result additionally requires the trace PID to be alive and launchd-owned, the committed config/`.env`/Identity/Soul/MCP authority and operational-environment fingerprints to match, configured channels and current memory health not to have failed, and the operator endpoint to be reachable when configuration is requested. Start, restart, and configuration attach reconstruct registry/config values from the same durable dotenv-plus-operational environment as the worker, so shell-only overrides cannot select a different instance. Workers without the durable marker must restart once before configuration can attach.
 
 On success init prints **Agent ready** and the browser-first handoff: confirm the running agent with `status`, run `mono-agent web run --loopback` in a second terminal, and open `http://127.0.0.1:5050` (with the `validate`/`restart` pair for later config edits). A readiness timeout preserves the committed files, then tries to unload both worker and scheduled maintenance and remove both definitions through the ownership-proven stop path. If stopped state cannot be proven, the command explicitly warns that a process may still be running. Either outcome prints exact `start`, `status`, and `logs --follow` commands plus log paths. Off macOS, init makes no process/readiness claim: it prints the manual start handoff (`mono-agent start`, or `--foreground` without a service manager) followed by `mono-agent web run --loopback`, and the terminal console remains an optional extra rather than the handoff.
 
@@ -597,27 +597,14 @@ Agent discovery, credentials, connection, or response validation failures exit
 uses `remote_refused`. Invalid subcommands, missing/extra ids, or ids longer
 than 256 characters exit `2`.
 
-## `tui`
+## Removed terminal renderer
 
-Opens the [operator console](/observability/tui/) from **any directory**: live chat with structured thinking/tool/telemetry insight, bounded recorded-run replay, and a source-annotated config view. Discovers running agents via the trace-source registry — zero running agents prints a `mono-agent start` hint and exits `1`, one connects directly, several open an in-TUI picker. Requires an interactive TTY.
-
-```bash
-mono-agent tui                          # discover + connect
-mono-agent tui --agent personal-agent   # connect by label or sourceId
-mono-agent tui --conversation ops       # chat under a stable conversation id
-mono-agent tui --local                  # ordinary current-folder chat, no daemon
-```
-
-| Flag | Effect |
-| --- | --- |
-| `--agent <label\|sourceId>` | Connect to a specific running instance; errors with the available list when there is no match. |
-| `--conversation <id>` | Conversation id for the chat (default `tui-<sourceId>`). |
-| `--config <path>` | Resolve a custom `traceability.registryDir` from this config (for agents registered outside the global registry). |
-| `--env-file <path>` | Use the same non-default dotenv file as the managed background instance and its recovery commands. |
-| `--local` | Build the current folder's configured responder in-process for ordinary chat. No channel service or launchd state is created. |
-
-The remote live-chat connection uses the agent's [`tui` channel](/channels/tui/) (on by default); an agent with the channel disabled still gets replay and config views. Edit `mono-agent.config.json` or `IDENTITY.md`, run `mono-agent validate`, and restart to apply configuration changes.
-
+`mono-agent tui`, `mono-agent help tui`, the standalone `mono-agent-tui` binary,
+and `@mono-agent/tui` are removed on the current unreleased source branch. Use
+`mono-agent web` for live operation, `mono-agent runs list|show` for bounded
+prior-run diagnostics, and
+`mono-agent config` for resolved configuration. The `tui` config and wire names
+remain compatibility identifiers for the maintained [operator stream endpoint](/channels/tui/).
 
 ## `web`
 
@@ -658,7 +645,7 @@ streams. The helper does not rotate before the fixed policy requires it.
 
 ## `sessions`
 
-The `mono-agent sessions` command was removed. Running it now errors with a pointer to its replacements and exits `2`. For operator run inspection use [`mono-agent tui`](#tui) (recorded-run replay) or [`mono-agent web`](#web) (live console).
+The `mono-agent sessions` command was removed. Running it now errors with a pointer to its replacements and exits `2`. For operator run inspection use `mono-agent runs list|show` (bounded offline diagnostics) or [`mono-agent web`](#web) (live console).
 
 The `@mono-agent/session-web` package, read-only `live` event relay, and `live.*` config/env surface have also been removed. Existing configs must delete the `live` section before validation. `MONO_AGENT_WEB_AUTH_TOKEN` is no longer read by any code. See the [deprecation tracker](/reference/deprecations/#removed-surfaces).
 
@@ -757,6 +744,5 @@ silently ignored. See [Framework simplification migration](/reference/framework-
 ## See also
 
 - [Observability overview](/observability/)
-- [Live TUI](/observability/tui/)
 - [Config blueprint](/config/blueprint/) and [Environment variables](/config/env-vars/)
 - [Programmatic composition](/programmatic/) for embedding the host without the CLI
