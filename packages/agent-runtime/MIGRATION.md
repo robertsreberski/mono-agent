@@ -69,9 +69,9 @@ runtime bridges behind a dispatch table; it now runs only its Pi implementation.
 Read the whole section before upgrading a live agent, and migrate its config
 before restarting one.
 
-### Pi 0.85 dependency migration
+### Pi 0.86 dependency migration
 
-The runtime exact-pins Pi AI and Pi Agent Core at `0.85.1`; the TUI pins Pi TUI
+The runtime exact-pins Pi AI and Pi Agent Core at `0.86.1`; the TUI pins Pi TUI
 at the same version. Pi's harness is now created asynchronously and exposes
 prompt, navigation, compaction, abort, event, and transcript operations through
 its `main` lane with an explicit operation context. mono-agent absorbs that API
@@ -735,8 +735,8 @@ backfill), and adds static `meta` and `radius` provider catalogs. Compaction
 remains owned by mono-agent policy, and model-native `max` reasoning plus Pi's
 request-wide pricing tiers are preserved.
 
-Packed npm consumers resolve the runtime-owned exact Pi AI 0.85.1 copy for both
-the runtime and Agent Core's `^0.85.1` dependency. The release guard verifies
+Packed npm consumers resolve the runtime-owned exact Pi AI 0.86.1 copy for both
+the runtime and Agent Core's `^0.86.1` dependency. The release guard verifies
 both resolution paths independently.
 
 The 0.83 upgrade carries two upstream removals, both absorbed inside the runtime
