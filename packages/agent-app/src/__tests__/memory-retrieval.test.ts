@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,7 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { MemoryCompletedTurn } from "@mono-agent/agent-contracts";
 import { createAgentHarness } from "@mono-agent/agent-harness";
-import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
+import { createBujoMemoryStore, safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 import { MemorySearchError } from "@mono-agent/memory/search";
 import { openMemoryDb, type MemoryRecord } from "@mono-agent/memory/store";
 import { describe, expect, it } from "vitest";
@@ -156,6 +156,77 @@ describe("MemoryRetrievalService", () => {
     ]);
   });
 
+  it("keeps the automatic lookup available as the deliberate original query without broadening ordinary recall", async () => {
+    const store = fakeStore();
+    store.recall = async (query) => {
+      store.queries.push(query);
+      if (query === "what areas might jordan explore?") {
+        return [
+          { score: 0.99, record: { id: "original-fact", text: "Jordan completed a certification in coastal ecology." } },
+          { score: 0.82, record: { id: "other-owner", text: "Riley completed a certification in systems design." } },
+        ];
+      }
+      return [{ score: 0.97, record: { id: "rephrased-neighbour", text: "Jordan likes structured project plans." } }];
+    };
+    const service = new MemoryRetrievalService(store);
+    const originalQuery = "What areas might Jordan explore?";
+
+    // This open-ended question is intentionally outside the finite automatic
+    // evidence grammar even though its raw lookup contains durable evidence.
+    await expect(service.load("conversation", originalQuery, { turnId: "turn-original" }))
+      .resolves.toBeUndefined();
+    expect(store.accesses).toEqual([]);
+
+    const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-original" });
+    const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+    const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const tools = await client.listTools();
+      expect(tools.tools[0]?.description).toMatch(/original.*automatic lookup question/iu);
+      expect(tools.tools[0]?.inputSchema).toMatchObject({
+        type: "object",
+        properties: {
+          query: expect.any(Object),
+          useOriginalQuery: expect.any(Object),
+          limit: expect.any(Object),
+        },
+      });
+
+      const rephrased = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { query: "Jordan career preferences" },
+      });
+      expect(rephrased.structuredContent).toEqual({
+        hits: [{ id: "rephrased-neighbour", score: 0.97, text: "Jordan likes structured project plans." }],
+      });
+
+      const original = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { useOriginalQuery: true, limit: 1 },
+      });
+      expect(original.structuredContent).toMatchObject({
+        queryMode: "original",
+        effectiveQuery: originalQuery,
+        hits: expect.arrayContaining([expect.objectContaining({ id: "original-fact" })]),
+      });
+      expect(original.content).toEqual(expect.arrayContaining([
+        expect.objectContaining({ text: expect.stringContaining(originalQuery) }),
+      ]));
+      expect(store.queries).toEqual([
+        "what areas might jordan explore?",
+        "jordan career preferences",
+      ]);
+      expect(store.accesses).toEqual([
+        ["rephrased-neighbour"],
+        ["original-fact"],
+      ]);
+    } finally {
+      await client.close().catch(() => undefined);
+      await extension.cleanup();
+    }
+  });
+
   it("renders first-party report evidence verbatim and shares its turn-scoped lookup with explicit recall", async () => {
     const store = fakeStore();
     store.recall = async (query) => {
@@ -206,6 +277,46 @@ describe("MemoryRetrievalService", () => {
       { turnId: "turn-current-history" },
     );
     expect(store.queries).toEqual(["what did alice send in her last message?"]);
+  });
+
+  it("keeps original-query selection turn-local and replaces or clears it on every repeated load", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+
+    await service.load("conversation", "First durable question", { turnId: "turn-repeat" });
+    await expect(service.recallOriginalOutcomeForTurn("turn-other"))
+      .resolves.toMatchObject({ available: false, reason: "not_loaded" });
+
+    await service.load("conversation", "What did Alice send in her last message?", { turnId: "turn-repeat" });
+    await expect(service.recallOriginalOutcomeForTurn("turn-repeat"))
+      .resolves.toMatchObject({
+        available: true,
+        query: "What did Alice send in her last message?",
+      });
+
+    await service.load("conversation", "What did you send in the last message?", { turnId: "turn-repeat" });
+    await expect(service.recallOriginalOutcomeForTurn("turn-repeat"))
+      .resolves.toMatchObject({ available: false, reason: "conversation_relative" });
+
+    await service.load("conversation", "   ", { turnId: "turn-repeat" });
+    await expect(service.recallOriginalOutcomeForTurn("turn-repeat"))
+      .resolves.toMatchObject({ available: false, reason: "empty" });
+
+    expect(store.queries).toEqual([
+      "first durable question",
+      "what did alice send in her last message?",
+    ]);
+  });
+
+  it("does not invent an original question from the conversation fallback", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+
+    await service.load("conversation-seed", undefined, { turnId: "turn-no-question" });
+
+    await expect(service.recallOriginalOutcomeForTurn("turn-no-question"))
+      .resolves.toMatchObject({ available: false, reason: "empty" });
+    expect(store.queries).toEqual(["conversation-seed"]);
   });
 
   it("drops high-similarity adjacent results outside the top-relative confidence band", async () => {
@@ -423,13 +534,48 @@ describe("MemoryRetrievalService", () => {
     expect(boundaryStore.accesses).toEqual([["first", "second"]]);
   });
 
-  it("drops the query cache when the logical turn is released", async () => {
+  it("drops the query cache and original selection when the logical turn is released", async () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);
     await service.load("conversation", "deploy pipeline", { turnId: "turn-release" });
     service.releaseTurn("turn-release");
+    await expect(service.recallOriginalOutcomeForTurn("turn-release"))
+      .resolves.toMatchObject({ available: false, reason: "not_loaded" });
     await service.recallForTurn("turn-release", "deploy pipeline");
     expect(store.queries).toEqual(["deploy pipeline", "deploy pipeline"]);
+  });
+
+  it("does not resurrect or serve an original lookup that settles after release", async () => {
+    let settle!: (hits: readonly { score: number; record: { id: string; text: string } }[]) => void;
+    const store = fakeStore();
+    store.recall = async (query) => {
+      store.queries.push(query);
+      return await new Promise((resolve) => { settle = resolve; });
+    };
+    const service = new MemoryRetrievalService(store);
+    const pending = service.load("conversation", "What areas might Jordan explore?", { turnId: "turn-late" });
+    await Promise.resolve();
+
+    service.releaseTurn("turn-late");
+    settle([{ score: 0.99, record: { id: "late", text: "Jordan completed a certification in coastal ecology." } }]);
+    await pending;
+
+    await expect(service.recallOriginalOutcomeForTurn("turn-late"))
+      .resolves.toMatchObject({ available: false, reason: "not_loaded" });
+    service.recordAccessIdsForTurn("turn-late", ["late"]);
+    expect(store.accesses).toEqual([]);
+    expect((service as unknown as { turns: Map<string, unknown> }).turns.size).toBe(0);
+  });
+
+  it("marks a failed automatic lookup unavailable without replaying it", async () => {
+    const store = fakeStore({ fail: true });
+    const service = new MemoryRetrievalService(store);
+
+    await expect(service.load("conversation", "durable question", { turnId: "turn-failed-original" }))
+      .rejects.toThrow("embedding endpoint offline");
+    await expect(service.recallOriginalOutcomeForTurn("turn-failed-original"))
+      .resolves.toMatchObject({ available: false, reason: "lookup_failed" });
+    expect(store.queries).toEqual(["durable question"]);
   });
 });
 
@@ -474,8 +620,13 @@ describe("shared MemoryRecall MCP", () => {
     const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
     try {
       await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
-      const result = await client.callTool({ name: "MemoryRecall", arguments: { query, limit: 5 } });
+      const result = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { useOriginalQuery: true, limit: 5 },
+      });
       expect(result.structuredContent).toMatchObject({
+        queryMode: "original",
+        effectiveQuery: query,
         degraded: true,
         retrievalMode: "lexical_only",
         degradation: { code: "embedding_unavailable" },
@@ -566,6 +717,51 @@ describe("shared MemoryRecall MCP", () => {
     }
   });
 
+  it("rejects ambiguous original-mode input and reports unavailable guarded originals without searching", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+    await service.load(
+      "conversation",
+      "What did you send in the last message?",
+      { turnId: "turn-original-guard" },
+    );
+    const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-original-guard" });
+    const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+    const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const ambiguous = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { query: "different query", useOriginalQuery: true },
+      });
+      expect(ambiguous.isError).toBe(true);
+      const missing = await client.callTool({ name: "MemoryRecall", arguments: {} });
+      expect(missing.isError).toBe(true);
+      const falseWithoutQuery = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { useOriginalQuery: false },
+      });
+      expect(falseWithoutQuery.isError).toBe(true);
+      expect(store.queries).toEqual([]);
+
+      const unavailable = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { useOriginalQuery: true },
+      });
+      expect(unavailable.isError).toBe(true);
+      expect(unavailable.structuredContent).toMatchObject({
+        hits: [],
+        queryMode: "original",
+        originalQueryUnavailable: true,
+        reason: "conversation_relative",
+      });
+      expect(store.queries).toEqual([]);
+    } finally {
+      await client.close().catch(() => undefined);
+      await extension.cleanup();
+    }
+  });
+
   it("accepts a second client initialize on the same per-run endpoint (model failover)", async () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);
@@ -625,8 +821,13 @@ describe("shared MemoryRecall MCP", () => {
     const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
     try {
       await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
-      const result = await client.callTool({ name: "MemoryRecall", arguments: { query, limit: 5 } });
+      const result = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { useOriginalQuery: true, limit: 5 },
+      });
       expect(result.structuredContent).toMatchObject({
+        queryMode: "original",
+        effectiveQuery: query,
         hits: expect.arrayContaining([expect.objectContaining({ id: "graph-target" })]),
       });
       const servedIds = (result.structuredContent as { hits: Array<{ id: string }> }).hits.map((hit) => hit.id);
@@ -657,6 +858,61 @@ describe("shared MemoryRecall MCP", () => {
     } finally {
       await client.close().catch(() => undefined);
       await extension.cleanup();
+    }
+  });
+
+  it("reopens a legacy BuJo source without mutating it and still accepts a new capture", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mono-agent-memory-legacy-original-query-"));
+    const oldDay = new Date("2026-09-03T10:00:00.000Z");
+    const newDay = new Date("2026-09-04T10:00:00.000Z");
+    const dailyPath = join(root, "daily", "2026-09-03.md");
+    const legacyPath = join(root, "2026-09-03.md");
+    let store = createBujoMemoryStore({ root, tier: "lite", clock: () => oldDay });
+    try {
+      await store.remember("legacy-conversation", "Jordan's durable workspace label is harbor.");
+      await store.close();
+      await rename(dailyPath, legacyPath);
+      await safeRebuildMemoryIndex({ root, tier: "lite" });
+      const legacyBefore = await readFile(legacyPath);
+
+      store = createBujoMemoryStore({ root, tier: "lite", clock: () => newDay });
+      const service = new MemoryRetrievalService(store);
+      const query = "What is Jordan's durable workspace label?";
+      await service.load("legacy-conversation", query, { turnId: "turn-legacy" });
+      const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-legacy" });
+      const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+      const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+      try {
+        await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+        const result = await client.callTool({
+          name: "MemoryRecall",
+          arguments: { useOriginalQuery: true },
+        });
+        expect(result.structuredContent).toMatchObject({
+          queryMode: "original",
+          hits: expect.arrayContaining([
+            expect.objectContaining({ text: "Jordan's durable workspace label is harbor." }),
+          ]),
+        });
+      } finally {
+        await client.close().catch(() => undefined);
+        await extension.cleanup();
+      }
+
+      expect(await readFile(legacyPath)).toEqual(legacyBefore);
+      await service.remember("legacy-conversation", "Jordan's durable review cadence is weekly.");
+      await expect(store.recall("durable review cadence weekly", { topK: 8, trackAccess: false }))
+        .resolves.toEqual(expect.arrayContaining([
+          expect.objectContaining({ record: expect.objectContaining({ text: "Jordan's durable review cadence is weekly." }) }),
+        ]));
+      await expect(store.recall("durable workspace label harbor", { topK: 8, trackAccess: false }))
+        .resolves.toEqual(expect.arrayContaining([
+          expect.objectContaining({ record: expect.objectContaining({ text: "Jordan's durable workspace label is harbor." }) }),
+        ]));
+      expect(await readFile(legacyPath)).toEqual(legacyBefore);
+    } finally {
+      await store.close().catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -860,11 +1116,14 @@ describe("MemoryRetrievalService.remember cache coherence", () => {
     };
     const service = new MemoryRetrievalService(store as never, {});
 
+    await service.load("conv-1", "What merge style does Robert prefer?", { turnId: "turn-1" });
     expect(await service.recallForTurn("turn-1", "squash merges")).toHaveLength(0);
     await service.remember("conv-1", "Robert prefers squash merges.");
     const after = await service.recallForTurn("turn-1", "squash merges");
 
     expect(after.map((hit) => hit.record.text)).toContain("Robert prefers squash merges.");
+    await expect(service.recallOriginalOutcomeForTurn("turn-1"))
+      .resolves.toMatchObject({ available: false, reason: "not_loaded" });
   });
 
   it("keeps the cache when the fact was already stored", async () => {
@@ -882,11 +1141,13 @@ describe("MemoryRetrievalService.remember cache coherence", () => {
     };
     const service = new MemoryRetrievalService(store as never, {});
 
-    await service.recallForTurn("turn-1", "squash merges");
+    await service.load("conv-1", "squash merges", { turnId: "turn-1" });
     expect(recallCalls).toBe(1);
     await service.remember("conv-1", "Robert prefers squash merges.");
     await service.recallForTurn("turn-1", "squash merges");
 
     expect(recallCalls).toBe(1);
+    await expect(service.recallOriginalOutcomeForTurn("turn-1"))
+      .resolves.toMatchObject({ available: true, query: "squash merges" });
   });
 });
