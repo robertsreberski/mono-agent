@@ -7,7 +7,7 @@ import { createModels, fauxProvider } from '@earendil-works/pi-ai';
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-responses';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentHarness, createInMemoryHistoryStore, createToolPolicy } from '../../../../agent-harness/src/index.ts';
-import { loadMonoAgentConfig } from '../../../../config/src/index.ts';
+import { resolveJsonMonoAgentConfig } from '../../../../config/src/index.ts';
 import { generatePiNativeResponse } from '../../ai/providers/pi-native.js';
 import { disposeProviderSession } from '../../ai/runtime/sessions.js';
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
@@ -219,7 +219,7 @@ it.each([
   ['openai-responses', 'long', true, null],
 ])('retention %s/%s (supported=%s) preserves Pi compatibility and stream-option boundaries', async (api, cacheRetention, supported, ttl) => {
   vi.stubEnv('PI_CACHE_RETENTION', cacheRetention === 'short' ? 'long' : 'short');
-  const resolvedRetention = loadMonoAgentConfig({ cwd: '/repo', env: { MONO_AGENT_IDENTITY_PATH: "IDENTITY.md", MONO_AGENT_MODEL: 'anthropic:claude-sonnet-4-6', MONO_AGENT_PI_CACHE_RETENTION: cacheRetention } }).providers.piNative.cacheRetention;
+  const resolvedRetention = resolveJsonMonoAgentConfig({ cwd: '/repo', json: { runtime: { model: 'anthropic:claude-sonnet-4-6' }, context: { identityPath: 'IDENTITY.md' }, providers: { piNative: { ...(cacheRetention === undefined ? {} : { cacheRetention }) } } } }).providers.piNative.cacheRetention;
   const { AgentHarness } = await import('@earendil-works/pi-agent-core');
   const create = vi.spyOn(AgentHarness, 'create');
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
