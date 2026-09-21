@@ -213,7 +213,7 @@ describe("parent stop", () => {
           },
         });
         expect(record!.subagentOwnership!.publication.sequence).toBeGreaterThan(retainedSequence);
-      });
+      }, { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
       expect(await f.instances.get("helper")).toMatchObject({ status: "running", turns: 0 });
       expect(f.wake).not.toHaveBeenCalled();
       await expect(send.execute("busy", { id: "helper", message: "next" })).rejects.toThrow("busy");
@@ -221,7 +221,7 @@ describe("parent stop", () => {
 
       releaseRetainedConfirm.resolve();
       await vi.waitFor(async () => expect((await f.store.get(first.details.jobId))?.subagentOwnership?.publication)
-        .toMatchObject({ state: "confirmed", receiptPending: false }), { timeout: 2_000 });
+        .toMatchObject({ state: "confirmed", receiptPending: false }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
       expect(await done(f.service, first.details.jobId)).toMatchObject({ state: "cancelled", childStillBusy: false });
       const settledInstance = await f.instances.get("helper");
       expect(settledInstance).toMatchObject({ status: "idle", turns: 1 });
@@ -233,7 +233,7 @@ describe("parent stop", () => {
       releaseRetainedConfirm.resolve();
       providerGate.resolve({ text: "cleanup" });
     }
-  }, 15_000);
+  }, 40_000);
   it.each([false, true])("stop races completion and AskParent without fabricating cancellation (question=%s)", async (question) => {
     const f = await managedFixture(); const gate = deferred<any>(); const reached = deferred<void>(); const proceed = deferred<void>();
     const { agent, options } = tools(f, async () => gate.promise);

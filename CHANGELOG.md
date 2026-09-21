@@ -12,6 +12,10 @@
   none/Lite/Journal/BuJo behavior remain. The upgrade performs no fallback, export,
   remote data migration, or remote cleanup; existing remote data is untouched.
 
+- Fix managed subagent cancellation settlement so a newer terminal release
+  publication is durably rearmed after an older publication finishes, without
+  releasing capacity or waking the parent early.
+
 - **Breaking: remove first-party Phoenix/OTLP export.** Remove the bundled
   exporter package, `observability.exporters`,
   `MONO_AGENT_OBSERVABILITY_EXPORTERS`, `mono-agent backfill`, exporter status,
