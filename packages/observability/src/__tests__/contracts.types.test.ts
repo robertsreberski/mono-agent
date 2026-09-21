@@ -9,7 +9,7 @@ import type {
   RuntimeEventLike,
 } from "../index.js";
 
-describe("run-export contracts", () => {
+describe("generic exporter contracts", () => {
   it("exports content-pattern redaction options from the package root", () => {
     const options: RedactJsonValueOptions = { contentPatternRedaction: true };
     expect(options.contentPatternRedaction).toBe(true);

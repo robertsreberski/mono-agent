@@ -86,7 +86,7 @@ export interface RedactJsonValueOptions {
    * Disabled by default to preserve existing prose exactly. Matches are
    * replaced before UTF-8 truncation so the emitted truncation marker describes
    * the redacted value. An existing canonical marker is preserved while its
-   * retained head is scanned, keeping repeated export/backfill passes stable.
+   * retained head is scanned, keeping repeated redaction passes stable.
    */
   readonly contentPatternRedaction?: boolean;
   /**
@@ -1660,8 +1660,8 @@ export function truncateString(value: string, maxStringBytes: number): string {
   if (encoded.length <= maxStringBytes) {
     return value;
   }
-  // Recorder summaries can pass through another redaction/export boundary
-  // during backfill. Preserve a marker we emitted previously instead of
+  // Recorder summaries can pass through another redaction boundary during
+  // later reads. Preserve a marker we emitted previously instead of
   // replacing its original omitted-byte count with the marker's own size.
   // A canonical retained head ends at most three bytes below the cap because a
   // UTF-8 code point occupies at most four bytes.

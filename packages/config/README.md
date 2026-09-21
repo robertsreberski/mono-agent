@@ -18,7 +18,7 @@ Catalog responsibility: Loads adapter-neutral runtime, context, memory, tool, an
 ## Responsibility
 
 Load, validate, source-annotate, and redact the core runtime, context, memory,
-tool/MCP, artifact, traceability, observability, provider, and sandbox settings.
+tool/MCP, artifact, traceability, provider, and sandbox settings.
 Channel packages remain responsible for their own configuration.
 
 ## Install / Usage
@@ -415,12 +415,9 @@ MonoAgentMemoryConsolidationJson
 MonoAgentMemoryEmbeddingsCircuitBreakerJson
 MonoAgentMemoryEmbeddingsJson
 MonoAgentMemoryLlmJson
-MonoAgentObservabilityExporterJson
 MonoAgentProviderJson
 MonoAgentProvidersJson
 MonoAgentRuntimeFallbackJson
-ObservabilityExporterConfig
-PhoenixExporterConfig
 PiNativeProviderConfig
 ProviderCoverageRoute
 ProviderDefinition
@@ -431,9 +428,6 @@ RedactedMemoryConfig
 RedactedMemoryEmbeddingsConfig
 RedactedMemorySupermemoryConfig
 RedactedMonoAgentConfig
-RedactedObservabilityConfig
-RedactedObservabilityExporterConfig
-RedactedPhoenixExporterConfig
 RedactedProviderDefinition
 RemovedConfigWarningsInput
 ResolvedProviders

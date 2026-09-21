@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-A single `mono-agent.config.json` brings the agent's runtime, providers, context, memory, tools, sandbox, observability, and channels together. This page shows the major sections in one broad example. Use the [generated config reference](/config/reference/) for the exhaustive field list.
+A single `mono-agent.config.json` brings the agent's runtime, providers, context, memory, tools, sandbox, artifacts, traceability, and channels together. This page shows the major sections in one broad example. Use the [generated config reference](/config/reference/) for the exhaustive field list.
 
 In normal CLI use, relative paths resolve from the agent folder. For fields with a documented environment mapping, precedence is **passed environment > JSON > default**. Config fields may be JSON-only; the generated reference marks fields without a mapping as `--`.
 
@@ -319,15 +319,6 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "globalDiscovery": true                // mirror into ~/.mono-agent/trace-sources too (default true)
   },
 
-  // Optional trace viewer: add a best-effort, terminal-batched Phoenix (OTLP)
-  // exporter. Omit it to keep only bounded local terminal JSONL snapshots; a
-  // pre-terminal crash can lose buffered events.
-  "observability": {
-    "exporters": [
-      { "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces", "contentPatternRedaction": false }
-    ]
-  },
-
   // ----- Channels: one section per channel; all independent. Most channels are
   // ----- opt-in; the `tui` operator surface defaults on and can opt out.
   // ----- A waiting/disabled channel never blocks the others.
@@ -477,7 +468,7 @@ mono-agent restart      # apply config edits (config is JSON-first; restart to r
 mono-agent restart --clear-sessions  # restart and clear provider/history/ACP continuity (durable memory kept)
 ```
 
-Edit `mono-agent.config.json` directly and run `mono-agent restart` to apply it through the CLI. The CLI does not watch the file. A programmatic host can explicitly call `app.applyConfigChange(reason)` instead. `start` prints the traceability source, exporter status, and one initial status per channel: `running`, `waiting_for_config`, `disabled`, or `failed`. A running self-recovering transport can later report `degraded`.
+Edit `mono-agent.config.json` directly and run `mono-agent restart` to apply it through the CLI. The CLI does not watch the file. A programmatic host can explicitly call `app.applyConfigChange(reason)` instead. `start` prints the traceability source, local artifact location, and one initial status per channel: `running`, `waiting_for_config`, `disabled`, or `failed`. A running self-recovering transport can later report `degraded`.
 
 Agent-aware CLI commands load `.env` before config resolution; exported shell variables remain in precedence. Use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` and `--env-file` paths there. Keep secrets in an untracked, owner-only dotenv file or exported environment—never in committed config.
 
@@ -503,7 +494,6 @@ Every top-level section maps to a deep-dive page:
 | `interaction` | Ask-the-user and tool-progress bridge | [Delivery & send tools](/channels/delivery-and-send-tools/) |
 | `sandbox` | Filesystem/network confinement for runtime commands | [Sandbox](/tools/sandbox/) |
 | `artifacts`, `traceability` | JSONL run summaries + the trace-source registry | [Artifacts & traces](/observability/artifacts-and-traces/) |
-| `observability` | Optional Phoenix (OTLP) exporter | [Phoenix & backfill](/observability/phoenix-and-backfill/) |
 | `tui` | Default-on loopback operator endpoint | [Operator stream endpoint](/channels/tui/) |
 | `webhook` | HTTP invoke endpoint (sync/async) | [Webhook](/channels/webhook/) |
 | `openaiApi` | OpenAI-compatible `/v1` endpoint (streams tokens) | [OpenAI API](/channels/openai-api/) |

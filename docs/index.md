@@ -56,7 +56,7 @@ Equivalent env overrides: `MONO_AGENT_MODEL=openai-codex:gpt-5.6-terra` and, for
 - **[Memory](/memory/)** — optional tiered capture and recall, embeddings, consolidation, and maintenance.
 - **[Context](/context/)** — identity/soul, skills, and how the system prompt is assembled per turn.
 - **[Tools](/tools/)** — the tool policy (allow/deny), background jobs, MCP integration, and the native sandbox.
-- **[Observability & CLI](/observability/)** — local run artifacts and traces, optional Phoenix export, and the lifecycle CLI.
+- **[Observability & CLI](/observability/)** — local run artifacts, trace-source discovery, and the lifecycle CLI.
 - **[Programmatic](/programmatic/)** — the `code`-only escape hatches: composition, approval gates, structured output, multi-agent, A2A consumers, and custom channels.
 - **[Playbooks](/playbooks/)** — end-to-end recipes (Telegram BuJo assistant, Slack MCP bot, local-only Ollama, sandboxed code agent, and more).
 - **[Packages](/reference/packages/)** — every published package, its ownership tier, responsibility, npm page, and authoritative README.

@@ -27,7 +27,6 @@ describe("consumer docs/config consistency checker", () => {
       config: {
         memory: { recallTool: { enabled: true } },
         tools: { allowedTools: ["MemoryRecall"], mcpConfigPath: "./mcp.json" },
-        observability: { exporters: [{ type: "phoenix" }] },
       },
       mcp: { mcpServers: {} },
     });
@@ -41,7 +40,7 @@ describe("consumer docs/config consistency checker", () => {
 
   it("passes when README references the configured MemoryRecall surface", async () => {
     const dir = await writeConsumer({
-      readme: "This consumer uses MemoryRecall and exports traces to Phoenix.",
+      readme: "This consumer uses MemoryRecall and retains bounded local run artifacts.",
       config: {
         memory: { recallTool: { enabled: true } },
         tools: { allowedTools: ["MemoryRecall"], mcpConfigPath: "./mcp.json" },

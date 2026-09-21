@@ -18,8 +18,9 @@ Catalog responsibility: Records and reads local JSONL run artifacts, summaries, 
 
 Records and reads bounded local JSONL run artifacts, summarizes and audits those
 artifacts, and publishes file-backed trace-source manifests for operator
-discovery. Browser-safe subpaths shape timelines and span attributes. The separate optional
-`@mono-agent/observability-phoenix` package owns Phoenix OTLP/HTTP transport.
+discovery. The browser-safe event-timeline subpath shapes local replay rows.
+Provider-neutral exporter contracts remain available for programmatic composition,
+but this repository ships no exporter implementation.
 
 Local recorder redaction is always on: non-numeric values under sensitive-looking
 object keys are redacted; numeric values under matched keys are retained; retained
@@ -30,9 +31,6 @@ mixed, unknown, or string-valued token objects remain fully redacted. Compaction
 metadata also preserves boolean `tokenCountsExact` and null
 `generatedSummaryTokens`/`tailEstimateTokens`; strings or objects under those names
 remain redacted.
-Phoenix export keeps its separate, default-off `contentPatternRedaction` policy
-for content supplied directly to an exporter.
-
 Numeric values under matched keys are retained. Current matcher limitations remain follow-up work: space-, dot-, slash-, and colon-separated `private`/`api` + `key` spellings are not matched, while substring matching conservatively redacts string values under benign keys such as `credentialType`, `bearerStatus`, and `privateKeyboard`.
 
 ## Install / Usage
@@ -64,13 +62,6 @@ const summary = await recorder.finish({ model: "openai:gpt-5" });
 console.log(summary.status, summary.artifactPaths);
 ```
 
-Install the optional `@mono-agent/observability-phoenix` package at the same
-version as the framework to export recorded runs:
-
-```ts
-import { createPhoenixRunExporter } from "@mono-agent/observability-phoenix";
-```
-
 ## Architecture
 
 ### Data flow
@@ -78,11 +69,10 @@ import { createPhoenixRunExporter } from "@mono-agent/observability-phoenix";
 1. Runtime events enter the root recorder and become bounded local
    `.events.jsonl` and `.summary.json` snapshots.
 2. A composite recorder can additionally replay the same bounded events to a
-   `RunExporter`; the optional Phoenix package sends them over OTLP.
+   caller-supplied `RunExporter`; export remains best-effort and cannot change the local run result.
 3. Host lifecycle updates become trace-source manifests that local operator
    readers use to discover each agent's artifact directory.
-4. Browser consumers pass recorded events through `./event-timeline` for
-   display rows or `./run-export` for Node-free span attributes.
+4. Browser consumers pass recorded events through `./event-timeline` for display rows.
 5. `pruneRunArtifacts` applies one policy to terminal summary/event pairs and
    the separate `tool-output/` run-directory pool, protecting running,
    uncertain, or recently modified directories while still cleaning recordless
@@ -98,7 +88,6 @@ stream.
 | --- | --- |
 | `@mono-agent/observability` | Node-backed recorder, artifact readers/audit/retention/metrics, trace registry, composite recorder, and shared contracts. |
 | `@mono-agent/observability/event-timeline` | Browser-safe adjacent-event coalescing for display. |
-| `@mono-agent/observability/run-export` | Node-free event-to-span mapping and exporter helpers. |
 | `src/recorder.ts` / `src/recorded-runs.ts` | Artifact write boundaries and bounded, hostile-file-safe reads. |
 | `src/artifact-retention.ts` / `src/tool-output-path.ts` | Terminal-run and raw tool-output retention with shared canonical containment and run-directory naming. |
 | `src/trace-sources.ts` | File-backed source manifests, heartbeat updates, discovery, and per-source run reads. |
@@ -157,7 +146,7 @@ persisted running prefix is redacted and may be empty when a process dies
 before the first successful checkpoint. Live broadcast is visibility, not disk
 recovery.
 
-### Run export and Phoenix
+### Generic exporter composition
 
 `RunExporter` defines optional async-capable `start`, `onEvent`, `finish`,
 `fail`, `flush`, and `close` hooks. `createCompositeRunRecorder` preserves the
@@ -165,18 +154,11 @@ synchronous local `onEvent` path, buffers exporter input, then performs a
 bounded batch replay at finish. Export failures and timeouts become warnings and
 never change the run outcome or suppress the local terminal write.
 
-The `./run-export` subpath exposes pure event-to-span mapping. The optional
-`@mono-agent/observability-phoenix` package maps a run to OpenInference-flavored
-spans, serializes OTLP protobuf, and posts it to a Phoenix traces endpoint.
-Deterministic ids make the same run safe to re-export.
-
-Privacy default is metadata-only: `includeSensitiveData: false` omits substantive
-payloads. When it is true, non-numeric values under sensitive-looking object
-keys are redacted; numeric values under matched keys are retained; free text is
-not content-scanned by default. The opt-in `contentPatternRedaction: true` scan
-replaces a closed set of high-confidence credential shapes in retained outbound
-text; it is defense in depth, not a general secret detector. This outbound
-policy is independent of the local recorder's always-on credential-shape scan.
+The repository does not supply a network exporter or replacement tracing backend.
+Implementations supplied by application code own their transport, data policy,
+and destination. Removing the former Phoenix/OTLP integration does not affect the
+local recorder, and it does not imply that providers, channels, MCP servers, or
+other configured services are offline.
 
 ## Public API
 
@@ -191,7 +173,6 @@ policy is independent of the local recorder's always-on credential-shape scan.
 | root | `registerTraceSource` / `listTraceSources` | Publish and discover running agent sources. |
 | root | `createCompositeRunRecorder` | Keep local recording primary while adding a best-effort exporter. |
 | `./event-timeline` | `combineRecordedRunEvents` | Render a browser-safe, coalesced event timeline. |
-| `./run-export` | `buildRootSpanAttributes` / `buildEventSpans` | Map runs and events without loading Node or network transport code. |
 
 <!-- public-api-inventory:start -->
 <!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->
@@ -209,7 +190,6 @@ CacheUsageMetrics
 CompositeRunRecorderOptions
 DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS
 DescribeRunFailureKindInput
-EventSpanMapping
 JsonlRunReaderOptions
 JsonlRunRecorderOptions
 KNOWN_RUN_FAILURE_KINDS
@@ -219,11 +199,9 @@ MapRunToSessionOptions
 ObservabilityError
 ObservabilityErrorCode
 ObservabilityErrorDetails
-ObservabilityExporterConfig
 ObservabilityReadError
 ObservabilityReadErrorCode
 ObservabilityReadErrorDetails
-PhoenixExporterConfig
 PruneRunArtifactsOptions
 PruneRunArtifactsResult
 PruneTraceSourcesOptions
@@ -267,10 +245,6 @@ SessionToolCall
 SessionTotals
 SessionTurnContext
 SetTimer
-SpanAttributeValue
-SpanAttributes
-SpanKindHint
-SpanStatusHint
 TimelineTurn
 TraceRunDetail
 TraceRunListItem
@@ -298,13 +272,10 @@ TraceSourceSupermemoryMemoryHealth
 UpdateTraceSourceOptions
 VisibleTextSanitizationOptions
 auditRecordedRuns
-buildEventSpanAttributes
-buildRootSpanAttributes
 cacheUsageMetrics
 canonicalToolArtifactRoot
 combineRecordedRunEvents
 containsVisibleSensitiveText
-countRuntimeWarnings
 createCompositeRunRecorder
 createJsonlRunRecorder
 deriveRunSource
@@ -326,8 +297,6 @@ registerTraceSource
 sanitizeVisibleObjectEntries
 sanitizeVisibleText
 segmentTimelineTurns
-spanKindHint
-spanStatusFor
 summarizeRecordedRunMetrics
 toolOutputRunDirectoryName
 truncateVisibleText
@@ -339,34 +308,11 @@ truncateVisibleText
 combineRecordedRunEvents
 ```
 
-**`@mono-agent/observability/run-export`**
-
-```text
-DEFAULT_MAX_EVENTS_PER_RUN
-DEFAULT_MAX_STRING_BYTES
-EventSpanMapping
-SpanAttributeValue
-SpanAttributes
-SpanKindHint
-SpanStatusHint
-buildEventSpanAttributes
-buildEventSpans
-buildRootSpanAttributes
-composeFailureDetail
-countRuntimeWarnings
-normalizeFailoverHistory
-redactJsonValue
-renderFailoverHistory
-spanKindHint
-spanStatusFor
-truncateString
-```
-
 <!-- public-api-inventory:end -->
 
 ## Dependency Boundary
 
-The root import writes and reads local artifact and registry files only. It has no runtime, adapter, UI, database, queue, network, or OpenTelemetry dependency. The exporter contract and pure span mapping live at the root / `./run-export`; OTLP transport and SDK dependencies belong to the optional `@mono-agent/observability-phoenix` package.
+The root import writes and reads local artifact and registry files only. It has no runtime, adapter, UI, database, queue, network, or telemetry-SDK dependency. The provider-neutral exporter contract lives at the root; caller-supplied implementations own transport and destination policy.
 
 ## What This Package Does Not Own
 
@@ -376,7 +322,6 @@ It does not provide a hosted trace backend, metrics service, durable database, U
 
 - [Observability overview](https://docs.mono-agent.dev/observability/)
 - [Artifacts, checkpoints, and trace registry](https://docs.mono-agent.dev/observability/artifacts-and-traces/)
-- [Phoenix export and backfill](https://docs.mono-agent.dev/observability/phoenix-and-backfill/)
 - [CLI command reference](https://docs.mono-agent.dev/observability/cli-reference/)
 
 ## Verification

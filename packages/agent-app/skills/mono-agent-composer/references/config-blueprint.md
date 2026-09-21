@@ -246,15 +246,6 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     "globalDiscovery": true
   },
 
-  // Optional trace viewer: add a best-effort, terminal-batched Phoenix (OTLP)
-  // exporter. Omit it to keep only bounded local terminal JSONL snapshots; a
-  // pre-terminal crash can lose buffered events.
-  "observability": {
-    "exporters": [
-      { "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces", "contentPatternRedaction": false }
-    ]
-  },
-
   // ----- Channels: one section per channel; all independent. Most channels are
   // ----- opt-in; the `tui` operator surface defaults on and can opt out.
   // ----- A waiting/disabled channel never blocks the others.
@@ -452,7 +443,7 @@ mono-agent restart      # apply config edits (config is JSON-first; restart to r
 mono-agent restart --clear-sessions  # restart AND purge persisted pi sessions (fresh start; durable memory kept)
 ```
 
-A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` / `--env-file` paths there. `start` prints the traceability source (Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts) and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason. Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it) and run `mono-agent restart` to apply — there is no live browser re-apply.
+A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` / `--env-file` paths there. `start` prints the local traceability source and artifact location plus one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason. Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it) and run `mono-agent restart` to apply — there is no live browser re-apply.
 
 For BuJo capture and the effective `bujo` tier that runs scheduled consolidation, configure `memory.llm`. Use `provider: "ollama"` with a local Ollama chat model string and optional `endpoint`, or `provider: "agent-host"` with `model` as a canonical `<provider>:<model>` runtime reference such as `openai-codex:gpt-5.6-sol`. Every route is Pi-native, so there is no SDK-versus-CLI distinction and no reference family is singled out for rejection: any reference the runtime accepts is valid here, including `openai-codex:*`. `endpoint` is Ollama-only and invalid for `agent-host`; `agent-host` additionally accepts `trace` (record each `complete()` as a `mem-*` run; default `true`) and `timeoutMs` (per-`complete()` abort, default 60000, range 1000-600000). The same values can be supplied via `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_ENDPOINT`, `MONO_AGENT_MEMORY_LLM_TRACE`, and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`. `memory.llm.executionMode` and `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` were retired in 0.21.0 and now fail config load — delete them, never emit them. Routine BuJo consolidation runs via the in-app scheduler; the standalone `memory-bujo` maintenance CLI was removed (use `mono-agent memory <subcommand>` from the agent folder). `agent-host` LLM capture is an in-app composition path that injects the `LlmComplete` implementation into the BuJo store.
 

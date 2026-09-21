@@ -1,6 +1,6 @@
 ---
 title: "Framework simplification migration"
-description: "Migrate retired configuration, runtime and memory APIs, and install the optional Phoenix exporter."
+description: "Migrate retired configuration, runtime, memory, and first-party trace-export surfaces."
 sidebar:
   order: 90
 ---
@@ -51,13 +51,45 @@ The memory audit JSON field `backlog.captureQueue` is replaced by `backlog.compl
 
 The `mono-agent-memory-recall` compatibility binary is removed. For agent requests, use the injected `MemoryRecall` tool backed by the shared per-turn retrieval service. For operator queries, use `mono-agent memory recall`. Remove MCP configurations that start the old executable and its binary-only environment setup.
 
-## Optional Phoenix exporter
+## Retired Phoenix/OTLP export
 
-Install `@mono-agent/observability-phoenix` at the exact version of the consumer's `@mono-agent/agent-app`. Keep the existing `observability.exporters` entry with `type: "phoenix"`; no new configuration format is required. The host resolves the explicitly installed package, checks its version, and preserves it in managed runtime installations.
+An earlier source revision extracted Phoenix transport into an optional package,
+but that extraction is not a published `@mono-agent/observability-phoenix@0.22.0`
+plugin. Static inspection of the published `@mono-agent/agent-app@0.22.0` and
+`@mono-agent/observability@0.22.0` tarballs shows the older built-in
+observability implementation, while the public plugin lookup returned no package.
+Do not add a new plugin dependency or mix the retired source package with a newer
+app.
 
-Replace imports from `@mono-agent/observability/otel` with `@mono-agent/observability-phoenix`. The old subpath has been removed. The optional package provides the Phoenix factory and OTLP mapping/serialization APIs used by backfill. The core observability package retains local recording and generic exporter composition without OpenTelemetry dependencies.
+First-party Phoenix/OTLP export, the `@mono-agent/observability/run-export`
+subpath, `observability.exporters`, `MONO_AGENT_OBSERVABILITY_EXPORTERS`, exporter
+status/probing, and `mono-agent backfill` are removed. The local JSONL recorder,
+`mono-agent runs`, `runs audit`, `runs report`, `RunHistory`, trace-source
+discovery, failover details, and provider-neutral `RunExporter` /
+`createCompositeRunRecorder` contracts remain.
 
-A missing, mismatched, or broken configured plugin produces an actionable error. After successful setup, transport errors remain bounded and best-effort: they do not replace the run outcome or suppress local JSONL artifacts. See [Phoenix export and backfill](/observability/phoenix-and-backfill/).
+Before upgrading:
+
+1. If a final legacy export is required, perform it with the complete currently
+   working version set that the consumer already operates. No concrete app/plugin
+   pin is recommended because no separately published plugin version was verified.
+2. Remove every active `observability.exporters` block and active
+   `MONO_AGENT_OBSERVABILITY_EXPORTERS` assignment.
+3. Run `mono-agent validate`, then upgrade and validate again.
+4. Use `mono-agent runs`, `mono-agent runs audit`, or `mono-agent runs report`
+   for retained local artifacts.
+
+Active or malformed legacy values fail before startup with fixed, secret-safe
+repair text; they are not silently discarded. An absent field, a blank env
+assignment, env `[]`, `observability: {}`, or
+`observability: { exporters: [] }` is tolerated only as an inert upgrade
+tombstone and enables nothing.
+
+The upgrade performs no automatic final export, replacement selection, config
+rewrite, artifact conversion, local artifact deletion, remote trace deletion, or
+installed-consumer migration. Removing the bundled trace exporter also does not
+make the application network-isolated: providers, channels, MCP servers, web
+tools, and configured external memory services can still use the network.
 
 ## Operator integrations
 

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Breaking: remove first-party Phoenix/OTLP export.** Remove the bundled
+  exporter package, `observability.exporters`,
+  `MONO_AGENT_OBSERVABILITY_EXPORTERS`, `mono-agent backfill`, exporter status,
+  and the OpenInference mapping subpath. Keep bounded local JSONL recording,
+  run history/audit/report, trace-source discovery, failover normalization, and
+  provider-neutral `RunExporter` composition. Active legacy settings now fail
+  with secret-safe migration guidance; inert empty leftovers remain accepted.
+
 - Replace the marketing site’s inactive PostHog integration with native Astro Vercel Web Analytics, preserving explicit opt-in, browser privacy signals and withdrawal controls; simplify reporting to basic page views.
 
 - Connect marketing and documentation links to mono-agent.dev and docs.mono-agent.dev, with a permanent redirect from the former marketing host.
