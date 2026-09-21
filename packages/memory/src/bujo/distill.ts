@@ -12,6 +12,24 @@ export interface CandidateMemory {
 export const MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS = 160;
 export const MAX_RECONCILIATION_TEXT_CODE_POINTS = 280;
 
+/**
+ * Clamp model-authored capture text to the bounded store contract.
+ *
+ * The 160-code-point cap is a host contract, not a model obligation: an
+ * over-long sentence is trimmed here rather than rejected, because rejecting it
+ * discards every other memory submitted in the same response. This restores the
+ * tolerance the pre-structured-output capture path applied via
+ * `normalizeCandidateText`. Only length is forgiving — malformed or unsafe text
+ * still fails its caller's strict validation.
+ */
+export function clampCaptureText(value: string): string {
+  // Slice by code point so an astral pair is never split into lone surrogates.
+  return Array.from(value)
+    .slice(0, MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS)
+    .join("")
+    .trim();
+}
+
 /** Normalize legacy reconciliation text to its bounded one-line representation. */
 export function normalizeReconciliationText(
   value: unknown,

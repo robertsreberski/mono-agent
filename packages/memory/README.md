@@ -218,8 +218,15 @@ capture or a successful empty result. The extraction prompt states the validator
 exact field, `0..1` salience, identifier, reference, and relation contracts. The
 reconcile prompt states the exact action-dependent objects: `ADD` has only index/action,
 `NOOP` requires a supplied target id, and `UPDATE`/`SUPERSEDE` require that target plus
-complete replacement text. The strict parser remains authoritative and never clamps,
-rescales, fills missing fields, or coerces model values.
+complete replacement text. The strict parser remains authoritative and never
+rescales, fills missing fields, or coerces model values. Its one exception is
+memory text length: text beyond the capture bound is clamped rather than
+rejected, because rejecting one long sentence would discard every other memory
+in the same response. Returned memory text is therefore bounded, not
+necessarily verbatim, model output. If clamping makes two otherwise distinct
+memories indistinct, only the colliding candidate is dropped; memories the
+model itself authored as indistinct still fail the whole attempt. Malformed or
+unsafe text and every structural field remain all-or-nothing.
 
 Capture and reconciliation prompts ask the selected model to preserve material
 speaker, evidence, preference scope, negation, and temporal qualification;
