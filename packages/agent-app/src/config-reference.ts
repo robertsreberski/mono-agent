@@ -1184,7 +1184,7 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.enum = ["process", "host"];
   } else if (field.jsonPath === "tools.web.search.backend" || field.jsonPath === "tools.web.fetch.provider") {
     const names = field.jsonPath === "tools.web.search.backend"
-      ? ["searxng", "ollama", "codex", "keyless", "duckduckgo", "startpage", "parallel", "hound"] : ["local", "parallel", "hound"];
+      ? ["searxng", "ollama", "codex", "keyless", "duckduckgo", "startpage", "parallel", "local"] : ["local", "parallel"];
     schema.anyOf = [{ type: "string", enum: names }, { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", enum: names } }];
   } else if (field.jsonPath === "tools.web.fetch.render") {
     schema.enum = ["never", "auto"];
@@ -1704,7 +1704,7 @@ function descriptionFor(id: string): string {
   if (id === "tools.web.search.codex.model") {
     return "Codex app-server model used for ChatGPT-subscription web search. The signed-in account must expose both this model and web search; default gpt-5.6-luna.";
   }
-  if (id === "tools.web.fetch.provider") return "WebFetch provider name or ordered chain: local (default), parallel, hound. Parallel cannot serve raw format, custom headers, or browser rendering. Hound is built-in HTTP-only local acquisition/extraction with proactive robots checks; it supports raw format and allowed headers but not browser rendering.";
+  if (id === "tools.web.fetch.provider") return "WebFetch provider name or ordered chain: local (default), parallel. Parallel cannot serve raw format, custom headers, or browser rendering. Local is built-in HTTP static acquisition/extraction; it enforces sandbox network policy but performs no robots.txt preflight. It supports raw format and allowed headers; browser rendering follows tools.web.fetch.render.";
 
   if (id === "tools.web.search.parallel.apiKeyEnv" || id === "tools.web.fetch.parallel.apiKeyEnv") return "Optional credential environment-variable name for Parallel MCP. Omit for anonymous access; the value is read at call time and never stored in config.";
   if (id === "tools.web.fetch.render") {

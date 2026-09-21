@@ -3786,14 +3786,14 @@ describe("validateMonoAgentFolder — web tools", () => {
     expect(fetchSpy.mock.calls.every(([, init]) => init.redirect === "error")).toBe(true);
   });
 
-  it("reports native Hound readiness without contacting an endpoint or public engines", async () => {
+  it("reports native local readiness without contacting an endpoint or public engines", async () => {
     const fetchSpy = vi.fn(); vi.stubGlobal("fetch", fetchSpy);
-    const configPath = await writeWebToolsConfig({ search: { backend: "hound" }, fetch: { provider: "hound" } });
+    const configPath = await writeWebToolsConfig({ search: { backend: "local" }, fetch: { provider: "local" } });
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
     const section = sectionById(report, "web-tools");
     expect(section.status).toBe("ok");
-    expect(section.details).toContain("Hound is a built-in Node provider; no endpoint or Python service is required.");
-    expect(section.details).toContain("Hound local capability is available (public engines and extraction not probed).");
+    expect(section.details).toContain("Local is a built-in Node provider; no endpoint or Python service is required.");
+    expect(section.details).toContain("Local web capability is available (public engines and extraction not probed).");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

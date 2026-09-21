@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Breaking: rename the built-in `hound` web provider to `local`.** Select
+  `tools.web.search.backend: "local"` and `tools.web.fetch.provider: "local"`;
+  the old `hound` value fails with a migration error naming the new value. For
+  search this is a pure rename. For fetch it is not equivalent: the removed
+  `hound` fetch path (robots preflight, no retries, forced
+  document-only/render-never) is gone and `local` keeps the classic behavior
+  (standard retries, no robots preflight, configured render mode honored).
+  Update a `hound` fetch selection only if that posture is acceptable.
+
+- Fix `WebSearch` fallback chains dead-ending on a refused local provider. A
+  throttled or robots-denied local search now advances to the next configured
+  backend and still runs alternate queries against it, instead of stopping the
+  whole call. Brave and Mojeek left the local engine pool because their only
+  search paths are robots-disallowed for every user agent, leaving a single
+  DuckDuckGo engine, so healthy searches no longer report `partial`.
+
 - Raise the configurable ceiling for `subagents.maxTurns` and
   `subagents.definitions[].maxTurns` from 200 to 400. Long single-run
   implementation work could exhaust its turn budget while an operator was

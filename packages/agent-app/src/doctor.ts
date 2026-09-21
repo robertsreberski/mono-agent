@@ -1,5 +1,5 @@
 import { persistentSubagentsEnabled, subagentInstancesRoot } from "./subagent-instances.js";
-import { inspectHoundWeb, inspectParallelWeb } from "@mono-agent/agent-runtime/agent/tools/index.js";
+import { inspectLocalWeb, inspectParallelWeb } from "@mono-agent/agent-runtime/agent/tools/index.js";
 import { inspectWebControl } from "./web-request-coordinator.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
@@ -1910,11 +1910,11 @@ async function webToolsSection(
   }
 
   details.push(`WebFetch provider: ${JSON.stringify(fetchConfig.provider ?? "local")}.`);
-  if (chain.includes("hound") || fetchProviders.includes("hound")) {
-    const probe = await inspectHoundWeb();
+  if (chain.includes("local") || fetchProviders.includes("local")) {
+    const probe = await inspectLocalWeb();
     if (!probe.ok) status = "waiting";
-    details.push("Hound is a built-in Node provider; no endpoint or Python service is required.");
-    details.push(probe.ok ? "Hound local capability is available (public engines and extraction not probed)." : "[WARN] Hound local capability is unavailable.");
+    details.push("Local is a built-in Node provider; no endpoint or Python service is required.");
+    details.push(probe.ok ? "Local web capability is available (public engines and extraction not probed)." : "[WARN] Local web capability is unavailable.");
   }
 
   details.push(`WebFetch browser rendering: ${fetchConfig.render}.`);
