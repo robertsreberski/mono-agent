@@ -1334,6 +1334,124 @@ describe("Agent tool max-turns wrap-up", () => {
     }
   });
 
+  /** Persistent-instance mock capturing finish outcomes. */
+  function persistentInstances(finished) {
+    return {
+      create: async (spec) => ({ id: "inst-1", turns: 0, status: "idle", sessionId: "sess-1", sessionsRoot: "/tmp/sess", ...spec }),
+      begin: async (id) => ({ id, sessionId: "sess-1", sessionsRoot: "/tmp/sess" }),
+      finish: async (id, outcome) => {
+        finished.push(outcome);
+        return { id, turns: 2, status: "idle" };
+      },
+    };
+  }
+
+  it("propagates a wrap-up continuity loss to the instance outcome", async () => {
+    // The host reports session continuity per run: a wrap-up that answered
+    // outside the instance session must not leave the instance recorded
+    // retained on the first run's fields, or the next AgentSend resumes a
+    // lost session.
+    const finished = [];
+    const run = scripted(
+      async () => ({ ...maxTurnsResult(), subagentContinuity: { turnToken: "tok", state: "retained" } }),
+      async () => ({
+        text: null,
+        error: "The child answered outside its persistent session.",
+        failureKind: "session_continuity_lost",
+        subagentContinuity: { turnToken: "tok", state: "lost" },
+        events: [],
+      }),
+    );
+    const tool = createAgentTool(subagentOptions({ run, instances: persistentInstances(finished) }));
+    const result = await tool.execute("c1", { prompt: "x", persist: true });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(finished).toHaveLength(1);
+    expect(finished[0]).toMatchObject({
+      status: "failed",
+      failureKind: "session_continuity_lost",
+      continuity: { turnToken: "tok", state: "lost" },
+    });
+    expect(result.details.subagent.status).toBe("failed");
+    expect(result.details.subagent.wrapUp.status).toBe("failed");
+  });
+
+  it("reports a wrap-up continuity loss at detached settlement", async () => {
+    const settledCalls = [];
+    const run = scripted(
+      async () => ({ ...maxTurnsResult(), subagentContinuity: { turnToken: "tok", state: "retained" } }),
+      async () => ({
+        text: null,
+        error: "The child answered outside its persistent session.",
+        failureKind: "session_continuity_lost",
+        subagentContinuity: { turnToken: "tok", state: "lost" },
+        events: [],
+      }),
+    );
+    const instances = {
+      create: async (spec) => ({ id: "inst-1", turns: 0, status: "idle", sessionId: "sess-1", sessionsRoot: "/tmp/sess", ...spec }),
+      reserve: async (id) => ({ id, incarnation: "", activeTurn: { token: "tok" }, sessionId: "sess-1", sessionsRoot: "/tmp/sess" }),
+      begin: async (id) => ({ id, incarnation: "", activeTurn: { token: "tok" }, sessionId: "sess-1", sessionsRoot: "/tmp/sess" }),
+      get: async (id) => ({ id, turns: 2, status: "idle" }),
+      releaseReservation: async () => {},
+    };
+    const execution = {
+      deadlineAt: Date.now() + 60_000,
+      managed: {
+        started: async () => {},
+        settled: async (report) => settledCalls.push(report),
+        report: async () => {},
+        ownedForegroundProcesses: undefined,
+      },
+    };
+    const background = {
+      startInternal: async (options) => {
+        await options.run(new AbortController().signal, () => {}, () => {}, execution);
+        return { jobId: "job-1", instanceId: "inst-1", state: "succeeded", startedAt: new Date().toISOString() };
+      },
+    };
+    const tool = createAgentTool(subagentOptions({ run, instances, backgroundSubagentController: background }));
+    await tool.execute("c1", { prompt: "x", persist: true, background: true });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(settledCalls).toHaveLength(1);
+    expect(settledCalls[0]).toMatchObject({
+      failureKind: "session_continuity_lost",
+      continuity: { turnToken: "tok", state: "lost" },
+    });
+  });
+
+  it.each([
+    ["failed", async () => ({ text: null, error: "boom", failureKind: "provider_unavailable", events: [] })],
+    ["unavailable", async () => { throw new Error("route gone"); }],
+  ])("keeps an ordinary %s wrap-up free of continuity loss", async (status, second) => {
+    const finished = [];
+    const run = scripted(async () => maxTurnsResult({ text: "partial" }), second);
+    const tool = createAgentTool(subagentOptions({ run, instances: persistentInstances(finished) }));
+    const result = await tool.execute("c1", { prompt: "x", persist: true });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.details.subagent.wrapUp.status).toBe(status);
+    expect(finished).toHaveLength(1);
+    expect(finished[0].status).toBe("failed");
+    expect(finished[0].failureKind).toBeUndefined();
+    expect(finished[0].continuity).toBeUndefined();
+  });
+
+  it("sums both runs' usage in the instance outcome", async () => {
+    const finished = [];
+    const run = scripted(
+      async () => ({ ...maxTurnsResult(), usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 5, cache_creation_tokens: 3, cost_usd: 0.25 } }),
+      async () => ({ text: "wrapped", usage: { input_tokens: 50, output_tokens: 10, cache_read_tokens: 1, cache_creation_tokens: 2, cost_usd: 0.5 }, events: [] }),
+    );
+    const tool = createAgentTool(subagentOptions({ run, instances: persistentInstances(finished) }));
+    await tool.execute("c1", { prompt: "x", persist: true });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(finished).toHaveLength(1);
+    expect(finished[0].usage).toEqual({ input: 150, output: 30, cacheRead: 6, cacheWrite: 5, costUsd: 0.75 });
+  });
+
   it("reuses the persistent instance for the wrap-up and names the report file", async () => {
     const finished = [];
     const instances = {

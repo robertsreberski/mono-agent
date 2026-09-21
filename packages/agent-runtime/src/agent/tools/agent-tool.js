@@ -612,9 +612,9 @@ export function createAgentTool(subagents, context = {}, continuation) {
               persistent: instance !== undefined,
             });
             const wrapResult = await invokeChildRun(prompt, WRAP_UP_MAX_TURNS);
-            return toWrapUpRecord(wrapResult, { turnsUsed, turnsAllowed: maxTurns });
+            return attachWrapUpSignals(toWrapUpRecord(wrapResult, { turnsUsed, turnsAllowed: maxTurns }), first, wrapResult);
           } catch (error) {
-            return {
+            return attachWrapUpSignals({
               budget: "maxTurns",
               turnsUsed,
               turnsAllowed: maxTurns,
@@ -623,7 +623,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
               answer: "",
               wrapUpTurnsUsed: null,
               wrapUpTurnsAllowed: WRAP_UP_MAX_TURNS,
-            };
+            }, first, undefined);
           }
         };
         try {
@@ -632,7 +632,19 @@ export function createAgentTool(subagents, context = {}, continuation) {
             const first = await invokeChildRun(params.prompt, maxTurns);
             const wrapUp = await maybeRunWrapUp(first);
             if (!wrapUp || first === null || typeof first !== "object") return first;
-            return { ...first, wrapUp };
+            // The host sets session-continuity signals per run
+            // (configured-agent.ts): without propagating the wrap-up's, a
+            // wrap-up that answered outside the instance session would leave
+            // the instance recorded retained on the first run's fields and the
+            // next AgentSend would resume a lost session. An ordinary failed
+            // or unavailable wrap-up carries no such signal, so the merged
+            // result still reads as a max-turns exhaustion.
+            return {
+              ...first,
+              ...(wrapUp.continuity !== undefined ? { subagentContinuity: wrapUp.continuity } : {}),
+              ...(wrapUp.continuityLost ? { failureKind: "session_continuity_lost" } : {}),
+              wrapUp,
+            };
           });
           // Observe the actual provider promise before racing reporting/deadline.
           const running = execution?.managed ? Promise.resolve(underlying).then(async (value) => {
@@ -681,7 +693,12 @@ export function createAgentTool(subagents, context = {}, continuation) {
         }
         if (instance && !abandoned) {
           const state = classifyOutcome({ result, thrown, timedOut });
-          const usage = result?.usage ?? {};
+          // The non-detached instance outcome sums both provider runs: the
+          // parent budget already accumulates across them via recordUsage and
+          // the detached path via collector.usage(), but `result.usage` alone
+          // is the first run's. (The detached usage there already includes the
+          // wrap-up, so this stays scoped to this path.)
+          const usage = sumRunUsage(result?.usage, result?.wrapUp?.wrapUsage ?? null);
           const instanceOutcome = { ...(result?.subagentContinuity ? { continuity: result.subagentContinuity } : {}), ...(execution?.managed && continuation?.close && state.status === "ok" && !signal?.aborted ? { closeAfterSuccess: true } : {}), status: timedOut ? "timeout" : signal?.aborted ? "cancelled" : state.status,
             ...(result?.failureKind === "session_continuity_lost" ? { failureKind: "session_continuity_lost" } : {}),
             answerHead: state.answer, ...(state.question ? { question: state.question } : {}), usage: detached ? detachedUsage(result, collector.usage()) : { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
@@ -1373,6 +1390,52 @@ function buildWrapUpPrompt({ prompt, turnsUsed, turnsAllowed, activity, cwd, rep
     "",
     "If your tools do not permit committing or writing files, say so plainly and put the full statement of position in your final reply text.",
   ].join("\n");
+}
+
+/**
+ * Carry the wrap-up run's session-continuity signal and raw usage onto its
+ * record. `continuity` prefers the wrap-up's own `subagentContinuity` when it
+ * reported one (otherwise the merged result keeps the first run's), and
+ * `continuityLost` is true when EITHER run reported `session_continuity_lost`
+ * — never for a merely failed or unavailable wrap-up. `wrapUsage` is the
+ * wrap-up's raw usage bag for the instance-outcome sum; it is not surfaced in
+ * `details.subagent.wrapUp`, which keeps its fixed seven fields.
+ * @param {*} record The record from `toWrapUpRecord` or the unavailable path.
+ * @param {*} first The main turn's result.
+ * @param {*} wrapResult The wrap-up run's raw result, or undefined when it never started.
+ * @returns {*}
+ */
+function attachWrapUpSignals(record, first, wrapResult) {
+  const wrapObject = wrapResult !== null && typeof wrapResult === "object" ? wrapResult : null;
+  const continuity = wrapObject?.subagentContinuity !== null && typeof wrapObject?.subagentContinuity === "object"
+    ? wrapObject.subagentContinuity
+    : undefined;
+  return {
+    ...record,
+    ...(continuity === undefined ? {} : { continuity }),
+    continuityLost: first?.failureKind === "session_continuity_lost" || wrapObject?.failureKind === "session_continuity_lost",
+    wrapUsage: wrapObject?.usage ?? null,
+  };
+}
+
+/**
+ * Sum two provider-run usage bags field-wise. Only finite-number values
+ * accumulate, so an unexpected shape never corrupts the total; keys present in
+ * only one bag pass through. The bridge reports both runs in the same
+ * spelling, which is the case that matters (instance token/cost accounting).
+ * @param {*} firstUsage
+ * @param {*} secondUsage
+ * @returns {Record<string, *>}
+ */
+function sumRunUsage(firstUsage, secondUsage) {
+  const base = firstUsage !== null && typeof firstUsage === "object" ? { ...firstUsage } : {};
+  if (secondUsage === null || typeof secondUsage !== "object") return base;
+  for (const [key, value] of Object.entries(secondUsage)) {
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    const current = base[key];
+    base[key] = (typeof current === "number" && Number.isFinite(current) ? current : 0) + value;
+  }
+  return base;
 }
 
 /**
