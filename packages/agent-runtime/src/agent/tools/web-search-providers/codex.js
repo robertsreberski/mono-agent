@@ -2,7 +2,12 @@
 import { claimWebSearchRequest } from "../web-search-state.js";
 export const codexProvider = {
   name: "codex", batchesQueries: false, primaryOnly: true,
-  filterSupport: { language: "advisory", timeRange: "advisory", country: "unsupported", domains: "operator" },
+  // domains: "unverified" — the query text (including site:) is passed through
+  // verbatim, but the subscription search is model-mediated through the Codex
+  // app-server's unpublished server-side search tool, so server-side operator
+  // support cannot be claimed without a live probe; only the client-side
+  // domain filter can be relied on.
+  filterSupport: { language: "advisory", timeRange: "advisory", country: "unsupported", domains: "unverified" },
   configure(input) {
     const model = typeof input?.codex?.model === "string" && input.codex.model.trim()
       ? input.codex.model.trim() : "gpt-5.6-luna";

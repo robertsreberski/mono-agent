@@ -4,7 +4,11 @@ import { requestSignal, readLimitedText, normalizedResult, collapseWhitespace, f
 const SEARXNG_THROTTLE_REASON_RE = /captcha|too many requests|rate.?limit|suspend|blocked|denied/iu;
 export const searxngProvider = {
   name: "searxng", batchesQueries: false, chainDeadlineMs: 3000,
-  filterSupport: { language: "provider", timeRange: "provider", country: "unsupported", domains: "operator" },
+  // domains: "unverified" — the operator text is forwarded verbatim, but the
+  // endpoint is operator-owned and support for site: is a property of its
+  // configured upstream engines, not of this adapter; only the client-side
+  // domain filter can be relied on across deployments.
+  filterSupport: { language: "provider", timeRange: "provider", country: "unsupported", domains: "unverified" },
   configure(input, selected) {
   const legacyEndpoint = input?.endpoint;
   const nestedEndpoint = input?.searxng?.endpoint;

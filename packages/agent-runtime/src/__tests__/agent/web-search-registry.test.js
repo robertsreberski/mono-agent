@@ -23,9 +23,14 @@ describe("source-level search registry", () => {
     for (const provider of webSearchProviders.values()) {
       expect(["operator", "unverified"]).toContain(provider.filterSupport.domains);
     }
-    // Parallel honours site: inside search_queries server-side (verified live);
-    // Ollama documents only a raw query string, so its support stays unverified.
+    // Parallel honours site: inside search_queries server-side (verified live).
+    // Codex is model-mediated through an unpublished server-side search tool
+    // and SearXNG support belongs to each deployment's configured upstreams,
+    // so neither claims operator support; Ollama documents only a raw query.
     expect(webSearchProviders.get("parallel")?.filterSupport.domains).toBe("operator");
+    expect(webSearchProviders.get("duckduckgo")?.filterSupport.domains).toBe("operator");
+    expect(webSearchProviders.get("codex")?.filterSupport.domains).toBe("unverified");
+    expect(webSearchProviders.get("searxng")?.filterSupport.domains).toBe("unverified");
     expect(webSearchProviders.get("ollama")?.filterSupport.domains).toBe("unverified");
   });  it("executes a newly registered provider without editing the chain", async () => {
     register("fake", (query, options) => {
