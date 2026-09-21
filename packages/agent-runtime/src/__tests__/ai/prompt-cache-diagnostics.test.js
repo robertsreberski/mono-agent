@@ -41,6 +41,44 @@ describe("prompt cache diagnostics", () => {
     expect(state.onEvent.mock.calls[0][0]).toMatchObject({ payloadFamily: "openai-responses", supported: true, toolDefinitionCount: 0, messageCount: 1 });
   });
 
+  it.each([
+    ["openai-responses", { api: "openai-responses", provider: "openai", id: "gpt" }],
+    ["openai-responses", { api: "azure-openai-responses", provider: "azure-openai", id: "gpt" }],
+  ])("replays the %s system prompt from converted input when instructions is absent", (family, model) => {
+    const wireInput = (text) => ({ input: [{ role: "system", content: text }, { role: "user", content: [{ type: "input_text", text: "PRIVATE" }] }], tools: [{ name: "Read" }] });
+    const one = fixture();
+    one.emit({ model, payload: wireInput("SYS-ONE") });
+    const first = one.onEvent.mock.calls[0][0];
+    const two = fixture();
+    two.emit({ model, payload: wireInput("SYS-TWO") });
+    const second = two.onEvent.mock.calls[0][0];
+    expect(first).toMatchObject({ payloadFamily: family, supported: true, toolDefinitionCount: 1, messageCount: 2 });
+    expect(first.systemBytes).toBeGreaterThan(0);
+    expect(first.systemFingerprint).toMatch(/^[a-f0-9]{16}$/u);
+    expect(second.systemFingerprint).not.toBe(first.systemFingerprint);
+    expect(JSON.stringify(first)).not.toMatch(/SYS-ONE|SYS-TWO|PRIVATE/u);
+  });
+
+  it("replays transcript-shaped input and developer-role instructions for openai-responses", () => {
+    const model = { api: "openai-responses", provider: "openai", id: "gpt" };
+    const transcript = fixture();
+    transcript.emit({ model, payload: { input: [{ role: "system", content: "SYS", toolsAdded: [{ name: "Read" }], timestamp: 0 }, { role: "user", content: "PRIVATE", timestamp: 1 }], tools: [{ name: "Read" }] } });
+    expect(transcript.onEvent.mock.calls[0][0]).toMatchObject({ payloadFamily: "openai-responses", supported: true, toolDefinitionCount: 1 });
+    expect(transcript.onEvent.mock.calls[0][0].systemBytes).toBeGreaterThan(0);
+    const reasoning = fixture();
+    reasoning.emit({ model, payload: { input: [{ role: "developer", content: "SYS" }, { role: "user", content: "PRIVATE" }] } });
+    expect(reasoning.onEvent.mock.calls[0][0].systemBytes).toBeGreaterThan(0);
+  });
+
+  it("prefers explicit instructions over replayed input for openai-codex-responses", () => {
+    const state = fixture();
+    state.emit({ model: { api: "openai-codex-responses", provider: "openai-codex", id: "gpt" }, payload: { instructions: "SYS", input: [{ role: "system", content: "STALE" }] } });
+    const event = state.onEvent.mock.calls[0][0];
+    expect(event).toMatchObject({ payloadFamily: "openai-codex", supported: true });
+    expect(event.systemBytes).toBe(3);
+    expect(JSON.stringify(event)).not.toMatch(/SYS|STALE/u);
+  });
+
   it("marks unknown payloads unsupported instead of fingerprinting empty projections", () => {
     const state = fixture();
     state.emit({ model: { api: "future-api", provider: "future", id: "m" }, payload: { request: "PRIVATE" } });

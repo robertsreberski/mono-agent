@@ -49,7 +49,21 @@ function normalizedPayload(event) {
     return { family: "anthropic", system: payload.system ?? null, tools: list(payload.tools), messages: list(payload.messages), payload };
   }
   if (["openai-responses", "azure-openai-responses", "openai-codex-responses"].includes(api)) {
-    return { family: api === "openai-codex-responses" ? "openai-codex" : "openai-responses", system: payload.instructions ?? null, tools: list(payload.tools), messages: list(payload.input), payload };
+    const input = list(payload.input);
+    // pi-ai 0.86.0 no longer sends `instructions` for openai/azure-responses (the
+    // prompt is folded into `input`): replay it from the messages the same way
+    // the pi-messages branch does, falling back to the converted instruction item
+    // for provider-shaped payloads whose messages carry no transcript metadata
+    // (notably the `timestamp` Pi's transcript helpers require). An explicit
+    // `instructions` (openai-codex-responses always sets it) still wins.
+    const replayed = getCurrentSystemPrompt(input);
+    const converted = input
+      .map((message) => record(message))
+      .filter((message) => message !== undefined && (message.role === "system" || message.role === "developer") && typeof message.content === "string" && message.content.length > 0)
+      .map((message) => message.content)
+      .join("\n\n");
+    const prompt = payload.instructions ?? (replayed !== "" ? replayed : converted);
+    return { family: api === "openai-codex-responses" ? "openai-codex" : "openai-responses", system: prompt === "" ? null : prompt, tools: list(payload.tools), messages: input, payload };
   }
   return { family: "unsupported", reason: `unrecognized_api:${api}` };
 }
