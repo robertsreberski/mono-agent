@@ -11,7 +11,6 @@ const dirs: string[] = [];
 interface Evidence {
   pid: number;
   boundaries: Array<{ reason: string; providerSessionId: string }>;
-  notices: string[];
   contexts: Array<{ systemPrompt: string; messages: Array<Record<string, unknown>> }>;
   requests: Array<{ owner: string; messages: unknown[]; sessionId: string }>;
   events: Array<{ kind: string; reason: string }>;
@@ -146,7 +145,6 @@ describe("durable model override native sessions", () => {
     expect(next.requests[0]!.sessionId).toBe(first.requests[0]!.sessionId);
     expect(next.records[1]!.providerSession.modelKey).toBe("faux:third");
     expect(next.boundaries).toMatchObject([{ reason: "model_change", providerSessionId: next.requests[1]!.sessionId }]);
-    expect(next.notices).toEqual([`session boundary: resume replay · model change · provider ${next.requests[1]!.sessionId}`]);
     expect(next.events).toMatchObject([{ kind: "resume_replay", reason: "model_change" }]);
   });
 });

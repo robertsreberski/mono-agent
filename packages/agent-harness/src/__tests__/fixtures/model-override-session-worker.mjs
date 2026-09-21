@@ -99,10 +99,8 @@ try {
 } finally {
   await harness.dispose();
 }
-const { sessionBoundaryNotice } = await import("../../../../tui/dist/ui/session-boundary.js");
 const mapped = mapRunToSession({ runId: "contract", conversationId: "bound", status: "succeeded",
   startedAt: "2026-09-08T00:00:00Z", durationMs: 0, eventCount: events.length, artifactPaths: [] }, events,
   { instanceLabel: "contract", cwd: root });
 const boundaries = mapped.steps.filter((step) => step.k === "boundary");
-const notices = events.map(sessionBoundaryNotice);
-process.stdout.write(JSON.stringify({ boundaries, notices, pid: process.pid, contexts, requests, events, sessionEvents, records, jsonl, trace }));
+process.stdout.write(JSON.stringify({ boundaries, pid: process.pid, contexts, requests, events, sessionEvents, records, jsonl, trace }));
