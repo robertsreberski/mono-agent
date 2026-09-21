@@ -71,8 +71,8 @@ before restarting one.
 
 ### Pi 0.86 dependency migration
 
-The runtime exact-pins Pi AI and Pi Agent Core at `0.86.1`; the TUI pins Pi TUI
-at the same version. Pi's harness is now created asynchronously and exposes
+The runtime exact-pins Pi AI and Pi Agent Core at `0.87.0` (the terminal TUI
+renderer is retired, so no Pi TUI pin remains). Pi's harness is now created asynchronously and exposes
 prompt, navigation, compaction, abort, event, and transcript operations through
 its `main` lane with an explicit operation context. mono-agent absorbs that API
 change in its Pi compatibility adapter; hosts do not need a config migration.
@@ -725,7 +725,7 @@ falls back to its own env vars, exactly as returning `undefined` from the old ho
 did). **No host action needed** — `resolvePiApiKey` behaves as before.
 
 Current dependency pins: **`@earendil-works/pi-ai` and
-`@earendil-works/pi-agent-core` are both `0.86.1`** (the initial Pi 0.80
+`@earendil-works/pi-agent-core` are both `0.87.0`** (the initial Pi 0.80
 migration landed at `0.80.5`, from `^0.79.1`). Pi 0.85's durable lane harness is
 adapted behind the runtime's existing public API. Pi 0.86 folds request prompts
 and tool declarations into the transcript's leading system message (providers
@@ -735,9 +735,18 @@ backfill), and adds static `meta` and `radius` provider catalogs. Compaction
 remains owned by mono-agent policy, and model-native `max` reasoning plus Pi's
 request-wide pricing tiers are preserved.
 
-Packed npm consumers resolve the runtime-owned exact Pi AI 0.86.1 copy for both
-the runtime and Agent Core's `^0.86.1` dependency. The release guard verifies
+Packed npm consumers resolve the runtime-owned exact Pi AI 0.87.0 copy for both
+the runtime and Agent Core's `^0.87.0` dependency. The release guard verifies
 both resolution paths independently.
+
+Pi 0.87.0 removes `shouldStopAfterTurn` from the low-level loop config,
+replaced by `finishTurn` alongside `prepareRequest` — but none of the new loop
+hooks is surfaced on `AgentHarnessOptions`, so the pi-native bridge keeps its
+local maxTurns ceiling and no host action is needed. Unknown OpenAI-compatible
+endpoints no longer receive strict tool schemas unless they advertise support;
+capable built-ins keep strict tools, and mono-agent's custom-provider path never
+advertised strict support, so wire behaviour there only loses a schema strictness
+those endpoints were never required to honour.
 
 The 0.83 upgrade carries two upstream removals, both absorbed inside the runtime
 so hosts need no action:
@@ -814,7 +823,7 @@ Worklab's runtime fork:
    `@earendil-works/pi-ai`, its separate Pi version constraint, and local copies
    of provider bridge code. Move tests off Pi's faux-provider helpers too; until
    that is complete, isolate the fixture or pin its development-only dependencies
-  to the exact Pi AI `0.86.1` and Pi Agent Core `0.86.1` compatibility pins
+  to the exact Pi AI `0.87.0` and Pi Agent Core `0.87.0` compatibility pins
    rather than floating ranges. Do not restore the
    removed `pi-sdk.js` subpath.
 3. **Use the public Pi surfaces.** Run models through
@@ -822,7 +831,7 @@ Worklab's runtime fork:
    `listPiBuiltinModels`, `getPiBuiltinModel`,
    `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
    catalog and OAuth integration. Those façades keep Pi provider objects and the
-  exact Pi AI `0.86.1` and Pi Agent Core `0.86.1` compatibility pins inside the runtime. OAuth login adapters
+  exact Pi AI `0.87.0` and Pi Agent Core `0.87.0` compatibility pins inside the runtime. OAuth login adapters
    must supply `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; the façade
    rejects an incomplete callback contract before starting provider login.
 4. **Inject Claude tests.** Replace package-level mocks of

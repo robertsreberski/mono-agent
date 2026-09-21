@@ -128,7 +128,7 @@ describe("resolvePiRuntimeModel — OpenAI Codex GPT-5.6 metadata", () => {
 });
 
 describe("resolvePiRuntimeModel — OpenCode Go DeepSeek V4.1 Flash upstream builtin", () => {
-  // pi-ai 0.86.1 ships this model natively (retiring the mono-agent catalog
+  // pi-ai 0.87.0 ships this model natively (retiring the mono-agent catalog
   // backfill): the row below is the upstream row, and the resolution pins THAT
   // behavior. Upstream's thinkingLevelMap pins `off`/`minimal`/`medium`/
   // `xhigh` to null, so — unlike the retired backfill, which left `off`

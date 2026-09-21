@@ -247,7 +247,7 @@ credential identity is still retained; a credential replacement clears its proof
 One **Authenticate** or **Re-authenticate** action starts a short-lived session on
 the agent host. GitHub Copilot and OpenAI Codex show Pi's native device URL and
 code while the headless host polls. Anthropic shows an authorization URL and a
-field for the final localhost redirect URL or code because Pi 0.86.1 has no
+field for the final localhost redirect URL or code because Pi 0.87.0 has no
 Anthropic device-code flow. API-key providers such as OpenCode-Go use masked,
 provider-owned prompts. There is no `--device-auth` CLI flag.
 The neutral recovery action remains available at the sheet's compact button size whenever

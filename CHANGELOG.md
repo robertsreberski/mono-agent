@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Upgrade the pinned Pi AI and Agent Core dependencies to 0.87.0 with no
+  config change. Pi replaces the low-level `shouldStopAfterTurn` loop hook
+  with `finishTurn`, which stays off the harness options the runtime builds
+  on, so the local max-turn ceiling is unchanged. Unknown OpenAI-compatible
+  endpoints no longer receive strict tool schemas unless they advertise
+  support, while capable built-in models keep strict tools.
+
 - Add a Markdown blog to the marketing site at `/blog/`, with an index,
   article pages, RSS, sitemap entries, and per-post social cards. The
   collection ships empty and the index reads intentionally until the first

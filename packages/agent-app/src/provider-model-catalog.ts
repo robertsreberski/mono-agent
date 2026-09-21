@@ -316,7 +316,7 @@ export function buildProviderModelCatalog(
     ...configuredRoutes.map((ref) => ref.provider),
   ]);
 
-  // The authoritative 41-entry static catalog (pi-ai 0.86.1) via the facade.
+  // The authoritative 41-entry static catalog (pi-ai 0.87.0) via the facade.
   let builtinProviders: readonly { readonly id: string; readonly label: string }[] = [];
   try {
     builtinProviders = listPiBuiltinProviders();

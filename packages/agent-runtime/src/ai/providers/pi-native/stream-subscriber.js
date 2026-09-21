@@ -258,22 +258,23 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       });
     } else if (event.type === "turn_end") {
       runState.turnCount += 1;
-      // NON-DELEGABLE (verified against @earendil-works/pi-agent-core 0.86.1).
-      // pi's only after-turn stop hook is `shouldStopAfterTurn` on the LOW-LEVEL
-      // `AgentLoopConfig` (dist/types.d.ts) — the config passed to the raw
-      // `agentLoop`. It is NOT surfaced on `AgentHarnessOptions`
-      // (dist/harness/types.d.ts) and `AgentHarness` (dist/harness/agent-harness.d.ts)
-      // exposes no maxTurns / maxSteps / loop-config passthrough. This bridge is
-      // built on AgentHarness (for its session tree, compaction, steering, and
-      // event stream); reaching `shouldStopAfterTurn` would mean abandoning the
-      // harness for the low-level loop and reimplementing all of that. So the
+      // NON-DELEGABLE (verified against @earendil-works/pi-agent-core 0.87.0).
+      // pi 0.87.0 REMOVED `shouldStopAfterTurn` from the low-level
+      // `AgentLoopConfig` (dist/types.d.ts) and replaced it with `finishTurn`
+      // (also on `AgentOptions`, dist/agent.d.ts). Neither hook is surfaced on
+      // `AgentHarnessOptions` (dist/harness/agent-harness.d.ts), and
+      // `AgentHarness` exposes no maxTurns / maxSteps / loop-config
+      // passthrough. This bridge is built on AgentHarness (for its session
+      // tree, compaction, steering, and event stream); reaching `finishTurn`
+      // would mean abandoning the harness for the low-level loop and
+      // reimplementing all of that. So the
       // maxTurns ceiling stays enforced HERE: we count `turn_end`s and abort on
       // the one that crosses the ceiling, but only when the turn ended to run
       // MORE tools (stopReason "toolUse"). The sole exception is one successful,
       // schema-selected StructuredOutput execution: that tool is itself the final
       // answer and terminates the turn, so aborting it would reclassify success as
       // max-turn failure. Ordinary, mixed, and failed tool turns keep the ceiling.
-      // Delegate to a harness-native option only if pi lifts shouldStopAfterTurn
+      // Delegate to a harness-native option only if pi lifts `finishTurn`
       // (or an equivalent) onto AgentHarnessOptions.
       const completedOnlyTerminalStructuredOutput = runState.toolExecutionsThisTurn === 1
         && runState.toolFailureThisTurn === false

@@ -688,7 +688,7 @@ describe("pi-native AgentHarness bridge", () => {
   it("routes the upstream opencode-go model through the run collection to provider_auth", async () => {
     // No `piResolvedModel`/`piResolvedModels` seam: production resolution
     // (`resolvePiRuntimeModel`) plus the real `builtinModels()` run collection
-    // serve this turn — pi-ai 0.86.1 ships `deepseek-v4.1-flash` natively, so no
+    // serve this turn — pi-ai 0.87.0 ships `deepseek-v4.1-flash` natively, so no
     // backfill registration is needed. With no credential the run must reach
     // the auth stage — only possible if the harness resolved
     // `deepseek-v4.1-flash` by id inside the collection. The env is stubbed so
