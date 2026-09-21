@@ -78,6 +78,9 @@ export const DEFAULT_WEB_HOST = "0.0.0.0";
 export const DEFAULT_WEB_PORT = 5050;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const MAX_SSE_CLIENTS = 64;
+const MAX_SSE_QUEUED_FRAMES = 256;
+const MAX_SSE_QUEUED_BYTES = 1024 * 1024;
+const SSE_DRAIN_TIMEOUT_MS = 30_000;
 /**
  * How often one connection may be told that one conversation's message moved,
  * when it is not subscribed to that conversation's content.
@@ -1080,24 +1083,26 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
+    let writer: BoundedSseWriter | undefined;
     const closeStream = (): void => {
       if (closed) return;
       closed = true;
       clearInterval(heartbeat);
       unsubscribe();
+      writer?.close();
       activeStreams.delete(closeStream);
       res.end();
     };
+    writer = createBoundedSseWriter({
+      target: res,
+      onTerminal: closeStream,
+      onFailure: (error) => {
+        logger?.error?.("Web console event stream failed.", { error: errorMessage(error) });
+      },
+    });
     const send = createWebEventDispatch({
       ...(subscribed === undefined ? {} : { subscribed }),
-      write: (event) => {
-        if (closed || res.writableEnded) return false;
-        if (res.write(formatSse(event))) return true;
-        // Events are state-invalidation hints, not an unbounded replay log. A
-        // client that cannot drain one frame must reconnect and bootstrap.
-        closeStream();
-        return false;
-      },
+      write: (event) => writer!.write(formatSse(event)),
       close: closeStream,
       onFailure: (error) => {
         logger?.error?.("Web console event stream failed.", { error: errorMessage(error) });
@@ -1105,7 +1110,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     });
     const unsubscribe = service.subscribe(send);
     const heartbeat = setInterval(() => {
-      if (!res.write(`: heartbeat ${Date.now()}\n\n`)) closeStream();
+      writer?.writeHeartbeat(`: heartbeat ${Date.now()}\n\n`);
     }, HEARTBEAT_INTERVAL_MS);
     heartbeat.unref();
     activeStreams.add(closeStream);
@@ -1892,6 +1897,125 @@ function assertProviderAuthBody(value: unknown): void {
       413,
     );
   }
+}
+
+interface SseWritableTarget {
+  readonly writableEnded: boolean;
+  write(frame: string): boolean;
+  once(event: "drain", listener: () => void): unknown;
+  removeListener(event: "drain", listener: () => void): unknown;
+}
+
+export interface BoundedSseWriter {
+  /** False means the stream was closed and its subscriber must be removed. */
+  write(frame: string): boolean;
+  /** Heartbeats carry no state and may be skipped while real frames are queued. */
+  writeHeartbeat(frame: string): boolean;
+  close(): void;
+}
+
+/**
+ * Preserve event order across ordinary Node writable backpressure.
+ *
+ * `write() === false` means the frame WAS accepted but the writable crossed its
+ * high-water mark. Ending there unnecessarily tore down a healthy console after
+ * any single large frame. Queue later
+ * frames behind `drain` instead. The queue is strictly bounded; crossing either
+ * bound or the drain deadline closes the stream, which makes EventSource
+ * reconnect and perform the normal gap repair rather than looking live while a
+ * delta was silently dropped.
+ */
+export function createBoundedSseWriter(options: {
+  readonly target: SseWritableTarget;
+  readonly onTerminal: () => void;
+  readonly onFailure?: (error: unknown) => void;
+  readonly maxQueuedFrames?: number;
+  readonly maxQueuedBytes?: number;
+  readonly drainTimeoutMs?: number;
+}): BoundedSseWriter {
+  const maxQueuedFrames = options.maxQueuedFrames ?? MAX_SSE_QUEUED_FRAMES;
+  const maxQueuedBytes = options.maxQueuedBytes ?? MAX_SSE_QUEUED_BYTES;
+  const drainTimeoutMs = options.drainTimeoutMs ?? SSE_DRAIN_TIMEOUT_MS;
+  const queued: string[] = [];
+  let queuedBytes = 0;
+  let backpressured = false;
+  let drainListening = false;
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
+
+  const disarmDrain = (): void => {
+    if (drainListening) options.target.removeListener("drain", onDrain);
+    drainListening = false;
+    if (drainTimer !== undefined) clearTimeout(drainTimer);
+    drainTimer = undefined;
+  };
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    disarmDrain();
+    queued.length = 0;
+    queuedBytes = 0;
+  };
+  const terminate = (error: unknown): false => {
+    if (closed) return false;
+    options.onFailure?.(error);
+    close();
+    options.onTerminal();
+    return false;
+  };
+  const armDrain = (): void => {
+    backpressured = true;
+    if (!drainListening) {
+      drainListening = true;
+      options.target.once("drain", onDrain);
+    }
+    if (drainTimer === undefined) {
+      drainTimer = setTimeout(() => {
+        terminate(new Error("Web console event stream backpressure did not drain in time."));
+      }, drainTimeoutMs);
+      drainTimer.unref();
+    }
+  };
+  const writeTarget = (frame: string): boolean => {
+    try {
+      if (!options.target.write(frame)) armDrain();
+      return true;
+    } catch (error) {
+      return terminate(error);
+    }
+  };
+  function onDrain(): void {
+    drainListening = false;
+    if (drainTimer !== undefined) clearTimeout(drainTimer);
+    drainTimer = undefined;
+    if (closed) return;
+    backpressured = false;
+    while (queued.length > 0) {
+      const frame = queued.shift()!;
+      queuedBytes -= Buffer.byteLength(frame, "utf8");
+      if (!writeTarget(frame) || backpressured) return;
+    }
+  }
+  const write = (frame: string): boolean => {
+    if (closed) return false;
+    if (options.target.writableEnded) {
+      return terminate(new Error("Web console event stream ended before its queued frame was written."));
+    }
+    if (!backpressured) return writeTarget(frame);
+    const bytes = Buffer.byteLength(frame, "utf8");
+    if (queued.length >= maxQueuedFrames || queuedBytes + bytes > maxQueuedBytes) {
+      return terminate(new Error("Web console event stream exceeded its bounded backpressure queue."));
+    }
+    queued.push(frame);
+    queuedBytes += bytes;
+    return true;
+  };
+
+  return {
+    write,
+    writeHeartbeat: (frame) => backpressured ? !closed : write(frame),
+    close,
+  };
 }
 
 /**
