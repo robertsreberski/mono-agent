@@ -49,7 +49,7 @@ import { readToolImpl } from "@mono-agent/agent-runtime/agent/tools/index.js";
 const runtime = createRuntime({ workspace: process.cwd() });
 const policies = {
   toolLimits: { toolTextLimitChars: 16_000, mcpCallTimeoutMs: 90_000 },
-  compaction: { triggerRatio: 0.7, fixedOverheadEnabled: true },
+  compaction: { triggerRatio: 0.9, fixedOverheadEnabled: true },
 };
 // Pass ...policies to runtime.run(...). Omit unspecified scalar budgets so
 // they are derived against the model that actually serves the request.
@@ -496,7 +496,7 @@ This baseline carries the whole 0.15.x contract forward and adds:
   lets a fallback router try its next model without conflating context capacity
   with quota, output, or max-turn `usage_limit` failures.
 - Omitted Pi compaction values resolve from effective context window `W`:
-  trigger ratio `0.70`, retained context `10%`, summary output `4%`, and minimum
+  trigger ratio `0.90`, retained context `10%`, summary output `4%`, and minimum
   proactive savings `10%`, subject to the documented scalar clamps. Numeric
   provider limits and generic overflow evidence may lower a learned
   process-local ceiling; `contextWindowOverride` remains the persistent

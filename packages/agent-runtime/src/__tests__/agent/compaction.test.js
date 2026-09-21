@@ -127,9 +127,11 @@ describe("resolveAgentCompactionPolicy MCP call timeouts", () => {
 describe("resolveAgentCompactionPolicy adaptive defaults", () => {
   const cases = [
     { window: 32_000, trigger: 16_000, keep: 4_000, summary: 2_000, savings: 4_000 },
-    { window: 128_000, trigger: 89_600, keep: 12_800, summary: 5_120, savings: 12_800 },
-    { window: 272_000, trigger: 190_400, keep: 20_000, summary: 10_880, savings: 20_000 },
-    { window: 372_000, trigger: 260_400, keep: 20_000, summary: 12_000, savings: 20_000 },
+    { window: 128_000, trigger: 112_000, keep: 12_800, summary: 5_120, savings: 12_800 },
+    { window: 200_000, trigger: 180_000, keep: 20_000, summary: 8_000, savings: 20_000 },
+    { window: 272_000, trigger: 244_800, keep: 20_000, summary: 10_880, savings: 20_000 },
+    { window: 372_000, trigger: 334_800, keep: 20_000, summary: 12_000, savings: 20_000 },
+    { window: 400_000, trigger: 360_000, keep: 20_000, summary: 12_000, savings: 20_000 },
   ];
 
   for (const row of cases) {
@@ -138,7 +140,7 @@ describe("resolveAgentCompactionPolicy adaptive defaults", () => {
       expect(policy).toMatchObject({
         enabled: true,
         contextWindow: row.window,
-        triggerRatio: 0.70,
+        triggerRatio: 0.90,
         triggerTokens: row.trigger,
         keepRecentTokens: row.keep,
         summaryMaxTokens: row.summary,
