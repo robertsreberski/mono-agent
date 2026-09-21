@@ -20,7 +20,7 @@ import type { WebEvent, WebMessage, WebMessageDelta, WebMessagePart } from "../c
 import { WEB_MAX_TURN_TEXT_CHARACTERS } from "../contracts.js";
 import { formatCronReplyContext } from "../cron-reply-context.js";
 import { applyDeltaOps, WebStore, WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
-import { agentGeneration, PROBE_FAILURE_TOLERANCE, WebService, WeightedTurnBudget } from "../service.js";
+import { StreamFrameCoalescer, agentGeneration, PROBE_FAILURE_TOLERANCE, WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
@@ -7182,5 +7182,59 @@ describe("conversation marker delivery", () => {
       expect(idleMarker.parts[0]).toMatchObject({ type: "conversation-marker", kind: "project", after: null });
       for (const tab of tabs) expect(tab.some((e) => e.type === "message.changed" && (e.payload as { messageId: string }).messageId === idleMarker.id)).toBe(true);
     } finally { await service.stop(); }
+  });
+});
+
+
+describe("adaptive stream persistence pacing", () => {
+  it("keeps small replies at 50 ms and caps a large turn at 250 ms with final byte equality", async () => {
+    const service = await createService();
+    const thread = service.createThread("agent-one");
+    const turn = service.store.beginTurn({ threadId: thread.id, text: "large reply", attachmentIds: [] });
+    vi.useFakeTimers();
+    try {
+      let writes = 0;
+      const coalescer = new StreamFrameCoalescer(async (frames) => {
+        writes++;
+        return service.store.applyStreamFrames(turn.turnId, frames).serializedBytes ?? 0;
+      }, () => { throw new Error("Unexpected persistence failure"); });
+      coalescer.push({ kind: "append", delta: "small" });
+      await vi.advanceTimersByTimeAsync(49);
+      expect(writes).toBe(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(writes).toBe(1);
+      coalescer.push({ kind: "append", delta: "x".repeat(6 * 1024 * 1024) });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(writes).toBe(2);
+      for (let index = 0; index < 100; index++) {
+        coalescer.push({ kind: "append", delta: "z" });
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      expect(writes).toBe(6); // Four bounded rewrites, not twenty, in this second.
+      coalescer.push({ kind: "append", delta: "final" });
+      await coalescer.flush(); // Settlement always drains immediately.
+      service.store.completeTurn(turn.turnId);
+      expect(service.store.getMessage(turn.assistantMessageId)?.parts)
+        .toEqual([{ type: "text", text: "small" + "x".repeat(6 * 1024 * 1024) + "z".repeat(100) + "final" }]);
+      coalescer.close();
+    } finally { vi.useRealTimers(); await service.stop(); }
+  });
+
+  it("paces by measured persistence duration even when the snapshot is small", async () => {
+    vi.useFakeTimers();
+    const clock = vi.spyOn(performance, "now");
+    try {
+      clock.mockReturnValueOnce(0).mockReturnValueOnce(100);
+      const persist = vi.fn(async () => 1);
+      const coalescer = new StreamFrameCoalescer(persist, () => {});
+      coalescer.push({ kind: "append", delta: "one" });
+      await vi.advanceTimersByTimeAsync(50);
+      coalescer.push({ kind: "append", delta: "two" });
+      await vi.advanceTimersByTimeAsync(249);
+      expect(persist).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(persist).toHaveBeenCalledTimes(2);
+      coalescer.close();
+    } finally { clock.mockRestore(); vi.useRealTimers(); }
   });
 });

@@ -24,6 +24,8 @@
 
 - Keep active console conversation refreshes responsive by reading validated job
   summaries instead of repeatedly parsing retained transcripts.
+- Keep large console responses responsive with adaptive streaming batches capped
+  at 250 ms, while retaining immediate search visibility after settlement.
 
 - Fix the web console to keep events responsive as transcripts grow and preserve
   SSE connections through ordinary socket backpressure with bounded memory.

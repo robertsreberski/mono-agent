@@ -4691,6 +4691,7 @@ describe("WebStore message sequence and part deltas", () => {
     expect(delta.baseSeq).toBe(before.seq);
     expect(delta.seq).toBe(before.seq + 1);
     expect(message.seq).toBe(delta.seq);
+    expect(message).toEqual(context.store.getMessage(context.messageId));
     expect(delta.updatedAt).toBe(message.updatedAt);
     expect(delta.status).toBe(message.status);
     expect(applyDeltaOps(before.parts, delta.ops)).toEqual(message.parts);
@@ -4729,9 +4730,9 @@ describe("WebStore message sequence and part deltas", () => {
       return write(id, parts, now, columns);
     });
     try {
-      expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "b" }]))
+      expect(() => context.store.completeTurn(context.turnId, "ab"))
         .toThrow(WebConsoleError);
-      expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "b" }]))
+      expect(() => context.store.completeTurn(context.turnId, "ab"))
         .toThrow(/moved from 1 to 2 while its delta was built/u);
     } finally {
       spy.mockRestore();
@@ -4742,6 +4743,62 @@ describe("WebStore message sequence and part deltas", () => {
     const message = context.store.getMessage(context.messageId);
     expect(message?.seq).toBe(1);
     expect(message?.parts).toEqual([{ type: "text", text: "a" }]);
+    context.store.close();
+  });
+
+  it("invalidates a stale stream snapshot and replays once against the durable sequence", async () => {
+    const context = await openStreamingStore();
+    const first = context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "cached" }]);
+    const db = (context.store as unknown as { database: DatabaseSync }).database;
+    db.prepare("UPDATE messages SET parts_json = ?, seq = seq + 1 WHERE id = ?")
+      .run(JSON.stringify([{ type: "text", text: "external" }]), context.messageId);
+    const durable = context.store.getMessage(context.messageId)!;
+    const prepare = db.prepare.bind(db);
+    let guardedWrites = 0;
+    let rereads = 0;
+    const spy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+      if (sql.includes("AND seq = ? RETURNING seq")) guardedWrites++;
+      if (sql === "SELECT * FROM messages WHERE id = ?") rereads++;
+      return prepare(sql);
+    });
+    const next = context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "+new" }]);
+    spy.mockRestore();
+    expect(guardedWrites).toBe(2);
+    expect(rereads).toBe(1);
+    expect(next.delta).toMatchObject({ baseSeq: durable.seq, seq: durable.seq + 1 });
+    expect(applyDeltaOps(durable.parts, next.delta!.ops)).toEqual(next.message.parts);
+    expect(next.message).toEqual(context.store.getMessage(context.messageId));
+    expect(next.message.parts).toEqual([{ type: "text", text: "external+new" }]);
+    expect(first.message.parts).toEqual([{ type: "text", text: "cached" }]);
+    const read = vi.spyOn(db, "prepare");
+    context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "+cached-again" }]);
+    expect(read.mock.calls.some(([sql]) => sql === "SELECT * FROM messages WHERE id = ?")).toBe(false);
+    read.mockRestore();
+    context.store.close();
+  });
+
+  it("indexes a large settled snapshot exactly once and rolls search back with a failed settlement", async () => {
+    const context = await openStreamingStore();
+    const db = (context.store as unknown as { database: DatabaseSync }).database;
+    const text = "searchneedle " + "x".repeat(4_000_000) + "\u0002 final\u0003";
+    context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: text }]);
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'searchneedle'").get()).toEqual({ n: 0 });
+    db.exec(`CREATE TRIGGER force_settle_failure BEFORE UPDATE OF status ON messages
+      WHEN new.status = 'complete' BEGIN SELECT RAISE(ABORT, 'forced failure'); END;`);
+    expect(() => context.store.completeTurn(context.turnId)).toThrow("forced failure");
+    expect(db.prepare("SELECT * FROM message_search_writes").all()).toEqual([]);
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'searchneedle'").get()).toEqual({ n: 0 });
+    db.exec("DROP TRIGGER force_settle_failure");
+    context.store.completeTurn(context.turnId);
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'searchneedle'").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT body FROM message_search WHERE message_search MATCH 'searchneedle'").get())
+      .toEqual({ body: text.replace(/[\u0002\u0003]/gu, "") });
+    expect(db.prepare("SELECT * FROM message_search_writes").all()).toEqual([]);
+    // Direct SQL callers still get the trigger-owned fallback, never a stale body.
+    db.prepare("UPDATE messages SET parts_json = ? WHERE id = ?")
+      .run(JSON.stringify([{ type: "text", text: "replacementneedle" }]), context.messageId);
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'searchneedle'").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'replacementneedle'").get()).toEqual({ n: 1 });
     context.store.close();
   });
 

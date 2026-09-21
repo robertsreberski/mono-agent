@@ -11,6 +11,7 @@ export interface WebStorageMigrationContext {
   readonly migrateMonitorWakeDeliveries: () => void;
   readonly suppressSilentCronHistory: () => void;
   readonly backfillMessageSearch: () => void;
+  readonly refreshMessageSearch: () => void;
 }
 
 export interface WebStorageMigration {
@@ -241,6 +242,10 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
     database.exec(`CREATE INDEX IF NOT EXISTS process_job_cards_by_state ON process_job_cards(state, thread_id);
       CREATE INDEX IF NOT EXISTS process_job_cards_by_thread ON process_job_cards(thread_id);`);
   } },
+  { version: 34, name: "precomputed-message-search", up: ({ database, refreshMessageSearch }) => {
+    database.exec("DROP TRIGGER IF EXISTS message_search_update; DROP TRIGGER IF EXISTS message_search_settle;");
+    refreshMessageSearch();
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -299,6 +304,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       notification_deliveries: ["message_id", "job_id", "run_id"],
       agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
       messages: ["seq", "cron_suppressed"],
+      message_search_writes: ["message_id"],
       process_job_cards: ["state", "completed_at"],
       turns: ["conversation_markers_json", "dispatch_started_at", "cancel_origin", "project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
       live_inputs: ["dispatch_started_at"],

@@ -541,13 +541,7 @@ const messageSearchBody = (source: "new" | "m"): string =>
  * finds accented prose. The write triggers are guarded on `json_valid` because
  * an unindexed message is one missing search hit, while a failed insert would
  * be a lost message.
- */
-const MESSAGE_SEARCH_REINDEX_SQL = `
-        DELETE FROM message_search WHERE rowid = old.rowid;
-        INSERT INTO message_search(rowid, body)
-        SELECT new.rowid, (${messageSearchBody("new")});`;
-
-/**
+ *
  * A streaming answer is rewritten every ~50 ms, and re-extracting a large
  * message's text on each snapshot costs several times the row write itself
  * (measured at ~6x, and ~23 ms per snapshot on the largest real messages). A
@@ -560,25 +554,25 @@ const MESSAGE_SEARCH_REINDEX_SQL = `
  * hole, a process that dies mid-turn.
  */
 const MESSAGE_SEARCH_SCHEMA_SQL = `
+      CREATE TABLE IF NOT EXISTS message_search_writes (message_id TEXT PRIMARY KEY);
       CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(
         body,
         tokenize='unicode61 remove_diacritics 2'
       );
       CREATE TRIGGER IF NOT EXISTS message_search_insert
         AFTER INSERT ON messages
-        WHEN json_valid(new.parts_json) AND new.status <> 'running' BEGIN
+        WHEN new.status <> 'running' AND json_valid(new.parts_json) BEGIN
         INSERT INTO message_search(rowid, body)
         SELECT new.rowid, (${messageSearchBody("new")});
       END;
       CREATE TRIGGER IF NOT EXISTS message_search_update
-        AFTER UPDATE OF parts_json ON messages
-        WHEN json_valid(new.parts_json) AND new.status <> 'running' BEGIN
-        ${MESSAGE_SEARCH_REINDEX_SQL}
-      END;
-      CREATE TRIGGER IF NOT EXISTS message_search_settle
-        AFTER UPDATE OF status ON messages
-        WHEN json_valid(new.parts_json) AND old.status = 'running' AND new.status <> 'running' BEGIN
-        ${MESSAGE_SEARCH_REINDEX_SQL}
+        AFTER UPDATE OF parts_json, status ON messages
+        WHEN (old.status <> 'running' OR new.status <> 'running')
+          AND NOT EXISTS (SELECT 1 FROM message_search_writes WHERE message_id = new.id) BEGIN
+        DELETE FROM message_search WHERE rowid = old.rowid;
+        INSERT INTO message_search(rowid, body)
+        SELECT new.rowid, (${messageSearchBody("new")})
+        WHERE new.status <> 'running' AND json_valid(new.parts_json);
       END;
       CREATE TRIGGER IF NOT EXISTS message_search_delete
         AFTER DELETE ON messages BEGIN
@@ -731,6 +725,8 @@ export interface StoredLiveInput {
  * number, and a delta nobody wrote would be a version that does not exist.
  */
 export interface StoredMessageWrite {
+  /** UTF-8 snapshot size already measured during persistence; never serialize for pacing. */
+  readonly serializedBytes?: number;
   readonly message: WebMessage;
   readonly delta?: WebMessageDelta;
   readonly attributionChanged?: true;
@@ -848,7 +844,10 @@ export interface UpsertWebProcessJobCardInput {
   readonly replyParts?: readonly AgentReplyPart[];
 }
 
+const STREAM_SEQUENCE_CONFLICT = Symbol("stream sequence conflict");
+
 export class WebStore {
+  private readonly streamSnapshots = new Map<string, WebMessage>();
   readonly paths: WebStatePaths;
   private readonly database: DatabaseSync;
   private readonly clock: () => Date;
@@ -918,6 +917,7 @@ export class WebStore {
     // Drop the cached statements first: they hold native handles onto the
     // connection this is about to close.
     this.partsWriteStatements.clear();
+    this.streamSnapshots.clear();
     this.database.close();
   }
 
@@ -4317,14 +4317,17 @@ export class WebStore {
     const turn = this.requireTurn(turnId);
     // Nothing is written for a turn that already settled, so there is no
     // version for a delta to name.
-    if (turn.status !== "running") return { message: this.requireMessage(turn.assistant_message_id) };
+    if (turn.status !== "running") {
+      this.streamSnapshots.delete(turnId);
+      return { message: this.requireMessage(turn.assistant_message_id) };
+    }
     // The base read, the frames applied to it and the write are ONE atomic
     // span, as they already are on the finish path. A delta whose ops were
     // diffed against a version other than the one its `baseSeq` names is
     // self-consistent and WRONG -- the one corruption a sequence number cannot
     // expose, because the console would apply it without complaint.
-    const write = this.transaction(() => {
-      const message = this.requireMessage(turn.assistant_message_id);
+    const persist = (): StoredMessageWrite => this.transaction(() => {
+      const message = this.streamSnapshots.get(turnId) ?? this.requireMessage(turn.assistant_message_id);
       const parts = [...message.parts];
       let actualModel: string | undefined;
       let actualEffort: string | undefined;
@@ -4442,13 +4445,46 @@ export class WebStore {
         runActivityFromParts(message.parts),
         runActivityFromParts(parts),
       );
+      // Match the durable read projection without a JSON round trip. Preserve
+      // unchanged references so append-only deltas stay append-only.
+      for (let index = 0; index < parts.length; index++) {
+        const part = parts[index]!;
+        if (part === message.parts[index]) continue;
+        const durable = canonicalizePersistedPartHistory(durableMessagePart(part));
+        if (!isWebMessagePart(durable)) throw new WebConsoleError("storage_corrupt", "Invalid streaming message part.", 500);
+        parts[index] = durable;
+      }
+      const now = this.now();
+      const serialized = serializeParts(parts);
+      // The cache is optimistic, never authoritative. A stale sequence writes
+      // nothing; roll back routing changes too, reread, and replay the frames.
+      const changed = this.database.prepare(`UPDATE messages SET parts_json = ?, updated_at = ?, seq = seq + 1
+        WHERE id = ? AND seq = ? RETURNING seq`).get(serialized, now, message.id, message.seq) as { seq: number } | undefined;
+      if (changed === undefined) throw STREAM_SEQUENCE_CONFLICT;
+      const attribution = runAttribution(this.requireTurn(turnId));
+      const committed: WebMessage = { ...message, parts, updatedAt: now, seq: changed.seq, ...(attribution === undefined ? {} : { attribution }) };
       return {
-        delta: this.writeMessageDelta(message, parts, this.now()),
+        message: committed,
+        serializedBytes: Buffer.byteLength(serialized),
+        delta: { messageId: message.id, baseSeq: message.seq, seq: changed.seq,
+          status: message.status, updatedAt: now, ...(attribution === undefined ? {} : { attribution }), ops: diffParts(message.parts, parts) },
         ...(attributionChanged ? { attributionChanged: true as const } : {}),
         ...(activityChanged ? { activityChanged: true as const } : {}),
       };
     });
-    return { message: this.requireMessage(turn.assistant_message_id), ...write };
+    try {
+      let write: StoredMessageWrite;
+      try { write = persist(); } catch (error) {
+        this.streamSnapshots.delete(turnId);
+        if (error !== STREAM_SEQUENCE_CONFLICT) throw error;
+        write = persist(); // One fresh read under BEGIN IMMEDIATE; no unbounded retry.
+      }
+      this.streamSnapshots.set(turnId, write.message);
+      return write;
+    } catch (error) {
+      this.streamSnapshots.delete(turnId);
+      throw error;
+    }
   }
 
   completeTurn(
@@ -5304,6 +5340,7 @@ export class WebStore {
           migrateMonitorWakeDeliveries: () => this.migrateMonitorWakeDeliveries(),
           suppressSilentCronHistory: () => this.suppressSilentCronHistory(),
           backfillMessageSearch: () => this.database.exec(MESSAGE_SEARCH_BACKFILL_SQL),
+          refreshMessageSearch: () => this.database.exec(MESSAGE_SEARCH_SCHEMA_SQL),
         });
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
       } catch (error) {
@@ -5731,6 +5768,7 @@ export class WebStore {
   ): StoredMessageWrite | undefined {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") return undefined;
+    this.streamSnapshots.delete(turnId);
     const existing = this.requireMessage(turn.assistant_message_id);
     let parts = [...existing.parts];
     if (finalText !== undefined && finalText.length > 0) reconcileFinalText(parts, finalText);
@@ -5952,11 +5990,29 @@ export class WebStore {
       statement = this.database.prepare(sql);
       this.partsWriteStatements.set(sql, statement);
     }
-    const row = statement.get(...values, id) as unknown as { seq: number } | undefined;
-    if (row === undefined) {
-      throw new WebConsoleError("storage_corrupt", `Message ${id} is missing from this conversation.`, 500);
-    }
-    return { baseSeq: row.seq - 1, seq: row.seq };
+    const prepared = statement;
+    const persist = (): { readonly baseSeq: number; readonly seq: number } => {
+      // This transaction-local marker suppresses only the fallback JSON trigger.
+      // It contains no prose and is removed before commit. A rollback/crash
+      // removes it with the message/FTS write; independent SQL writers retain
+      // their trigger-backed indexing. Never disable triggers connection-wide.
+      const precomputeSearch = columns.status !== undefined && columns.status !== "running";
+      if (precomputeSearch) this.database.prepare("INSERT INTO message_search_writes(message_id) VALUES (?)").run(id);
+      const row = prepared.get(...values, id) as unknown as { seq: number } | undefined;
+      if (row === undefined) {
+        throw new WebConsoleError("storage_corrupt", `Message ${id} is missing from this conversation.`, 500);
+      }
+      if (precomputeSearch) {
+        const body = parts.filter((part): part is Extract<WebMessagePart, { type: "text" }> => part.type === "text")
+          .map((part) => part.text).join(" ").replace(/[\u0002\u0003]/gu, "");
+        this.database.prepare("DELETE FROM message_search WHERE rowid = (SELECT rowid FROM messages WHERE id = ?)").run(id);
+        this.database.prepare("INSERT INTO message_search(rowid, body) SELECT rowid, ? FROM messages WHERE id = ?").run(body, id);
+        this.database.prepare("DELETE FROM message_search_writes WHERE message_id = ?").run(id);
+      }
+      return { baseSeq: row.seq - 1, seq: row.seq };
+    };
+    // Initialization owns a transaction before the runtime depth counter exists.
+    return this.database.isTransaction ? persist() : this.transaction(persist);
   }
 
   /**
