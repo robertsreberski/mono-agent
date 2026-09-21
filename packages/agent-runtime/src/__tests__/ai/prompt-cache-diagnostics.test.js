@@ -20,8 +20,10 @@ describe("prompt cache diagnostics", () => {
   it.each([
     ["anthropic", { api: "anthropic-messages", provider: "anthropic", id: "claude" }, { system: [{ type: "text", text: "SYS", cache_control: { type: "ephemeral" } }], tools: [{ name: "Read" }], messages: [{ role: "user", content: "PRIVATE" }], max_tokens: 10 }, "explicit"],
     ["openai-responses", { api: "openai-responses", provider: "openai", id: "gpt" }, { input: [{ role: "user", content: "PRIVATE" }], tools: [{ name: "Read" }], prompt_cache_key: "KEY" }, "keyed"],
+    ["openai-responses", { api: "azure-openai-responses", provider: "azure-openai", id: "gpt" }, { instructions: "SYS", input: [{ role: "user", content: "PRIVATE" }], tools: [{ name: "Read" }], prompt_cache_key: "KEY" }, "keyed"],
     ["openai-codex", { api: "openai-codex-responses", provider: "openai-codex", id: "gpt" }, { instructions: "SYS", input: [{ role: "user", content: "PRIVATE" }], tools: [{ name: "Read" }], prompt_cache_key: "KEY" }, "keyed"],
     ["google", { api: "google-generative-ai", provider: "google", id: "gemini" }, { contents: [{ role: "user", parts: [{ text: "PRIVATE" }] }], config: { systemInstruction: "SYS", tools: [{ functionDeclarations: [{ name: "Read" }] }] } }, "provider-default"],
+    ["google", { api: "google-vertex", provider: "google", id: "gemini" }, { contents: [{ role: "user", parts: [{ text: "PRIVATE" }] }], config: { systemInstruction: "SYS", tools: [{ functionDeclarations: [{ name: "Read" }] }] } }, "provider-default"],
     ["pi-messages", { api: "pi-messages", provider: "custom", id: "model" }, { context: { messages: [{ role: "system", content: "SYS", toolsAdded: [{ name: "Read" }], timestamp: 0 }] }, options: { sessionId: "KEY" } }, "keyed"],
     ["bedrock", { api: "bedrock-converse-stream", provider: "amazon-bedrock", id: "claude" }, { system: [{ text: "SYS", cachePoint: { type: "default" } }], messages: [{ role: "user", content: [{ text: "PRIVATE" }] }], toolConfig: { tools: [{ toolSpec: { name: "Read" } }] } }, "explicit"],
   ])("normalizes %s without emitting content", (family, model, payload, cacheMode) => {
@@ -31,6 +33,12 @@ describe("prompt cache diagnostics", () => {
     const encoded = JSON.stringify(event);
     expect(event).toMatchObject({ payloadFamily: family, supported: true, model: `${model.provider}:${model.id}`, api: model.api, toolDefinitionCount: 1, messageCount: 1, cacheMode });
     expect(encoded).not.toMatch(/SYS|PRIVATE|KEY/u);
+  });
+
+  it("reports an explicit zero tool count when the provider payload carries no tools", () => {
+    const state = fixture();
+    state.emit({ model: { api: "openai-responses", provider: "openai", id: "gpt" }, payload: { input: [{ role: "user", content: "PRIVATE" }] } });
+    expect(state.onEvent.mock.calls[0][0]).toMatchObject({ payloadFamily: "openai-responses", supported: true, toolDefinitionCount: 0, messageCount: 1 });
   });
 
   it("marks unknown payloads unsupported instead of fingerprinting empty projections", () => {
