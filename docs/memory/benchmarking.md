@@ -263,8 +263,13 @@ ceiling. Any late payload is discarded and usage remains unknown. A settled capt
 result that explicitly reports the configured finite `maxTurns` guard follows its
 unchanged durable `provider` pending record too, but only when the current attempt
 records `max_turns_hit`, normalized local `budget_exceeded`, and Pi's `usage_limit`.
-It does not add an SDK/model loop or increase the one-turn call limit. Unknown
-settlement, global cancellation, reader timeout, real auth/quota without that guard,
+A fulfilled current capture call that omits its required structured result, misses
+its required reconciliation projection key, or produces an unserializable selected
+projection follows that same durable `provider` record only when the exact current
+attempt records the known settled structured-contract boundary. Free-form text is
+never substituted, and strict schema/content validation remains unchanged. This does
+not add an SDK/model loop or increase the one-turn call limit. Unknown settlement,
+global or caller cancellation, reader timeout, real auth/quota, unfinished tool loops,
 generic provider, context, compaction, embedding, processing and output-limit
 failures remain terminal; calls never overlap. First-attempt and recovered successes,
 recovery causes, scheduled attempts and exhaustion are separate artifact events.

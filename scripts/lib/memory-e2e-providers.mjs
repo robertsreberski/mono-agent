@@ -363,7 +363,15 @@ export function meteredRuntime(runtime, { budget, stage, tag, clock = performanc
           throw new BenchmarkError("unfinished_tool_loop", { failureKind: event.failureKind });
         }
         if (structuredOutputRequested) {
-          if (!hasStructuredResult) throw new BenchmarkError("structured_result_missing", { failureKind: event.failureKind });
+          if (!hasStructuredResult) {
+            // The runtime fulfilled this exact call without provider/cancellation
+            // evidence, but omitted the strict payload required by production.
+            // Preserve that positive settled boundary for capture recovery; never
+            // substitute the free-form text as a successful completion.
+            event.runtimeSettlement = "fulfilled";
+            event.structuredOutputFailure = "structured_result_missing";
+            throw new BenchmarkError("structured_result_missing", { failureKind: event.failureKind });
+          }
         } else if (typeof result.text !== "string" || !result.text.trim()) {
           throw new BenchmarkError("provider_failed", { failureKind: event.failureKind });
         }
@@ -432,7 +440,23 @@ export function captureLlm(runtime, { model, workspace, sessionsRoot, budget, ta
         }
         throw error;
       }
-      const output = captureCompletionText(result, options);
+      let output;
+      try {
+        output = captureCompletionText(result, options);
+      } catch (error) {
+        if (error instanceof BenchmarkError
+          && ["structured_result_key_missing", "structured_result_unserializable"].includes(error.code)) {
+          // meteredRuntime already recorded a completed, settled provider call.
+          // This second event truthfully records rejection at the strict host
+          // projection boundary without rewriting the completed transport event.
+          budget.events.push({
+            ...tag, stage, status: error.code, runtimeSettlement: "fulfilled",
+            structuredOutputFailure: error.code, failureKind: null,
+            providerReportedFailureKind: null, maxTurnsHit: false, durationMs: 0,
+          });
+        }
+        throw error;
+      }
       capture?.({ ...tag, stage, prompt, output });
       return output;
     },

@@ -570,6 +570,67 @@ describe("fictional E2E production-path contract, not model quality", () => {
     expect((await readdir(input.directory)).filter((name) => name.startsWith("work-"))).toEqual([]);
   }, 30000);
 
+  it("recovers a settled missing structured result through the actual durable provider schedule", async () => {
+    const input = await fixture();
+    const dataset = await script("memory-e2e-dataset");
+    const original = input.corpus.groups[0];
+    const group = {
+      id: "structured-recovery",
+      split: "evaluation",
+      source: { turns: original.source.turns.slice(0, 1), contextPolicy: "memory-only" },
+      questions: [{
+        id: "q-structured-recovery", source: original.source.question,
+        evaluation: { ...original.evaluation, category: "multi-hop", locomoCategory: 1 },
+      }],
+    };
+    const corpus = { schemaVersion: 1, name: "locomo-v1", turnsPerGroup: { min: 1, max: 64 }, arms: ["bujo"], groups: [group] };
+    dataset.validateCorpus(corpus);
+    const plan = dataset.makePlan({ corpus, sha256: "synthetic-structured-recovery", split: "evaluation" });
+    plan.locomo = {
+      captureRecovery: {
+        policy: "native_persisted_exponential_v1",
+        maxAttempts: 2,
+        retryBaseMs: 60_000,
+        retryMaxMs: 60_000,
+        scheduleSource: "durable_pending_record_nextAttemptAt",
+        virtualClock: "advance_exactly_to_persisted_schedule",
+        retryableFailure: "model_output_settled_timeout_proven_finite_step_or_settled_structured_contract",
+        finiteStepPolicy: "current_attempt_capture_max_turns_only",
+        timeoutPolicy: "settled_capture_runtime_only",
+        structuredOutputPolicy: "current_attempt_fulfilled_required_projection_only",
+      },
+      experiment: { protocol: "synthetic-structured-recovery" },
+    };
+    plan.perCall.readinessTimeoutMs = 5_000;
+    let extractionCalls = 0;
+    const providerFactory = (args: any) => {
+      const value = input.providers.scriptedProviders(args);
+      return { ...value, extractor: { run: async () => {
+        extractionCalls += 1;
+        return extractionCalls === 1
+          ? { text: "plausible fallback" }
+          : { text: "", structuredResult: { memories: [], entities: [], relations: [] } };
+      } } };
+    };
+    const report = await input.runner.runBenchmark({ ...input, corpus, plan, providerFactory });
+    expect(report.trials).toMatchObject([{ status: "completed", cleanup: "removed_owned_store" }]);
+    expect(extractionCalls).toBe(2);
+    expect(report.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: "extraction", status: "structured_result_missing",
+        runtimeSettlement: "fulfilled", structuredOutputFailure: "structured_result_missing",
+      }),
+      expect.objectContaining({
+        stage: "capture_recovery", status: "scheduled", attempt: 1,
+        failureKind: "provider", recoveryCause: "settled_structured_output",
+      }),
+      expect.objectContaining({
+        stage: "capture_recovery", status: "recovered_success", attempt: 2, priorFailures: 1,
+      }),
+    ]));
+    expect((await readdir(input.directory)).filter((name) => name.startsWith("work-"))).toEqual([]);
+  }, 30000);
+
   it("resets adjacent source admissions after a virtual retry advances the recovery clock", async () => {
     const input = await fixture();
     const dataset = await script("memory-e2e-dataset");

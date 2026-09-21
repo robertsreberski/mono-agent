@@ -231,6 +231,35 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(captureRetryCause({ lastError: "model_output" }, { status: "completed" })).toBe("model_output");
     expect(captureRetryCause({ lastError: "model_output" }, { status: "capture_timeout_settled" }))
       .toBe("settled_capture_timeout");
+
+    const structured = {
+      stage: "extraction",
+      status: "structured_result_missing",
+      runtimeSettlement: "fulfilled",
+      structuredOutputFailure: "structured_result_missing",
+      failureKind: null,
+      providerReportedFailureKind: null,
+      maxTurnsHit: false,
+    };
+    expect(captureRetryCause(pending, structured)).toBe("settled_structured_output");
+    for (const status of ["structured_result_key_missing", "structured_result_unserializable"]) {
+      expect(captureRetryCause(pending, {
+        ...structured, status, structuredOutputFailure: status, stage: "reconciliation",
+      })).toBe("settled_structured_output");
+    }
+    expect(captureRetryCause(pending, { ...structured, runtimeSettlement: "unknown" })).toBeNull();
+    expect(captureRetryCause(pending, { ...structured, structuredOutputFailure: "provider_failed" })).toBeNull();
+    expect(captureRetryCause(pending, { ...structured, failureKind: "provider_auth" })).toBeNull();
+    expect(captureRetryCause(pending, { ...structured, providerReportedFailureKind: "usage_limit" })).toBeNull();
+    expect(captureRetryCause(pending, { ...structured, maxTurnsHit: true })).toBeNull();
+    for (const status of ["provider_failed", "provider_timeout_or_cancelled", "provider_settlement_unknown", "output_limit_reached", "unfinished_tool_loop"]) {
+      expect(captureRetryCause(pending, { ...structured, status, structuredOutputFailure: status })).toBeNull();
+    }
+    const staleStructured = currentCaptureRetryCause([
+      { groupId: "g", arm: "bujo", ...structured },
+      { groupId: "g", arm: "bujo", stage: "extraction", status: "provider_failed" },
+    ], 0, { groupId: "g", arm: "bujo" }, pending);
+    expect(staleStructured).toEqual({ cause: null, nextCursor: 2 });
   });
 
   it("bounds persistent finite capture-step failures at the native provider dead letter", async () => {
@@ -269,6 +298,64 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(exhausted).toEqual([{
       attempt: 16, failureKind: "provider", recoveryCause: "finite_capture_step",
     }]);
+    expect(inspectCompletedTurnIntake(directory, now).items[0]).toMatchObject({
+      id: admission.id, state: "dead", attempt: 16, lastError: "provider",
+    });
+    intake.finishShutdown();
+  });
+
+  it("bounds repeated settled structured-contract failures at the native provider dead letter", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "retry-structured-exhaustion-test-")); dirs.push(directory);
+    const { budget } = await setup();
+    const maxAttempts = 16; let attempts = 0; let now = new Date("2026-09-20T00:00:00.000Z");
+    const exhausted = []; const scheduled = []; const tag = { groupId: "g", arm: "bujo" };
+    const llm = captureLlm({ run: async () => ({ text: "plausible fallback" }) }, {
+      model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag,
+    });
+    const intake = new CompletedTurnIntakeManager({
+      root: directory, clock: () => now, writeSummary: async () => {},
+      capture: async () => {
+        attempts += 1;
+        try {
+          await llm.complete("extract", { label: "capture:extract", outputSchema: { type: "object" } });
+        } catch (cause) {
+          const error = new Error("settled structured contract failure", { cause });
+          error.name = "MemoryModelError";
+          throw error;
+        }
+        return "captured";
+      },
+    });
+    const admission = intake.admit({
+      runId: "runner-native-structured-exhaustion", conversationId: "conversation", summary: "summary", captureText: "source",
+    });
+    let cursor = 0;
+    await expect(awaitReady({
+      flush: () => intake.flush(),
+      queueSnapshot: () => ({ intake: intake.snapshot(), shutdown: { timedOut: false, discarded: 0 } }),
+    }, 2000, budget, {
+      id: admission.id, maxAttempts,
+      inspect: () => inspectCompletedTurnIntake(directory, now),
+      persistedSchedule: (item) => persistedCaptureRetrySchedule(admission.source, item),
+      advanceClock: (value) => { const advance = Date.parse(value) - now.getTime(); now = new Date(value); return advance; },
+      retryCause: (item) => {
+        const classified = currentCaptureRetryCause(budget.events, cursor, tag, item);
+        cursor = classified.nextCursor;
+        return classified.cause;
+      },
+      onRetry: (value) => scheduled.push(value), onExhausted: (value) => exhausted.push(value),
+    })).rejects.toThrow("capture_not_ready");
+    expect(attempts).toBe(16);
+    expect(scheduled).toHaveLength(15);
+    expect(scheduled.every((entry) => entry.failureKind === "provider"
+      && entry.recoveryCause === "settled_structured_output")).toBe(true);
+    expect(exhausted).toEqual([{
+      attempt: 16, failureKind: "provider", recoveryCause: "settled_structured_output",
+    }]);
+    expect(budget.events).toHaveLength(16);
+    expect(budget.events.every((entry) => entry.status === "structured_result_missing"
+      && entry.runtimeSettlement === "fulfilled"
+      && entry.structuredOutputFailure === "structured_result_missing")).toBe(true);
     expect(inspectCompletedTurnIntake(directory, now).items[0]).toMatchObject({
       id: admission.id, state: "dead", attempt: 16, lastError: "provider",
     });
@@ -837,18 +924,38 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     await expect(meteredRuntime({ run }, { budget, stage: "extraction", tag: {} })
       .run("s", { messages: [], outputSchema: { type: "object" } })).rejects.toThrow(code);
     expect(budget.events[0].status).toBe(code);
+    if (code === "structured_result_missing") {
+      expect(budget.events[0]).toMatchObject({
+        runtimeSettlement: "fulfilled",
+        structuredOutputFailure: "structured_result_missing",
+      });
+      expect(captureRetryCause({ lastError: "provider" }, budget.events[0]))
+        .toBe("settled_structured_output");
+    }
     if (result.cancelled) expect(budget.providerStop).toBeNull();
   });
 
-  it("fails closed on missing reconciliation projection and never records fallback text", async () => {
+  it.each([
+    ["missing key", { other: [] }, "structured_result_key_missing"],
+    ["unserializable selected value", { decisions: 1n }, "structured_result_unserializable"],
+  ])("fails closed on reconciliation projection %s and records the settled boundary", async (_label, structuredResult, code) => {
     const { budget } = await setup(); const trace = [];
-    const llm = captureLlm({ run: async () => ({ text: "[]", structuredResult: { other: [] } }) }, {
+    const llm = captureLlm({ run: async () => ({ text: "[]", structuredResult }) }, {
       model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag: {}, capture: (entry) => trace.push(entry),
     });
     await expect(llm.complete("reconcile", {
       label: "capture:reconcile-batch", outputSchema: { type: "object" }, structuredResultKey: "decisions",
-    })).rejects.toThrow("structured_result_key_missing");
+    })).rejects.toThrow(code);
     expect(trace).toEqual([]);
+    expect(budget.events).toHaveLength(2);
+    expect(budget.events[0]).toMatchObject({ stage: "reconciliation", status: "completed" });
+    expect(budget.events[1]).toMatchObject({
+      stage: "reconciliation", status: code, runtimeSettlement: "fulfilled",
+      structuredOutputFailure: code, failureKind: null,
+      providerReportedFailureKind: null, maxTurnsHit: false,
+    });
+    expect(captureRetryCause({ lastError: "provider" }, budget.events[1]))
+      .toBe("settled_structured_output");
   });
 
   it("meters bounded embedding text into both the combined and embedding-specific hard budgets", async () => {

@@ -147,8 +147,9 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
       policy: "native_persisted_exponential_v1", maxAttempts: 16, retryBaseMs: 60_000,
       retryMaxMs: 21_600_000, scheduleSource: "durable_pending_record_nextAttemptAt",
       virtualClock: "advance_exactly_to_persisted_schedule",
-      retryableFailure: "model_output_settled_timeout_or_proven_finite_capture_step",
+      retryableFailure: "model_output_settled_timeout_proven_finite_step_or_settled_structured_contract",
       finiteStepPolicy: "current_attempt_capture_max_turns_only",
+      structuredOutputPolicy: "current_attempt_fulfilled_required_projection_only",
       timeoutPolicy: "settled_capture_runtime_only", timeoutSettlementMs: 30_000,
       timeoutPayloadPolicy: "discard_late_payload_without_partial_write",
     });

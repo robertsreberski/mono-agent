@@ -90,9 +90,11 @@
   capture pass per conversation within a run, independent question histories,
   source timestamp-bound admission clocks that retries cannot shift, and exact
   completed-result reuse. Retry only positively identified local capture
-  failures. Use a plan-bound 30-second embedding deadline that matches the
-  native memory provider default while keeping deadline and cancellation
-  failures terminal. Report lexical scores separately from unmeasured semantic
+  failures, including fulfilled strict calls that omit or cannot project their
+  required structured result, through the native durable schedule without
+  accepting fallback text. Use a plan-bound 30-second embedding deadline that
+  matches the native memory provider default while keeping deadline and
+  cancellation failures terminal. Report lexical scores separately from unmeasured semantic
   quality and expose capture, retrieval, and budget limits.
 - Keep memory E2E strict capture on the runtime's authoritative structured
   result, including reconciliation projection, and pin real requests to SSE

@@ -39,6 +39,13 @@ export function readySnapshot(snapshot) {
   return !index || ["queued", "inFlight", "remainingBacklog", "recoveryFilesRemaining", "failed", "dropped", "discarded"].every((key) => index[key] === 0);
 }
 
+const SETTLED_CAPTURE_STRUCTURED_FAILURES = new Set([
+  "structured_result_missing",
+  "structured_result_key_missing",
+  "structured_result_unserializable",
+]);
+const SETTLED_CAPTURE_STRUCTURED_POLICY = "current_attempt_fulfilled_required_projection_only";
+
 /**
  * Classify only evaluator-proven capture failures that may follow the production
  * durable intake schedule. The caller supplies the latest capture event from the
@@ -55,6 +62,15 @@ export function captureRetryCause(item, captureAttempt) {
     && captureAttempt?.providerReportedFailureKind === "usage_limit"
     && captureAttempt?.maxTurnsHit === true) {
     return "finite_capture_step";
+  }
+  if (item.lastError === "provider"
+    && SETTLED_CAPTURE_STRUCTURED_FAILURES.has(captureAttempt?.status)
+    && captureAttempt?.runtimeSettlement === "fulfilled"
+    && captureAttempt?.structuredOutputFailure === captureAttempt.status
+    && captureAttempt?.failureKind === null
+    && captureAttempt?.providerReportedFailureKind === null
+    && captureAttempt?.maxTurnsHit === false) {
+    return "settled_structured_output";
   }
   return null;
 }
@@ -104,7 +120,7 @@ export async function awaitReady(store, timeoutMs, budget, recovery = null) {
       const recoveryCause = recovery.retryCause?.(failed[0])
         ?? (failed[0].lastError === "model_output" ? "model_output" : null);
       if (recoveryCause === null) throw new BenchmarkError("capture_not_ready");
-      if (!["model_output", "settled_capture_timeout", "finite_capture_step"].includes(recoveryCause)) {
+      if (!["model_output", "settled_capture_timeout", "finite_capture_step", "settled_structured_output"].includes(recoveryCause)) {
         throw new BenchmarkError("capture_recovery_invalid");
       }
       if (failed[0].state === "dead" || failed[0].attempt >= recovery.maxAttempts) {
@@ -646,6 +662,10 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
                 captureEventCursor = classified.nextCursor;
                 if (classified.cause === "finite_capture_step"
                   && recoveryConfig.finiteStepPolicy !== "current_attempt_capture_max_turns_only") {
+                  return null;
+                }
+                if (classified.cause === "settled_structured_output"
+                  && recoveryConfig.structuredOutputPolicy !== SETTLED_CAPTURE_STRUCTURED_POLICY) {
                   return null;
                 }
                 return classified.cause;
