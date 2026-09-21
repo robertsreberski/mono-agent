@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Raise the configurable ceiling for `subagents.maxTurns` and
+  `subagents.definitions[].maxTurns` from 200 to 400. Long single-run
+  implementation work could exhaust its turn budget while an operator was
+  already configured at the previous maximum, leaving no configuration
+  response available. Wall-clock runaway remains bounded by
+  `subagents.timeoutMs`, and turns per persistent instance remain bounded by
+  `subagents.instances.maxTurns`. No default changes, so existing deployments
+  behave identically.
+
 - **Breaking: remove the first-party terminal renderer.** Remove `mono-agent tui`,
   the `mono-agent-tui` binary, and `@mono-agent/tui`; use `mono-agent web run --loopback` for
   live operation, `mono-agent runs list|show` for bounded offline diagnostics,
