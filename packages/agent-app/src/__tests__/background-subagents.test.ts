@@ -236,20 +236,61 @@ describe("parent stop", () => {
   }, 40_000);
   it.each([false, true])("stop races completion and AskParent without fabricating cancellation (question=%s)", async (question) => {
     const f = await managedFixture(); const gate = deferred<any>(); const reached = deferred<void>(); const proceed = deferred<void>();
+    const controllerDrained = deferred<void>(); const secondReadDrained = deferred<void>();
     const { agent, options } = tools(f, async () => gate.promise);
     const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
     const controller = options.backgroundSubagentController;
-    const send = createAgentSendTool({ ...options, backgroundSubagentController: { ...controller,
-      stop: async (identity: any) => { reached.resolve(); await proceed.promise; return controller.stop!(identity); } } });
-    const stopping = send.execute("stop", { id: "helper", stop: true }); await reached.promise;
-    gate.resolve({ text: "completed first", ...(question ? { subagentQuestion: { question: "Choose scope?" } } : {}) });
-    await done(f.service, started.details.jobId); proceed.resolve();
-    const result = await stopping;
-    if (result.details.stop.status === "stopped") expect(result.details.stop).toMatchObject({ disposition: question ? "awaiting_reply" : "ok", stopRequested: false, resumable: true });
-    else expect(result.details.stop).toMatchObject({ code: "subagent_stop_unavailable", stopRequested: "unknown" });
-    expect((await send.execute("idle", { id: "helper", stop: true })).details.stop).toMatchObject({ status: "already_idle", disposition: question ? "awaiting_reply" : "ok", resumable: true });
-    expect(await f.instances.get("helper")).toMatchObject({ turns: 1, status: question ? "awaiting_reply" : "idle" });
-    expect(f.wake).toHaveBeenCalledOnce();
+    // The public six-second race does not cancel its underlying operation. Track
+    // the proof and final registry read so fixture removal never races late I/O.
+    const originalGet = options.instances.get.bind(options.instances);
+    let readCalls = 0;
+    const instances = { ...options.instances, get: async (id: string) => {
+      const call = ++readCalls;
+      try { return await originalGet(id); }
+      finally { if (call === 2) secondReadDrained.resolve(); }
+    } };
+    let observedProof: Awaited<ReturnType<NonNullable<typeof controller.stop>>> | undefined;
+    let completionOrder = 0; let proofObservedAt = 0;
+    const send = createAgentSendTool({ ...options, instances, backgroundSubagentController: { ...controller,
+      stop: async (identity: any) => {
+        reached.resolve();
+        try {
+          await proceed.promise;
+          observedProof = await controller.stop!(identity);
+          proofObservedAt = ++completionOrder;
+          return observedProof;
+        } finally { controllerDrained.resolve(); }
+      } } });
+    let stopping: ReturnType<typeof send.execute> | undefined;
+    try {
+      stopping = send.execute("stop", { id: "helper", stop: true }); await reached.promise;
+      gate.resolve({ text: "completed first", ...(question ? { subagentQuestion: { question: "Choose scope?" } } : {}) });
+      await done(f.service, started.details.jobId); proceed.resolve();
+      const result = await stopping;
+      const receiptObservedAt = ++completionOrder;
+      await controllerDrained.promise;
+      expect(observedProof).toMatchObject({ jobId: started.details.jobId, disposition: question ? "awaiting_reply" : "ok",
+        stopRequested: false, childStillBusy: false, resumable: true });
+      await secondReadDrained.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (result.details.stop.status === "stopped") {
+        expect(result.details.stop).toMatchObject({ disposition: question ? "awaiting_reply" : "ok", stopRequested: false, resumable: true });
+        expect(proofObservedAt).toBeLessThan(receiptObservedAt);
+      } else {
+        expect(result.details.stop).toMatchObject({ code: "subagent_stop_unavailable", stopRequested: expect.toBeOneOf(["unknown", false]) });
+        if (result.details.stop.stopRequested === "unknown") expect(receiptObservedAt).toBeLessThan(proofObservedAt);
+        else expect(proofObservedAt).toBeLessThan(receiptObservedAt);
+      }
+      expect((await send.execute("idle", { id: "helper", stop: true })).details.stop).toMatchObject({ status: "already_idle", disposition: question ? "awaiting_reply" : "ok", resumable: true });
+      expect(await f.instances.get("helper")).toMatchObject({ turns: 1, status: question ? "awaiting_reply" : "idle" });
+      expect(f.wake).toHaveBeenCalledOnce();
+    } finally {
+      gate.resolve({ text: "cleanup" });
+      proceed.resolve();
+      if (stopping) await Promise.allSettled([stopping, controllerDrained.promise]);
+      if (observedProof) await secondReadDrained.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
   }, 15_000);
   it("publication failure and restart remain fenced until the exact stop certificate is acknowledged", async () => {
     const f = await managedFixture(); const entered = deferred<void>(); const root = resolve(f.root, "children");
