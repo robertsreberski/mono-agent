@@ -24,6 +24,11 @@
   provider-neutral `RunExporter` composition. Active legacy settings now fail
   with secret-safe migration guidance; inert empty leftovers remain accepted.
 
+- Let a configured `runtime.compaction.triggerRatio` up to `0.95` take effect on
+  large context windows by deriving the safety headroom as 10% of the window
+  (`16,000`-`48,000` tokens) instead of 25% (`16,000`-`96,000`); the `0.70`
+  default trigger path is unchanged.
+
 - Replace the marketing site’s inactive PostHog integration with native Astro Vercel Web Analytics, preserving explicit opt-in, browser privacy signals and withdrawal controls; simplify reporting to basic page views.
 
 - Connect marketing and documentation links to mono-agent.dev and docs.mono-agent.dev, with a permanent redirect from the former marketing host.

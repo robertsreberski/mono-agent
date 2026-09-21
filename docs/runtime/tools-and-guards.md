@@ -418,7 +418,7 @@ request still exceeds the primary model's window, the run is classified as
 `context_limit`; the fallback router may then try the next configured model.
 
 This is automatic and configurable on the Pi-native bridge. Defaults resolve against the effective context window `W`: trigger ratio `0.70`, safety headroom
-`clamp(floor(W × 0.25), 16000, 96000)`, retained context
+`clamp(floor(W × 0.10), 16000, 48000)`, retained context
 `clamp(floor(W × 0.10), 4000, 20000)`, summary output
 `clamp(floor(W × 0.04), 2000, 12000)`, and minimum proactive savings
 `clamp(floor(W × 0.10), 4000, 20000)`. Configure overrides under

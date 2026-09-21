@@ -93,7 +93,12 @@ export function resolveAgentCompactionPolicy({ toolLimits = {}, compaction = {} 
     0.2,
     0.95,
   );
-  const safetyHeadroom = clampInteger(contextWindow * 0.25, 16000, 16000, 96000);
+  // Scale-aware reserve: the headroom leaves room for the pending response
+  // and the compaction request itself, which is an absolute quantity — not a
+  // quarter of an ever-growing window. At 10% with a 16k floor / 48k ceiling,
+  // a 200k-400k window reaches a configured 0.9, a 128k window is held at
+  // 87.5% by the floor, and very large windows stop reserving absurd amounts.
+  const safetyHeadroom = clampInteger(contextWindow * 0.10, 16000, 16000, 48000);
   // Add a tiny scale-aware epsilon before flooring so decimal ratios such as
   // 0.70 do not lose a token to IEEE-754 representation (372000 * 0.70 is
   // otherwise 260399.99999999997 in JavaScript).
