@@ -5,7 +5,7 @@ sidebar:
   order: 0
 ---
 
-This section takes you from an empty folder to an agent you are talking to in the browser. The recommended path installs the published CLI, scaffolds an agent with the guided `init`, starts it (guided macOS setup starts it for you; Linux and hosts without a service manager start it manually), and opens the foreground web console. The terminal console, channel setup, memory tiers, and observability are all optional next steps, not prerequisites.
+This section takes you from an empty folder to an agent you are talking to in the browser. The recommended path installs the published CLI, scaffolds an agent with the guided `init`, starts it (guided macOS setup starts it for you; Linux and hosts without a service manager start it manually), and opens the foreground web console. Channel setup, memory tiers, and observability are optional next steps, not prerequisites.
 
 Bare `mono-agent init` on a TTY names the agent, searches the provider catalogs, and runs a real no-tool check for every selected route; on macOS the strict **Agent ready** gate then also starts the managed agent and proves its live snapshot, while other platforms stop at a manual-start handoff; flag/non-TTY init creates a scaffold only. mono-agent remains config-first: one `mono-agent.config.json`, driven by the CLI.
 

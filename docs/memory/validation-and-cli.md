@@ -545,11 +545,11 @@ for an existing local agent, with one backend-specific branch in step 6.
    mono-agent config
    mono-agent validate
    mono-agent restart
-   mono-agent tui
+   mono-agent web run --loopback
    ```
 
    Edit the config or identity directly, never enter secrets in either file,
-   validate the result, restart, and only then open the browser console (`mono-agent web run --loopback`) or the optional terminal console.
+   validate the result, restart, and only then open the browser console (`mono-agent web run --loopback`).
 
 4. Confirm that the exact embeddings model is available from the selected provider. For Ollama:
 
@@ -599,7 +599,7 @@ for an existing local agent, with one backend-specific branch in step 6.
    another writer between them.
 
 
-7. Verify all evidence routes in the TUI or an enabled conversational channel without
+7. Verify all evidence routes in the web console or an enabled conversational channel without
    restarting between messages. For Telegram, send `Reply exactly with this token:
    V1-HISTORY-<unique>`, wait for that reply, then ask `What did you send in the last
    message?` and confirm the token comes back from active history without a durable

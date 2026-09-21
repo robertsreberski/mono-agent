@@ -90,7 +90,7 @@ Everything below runs in the user's agent folder, not the workspace.
    mono-agent start
    ```
 
-   Then run the acceptance smoke test matching the chosen channel (see `references/validation.md`). To change anything, edit `mono-agent.config.json` or `IDENTITY.md` directly, run `mono-agent validate`, and run `mono-agent restart`; there is no live browser or conversational re-apply. Open ordinary `mono-agent tui` after the restarted agent is ready.
+   Then run the acceptance smoke test matching the chosen channel (see `references/validation.md`). To change anything, edit `mono-agent.config.json` or `IDENTITY.md` directly, run `mono-agent validate`, and run `mono-agent restart`; there is no live browser or conversational re-apply. Open the browser console with `mono-agent web run --loopback` after the restarted agent is ready.
 
 ## When Config Is Not Enough
 

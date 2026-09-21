@@ -61,7 +61,7 @@ Managed `tool_call_started` and `tool_call_completed` events may carry
 `SessionToolHistoryEventMetadata`. It is the host writer's acknowledgement for
 that exact block—stable record/sequence when already known, persisted, deferred,
 or failed status, terminal state, truncation byte counts, opaque artifact
-availability, and an untrusted marker. Web/TUI clients render this metadata
+availability, and an untrusted marker. Web/operator clients render this metadata
 directly; they do not re-derive canonical history from run artifacts or their
 own stores. `deferred` means foreground confirmation elapsed while the accepted
 write continued toward bounded run-finalization reconciliation; it is not a

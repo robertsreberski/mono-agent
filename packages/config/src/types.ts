@@ -431,8 +431,8 @@ export interface MonoAgentConfig {
      * When this agent's own `registryDir` is not the machine-wide default
      * (e.g. `mono-agent init`'s config-local scaffold), also mirror its
      * heartbeat manifest into the global `~/.mono-agent/trace-sources`
-     * registry so `mono-agent tui` run from anywhere on the machine can find
-     * it. Default true; set false to keep this agent's registration local-only.
+     * registry so machine-wide operator clients can find it. Default true; set
+     * false to keep this agent's registration local-only.
      */
     readonly globalDiscovery?: boolean;
   };

@@ -190,21 +190,6 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     lines: ["Print (and optionally follow) log files on macOS or the user journal on Linux."],
   },
   {
-    command: "tui",
-    group: "Console",
-    short: "tui",
-    summary: "Operator console: live chat, recorded-run replay, config view.",
-    signature: "mono-agent tui [--agent <label|sourceId>] [--conversation <id>]\n" +
-      "               [--local]",
-    lines: [
-      "Open the operator console from any directory: live chat with structured",
-      "thinking/tool/telemetry insight, recorded-run replay, and config view.",
-      "Discovers running agents via the trace-source registry; one running",
-      "agent connects directly, several open a picker. --local starts an",
-      "ordinary in-process chat for the current agent folder.",
-    ],
-  },
-  {
     command: "web",
     group: "Console",
     short: "web [start|stop|status|...]",
@@ -247,20 +232,24 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
   {
     command: "runs",
     group: "Observe",
-    short: "runs [report|audit]",
-    summary: "Read-only reporting over local agent-run artifacts.",
+    short: "runs [report|audit|list|show]",
+    summary: "Read-only reporting and inspection over local agent-run artifacts.",
     json: true,
     signature:
       "mono-agent runs [report|audit] [--artifacts <path> | --consumer <path>]\n" +
       "                [--since <iso>] [--until <iso>] [--by model|channel|failureKind]\n" +
-      "                [--stale-after-ms <n>] [--include-memory] [--json] [--config <path>] [--env-file <path>]",
+      "                [--stale-after-ms <n>] [--include-memory] [--json] [--config <path>] [--env-file <path>]\n" +
+      "mono-agent runs list [--artifacts <path>] [--include-memory] [--json]\n" +
+      "mono-agent runs show <run-id> [--artifacts <path>] [--include-memory] [--json]",
     lines: [
-      "Read-only, offline reporting over local agent-run summary artifacts.",
+      "Read-only, offline reporting over trusted local agent-run artifacts.",
       "report (default): status/failure-kind rates, duration percentiles, and",
       "total/per-run cost, optionally windowed (--since/--until) and grouped (--by).",
       "audit: artifact integrity — parse failures, status/failure-kind histograms,",
       "stale running summaries (never rewritten), and per-failure-kind rates.",
-      "--include-memory adds memory-run artifacts.",
+      "list returns at most 50 newest summaries; show returns at most 500 first/last",
+      "events. Emitted strings are capped at 32 KiB and credential-shaped content is redacted.",
+      "--include-memory adds memory-run artifacts; show checks agent scope before memory scope.",
     ],
   },
   {
@@ -354,7 +343,7 @@ loginctl enable-linger for this user to keep the service alive across logins. Se
 .env file in the working directory, the same as foreground mode. The background
 commands require macOS or Linux with a running systemd user manager; elsewhere use start --foreground.
 Edit mono-agent.config.json and the configured identity document directly, then
-run mono-agent validate and restart the agent before opening ordinary TUI chat.
+run mono-agent validate and restart the agent before opening ordinary web chat.
 
 Init model references use <provider>:<model>, for example
 openai-codex:gpt-5.6-terra or anthropic:claude-sonnet-4-6. The init wizard

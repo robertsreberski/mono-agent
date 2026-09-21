@@ -51,7 +51,7 @@ function displayChannelId(id: string): string {
 }
 
 function describeOperatorPurpose(entry: HumanChannelStatus): string {
-  const purpose = entry.id === "tui" ? "TUI + Web" : undefined;
+  const purpose = entry.id === "tui" ? "Web Console" : undefined;
   if (purpose === undefined || entry.kind !== "running") return entry.text;
   if (entry.text === "running") return `running (${purpose})`;
   if (entry.text.startsWith("running (") && entry.text.endsWith(")")) {

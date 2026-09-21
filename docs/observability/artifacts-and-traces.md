@@ -90,7 +90,7 @@ A run summary's `status` is one of:
 
 A crashed process can leave the most recent incrementally checkpointed summary at `running`. To self-heal that, the host runs `reconcileStaleRunArtifacts()` **once at startup**: it scans the artifacts directory and rewrites any summary left at `running` by a *previous* process to `interrupted` (failure kind `process_death`) while preserving the checkpointed event trail. It is fire-and-forget — best-effort, runs in the background, and never gates readiness — so a large artifacts directory can never delay start. The local readers retain `interrupted` as a distinct terminal status alongside `failed` and `cancelled`.
 
-Reconciliation repairs status only and can report only data that reached a recorder write boundary. It can preserve the last completed checkpointed prefix; a death before the first incremental checkpoint or after a failed write can still reconcile as `process_death` with `eventCount: 0` even though events occurred. A death between the two file renames can also leave a newer events file beside the prior summary. The live broadcast may show connected TUI/web clients a newer best-effort tail, but it is not recovery for data absent from disk. A failed or signal-aborted run that unwinds through the harness can publish its bounded canonical continuity account; a hard process death cannot run that publisher, so its reconciled artifact/web projection does not imply any canonical message-history append.
+Reconciliation repairs status only and can report only data that reached a recorder write boundary. It can preserve the last completed checkpointed prefix; a death before the first incremental checkpoint or after a failed write can still reconcile as `process_death` with `eventCount: 0` even though events occurred. A death between the two file renames can also leave a newer events file beside the prior summary. The live broadcast may show connected operator clients a newer best-effort tail, but it is not recovery for data absent from disk. A failed or signal-aborted run that unwinds through the harness can publish its bounded canonical continuity account; a hard process death cannot run that publisher, so its reconciled artifact/web projection does not imply any canonical message-history append.
 
 Failure kinds are an open string set because provider/runtime adapters can surface new values. The display taxonomy currently explains the common operator-facing kinds including `context_limit`, `usage_limit`, `process_death`, `cancelled` and its cancellation variants, `provider_unavailable`, `provider_unavailable_exhausted`, `runtime_error`, `session_not_found`, and `session_busy`; unknown values stay visible and get a generic artifact/log inspection hint. `context_limit` specifically means request input still exceeded the selected model's usable window after bridge recovery; unlike quota/output/max-turn `usage_limit`, it is eligible for configured route fallback.
 
@@ -284,7 +284,7 @@ Because these events live in JSONL, local audit and replay retain the attributio
 
 The host periodically writes a heartbeat manifest describing this agent into `traceability.registryDir`. `mono-agent status` reads that directory to list known trace sources and mark any whose last heartbeat is older than `staleAfterMs` as stale. This is how the CLI discovers running agents on the machine without a central service.
 
-When `registryDir` is a config-local override (as `mono-agent init` scaffolds), the same manifest is ALSO best-effort mirrored into the global `~/.mono-agent/trace-sources` registry (`traceability.globalDiscovery`, default `true`), so `mono-agent tui`/`status` run from anywhere on the machine still finds this agent. See [Terminal UI](/observability/tui/) for how discovery merges the two registries.
+When `registryDir` is a config-local override (as `mono-agent init` scaffolds), the same manifest is ALSO best-effort mirrored into the global `~/.mono-agent/trace-sources` registry (`traceability.globalDiscovery`, default `true`), so `mono-agent status`, the web console, and other maintained discovery clients can still find this agent from outside the project directory.
 
 ```json
 {
@@ -338,7 +338,7 @@ memory or model text, payloads, or raw provider/native errors. `none/not_configu
 and `none/unknown` omit `mode`. For the exact strict CLI schema and exit contract, see
 [Memory validation & CLI](/memory/validation-and-cli/#strict-provider-free-health-gate).
 
-Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3× margin) so a single missed write does not flap a healthy agent into the stale state. Registries also self-prune: manifests whose heartbeat is older than 7 days AND whose process is no longer running are deleted automatically the next time an agent starts or `mono-agent tui` runs.
+Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3× margin) so a single missed write does not flap a healthy agent into the stale state. Registries also self-prune: manifests whose heartbeat is older than 7 days AND whose process is no longer running are deleted automatically the next time an agent starts.
 
 ## How `start` and `status` use this
 
@@ -365,7 +365,7 @@ environment for the Node/ABI, build-marker, `validate --json`, `memory audit --s
 structured arguments, working directory, origin plist, and PID. The running PID's actual Node executable
 device/inode and cwd must also match.
 On supported POSIX/macOS hosts, the root build holds an exclusive lock from before clearing the old
-marker through the package build, required CLI/TUI executable-mode finalization, output sync,
+marker through the package build, required CLI executable-mode finalization, output sync,
 deterministic output-digest calculation, installed
 root/workspace dependency-tree calculation, and atomic owner-only marker publication. The dependency
 digest covers file bytes, modes, and canonical symlink topology without following links, so rebuilding a

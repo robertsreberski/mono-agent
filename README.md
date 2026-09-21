@@ -76,7 +76,7 @@ Open <http://127.0.0.1:5050>, choose the running agent, and start a conversation
 
 Want the console to keep running in the background? `mono-agent web start` installs it as a service instead, bound to the same loopback listener; widen it explicitly with `--host`. On macOS, managed startup re-verifies an existing mono-agent-owned Tailscale Serve route and publishes a new one only with `--share-tailnet`, and other proxies and routes are not inspected — so neither the bind nor the absence of an owned route makes a console local. There is still no application login, so anyone who can reach it can operate the discovered agents. `web run` never configures Serve and never removes a route; only `web stop` removes the exact route mono-agent owns. [Install & prerequisites](./docs/getting-started/install.md#run-the-browser-console) covers both modes and how to check the effective URLs.
 
-The same agent is also reachable from the terminal console and, once you enable them, from channels. [Your first agent](./docs/getting-started/quickstart.md) walks the wizard branches, the scriptable webhook smoke request, and the per-platform start paths; [Setup security and managed runtime](./docs/reference/setup-security.md) documents the managed-start and secret-persistence trust model behind them.
+The same agent is also reachable from enabled communication channels. [Your first agent](./docs/getting-started/quickstart.md) walks the wizard branches, the scriptable webhook smoke request, and the per-platform start paths; [Setup security and managed runtime](./docs/reference/setup-security.md) documents the managed-start and secret-persistence trust model behind them.
 
 ## Setup details
 

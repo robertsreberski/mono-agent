@@ -150,7 +150,7 @@ export const packageCatalog = [
     name: "@mono-agent/operator-adapter",
     category: "communication",
     channelIds: ["tui"],
-    responsibility: "Exposes the structured local TUI NDJSON endpoint used by the terminal and browser operator consoles.",
+    responsibility: "Exposes the structured local operator NDJSON endpoint used by the browser console, ACP bridge, and jobs client.",
     allowedDependencyCategories: ["core"],
     publishable: true,
   },
@@ -178,14 +178,6 @@ export const packageCatalog = [
     channelIds: ["telegram"],
     responsibility: "Adapts Telegram updates to structural agent requests and streamed replies.",
     allowedDependencyCategories: ["core"],
-    publishable: true,
-  },
-  {
-    dir: "tui",
-    name: "@mono-agent/tui",
-    category: "operator-surface",
-    responsibility: "pi-tui operator console: live chat with structured stream-event insight, bounded recorded-run replay, and read-only config view for running agents.",
-    allowedDependencyCategories: ["core", "observability", "communication"],
     publishable: true,
   },
   {

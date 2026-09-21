@@ -23,7 +23,7 @@ Boundary rules:
 
 | Boundary | What ends | What survives | What is emitted |
 | --- | --- | --- | --- |
-| Daily rollover (`runtime.session.rollover: "daily"`) | The current day-bucket conversation id and its warm provider-session lineage, on every channel **except** the console (TUI + web) | Durable memory, old run artifacts, durable Pi transcripts for other ids, app process state, and every console thread | `session_boundary` with `kind: "rollover"` on the first turn of the new bucket |
+| Daily rollover (`runtime.session.rollover: "daily"`) | The current day-bucket conversation id and its warm provider-session lineage, on every channel **except** the web console | Durable memory, old run artifacts, durable Pi transcripts for other ids, app process state, and every console thread | `session_boundary` with `kind: "rollover"` on the first turn of the new bucket |
 | Isolated proactive turn (`runtime.session.isolateProactive: true`) | Nothing shared; the proactive turn intentionally skips the conversation's warm provider session | Existing interactive warm session, durable history, memory, and run artifacts | `session_boundary` with `kind: "isolated"` and `reason: "proactive"` |
 | Model change within a continuous conversation | The previous model-bound provider epoch; the new model starts from canonical history | Durable message and tool history, memory, and run artifacts | `session_boundary` with `kind: "resume_replay"` and `reason: "model_change"` |
 | First bound turn for a legacy unbound provider record | The pre-model-binding provider epoch; the requested model starts from canonical history without guessing the previous owner | Durable message and tool history, memory, and run artifacts | One cold session event plus `session_boundary` with `kind: "resume_replay"`, both with `reason: "legacy_unbound_model"` |
@@ -105,8 +105,8 @@ owners; the store never age-deletes a claim. Full-synchronous DELETE journals
 make interrupted row changes recoverable, while fixed file, row-count, and byte
 ceilings prevent per-conversation lock-file growth.
 
-Rollover never applies to the console channel (the `gui` operator channel behind
-both `mono-agent tui` and the web console). A console thread already carries an
+Rollover never applies to the console channel (the `gui` operator channel used
+by the web console; its stable protocol/source id remains `tui`). A console thread already carries an
 explicit, reader-owned session boundary: it has a permanent conversation id and
 a visible "new thread" action. Bucketing it by day on top of that severed a live
 conversation at midnight, so the next morning's follow-up in the same visible

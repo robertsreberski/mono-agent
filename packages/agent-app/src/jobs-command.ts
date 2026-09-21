@@ -12,9 +12,20 @@ import { listTraceSources, mergeTraceSources, type TraceSourceListItem } from "@
 import { resolveAppTraceRegistryDir, resolveGlobalTraceRegistryDir } from "./app-config.js";
 import { readBoundedOwnerOnlyFile } from "./continuation-store-fs.js";
 import { PROCESS_JOB_SECRET_FILE } from "./process-jobs-store.js";
-import { tuiEndpointOf } from "./tui-command.js";
 
 const MAX_PROCESS_JOBS_RESPONSE_BYTES = 16 * 1024 * 1024;
+
+/** Read the legacy `tui` metadata slot that carries the shared operator endpoint. */
+export function operatorEndpointOf(source: TraceSourceListItem): string | undefined {
+  const channels = source.metadata?.channels;
+  if (typeof channels !== "object" || channels === null) return undefined;
+  const operator = (channels as Record<string, unknown>).tui;
+  if (typeof operator !== "object" || operator === null) return undefined;
+  const record = operator as Record<string, unknown>;
+  return record.kind === "running" && typeof record.baseUrl === "string" && record.baseUrl.length > 0
+    ? record.baseUrl
+    : undefined;
+}
 
 export interface RunJobsCommandOptions {
   readonly cwd: string;
@@ -46,7 +57,7 @@ export async function runJobsCommand(options: RunJobsCommandOptions): Promise<nu
     return writeFailure(stderr, options.json === true, codeOf(error) ?? "agent_unreachable", reasonOf(error));
   }
 
-  const baseUrlValue = tuiEndpointOf(source);
+  const baseUrlValue = operatorEndpointOf(source);
   if (baseUrlValue === undefined) {
     return writeFailure(stderr, options.json === true, "agent_unreachable", "The selected agent has no running operator endpoint.");
   }

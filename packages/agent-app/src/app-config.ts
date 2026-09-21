@@ -293,8 +293,7 @@ export interface ShouldMirrorTraceSourceGloballyInput {
 /**
  * Gate for the best-effort global-registry mirror (see {@link resolveGlobalTraceRegistryDir}):
  * an agent whose own registry differs from the machine-wide default also
- * registers there, so `mono-agent tui` run from anywhere on the machine finds
- * it — UNLESS the agent opted out (`traceability.globalDiscovery: false`),
+ * registers there, so machine-wide operator clients find it — UNLESS the agent opted out (`traceability.globalDiscovery: false`),
  * its own registry already IS the global one (nothing to mirror), or its
  * registry lives under the OS tmp directory (keeps throwaway test/ephemeral
  * runs from polluting the developer's real global registry).

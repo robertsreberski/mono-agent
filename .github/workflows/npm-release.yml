@@ -111,9 +111,6 @@ jobs:
           TMP_ROOT="$(mktemp -d)"
           trap 'rm -rf -- "$TMP_ROOT"' EXIT
 
-          retry npm install -g --prefix "$TMP_ROOT/tui" --prefer-online "@mono-agent/tui@${VERSION}"
-          "$TMP_ROOT/tui/bin/mono-agent-tui" --help
-
           retry npm install -g --prefix "$TMP_ROOT/app" --prefer-online "@mono-agent/agent-app@${VERSION}"
           "$TMP_ROOT/app/bin/mono-agent" --help
 
