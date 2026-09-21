@@ -119,7 +119,7 @@ async function performSearch(
   const providerFailures = [];
   const engineOutcomes = [];
   let partialEngines = false;
-  let houndStopped = false;
+  let localStopped = false;
   const providersUsed = new Set();
   const attemptedBackends = new Set();
   const actualQueries = [];
@@ -160,13 +160,13 @@ async function performSearch(
     // Chain failures are reported even when a later backend rescued the query,
     // so a silent degradation to the fallback is still visible in the outcome.
     if (result.failures?.length) providerFailures.push(...result.failures);
-    if (result.backend === "hound" && Array.isArray(result.engineOutcomes)) {
+    if (result.backend === "local" && Array.isArray(result.engineOutcomes)) {
       engineOutcomes.push(...result.engineOutcomes.slice(0, 3));
       partialEngines ||= result.partial === true;
       // Only a terminal local-provider failure (no answer possible now) marks
       // the provider stopped. A per-engine denial on a search that still
       // answered must never gate the chain or the remaining query variants.
-      houndStopped ||= result.ok === false && result.engineOutcomes.some((entry) => ["robots_denied", "robots_unavailable", "robots_crawl_delay", "access_challenge", "authentication_required", "rate_limited", "search_budget_exhausted", "network_denied"].includes(entry.code));
+      localStopped ||= result.ok === false && result.engineOutcomes.some((entry) => ["robots_denied", "robots_unavailable", "robots_crawl_delay", "access_challenge", "authentication_required", "rate_limited", "search_budget_exhausted", "network_denied"].includes(entry.code));
     }
     if (result.ok) {
       if (typeof result.actualQuery === "string" && result.actualQuery.trim()) {
@@ -257,7 +257,7 @@ async function performSearch(
     const networkDenied = providerFailures.length > 0
       && providerFailures.every((entry) => entry.message === "Network access denied by sandbox policy.");
     const throttled = providerFailures.some((entry) => entry.rateLimited || entry.cooldown);
-    const terminalHoundCode = houndStopped ? providerFailures.find((entry) => entry.backend === "hound")?.code : undefined;
+    const terminalLocalCode = localStopped ? providerFailures.find((entry) => entry.backend === "local")?.code : undefined;
     const strictProviderCode = !Array.isArray(config.backend)
       ? providerFailures.find((entry) => typeof entry.code === "string")?.code
       : undefined;
@@ -266,7 +266,7 @@ async function performSearch(
     return searchFailure(networkDenied
       ? "Error: Network access denied by sandbox policy."
       : `Error: WebSearch failed: ${reason}`,
-    networkDenied ? "network_denied" : (throttled ? "rate_limited" : (terminalHoundCode || strictProviderCode || "backend_unavailable")), startedAt, searchState, callClaims.requests, {
+    networkDenied ? "network_denied" : (throttled ? "rate_limited" : (terminalLocalCode || strictProviderCode || "backend_unavailable")), startedAt, searchState, callClaims.requests, {
       attempts,
       ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12) } : {}),
       backend: config.backend,
@@ -298,7 +298,7 @@ async function performSearch(
     : providersUsed.size > 1 ? "mixed" : config.backend;
   const bounded = boundWebSearchEntries(merged);
   const budget = webSearchBudgetSnapshot(searchState, callClaims.requests);
-  const retryInRun = !houndStopped && searchState.requestsUsed < searchState.maxRequests;
+  const retryInRun = !localStopped && searchState.requestsUsed < searchState.maxRequests;
   const nextAction = bounded.resultCount > 0
     ? "fetch_existing_sources"
     : retryInRun ? "refine_query" : "use_available_evidence";
@@ -319,7 +319,7 @@ async function performSearch(
     .map((entry) => `${entry.backend}:${entry.code}`);
   const coverage = {
     resultCount: fittedEntries.length,
-    ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12), partialEngines, searchStopped: houndStopped } : {}),
+    ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12), partialEngines, searchStopped: localStopped } : {}),
     truncated: truncatedFinal,
     ...(omittedCount > 0 ? { omittedResults: omittedCount } : {}),
     backend,
@@ -407,7 +407,7 @@ async function performSearch(
       cooldownSkipCount: providerFailures.filter((r) => r.cooldown).length,
       quotaSkipCount: providerFailures.filter((r) => r.quotaSkipped).length,
       filterSupport: coverage.filterSupport,
-      ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12), partialEngines, searchStopped: houndStopped } : {}),
+      ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12), partialEngines, searchStopped: localStopped } : {}),
       providerFailureCount: providerFailures.length,
       rateLimited: coverage.rateLimited,
       cooldownBackends: coverage.cooldownBackends,
@@ -510,6 +510,9 @@ function normalizeSearchConfig(input) {
     return { error: `tools.web.search.backend "auto" was removed; use ${JSON.stringify(previous)} (the previous auto order for this configuration)` };
   }
   const names = Array.isArray(backend) ? backend : [backend];
+  if (names.some((name) => name === "hound")) {
+    return { error: '`tools.web.search.backend` value `hound` was renamed to `local`; use `local` instead.' };
+  }
   if (!names.length || names.some((name) => name !== "keyless" && !webSearchProviders.has(name))) {
     return { error: "Unknown web search provider." };
   }

@@ -5,8 +5,8 @@ export { markdownToText } from "./web-markdown-text.js";
 import { XMLValidator } from "fast-xml-parser";
 import { DOMParser } from "linkedom";
 import { extractText as extractPdfText, getDocumentProxy } from "unpdf";
-import { extractHoundHtml } from "./hound-local/extract.js";
-export { extractHtmlLinks, MAX_WEB_FETCH_LINKS, MAX_WEB_FETCH_LINK_URL_CHARS, MAX_WEB_FETCH_LINK_TEXT_CHARS } from "./hound-local/links.js";
+import { extractLocalHtml } from "./local/extract.js";
+export { extractHtmlLinks, MAX_WEB_FETCH_LINKS, MAX_WEB_FETCH_LINK_URL_CHARS, MAX_WEB_FETCH_LINK_TEXT_CHARS } from "./local/links.js";
 
 export const MAX_STRUCTURED_DOCUMENT_BYTES = 8 * 1024 * 1024;
 const MARKDOWN_MIME_TYPES = new Set([
@@ -106,7 +106,7 @@ async function extractPdf(bytes) {
 }
 
 async function extractHtml(html, url, format) {
-  const extracted = await extractHoundHtml(html, url);
+  const extracted = await extractLocalHtml(html, url);
   return finishHtml(extracted.markdown, extracted.title, format, extracted.stage, extracted.failures);
 }
 

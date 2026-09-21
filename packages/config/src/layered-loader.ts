@@ -708,7 +708,7 @@ export function layerJsonOntoEnv(
 ): Record<string, string | undefined> {
   assertNoRetiredMonoAgentConfigJson(json);
   for (const key of ["MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT", "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT"]) {
-    if (env[key] !== undefined) throw new MonoAgentConfigError("invalid_env", `${key} was removed: Hound is built in. Remove the endpoint setting.`, { env: key });
+    if (env[key] !== undefined) throw new MonoAgentConfigError("invalid_env", `${key} was removed: the local web provider is built in and needs no endpoint. Remove the endpoint setting.`, { env: key });
   }
   validateJsonRuntimeCompaction(json);
   const fromJson: Record<string, string | undefined> = {};

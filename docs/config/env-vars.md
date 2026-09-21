@@ -176,7 +176,7 @@ They are tolerated so stale environments do not break startup, but they are igno
 | `MONO_AGENT_CONTINUATION_SERVERS` | `tools.continuationServers` | Comma-separated stdio or loopback-HTTP MCP server names that receive trusted request-bound continuation claim capabilities. See [durable continuations](/tools/durable-continuations/). |
 | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | `tools.mcpCallTimeoutMs` | Inactivity timeout per MCP tool call; tool progress notifications reset it. Default 120000. |
 | `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | `tools.mcpCallMaxTotalTimeoutMs` | Hard wall clock per MCP tool call that progress cannot extend. Default 2700000 (45 min). An AskUser configured with no automatic expiry is narrowly exempt. |
-| `MONO_AGENT_WEB_SEARCH_BACKEND` | `tools.web.search.backend` | One strict provider or comma-separated ordered chain. Default `parallel,ollama` (Parallel then local Ollama); names: `parallel`, `ollama`, `searxng`, `codex`, `keyless`, `duckduckgo`, `startpage`, `hound`. Keyless and Hound are opt-in. `auto` is rejected with the previous explicit order. |
+| `MONO_AGENT_WEB_SEARCH_BACKEND` | `tools.web.search.backend` | One strict provider or comma-separated ordered chain. Default `parallel,ollama` (Parallel then local Ollama); names: `parallel`, `ollama`, `searxng`, `codex`, `keyless`, `duckduckgo`, `startpage`, `local`. Keyless and local search are opt-in. `auto` is rejected with the previous explicit order, and `hound` is rejected with a rename-to-`local` migration error. |
 | `MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN` | `tools.web.search.maxRequestsPerRun` | Hard limit on answered provider searches (including empty answers) in one logical run; integer 1–20, default 4. Failed attempts are refunded; cache hits, coalesced followers, cooldown skips, and quota skips consume no request. Network dispatches have a separate ceiling of four times this limit. |
 | `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` | `tools.web.search.searxng.endpoint` | Canonical unauthenticated loopback HTTP SearXNG base URL; required whenever a selection includes `searxng`. |
 | `MONO_AGENT_WEB_SEARCH_ENDPOINT` | `tools.web.search.endpoint` | Compatibility alias for the canonical SearXNG endpoint variable. Existing config remains valid; prefer the provider-specific name. |
@@ -185,15 +185,15 @@ They are tolerated so stale environments do not break startup, but they are igno
 | `MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL` | `tools.web.search.ollama.trustPublicUrl` | Explicit `true` acknowledgement for an unauthenticated custom public HTTPS Ollama origin. Never authorizes hosted credentials there. |
 | `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | `tools.web.search.codex.model` | Codex app-server subscription-search model; default `gpt-5.6-luna`. |
 | `MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV` | `tools.web.search.parallel.apiKeyEnv` | Optional credential variable name; omitted means anonymous, missing named value is an error. Read at call time. |
-| `MONO_AGENT_WEB_FETCH_PROVIDER` | `tools.web.fetch.provider` | Strict `local` (default), `parallel`, `hound`, or comma-separated ordered chain such as `local,parallel`. |
+| `MONO_AGENT_WEB_FETCH_PROVIDER` | `tools.web.fetch.provider` | Strict `local` (default), `parallel`, or comma-separated ordered chain such as `local,parallel`. `hound` is rejected with a migration error: `local` is not equivalent (standard retries, no robots preflight, configured render mode honored). |
 | `MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV` | `tools.web.fetch.parallel.apiKeyEnv` | Optional credential variable name for Parallel extraction; omitted means anonymous. |
 | `MONO_AGENT_WEB_FETCH_RENDER` | `tools.web.fetch.render` | `never` (default and capability disabled) or `auto` (static-first isolated browser fallback). |
 | `MONO_AGENT_WEB_BROWSER_COMMAND` | `tools.web.fetch.browserCommand` | Direct `agent-browser` executable name/path. Default `agent-browser`; shell fragments are not evaluated. |
 
-Hound is built in and requires no endpoint. Remove the retired
+The local web provider is built in and requires no endpoint. Remove the retired
 `MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT` and `MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT`
 variables (including empty values); their presence is a migration error, even
-when Hound is unselected. See [native Hound](../tools/web-research.md#native-hound-opt-in).
+when local is unselected. See [native local provider](../tools/web-research.md#native-local-provider-opt-in).
 
 
 ### Durable continuations

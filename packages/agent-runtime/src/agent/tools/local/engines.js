@@ -13,11 +13,11 @@ import { parseHTML } from "linkedom";
 import { canonicalizeSearchUrl, collapseWhitespace, wrappedSearchDestination } from "../web-search-providers/shared.js";
 import { duckDuckGoRegion } from "../web-search-country.js";
 
-export const HOUND_ENGINES = Object.freeze([
+export const LOCAL_ENGINES = Object.freeze([
   { name: "duckduckgo", origin: "https://html.duckduckgo.com", date: true, country: true },
 ]);
 
-export function houndEngineRequest(engine, query, timeRange, language, country) {
+export function localEngineRequest(engine, query, timeRange, language, country) {
   const headers = { "Accept-Language": language || "en-US,en;q=0.8" };
   const date = { day: "d", month: "m", year: "y" }[timeRange];
   if (engine.name === "duckduckgo") {
@@ -25,10 +25,10 @@ export function houndEngineRequest(engine, query, timeRange, language, country) 
     if (date) body.set("df", date);
     return { url: `${engine.origin}/html/`, init: { method: "POST", body, headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" } } };
   }
-  throw Object.assign(new Error(`Unsupported Hound engine (${engine?.name}).`), { code: "endpoint_not_supported" });
+  throw Object.assign(new Error(`Unsupported local search engine (${engine?.name}).`), { code: "endpoint_not_supported" });
 }
 
-export function parseHoundEngine(engine, html) {
+export function parseLocalEngine(engine, html) {
   const { document } = parseHTML(html);
   for (const node of document.querySelectorAll("script,style")) node.remove();
   const results = [];
@@ -45,7 +45,7 @@ export function parseHoundEngine(engine, html) {
     if (results.length >= 30) break;
   }
   if (!results.length && !/\bno results (?:found|for|were found)\b/iu.test(document.documentElement?.textContent || "")) {
-    throw Object.assign(new Error("Unrecognized Hound engine result layout."), { code: "invalid_response" });
+    throw Object.assign(new Error("Unrecognized local engine result layout."), { code: "invalid_response" });
   }
   return results;
 }
@@ -83,7 +83,7 @@ function dedupeKey(url) {
  * the merge still dedupes and diversifies hosts. No neural model or authority
  * labels.
  */
-export function mergeHoundResults(lists, { includeDomains = [], excludeDomains = [] } = {}) {
+export function mergeLocalResults(lists, { includeDomains = [], excludeDomains = [] } = {}) {
   const byUrl = new Map();
   const matches = (host, domain) => host === domain || host.endsWith(`.${domain}`);
   for (const list of lists) for (const [position, result] of list.entries()) {
@@ -105,5 +105,5 @@ export function mergeHoundResults(lists, { includeDomains = [], excludeDomains =
     const count = counts.get(host) ?? 0; counts.set(host, count + 1);
     (includeDomains.length === 1 || count < 2 ? leading : deferred).push(result);
   }
-  return [...leading, ...deferred].map(({ engine: _engine, position: _position, engines: _engines, ...result }) => ({ ...result, backend: "hound" }));
+  return [...leading, ...deferred].map(({ engine: _engine, position: _position, engines: _engines, ...result }) => ({ ...result, backend: "local" }));
 }

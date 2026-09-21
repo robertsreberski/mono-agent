@@ -51,15 +51,23 @@ describe("explicit web provider selection", () => {
     expect(config?.search.parallel).toEqual({ apiKeyEnv: "TEST_PARALLEL_KEY" });
     expect(JSON.stringify(config)).not.toContain("sentinel-secret");
   });
-  it("selects native Hound without endpoints and preserves explicit ordering", () => {
-    expect(load({ search: { backend: "hound" }, fetch: { provider: "hound" } })).toMatchObject({ search: { backend: "hound" }, fetch: { provider: "hound" } });
-    expect(load({}, { MONO_AGENT_WEB_SEARCH_BACKEND: "parallel,hound", MONO_AGENT_WEB_FETCH_PROVIDER: "local,hound" })).toMatchObject({ search: { backend: ["parallel", "hound"] }, fetch: { provider: ["local", "hound"] } });
+  it("selects the native local provider without endpoints and preserves explicit ordering", () => {
+    expect(load({ search: { backend: "local" }, fetch: { provider: "local" } })).toMatchObject({ search: { backend: "local" }, fetch: { provider: "local" } });
+    expect(load({}, { MONO_AGENT_WEB_SEARCH_BACKEND: "parallel,local", MONO_AGENT_WEB_FETCH_PROVIDER: "local,parallel" })).toMatchObject({ search: { backend: ["parallel", "local"] }, fetch: { provider: ["local", "parallel"] } });
+  });
+  it("migrates a renamed search backend to local", () => {
+    expect(() => load({ search: { backend: "hound" } })).toThrow("`tools.web.search.backend` value `hound` was renamed to `local`; use `local` instead.");
+    expect(() => load({}, { MONO_AGENT_WEB_SEARCH_BACKEND: "parallel,hound" })).toThrow("was renamed to `local`");
+  });
+  it("migrates a renamed fetch provider with its behavior delta", () => {
+    expect(() => load({ fetch: { provider: "hound" } })).toThrow("performs no robots preflight");
+    expect(() => load({}, { MONO_AGENT_WEB_FETCH_PROVIDER: "local,hound" })).toThrow("was renamed to `local`");
   });
   it.each(["", " ", "http://127.0.0.1:8765/mcp", "http://user:sentinel@remote.example/mcp", "not-a-url"])("rejects obsolete JSON and env endpoints without echoing values (%s)", (endpoint) => {
     for (const kind of ["search", "fetch"] as const) {
-      expect(() => load({ [kind]: { hound: { endpoint } } })).toThrow(/was removed: Hound is built in/);
-      expect(() => load({}, { [`MONO_AGENT_WEB_${kind.toUpperCase()}_HOUND_ENDPOINT`]: endpoint })).toThrow(/was removed: Hound is built in/);
-      expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...env, [`MONO_AGENT_WEB_${kind.toUpperCase()}_HOUND_ENDPOINT`]: endpoint } })).toThrow(/was removed: Hound is built in/);
+      expect(() => load({ [kind]: { hound: { endpoint } } })).toThrow(new RegExp(`was removed: local ${kind} is built in`));
+      expect(() => load({}, { [`MONO_AGENT_WEB_${kind.toUpperCase()}_HOUND_ENDPOINT`]: endpoint })).toThrow(/was removed: the local web provider is built in/);
+      expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...env, [`MONO_AGENT_WEB_${kind.toUpperCase()}_HOUND_ENDPOINT`]: endpoint } })).toThrow(/was removed: (the local web provider|local (search|fetch)) is built in/);
       try { load({ [kind]: { hound: { endpoint } } }); } catch (error) { expect(String(error)).not.toContain("sentinel"); }
     }
   });

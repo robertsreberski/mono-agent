@@ -3,7 +3,7 @@
 // completed decisions only. No shielded tasks, fail-open misses or bypass.
 // Copyright (c) 2026 Bishesh Bhandari, MIT; see THIRD_PARTY_NOTICES.md.
 import robotsParser from "robots-parser";
-import { assertHoundTarget, houndRequest, HOUND_USER_AGENT } from "./network.js";
+import { assertLocalTarget, localRequest, LOCAL_USER_AGENT } from "./network.js";
 import { withWebDeadline } from "../web-request.js";
 
 // robots-parser's legacy ambient-module declaration is ambiguous under NodeNext;
@@ -13,9 +13,9 @@ const caches = new WeakMap();
 const TTL = 3_600_000;
 const LIMIT = 64;
 
-export async function assertHoundRobots(url, options) {
-  const target = assertHoundTarget(url, options);
-  const userAgent = options.userAgent ?? HOUND_USER_AGENT;
+export async function assertLocalRobots(url, options) {
+  const target = assertLocalTarget(url, options);
+  const userAgent = options.userAgent ?? LOCAL_USER_AGENT;
   // Search state or explicit fetch owner isolates lifecycle. No in-flight
   // sharing: cancelling one call never leaves another owner's request alive.
   const owner = options.robotsOwner ?? options.searchState ?? options;
@@ -28,12 +28,12 @@ export async function assertHoundRobots(url, options) {
     entry = await withWebDeadline(options.signal, 5_000, async (signal) => {
       let robotsUrl = new URL("/robots.txt", target).href;
       for (let hop = 0; hop <= 2; hop += 1) {
-        const { response, text } = await houndRequest(robotsUrl, { ...options, signal, userAgent }, {}, 64 * 1024);
+        const { response, text } = await localRequest(robotsUrl, { ...options, signal, userAgent }, {}, 64 * 1024);
         signal.throwIfAborted();
         if (response.status >= 300 && response.status < 400) {
           if (hop === 2 || !response.headers.get("location")) throw robotsError("robots_unavailable");
           robotsUrl = new URL(response.headers.get("location"), robotsUrl).href;
-          continue; // houndRequest gates the computed destination before admission
+          continue; // localRequest gates the computed destination before admission
         }
         if ([404, 410].includes(response.status)) return { parser: null, expires: Date.now() + TTL };
         if (!response.ok || /<(?:!doctype|html|head|body)\b/iu.test(text)) throw robotsError("robots_unavailable");
@@ -60,5 +60,5 @@ export async function assertHoundRobots(url, options) {
 }
 
 function robotsError(code) {
-  return Object.assign(new Error(`Hound robots check refused (${code}).`), { code });
+  return Object.assign(new Error(`Local robots check refused (${code}).`), { code });
 }
