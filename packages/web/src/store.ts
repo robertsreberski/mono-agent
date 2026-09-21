@@ -289,6 +289,8 @@ export type CronReplyReservationResult =
   | { readonly kind: "tombstoned"; readonly operation: StoredCronReplyOperation };
 
 interface ProcessJobCardRow {
+  state: ProcessJobState;
+  completed_at: string | null;
   source_id: string;
   job_id: string;
   delivery_key: string;
@@ -539,13 +541,7 @@ const messageSearchBody = (source: "new" | "m"): string =>
  * finds accented prose. The write triggers are guarded on `json_valid` because
  * an unindexed message is one missing search hit, while a failed insert would
  * be a lost message.
- */
-const MESSAGE_SEARCH_REINDEX_SQL = `
-        DELETE FROM message_search WHERE rowid = old.rowid;
-        INSERT INTO message_search(rowid, body)
-        SELECT new.rowid, (${messageSearchBody("new")});`;
-
-/**
+ *
  * A streaming answer is rewritten every ~50 ms, and re-extracting a large
  * message's text on each snapshot costs several times the row write itself
  * (measured at ~6x, and ~23 ms per snapshot on the largest real messages). A
@@ -558,25 +554,25 @@ const MESSAGE_SEARCH_REINDEX_SQL = `
  * hole, a process that dies mid-turn.
  */
 const MESSAGE_SEARCH_SCHEMA_SQL = `
+      CREATE TABLE IF NOT EXISTS message_search_writes (message_id TEXT PRIMARY KEY);
       CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(
         body,
         tokenize='unicode61 remove_diacritics 2'
       );
       CREATE TRIGGER IF NOT EXISTS message_search_insert
         AFTER INSERT ON messages
-        WHEN json_valid(new.parts_json) AND new.status <> 'running' BEGIN
+        WHEN new.status <> 'running' AND json_valid(new.parts_json) BEGIN
         INSERT INTO message_search(rowid, body)
         SELECT new.rowid, (${messageSearchBody("new")});
       END;
       CREATE TRIGGER IF NOT EXISTS message_search_update
-        AFTER UPDATE OF parts_json ON messages
-        WHEN json_valid(new.parts_json) AND new.status <> 'running' BEGIN
-        ${MESSAGE_SEARCH_REINDEX_SQL}
-      END;
-      CREATE TRIGGER IF NOT EXISTS message_search_settle
-        AFTER UPDATE OF status ON messages
-        WHEN json_valid(new.parts_json) AND old.status = 'running' AND new.status <> 'running' BEGIN
-        ${MESSAGE_SEARCH_REINDEX_SQL}
+        AFTER UPDATE OF parts_json, status ON messages
+        WHEN (old.status <> 'running' OR new.status <> 'running')
+          AND NOT EXISTS (SELECT 1 FROM message_search_writes WHERE message_id = new.id) BEGIN
+        DELETE FROM message_search WHERE rowid = old.rowid;
+        INSERT INTO message_search(rowid, body)
+        SELECT new.rowid, (${messageSearchBody("new")})
+        WHERE new.status <> 'running' AND json_valid(new.parts_json);
       END;
       CREATE TRIGGER IF NOT EXISTS message_search_delete
         AFTER DELETE ON messages BEGIN
@@ -729,6 +725,8 @@ export interface StoredLiveInput {
  * number, and a delta nobody wrote would be a version that does not exist.
  */
 export interface StoredMessageWrite {
+  /** UTF-8 snapshot size already measured during persistence; never serialize for pacing. */
+  readonly serializedBytes?: number;
   readonly message: WebMessage;
   readonly delta?: WebMessageDelta;
   readonly attributionChanged?: true;
@@ -846,7 +844,10 @@ export interface UpsertWebProcessJobCardInput {
   readonly replyParts?: readonly AgentReplyPart[];
 }
 
+const STREAM_SEQUENCE_CONFLICT = Symbol("stream sequence conflict");
+
 export class WebStore {
+  private readonly streamSnapshots = new Map<string, WebMessage>();
   readonly paths: WebStatePaths;
   private readonly database: DatabaseSync;
   private readonly clock: () => Date;
@@ -916,6 +917,7 @@ export class WebStore {
     // Drop the cached statements first: they hold native handles onto the
     // connection this is about to close.
     this.partsWriteStatements.clear();
+    this.streamSnapshots.clear();
     this.database.close();
   }
 
@@ -2171,8 +2173,8 @@ export class WebStore {
         this.database.prepare(`
           INSERT INTO process_job_cards (
             source_id, job_id, delivery_key, thread_id, message_id,
-            projection_sha256, response_text, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            projection_sha256, response_text, created_at, updated_at, state, completed_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           input.sourceId,
           projection.jobId,
@@ -2183,6 +2185,8 @@ export class WebStore {
           input.responseText ?? null,
           now,
           now,
+          projection.state,
+          projection.timestamps.completedAt ?? null,
         );
         this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
           .run(now, input.threadId);
@@ -2212,6 +2216,10 @@ export class WebStore {
       || priorPart.job.jobId !== projection.jobId
       || priorParts.length !== 1 + priorReplyParts.length) {
       throw new WebConsoleError("storage_corrupt", "A retained process-job card has invalid content.", 500);
+    }
+    if (existing.state !== priorPart.job.state
+      || existing.completed_at !== (priorPart.job.timestamps.completedAt ?? null)) {
+      throw new WebConsoleError("storage_corrupt", "A retained process-job projection disagrees with its message.", 500);
     }
     assertProcessJobCardTransition(priorPart.job, projection);
     if (priorPart.job.kind === "internal" && projection.kind === "internal" && priorPart.job.subagentProgress
@@ -2257,9 +2265,10 @@ export class WebStore {
       );
       this.database.prepare(`
         UPDATE process_job_cards
-        SET projection_sha256 = ?, response_text = ?, updated_at = ?
+        SET projection_sha256 = ?, response_text = ?, updated_at = ?, state = ?, completed_at = ?
         WHERE source_id = ? AND job_id = ?
-      `).run(projectionSha256, responseText ?? null, now, input.sourceId, projection.jobId);
+      `).run(projectionSha256, responseText ?? null, now, projection.state,
+        projection.timestamps.completedAt ?? null, input.sourceId, projection.jobId);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, input.threadId);
       this.recordThreadRevision(input.threadId, "process_job_card_updated", now);
@@ -2756,11 +2765,8 @@ export class WebStore {
         SELECT thread_id FROM turns WHERE status = 'running'
         UNION
         SELECT c.thread_id
-          FROM messages m
-          JOIN process_job_cards c ON c.message_id = m.id AND c.thread_id = m.thread_id
-          JOIN json_each(m.parts_json) part
-         WHERE json_extract(part.value, '$.type') = 'process-job'
-           AND json_extract(part.value, '$.job.state') IN ('queued', 'starting', 'running')
+          FROM process_job_cards c
+         WHERE c.state IN ('queued', 'starting', 'running')
       )
       SELECT t.id AS id, t.source_id AS source_id
         FROM active a
@@ -2872,20 +2878,31 @@ export class WebStore {
       );
     }
     values.push(limit + 1);
+    // Rank and bound KEYS before fetching parts_json. Carrying m.* through the
+    // temporary ORDER BY made SQLite copy multi-megabyte message blobs into its
+    // sorter, even though a page needs only the winning rows.
     const rows = this.database.prepare(`
-      SELECT m.*, ${orderedAt} AS ordered_at, ${rank} AS role_rank, m.rowid AS storage_rowid,
+      WITH page AS MATERIALIZED (
+        SELECT m.rowid AS storage_rowid, ${orderedAt} AS ordered_at,
+          ${rank} AS role_rank, m.created_at AS created_at
+        FROM messages m
+        LEFT JOIN turns t ON t.id = m.turn_id
+        WHERE m.thread_id = ? AND ${visibleMessageSql("m")} ${beforeSql}
+        ORDER BY ordered_at DESC, role_rank DESC, m.created_at DESC, storage_rowid DESC
+        LIMIT ?
+      )
+      SELECT m.*, page.ordered_at, page.role_rank, page.storage_rowid,
         t.finished_at AS turn_finished_at
-      FROM messages m
+      FROM page
+      JOIN messages m ON m.rowid = page.storage_rowid
       LEFT JOIN turns t ON t.id = m.turn_id
-      WHERE m.thread_id = ? AND ${visibleMessageSql("m")} ${beforeSql}
-      ORDER BY ordered_at DESC, role_rank DESC, m.created_at DESC, storage_rowid DESC
-      LIMIT ?
+      ORDER BY page.ordered_at DESC, page.role_rank DESC, page.created_at DESC, page.storage_rowid DESC
     `).all(...values) as unknown as MessagePageRow[];
     const hasMore = rows.length > limit;
     const pageRows = rows.slice(0, limit).reverse();
     const oldest = pageRows[0];
     return {
-      messages: pageRows.map((row) => this.mapMessage(row)),
+      messages: this.mapMessages(pageRows),
       ...(hasMore && oldest !== undefined
         ? {
             nextCursor: encodeCursor({
@@ -4297,17 +4314,18 @@ export class WebStore {
   }
 
   applyStreamFrames(turnId: string, frames: readonly AgentStreamWireFrame[]): StoredMessageWrite {
-    const turn = this.requireTurn(turnId);
-    // Nothing is written for a turn that already settled, so there is no
-    // version for a delta to name.
-    if (turn.status !== "running") return { message: this.requireMessage(turn.assistant_message_id) };
-    // The base read, the frames applied to it and the write are ONE atomic
-    // span, as they already are on the finish path. A delta whose ops were
-    // diffed against a version other than the one its `baseSeq` names is
-    // self-consistent and WRONG -- the one corruption a sequence number cannot
-    // expose, because the console would apply it without complaint.
-    const write = this.transaction(() => {
-      const message = this.requireMessage(turn.assistant_message_id);
+    // Each attempt validates turn lifecycle and message ownership under the
+    // same writer lock as the sequence guard. A different SQLite writer may
+    // settle or reparent the assistant between a conflict rollback and retry.
+    const persist = (): StoredMessageWrite => this.transaction(() => {
+      let turn = this.requireTurn(turnId);
+      const message = (turn.status === "running" ? this.streamSnapshots.get(turnId) : undefined)
+        ?? this.requireMessage(turn.assistant_message_id);
+      if (message.id !== turn.assistant_message_id || message.turnId !== turn.id || message.threadId !== turn.thread_id) {
+        throw new WebConsoleError("storage_corrupt", "A streaming assistant message does not belong to its turn and thread.", 500);
+      }
+      // A settled turn has no write (and therefore no delta) to announce.
+      if (turn.status !== "running") return { message };
       const parts = [...message.parts];
       let actualModel: string | undefined;
       let actualEffort: string | undefined;
@@ -4396,14 +4414,14 @@ export class WebStore {
         }
       }
       if (actualModel !== undefined || actualEffort !== undefined || actualEffectiveEffort !== undefined || attributionChanged) {
-        this.database.prepare(`
+        turn = this.database.prepare(`
           UPDATE turns SET
             model = CASE WHEN ? IS NULL THEN model ELSE ? END,
             effort = CASE WHEN ? = 1 THEN NULL WHEN ? IS NULL THEN effort ELSE ? END,
             effective_effort = CASE WHEN ? = 1 THEN NULL WHEN ? IS NULL THEN effective_effort ELSE ? END,
             routing_json = ?
-          WHERE id = ?
-        `).run(
+          WHERE id = ? RETURNING *
+        `).get(
           actualModel ?? null,
           actualModel ?? null,
           clearEffort ? 1 : 0,
@@ -4414,7 +4432,7 @@ export class WebStore {
           actualEffectiveEffort ?? null,
           serializeRoutingState(routing),
           turnId,
-        );
+        ) as unknown as TurnRow;
       }
       // Diffed on the parts already in hand, before and after: a text delta
       // moves neither the tool-call count nor the phase nor the cost, and it is
@@ -4425,13 +4443,48 @@ export class WebStore {
         runActivityFromParts(message.parts),
         runActivityFromParts(parts),
       );
+      // Match the durable read projection without a JSON round trip. Preserve
+      // unchanged references so append-only deltas stay append-only.
+      for (let index = 0; index < parts.length; index++) {
+        const part = parts[index]!;
+        if (part === message.parts[index]) continue;
+        const durable = canonicalizePersistedPartHistory(durableMessagePart(part));
+        if (!isWebMessagePart(durable)) throw new WebConsoleError("storage_corrupt", "Invalid streaming message part.", 500);
+        parts[index] = durable;
+      }
+      const now = this.now();
+      const serialized = serializeParts(parts);
+      // The cache is optimistic, never authoritative. A stale sequence writes
+      // nothing; roll back routing changes too, reread, and replay the frames.
+      const changed = this.database.prepare(`UPDATE messages SET parts_json = ?, updated_at = ?, seq = seq + 1
+        WHERE id = ? AND turn_id = ? AND thread_id = ? AND seq = ? RETURNING seq`)
+        .get(serialized, now, message.id, turn.id, turn.thread_id, message.seq) as { seq: number } | undefined;
+      if (changed === undefined) throw STREAM_SEQUENCE_CONFLICT;
+      const attribution = runAttribution(turn);
+      const committed: WebMessage = { ...message, parts, updatedAt: now, seq: changed.seq, ...(attribution === undefined ? {} : { attribution }) };
       return {
-        delta: this.writeMessageDelta(message, parts, this.now()),
+        message: committed,
+        serializedBytes: Buffer.byteLength(serialized),
+        delta: { messageId: message.id, baseSeq: message.seq, seq: changed.seq,
+          status: message.status, updatedAt: now, ...(attribution === undefined ? {} : { attribution }), ops: diffParts(message.parts, parts) },
         ...(attributionChanged ? { attributionChanged: true as const } : {}),
         ...(activityChanged ? { activityChanged: true as const } : {}),
       };
     });
-    return { message: this.requireMessage(turn.assistant_message_id), ...write };
+    try {
+      let write: StoredMessageWrite;
+      try { write = persist(); } catch (error) {
+        this.streamSnapshots.delete(turnId);
+        if (error !== STREAM_SEQUENCE_CONFLICT) throw error;
+        write = persist(); // One fresh read under BEGIN IMMEDIATE; no unbounded retry.
+      }
+      if (write.delta === undefined) this.streamSnapshots.delete(turnId);
+      else this.streamSnapshots.set(turnId, write.message);
+      return write;
+    } catch (error) {
+      this.streamSnapshots.delete(turnId);
+      throw error;
+    }
   }
 
   completeTurn(
@@ -5287,6 +5340,7 @@ export class WebStore {
           migrateMonitorWakeDeliveries: () => this.migrateMonitorWakeDeliveries(),
           suppressSilentCronHistory: () => this.suppressSilentCronHistory(),
           backfillMessageSearch: () => this.database.exec(MESSAGE_SEARCH_BACKFILL_SQL),
+          refreshMessageSearch: () => this.database.exec(MESSAGE_SEARCH_SCHEMA_SQL),
         });
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
       } catch (error) {
@@ -5714,6 +5768,7 @@ export class WebStore {
   ): StoredMessageWrite | undefined {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") return undefined;
+    this.streamSnapshots.delete(turnId);
     const existing = this.requireMessage(turn.assistant_message_id);
     let parts = [...existing.parts];
     if (finalText !== undefined && finalText.length > 0) reconcileFinalText(parts, finalText);
@@ -5935,11 +5990,29 @@ export class WebStore {
       statement = this.database.prepare(sql);
       this.partsWriteStatements.set(sql, statement);
     }
-    const row = statement.get(...values, id) as unknown as { seq: number } | undefined;
-    if (row === undefined) {
-      throw new WebConsoleError("storage_corrupt", `Message ${id} is missing from this conversation.`, 500);
-    }
-    return { baseSeq: row.seq - 1, seq: row.seq };
+    const prepared = statement;
+    const persist = (): { readonly baseSeq: number; readonly seq: number } => {
+      // This transaction-local marker suppresses only the fallback JSON trigger.
+      // It contains no prose and is removed before commit. A rollback/crash
+      // removes it with the message/FTS write; independent SQL writers retain
+      // their trigger-backed indexing. Never disable triggers connection-wide.
+      const precomputeSearch = columns.status !== undefined && columns.status !== "running";
+      if (precomputeSearch) this.database.prepare("INSERT INTO message_search_writes(message_id) VALUES (?)").run(id);
+      const row = prepared.get(...values, id) as unknown as { seq: number } | undefined;
+      if (row === undefined) {
+        throw new WebConsoleError("storage_corrupt", `Message ${id} is missing from this conversation.`, 500);
+      }
+      if (precomputeSearch) {
+        const body = parts.filter((part): part is Extract<WebMessagePart, { type: "text" }> => part.type === "text")
+          .map((part) => part.text).join(" ").replace(/[\u0002\u0003]/gu, "");
+        this.database.prepare("DELETE FROM message_search WHERE rowid = (SELECT rowid FROM messages WHERE id = ?)").run(id);
+        this.database.prepare("INSERT INTO message_search(rowid, body) SELECT rowid, ? FROM messages WHERE id = ?").run(body, id);
+        this.database.prepare("DELETE FROM message_search_writes WHERE message_id = ?").run(id);
+      }
+      return { baseSeq: row.seq - 1, seq: row.seq };
+    };
+    // Initialization owns a transaction before the runtime depth counter exists.
+    return this.database.isTransaction ? persist() : this.transaction(persist);
   }
 
   /**
@@ -5984,49 +6057,76 @@ export class WebStore {
   }
 
   private mapMessage(row: MessageRow): WebMessage {
-    const attachments = this.database
-      .prepare("SELECT * FROM attachments WHERE message_id = ? AND origin = 'upload' ORDER BY created_at, id")
-      .all(row.id) as unknown as AttachmentRow[];
-    const storedParts = parseParts(row.parts_json);
-    const quote = quoteFromParts(storedParts);
-    const liveInputStatus = liveInputStatusFromParts(storedParts);
-    const role = normalizeRole(row.role);
-    const finishedAt = role === "assistant" ? this.turnFinishedAt(row) : undefined;
-    const attribution = role === "assistant" && row.turn_id !== null
-      ? runAttribution(this.requireTurn(row.turn_id))
-      : undefined;
-    return {
-      id: row.id,
-      threadId: row.thread_id,
-      ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
-      role,
-      ...(quote === undefined ? {} : { quote }),
-      parts: storedParts.filter(
-        (part) => part.type !== "telemetry"
-          || (part.event !== QUOTE_TELEMETRY_EVENT && part.event !== LIVE_INPUT_TELEMETRY_EVENT),
-      ),
-      attachments: attachments.map((attachment) => toWebAttachment(mapStoredAttachment(attachment))),
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      ...(finishedAt === undefined ? {} : { finishedAt }),
-      status: normalizeMessageStatus(row.status),
-      ...(liveInputStatus === undefined ? {} : { liveInputStatus }),
-      ...(attribution === undefined ? {} : { attribution }),
-      seq: row.seq,
-    };
+    return this.mapMessages([row])[0] as WebMessage;
   }
 
   /**
-   * The turn's terminal stamp, which `finishTurnInTransaction` writes with the
-   * message status. A page query projects it from its own join; only a
-   * single-row read pays for a lookup.
+   * Hydrate a bounded message set with a constant number of statements.
+   *
+   * A transcript page used to query attachments once per row and the turn once
+   * per assistant row. Besides the statement count, every turn lookup prepared
+   * and crossed the native SQLite boundary separately. The page already owns a
+   * bounded id set, so both relations are read once and grouped here.
    */
-  private turnFinishedAt(row: MessageRow): string | undefined {
-    if (row.turn_id === null) return undefined;
-    if (row.turn_finished_at !== undefined) return row.turn_finished_at ?? undefined;
-    const turn = this.database.prepare("SELECT finished_at FROM turns WHERE id = ?")
-      .get(row.turn_id) as unknown as { finished_at: string | null } | undefined;
-    return turn?.finished_at ?? undefined;
+  private mapMessages(rows: readonly MessageRow[]): WebMessage[] {
+    if (rows.length === 0) return [];
+    const messageIds = rows.map((row) => row.id);
+    const attachmentRows = this.database.prepare(`
+      SELECT * FROM attachments
+      WHERE message_id IN (SELECT value FROM json_each(?)) AND origin = 'upload'
+      ORDER BY message_id, created_at, id
+    `).all(JSON.stringify(messageIds)) as unknown as AttachmentRow[];
+    const attachments = new Map<string, AttachmentRow[]>();
+    for (const attachment of attachmentRows) {
+      if (attachment.message_id === null) continue;
+      const owned = attachments.get(attachment.message_id) ?? [];
+      owned.push(attachment);
+      attachments.set(attachment.message_id, owned);
+    }
+    const turnIds = [...new Set(rows.flatMap((row) =>
+      normalizeRole(row.role) === "assistant" && row.turn_id !== null ? [row.turn_id] : []))];
+    const turns = turnIds.length === 0
+      ? new Map<string, TurnRow>()
+      : new Map((this.database.prepare(`
+          SELECT * FROM turns WHERE id IN (SELECT value FROM json_each(?))
+        `).all(JSON.stringify(turnIds)) as unknown as TurnRow[]).map((turn) => [turn.id, turn]));
+
+    return rows.map((row) => {
+      const storedParts = parseParts(row.parts_json);
+      const quote = quoteFromParts(storedParts);
+      const liveInputStatus = liveInputStatusFromParts(storedParts);
+      const role = normalizeRole(row.role);
+      // A missing turn is storage corruption. Keep the established error shape
+      // on that exceptional path without putting one lookup per row back on the
+      // healthy page path.
+      const turn = role === "assistant" && row.turn_id !== null
+        ? turns.get(row.turn_id) ?? this.requireTurn(row.turn_id)
+        : undefined;
+      const finishedAt = role === "assistant"
+        ? row.turn_finished_at !== undefined ? row.turn_finished_at ?? undefined : turn?.finished_at ?? undefined
+        : undefined;
+      const attribution = turn === undefined ? undefined : runAttribution(turn);
+      return {
+        id: row.id,
+        threadId: row.thread_id,
+        ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
+        role,
+        ...(quote === undefined ? {} : { quote }),
+        parts: storedParts.filter(
+          (part) => part.type !== "telemetry"
+            || (part.event !== QUOTE_TELEMETRY_EVENT && part.event !== LIVE_INPUT_TELEMETRY_EVENT),
+        ),
+        attachments: (attachments.get(row.id) ?? [])
+          .map((attachment) => toWebAttachment(mapStoredAttachment(attachment))),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        ...(finishedAt === undefined ? {} : { finishedAt }),
+        status: normalizeMessageStatus(row.status),
+        ...(liveInputStatus === undefined ? {} : { liveInputStatus }),
+        ...(attribution === undefined ? {} : { attribution }),
+        seq: row.seq,
+      };
+    });
   }
 
   /** The newest turn of each listed conversation, by thread id. */
@@ -6130,15 +6230,22 @@ export class WebStore {
    * conversation's attachments, turn row and finish stamp.
    */
   private lastMessagePreviews(threadIds: readonly string[]): Map<string, string> {
+    // The window ranks keys only. Selecting m.* inside it made SQLite carry
+    // every candidate parts_json through the partition sorter before discarding
+    // all but one row per conversation.
     const rows = this.database.prepare(`
-      SELECT * FROM (
-        SELECT m.*, ROW_NUMBER() OVER (
-          PARTITION BY m.thread_id ORDER BY m.created_at DESC, m.rowid DESC
-        ) AS rn
+      WITH latest AS MATERIALIZED (
+        SELECT m.rowid AS storage_rowid, m.thread_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY m.thread_id ORDER BY m.created_at DESC, m.rowid DESC
+          ) AS rn
         FROM messages m
         WHERE m.thread_id IN (SELECT value FROM json_each(?)) AND ${visibleMessageSql("m")} AND NOT (${markerMessageSql("m")})
-      ) WHERE rn = 1
-    `).all(JSON.stringify(threadIds)) as unknown as MessageRow[];
+      )
+      SELECT latest.thread_id, m.parts_json
+      FROM latest JOIN messages m ON m.rowid = latest.storage_rowid
+      WHERE latest.rn = 1
+    `).all(JSON.stringify(threadIds)) as unknown as Array<{ thread_id: string; parts_json: string }>;
     const previews = new Map<string, string>();
     for (const row of rows) {
       const parts = parseParts(row.parts_json);
@@ -6163,15 +6270,10 @@ export class WebStore {
   private jobActivities(threadIds: readonly string[]): Map<string, WebJobActivity> {
     const rows = this.database.prepare(`
       WITH jobs AS (
-        SELECT m.thread_id AS thread_id,
-               json_extract(part.value, '$.job.state') AS state,
-               json_extract(part.value, '$.job.timestamps.completedAt') AS completed_at,
-               c.response_text, m.rowid AS ordinal
-        FROM messages m
-        JOIN process_job_cards c ON c.message_id = m.id AND c.thread_id = m.thread_id
-        JOIN json_each(m.parts_json) part
-        WHERE m.thread_id IN (SELECT value FROM json_each(?))
-          AND json_extract(part.value, '$.type') = 'process-job'
+        SELECT c.thread_id, c.state, c.completed_at, c.response_text, m.rowid AS ordinal
+        FROM process_job_cards c
+        CROSS JOIN messages m ON m.id = c.message_id
+        WHERE c.thread_id IN (SELECT value FROM json_each(?))
       )
       SELECT g.thread_id AS thread_id,
              count(*) FILTER (WHERE g.state = 'queued') AS queued,
