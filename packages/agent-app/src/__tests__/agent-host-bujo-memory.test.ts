@@ -373,6 +373,46 @@ describe("createConfiguredMemory — bujo mode", () => {
       { memoryRuntime: createRecordingRuntime() },
     )).rejects.toThrow(/LM_STUDIO_API_KEY.*no resolved value/iu);
   });
+
+  it("resolves a declared embedding apiKeyEnv at managed-memory startup", async () => {
+    // Without resolve-at-use the loader carries only the name, so startup
+    // throws "no resolved value" even with the variable set.
+    const dir = await tempDir();
+    vi.stubEnv("MANAGED_TEST_API_KEY", "env-resolved-secret");
+    const fetchSpy = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
+      return new Response(JSON.stringify({
+        data: body.input.map(() => ({ embedding: [1, 0, 0, 0] })),
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const store = await createConfiguredMemory(
+      bujoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        memoryRoot: join(dir, "resolved-memory"),
+        embeddings: {
+          provider: "lmstudio",
+          model: "text-embedding-test",
+          endpoint: "http://localhost:1234",
+          apiKeyEnv: "MANAGED_TEST_API_KEY",
+          dim: 4,
+        },
+        llm: {
+          provider: "agent-host",
+          model: "openai-codex:gpt-5.5",
+        },
+      }),
+      { memoryRuntime: createRecordingRuntime() },
+    );
+
+    await (store as unknown as { load(conversationId: string, query: string): Promise<unknown> })
+      .load("conv-1", "remember the provider");
+
+    const headers = fetchSpy.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(headers?.["authorization"]).toBe("Bearer env-resolved-secret");
+    await (store as unknown as { close(): Promise<void> }).close();
+  });
 });
 
 describe("createConfiguredMemory — memory LLM tracing", () => {

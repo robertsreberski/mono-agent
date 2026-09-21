@@ -414,6 +414,30 @@ describe("createRecallStore", () => {
     })).rejects.toThrow(/LM_STUDIO_API_KEY.*no resolved value/iu);
   });
 
+  it("resolves a declared apiKeyEnv at use and sends it as the bearer token", async () => {
+    // Without resolve-at-use the loader carries only the name, so the provider
+    // would fail to authenticate even with the variable set.
+    vi.stubEnv("RECALL_TEST_API_KEY", "env-resolved-secret");
+    const fetchSpy = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
+      return new Response(JSON.stringify({
+        data: body.input.map(() => ({ embedding: [1, 0, 0] })),
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const provider = await createMemoryEmbeddingProvider({
+      provider: "lmstudio",
+      model: "text-embedding-test",
+      endpoint: "http://localhost:1234",
+      apiKeyEnv: "RECALL_TEST_API_KEY",
+    });
+    await expect(provider.embed(["remember this"])).resolves.toEqual([[1, 0, 0]]);
+
+    const headers = fetchSpy.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(headers?.["authorization"]).toBe("Bearer env-resolved-secret");
+  });
+
   it("builds an FTS-only store when settings carry no embeddings (F12)", async () => {
     // No embeddings → lite tier → FTS recall answers without any Ollama/OpenAI backend.
     await seedRecallMemory(dir, "The deploy pipeline uses blue-green releases on Fridays.");

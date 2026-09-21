@@ -6,6 +6,7 @@ import type {
 } from "@mono-agent/memory/search";
 import type { MemoryStatus, MemoryType } from "@mono-agent/memory/store";
 import { isConversationRelativeQuery } from "@mono-agent/memory/bujo";
+import { normalizeOptionalString } from "@mono-agent/agent-contracts";
 import * as z from "zod/v4";
 
 import type {
@@ -144,7 +145,12 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
 export async function createMemoryEmbeddingProvider(
   embeddings: MemoryRecallEmbeddings,
 ): Promise<EmbeddingProvider> {
-  if (embeddings.apiKeyEnv !== undefined && embeddings.apiKey === undefined) {
+  // Same resolve-at-use contract as managed memory: the loader carries only
+  // the credential name, so the value is read here (declared name wins).
+  const embeddingsApiKey = embeddings.apiKeyEnv !== undefined
+    ? normalizeOptionalString(process.env[embeddings.apiKeyEnv])
+    : embeddings.apiKey;
+  if (embeddings.apiKeyEnv !== undefined && embeddingsApiKey === undefined) {
     throw new Error(
       `memory.embeddings.apiKeyEnv ${embeddings.apiKeyEnv} is declared but has no resolved value; ` +
       `set ${embeddings.apiKeyEnv} before using semantic memory.`,
@@ -154,7 +160,7 @@ export async function createMemoryEmbeddingProvider(
     provider: embeddings.provider,
     model: embeddings.model,
     ...(embeddings.endpoint === undefined ? {} : { endpoint: embeddings.endpoint }),
-    ...(embeddings.apiKey === undefined ? {} : { apiKey: embeddings.apiKey }),
+    ...(embeddingsApiKey === undefined ? {} : { apiKey: embeddingsApiKey }),
     timeoutMs: embeddings.timeoutMs ?? DEFAULT_RECALL_EMBEDDINGS_TIMEOUT_MS,
   };
   const breakerOptions: CircuitBreakerEmbeddingOptions = {
