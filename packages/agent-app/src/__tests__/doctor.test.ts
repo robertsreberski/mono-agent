@@ -3870,8 +3870,36 @@ describe("validateMonoAgentFolder — web tools", () => {
     expect(fetchSpy.mock.calls.every(([, init]) => !("Authorization" in ((init as RequestInit).headers as Record<string, string>)))).toBe(true);
   });
 
-  it("stops an Ollama Web Search probe response that exceeds its streamed byte limit", async () => {
-    const oversized = new Uint8Array((2 * 1024 * 1024) + 1);
+  it("sends the resolved apiKeyEnv bearer on the hosted Ollama probe", async () => {
+    // Without resolve-at-use the probe sends "Bearer undefined" even with the
+    // variable set, misdiagnosing a correct configuration as an auth failure.
+    const fetchSpy = vi.fn(async (_url: unknown, _init?: RequestInit) =>
+      new Response(JSON.stringify({ results: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({
+      search: {
+        backend: "ollama",
+        ollama: { baseUrl: "https://ollama.com", apiKeyEnv: "DOCTOR_TEST_OLLAMA_KEY" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: { DOCTOR_TEST_OLLAMA_KEY: "env-resolved-key" },
+      cwd: dir,
+      configPath,
+      liveness: true,
+    });
+    expect(sectionById(report, "web-tools").details).toContain(
+      "Ollama Web Search JSON probe succeeded.",
+    );
+    const headers = fetchSpy.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(headers?.["Authorization"]).toBe("Bearer env-resolved-key");
+  });
+
+  it("stops an Ollama Web Search probe response that exceeds its streamed byte limit", async () => {    const oversized = new Uint8Array((2 * 1024 * 1024) + 1);
     const fetchSpy = vi.fn().mockResolvedValue(new Response(new ReadableStream({
       start(controller) {
         controller.enqueue(oversized);

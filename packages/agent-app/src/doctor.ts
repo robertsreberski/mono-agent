@@ -92,7 +92,7 @@ import {
   type DurableContinuationRecord,
 } from "./continuation-store-types.js";
 import { CONTINUATION_STATES, continuationDigest, type ContinuationState } from "./continuations.js";
-import { isProcessJobState, PROCESS_JOB_STATES } from "@mono-agent/agent-contracts";
+import { isProcessJobState, normalizeOptionalString, PROCESS_JOB_STATES } from "@mono-agent/agent-contracts";
 import {
   hasSubagentObligation,
   hasUnresolvedSubagentOwnership,
@@ -1856,7 +1856,7 @@ async function webToolsSection(
       details.push(chained ? "Ollama Web Search readiness is checked lazily when the chain reaches it." : "Ollama Web Search liveness was not probed.");
     } else {
       details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : fallback}`);
-      const probe = await probeOllamaWebSearch(ollama);
+      const probe = await probeOllamaWebSearch(ollama, input.env);
       if (probe.ok) details.push("Ollama Web Search JSON probe succeeded.");
       else {
         status = "waiting";
@@ -1939,10 +1939,15 @@ async function webToolsSection(
 
 async function probeOllamaWebSearch(
   config: NonNullable<NonNullable<MonoAgentConfig["tools"]["web"]>["search"]["ollama"]>,
+  env: Readonly<Record<string, string | undefined>>,
 ): Promise<{ readonly ok: boolean; readonly reason: string }> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => { ctrl.abort(); }, LIVENESS_PROBE_TIMEOUT_MS);
   const official = config.baseUrl === "https://ollama.com";
+  // Resolve-at-use like every other consumer: the loader carries only the name.
+  const apiKey = config.apiKeyEnv === undefined
+    ? config.apiKey
+    : normalizeOptionalString(env[config.apiKeyEnv]) ?? config.apiKey;
   const paths = official ? ["/api/web_search"] : ["/api/experimental/web_search", "/api/web_search"];
   try {
     for (let index = 0; index < paths.length; index += 1) {
@@ -1951,7 +1956,7 @@ async function probeOllamaWebSearch(
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
-          ...(official ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+          ...(official ? { Authorization: `Bearer ${apiKey}` } : {}),
         },
         body: JSON.stringify({ query: "mono-agent doctor", max_results: 1 }),
         redirect: "error",

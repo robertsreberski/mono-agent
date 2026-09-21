@@ -119,13 +119,19 @@ function normalizeOllamaSearchConfig(input, backend) {
 }
 
 function resolveOllamaApiKey(config) {
+  // Declared-name-authoritative like the other resolve-at-use sites: a declared
+  // apiKeyEnv wins when set and yields nothing when unset (never the inline
+  // literal, which may be stale); without a declared name the inline key stands.
+  const name = config?.apiKeyEnv;
+  if (typeof name === "string" && name.length > 0) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) return undefined;
+    const value = process.env[name]?.trim();
+    return value && value.length > 0 ? value : undefined;
+  }
   if (typeof config?.apiKey === "string" && config.apiKey.trim().length > 0) {
     return config.apiKey.trim();
   }
-  const name = config?.apiKeyEnv;
-  if (typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) return undefined;
-  const value = process.env[name]?.trim();
-  return value && value.length > 0 ? value : undefined;
+  return undefined;
 }
 
 function isPrivateOllamaOrigin(url) {
