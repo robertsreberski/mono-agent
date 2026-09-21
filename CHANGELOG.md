@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a Markdown blog to the marketing site at `/blog/`, with an index,
+  article pages, RSS, sitemap entries, and per-post social cards. The
+  collection ships empty and the index reads intentionally until the first
+  post lands; the authoring contract lives in `marketing/BLOG.md`.
+
 - **Breaking: rename the built-in `hound` web provider to `local`.** Select
   `tools.web.search.backend: "local"` and `tools.web.fetch.provider: "local"`;
   the old `hound` value fails with a migration error naming the new value. For
