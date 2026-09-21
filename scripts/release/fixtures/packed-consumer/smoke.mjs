@@ -164,7 +164,8 @@ async function verifyRetiredTuiAndRunInspection() {
       throw new Error(`Packed traversal guard failed: ${JSON.stringify(traversal)}`);
     }
     const webHelp = await runCapturedCli(process.execPath, [cli, "help", "web"], cwd);
-    if (webHelp.status !== 0 || !webHelp.stdout.includes("Always-on assistant-ui console")) {
+    if (webHelp.status !== 0 || webHelp.stderr !== ""
+      || !webHelp.stdout.includes("Operate the always-on assistant-ui console")) {
       throw new Error(`Packed maintained web help failed: ${JSON.stringify(webHelp)}`);
     }
   } finally {

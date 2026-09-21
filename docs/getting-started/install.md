@@ -119,7 +119,7 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 | `restart` / `stop` / `status` / `logs` | Manage the managed instance (macOS launchd; Linux systemd user service). |
 | `web` | Manage or run the always-on browser console; bare `web` only reports status. |
 | `runs list` / `runs show` | Inspect bounded, redacted local run evidence without loading providers. |
-| `tui` / `sessions` (removed) | Removed — use `mono-agent web` for live operation, `runs list|show` for prior-run diagnostics, and `mono-agent config` for resolved configuration. |
+| `tui` / `sessions` (removed) | Removed — use `mono-agent web` for live operation, `runs list` / `runs show` for prior-run diagnostics, and `mono-agent config` for resolved configuration. |
 | `install-skill` | Install the authoring composer and its documentation MCP companion, or maintain managed project skills. |
 | `backfill` (removed) | Fails with pre-upgrade migration guidance; retained artifacts remain available through `runs`. |
 

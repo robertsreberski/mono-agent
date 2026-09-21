@@ -31,9 +31,9 @@ programmatic surfaces are simply no longer exported.
 | `mono-agent audit-runs` and its `--artifact-dir` flag | `mono-agent runs audit --artifacts <path>` |
 | `mono-agent recipes list \| show <id>` | `mono-agent presets list \| show <id>` |
 | `mono-agent init --recipe <id>` and `mono-agent validate --recipe <id>` | `--preset <id>` |
-| `mono-agent sessions` (Session Recorder launcher) | `mono-agent runs list|show` (recorded-run diagnostics) or `mono-agent web` (live console) |
-| `@mono-agent/session-web`, `live.*` config/env, and the read-only live-event relay APIs | `mono-agent runs list|show` for recorded-run diagnostics or `mono-agent web` for live conversations |
-| `mono-agent tui` and `mono-agent help tui` | `mono-agent web` for live operation, `mono-agent runs list|show` for bounded prior-run diagnostics, and `mono-agent config` for resolved configuration |
+| `mono-agent sessions` (Session Recorder launcher) | `mono-agent runs list` / `mono-agent runs show` (recorded-run diagnostics) or `mono-agent web` (live console) |
+| `@mono-agent/session-web`, `live.*` config/env, and the read-only live-event relay APIs | `mono-agent runs list` / `mono-agent runs show` for recorded-run diagnostics or `mono-agent web` for live conversations |
+| `mono-agent tui` and `mono-agent help tui` | `mono-agent web` for live operation, `mono-agent runs list` / `mono-agent runs show` for bounded prior-run diagnostics, and `mono-agent config` for resolved configuration |
 | `mono-agent-tui` and direct `@mono-agent/tui` imports | Remove the renderer integration and compose against the maintained package that owns the required capability; no compatibility exports were relocated |
 | CLI flag `--fallback-models <csv>` | Repeat `--fallback <ref>` and, when needed, `--fallback-effort <level>` |
 | `memory-bujo` standalone CLI bin | `mono-agent memory <subcommand>` from the agent folder |

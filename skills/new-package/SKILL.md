@@ -124,3 +124,5 @@ When the new package is a channel driver, or adds a new `ChannelId`:
   ```
 
 ## Gotchas
+
+- **Sibling test-shape parity.** When a package has structurally parallel submodules, compare their test listings and cover missing counterpart behavior; an unexplained gap can be an untested path. Use the actual maintained submodule names rather than assuming a retired package or module still exists.
