@@ -354,10 +354,10 @@ function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
       toField(env, {
         id: "runtime.compaction.triggerRatio",
         label: "Compaction trigger ratio",
-        value: String(compaction.triggerRatio ?? 0.70),
+        value: String(compaction.triggerRatio ?? 0.90),
         jsonPresent: json.runtime?.compaction?.triggerRatio !== undefined,
         jsonValue: json.runtime?.compaction?.triggerRatio,
-        defaultValue: 0.70,
+        defaultValue: 0.90,
       }),
       toField(env, {
         id: "runtime.compaction.keepRecentTokens",

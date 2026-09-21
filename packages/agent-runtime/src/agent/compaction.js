@@ -33,7 +33,7 @@
  */
 
 const DEFAULT_CONTEXT_WINDOW = 128000;
-const DEFAULT_TRIGGER_RATIO = 0.70;
+const DEFAULT_TRIGGER_RATIO = 0.90;
 // intelligence-ramp Phase 3: lifted from 16K/20K/12K. Mid-task tool reads
 // (large file edits, long bash output, deep MCP results) were being silently
 // clipped before the agent could reason about them. The 256KB hard ceiling
@@ -100,8 +100,8 @@ export function resolveAgentCompactionPolicy({ toolLimits = {}, compaction = {} 
   // 87.5% by the floor, and very large windows stop reserving absurd amounts.
   const safetyHeadroom = clampInteger(contextWindow * 0.10, 16000, 16000, 48000);
   // Add a tiny scale-aware epsilon before flooring so decimal ratios such as
-  // 0.70 do not lose a token to IEEE-754 representation (372000 * 0.70 is
-  // otherwise 260399.99999999997 in JavaScript).
+  // a configured ratio of 0.70 do not lose a token to IEEE-754 representation
+  // (372000 * 0.70 is otherwise 260399.99999999997 in JavaScript).
   const ratioTrigger = Math.floor((contextWindow * triggerRatio) + (Number.EPSILON * contextWindow));
   const reserveTrigger = Math.max(1, contextWindow - safetyHeadroom);
   const adaptiveKeepRecentTokens = clampInteger(contextWindow * 0.10, 4000, 4000, 20000);

@@ -107,7 +107,7 @@ describe("buildMonoAgentConfigView", () => {
   it("shows adaptive compaction defaults and JSON/env source precedence", () => {
     const defaults = buildView(baseEnv);
     expect(field(defaults, "runtime.compaction.enabled")).toMatchObject({ value: "yes", source: "default" });
-    expect(field(defaults, "runtime.compaction.triggerRatio")).toMatchObject({ value: "0.7", source: "default" });
+    expect(field(defaults, "runtime.compaction.triggerRatio")).toMatchObject({ value: "0.9", source: "default" });
     expect(field(defaults, "runtime.compaction.keepRecentTokens")).toMatchObject({
       value: "adaptive by model",
       source: "default",
