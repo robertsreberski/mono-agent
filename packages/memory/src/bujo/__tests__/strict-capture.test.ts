@@ -128,6 +128,45 @@ describe("strict completed-turn extraction", () => {
     expect(plan.candidates[1]!.text).toBe(short);
   });
 
+  it("drops only the clamp-collided candidate and keeps unrelated siblings", async () => {
+    // Two long facts whose shared opening exceeds the bound but whose tails are
+    // lexically distinct: the pre-clamp pair is NOT a near-duplicate, yet
+    // clamping makes them identical. Without per-candidate handling this would
+    // reject the batch and discard the unrelated sibling with it — the very
+    // batch-loss shape this clamp exists to remove.
+    const shared = "Robert reported that the nightly repository watch job completed its full scan of every tracked "
+      + "pull request and then posted its digest to the console without any error at all on ";
+    expect([...shared].length).toBeGreaterThan(160);
+    const first = `${shared}Monday covering authentication caching pagination throttling logging metrics dashboards alerting `
+      + "backups migrations rollbacks indexing sharding replication failover quotas billing invoices "
+      + "receipts refunds disputes chargebacks settlements payouts ledgers reconciliations audits.";
+    const second = `${shared}Tuesday including onboarding tutorials walkthroughs checklists templates snippets examples samples `
+      + "demos sandboxes playgrounds workshops seminars webinars podcasts newsletters bulletins digests "
+      + "summaries briefs memos minutes agendas transcripts recordings archives forums.";
+    const clamped = [...first].slice(0, 160).join("").trim();
+    expect([...second].slice(0, 160).join("").trim()).toBe(clamped);
+    const sibling = "Morgan prefers strict durable capture.";
+
+    const plan = await extractCapturePlanStrict("completed turn", {
+      id: "clamp-collision",
+      complete: async () => planWithMemoryTexts([first, second, sibling]),
+    });
+
+    expect(plan.candidates).toHaveLength(2);
+    expect(plan.candidates[0]!.text).toBe(clamped);
+    expect(plan.candidates[1]!.text).toBe(sibling);
+  });
+
+  it("still fails the whole attempt for memories the model authored as indistinct", async () => {
+    // Unchanged contract: a pre-clamp duplicate is a model-output defect, not
+    // a host artifact, so it must not be silently dropped.
+    const text = "Morgan prefers strict durable capture.";
+    await expect(extractCapturePlanStrict("completed turn", {
+      id: "authored-duplicate",
+      complete: async () => planWithMemoryTexts([text, text]),
+    })).rejects.toMatchObject({ name: "MemoryModelOutputError" });
+  });
+
   it("keeps structural capture fields strict rather than clamping them", async () => {
     // Truncating an id would silently break entityIds referential integrity,
     // so only free-text memory bodies clamp.

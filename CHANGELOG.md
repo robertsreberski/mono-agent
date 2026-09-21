@@ -11,7 +11,9 @@
   beyond the bound is now trimmed, restoring the tolerance the pre-structured
   capture path applied. Trimming, character-class, and emptiness rules stay
   strict, and structural fields such as entity ids are still rejected rather
-  than truncated.
+  than truncated. When clamping makes two otherwise distinct memories
+  indistinct, only the colliding candidate is dropped; memories the model
+  itself authored as indistinct still fail the whole attempt.
 
 - Raise the configurable ceiling for `subagents.maxTurns` and
   `subagents.definitions[].maxTurns` from 200 to 400. Long single-run

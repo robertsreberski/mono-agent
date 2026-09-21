@@ -147,7 +147,17 @@ ${text}`;
 
 /**
  * Strict completed-turn extraction. Every item is accepted as a whole or the
- * whole attempt fails; no coercion, truncation, filtering, or partial success.
+ * whole attempt fails; no coercion, filtering, or partial success.
+ *
+ * Length is the single exception: memory `text` beyond
+ * `MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS` is clamped rather than rejected,
+ * because rejecting one long sentence discards every sibling memory in the
+ * same response. Returned memory text is therefore bounded model output, not
+ * necessarily verbatim model output. When clamping makes two otherwise
+ * distinct memories indistinct, only the colliding candidate is dropped;
+ * memories the model itself authored as indistinct still fail the whole
+ * attempt. Malformed or unsafe text and every structural field — entity ids,
+ * types, relations — remain strictly all-or-nothing.
  */
 export async function extractCapturePlanStrict(
   text: string,
@@ -200,18 +210,36 @@ export async function extractCapturePlanStrict(
     if (relationKeys.has(key)) throw outputError("capture-extract", "relations must be unique");
     relationKeys.add(key);
   }
-  const candidates = parsed.memories.map((value, index) => strictCandidate(value, index, entityIds));
-  const candidateTokenSets: string[][] = [];
-  for (const candidate of candidates) {
+  const parsedCandidates = parsed.memories.map((value, index) => strictCandidate(value, index, entityIds));
+  const candidates: CandidateMemory[] = [];
+  const clampedTokenSets: string[][] = [];
+  const fullTokenSets: string[][] = [];
+  for (const { candidate, fullText } of parsedCandidates) {
     const tokens = candidateTokens(candidate.text);
-    const key = tokens.join("\u0000");
-    if (candidateTokenSets.some((prior) => prior.join("\u0000") === key
-      || isAmbiguousNearDuplicate(prior, tokens))) {
-      throw outputError("capture-extract", "memories must be distinct and non-ambiguous");
+    const fullTokens = candidateTokens(fullText);
+    if (indistinctFrom(clampedTokenSets, tokens)) {
+      // Two memories the model authored as indistinct remain a strict output
+      // defect. A collision that exists only after the host clamp is the host's
+      // own doing — two long facts can share their first
+      // MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS code points and differ solely in
+      // a material tail such as a date. Dropping that one candidate keeps every
+      // unrelated sibling instead of discarding the batch and retrying it.
+      if (indistinctFrom(fullTokenSets, fullTokens)) {
+        throw outputError("capture-extract", "memories must be distinct and non-ambiguous");
+      }
+      continue;
     }
-    candidateTokenSets.push(tokens);
+    candidates.push(candidate);
+    clampedTokenSets.push(tokens);
+    fullTokenSets.push(fullTokens);
   }
   return { candidates, entities, relations };
+}
+
+function indistinctFrom(priorTokenSets: readonly (readonly string[])[], tokens: readonly string[]): boolean {
+  const key = tokens.join("\u0000");
+  return priorTokenSets.some((prior) => prior.join("\u0000") === key
+    || isAmbiguousNearDuplicate(prior, tokens));
 }
 
 function stripSingleJsonFence(raw: string): string {
@@ -226,14 +254,18 @@ const STRICT_ENTITY_ID = /^[a-z][a-z0-9-]{0,31}:[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const STRICT_ENTITY_TYPE = /^[a-z][a-z0-9-]{0,47}$/u;
 const STRICT_RELATION = /^[a-z0-9]+(?:[ -][a-z0-9]+)*$/u;
 
-function strictCandidate(value: unknown, index: number, entityIds: ReadonlySet<string>): CandidateMemory {
+function strictCandidate(
+  value: unknown,
+  index: number,
+  entityIds: ReadonlySet<string>,
+): { candidate: CandidateMemory; fullText: string } {
   if (!isRecord(value) || !hasExactKeys(value, ["type", "text", "salience", "isInsight", "entityIds"])) {
     throw outputError("capture-extract", `memory ${index} has missing or unknown fields`);
   }
   if (value.type !== "task" && value.type !== "event" && value.type !== "note") {
     throw outputError("capture-extract", `memory ${index} has an unknown type`);
   }
-  const text = clampedCaptureText(value.text, `memory ${index} text`);
+  const { text, full: fullText } = clampedCaptureText(value.text, `memory ${index} text`);
   if (text.includes("<!--mem")) throw outputError("capture-extract", `memory ${index} text contains a reserved delimiter`);
   if (typeof value.salience !== "number" || !Number.isFinite(value.salience)
     || value.salience < 0 || value.salience > 1) {
@@ -251,7 +283,10 @@ function strictCandidate(value: unknown, index: number, entityIds: ReadonlySet<s
   if (new Set(associated).size !== associated.length) {
     throw outputError("capture-extract", `memory ${index} repeats an entity id`);
   }
-  return { type: value.type, text, salience: value.salience, isInsight: value.isInsight, entityIds: associated };
+  return {
+    candidate: { type: value.type, text, salience: value.salience, isInsight: value.isInsight, entityIds: associated },
+    fullText,
+  };
 }
 
 function strictEntity(value: unknown, index: number): ExtractedEntity {
@@ -286,7 +321,7 @@ function strictRelation(value: unknown, index: number, entityIds: ReadonlySet<st
  * response. Trimming, character classes, and emptiness stay strict, because
  * those signal malformed or unsafe output rather than a sentence run long.
  */
-function clampedCaptureText(value: unknown, label: string): string {
+function clampedCaptureText(value: unknown, label: string): { text: string; full: string } {
   if (typeof value !== "string" || value.length === 0 || value.trim().length === 0
     || value !== value.trim()
     || /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(value)) {
@@ -294,7 +329,7 @@ function clampedCaptureText(value: unknown, label: string): string {
   }
   const clamped = clampCaptureText(value);
   if (clamped.length === 0) throw outputError("capture-extract", `${label} is invalid`);
-  return clamped;
+  return { text: clamped, full: value };
 }
 
 function strictText(value: unknown, maxCodePoints: number, label: string): string {
