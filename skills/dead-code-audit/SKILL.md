@@ -60,7 +60,7 @@ When a diff adds an exported `compact*`/`prune*`/`rotate*`/`gc*` function, it
 must have a non-test call site in the **runtime lifecycle** — a periodic
 maintenance routine that is defined and tested but never wired is invisible to
 the gate. The correct pattern already ships: `pruneTraceSources` is called from
-`tui-command.ts` and `web-command.ts` at startup. `compactPostedMessageIndex`
+`web-command.ts` at startup. `compactPostedMessageIndex`
 shipped tested-but-never-wired.
 
 ```bash

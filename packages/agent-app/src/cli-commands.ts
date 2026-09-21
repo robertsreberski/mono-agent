@@ -53,6 +53,7 @@ export type {
   PrintAppStatusOptions,
 } from "./cli-background-command.js";
 import { runRunsCommand } from "./cli-runs-command.js";
+import { isRunInspectionInvocation, writeRunInspectionUsageFailure } from "./run-inspection.js";
 import {
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
@@ -89,6 +90,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   try {
     args = parseCliArgs(argv);
   } catch (error) {
+    if (isRunInspectionInvocation(argv)) {
+      writeRunInspectionUsageFailure(argv.includes("--json"));
+      return 2;
+    }
     if (argv[0] === "memory" && argv.includes("adopt-replay")) {
       const { writeReplayAdoptionCliFailure } = await import("./memory-command.js");
       writeReplayAdoptionCliFailure(argv.includes("--json"), "replay_adoption_usage");
@@ -186,6 +191,16 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     return 2;
   }
 
+  // The retired renderer topic must remain side-effect free. Keep this after the
+  // managed-maintenance authorization guards, but before dotenv/config loading.
+  if (args.command === "help" && args.positionals[0] === "tui") {
+    const result = renderHelpTopic("tui");
+    if (result.ok) {
+      process.stdout.write(result.text);
+      return 0;
+    }
+  }
+
   const invocationCwd = process.cwd();
   // Capture the exported shell before dotenv loading. Guided init retains only
   // worker-operational values and reports shell/background credential drift;
@@ -260,18 +275,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     case "status":
     case "logs":
       return await runBackgroundCommand(args, args.command);
-    case "tui": {
-      // Lazy import: the operator console (and pi-tui) load only on demand.
-      const { runTui } = await import("./tui-command.js");
-      return await runTui({
-        configPath: resolve(process.cwd(), args.configPath ?? "mono-agent.config.json"),
-        cwd: process.cwd(),
-        env: process.env,
-        ...(args.agent === undefined ? {} : { agent: args.agent }),
-        ...(args.conversation === undefined ? {} : { conversationId: args.conversation }),
-        ...(args.local === true ? { local: true } : {}),
-      });
-    }
     case "web": {
       // Lazy import: assistant-ui and the persistent web store load only on demand.
       const { runWebCommand } = await import("./web-command.js");

@@ -65,7 +65,6 @@ export default defineConfig({
             { slug: 'observability' },
             { slug: 'observability/artifacts-and-traces' },
             { slug: 'observability/cli-reference' },
-            { slug: 'observability/tui' },
             { slug: 'observability/linux-services' },
           ],
         },

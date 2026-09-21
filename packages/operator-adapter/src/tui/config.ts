@@ -43,8 +43,8 @@ export interface LoadTuiAdapterConfigInput {
 /**
  * Unlike every chat channel (telegram/slack/…, default OFF), the TUI endpoint
  * is ON by default: it is an operator surface, binds loopback-only on an
- * ephemeral port, and needs no credentials — and `mono-agent tui` must be able
- * to reach any running agent without a per-agent config edit. Set
+ * ephemeral port, and needs no credentials — and operator clients must be
+ * able to reach any running agent without a per-agent config edit. Set
  * `"tui": { "enabled": false }` to opt out.
  */
 const DEFAULT_ENABLED = true;
@@ -87,9 +87,9 @@ export function redactTuiAdapterConfig(config: TuiAdapterConfig): RedactedTuiAda
 /**
  * The `tui` section's field registry: the single source of truth both the
  * JSON→env layering below and the app's config provenance view derive from.
- * The `tui.apiKey` id doubles as a cross-package contract: `mono-agent tui`
- * resolves a running agent's key by reading this field from the agent's
- * config file (the trace-source registry never carries secrets).
+ * The `tui.apiKey` id doubles as a cross-package contract: operator clients
+ * resolve a running agent's key by reading this field from the agent's config
+ * file (the trace-source registry never carries secrets).
  */
 export const TUI_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "tui.enabled", env: "MONO_AGENT_TUI_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },

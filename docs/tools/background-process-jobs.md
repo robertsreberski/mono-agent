@@ -179,9 +179,9 @@ enforce this host policy, so they are rejected while any registered private
 root exists.
 
 This agent-root-aware coverage belongs to the full app, configured
-harness/responder, local TUI, the lazy-run wrapper returned by
+harness/responder, app-owned operator endpoint, the lazy-run wrapper returned by
 `createConfiguredAgentRuntime`, configured named children, and direct configured
-memory LLM/embedding calls. Remote TUI and ACP bridges are thin clients of an
+memory LLM/embedding calls. Web and ACP clients are thin clients of an
 already owned host and do not invoke a provider themselves. Lower-level
 `@mono-agent/runtime-adapter` and `@mono-agent/agent-runtime` factories are
 root-agnostic unless an app-owned caller supplies the protection policy and
@@ -230,7 +230,7 @@ runtime surfaces: a managed configuration apply performs that teardown/rebuild,
 and a process restart does the same. Existing in-flight runs are not mutated.
 No state migration or reset occurs, and retained registry roots remain
 registered when the flag is enabled, disabled, or removed. `validate`,
-foreground/background `status`, trace metadata, and the local TUI summary show
+foreground/background `status` and trace metadata show
 the path-free warning `UNSAFE: ProcessJobs state and operator secret are
 model-accessible.`
 
@@ -238,7 +238,7 @@ model-accessible.`
 
 Official local hosts also take one cooperative lifetime lease keyed by the
 canonical realpath of the agent root and stored under the effective account
-home. In one process, repeated configured app/harness/responder/local-TUI owners
+home. In one process, repeated configured app/harness/responder/operator-endpoint owners
 share a reentrant reference count. Physical release waits for all owner
 references and all true-settlement request leases; a release failure makes every
 later in-process acquisition fail deterministically. A stale official-process

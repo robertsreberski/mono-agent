@@ -100,7 +100,7 @@ retained text names that file directly under its header
 (`[result truncated; full result saved to: …]`) so the main agent can `Read` it.
 Without a configured artifact sink the text says the full result was not saved.
 
-**What operators see.** Foreground subagent tool calls stream live to the TUI and web
+**What operators see.** Foreground subagent tool calls stream live to the web console
 console as its own entry, named `<profile>▸<tool>` and bracketed by the
 subagent's own start/finish rows. The subagent's thinking and prose stay
 internal — only its final answer reaches the parent, through the tool result.

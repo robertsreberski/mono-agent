@@ -2,11 +2,19 @@
 
 ## Unreleased
 
+- **Breaking: remove the first-party terminal renderer.** Remove `mono-agent tui`,
+  the `mono-agent-tui` binary, and `@mono-agent/tui`; use `mono-agent web run --loopback` for
+  live operation, `mono-agent runs list|show` for bounded offline diagnostics,
+  and `mono-agent config` for resolved configuration. Keep the shared `tui.*`
+  operator endpoint and wire identifiers used by web, ACP, and jobs clients.
+
 - Add a deliberate `MemoryRecall` original-query mode to configured per-turn
   memory, reusing the bounded automatic lookup after a safety abstention without
   changing ordinary query-local search or capability-free programmatic recall
   tools. Preserve existing graph expansion and count delivered IDs once per turn,
   including explicit recall through shared non-graph writable stores.
+
+- Add read-only `mono-agent runs list` and `mono-agent runs show <run-id>` diagnostics for trusted local run artifacts. Output is capped, terminal-safe, scans high-confidence credential shapes, is available as stable JSON, and remains offline without starting providers.
 
 - **Breaking: retire first-party Supermemory integration.** Remove the
   `@mono-agent/memory-supermemory` package, active backend/config/env surfaces,

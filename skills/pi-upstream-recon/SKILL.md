@@ -1,12 +1,12 @@
 ---
 name: pi-upstream-recon
-description: Investigate the vendored pi packages' real API surface (pi-ai, pi-agent-core, pi-tui) before hand-rolling anything, and run pi version bumps safely. Use before implementing anything runtime/provider/TUI-shaped, when pi behavior is surprising, or when asked to "bump pi".
+description: Investigate the vendored pi packages' real API surface (pi-ai and pi-agent-core) before hand-rolling anything, and run pi version bumps safely. Use before implementing runtime/provider/session behavior, when pi behavior is surprising, or when asked to "bump pi".
 ---
 
 # pi upstream recon
 
 Standing rule: **prefer native upstream implementations.** Before hand-rolling
-runtime/provider/session/compaction/TUI machinery, check whether pi already
+runtime/provider/session/compaction machinery, check whether pi already
 ships it — and check the LATEST version's API, never memory of an old one.
 
 This rule is not pi-specific — it applies to **any** provider adapter. Before
@@ -61,9 +61,6 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   compatibility pins as development-only pins; a floating
   host range can otherwise satisfy Pi Agent Core's upstream dependency with a
   different copy.
-- `packages/tui`: `@earendil-works/pi-tui` at `0.85.1`. A clean build and
-  typecheck do not exercise terminal input/rendering — **verify the console
-  interactively** before trusting a TUI bump.
 - Pi 0.85's JSONL v4 store reads legacy v3 transcripts during open and writes
   the upgraded representation when the resumed session next persists a turn.
   Preserve an end-to-end legacy-resume regression test instead of adding a

@@ -66,7 +66,6 @@
     "@mono-agent/runtime-adapter": "workspace:0.22.0",
     "@mono-agent/slack-adapter": "workspace:0.22.0",
     "@mono-agent/telegram-adapter": "workspace:0.22.0",
-    "@mono-agent/tui": "workspace:0.22.0",
     "@mono-agent/operator-adapter": "workspace:0.22.0",
     "@mono-agent/web": "workspace:0.22.0",
     "@mono-agent/webhook-adapter": "workspace:0.22.0",

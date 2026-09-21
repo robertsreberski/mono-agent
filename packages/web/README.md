@@ -361,7 +361,7 @@ console conversations for that agent. Either field may inherit resolved config,
 and **Revert to config** clears both overrides in one action. These settings live
 in the web service's SQLite database, survive restart, and do not edit
 `mono-agent.config.json`; existing conversations and Telegram, Slack, cron,
-webhook, API, and TUI requests remain unchanged.
+webhook, API, and operator-endpoint requests remain unchanged.
 
 The same dialog shows **Provider authentication** when the current agent
 advertises provider-auth v1. It renders only the host-returned providers used by
@@ -1118,7 +1118,7 @@ import another operator surface or start the operator adapter server.
 - Agent runtime/provider execution or conversation history inside an agent.
 - The operator-adapter HTTP server published by each agent.
 - CLI background-process, launchd, or conflict-safe Tailscale Serve lifecycle.
-- Recorded-run replay, which belongs to `@mono-agent/tui`.
+- Offline run inspection, which belongs to `mono-agent runs list|show`.
 - Authentication. Network reachability is the intentional security boundary.
 - Host filesystem browsing: attachments come only from the browser device's
   native file picker.

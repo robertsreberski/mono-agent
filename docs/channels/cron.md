@@ -27,7 +27,7 @@ notification is enabled or disabled. It does not claim that notification was
 disabled, and the later notification attempt does not log the outcomes again.
 At most 20 records are emitted; an off-contract overflow becomes one explicit
 counted aggregate, and no path, URL, capability, integrity id, producer message,
-or payload byte is copied into it. Restarted operator/TUI/web reads project the
+or payload byte is copied into it. Restarted operator/web reads project the
 same durable outcomes without changing the stored answer text.
 
 **Model-exhaustion failure notice.** For cron jobs only, `notify: true` also enables a short one-line error notice when the run fails because **all configured models failed** (`provider_unavailable_exhausted`). This notice is sent only when `notifyConversationId` is explicitly set; failure notices never infer a destination. They are delivered verbatim with no second LLM turn, best-effort, and rate-limited per job by `notifyFailureCooldownHours` (default `6`).

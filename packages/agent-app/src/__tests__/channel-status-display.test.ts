@@ -22,7 +22,7 @@ describe("formatHumanChannelSections", () => {
 
     const operator = sections[1]?.lines.join("\n") ?? "";
     expect(operator).toContain("gui");
-    expect(operator).toContain("TUI + Web; baseUrl=http://127.0.0.1:5001/gui");
+    expect(operator).toContain("Web Console; baseUrl=http://127.0.0.1:5001/gui");
     expect(operator).not.toContain("tui");
   });
 

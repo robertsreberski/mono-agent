@@ -27,7 +27,7 @@ describe("check-getting-started-version-pins", () => {
       docRecords: [
         {
           path: "docs/getting-started/install.md",
-          text: "npm i -g @mono-agent/agent-app@0.4.1 @mono-agent/tui@0.4.1",
+          text: "npm i -g @mono-agent/agent-app@0.4.1 @mono-agent/web@0.4.1",
         },
       ],
     });
@@ -43,7 +43,7 @@ describe("check-getting-started-version-pins", () => {
           path: "docs/getting-started/install.md",
           text: [
             'version=<published-version>',
-            'npm i -g "@mono-agent/agent-app@$version" "@mono-agent/tui@$version"',
+            'npm i -g "@mono-agent/agent-app@$version" "@mono-agent/web@$version"',
             'npm i -g "mono-agent@$version"',
             "npm i -g @mono-agent/agent-app@latest",
             "npx mono-agent init",

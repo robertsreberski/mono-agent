@@ -7,7 +7,7 @@ sidebar:
 
 This page covers the recommended way to install the `mono-agent` CLI, what the browser console needs, and how to run an unreleased build straight from a clone of the repo.
 
-The shipped command line lives in `@mono-agent/agent-app`: the config-first host that reads one `mono-agent.config.json` and hosts every channel. The always-on browser console lives in `@mono-agent/web`, and the optional terminal console lives in `@mono-agent/tui`. For convenience there is an unscoped **`create-mono-agent`** installer that puts the natural `mono-agent` command on your `PATH`; both installer bins delegate to `@mono-agent/agent-app`, and only the `create-mono-agent` name adds the npm-init routing described below. All publish under the `@mono-agent/*` scope on npm.
+The shipped command line lives in `@mono-agent/agent-app`: the config-first host that reads one `mono-agent.config.json` and hosts every channel. The always-on browser console lives in `@mono-agent/web`. For convenience there is an unscoped **`create-mono-agent`** installer that puts the natural `mono-agent` command on your `PATH`; both installer bins delegate to `@mono-agent/agent-app`, and only the `create-mono-agent` name adds the npm-init routing described below. All publish under the `@mono-agent/*` scope on npm.
 
 :::note
 The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to an unrelated `monoagent` package — so the installer follows npm's `create-*` convention (`create-mono-agent`), which `npm create mono-agent` resolves natively.
@@ -100,22 +100,6 @@ Two differences matter before you use the managed path:
 
 Where no usable service manager exists, the foreground command above is the supported path. Read the [web console guide](/observability/web-console/) for persistent threads, attachments, notifications, service lifecycle, and the full security boundary.
 
-## The terminal console (optional)
-
-The operator console is built into the CLI. Once an agent is running (`mono-agent start`), open it from **any directory**:
-
-```bash
-mono-agent tui
-```
-
-It discovers running agents on the machine and gives you live chat with structured thinking/tool/telemetry insight, bounded recorded-run replay, and a config view. Use it alongside the browser console, or instead of it on a headless host. The underlying `@mono-agent/tui` package also ships a low-level `mono-agent-tui` bin for custom hosts (`--responder` embedded mode, `--url` direct connect):
-
-```bash
-npm i -g @mono-agent/tui   # only needed for the standalone bin
-```
-
-See [TUI](/observability/tui/) for the console walkthrough.
-
 ## Verify the install
 
 Confirm the CLI resolves and prints its help:
@@ -134,8 +118,8 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 | `start` | Start the host for every configured channel as a macOS `launchd` or Linux systemd user service; use `--foreground` where no service manager exists. |
 | `restart` / `stop` / `status` / `logs` | Manage the managed instance (macOS launchd; Linux systemd user service). |
 | `web` | Manage or run the always-on browser console; bare `web` only reports status. |
-| `tui` | Open the terminal operator console and connect to any running agent. |
-| `sessions` (removed) | Removed — use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). |
+| `runs list` / `runs show` | Inspect bounded, redacted local run evidence without loading providers. |
+| `tui` / `sessions` (removed) | Removed — use `mono-agent web run --loopback` for live operation, `runs list` / `runs show` for prior-run diagnostics, and `mono-agent config` for resolved configuration. |
 | `install-skill` | Install the authoring composer and its documentation MCP companion, or maintain managed project skills. |
 | `backfill` (removed) | Fails with pre-upgrade migration guidance; retained artifacts remain available through `runs`. |
 
@@ -157,7 +141,7 @@ Bare `init` behaves differently per platform and input mode, and the docs do not
 - **Linux, interactive**: the wizard still runs and proves the routes, but it does not start the systemd user service for you. It prints the manual start handoff — terminal 1 `mono-agent start` (which requires a usable systemd **user** manager) or `mono-agent start --foreground` without one, then terminal 2 `mono-agent web run --loopback`, because the console needs that agent process to stay alive.
 - **Any flag, `--yes`, or a non-TTY**: init is scaffold-only. It never runs the readiness proof, never starts a process, and never labels the result ready.
 
-Off macOS, edit the preserved scaffold manually, validate, start the service or foreground process, and open the browser console or `mono-agent tui`. See [Setup security and managed runtime](/reference/setup-security/) for the closure, environment, single-instance, and snapshot-integrity contracts behind the managed path.
+Off macOS, edit the preserved scaffold manually, validate, start the service or foreground process, and open the browser console. See [Setup security and managed runtime](/reference/setup-security/) for the closure, environment, single-instance, and snapshot-integrity contracts behind the managed path.
 
 ```bash
 mono-agent init --preset telegram-assistant --yes   # scaffold from a preset
@@ -183,7 +167,6 @@ Update global installs with npm:
 
 ```bash
 npm update -g create-mono-agent     # (or @mono-agent/agent-app)
-npm update -g @mono-agent/tui       # only if you installed the standalone TUI bin
 ```
 
 The `create-mono-agent` installer, `@mono-agent/agent-app`, `@mono-agent/web`, and every other `@mono-agent/*` package release in lockstep at one version — keep any pinned references (scoped or the installer) on the same version. To see what the current npm release actually contains relative to these docs, read [Release status](/reference/release-status/).
@@ -214,7 +197,7 @@ pnpm run build
 
 `pnpm run build` builds every package in dependency order. On supported POSIX/macOS
 hosts it first acquires the ignored exclusive `.mono-agent-build.lock`, removes the prior
-`.mono-agent-build.json`, finalizes the required CLI/TUI executable modes, syncs the completed deploy
+`.mono-agent-build.json`, finalizes the required CLI executable mode, syncs the completed deploy
 outputs, and atomically publishes a canonical
 owner-only marker. The marker records the full source SHA and state, Node version and ABI, completion
 time, a deterministic digest of the actual deploy outputs, and a separate digest of the installed root
@@ -254,12 +237,6 @@ alias mono-agent="node /absolute/path/to/mono-agent/packages/agent-app/dist/cli.
 mono-agent --help
 ```
 
-For the TUI bin from the same clone, alias `mono-agent-tui` to `packages/tui/dist/bin/mono-agent-tui.js`:
-
-```bash
-alias mono-agent-tui="node /absolute/path/to/mono-agent/packages/tui/dist/bin/mono-agent-tui.js"
-```
-
 :::caution
 Rebuild (`pnpm run build`) after pulling new changes — the alias points at compiled output in `dist/`, not the TypeScript sources, so edits are not picked up until you rebuild. Cross-package types and tests resolve against built `dist/`, so a stale build can mask or surface errors that do not match `src`.
 
@@ -267,5 +244,5 @@ A source build is an evaluation path, not a published artifact: other agents tha
 :::
 
 :::tip
-Editable global link instead of an alias? After `pnpm run build`, run `npm link` from `packages/agent-app` (and `packages/tui`) to put the local bins on your `PATH`. You still rebuild after each change.
+Editable global link instead of an alias? After `pnpm run build`, run `npm link` from `packages/agent-app` to put the local bin on your `PATH`. You still rebuild after each change.
 :::

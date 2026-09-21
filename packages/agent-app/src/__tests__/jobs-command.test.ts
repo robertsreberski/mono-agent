@@ -7,9 +7,30 @@ import type { ProcessJobProjection } from "@mono-agent/agent-contracts";
 import type { TraceSourceListItem, TraceSourceListResult } from "@mono-agent/observability";
 import { describe, expect, it, vi } from "vitest";
 
-import { runJobsCommand } from "../jobs-command.js";
+import { operatorEndpointOf, runJobsCommand } from "../jobs-command.js";
 
 describe("mono-agent jobs", () => {
+  it("reads only a non-empty running operator endpoint from legacy tui metadata", () => {
+    const source = (tui: unknown): TraceSourceListItem => ({
+      schema: "agent-runtime.trace-source.v1",
+      sourceId: "fixture",
+      label: "fixture",
+      artifactDir: "/tmp/artifacts",
+      pid: 1,
+      status: "running",
+      health: "running",
+      startedAt: "2026-08-14T10:00:00.000Z",
+      updatedAt: "2026-08-14T10:00:01.000Z",
+      warnings: [],
+      metadata: { channels: { tui } },
+    });
+    expect(operatorEndpointOf(source({ kind: "running", baseUrl: "http://127.0.0.1:5151/gui" })))
+      .toBe("http://127.0.0.1:5151/gui");
+    expect(operatorEndpointOf(source({ kind: "disabled" }))).toBeUndefined();
+    expect(operatorEndpointOf(source({ kind: "running", baseUrl: "" }))).toBeUndefined();
+    expect(operatorEndpointOf(source(null))).toBeUndefined();
+  });
+
   it("discovers by --agent, authenticates with the owner secret, and renders list/get/cancel JSON", async () => {
     const fixture = await createFixture();
     const projection = job();

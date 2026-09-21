@@ -106,7 +106,7 @@ curl -s "http://127.0.0.1:${PORT}/webhook/invoke" \
 
 Replace `3000` with the port from the `start` output. A response means the runtime, model, identity, and webhook channel are all wired correctly. Without valid provider credentials or a reachable local provider, the webhook request should fail honestly rather than returning a fake model reply. The webhook channel binds to loopback by default; to accept non-loopback requests you must set both `webhook.allowNonLoopback: true` and `MONO_AGENT_WEBHOOK_API_KEY`, and callers send the key as a bearer. For async invocation, status polling, multiple named endpoints, and per-endpoint prompts, see [Webhook](/channels/webhook/).
 
-Prefer a terminal chat to the browser? `mono-agent tui` connects to the same running agent from any directory and adds structured turn inspection and recorded-run replay; see [TUI](/observability/tui/).
+Need terminal diagnostics? `mono-agent runs list` and `mono-agent runs show <run-id>` inspect bounded, redacted local run evidence without contacting a provider; `mono-agent config` prints the resolved configuration.
 
 :::note
 How long this takes depends on provider authentication, network latency, model availability, and whether the CLI has to be installed or built first. Guided setup waits on real sign-in and route probes; the scaffold-only path is local, and `validate` is local config plus bounded live checks for the capabilities you enabled. There is no fixed promise for time-to-first-reply.

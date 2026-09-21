@@ -1,11 +1,11 @@
 ---
 title: "Observability & CLI"
-description: "Map mono-agent's local run artifacts, trace-source registry, lifecycle CLI, terminal console, and always-on web console."
+description: "Map mono-agent's local run artifacts, trace-source registry, lifecycle CLI, and always-on web console."
 sidebar:
   order: 0
 ---
 
-Every mono-agent run produces bounded local JSONL evidence. The artifacts are the on-disk record after successful recorder boundaries, not a crash-safe in-flight journal. A trace-source registry lets operator surfaces discover running agents, the `mono-agent` CLI operates the lifecycle, and the TUI and always-on web console provide complementary views.
+Every mono-agent run produces bounded local JSONL evidence. The artifacts are the on-disk record after successful recorder boundaries, not a crash-safe in-flight journal. A trace-source registry lets operator surfaces discover running agents, the `mono-agent` CLI operates the lifecycle, and the always-on web console provides live operation.
 
 The framework no longer bundles a Phoenix/OTLP trace exporter or historical export command. This does **not** make an agent network-isolated: configured providers, channels, MCP servers, web tools, and external memory services can still use the network.
 
@@ -16,8 +16,7 @@ The framework no longer bundles a Phoenix/OTLP trace exporter or historical expo
 | JSONL run artifacts | Per-run `run-*.events.jsonl` + `run-*.summary.json`; sensitive-looking values are redacted and retained free text is scanned for a closed set of credential shapes | config / auto | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Trace-source registry | Heartbeat manifests for local operator discovery | config | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Run reports | Read-only audit, metrics, and bounded prior-run evidence over local artifacts | cli / code | [Run artifacts & traces](/observability/artifacts-and-traces/) |
-| `mono-agent` CLI | init / validate / start / stop / logs / restart / tui / web / runs / install-skill | cli | [CLI reference](/observability/cli-reference/) |
-| TUI | Operator console: live chat, run replay, and config view | cli | [TUI](/observability/tui/) |
+| `mono-agent` CLI | init / validate / start / stop / logs / restart / web / runs / install-skill | cli | [CLI reference](/observability/cli-reference/) |
 | Web console | Persistent multi-agent conversations, streamed turns, and local-device attachments | cli | [Web console](/observability/web-console/) |
 
 ## JSONL run artifacts
@@ -66,16 +65,12 @@ There is no automatic export, replacement selection, config rewrite, artifact co
 
 Invoking `mono-agent backfill` or `mono-agent help backfill` now prints the removal and pre-upgrade migration pointer. The full command and flag matrix is in the [CLI reference](/observability/cli-reference/).
 
-## The TUI
+## Offline run inspection
 
-`mono-agent tui` opens the operator console from any directory and connects to a running agent on the machine: live chat with structured tool insight, bounded recorded-run replay, and a source-annotated config view.
-
-```bash
-mono-agent tui
-mono-agent tui --agent personal-agent
-```
-
-See the [TUI page](/observability/tui/) for details.
+`mono-agent runs list` and `mono-agent runs show <run-id>` read bounded, redacted
+run evidence without contacting a provider. `mono-agent config` provides the
+resolved configuration view. The former terminal renderer is removed; use the
+web console for live operation.
 
 ## The always-on web console
 

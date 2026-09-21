@@ -126,7 +126,7 @@ Communication adapters are edge packages. They accept an `AgentResponder` and ow
 | Slack | `@mono-agent/slack-adapter` | Allowed channel or DM receives text and a generated reply file through the external upload flow |
 | WhatsApp | `@mono-agent/whatsapp-adapter` (external channel plugin) | Allowed sender/group trigger produces a reply |
 | OpenAI-compatible API | `@mono-agent/openai-api-adapter` | `curl /v1/models` and `/v1/chat/completions` |
-| Operator endpoint | `@mono-agent/operator-adapter` | `mono-agent tui` and `mono-agent web` connect for chat |
+| Operator endpoint | `@mono-agent/operator-adapter` | `mono-agent web`, ACP, and jobs clients connect |
 | A2A provider/consumer | `@mono-agent/a2a-adapter` (external channel plugin) | Send text to the Agent Card URL |
 | Webhook | `@mono-agent/webhook-adapter` | `curl` the configured invocation path (with `Authorization: Bearer ...` when `apiKey` is set) |
 | Cron | `@mono-agent/cron-adapter` | One scheduled or manually triggered invocation |
@@ -137,9 +137,8 @@ Adapters must not import the harness, runtime adapter, memory package (`@mono-ag
 
 Use:
 
-- `@mono-agent/tui` for the pi-tui operator console (`mono-agent tui`): live chat with structured stream-event insight, recorded-run replay, and config view. Remote event frames have a strict 256 KiB UTF-8 NDJSON cap: assistant-thought/tool-call payload fields are reduced and remeasured, while another oversized variant or a reducible event whose minimal form still does not fit becomes a bounded `oversized_event` marker. Other frame kinds are unaffected, and replay contains only sensitive-key-redacted, credential-scanned, capped events that reached terminal JSONL persistence.
 - `@mono-agent/web` for the assistant-ui always-on browser console (`mono-agent web`): persistent multi-agent conversations and same-thread quotes, fixed compact/expanded agent navigation with offline filtering, separate Chats and overview-backed Automations destinations with stable read-only cron history routes, explicit alive-page/PWA response notifications, device-local file picking, integrity-checked reply downloads, confirmation-gated MCP Apps in a double-frame sandbox, streamed reasoning/tools, internal telemetry-backed cumulative context usage, cancellation, LAN-default HTTP on port 5050, and conflict-safe optional Tailscale Serve HTTPS. It has no app login; network reachability is the access boundary.
-- `@mono-agent/operator-adapter` for the loopback NDJSON stream endpoint the TUI and web chat console connect to (`tui` config section, on by default).
+- `@mono-agent/operator-adapter` for the loopback NDJSON stream endpoint used by web, ACP, and jobs clients (`tui` remains the compatibility config section and defaults on).
 - `@mono-agent/observability` for JSONL event artifacts, summaries, trace-source registration, and provider-neutral `RunExporter` composition. The framework does not bundle a trace exporter.
 
 Traceability is local-first. A running host registers a source manifest; `mono-agent status` reads the trace-source registry to report live sources, and artifacts are keyed by `(sourceId, runId)` so duplicate run ids do not collide. The recorder writes empty events plus a `running` summary at start, schedules bounded checkpoints, and writes a sensitive-key-redacted, credential-scanned, capped terminal snapshot at finish/fail. A crash can still lose an unsaved tail. These local artifacts remain available after the first-party Phoenix/OTLP exporter retirement.

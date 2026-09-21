@@ -61,7 +61,7 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
 | `MONO_AGENT_SESSION_MODE` | `runtime.session.mode` | `continuous` (default) reuses a warm provider session and queues turns per conversation; `per-message` starts each provider turn cold. Durable history remains a separate replay layer in both modes. |
 | `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS` | `runtime.session.idleTimeoutMs` | Idle eviction window for warm continuous sessions; default 30 minutes. It does not delete durable history. See [Sessions and concurrency](/runtime/sessions-concurrency/). |
 | `MONO_AGENT_SESSION_ISOLATE_PROACTIVE` | `runtime.session.isolateProactive` | When `true`, scheduled requests carrying cron metadata run one-shot instead of acquiring or saving the conversation's warm session. Interactive turns are unchanged. |
-| `MONO_AGENT_SESSION_ROLLOVER` | `runtime.session.rollover` | `none` or `daily`; daily adds a date bucket to each conversation id, except console (TUI/web) threads, which own their own session boundary. |
+| `MONO_AGENT_SESSION_ROLLOVER` | `runtime.session.rollover` | `none` or `daily`; daily adds a date bucket to each conversation id, except operator-console threads, which own their own session boundary. |
 | `MONO_AGENT_SESSION_ROLLOVER_TIMEZONE` | `runtime.session.rolloverTimezone` | IANA timezone for daily bucket boundaries; defaults to the system timezone. |
 | `MONO_AGENT_SESSION_ROLLOVER_NOTICE` | `runtime.session.rolloverNotice` | When `true`, the first turn in a new daily bucket receives a one-line adapter-visible notice. Default off; it does not enable rollover by itself. |
 | `MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS` | `concurrency.maxConcurrentRuns` | Runs executing against the provider at once (**per-channel**). |
@@ -250,7 +250,7 @@ Opted project stdio MCPs also receive host-owned filesystem context after all MC
 
 ## Channels
 
-Most channels are opt-in via their `enabled` flag (default off). The `tui` operator surface defaults on so the TUI/web console can chat without per-agent edits. The tables below enumerate every channel environment variable. Structured JSON-only fields have no invented environment form and are identified beside the relevant channel; consult the [annotated config blueprint](/config/blueprint/) for the complete per-channel shape.
+Most channels are opt-in via their `enabled` flag (default off). The compatibility-named `tui` operator endpoint defaults on so the web console and maintained operator clients work without per-agent edits. The tables below enumerate every channel environment variable. Structured JSON-only fields have no invented environment form and are identified beside the relevant channel; consult the [annotated config blueprint](/config/blueprint/) for the complete per-channel shape.
 
 ### Telegram
 
@@ -390,7 +390,7 @@ Messenger is loaded through `channels.plugins[]` with `package: "@mono-agent/mes
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_TUI_ENABLED` | `tui.enabled` | **Default `true`** — default-on loopback operator surface for `mono-agent tui` and `mono-agent web`. |
+| `MONO_AGENT_TUI_ENABLED` | `tui.enabled` | **Default `true`** — default-on loopback operator endpoint used by `mono-agent web`, ACP, and jobs clients. |
 | `MONO_AGENT_TUI_HOST` | `tui.host` | Default `127.0.0.1`. |
 | `MONO_AGENT_TUI_PORT` | `tui.port` | Default `0` (ephemeral; published to the trace-source registry). |
 | `MONO_AGENT_TUI_BASE_PATH` | `tui.basePath` | Default `/gui`. |

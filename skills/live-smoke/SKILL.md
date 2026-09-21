@@ -1,6 +1,6 @@
 ---
 name: live-smoke
-description: Run one live mono-agent smoke scenario matching the changed runtime, adapter, TUI, web, or worker boundary. Use for high-risk changes or when asked to smoke test, test live, or drive the TUI.
+description: Run one live mono-agent smoke scenario matching the changed runtime, adapter, web, or worker boundary. Use for high-risk changes or when asked to smoke test or test live.
 ---
 
 # Live smoke
@@ -12,7 +12,6 @@ generic merge ritual.
 | Changed boundary | Scenario |
 |---|---|
 | CLI lifecycle, adapter startup, memory wiring | A. Throwaway agent |
-| TUI rendering or input | B. TUI via tmux |
 | Web server, API, PWA | C. Web via curl |
 | Readiness worker transport | D. Real worker with local protocol server |
 | Documentation MCP package / stdio boundary | E. Packed documentation MCP |
@@ -50,31 +49,6 @@ Cleanup — ALWAYS:
 ```bash
 pkill -f "agent-app/dist/cli.js start"; sleep 1
 rm -rf "$(cat /tmp/mono-agent-smoke-dir)" /tmp/mono-agent-smoke-dir
-```
-
-## B. TUI smoke via tmux (the `tuismoke` pattern)
-
-```bash
-pnpm --filter @mono-agent/tui... build 2>&1 | tail -2
-tmux kill-session -t tuismoke 2>/dev/null
-tmux new-session -d -s tuismoke -x 140 -y 36 "node packages/tui/dist/bin/mono-agent-tui.js <args>"
-sleep 2; tmux capture-pane -t tuismoke -p | grep -v '^$' | tail -20
-tmux send-keys -t tuismoke Enter          # keys: Enter, Down, Up, Escape, F3; literal text: -l "text"
-sleep 1; tmux capture-pane -t tuismoke -p | grep -v '^$' | sed -n '7,18p'
-```
-
-Poll until ready instead of long sleeps:
-
-```bash
-for i in $(seq 1 20); do out=$(tmux capture-pane -t tuismoke -p | grep -v '^$'); \
-  echo "$out" | grep -q '<ready marker>' && break; sleep 1; done
-```
-
-Teardown:
-
-```bash
-tmux send-keys -t tuismoke Escape 2>/dev/null; tmux send-keys -t tuismoke C-c C-c 2>/dev/null
-sleep 1; tmux kill-session -t tuismoke 2>/dev/null
 ```
 
 ## C. Web PWA smoke (web console)

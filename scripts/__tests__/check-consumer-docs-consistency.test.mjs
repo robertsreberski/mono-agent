@@ -773,7 +773,7 @@ describe("check-consumer-docs-consistency", () => {
     expect(result.issues.join("\n")).toContain("append-only JSONL run artifact");
   });
 
-  it("flags full/no-drop TUI recovery claims across docs, package READMEs, and runtime source text", async () => {
+  it("flags full/no-drop legacy TUI-wire recovery claims across docs and operator sources", async () => {
     const repoRoot = await tempRepo();
     await writeRepoDoc(repoRoot, "docs/channels/tui.md", [
       "# TUI channel",
@@ -785,16 +785,9 @@ describe("check-consumer-docs-consistency", () => {
       "The full data is always in the run's JSONL artifacts and visible in replay.",
       "Replay opens a full coalesced event timeline.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/tui/README.md", [
-      "# TUI package",
-      "Open any run for its full coalesced event timeline (nothing dropped).",
-    ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/operator-adapter/README.md", [
       "# Operator adapter",
       "The endpoint streams at full `AgentStreamEvent` fidelity.",
-    ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/tui/src/ui/components/tool-panel.ts", [
-      "const notice = '(payload truncated for streaming — full data in run artifacts)';",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/operator-adapter/src/tui/constants.ts", [
       "// The full data remains in the run's JSONL artifacts.",
@@ -802,18 +795,11 @@ describe("check-consumer-docs-consistency", () => {
     await writeRepoDoc(repoRoot, "packages/operator-adapter/src/tui/server.ts", [
       "// The full payload stays available in run artifacts.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/tui/src/ui/views/replay.ts", [
-      "// A full event timeline is richer than live since nothing is dropped.",
-    ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/tui/src/ui/app.ts", [
-      "const description = 'Browse recorded runs (full event timeline)';",
-    ].join("\n"));
-
     const result = await checkConsumerDocsConsistency([], { repoRoot });
     const reported = result.issues.join("\n");
 
-    expect(result.userDocsChecked).toBe(4);
-    expect(result.artifactContractSourcesChecked).toBe(5);
+    expect(result.userDocsChecked).toBe(3);
+    expect(result.artifactContractSourcesChecked).toBe(2);
     expect(reported).toContain("full payload guaranteed in run artifacts");
     expect(reported).toContain("full or no-drop replay timeline");
     expect(reported).toContain("full AgentStreamEvent fidelity");
@@ -821,13 +807,9 @@ describe("check-consumer-docs-consistency", () => {
     for (const relativePath of [
       "docs/channels/tui.md",
       "docs/observability/tui.md",
-      "packages/tui/README.md",
       "packages/operator-adapter/README.md",
-      "packages/tui/src/ui/components/tool-panel.ts",
       "packages/operator-adapter/src/tui/constants.ts",
       "packages/operator-adapter/src/tui/server.ts",
-      "packages/tui/src/ui/views/replay.ts",
-      "packages/tui/src/ui/app.ts",
     ]) {
       expect(reported).toContain(relativePath);
     }
@@ -891,9 +873,6 @@ describe("check-consumer-docs-consistency", () => {
     await writeRepoDoc(repoRoot, "packages/operator-adapter/package.json", JSON.stringify({
       description: "Loopback operator adapters: full-fidelity TUI NDJSON turns and live SSE.",
     }));
-    await writeRepoDoc(repoRoot, "packages/tui/package.json", JSON.stringify({
-      description: "live chat with full stream-event insight",
-    }));
     await writeRepoDoc(repoRoot, "scripts/package-catalog.mjs", [
       "const responsibility = 'full-fidelity TUI NDJSON turns';",
     ].join("\n"));
@@ -915,7 +894,7 @@ describe("check-consumer-docs-consistency", () => {
     const reported = result.issues.join("\n");
 
     expect(result.userDocsChecked).toBe(10);
-    expect(result.artifactContractSourcesChecked).toBe(6);
+    expect(result.artifactContractSourcesChecked).toBe(5);
     expect(reported).toContain("full stream-event insight");
     expect(reported).toContain("exporter retirement deletes local artifacts");
     expect(reported).toContain("exporter retirement implies network isolation");
@@ -946,7 +925,6 @@ describe("check-consumer-docs-consistency", () => {
       "packages/agent-app/src/cli-help.ts",
       "packages/operator-adapter/package.json",
       "packages/operator-adapter/src/tui/constants.ts",
-      "packages/tui/package.json",
       "scripts/package-catalog.mjs",
       "docs/channels/tui.md",
       "docs/observability/tui.md",
