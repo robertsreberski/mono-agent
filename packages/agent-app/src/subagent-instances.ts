@@ -74,7 +74,7 @@ export interface SubagentRecoveryInspection {
   readonly recovery?: SubagentRecoveryFence;
   readonly status: "not_required" | "held" | "ready" | "structured_job_recovery_unavailable" | "observation_policy_unavailable" | "observation_policy_denied" | "observation_unavailable" | "observation_inconsistent" | "observation_truncated";
   readonly facts?: SubagentRecoveryFacts;
-  readonly parentVerificationRequired: true;
+  readonly parentVerificationRequired: boolean;
   readonly ack?: string;
 }
 export interface InstanceSpec { verification?: SubagentVerificationDeclaration; id?: string; name: string; systemPrompt: string; definition: InstanceDefinition }
@@ -425,10 +425,13 @@ export function createSubagentInstanceRegistry(options: {
             return { ...base, status: "held" };
           }
           try { await authorizeRecovery(record, access); } catch (error) {
-            return { ...base, status: error instanceof SubagentRecoveryError && error.code === "subagent_recovery_policy_unavailable" ? "observation_policy_unavailable" : "observation_policy_denied" };
+            const unavailable = error instanceof SubagentRecoveryError && error.code === "subagent_recovery_policy_unavailable";
+            // An unavailable policy honours no verification contract: the parent
+            // is not asked to verify when no acknowledgement can follow.
+            return { ...base, parentVerificationRequired: !unavailable, status: unavailable ? "observation_policy_unavailable" : "observation_policy_denied" };
           }
           const facts = subject.owner && options.observeRecovery ? await options.observeRecovery(subject, access) : undefined;
-          if (facts && facts.status !== "observed") return { ...base, facts, status: facts.status };
+          if (facts && facts.status !== "observed") return { ...base, parentVerificationRequired: facts.status !== "observation_unavailable", facts, status: facts.status };
           if (facts && record.recovery) {
             if (record.recovery.sequence === Number.MAX_SAFE_INTEGER) throw new SubagentRecoveryError("subagent_recovery_ack_stale");
             record.recovery = { ...record.recovery, sequence: record.recovery.sequence + 1 }; base.recovery = structuredClone(record.recovery);
@@ -485,8 +488,9 @@ export function createSubagentInstanceRegistry(options: {
             if (phase === "intent") return;
             record.ownerReceipt = { jobId: identity.jobId, storeRoot: identity.storeRoot, turnToken: identity.turnToken, sequence: publication.sequence, finalized: false, acknowledged: false };
             if (!publication.released) return;
-            if (disposition.status === "ok" && disposition.closeAfterSuccess && record.verificationTarget
-              && !await options.authorizeClosure?.(subjectOf(record)).catch(() => false)) throw new SubagentRecoveryError("subagent_recovery_policy_unavailable");
+            // A successful self-close discards state without reading the
+            // verification workdir or disclosing observation results, so it
+            // never requires verification-target authorization either.
             if (disposition.resumeAfterStop && disposition.continuity === "retained"
               && record.recovery?.turnToken === identity.turnToken) delete record.recovery;
             const wasRunning = record.status === "running";
@@ -677,7 +681,11 @@ export function createSubagentInstanceRegistry(options: {
         }),
         close: (id, access) => transaction(async (records) => {
           const record = required(records, id);
-          if (record.verificationTarget) await authorizeRecovery(record, access);
+          // Closure discards state: it neither reads the verification workdir
+          // nor discloses observation results, so it never requires
+          // verification-target authorization. The access parameter stays for
+          // handle signature compatibility.
+          void access;
           if (record.activeTurn?.kind === "detached" && !turns.has(turnPath(id))) throw new SubagentRecoveryError("subagent_owner_unavailable");
           if (["queued", "running"].includes(record.status)) throw new Error(`Subagent instance "${id}" is busy.`);
           if (receiptHeld(record)) throw new SubagentRecoveryError("subagent_owner_unavailable");
