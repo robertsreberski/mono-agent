@@ -8,7 +8,7 @@ sidebar:
 The `memory.embeddings` block configures the vector embedding provider used for semantic
 recall. It is a **shared prerequisite** for both the `journal` and `bujo` memory tiers — it
 is not a tier on its own. The `lite` tier needs no embeddings. This page covers the config
-keys, the three providers (Ollama, LM Studio, and OpenAI), the matching `MONO_AGENT_MEMORY_EMBEDDINGS_*`
+keys, the three providers (Ollama, LM Studio, and OpenAI), JSON configuration for those fields
 env vars, and the timeout / circuit-breaker behavior.
 
 For the tier model (lite / journal / bujo) and where this block fits, see
@@ -159,19 +159,7 @@ export OPENAI_API_KEY=sk-...
 The default OpenAI endpoint is `https://api.openai.com/v1`; override `endpoint` to target an
 OpenAI-compatible gateway.
 
-## Environment variables
-
-Every key has a `MONO_AGENT_MEMORY_EMBEDDINGS_*` override. See
-[the environment-variable reference](/config/env-vars/).
-
-| Env var | Config key |
-| --- | --- |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT` | `memory.embeddings.endpoint` |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV` | `memory.embeddings.apiKeyEnv` |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY` | `memory.embeddings.apiKey` |
+Core embedding settings are configured in JSON; `apiKeyEnv` names the environment variable containing a credential.
 
 The standalone `memory-bujo` CLI that read these `MONO_AGENT_MEMORY_EMBEDDINGS_*` variables
 directly against a memory root has been removed. Config-aware recall now runs from the agent
@@ -202,11 +190,11 @@ cannot stall recall:
 :::note
 The config-first defaults and overrides are:
 
-| Config key | Default | Environment override |
+| Config key | Default | Source |
 | --- | --- | --- |
-| `memory.embeddings.timeoutMs` | `10000` | `MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS` |
-| `memory.embeddings.circuitBreaker.failureThreshold` | `3` | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD` |
-| `memory.embeddings.circuitBreaker.cooldownMs` | `30000` | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS` |
+| `memory.embeddings.timeoutMs` | `10000` | — |
+| `memory.embeddings.circuitBreaker.failureThreshold` | `3` | — |
+| `memory.embeddings.circuitBreaker.cooldownMs` | `30000` | — |
 
 The low-level `@mono-agent/memory/search` provider constructor retains its own 30-second
 timeout when called directly without `timeoutMs`; the configured app always supplies the

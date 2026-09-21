@@ -194,7 +194,7 @@ mono-agent init \
 - **`skills/mono-agent-memory`** — the versioned project-local memory skill selected with index disclosure. `ReadSkill` loads its body only when needed. `skills/.mono-agent-managed.json` records its hash for safe drift checks and updates.
 - **`.mono-agent/`** — working directories: `.mono-agent/artifacts` (run output) and `.mono-agent/workspace`.
 
-When a fresh init selects built-in Journal or BuJo memory, init also creates one empty managed generation without indexing content. Guided setup has already made its separate fixed, non-user readiness probe; flag/non-TTY scaffolding makes no provider call and no readiness claim. Init never adopts or changes a pre-existing memory root; stop the agent and use the explicit `mono-agent memory rebuild` path for an existing root. Fresh managed init rejects environment overrides for memory backend, mode, path, and embedding provider/model/dimension; put that identity in the generated config. Credential and endpoint environment values remain valid inputs.
+When a fresh init selects built-in Journal or BuJo memory, init also creates one empty managed generation without indexing content. Guided setup has already made its separate fixed, non-user readiness probe; flag/non-TTY scaffolding makes no provider call and no readiness claim. Init never adopts or changes a pre-existing memory root; stop the agent and use the explicit `mono-agent memory rebuild` path for an existing root. Fresh managed init writes memory identity into the generated config. Credentials referenced by `apiKeyEnv` remain environment values.
 
 The generated config (with canonical `--fallback` routes and `--memory bujo`) looks like this — note that `tools.allowedTools` defaults to allow-all (`["*"]`), and the `bujo` tier scaffolds its embeddings, capture LLM, and recall tool:
 
@@ -245,7 +245,7 @@ The generated config (with canonical `--fallback` routes and `--memory bujo`) lo
 }
 ```
 
-Every field documented with a `MONO_AGENT_*` mapping has an env override (env > JSON > defaults) — for example `MONO_AGENT_NAME`, `MONO_AGENT_MODEL`, and `MONO_AGENT_FALLBACKS_JSON`; JSON-only fields stay in the file. See the [generated config reference](/config/reference/) for which fields expose a mapping, and [Environment variables](/config/env-vars/) for the supported set. The scaffolder also adds an `artifacts.retention` block and a `$schema` reference, omitted here for brevity.
+Core fields resolve from JSON, then built-in defaults. The scaffolder also adds an `artifacts.retention` block and a `$schema` reference, omitted here for brevity.
 
 For selected channel secrets, the guided wizard never shows values in config, examples, review output, or logs. Existing non-empty dotenv assignments and comments are preserved, and a shell-only value cannot make a later background start appear durable. Automatic persistence fails closed when the agent folder, dotenv, ignore rules, or a concurrent update cannot be verified safely; unsupported platforms receive manual instructions. The complete ownership, locking, promotion, race-recovery, and provider-auth-store rules live in [Setup security and managed runtime](/reference/setup-security/). Never copy `.env.example` over an already populated `.env`.
 

@@ -198,7 +198,7 @@ async function verifyLocalRecorderRoundTrip() {
 }
 
 async function verifyRetiredExporterMigration() {
-  const { loadMonoAgentConfigWithSources } = await import("@mono-agent/config");
+  const { loadMonoAgentConfig } = await import("@mono-agent/config");
   const cwd = await mkdtemp(join(tmpdir(), "mono-agent-packed-config-"));
   const configPath = join(cwd, "mono-agent.config.json");
   const base = {
@@ -207,7 +207,7 @@ async function verifyRetiredExporterMigration() {
   };
   try {
     await writeFile(configPath, `${JSON.stringify({ ...base, observability: { exporters: [] } })}\n`, "utf8");
-    const config = await loadMonoAgentConfigWithSources({ cwd, jsonPath: configPath, env: {} });
+    const config = await loadMonoAgentConfig({ cwd, jsonPath: configPath });
     if (Object.hasOwn(config, "observability")) {
       throw new Error("Inert exporter tombstone unexpectedly enabled observability config.");
     }
@@ -218,7 +218,7 @@ async function verifyRetiredExporterMigration() {
       observability: { exporters: [{ type: "phoenix", endpoint: `https://${secret}@example.invalid` }] },
     })}\n`, "utf8");
     try {
-      await loadMonoAgentConfigWithSources({ cwd, jsonPath: configPath, env: {} });
+      await loadMonoAgentConfig({ cwd, jsonPath: configPath });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes(secret) || message.includes("example.invalid")) {

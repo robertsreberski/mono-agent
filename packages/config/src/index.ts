@@ -2,14 +2,12 @@ export {
   assertConfiguredProviderCoverage,
   assertNoRetiredMonoAgentConfig,
   MAX_AGENT_NAME_LENGTH,
-  loadMonoAgentConfig,
   MonoAgentConfigError,
   redactMonoAgentConfig,
   resolveConfiguredProviders,
   RETIRED_CONFIG_FIELDS,
 } from "./config.js";
 export type {
-  LoadMonoAgentConfigInput,
   MonoAgentConfigErrorCode,
   MonoAgentConfigErrorDetails,
   ProviderCoverageRoute,
@@ -39,10 +37,8 @@ export type {
   ResolvedProviders,
   SessionMode,
 } from "./types.js";
-export {
-  loadMonoAgentConfigWithSources,
-} from "./layered-loader.js";
-export type { LoadMonoAgentConfigWithSourcesInput } from "./layered-loader.js";
+export { loadMonoAgentConfig } from "./layered-loader.js";
+export type { LoadMonoAgentConfigInput } from "./layered-loader.js";
 export {
   readMonoAgentConfigJson,
   writeMonoAgentConfigJson,
@@ -70,7 +66,7 @@ export {
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
 } from "./enums.js";
-export { buildMonoAgentConfigView, CONFIG_ENV_KEYS, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "./config-view.js";
+export { buildMonoAgentConfigView, CORE_CONFIG_FIELD_IDS, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "./config-view.js";
 export type {
   BuildMonoAgentConfigViewInput,
   ConfigViewField,

@@ -29,7 +29,7 @@ At `start()`, the recorder separately replaces an empty events file and a `runni
 }
 ```
 
-Override the directory with `MONO_AGENT_ARTIFACT_DIR`. The [tool bloat guard](/runtime/tools-and-guards/) also persists oversized tool output beneath the artifact root.
+Set `artifacts.dir` in JSON to override the directory. The [tool bloat guard](/runtime/tools-and-guards/) also persists oversized tool output beneath the artifact root.
 
 Each summary has a final `status` (`succeeded`, `failed`, `cancelled`, or `interrupted`). A run left at `running` by a dead prior process is reconciled to `interrupted` at the next startup. `mono-agent runs`, `runs audit`, and `runs report` read these artifacts locally without contacting a collector.
 
@@ -51,7 +51,7 @@ The host publishes a heartbeat manifest so local operator surfaces can discover 
 }
 ```
 
-The matching env vars are `MONO_AGENT_TRACE_*`, including `MONO_AGENT_TRACE_REGISTRY_DIR`, `MONO_AGENT_TRACE_SOURCE_ID`, and `MONO_AGENT_TRACE_SOURCE_LABEL`.
+Configure traceability in the JSON `traceability` block.
 
 ## Exporter retirement and migration
 

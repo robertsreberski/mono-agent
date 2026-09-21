@@ -84,7 +84,7 @@ recipe → preset mapping is recorded as static documentation in
 
 Every retired environment variable (`MONO_AGENT_EXECUTION_MODE`,
 `MONO_AGENT_ROUTE_SAFETY`, `MONO_AGENT_FALLBACK_MODELS`,
-`MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`) fails config load when it carries a
+`memory.llm.executionMode`) fails config load when it carries a
 value, naming the exact repair in environment terms. All of them that are set are
 reported in a single load, not one per run. An empty assignment (`KEY=`) is still
 treated as unset — an inert leftover line in a deployed `.env` does not break
@@ -98,7 +98,7 @@ usually a few `mono-agent validate` passes rather than one.
 
 A rejected model reference names its concrete replacement in the message
 `doctor`, `mono-agent validate`, `mono-agent config` and the startup error all
-print — for example `` MONO_AGENT_MODEL `codex:gpt-5.6-terra` is not a valid
+print — for example `` runtime.model `codex:gpt-5.6-terra` is not a valid
 runtime model reference: codex is no longer a runtime backend; use
 openai-codex:gpt-5.6-terra ``. See
 [the runtime migration guide](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/MIGRATION.md)

@@ -77,7 +77,6 @@ In `continuous` mode the runtime holds one warm provider session per conversatio
 }
 ```
 
-Env vars: `MONO_AGENT_SESSION_MODE`, `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS`, `MONO_AGENT_SESSION_ROLLOVER`, `MONO_AGENT_SESSION_ROLLOVER_TIMEZONE`, `MONO_AGENT_SESSION_ROLLOVER_NOTICE`.
 
 Warm in-memory sessions are lost on restart. To resume across restarts, use the default durable history store together with `providers.piNative.piSessionsRoot` (see [Pi-native tuning](#pi-native-tuning) below). The history store, not a conversation-id hash, owns the resumable provider epoch.
 
@@ -143,7 +142,6 @@ turn after that resumes normally.
 }
 ```
 
-Env vars: `MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS`, `MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS`.
 
 These bounds cover the harness run path (which begins at `responder.respond`). Channel adapters (Slack/Telegram) do per-conversation admission and attachment downloads *before* that boundary, so cross-conversation transport download IO is not covered here — per-file byte caps and timeouts apply to that instead. A plain-text same-conversation follow-up can be applied inside the active provider run; its reserved adapter queue slot is released after acknowledgement or becomes the next normal turn on an unsupported/failed/end-of-turn race. Adapter queues are drained and aborted on `/cancel` and stop.
 
@@ -237,7 +235,6 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 }
 ```
 
-Env vars: `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`, `MONO_AGENT_PI_TRANSPORT`, `MONO_AGENT_PI_MAX_RETRIES`, `MONO_AGENT_MAX_RETRY_DELAY_MS`, `MONO_AGENT_PI_SESSIONS_ROOT`.
 
 `auto` preserves Pi's provider-specific default and fallback behavior. An explicit mode is host-authoritative for configured agents: request-scoped runtime extensions cannot replace it. Every Pi result records the normalized choice as `diagnostics.pi_transport_requested`; this is the requested mode, not a claim that a provider with only one transport changed its wire protocol.
 
@@ -338,7 +335,7 @@ For retry behavior across *different* models (provider failover, not transport r
 
 ## Prompt-cache diagnostics
 
-`providers.piNative.promptCacheDiagnostics` (default `false`; env `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`) enables metadata-only request fingerprints in existing run artifacts. It never emits prompt text, tool arguments, raw cache keys, endpoints or credentials. See [Prompt-cache measurement](/runtime/prompt-cache-measurement/) for the artifact reader.
+`providers.piNative.promptCacheDiagnostics` (default `false`) enables metadata-only request fingerprints in existing run artifacts. It never emits prompt text, tool arguments, raw cache keys, endpoints or credentials. See [Prompt-cache measurement](/runtime/prompt-cache-measurement/) for the artifact reader.
 
 
 ## Persistent child sessions
@@ -380,10 +377,7 @@ their registered service; disabled, failed or missing owners fail closed. See [d
 ### Anthropic cache retention
 
 `providers.piNative.cacheRetention` defaults to `"long"` (one hour); set `"short"`
-(five minutes) to opt out. Nonempty `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON,
-then the `"long"` default. Both the default and explicit values override Pi's
-separate ambient `PI_CACHE_RETENTION`, including explicit `"short"` when Pi's
-environment requests long retention.
+(five minutes) to opt out. JSON wins over the `"long"` default, and the resolved value overrides Pi's ambient `PI_CACHE_RETENTION`.
 The runtime forwards retention only to Anthropic Messages, including child
 routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
 unsupported models receive no one-hour TTL.

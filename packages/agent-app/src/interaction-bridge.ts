@@ -89,9 +89,9 @@ export function formatInteractionBridgeUrl(host: string, port?: number): string 
   return `http://${urlHost}${port === undefined ? "" : `:${String(port)}`}`;
 }
 
-/** Resolved `interaction` config block (JSON `interaction` key + env overrides). */
+/** Resolved JSON `interaction` config block. */
 export interface InteractionSettings {
-  /** True when the operator explicitly configured the block (JSON or env). */
+  /** True when the operator explicitly configured the JSON block. */
   readonly configured: boolean;
   readonly host: string;
   readonly port: number;
@@ -100,10 +100,12 @@ export interface InteractionSettings {
 }
 
 /**
- * Load the app-level `interaction` block from `mono-agent.config.json` with env
- * overrides (`MONO_AGENT_INTERACTION_BRIDGE_HOST/PORT`,
- * `MONO_AGENT_ASK_USER_TIMEOUT_MS`, `MONO_AGENT_PROGRESS_ENABLED`). Tolerant of
- * a missing file/block: returns unconfigured defaults.
+ * Load the app-level `interaction` block from `mono-agent.config.json`.
+ *
+ * The `env` member is retained on the host input because this module also owns
+ * a separate parent-to-child runtime protocol. Configuration names found there
+ * are intentionally ignored here; child readers consume only values injected
+ * by the parent when constructing that protocol.
  */
 export async function loadInteractionSettings(input: {
   readonly env: Record<string, string | undefined>;
@@ -125,42 +127,15 @@ export async function loadInteractionSettings(input: {
   const bridge = (block.bridge ?? {}) as Record<string, unknown>;
   const askUser = (block.askUser ?? {}) as Record<string, unknown>;
   const progress = (block.progress ?? {}) as Record<string, unknown>;
-  const envHost = trimmed(input.env.MONO_AGENT_INTERACTION_BRIDGE_HOST);
-  const envPort = integerOf(input.env.MONO_AGENT_INTERACTION_BRIDGE_PORT);
-  const envTimeout = askTimeoutValue(input.env.MONO_AGENT_ASK_USER_TIMEOUT_MS);
-  const envProgress = trimmed(input.env.MONO_AGENT_PROGRESS_ENABLED);
-  const configured =
-    present || envHost !== undefined || envPort !== undefined || envTimeout !== undefined || envProgress !== undefined;
   return {
-    configured,
-    host: envHost ?? (typeof bridge.host === "string" ? bridge.host : "127.0.0.1"),
-    port: envPort ?? integerValue(bridge.port) ?? DEFAULT_INTERACTION_BRIDGE_PORT,
-    askTimeoutMs: envTimeout !== undefined
-      ? envTimeout
-      : askUser.timeoutMs === null
-        ? null
-        : integerValue(askUser.timeoutMs) ?? DEFAULT_ASK_USER_TIMEOUT_MS,
-    progressEnabled: envProgress !== undefined ? envProgress !== "false" : progress.enabled !== false,
+    configured: present,
+    host: typeof bridge.host === "string" ? bridge.host : "127.0.0.1",
+    port: integerValue(bridge.port) ?? DEFAULT_INTERACTION_BRIDGE_PORT,
+    askTimeoutMs: askUser.timeoutMs === null
+      ? null
+      : integerValue(askUser.timeoutMs) ?? DEFAULT_ASK_USER_TIMEOUT_MS,
+    progressEnabled: progress.enabled !== false,
   };
-}
-
-function trimmed(value: string | undefined): string | undefined {
-  const normalized = value?.trim();
-  return normalized === undefined || normalized.length === 0 ? undefined : normalized;
-}
-
-function integerOf(value: string | undefined): number | undefined {
-  const normalized = trimmed(value);
-  if (normalized === undefined || !/^\d+$/u.test(normalized)) {
-    return undefined;
-  }
-  return Number.parseInt(normalized, 10);
-}
-
-function askTimeoutValue(value: string | undefined): number | null | undefined {
-  const normalized = trimmed(value);
-  if (normalized === "none") return null;
-  return integerOf(normalized);
 }
 
 function integerValue(value: unknown): number | undefined {

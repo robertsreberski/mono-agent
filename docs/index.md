@@ -44,7 +44,7 @@ An agent can be small. This is a complete config:
 }
 ```
 
-Equivalent env overrides: `MONO_AGENT_MODEL=openai-codex:gpt-5.6-terra` and, for the enabled Telegram channel, `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`. Source configs omit credentials; see [Environment variables](/config/env-vars/) for the full mapping.
+Core model selection stays in JSON. The enabled Telegram adapter can read `MONO_AGENT_TELEGRAM_BOT_TOKEN` from `.env`; see [Operational environment variables](/config/env-vars/).
 
 ## Site map
 
@@ -64,6 +64,6 @@ Equivalent env overrides: `MONO_AGENT_MODEL=openai-codex:gpt-5.6-terra` and, for
 
 ## Config-first philosophy
 
-Everything that defines a running agent lives in `mono-agent.config.json`, resolved with a strict precedence for fields that expose an environment mapping: **process env > `mono-agent.config.json` > built-in defaults**. Documented `MONO_AGENT_*` overrides let one source config run in different environments without embedding credentials; JSON-only fields remain in the config file.
+Everything that defines a running agent lives in `mono-agent.config.json`, with built-in defaults for omitted fields. Former core `MONO_AGENT_*` overrides are silently ignored; environment values remain for secret references, adapter inputs, and process plumbing.
 
 External channels and optional subsystems are generally **opt-in**: a transport is dormant until you enable it, while the loopback operator endpoint (compatibility id `tui`) defaults on and can be disabled explicitly. Security-sensitive surfaces (sandbox fallback, network policy, send-tool allowlists) **fail closed** by default. Approval gates, structured output, custom runtimes/channels, and direct runtime live input are programmatic escape hatches; managed Slack, Telegram, and web-console turns provide live follow-up steering automatically on capable providers. See [Programmatic](/programmatic/).

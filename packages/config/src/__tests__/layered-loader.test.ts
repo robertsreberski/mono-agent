@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MonoAgentConfigError } from "../config.js";
 import type { MonoAgentConfigJson } from "../json-source.js";
-import { loadMonoAgentConfigWithSources, layerJsonOntoEnv } from "../layered-loader.js";
+import { loadMonoAgentConfig, loadProjectedConfigForTests, projectMonoAgentConfigJson } from "../layered-loader.js";
 
 let dir: string;
 
@@ -18,25 +18,25 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-describe("layerJsonOntoEnv", () => {
+describe("projectMonoAgentConfigJson", () => {
   it("returns env values unchanged when JSON is empty", () => {
-    const layered = layerJsonOntoEnv({}, { FOO: "bar" });
+    const layered = projectMonoAgentConfigJson({}, { FOO: "bar" });
     expect(layered).toEqual({ FOO: "bar" });
   });
 
   it("projects the retry policy onto env and lets env win", () => {
     const json = { runtime: { retry: { primaryAttempts: 3, backoffMs: 500, maxBackoffMs: 9_000 } } };
-    expect(layerJsonOntoEnv(json, {})).toMatchObject({
+    expect(projectMonoAgentConfigJson(json, {})).toMatchObject({
       MONO_AGENT_RETRY_PRIMARY_ATTEMPTS: "3",
       MONO_AGENT_RETRY_BACKOFF_MS: "500",
       MONO_AGENT_RETRY_MAX_BACKOFF_MS: "9000",
     });
-    expect(layerJsonOntoEnv(json, { MONO_AGENT_RETRY_PRIMARY_ATTEMPTS: "5" }))
+    expect(projectMonoAgentConfigJson(json, { MONO_AGENT_RETRY_PRIMARY_ATTEMPTS: "5" }))
       .toMatchObject({ MONO_AGENT_RETRY_PRIMARY_ATTEMPTS: "5", MONO_AGENT_RETRY_BACKOFF_MS: "500" });
   });
 
   it("round-trips per-route attempts through the canonical fallbacks JSON", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { runtime: { fallbacks: [{ model: "openai-codex:gpt-5.6-sol", attempts: 3 }] } },
       {},
     );
@@ -46,12 +46,12 @@ describe("layerJsonOntoEnv", () => {
 
   it("preserves shorthand and named subagent models through JSON layering", () => {
     const models = ["openai-codex:gpt-5.5", { name: "fable", model: "anthropic:claude-fable-5-1" }];
-    const layered = layerJsonOntoEnv({ subagents: { models } }, {});
+    const layered = projectMonoAgentConfigJson({ subagents: { models } }, {});
     expect(JSON.parse(layered.MONO_AGENT_SUBAGENTS_JSON as string)).toEqual({ models });
   });
 
   it("translates JSON sections to env keys", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         agent: { name: "Research Partner" },
         runtime: {
@@ -157,7 +157,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("projects canonical SearXNG and Ollama blocks while real env wins across the SearXNG alias", () => {
-    const layered = layerJsonOntoEnv({ tools: { web: { search: {
+    const layered = projectMonoAgentConfigJson({ tools: { web: { search: {
       backend: "ollama",
       maxRequestsPerRun: 6,
       searxng: { endpoint: "http://127.0.0.1:8088" },
@@ -177,7 +177,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("rejects raw retired Hound JSON even when real env would override it", () => {
-    expect(() => layerJsonOntoEnv({ tools: { web: {
+    expect(() => projectMonoAgentConfigJson({ tools: { web: {
       search: { backend: "hound", hound: { endpoint: "retired" } },
     } } }, { MONO_AGENT_WEB_SEARCH_BACKEND: "parallel", MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT: "override" })).toThrow(/tools.web.search.hound.endpoint.*was removed/);
   });
@@ -186,7 +186,7 @@ describe("layerJsonOntoEnv", () => {
     const json = {
       runtime: { fallbacks: [{ model: "anthropic:claude-sonnet-4-6" }] },
     } as const;
-    const canonical = layerJsonOntoEnv(
+    const canonical = projectMonoAgentConfigJson(
       json,
       { MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "openai-codex:gpt-5.6-sol" }]) },
     );
@@ -195,14 +195,14 @@ describe("layerJsonOntoEnv", () => {
 
   it("layers prompt cache diagnostics with env precedence", () => {
     const json = { providers: { piNative: { promptCacheDiagnostics: true } } };
-    expect(layerJsonOntoEnv(json, {}).MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS).toBe("true");
-    expect(() => layerJsonOntoEnv({ providers: { piNative: { promptCacheDiagnostics: "true" as unknown as boolean } } }, {})).toThrow("boolean");
-    expect(layerJsonOntoEnv(json, { MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "false" }).MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS).toBe("false");
-    expect(layerJsonOntoEnv({ providers: { piNative: { promptCacheDiagnostics: false } } }, {}).MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS).toBe("false");
+    expect(projectMonoAgentConfigJson(json, {}).MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS).toBe("true");
+    expect(() => projectMonoAgentConfigJson({ providers: { piNative: { promptCacheDiagnostics: "true" as unknown as boolean } } }, {})).toThrow("boolean");
+    expect(projectMonoAgentConfigJson(json, { MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "false" }).MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS).toBe("false");
+    expect(projectMonoAgentConfigJson({ providers: { piNative: { promptCacheDiagnostics: false } } }, {}).MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS).toBe("false");
   });
 
   it("translates JSON providers.piNative knobs to env keys", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         providers: {
           piNative: { transport: "sse", piMaxRetries: 4, maxRetryDelayMs: 30000, piSessionsRoot: ".mono-agent/sessions" },
@@ -217,7 +217,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("lets a legacy local-provider env var override the same JSON provider id", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         providers: {
           piAuthPath: ".pi/auth.json",
@@ -242,7 +242,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("drops JSON provider ids named by MONO_AGENT_LOCAL_PROVIDERS_JSON", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { providers: { ollama: { type: "ollama" }, lmstudio: { type: "lmstudio" } } },
       {
         MONO_AGENT_LOCAL_PROVIDERS_JSON: JSON.stringify([
@@ -254,7 +254,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("keeps the whole JSON provider map when the legacy env registry is unparseable", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { providers: { ollama: { type: "ollama" } } },
       { MONO_AGENT_LOCAL_PROVIDERS_JSON: "{not-json" },
     );
@@ -263,7 +263,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates runtime.compaction JSON and lets env override individual fields", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         runtime: {
           compaction: {
@@ -302,7 +302,7 @@ describe("layerJsonOntoEnv", () => {
       },
       context: { identityPath: "IDENTITY.md" },
     }));
-    const loaded = await loadMonoAgentConfigWithSources({
+    const loaded = await loadProjectedConfigForTests({
       cwd: "/repo",
       jsonPath: configPath,
       env: { MONO_AGENT_COMPACTION_TRIGGER_RATIO: "0.8" },
@@ -325,12 +325,12 @@ describe("layerJsonOntoEnv", () => {
     [{ fixedOverheadEnabled: "yes" }, "runtime.compaction.fixedOverheadEnabled"],
     [{ contextWindowOverride: 31_999 }, "runtime.compaction.contextWindowOverride"],
   ])("rejects invalid runtime.compaction JSON at %s", (compaction, path) => {
-    expect(() => layerJsonOntoEnv({ runtime: { compaction: compaction as never } }, {}))
+    expect(() => projectMonoAgentConfigJson({ runtime: { compaction: compaction as never } }, {}))
       .toThrowError(expect.objectContaining({ code: "invalid_json", details: expect.objectContaining({ path }) }));
   });
 
   it("translates JSON concurrency to env keys", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { concurrency: { maxConcurrentRuns: 4 } },
       {},
     );
@@ -338,7 +338,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates JSON concurrency.maxPendingRuns to env keys", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { concurrency: { maxConcurrentRuns: 4, maxPendingRuns: 16 } },
       {},
     );
@@ -347,7 +347,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("lets env override JSON concurrency", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { concurrency: { maxConcurrentRuns: 4, maxPendingRuns: 16 } },
       {
         MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS: "8",
@@ -359,7 +359,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates JSON memory embeddings timeoutMs and circuit breaker to env keys", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         memory: {
           mode: "journal",
@@ -397,7 +397,7 @@ describe("layerJsonOntoEnv", () => {
       },
     }), "utf8");
 
-    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const config = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
 
     expect(config.memory?.embeddings).toEqual({
       provider: "lmstudio",
@@ -410,7 +410,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates JSON memory.recallTool.enabled to an env key", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { memory: { mode: "journal", path: ".mono-agent/memory", recallTool: { enabled: false } } },
       {},
     );
@@ -418,7 +418,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates JSON memory.rememberTool.enabled to an env key", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { memory: { mode: "journal", path: ".mono-agent/memory", rememberTool: { enabled: false } } },
       {},
     );
@@ -426,7 +426,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("lets env override JSON memory.rememberTool.enabled", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { memory: { mode: "journal", path: ".mono-agent/memory", rememberTool: { enabled: false } } },
       { MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED: "true" },
     );
@@ -434,7 +434,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("lets env override JSON memory.recallTool.enabled", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { memory: { mode: "journal", path: ".mono-agent/memory", recallTool: { enabled: false } } },
       { MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: "true" },
     );
@@ -442,7 +442,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("rejects active JSON Supermemory before projecting it to env keys", () => {
-    expect(() => layerJsonOntoEnv(
+    expect(() => projectMonoAgentConfigJson(
       {
         memory: {
           backend: "supermemory",
@@ -464,7 +464,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates JSON runtime.session to env keys", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { runtime: { session: { mode: "per-message", idleTimeoutMs: 120_000, rolloverNotice: true } } },
       {},
     );
@@ -474,7 +474,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("lets env override JSON session values", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { runtime: { session: { mode: "per-message", idleTimeoutMs: 120_000, rolloverNotice: true } } },
       {
         MONO_AGENT_SESSION_MODE: "continuous",
@@ -488,7 +488,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("lets env override JSON values", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         runtime: { maxTurns: 4 },
         providers: {
@@ -510,7 +510,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates the JSON sandbox section to env keys", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         sandbox: {
           mode: "native",
@@ -535,7 +535,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates JSON memory embeddings to env keys (graphPath is a no-op — retired)", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         memory: {
           mode: "journal",
@@ -558,7 +558,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates JSON memory bujo mode and llm block to env keys", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         memory: {
           mode: "bujo",
@@ -577,7 +577,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates JSON agent-host memory llm block to env keys", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         memory: {
           mode: "bujo",
@@ -609,7 +609,7 @@ describe("layerJsonOntoEnv", () => {
       },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({
+    await expect(loadProjectedConfigForTests({
       env: {
         MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
         MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
@@ -623,7 +623,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates JSON memory llm timeoutMs to its env key", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         memory: {
           mode: "bujo",
@@ -637,7 +637,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("drops a stale JSON Ollama LLM endpoint when env switches memory llm to agent-host", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         memory: {
           mode: "bujo",
@@ -656,7 +656,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("preserves an explicit env endpoint so invalid agent-host env config can fail validation", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         memory: {
           mode: "bujo",
@@ -675,7 +675,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("omits LLM env keys when llm block is absent in JSON", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { memory: { mode: "bujo", path: ".mono-agent/memory" } },
       {},
     );
@@ -685,7 +685,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates JSON memory consolidation block to env keys", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         memory: {
           mode: "bujo",
@@ -702,7 +702,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("omits consolidation env keys when consolidation block is absent in JSON", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { memory: { mode: "bujo", path: ".mono-agent/memory" } },
       {},
     );
@@ -711,7 +711,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("does not translate removed JSON reflection and migration blocks to env keys", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       {
         memory: {
           mode: "bujo",
@@ -729,7 +729,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("uses lite as the default memory mode when mode is omitted from JSON", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { memory: { path: ".mono-agent/memory" } },
       {},
     );
@@ -738,7 +738,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates JSON context.skillMaxBytes to an env key", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { context: { identityPath: "IDENTITY.md", skillMaxBytes: 24000 } },
       {},
     );
@@ -746,7 +746,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates JSON context.skillDisclosure to an env key", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { context: { identityPath: "IDENTITY.md", skillDisclosure: "index" } },
       {},
     );
@@ -754,7 +754,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("omits MONO_AGENT_SKILL_DISCLOSURE when context.skillDisclosure is absent", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { context: { identityPath: "IDENTITY.md" } },
       {},
     );
@@ -762,7 +762,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates JSON runtime.session.isolateProactive to an env key", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { runtime: { session: { isolateProactive: true } } },
       {},
     );
@@ -770,7 +770,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("translates JSON runtime.session.rolloverNotice false to an env key", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { runtime: { session: { rolloverNotice: false } } },
       {},
     );
@@ -779,7 +779,7 @@ describe("layerJsonOntoEnv", () => {
 
   it("rejects non-boolean JSON runtime.session.rolloverNotice", () => {
     expect(() =>
-      layerJsonOntoEnv(
+      projectMonoAgentConfigJson(
         { runtime: { session: { rolloverNotice: "false" as unknown as boolean } } },
         {},
       ),
@@ -787,7 +787,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("omits MONO_AGENT_SESSION_ISOLATE_PROACTIVE when session.isolateProactive is absent", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { runtime: { session: { mode: "continuous" } } },
       {},
     );
@@ -796,7 +796,7 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("treats empty env values as absent so JSON wins", () => {
-    const layered = layerJsonOntoEnv(
+    const layered = projectMonoAgentConfigJson(
       { runtime: { maxTurns: 4 } },
       { MONO_AGENT_MAX_TURNS: "   " },
     );
@@ -804,12 +804,12 @@ describe("layerJsonOntoEnv", () => {
   });
 
   it("does not project the inert removed observability shape onto env", () => {
-    const layered = layerJsonOntoEnv({ observability: { exporters: [] } }, {});
+    const layered = projectMonoAgentConfigJson({ observability: { exporters: [] } }, {});
     expect(layered.MONO_AGENT_OBSERVABILITY_EXPORTERS).toBeUndefined();
   });
 });
 
-describe("loadMonoAgentConfigWithSources", () => {
+describe("loadMonoAgentConfig", () => {
   it("rejects active legacy JSON before an inert env value can mask it", async () => {
     const path = join(dir, "config.json");
     await writeFile(path, JSON.stringify({
@@ -819,7 +819,7 @@ describe("loadMonoAgentConfigWithSources", () => {
     }), "utf8");
 
     try {
-      await loadMonoAgentConfigWithSources({
+      await loadProjectedConfigForTests({
         env: { MONO_AGENT_OBSERVABILITY_EXPORTERS: "[]" },
         cwd: dir,
         jsonPath: path,
@@ -837,7 +837,7 @@ describe("loadMonoAgentConfigWithSources", () => {
     for (const observability of [{}, { exporters: [] }]) {
       const path = join(dir, `config-${JSON.stringify(observability).length}.json`);
       await writeFile(path, JSON.stringify({ observability }), "utf8");
-      await expect(loadMonoAgentConfigWithSources({
+      await expect(loadProjectedConfigForTests({
         env: {
           MONO_AGENT_MODEL: "pi:openai-codex:gpt-5.5",
           MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
@@ -856,7 +856,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { mode: "journal", path: ".mono-agent/memory" },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       code: "invalid_json",
       message: expect.stringContaining("memory.embeddings"),
       details: { path: "memory.embeddings", code: "invalid_json" },
@@ -871,7 +871,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { mode: "bujo", path: ".mono-agent/memory", embeddings: { provider: "ollama" } },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       code: "invalid_json",
       message: expect.stringContaining("memory.llm"),
       details: { path: "memory.llm", code: "invalid_json" },
@@ -897,7 +897,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       code: "invalid_json",
       message: expect.stringContaining("memory.llm"),
       details: { path: "memory.llm", code: "invalid_json" },
@@ -913,7 +913,7 @@ describe("loadMonoAgentConfigWithSources", () => {
     }), "utf8");
 
     try {
-      await loadMonoAgentConfigWithSources({
+      await loadProjectedConfigForTests({
         env: { MONO_AGENT_MEMORY_MODE: "journal" },
         cwd: dir,
         jsonPath: path,
@@ -983,7 +983,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { mode, path: ".mono-agent/memory", ...memory },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       code: "invalid_env",
       message: expect.stringContaining(implicated),
       details: { env: implicated, code: "invalid_env" },
@@ -1035,7 +1035,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { path: ".mono-agent/memory", ...memory },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       code: "invalid_json",
       message: expect.stringContaining(expectedPath),
       details: { path: expectedPath, code: "invalid_json" },
@@ -1054,7 +1054,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: { MONO_AGENT_MEMORY_MODE: "journal" },
       cwd: dir,
       jsonPath: path,
@@ -1073,7 +1073,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       }),
       "utf8",
     );
-    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const config = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     expect(config.tools.allowedTools).toEqual(["*"]);
   });
 
@@ -1094,7 +1094,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const config = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     expect(config.tools.filesystem).toEqual({
       readableRoots: [join(dir, "projects/repo,archive")],
       writableRoots: [join(dir, "output/repo,archive")],
@@ -1112,7 +1112,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       }),
       "utf8",
     );
-    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const config = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     expect(config.tools.allowedTools).toEqual([]);
   });
 
@@ -1138,7 +1138,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       }),
       "utf8",
     );
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: {},
       cwd: dir,
       jsonPath: path,
@@ -1163,7 +1163,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: {
         MONO_AGENT_LOCAL_PROVIDER_ID: "ollama",
         MONO_AGENT_LOCAL_PROVIDER_TYPE: "ollama",
@@ -1187,7 +1187,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: {
         MONO_AGENT_LOCAL_PROVIDER_ID: "ollama",
         MONO_AGENT_LOCAL_PROVIDER_TYPE: "ollama",
@@ -1213,7 +1213,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       }),
       "utf8",
     );
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: { MONO_AGENT_MAX_TURNS: "20" },
       cwd: dir,
       jsonPath: path,
@@ -1232,7 +1232,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: {},
       cwd: dir,
       jsonPath: path,
@@ -1252,7 +1252,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: { MONO_AGENT_MAX_TURNS: "0" },
       cwd: dir,
       jsonPath: path,
@@ -1275,10 +1275,10 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const fromJson = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const fromJson = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     expect(fromJson.runtime.session).toEqual({ mode: "per-message", idleTimeoutMs: 120_000, rollover: "none" });
 
-    const withEnv = await loadMonoAgentConfigWithSources({
+    const withEnv = await loadProjectedConfigForTests({
       env: { MONO_AGENT_SESSION_MODE: "continuous", MONO_AGENT_SESSION_IDLE_TIMEOUT_MS: "5000" },
       cwd: dir,
       jsonPath: path,
@@ -1301,11 +1301,11 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const fromJson = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const fromJson = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     expect(fromJson.runtime.session.rollover).toBe("daily");
     expect(fromJson.runtime.session.rolloverTimezone).toBe("Europe/Rome");
 
-    const withEnv = await loadMonoAgentConfigWithSources({
+    const withEnv = await loadProjectedConfigForTests({
       env: { MONO_AGENT_SESSION_ROLLOVER: "none", MONO_AGENT_SESSION_ROLLOVER_TIMEZONE: "UTC" },
       cwd: dir,
       jsonPath: path,
@@ -1330,7 +1330,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const fromJson = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const fromJson = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     expect(fromJson.context.skillDisclosure).toBe("index");
     expect(fromJson.runtime.session.isolateProactive).toBe(true);
     expect(fromJson.runtime.session.rolloverNotice).toBe(true);
@@ -1345,13 +1345,13 @@ describe("loadMonoAgentConfigWithSources", () => {
       }),
       "utf8",
     );
-    const defaults = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path2 });
+    const defaults = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path2 });
     expect(defaults.context.skillDisclosure).toBeUndefined();
     expect(defaults.runtime.session.isolateProactive).toBeUndefined();
     expect(defaults.runtime.session.rolloverNotice).toBeUndefined();
 
     // Env overrides JSON (higher precedence).
-    const withEnv = await loadMonoAgentConfigWithSources({
+    const withEnv = await loadProjectedConfigForTests({
       env: {
         MONO_AGENT_SKILL_DISCLOSURE: "full",
         MONO_AGENT_SESSION_ISOLATE_PROACTIVE: "false",
@@ -1381,7 +1381,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const config = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     expect(config.sandbox).toMatchObject({
       mode: "native",
       fallback: "fail-closed",
@@ -1406,7 +1406,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const config = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     expect(config.memory).not.toHaveProperty("graphPath");
     expect(config.memory?.embeddings).toEqual({ provider: "ollama", model: "nomic-embed-text:v1.5" });
   });
@@ -1427,7 +1427,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const config = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     expect(config.memory?.embeddings).toEqual({
       provider: "ollama",
       model: "nomic-embed-text:v1.5",
@@ -1443,7 +1443,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { mode: "journal", path: ".mono-agent/memory", embeddings: {} },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       code: "invalid_json",
       details: { path: "memory.embeddings", code: "invalid_json" },
     });
@@ -1462,7 +1462,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { backend },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({
+    await expect(loadProjectedConfigForTests({
       env: { MONO_AGENT_MEMORY_BACKEND: envBackend },
       cwd: dir,
       jsonPath: path,
@@ -1480,7 +1480,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { backend: "bujo", mode: "lite", path: ".mono-agent/memory" },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({
+    await expect(loadProjectedConfigForTests({
       env: { MONO_AGENT_MEMORY_BACKEND: " supermemory " },
       cwd: dir,
       jsonPath: path,
@@ -1498,7 +1498,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { supermemory: {} },
     }), "utf8");
 
-    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const config = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     expect(config.memory).toBeUndefined();
   });
 
@@ -1510,7 +1510,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { backend: 123, path: ".mono-agent/memory" },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       name: "MonoAgentConfigError",
       code: "invalid_json",
       message: expect.stringContaining("memory.backend"),
@@ -1530,7 +1530,7 @@ describe("loadMonoAgentConfigWithSources", () => {
 
       let rejection: unknown;
       try {
-        await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+        await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
       } catch (error) {
         rejection = error;
       }
@@ -1557,7 +1557,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       name: "MonoAgentConfigError",
       code: "invalid_json",
       message: expect.stringContaining("memory.llm"),
@@ -1588,7 +1588,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       name: "MonoAgentConfigError",
       code: "invalid_json",
       message: expect.stringContaining(expected),
@@ -1627,7 +1627,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { mode: "journal", path: ".mono-agent/memory", embeddings },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       code: "invalid_json",
       details: { path: expectedPath, code: "invalid_json" },
     });
@@ -1654,7 +1654,7 @@ describe("loadMonoAgentConfigWithSources", () => {
 
     let rejection: unknown;
     try {
-      await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+      await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     } catch (error) {
       rejection = error;
     }
@@ -1719,7 +1719,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory,
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       code: "invalid_json",
       details: { path: expectedPath, code: "invalid_json" },
     });
@@ -1760,7 +1760,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory,
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       code: "invalid_json",
       details: { path: expectedPath, code: "invalid_json" },
     });
@@ -1789,7 +1789,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory,
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       code: "invalid_json",
       details: { path: expectedPath, code: "invalid_json" },
     });
@@ -1815,7 +1815,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory,
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       code: "invalid_env",
       details: { env: expectedEnv, code: "invalid_env" },
     });
@@ -1835,7 +1835,7 @@ describe("loadMonoAgentConfigWithSources", () => {
         },
       }), "utf8");
 
-      await expect(loadMonoAgentConfigWithSources({
+      await expect(loadProjectedConfigForTests({
         env: { MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai" },
         cwd: dir,
         jsonPath: path,
@@ -1926,7 +1926,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory,
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       code: "invalid_json",
       details: { path: expectedPath, code: "invalid_json" },
     });
@@ -1945,7 +1945,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: {
         MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
         MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
@@ -1967,7 +1967,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { mode: " lite ", path: ".mono-agent/memory" },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({
+    await expect(loadProjectedConfigForTests({
       env: { MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "384" },
       cwd: dir,
       jsonPath: path,
@@ -1991,7 +1991,7 @@ describe("loadMonoAgentConfigWithSources", () => {
         embeddings: { dim: [2] },
       },
     }), "utf8");
-    const embeddingsConfig = await loadMonoAgentConfigWithSources({
+    const embeddingsConfig = await loadProjectedConfigForTests({
       env: { MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "384" },
       cwd: dir,
       jsonPath: embeddingsPath,
@@ -2007,7 +2007,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { mode: "journal", path: ".mono-agent/memory", embeddings: { dim: [2] } },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({
+    await expect(loadProjectedConfigForTests({
       env: { MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "not-an-integer" },
       cwd: dir,
       jsonPath: path,
@@ -2028,7 +2028,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { mode: "journal", path: ".mono-agent/memory", embeddings: { dim: [2] } },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({
+    await expect(loadProjectedConfigForTests({
       env: { MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "   " },
       cwd: dir,
       jsonPath: path,
@@ -2067,7 +2067,7 @@ describe("loadMonoAgentConfigWithSources", () => {
 
     let error: unknown;
     try {
-      await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+      await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     } catch (cause) {
       error = cause;
     }
@@ -2112,7 +2112,7 @@ describe("loadMonoAgentConfigWithSources", () => {
 
     let error: unknown;
     try {
-      await loadMonoAgentConfigWithSources({
+      await loadProjectedConfigForTests({
         env: { [envName]: value },
         cwd: dir,
         jsonPath: path,
@@ -2150,7 +2150,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: {
         MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
         MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
@@ -2178,7 +2178,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({
+    await expect(loadProjectedConfigForTests({
       env: {
         MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
         MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
@@ -2204,7 +2204,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({
+    await expect(loadProjectedConfigForTests({
       env: {
         MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
         MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
@@ -2230,7 +2230,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({
+    await expect(loadProjectedConfigForTests({
       env: {
         MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
         MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
@@ -2257,7 +2257,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: { MONO_AGENT_MEMORY_LLM_MODEL: "qwen3:4b" },
       cwd: dir,
       jsonPath: path,
@@ -2273,7 +2273,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { backend: 123, mode: "lite", path: ".mono-agent/memory" },
     }), "utf8");
 
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: { MONO_AGENT_MEMORY_BACKEND: "bujo" },
       cwd: dir,
       jsonPath: path,
@@ -2292,7 +2292,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({
+    await expect(loadProjectedConfigForTests({
       env: { MONO_AGENT_MEMORY_BACKEND: "bujo" },
       cwd: dir,
       jsonPath: path,
@@ -2310,7 +2310,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       memory: { backend: 123 },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({
+    await expect(loadProjectedConfigForTests({
       env: { MONO_AGENT_MEMORY_BACKEND: "not-a-backend" },
       cwd: dir,
       jsonPath: path,
@@ -2335,7 +2335,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({
+    await expect(loadProjectedConfigForTests({
       env: { MONO_AGENT_MEMORY_BACKEND: "bujo" },
       cwd: dir,
       jsonPath: path,
@@ -2358,7 +2358,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
       code: "invalid_json",
       details: { path: "memory.llm", code: "invalid_json" },
     });
@@ -2380,7 +2380,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({
+    await expect(loadProjectedConfigForTests({
       env: { MONO_AGENT_MEMORY_MODE: "bujo" },
       cwd: dir,
       jsonPath: path,
@@ -2391,7 +2391,7 @@ describe("loadMonoAgentConfigWithSources", () => {
   });
 
   it("treats a dim-only embeddings env surface as explicit and applies provider/model defaults", async () => {
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: {
         MONO_AGENT_MODEL: "pi:openai-codex:gpt-5.5",
         MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
@@ -2409,7 +2409,7 @@ describe("loadMonoAgentConfigWithSources", () => {
   });
 
   it("works without a jsonPath (pure env loader behavior)", async () => {
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: {
         MONO_AGENT_MODEL: "pi:openai-codex:gpt-5.5",
         MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
@@ -2420,7 +2420,7 @@ describe("loadMonoAgentConfigWithSources", () => {
   });
 
   it("treats a missing JSON file as an empty layer", async () => {
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: {
         MONO_AGENT_MODEL: "pi:openai-codex:gpt-5.5",
         MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
@@ -2446,7 +2446,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const config = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     expect(config.memory?.mode).toBe("lite");
     expect(config.memory?.embeddings).toBeUndefined();
     expect(config.memory?.llm).toBeUndefined();
@@ -2469,7 +2469,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const config = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     expect(config.memory?.mode).toBe("journal");
     expect(config.memory?.embeddings).toMatchObject({ provider: "ollama", model: "nomic-embed-text", dim: 768 });
     expect(config.memory?.llm).toBeUndefined();
@@ -2493,7 +2493,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const config = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     expect(config.memory?.mode).toBe("bujo");
     expect(config.memory?.consolidation).toEqual({ enabled: true, cron: "0 */2 * * *" });
   });
@@ -2516,7 +2516,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const config = await loadMonoAgentConfigWithSources({
+    const config = await loadProjectedConfigForTests({
       env: { MONO_AGENT_MEMORY_CONSOLIDATION_CRON: "0 */4 * * *" },
       cwd: dir,
       jsonPath: path,
@@ -2548,7 +2548,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       "utf8",
     );
 
-    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    const config = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
 
     expect(config.memory?.mode).toBe("bujo");
     expect(config.memory?.path).toBe(join(dir, ".mono-agent", "memory"));
@@ -2583,7 +2583,7 @@ describe("JSON-sourced runtime failures name the JSON path, not an env var", () 
   ): Promise<MonoAgentConfigError> => {
     const path = await write(json);
     try {
-      await loadMonoAgentConfigWithSources({ env, cwd: dir, jsonPath: path });
+      await loadProjectedConfigForTests({ env, cwd: dir, jsonPath: path });
     } catch (error) {
       if (error instanceof MonoAgentConfigError) return error;
       throw error;
@@ -2793,7 +2793,7 @@ describe("JSON attribution rewrites the diagnostic's subject, never the operator
     const path = join(dir, "config.json");
     await writeFile(path, JSON.stringify(json), "utf8");
     try {
-      await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+      await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: path });
     } catch (error) {
       if (error instanceof MonoAgentConfigError) return error;
       throw error;
@@ -2908,9 +2908,9 @@ describe("JSON attribution rewrites the diagnostic's subject, never the operator
 
 it("layers cache retention JSON below nonempty environment", () => {
   const json = { providers: { piNative: { cacheRetention: "long" as const } } };
-  expect(layerJsonOntoEnv(json, {}).MONO_AGENT_PI_CACHE_RETENTION).toBe("long");
-  expect(layerJsonOntoEnv(json, { MONO_AGENT_PI_CACHE_RETENTION: "short" }).MONO_AGENT_PI_CACHE_RETENTION).toBe("short");
-  expect(layerJsonOntoEnv({}, {}).MONO_AGENT_PI_CACHE_RETENTION).toBeUndefined();
+  expect(projectMonoAgentConfigJson(json, {}).MONO_AGENT_PI_CACHE_RETENTION).toBe("long");
+  expect(projectMonoAgentConfigJson(json, { MONO_AGENT_PI_CACHE_RETENTION: "short" }).MONO_AGENT_PI_CACHE_RETENTION).toBe("short");
+  expect(projectMonoAgentConfigJson({}, {}).MONO_AGENT_PI_CACHE_RETENTION).toBeUndefined();
 });
 
 
@@ -2919,21 +2919,59 @@ describe("retired settings compatibility", () => {
     const jsonPath = join(dir, "mono-agent.config.json");
     const config = { runtime: { model: "pi:openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" } };
     await writeFile(jsonPath, JSON.stringify(config));
-    const baseline = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath });
+    const baseline = await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       await writeFile(jsonPath, JSON.stringify({ ...config, monitors: { enabled: true, maxActive: 999 } }));
-      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath })).toEqual(baseline);
-      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: `${dir}/./mono-agent.config.json` })).toEqual(baseline);
-      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath })).toEqual(baseline);
+      expect(await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath })).toEqual(baseline);
+      expect(await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: `${dir}/./mono-agent.config.json` })).toEqual(baseline);
+      expect(await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath })).toEqual(baseline);
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("Ignoring deprecated monitors config"));
       const secondPath = join(dir, "second.config.json");
       await writeFile(secondPath, JSON.stringify({ ...config, monitors: { unknownNestedKey: true } }));
-      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: secondPath, warnOnDeprecatedConfig: false })).toEqual(baseline);
+      expect(await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: secondPath, warnOnDeprecatedConfig: false })).toEqual(baseline);
       expect(warn).toHaveBeenCalledTimes(1);
-      expect(await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: secondPath })).toEqual(baseline);
+      expect(await loadProjectedConfigForTests({ env: {}, cwd: dir, jsonPath: secondPath })).toEqual(baseline);
       expect(warn).toHaveBeenCalledTimes(2);
     } finally { warn.mockRestore(); }
+  });
+});
+
+describe("JSON-only public loader", () => {
+  it("attributes missing required fields to JSON paths", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(path, "{}", "utf8");
+    await expect(loadMonoAgentConfig({ cwd: dir, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_json",
+      details: { path: "runtime.model" },
+    });
+  });
+
+  it("silently ignores representative active and retired MONO_AGENT config variables", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "openai-codex:gpt-5.6-sol", maxTurns: 7 },
+      context: { identityPath: "IDENTITY.md" },
+      providers: { piAuthPath: ".pi/auth.json" },
+    }), "utf8");
+
+    const inputWithStaleEnvironment = {
+      cwd: dir,
+      jsonPath: path,
+      env: {
+        MONO_AGENT_MODEL: "anthropic:ignored",
+        MONO_AGENT_MAX_TURNS: "99",
+        MONO_AGENT_IDENTITY_PATH: "IGNORED.md",
+        MONO_AGENT_PI_AUTH_PATH: "/ignored/auth.json",
+        MONO_AGENT_PERMISSION_MODE: "ignored-retired-value",
+      },
+    };
+    const config = await loadMonoAgentConfig(inputWithStaleEnvironment);
+
+    expect(config.runtime.model).toMatchObject({ provider: "openai-codex", model: "gpt-5.6-sol" });
+    expect(config.runtime.maxTurns).toBe(7);
+    expect(config.context.identityPath).toBe(join(dir, "IDENTITY.md"));
+    expect(config.providers?.piAuthPath).toBe(join(dir, ".pi/auth.json"));
   });
 });

@@ -99,24 +99,12 @@ mono-agent ships with an open tool surface. Memory, channel admission, HTTP bind
 Channels and tools also enforce their own destination allowlists (e.g. `telegram.allowedChatIds`, `slack.allowedChannelIds`). An empty allowlist with `allowAll*` left off means the agent will not act on anyone — that is the intended fail-closed behavior, not a bug.
 :::
 
-## Configuration precedence: env > JSON > defaults
+## Configuration precedence: JSON → defaults
 
-Fields with a documented `MONO_AGENT_*` environment mapping use this resolution order; JSON-only fields stay in `mono-agent.config.json`:
-
-1. **Process environment** (`MONO_AGENT_*`) — highest priority.
-2. **`mono-agent.config.json`** — the JSON value.
-3. **Built-in default** — used when neither is set.
-
-So `MONO_AGENT_MODEL=opencode-go:kimi-k2.6` overrides `runtime.model` in the JSON for that process. A `.env` file in the agent folder is loaded automatically (exported shell variables still win); use `--env-file <path>` for an alternate file.
-
-| Config key | Env var |
-| --- | --- |
-| `runtime.model` | `MONO_AGENT_MODEL` |
-| `tools.allowedTools` | `MONO_AGENT_ALLOWED_TOOLS` |
-| `memory.writeMode` | `MONO_AGENT_MEMORY_WRITE_MODE` |
-| `telegram.enabled` | `MONO_AGENT_TELEGRAM_*` |
-
-The complete key → env mapping is in [Configuration → Env Vars](/config/env-vars/).
+Core fields resolve from `mono-agent.config.json`, then built-in defaults.
+Former core `MONO_AGENT_*` overrides are silently ignored. Environment values
+remain available for credentials named by JSON, adapter-owned settings, and
+process plumbing; see [Operational environment variables](/config/env-vars/).
 
 ## Where to go next
 

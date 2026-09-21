@@ -3,7 +3,8 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { ALLOW_ALL_TOOLS, loadMonoAgentConfig, MonoAgentConfigError, redactMonoAgentConfig, resolveConfiguredProviders } from "../index.js";
+import { ALLOW_ALL_TOOLS, MonoAgentConfigError, redactMonoAgentConfig, resolveConfiguredProviders } from "../index.js";
+import { resolveProjectedMonoAgentConfig } from "../config.js";
 import type { MemoryBackend } from "../index.js";
 
 const baseEnv = {
@@ -30,7 +31,7 @@ const RETIRED_SUPERMEMORY_ENV_CASES = [
   ["MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER", "false"],
 ] as const;
 
-describe("loadMonoAgentConfig", () => {
+describe("resolveProjectedMonoAgentConfig", () => {
   it("exposes only BuJo as the active memory backend type", () => {
     const supportedBackend: MemoryBackend = "bujo";
     // @ts-expect-error Supermemory is a retired input tombstone, not an active backend.
@@ -40,7 +41,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads required runtime, context, tools, memory, and artifact config", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -117,7 +118,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("uses finite artifact retention defaults", () => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
 
     expect(config.runtime.compaction).toEqual({ enabled: true, fixedOverheadEnabled: true });
     expect(config.artifacts.retention).toEqual({ maxAgeDays: 365, maxCount: 50000, dryRun: false });
@@ -130,7 +131,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads local web search and browser-render settings from env", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -157,7 +158,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads local and hosted Ollama Web Search without leaking hosted credentials", () => {
-    const local = loadMonoAgentConfig({ cwd: "/repo", env: {
+    const local = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: {
       ...baseEnv,
       MONO_AGENT_WEB_SEARCH_BACKEND: "ollama",
     } });
@@ -166,7 +167,7 @@ describe("loadMonoAgentConfig", () => {
       trustPublicUrl: false,
     });
 
-    const hosted = loadMonoAgentConfig({ cwd: "/repo", env: {
+    const hosted = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: {
       ...baseEnv,
       MONO_AGENT_WEB_SEARCH_BACKEND: "ollama",
       MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL: "https://ollama.com",
@@ -179,18 +180,18 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("binds Ollama credentials to the official origin and requires trust for custom public origins", () => {
-    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: {
+    expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: {
       ...baseEnv,
       MONO_AGENT_WEB_SEARCH_BACKEND: "ollama",
       MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV: "TEST_OLLAMA_WEB_KEY",
       TEST_OLLAMA_WEB_KEY: "sentinel-hosted-key",
     } })).toThrow(/only for the exact https:\/\/ollama\.com origin/u);
-    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: {
+    expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: {
       ...baseEnv,
       MONO_AGENT_WEB_SEARCH_BACKEND: "ollama",
       MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL: "https://search.example.com",
     } })).toThrow(/TRUST_PUBLIC_URL=true/u);
-    expect(loadMonoAgentConfig({ cwd: "/repo", env: {
+    expect(resolveProjectedMonoAgentConfig({ cwd: "/repo", env: {
       ...baseEnv,
       MONO_AGENT_WEB_SEARCH_BACKEND: "ollama",
       MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL: "https://search.example.com",
@@ -199,12 +200,12 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("accepts the legacy SearXNG endpoint alias but rejects conflicting spellings", () => {
-    expect(loadMonoAgentConfig({ cwd: "/repo", env: {
+    expect(resolveProjectedMonoAgentConfig({ cwd: "/repo", env: {
       ...baseEnv,
       MONO_AGENT_WEB_SEARCH_BACKEND: "searxng",
       MONO_AGENT_WEB_SEARCH_ENDPOINT: "http://127.0.0.1:8088",
     } }).tools.web?.search.searxng?.endpoint).toBe("http://127.0.0.1:8088");
-    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: {
+    expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: {
       ...baseEnv,
       MONO_AGENT_WEB_SEARCH_BACKEND: "searxng",
       MONO_AGENT_WEB_SEARCH_ENDPOINT: "http://127.0.0.1:8088",
@@ -220,26 +221,26 @@ describe("loadMonoAgentConfig", () => {
       "http://127.0.0.1:8088?format=html",
       "http://127.0.0.1:8088#fragment",
     ]) {
-      expect(() => loadMonoAgentConfig({
+      expect(() => resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_WEB_SEARCH_ENDPOINT: endpoint },
       })).toThrow(MonoAgentConfigError);
     }
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_WEB_SEARCH_BACKEND: "searxng" },
     })).toThrow(/MONO_AGENT_WEB_SEARCH_ENDPOINT/u);
   });
 
   it("rejects control characters in the direct browser executable", () => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_WEB_BROWSER_COMMAND: "agent-browser\t--unsafe" },
     })).toThrow(/MONO_AGENT_WEB_BROWSER_COMMAND/u);
   });
 
   it("accepts strict Codex search without SearXNG and validates its model id", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -252,7 +253,7 @@ describe("loadMonoAgentConfig", () => {
       maxRequestsPerRun: 4,
       codex: { model: "gpt-5.6-luna" },
     });
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -263,19 +264,19 @@ describe("loadMonoAgentConfig", () => {
 
   it("bounds the per-run WebSearch provider-request budget", () => {
     for (const invalid of ["0", "21", "1.5", "nope"]) {
-      expect(() => loadMonoAgentConfig({
+      expect(() => resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN: invalid },
       })).toThrow(/MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN/u);
     }
-    expect(loadMonoAgentConfig({
+    expect(resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN: "20" },
     }).tools.web?.search.maxRequestsPerRun).toBe(20);
   });
 
   it("loads every runtime compaction override from env", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -308,14 +309,14 @@ describe("loadMonoAgentConfig", () => {
     ["MONO_AGENT_COMPACTION_FIXED_OVERHEAD_ENABLED", "sometimes"],
     ["MONO_AGENT_COMPACTION_CONTEXT_WINDOW_OVERRIDE", "31999"],
   ])("rejects invalid compaction env %s=%s", (name, value) => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, [name]: value },
     })).toThrowError(expect.objectContaining({ code: "invalid_env" }));
   });
 
   it("expands a home-relative Pi auth path instead of treating tilde as a directory", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_PI_AUTH_PATH: "~/.pi/custom/auth.json" },
     });
@@ -324,7 +325,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("defaults memory artifact retention dry-run to the agent retention dry-run", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -338,25 +339,25 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects invalid artifact retention values", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS: "0" },
       }),
     ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT: "-1" },
       }),
     ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_AGE_DAYS: "0" },
       }),
     ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_COUNT: "-1" },
       }),
@@ -364,13 +365,13 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("treats an omitted runtime max turns value as unlimited", () => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
 
     expect(config.runtime.maxTurns).toBeUndefined();
   });
 
   it("treats runtime max turns of zero as unlimited", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -382,27 +383,27 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("omits permission mode when the env is unset", () => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
     expect(config.runtime).not.toHaveProperty("permissionMode");
   });
 
   it.each(["true", "false"])("loads prompt cache diagnostics %s without changing unset defaults", (value) => {
-    const unset = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    const unset = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
     expect(unset.providers?.piNative).toEqual({ cacheRetention: "long" });
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: value } });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: value } });
     expect(config.providers?.piNative).toEqual({ cacheRetention: "long", promptCacheDiagnostics: value === "true" });
-    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "invalid" } })).toThrow();
+    expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "invalid" } })).toThrow();
   });
 
   it("loads prompt cache diagnostics from the provider JSON envelope", () => {
     const env = { ...baseEnv, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { promptCacheDiagnostics: true } }) };
-    expect(loadMonoAgentConfig({ cwd: "/repo", env }).providers?.piNative).toEqual({ cacheRetention: "long", promptCacheDiagnostics: true });
-    expect(loadMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "false" } }).providers?.piNative).toEqual({ cacheRetention: "long", promptCacheDiagnostics: false });
-    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { promptCacheDiagnostics: "true" } }) } })).toThrow("boolean");
+    expect(resolveProjectedMonoAgentConfig({ cwd: "/repo", env }).providers?.piNative).toEqual({ cacheRetention: "long", promptCacheDiagnostics: true });
+    expect(resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "false" } }).providers?.piNative).toEqual({ cacheRetention: "long", promptCacheDiagnostics: false });
+    expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { promptCacheDiagnostics: "true" } }) } })).toThrow("boolean");
   });
 
   it("loads pi-native provider knobs from env", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -422,13 +423,13 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("defaults only cache retention when pi-native provider env is unset", () => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
     expect(config.providers?.piNative).toEqual({ cacheRetention: "long" });
   });
 
   it("rejects an out-of-range pi max retries value", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_PI_MAX_RETRIES: "99" },
       }),
@@ -437,7 +438,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects an invalid pi transport", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_PI_TRANSPORT: "long-polling" },
       }),
@@ -446,7 +447,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects the retired permission mode with an actionable repair", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_PERMISSION_MODE: "bypassPermissions" },
       }),
@@ -454,7 +455,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads a trimmed public agent name and uses it as the default trace label", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_NAME: "  Research Partner  " },
     });
@@ -465,7 +466,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("keeps an explicit trace label ahead of the public agent name", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -479,12 +480,12 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it.each(["", "line one\nline two", "x".repeat(81)])("rejects an invalid public agent name %j", (name) => {
-    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_NAME: name } }))
+    expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_NAME: name } }))
       .toThrow(/MONO_AGENT_NAME/u);
   });
 
   it("loads canonical fallback routes with independent effort", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -505,12 +506,12 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it.each(["minimal", "ultra"])("accepts the %s effort level", (effort) => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_EFFORT: effort } });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_EFFORT: effort } });
     expect(config.runtime.effort).toBe(effort);
   });
 
   it("rejects duplicate primary and fallback routes deterministically", () => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -522,7 +523,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("loads persistent instance limits and resolves its root", () => {
     const instances = { enabled: false, root: "./children", maxPerConversation: 32, idleTtlMs: 60_000, maxTurns: 500 };
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
       MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances }),
     } });
     expect(config.subagents?.instances).toEqual({ ...instances, root: "/repo/children" });
@@ -532,13 +533,13 @@ describe("loadMonoAgentConfig", () => {
     { maxPerConversation: 33 }, { idleTtlMs: 59_999 }, { idleTtlMs: 604_800_001 },
     { maxTurns: 0 }, { maxTurns: 501 }, { maxTurns: 1.5 }, { unknown: true },
   ])("rejects invalid instance settings %j", (instances) => {
-    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
+    expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
       MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ instances }),
     } })).toThrow(/instances/u);
   });
 
   it("loads subagent profiles and caps", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -566,7 +567,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads named and shorthand subagent model choices", () => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
       MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ models: ["openai-codex:gpt-5.5", { name: "fable", model: "anthropic:claude-fable-5-1" }] }),
     } });
     expect(config.subagents?.models).toEqual([
@@ -589,30 +590,30 @@ describe("loadMonoAgentConfig", () => {
     [{ models: [{ name: "helper", model: "anthropic:x" }], definitions: [{ name: "helper", description: "d", prompt: "p" }] }, /collides/u],
     [{ models: ["private-provider:x"] }, /subagents.models\[0\].model is not available/u],
   ])("rejects invalid subagent model choices: %j", (payload, expected) => {
-    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
+    expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
       MONO_AGENT_SUBAGENTS_JSON: JSON.stringify(payload),
     } })).toThrow(expected);
   });
 
   it.each([1, 900_000, Number.MAX_SAFE_INTEGER])("reads detached commandTimeoutMs=%s", (commandTimeoutMs) => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
       MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, commandTimeoutMs }),
     } });
     expect(config.subagents?.commandTimeoutMs).toBe(commandTimeoutMs);
   });
 
   it.each([0, -1, 1.5, "900000", null, Number.MAX_SAFE_INTEGER + 1, Infinity])("rejects invalid commandTimeoutMs=%s", (commandTimeoutMs) => {
-    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
+    expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
       MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ commandTimeoutMs }),
     } })).toThrow(/commandTimeoutMs must be an integer/);
   });
 
   it("is absent when no subagents are configured", () => {
-    expect(loadMonoAgentConfig({ cwd: "/repo", env: baseEnv }).subagents).toBeUndefined();
+    expect(resolveProjectedMonoAgentConfig({ cwd: "/repo", env: baseEnv }).subagents).toBeUndefined();
   });
 
   it("loads the in-flight subagent policy", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -643,17 +644,17 @@ describe("loadMonoAgentConfig", () => {
     ["an inline AgentSend grant", JSON.stringify({ inline: { allowedTools: ["AgentSend"] } }), /cannot allow Agent or AgentSend/u],
     ["an inline Agent grant", JSON.stringify({ inline: { allowedTools: ["Agent"] } }), /subagents never spawn subagents/u],
   ])("rejects %s", (_label, payload, expected) => {
-    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_SUBAGENTS_JSON: payload } }))
+    expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_SUBAGENTS_JSON: payload } }))
       .toThrow(expected);
   });
 
   it("materializes same-model retry defaults", () => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: baseEnv });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: baseEnv });
     expect(config.runtime.retry).toEqual({ primaryAttempts: 2, backoffMs: 1_000, maxBackoffMs: 15_000 });
   });
 
   it("reads the retry policy from env", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -673,12 +674,12 @@ describe("loadMonoAgentConfig", () => {
     ["MONO_AGENT_RETRY_BACKOFF_MS", "60001"],
     ["MONO_AGENT_RETRY_MAX_BACKOFF_MS", "300001"],
   ])("rejects out-of-range %s=%s", (env, value) => {
-    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [env]: value } }))
+    expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [env]: value } }))
       .toThrow(/must be an integer between/u);
   });
 
   it("accepts per-route attempts on canonical fallbacks", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -693,7 +694,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it.each([0, 11, 2.5, "2"])("rejects a fallback attempts value of %s", (attempts) => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -703,19 +704,19 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("rejects malformed canonical fallback entries", () => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ effort: "high" }]) },
     })).toThrow(/non-empty model/u);
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "openai-codex:gpt-5.6-sol", effort: "extreme" }]) },
     })).toThrow(/must be one of/u);
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "openai-codex:gpt-5.6-sol", effort: "" }]) },
     })).toThrow(/must be one of/u);
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "openai-codex:gpt-5.6-sol", efffort: "max" }]) },
     })).toThrow(/unknown field: efffort/u);
@@ -745,7 +746,7 @@ describe("loadMonoAgentConfig", () => {
       "`MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` was removed for the same reason as `MONO_AGENT_EXECUTION_MODE`: mono-agent runs only the Pi runtime (SDK). Remove the variable from your environment and `.env`.",
     ],
   ] as const)("rejects retired env key %s with migration guidance", (env, path, message) => {
-    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [env]: "retired" } }))
+    expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [env]: "retired" } }))
       .toThrowError(expect.objectContaining({
         code: "invalid_env",
         message,
@@ -765,20 +766,20 @@ describe("loadMonoAgentConfig", () => {
     // never configured anything even before the field was retired. Failing the
     // whole load on an inert leftover line is a startup regression, not a
     // migration signal.
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [env]: "" } });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [env]: "" } });
 
     expect(config.runtime.fallbacks).toBeUndefined();
   });
 
   it("still rejects a whitespace-padded retired env value", () => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_FALLBACK_MODELS: "  ollama:gemma4:31b  " },
     })).toThrow(/MONO_AGENT_FALLBACK_MODELS/u);
   });
 
   it("loads the Pi OAuth auth path from env", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -792,7 +793,7 @@ describe("loadMonoAgentConfig", () => {
   it("tolerates the retired MONO_AGENT_MEMORY_SCOPE / _TOOLS_* / _GRAPH_PATH env vars but warns", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const config = loadMonoAgentConfig({
+      const config = resolveProjectedMonoAgentConfig({
         env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "./mem",
           MONO_AGENT_MEMORY_SCOPE: "per-conversation",
           MONO_AGENT_MEMORY_TOOLS_ENABLED: "true",
@@ -813,14 +814,14 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("defaults the runtime session to continuous with a 30-minute idle timeout", () => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: baseEnv });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: baseEnv });
 
     expect(config.runtime.session).toEqual({ mode: "continuous", idleTimeoutMs: 1_800_000, rollover: "none" });
     expect(config.sandbox).toBeUndefined();
   });
 
   it("loads sandbox policy from env when configured", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -845,7 +846,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects unsafe sandbox fallback unless explicitly opted in", () => {
     try {
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -866,7 +867,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("allows unsafe sandbox fallback with the explicit opt-in", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -884,7 +885,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("reports the sandbox allowlist env when allowlist mode has no domains", () => {
     try {
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -905,7 +906,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("respects session env overrides", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -918,16 +919,16 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("preserves explicit session rollover notice env values while omitting the unset field", () => {
-    const defaults = loadMonoAgentConfig({ cwd: "/repo", env: baseEnv });
+    const defaults = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: baseEnv });
     expect(defaults.runtime.session.rolloverNotice).toBeUndefined();
 
-    const enabled = loadMonoAgentConfig({
+    const enabled = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_SESSION_ROLLOVER_NOTICE: "true" },
     });
     expect(enabled.runtime.session.rolloverNotice).toBe(true);
 
-    const disabled = loadMonoAgentConfig({
+    const disabled = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_SESSION_ROLLOVER_NOTICE: "false" },
     });
@@ -936,7 +937,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects an invalid session rollover notice value", () => {
     try {
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_SESSION_ROLLOVER_NOTICE: "sometimes" },
       });
@@ -949,7 +950,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects an invalid session mode", () => {
     try {
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_SESSION_MODE: "forever" },
       });
@@ -964,7 +965,7 @@ describe("loadMonoAgentConfig", () => {
   it("rejects invalid or out-of-bounds session idle timeouts", () => {
     for (const raw of ["not-a-number", "999", "86400001"]) {
       try {
-        loadMonoAgentConfig({
+        resolveProjectedMonoAgentConfig({
           cwd: "/repo",
           env: { ...baseEnv, MONO_AGENT_SESSION_IDLE_TIMEOUT_MS: raw },
         });
@@ -977,7 +978,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("redacts core config without adapter-specific sections", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1001,7 +1002,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("preserves non-secret pi-native provider knobs through redaction", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1022,7 +1023,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("defaults traceability to a host-shared registry path", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: baseEnv,
     });
@@ -1031,7 +1032,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("defaults traceability.globalDiscovery to true so agents mirror into the machine-wide registry", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: baseEnv,
     });
@@ -1041,7 +1042,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects a non-boolean MONO_AGENT_TRACE_GLOBAL_DISCOVERY", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_TRACE_GLOBAL_DISCOVERY: "sometimes" },
       }),
@@ -1049,7 +1050,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads a local Ollama provider from the one-provider env shape", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1074,7 +1075,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads a local provider registry from env JSON", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1100,7 +1101,7 @@ describe("loadMonoAgentConfig", () => {
   it("rejects a bare non-builtin provider entry that Pi cannot reach", () => {
     // A bare `{}` for an id Pi has no catalog for validated, advertised nothing,
     // and only failed at turn time with `pi model not found`.
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1111,7 +1112,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("resolves a provider-map entry into the deterministic shared view", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1136,7 +1137,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("reads reserved Pi settings from the whole providers env projection", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1169,7 +1170,7 @@ describe("loadMonoAgentConfig", () => {
       baseUrl: "http://localhost:11434",
       models: [{ name: "qwen3:8b" }],
     } as const;
-    const fromMap = loadMonoAgentConfig({
+    const fromMap = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1177,7 +1178,7 @@ describe("loadMonoAgentConfig", () => {
         MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ ollama: common }),
       },
     });
-    const fromLegacy = loadMonoAgentConfig({
+    const fromLegacy = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1190,7 +1191,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("rejects a duplicate id across the provider map and providers.local[] with both paths", () => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1203,14 +1204,14 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("rejects an unlisted non-builtin route with the provider id and exact repair", () => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_MODEL: "private-provider:model-one" },
     })).toThrow('Provider "private-provider" used by runtime.model is not available; add "providers": { "private-provider": { "type": "openai_compat", "baseUrl": "https://..." } }');
   });
 
   it("rejects an unlisted provider named only by a subagent profile model", () => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1225,7 +1226,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("accepts a subagent profile model whose provider is declared in the map", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1242,7 +1243,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("admits a bare autodiscoverable route without fabricating a provider endpoint", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1263,7 +1264,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("fills the default endpoint for an autodiscoverable provider declared as an empty entry", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1281,7 +1282,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("rejects invalid local-provider JSON and URLs", () => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1289,7 +1290,7 @@ describe("loadMonoAgentConfig", () => {
       },
     })).toThrow(MonoAgentConfigError);
 
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1302,7 +1303,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads sandbox filesystem scopes from env", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1323,7 +1324,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads additional file-tool roots relative to the config directory", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/agent",
       env: {
         ...baseEnv,
@@ -1339,7 +1340,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("rejects malformed JSON-like file-tool root values instead of splitting them as CSV", () => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/agent",
       env: {
         ...baseEnv,
@@ -1355,7 +1356,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads memory embeddings from env with the Ollama default model", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1374,7 +1375,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("resolves the embeddings api key from apiKeyEnv", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1397,7 +1398,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects openai embeddings without an api key", () => {
     try {
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -1431,7 +1432,7 @@ describe("loadMonoAgentConfig", () => {
       { MONO_AGENT_MEMORY_CONSOLIDATION_CRON: "0 */2 * * *" },
     ]) {
       try {
-        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, ...env } });
+        resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, ...env } });
       } catch (error) {
         expect(error).toBeInstanceOf(MonoAgentConfigError);
         expect(error).toMatchObject({ code: "invalid_env" });
@@ -1442,7 +1443,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("defaults memory.recallTool on for every configured local tier", () => {
-    const withEmbeddings = loadMonoAgentConfig({
+    const withEmbeddings = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1454,13 +1455,13 @@ describe("loadMonoAgentConfig", () => {
     expect(withEmbeddings.memory?.recallTool).toEqual({ enabled: true });
 
     // lite tier uses FTS-only recall and is on by default.
-    const lite = loadMonoAgentConfig({
+    const lite = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "lite" },
     });
     expect(lite.memory?.recallTool).toEqual({ enabled: true });
 
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "journal" },
     })).toThrow(/requires an explicit memory\.embeddings/i);
@@ -1468,7 +1469,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("lets MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED override the recallTool default in both directions", () => {
     // Explicit off on a tier that would default on.
-    const forcedOff = loadMonoAgentConfig({
+    const forcedOff = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1481,7 +1482,7 @@ describe("loadMonoAgentConfig", () => {
     expect(forcedOff.memory?.recallTool).toEqual({ enabled: false });
 
     // Explicit on for lite remains accepted.
-    const forcedOn = loadMonoAgentConfig({
+    const forcedOn = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1496,14 +1497,14 @@ describe("loadMonoAgentConfig", () => {
   it("fails closed when the remember flag is set without a memory path", () => {
     // Adjacent memory flags fail closed here; omitting this one let a declared
     // capability silently resolve to memory: undefined.
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED: "true" },
     })).toThrow(/MONO_AGENT_MEMORY_PATH/u);
   });
 
   it("defaults memory.rememberTool on for the local backend", () => {
-    const lite = loadMonoAgentConfig({
+    const lite = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "lite" },
     });
@@ -1511,7 +1512,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("lets MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED override the local rememberTool default in both directions", () => {
-    const forcedOff = loadMonoAgentConfig({
+    const forcedOff = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1522,7 +1523,7 @@ describe("loadMonoAgentConfig", () => {
     });
     expect(forcedOff.memory?.rememberTool).toEqual({ enabled: false });
 
-    const forcedOn = loadMonoAgentConfig({
+    const forcedOn = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1536,7 +1537,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects a non-boolean MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED", () => {
     try {
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -1555,7 +1556,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("redacts the embeddings api key", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1575,7 +1576,7 @@ describe("loadMonoAgentConfig", () => {
     ["an explicit BuJo selector", "bujo"],
     ["no selector", undefined],
   ] as const)("rejects an active retired memory block at the public redaction boundary with %s", (_label, backend) => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1621,7 +1622,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("rejects a trim-normalized retired selector at the public redaction boundary", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "lite" },
     });
@@ -1637,7 +1638,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("accepts but omits an inert retired memory tombstone while preserving supported redaction", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1659,7 +1660,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads context.skillMaxBytes from env", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_SKILL_MAX_BYTES: "24000" },
     });
@@ -1668,12 +1669,12 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("omits skillMaxBytes when the env is unset and rejects invalid values", () => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
     expect(config.context.skillMaxBytes).toBeUndefined();
 
     for (const raw of ["not-a-number", "0", "1000001"]) {
       try {
-        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_SKILL_MAX_BYTES: raw } });
+        resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_SKILL_MAX_BYTES: raw } });
       } catch (error) {
         expect(error).toMatchObject({ code: "invalid_env", details: { env: "MONO_AGENT_SKILL_MAX_BYTES" } });
         continue;
@@ -1683,7 +1684,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads concurrency.maxConcurrentRuns from env", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS: "4" },
     });
@@ -1692,7 +1693,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads concurrency.maxPendingRuns from env", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS: "16" },
     });
@@ -1704,7 +1705,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads both concurrency bounds together from env", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1718,12 +1719,12 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("omits concurrency when the env is unset and rejects invalid values", () => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
     expect(config.concurrency).toBeUndefined();
 
     for (const raw of ["not-a-number", "0", "-1"]) {
       try {
-        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS: raw } });
+        resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS: raw } });
       } catch (error) {
         expect(error).toMatchObject({ code: "invalid_env", details: { env: "MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS" } });
         continue;
@@ -1733,7 +1734,7 @@ describe("loadMonoAgentConfig", () => {
 
     for (const raw of ["not-a-number", "0", "-1"]) {
       try {
-        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS: raw } });
+        resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS: raw } });
       } catch (error) {
         expect(error).toMatchObject({ code: "invalid_env", details: { env: "MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS" } });
         continue;
@@ -1743,7 +1744,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads memory embeddings timeoutMs and circuit breaker from env", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1764,7 +1765,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("omits embeddings timeoutMs/circuitBreaker when unset and rejects invalid values", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1784,7 +1785,7 @@ describe("loadMonoAgentConfig", () => {
     ];
     for (const [key, raw] of invalidByEnv) {
       try {
-        loadMonoAgentConfig({
+        resolveProjectedMonoAgentConfig({
           cwd: "/repo",
           env: {
             ...baseEnv,
@@ -1809,7 +1810,7 @@ describe("loadMonoAgentConfig", () => {
       "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
     ]) {
       try {
-        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [key]: "5000" } });
+        resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [key]: "5000" } });
       } catch (error) {
         expect(error).toBeInstanceOf(MonoAgentConfigError);
         expect(error).toMatchObject({ code: "invalid_env" });
@@ -1820,7 +1821,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("redacts the non-secret embeddings tuning fields", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1839,7 +1840,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("does not include adapter env values in validation errors", () => {
     try {
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -1856,7 +1857,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("rejects memory.mode bujo when either prerequisite is omitted", () => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1869,7 +1870,7 @@ describe("loadMonoAgentConfig", () => {
   it.each(["lite", "journal"] as const)(
     "rejects a partial memory.llm block in %s mode instead of silently dropping it",
     (mode) => {
-      expect(() => loadMonoAgentConfig({
+      expect(() => resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -1887,7 +1888,7 @@ describe("loadMonoAgentConfig", () => {
   );
 
   it("rejects a partial BuJo memory.llm block when its model is missing", () => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1904,7 +1905,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads memory.llm from env when model is set", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1925,7 +1926,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads agent-host memory.llm with a runtime model reference", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1944,7 +1945,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads agent-host memory.llm timeoutMs when set", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -1966,7 +1967,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects memory.llm timeoutMs when the provider is not agent-host", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -1982,7 +1983,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects agent-host memory.llm endpoint because runtime models do not use Ollama endpoints", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -1998,7 +1999,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects invalid agent-host memory.llm model references", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -2012,7 +2013,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("rejects bujo when the memory LLM is unset", () => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2024,7 +2025,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("omits memory.llm.endpoint when only provider and model are set", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2045,7 +2046,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects an unsupported memory.llm provider from env", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -2059,7 +2060,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("does not treat LM Studio as a memory LLM provider", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -2074,7 +2075,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads memory.embeddings.dim from env", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2090,7 +2091,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads LM Studio embeddings without requiring an API key", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2109,7 +2110,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("preserves an unresolved LM Studio apiKeyEnv without treating its name as a key", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2130,7 +2131,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("does not substitute a generic literal when a declared LM Studio apiKeyEnv is unresolved", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2147,7 +2148,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("does not let a generic literal satisfy an unresolved OpenAI apiKeyEnv", () => {
-    expect(() => loadMonoAgentConfig({
+    expect(() => resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2161,7 +2162,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("resolves an optional LM Studio apiKeyEnv when the named variable is set", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2183,7 +2184,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("omits embeddings.dim when the env is unset", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2197,7 +2198,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("redacts bujo config without leaking llm model or endpoint (no secrets to redact)", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2220,7 +2221,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects invalid memory mode from env", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -2233,7 +2234,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects the removed 'markdown' mode from env", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -2245,7 +2246,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads memory.mode lite from env (FTS-only, no embeddings required)", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2260,7 +2261,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("defaults memory mode to lite when path is set but mode is unset", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2272,7 +2273,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads memory.mode journal from env", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2286,7 +2287,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads memory.consolidation from env when enabled and cron are set", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2302,7 +2303,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("omits consolidation when neither enabled nor cron env vars are set", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2316,7 +2317,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads a consolidation block with only cron set (enabled omitted)", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2332,7 +2333,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("loads a consolidation block with only enabled set (cron omitted)", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2350,7 +2351,7 @@ describe("loadMonoAgentConfig", () => {
   it("ignores removed reflection and migration env keys without requiring a memory path", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const config = loadMonoAgentConfig({
+      const config = resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -2372,7 +2373,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("accepts memory.writeMode 'capture' with mode 'bujo'", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
@@ -2388,7 +2389,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("rejects memory.writeMode 'capture' unless mode is 'bujo'", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -2401,7 +2402,7 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("defaults memory.backend to 'bujo' when a memory block is configured", () => {
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, ...journalMemoryPrerequisite, MONO_AGENT_MEMORY_PATH: "./mem", MONO_AGENT_MEMORY_MODE: "journal" },
     });
@@ -2413,7 +2414,7 @@ describe("loadMonoAgentConfig", () => {
     (backend) => {
       let rejection: unknown;
       try {
-        loadMonoAgentConfig({
+        resolveProjectedMonoAgentConfig({
           cwd: "/repo",
           env: { ...baseEnv, MONO_AGENT_MEMORY_BACKEND: backend },
         });
@@ -2436,7 +2437,7 @@ describe("loadMonoAgentConfig", () => {
     (env, value) => {
       let rejection: unknown;
       try {
-        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [env]: value } });
+        resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [env]: value } });
       } catch (error) {
         rejection = error;
       }
@@ -2449,7 +2450,7 @@ describe("loadMonoAgentConfig", () => {
   it.each(RETIRED_SUPERMEMORY_ENV_CASES)(
     "rejects retired Supermemory env %s even alongside valid local memory",
     (env, value) => {
-      expect(() => loadMonoAgentConfig({
+      expect(() => resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -2478,7 +2479,7 @@ describe("loadMonoAgentConfig", () => {
     };
     let rejection: unknown;
     try {
-      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, ...retired } });
+      resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, ...retired } });
     } catch (error) {
       rejection = error;
     }
@@ -2523,7 +2524,7 @@ describe("loadMonoAgentConfig", () => {
     const inertRetired = Object.fromEntries(
       RETIRED_SUPERMEMORY_ENV_CASES.map(([env], index) => [env, index % 2 === 0 ? "" : "   "]),
     );
-    const config = loadMonoAgentConfig({
+    const config = resolveProjectedMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, ...inertRetired, MONO_AGENT_MEMORY_BACKEND: "   " },
     });
@@ -2532,7 +2533,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("keeps explicit and padded BuJo selectors unchanged", () => {
     for (const backend of ["bujo", "  bujo  "]) {
-      const config = loadMonoAgentConfig({
+      const config = resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -2550,7 +2551,7 @@ describe("loadMonoAgentConfig", () => {
     (backend) => {
       let rejection: unknown;
       try {
-        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MEMORY_BACKEND: backend } });
+        resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MEMORY_BACKEND: backend } });
       } catch (error) {
         rejection = error;
       }
@@ -2562,7 +2563,7 @@ describe("loadMonoAgentConfig", () => {
   it.each([undefined, "", "   ", "[]", " [ ] "])(
     "accepts an absent or inert removed exporter env value (%s)",
     (value) => {
-      const config = loadMonoAgentConfig({
+      const config = resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, ...(value === undefined ? {} : { MONO_AGENT_OBSERVABILITY_EXPORTERS: value }) },
       });
@@ -2577,7 +2578,7 @@ describe("loadMonoAgentConfig", () => {
     "{not-json secret-token",
   ])("rejects active or malformed removed exporter env values secret-safely", (value) => {
     try {
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_OBSERVABILITY_EXPORTERS: value },
       });
@@ -2592,25 +2593,25 @@ describe("loadMonoAgentConfig", () => {
   });
 });
 
-describe("loadMonoAgentConfig tools.allowedTools default", () => {
+describe("resolveProjectedMonoAgentConfig tools.allowedTools default", () => {
   it("defaults to allow-all (['*']) when MONO_AGENT_ALLOWED_TOOLS is unset", () => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
     expect(config.tools.allowedTools).toEqual([ALLOW_ALL_TOOLS]);
     expect(ALLOW_ALL_TOOLS).toBe("*");
   });
 
   it("resolves an explicit empty MONO_AGENT_ALLOWED_TOOLS to [] (chat-only)", () => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_ALLOWED_TOOLS: "" } });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_ALLOWED_TOOLS: "" } });
     expect(config.tools.allowedTools).toEqual([]);
   });
 
   it("resolves MONO_AGENT_ALLOWED_TOOLS='*' to ['*']", () => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_ALLOWED_TOOLS: "*" } });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_ALLOWED_TOOLS: "*" } });
     expect(config.tools.allowedTools).toEqual(["*"]);
   });
 
   it("resolves an explicit tool list unchanged", () => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_ALLOWED_TOOLS: "Read,Bash" } });
+    const config = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_ALLOWED_TOOLS: "Read,Bash" } });
     expect(config.tools.allowedTools).toEqual(["Read", "Bash"]);
   });
 });
@@ -2626,7 +2627,7 @@ describe("loadMonoAgentConfig tools.allowedTools default", () => {
 describe("rejected model references name their replacement in the message", () => {
   it("names openai-codex for a retired codex: primary", () => {
     try {
-      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "codex:gpt-5.6-sol" } });
+      resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "codex:gpt-5.6-sol" } });
       throw new Error("Expected codex:gpt-5.6-sol to be rejected.");
     } catch (error) {
       expect(error).toBeInstanceOf(MonoAgentConfigError);
@@ -2644,25 +2645,25 @@ describe("rejected model references name their replacement in the message", () =
 
   it("names anthropic for a retired claude: primary", () => {
     expect(() =>
-      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "claude:claude-sonnet-4-6" } }),
+      resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "claude:claude-sonnet-4-6" } }),
     ).toThrow(/anthropic:claude-sonnet-4-6/u);
   });
 
   it("names the direct replacement for a retired vercel: primary", () => {
     expect(() =>
-      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "vercel:openai:gpt-5.5" } }),
+      resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "vercel:openai:gpt-5.5" } }),
     ).toThrow(/use openai:gpt-5\.5 directly/u);
   });
 
   it("names the surviving ACP bridge for a retired acp: primary", () => {
     expect(() =>
-      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "acp:some-agent" } }),
+      resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "acp:some-agent" } }),
     ).toThrow(/mono-agent bridge acp/u);
   });
 
   it("names openai-codex for a retired codex: fallback route", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -2674,7 +2675,7 @@ describe("rejected model references name their replacement in the message", () =
 
   it("names openai-codex for a retired codex: subagent model", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -2691,7 +2692,7 @@ describe("rejected model references name their replacement in the message", () =
 
   it("names openai-codex for a retired codex: agent-host memory LLM", () => {
     expect(() =>
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -2706,13 +2707,13 @@ describe("rejected model references name their replacement in the message", () =
 
   it("still names the grammar for a reference with no structural separator", () => {
     expect(() =>
-      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "gpt-5.5" } }),
+      resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "gpt-5.5" } }),
     ).toThrow(/expected <provider>:<model>/u);
   });
 
   it("still names the tier-alias repair", () => {
     expect(() =>
-      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "anthropic:opus" } }),
+      resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "anthropic:opus" } }),
     ).toThrow(/tier aliases are not valid model ids/u);
   });
 });
@@ -2726,7 +2727,7 @@ describe("rejected model references name their replacement in the message", () =
 describe("retired settings are reported completely and in the operator's own surface", () => {
   it("reports every retired env var in one load, not just the first", () => {
     try {
-      loadMonoAgentConfig({
+      resolveProjectedMonoAgentConfig({
         cwd: "/repo",
         env: {
           ...baseEnv,
@@ -2754,7 +2755,7 @@ describe("retired settings are reported completely and in the operator's own sur
 
   it("names MONO_AGENT_FALLBACKS_JSON as the env re-expression of MONO_AGENT_FALLBACK_MODELS", () => {
     expect(() =>
-      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_FALLBACK_MODELS: "ollama:gemma4:31b" } }),
+      resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_FALLBACK_MODELS: "ollama:gemma4:31b" } }),
     ).toThrow(/MONO_AGENT_FALLBACKS_JSON/u);
   });
 
@@ -2764,7 +2765,7 @@ describe("retired settings are reported completely and in the operator's own sur
     "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
   ] as const)("tells the operator to remove the variable %s, not a JSON key", (env) => {
     try {
-      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [env]: "sdk" } });
+      resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [env]: "sdk" } });
       throw new Error(`Expected ${env} to be rejected.`);
     } catch (error) {
       const message = (error as MonoAgentConfigError).message;
@@ -2789,7 +2790,7 @@ describe("echoed model references are bounded and cannot forge diagnostic lines"
 
   const messageOf = (env: Record<string, string | undefined>): string => {
     try {
-      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, ...env } });
+      resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, ...env } });
     } catch (error) {
       if (error instanceof MonoAgentConfigError) return error.message;
       throw error;
@@ -2843,7 +2844,7 @@ describe("echoed model references are bounded and cannot forge diagnostic lines"
 
   it("bounds details.reason too, not only the rendered message", () => {
     try {
-      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: oversized } });
+      resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: oversized } });
       throw new Error("Expected the model reference to be rejected.");
     } catch (error) {
       const details = (error as MonoAgentConfigError).details;
@@ -2856,14 +2857,14 @@ describe("echoed model references are bounded and cannot forge diagnostic lines"
 
 it("resolves cache retention env over provider JSON, with a long default and strict values", () => {
   const env = { ...baseEnv, MONO_AGENT_MODEL: "anthropic:claude-sonnet-4-6" };
-  expect(loadMonoAgentConfig({ cwd: "/repo", env }).providers?.piNative?.cacheRetention).toBe("long");
+  expect(resolveProjectedMonoAgentConfig({ cwd: "/repo", env }).providers?.piNative?.cacheRetention).toBe("long");
   const json = { ...env, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { cacheRetention: "long" } }) };
-  expect(loadMonoAgentConfig({ cwd: "/repo", env: json }).providers?.piNative?.cacheRetention).toBe("long");
-  expect(loadMonoAgentConfig({ cwd: "/repo", env: { ...json, MONO_AGENT_PI_CACHE_RETENTION: "short" } }).providers?.piNative?.cacheRetention).toBe("short");
-  expect(loadMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { cacheRetention: "short" } }) } }).providers?.piNative?.cacheRetention).toBe("short");
-  expect(loadMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PI_CACHE_RETENTION: "  ", PI_CACHE_RETENTION: "short" } }).providers?.piNative?.cacheRetention).toBe("long");
+  expect(resolveProjectedMonoAgentConfig({ cwd: "/repo", env: json }).providers?.piNative?.cacheRetention).toBe("long");
+  expect(resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...json, MONO_AGENT_PI_CACHE_RETENTION: "short" } }).providers?.piNative?.cacheRetention).toBe("short");
+  expect(resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { cacheRetention: "short" } }) } }).providers?.piNative?.cacheRetention).toBe("short");
+  expect(resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PI_CACHE_RETENTION: "  ", PI_CACHE_RETENTION: "short" } }).providers?.piNative?.cacheRetention).toBe("long");
   for (const value of ["none", "1h", "invalid", true]) {
-    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PI_CACHE_RETENTION: String(value) } })).toThrow();
-    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { cacheRetention: value } }) } })).toThrow();
+    expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PI_CACHE_RETENTION: String(value) } })).toThrow();
+    expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { cacheRetention: value } }) } })).toThrow();
   }
 });

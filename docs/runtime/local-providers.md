@@ -15,7 +15,7 @@ Each provider id in the `providers` map defines a provider. The runtime reaches 
 
 This is the same `<provider>:<model>` form used by built-in Pi providers (e.g. `openai-codex:gpt-5.6-terra`); local providers simply add new ids you control. A leading `pi:` prefix is canonicalized away. See [Pi runtime & model references](/runtime/backends/) for the full ref grammar.
 
-Coverage: `config` — `providers` map (`MONO_AGENT_PROVIDERS_JSON`). The legacy `providers.local[]` array and its env forms still load and resolve to the same effective provider set.
+Coverage: `config` — the `providers` map. The legacy `providers.local[]` JSON array still resolves to the same effective provider set.
 
 `mono-agent init` can discover local models while you scaffold: `ollama list` contributes `ollama:<model>` choices, and LM Studio's default local server (`http://localhost:1234/v1/models`) contributes `lmstudio:<model>` choices. Discovery is best-effort and bounded; missing CLIs or stopped servers show status in the wizard without failing the scaffold. Choosing an `ollama:*` or `lmstudio:*` primary or fallback model auto-adds the matching provider entry to the generated config, and `--auth` / interactive provider setup runs a reachability preflight instead of collecting secrets.
 
@@ -147,11 +147,6 @@ Only set `trustPublicUrl: true` for gateways you control or trust. Private addre
 
 The whole map can be supplied as JSON, which overrides the config file:
 
-```bash
-MONO_AGENT_PROVIDERS_JSON='{"ollama": {"type": "ollama", "baseUrl": "http://localhost:11434"}}'
-```
-
-`MONO_AGENT_LOCAL_PROVIDERS_JSON` and the single-provider scalars (`MONO_AGENT_LOCAL_PROVIDER_ID`, `MONO_AGENT_LOCAL_PROVIDER_TYPE`, `MONO_AGENT_LOCAL_PROVIDER_BASE_URL`, `MONO_AGENT_LOCAL_PROVIDER_ENABLED`, `MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL`, `MONO_AGENT_LOCAL_PROVIDER_API_KEY`) are deprecated but still load; their entries merge into the same effective provider set and the config-view emits a deprecation warning. Prefer `MONO_AGENT_PROVIDERS_JSON` for new setups. See [Environment variables](/config/env-vars/) for precedence rules.
 
 ## Pi credentials (built-in providers)
 
@@ -165,7 +160,7 @@ Built-in Pi providers use the Pi auth file configured by `providers.piAuthPath` 
 }
 ```
 
-Override the path with `MONO_AGENT_PI_AUTH_PATH`. The single path precedence used by discovery, setup, `auth login`, readiness, validation, and runtime is `--pi-auth-path` (auth command only) → non-empty `MONO_AGENT_PI_AUTH_PATH` → non-empty `providers.piAuthPath` → `~/.pi/agent/auth.json`. A leading `~` expands to the current user's home; relative values resolve from the agent/invocation working directory. A malformed or unreadable config is an error; only a missing config falls through. This is separate from provider entries: built-in Pi providers are registered by the Pi runtime, while a declared entry registers your own servers.
+The path precedence used by discovery, setup, `auth login`, readiness, validation, and runtime is `--pi-auth-path` (auth command only) → non-empty `providers.piAuthPath` → `~/.pi/agent/auth.json`. A leading `~` expands to the current user's home; relative values resolve from the agent/invocation working directory. A malformed or unreadable config is an error; only a missing config falls through. This is separate from provider entries: built-in Pi providers are registered by the Pi runtime, while a declared entry registers your own servers.
 
 Run `mono-agent auth login <provider>` for the supported built-in Pi targets: Anthropic, GitHub Copilot, and OpenAI Codex use their bundled OAuth flows; OpenCode-Go uses `OPENCODE_API_KEY`. Anthropic accepts either its localhost callback or a final redirect URL pasted at the live terminal prompt; Pi validates the pasted code and OAuth state before token exchange. Standalone OpenCode-Go login collects the key through a masked TTY prompt. For an explicitly headless flow, pipe exactly one line with `--api-key-stdin`, for example `printf '%s\n' "$OPENCODE_API_KEY" | mono-agent auth login opencode-go --api-key-stdin`; without that flag mono-agent never copies the ambient key implicitly. Its key can be stored in the same owner-only auth file or left in the durable provider environment, and the wizard never copies an ambient key into `auth.json` unless secure-store persistence was selected explicitly. Other provider refs remain compatible as hand-authored runtime configuration but do not gain an implied guided login flow.
 
@@ -173,7 +168,7 @@ mono-agent invokes its app-owned terminal wrapper around the bundled Pi OAuth pr
 
 The interactive `mono-agent init` wizard keeps every bundled model for its supported Pi integrations—Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go—searchable even when authentication is missing, alongside discovered Ollama/LM Studio models. Hand-authored provider refs remain valid runtime configuration without becoming implied guided integrations. The wizard reports `catalog available`, `credential detected`, and `verified by live readiness` separately; an auth-store entry skips redundant login but does not claim the model works. On repair, the chosen upstream OAuth or OpenCode-Go API-key flow reruns and the exact route is checked again. `mono-agent validate` remains read-only and never runs login or writes keys.
 
-Coverage: `config` — `providers.piAuthPath` (`MONO_AGENT_PI_AUTH_PATH`).
+Coverage: `config` — `providers.piAuthPath`.
 
 ## Using a local model as a fallback
 

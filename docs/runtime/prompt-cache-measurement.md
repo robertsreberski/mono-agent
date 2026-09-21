@@ -27,7 +27,7 @@ The implementation test suite exercises dry-run assembly plus positive and negat
 ## Read real run artifacts
 
 Set `providers.piNative.promptCacheDiagnostics: true` in the agent config (or
-`MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS=true`) before starting the agent. The
+`providers.piNative.promptCacheDiagnostics: true`) before starting the agent. The
 default is `false`; unset config leaves runtime options unchanged. Emit
 metadata-only prompt-cache request fingerprints into run artifacts; never prompt
 text, tool arguments, cache keys, endpoints or credentials. Existing artifact
@@ -116,8 +116,7 @@ actual billing or a guaranteed hit.
 ### Anthropic cache retention
 
 `providers.piNative.cacheRetention` defaults to `"long"` (one hour); set `"short"`
-(five minutes) to opt out. Nonempty `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON,
-then the `"long"` default. Both the default and explicit values override Pi's
+(five minutes) to opt out. JSON wins over the `"long"` default. Both the default and explicit values override Pi's
 separate ambient `PI_CACHE_RETENTION`, including explicit `"short"` when Pi's
 environment requests long retention.
 The runtime forwards retention only to Anthropic Messages, including child

@@ -291,7 +291,7 @@ The example assumes `MONO_AGENT_SLACK_BOT_TOKEN`, `MONO_AGENT_SLACK_APP_TOKEN`, 
 }
 ```
 
-The allowlist also accepts `MONO_AGENT_ALLOWED_TOOLS` (and `MONO_AGENT_DISALLOWED_TOOLS` for denials, where deny wins). See [Tool policy](/tools/policy/) for allow/deny precedence and how MCP tool names are matched.
+Configure the allowlist with `tools.allowedTools` and denials with `tools.disallowedTools` (deny wins). See [Tool policy](/tools/policy/) for allow/deny precedence and how MCP tool names are matched.
 
 :::note
 Allowing a send tool but leaving the adapter disabled or unconfigured means the tool is present in name but has no working destination — the send fails. Enable and configure the adapter (Slack / Telegram) as well.

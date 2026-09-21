@@ -11,7 +11,7 @@ For tier selection (lite / journal / bujo) and embeddings setup, start at the [M
 
 ## Write modes (`memory.writeMode`)
 
-`memory.writeMode` controls how the **host runtime** persists each completed turn. It is independent of the tier's recall capability. Coverage: **config** (env: `MONO_AGENT_MEMORY_WRITE_MODE`).
+`memory.writeMode` controls how the **host runtime** persists each completed turn. It is independent of the tier's recall capability. Coverage: **config** .
 
 | Mode | What it does | Backend / tiers | LLM |
 |------|--------------|-------|-----|
@@ -35,8 +35,8 @@ Memory persistence is **host-owned**. When a user says “remember this,” the 
 }
 ```
 
-```bash
-MONO_AGENT_MEMORY_WRITE_MODE=append-host-summary
+```json
+{ "memory": { "writeMode": "append-host-summary" } }
 ```
 
 ### Durable completed-turn admission
@@ -197,20 +197,19 @@ or tier downshift.
 }
 ```
 
-```bash
-MONO_AGENT_MEMORY_MODE=bujo
-MONO_AGENT_MEMORY_WRITE_MODE=capture
+```json
+{ "memory": { "mode": "bujo", "writeMode": "capture" } }
 ```
 
 :::caution
-The capture pipeline never replaces the user's successful provider answer. An LLM/embedding timeout emits a memory warning, leaves the admitted turn pending, and retries it durably; only exhaustion moves it to a dead letter. Raise the in-app per-call timeout — `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`), **default `60000`** — for a slow model; see [Validation & CLI](/memory/validation-and-cli/#the-memory-llm-timeout).
+The capture pipeline never replaces the user's successful provider answer. An LLM/embedding timeout emits a memory warning, leaves the admitted turn pending, and retries it durably; only exhaustion moves it to a dead letter. Raise the in-app per-call timeout — `memory.llm.timeoutMs`, **default `60000`** — for a slow model; see [Validation & CLI](/memory/validation-and-cli/#the-memory-llm-timeout).
 :::
 
 The BuJo chat model used by capture comes from the tier's required `memory.llm` block. [Scheduled consolidation](/memory/rituals/) keeps that strict tier contract but is projection-only and makes no LLM call. With `memory.llm.provider: "agent-host"`, capture can point at an SDK runtime model reference (e.g. `openai-codex:gpt-5.6-terra`). The extraction prompt explicitly states exact fields, array bounds, identifier/reference grammar, lowercase relations, and the canonical `0..1` salience range. The provider-neutral strict parser remains authoritative and never clamps, rescales, or coerces model values. Standalone `migrate` remains Ollama-only; legacy `reflect` is a read-only due-state report and needs no model.
 
 ## The `MemoryRecall` tool
 
-The agent performs targeted durable-memory search through the read-only `MemoryRecall` tool: hybrid **keyword (FTS) + vector** search over the same memory it writes to. Coverage: **config** (env: `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`).
+The agent performs targeted durable-memory search through the read-only `MemoryRecall` tool: hybrid **keyword (FTS) + vector** search over the same memory it writes to. Coverage: **config** .
 
 `MemoryRecall` runs **no chat LLM** — recall is embeddings + full-text search only. Durable writes stay in-app on the agent-host LLM via [per-turn capture](#capture--per-turn-intelligent-capture-bujo); recall just reads.
 
@@ -276,8 +275,8 @@ The endpoint is allocated only after the turn acquires a provider-concurrency sl
 }
 ```
 
-```bash
-MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED=true
+```json
+{ "memory": { "recallTool": { "enabled": true } } }
 ```
 
 | `recallTool.enabled` default | Condition |
@@ -405,15 +404,15 @@ See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provi
 
 | Env var | Config key | Notes |
 |---------|-----------|-------|
-| `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture`; `capture` requires `mode: bujo` |
-| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Explicit memory-read family: targeted `MemoryRecall` plus policy-allowed `MemoryJournal` on local tiers; default on |
-| `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo` |
-| `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline |
-| `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama chat endpoint (default `http://localhost:11434`) |
-| `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | Per-call in-app chat-LLM timeout, **default `60000`**. See [Validation & CLI](/memory/validation-and-cli/#the-memory-llm-timeout). |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama` / `lmstudio` / `openai`; defaults to `ollama` once the required Journal/BuJo embeddings block is present; no cross-provider fallback |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Defaults by provider (`nomic-embed-text:v1.5` for Ollama; `text-embedding-nomic-embed-text-v1.5` for LM Studio) |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Defaults to `768`; set it when the model output dimension differs |
+| — | `memory.writeMode` | `disabled` / `append-host-summary` / `capture`; `capture` requires `mode: bujo` |
+| — | `memory.recallTool.enabled` | Explicit memory-read family: targeted `MemoryRecall` plus policy-allowed `MemoryJournal` on local tiers; default on |
+| — | `memory.mode` | `lite` / `journal` / `bujo` |
+| — | `memory.llm.model` | Chat model for the capture pipeline |
+| — | `memory.llm.endpoint` | Ollama chat endpoint (default `http://localhost:11434`) |
+| — | `memory.llm.timeoutMs` | Per-call in-app chat-LLM timeout, **default `60000`**. See [Validation & CLI](/memory/validation-and-cli/#the-memory-llm-timeout). |
+| — | `memory.embeddings.provider` | `ollama` / `lmstudio` / `openai`; defaults to `ollama` once the required Journal/BuJo embeddings block is present; no cross-provider fallback |
+| — | `memory.embeddings.model` | Defaults by provider (`nomic-embed-text:v1.5` for Ollama; `text-embedding-nomic-embed-text-v1.5` for LM Studio) |
+| — | `memory.embeddings.dim` | Defaults to `768`; set it when the model output dimension differs |
 
 See [Environment variables](/config/env-vars/) for the full table and precedence rules.
 

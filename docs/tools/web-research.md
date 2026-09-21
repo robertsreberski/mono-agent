@@ -71,19 +71,19 @@ Environment equivalents:
 | Config key | Environment variable | Default |
 | --- | --- | --- |
 | `tools.web.coordination` | `MONO_AGENT_WEB_COORDINATION` | `process` |
-| `tools.web.search.backend` | `MONO_AGENT_WEB_SEARCH_BACKEND` | `parallel,ollama` |
-| `tools.web.search.maxRequestsPerRun` | `MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN` | `4` |
-| `tools.web.search.searxng.endpoint` | `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` | unset |
-| legacy `tools.web.search.endpoint` | `MONO_AGENT_WEB_SEARCH_ENDPOINT` | unset |
-| `tools.web.search.ollama.baseUrl` | `MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` when Ollama is selected |
-| `tools.web.search.ollama.apiKeyEnv` | `MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV` | unset |
-| `tools.web.search.ollama.trustPublicUrl` | `MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL` | `false` |
-| `tools.web.search.codex.model` | `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | `gpt-5.6-luna` |
-| `tools.web.search.parallel.apiKeyEnv` | `MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV` | unset (anonymous) |
-| `tools.web.fetch.provider` | `MONO_AGENT_WEB_FETCH_PROVIDER` | `local` |
-| `tools.web.fetch.parallel.apiKeyEnv` | `MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV` | unset (anonymous) |
-| `tools.web.fetch.render` | `MONO_AGENT_WEB_FETCH_RENDER` | `never` |
-| `tools.web.fetch.browserCommand` | `MONO_AGENT_WEB_BROWSER_COMMAND` | `agent-browser` |
+| `tools.web.search.backend` | — | `parallel,ollama` |
+| `tools.web.search.maxRequestsPerRun` | — | `4` |
+| `tools.web.search.searxng.endpoint` | — | unset |
+| legacy `tools.web.search.endpoint` | — | unset |
+| `tools.web.search.ollama.baseUrl` | — | `http://127.0.0.1:11434` when Ollama is selected |
+| `tools.web.search.ollama.apiKeyEnv` | — | unset |
+| `tools.web.search.ollama.trustPublicUrl` | — | `false` |
+| `tools.web.search.codex.model` | — | `gpt-5.6-luna` |
+| `tools.web.search.parallel.apiKeyEnv` | — | unset (anonymous) |
+| `tools.web.fetch.provider` | — | `local` |
+| `tools.web.fetch.parallel.apiKeyEnv` | — | unset (anonymous) |
+| `tools.web.fetch.render` | — | `never` |
+| `tools.web.fetch.browserCommand` | — | `agent-browser` |
 
 ## WebSearch
 
@@ -106,7 +106,7 @@ whole call. SearXNG requires an endpoint at load time; Ollama needs no block.
 
 ### Migrating from auto
 
-Search `auto` was removed, including `MONO_AGENT_WEB_SEARCH_BACKEND=auto`.
+Search `auto` was removed from `tools.web.search.backend`.
 Config loading prints the equivalent previous chain for that configuration:
 explicit Ollama block first, then a configured SearXNG endpoint, then Codex and
 keyless. For example, an old SearXNG configuration reports:
@@ -117,7 +117,7 @@ tools.web.search.backend "auto" was removed; use ["searxng","codex","keyless"] (
 
 Use that array to preserve old behavior, or omit `backend` to adopt the new
 Parallel → local Ollama default. Environment arrays use comma-separated names,
-for example `MONO_AGENT_WEB_SEARCH_BACKEND=searxng,codex,keyless`.
+for example `["searxng", "codex", "keyless"]`.
 
 ### Parallel Search MCP
 
@@ -214,7 +214,7 @@ not public engine availability or a successful extraction probe.
 #### Migrating the retired endpoint settings
 
 Remove `tools.web.search.hound.endpoint`, `tools.web.fetch.hound.endpoint`,
-`MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT`, and `MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT`.
+the former Hound endpoint environment names. Those stale names are now silently ignored.
 Their presence is rejected, even if Hound is unselected, a higher-priority layer
 would override the setting, or an answer is cached. Error messages do not echo
 endpoint values. Selecting `hound` without endpoint settings is now sufficient.

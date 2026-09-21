@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { loadMonoAgentConfig } from "../config.js";
-import { layerJsonOntoEnv } from "../layered-loader.js";
+import { resolveProjectedMonoAgentConfig } from "../config.js";
+import { projectMonoAgentConfigJson } from "../layered-loader.js";
 import type { MonoAgentConfigJson } from "../json-source.js";
 const env = { MONO_AGENT_MODEL: "pi:openai-codex:gpt-5.5", MONO_AGENT_IDENTITY_PATH: "IDENTITY.md" };
 function load(web: NonNullable<NonNullable<MonoAgentConfigJson["tools"]>["web"]>, extra = {}) {
-  return loadMonoAgentConfig({ cwd: "/repo", env: layerJsonOntoEnv({ tools: { web } }, { ...env, ...extra }) }).tools.web;
+  return resolveProjectedMonoAgentConfig({ cwd: "/repo", env: projectMonoAgentConfigJson({ tools: { web } }, { ...env, ...extra }) }).tools.web;
 }
 describe("explicit web provider selection", () => {
   it("defaults to Parallel then local Ollama, with local fetch", () => {
@@ -59,7 +59,7 @@ describe("explicit web provider selection", () => {
     for (const kind of ["search", "fetch"] as const) {
       expect(() => load({ [kind]: { hound: { endpoint } } })).toThrow(/was removed: Hound is built in/);
       expect(() => load({}, { [`MONO_AGENT_WEB_${kind.toUpperCase()}_HOUND_ENDPOINT`]: endpoint })).toThrow(/was removed: Hound is built in/);
-      expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...env, [`MONO_AGENT_WEB_${kind.toUpperCase()}_HOUND_ENDPOINT`]: endpoint } })).toThrow(/was removed: Hound is built in/);
+      expect(() => resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { ...env, [`MONO_AGENT_WEB_${kind.toUpperCase()}_HOUND_ENDPOINT`]: endpoint } })).toThrow(/was removed: Hound is built in/);
       try { load({ [kind]: { hound: { endpoint } } }); } catch (error) { expect(String(error)).not.toContain("sentinel"); }
     }
   });

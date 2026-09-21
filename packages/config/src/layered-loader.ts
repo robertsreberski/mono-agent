@@ -8,17 +8,12 @@ import type {
   MonoAgentMemoryLlmJson,
   MonoAgentProvidersJson,
 } from "./json-source.js";
-import { loadMonoAgentConfig, MEMORY_LLM_ENV_KEYS, MonoAgentConfigError } from "./config.js";
+import { resolveProjectedMonoAgentConfig, MEMORY_LLM_ENV_KEYS, MonoAgentConfigError } from "./config.js";
 import type { MonoAgentConfig } from "./types.js";
 
-export interface LoadMonoAgentConfigWithSourcesInput {
-  readonly env: Record<string, string | undefined>;
+export interface LoadMonoAgentConfigInput {
   readonly cwd: string;
-  /**
-   * Optional path to a JSON config file. Missing or empty file is OK.
-   * When set, values from JSON fill in fields that are not present in env;
-   * env always wins for fields present in both layers.
-   */
+  /** Optional path to a JSON config file. Missing or empty file is OK. */
   readonly jsonPath?: string;
   /** Disable deprecation prose for callers that produce structured diagnostics. */
   readonly warnOnDeprecatedConfig?: boolean;
@@ -27,18 +22,18 @@ export interface LoadMonoAgentConfigWithSourcesInput {
 const warnedDeprecatedConfigPaths = new Set<string>();
 
 /**
- * Layered loader: JSON file provides defaults, env vars override.
- *
- * Precedence (highest first):
- *   1. process env
- *   2. mono-agent.config.json
- *   3. built-in defaults from loadMonoAgentConfig (sessions, retry policy, etc.)
- *
- * Returns the same `MonoAgentConfig` shape as `loadMonoAgentConfig` so
- * existing call sites only need to swap the loader.
+ * Load core configuration from mono-agent.config.json and built-in defaults.
+ * Environment variables are deliberately not a core configuration source.
  */
-export async function loadMonoAgentConfigWithSources(
-  input: LoadMonoAgentConfigWithSourcesInput,
+export async function loadMonoAgentConfig(
+  input: LoadMonoAgentConfigInput,
+): Promise<MonoAgentConfig> {
+  return loadConfigFile(input, {});
+}
+
+async function loadConfigFile(
+  input: LoadMonoAgentConfigInput,
+  parserOverrides: Record<string, string | undefined>,
 ): Promise<MonoAgentConfig> {
   const jsonLayer = input.jsonPath === undefined
     ? {}
@@ -49,18 +44,24 @@ export async function loadMonoAgentConfigWithSources(
     warnedDeprecatedConfigPaths.add(configPath);
     console.warn("[mono-agent] Ignoring deprecated monitors config: monitors were removed. Use background process jobs for finite work.");
   }
-  // Validate raw JSON before flattening it into the string-only env surface.
-  // String(...) coercion is intentional for valid numeric/boolean settings,
-  // but must never make arrays or other malformed nested values look valid.
-  validateJsonMemoryBlocks(jsonLayer, input.env);
-  const layeredEnv = layerJsonOntoEnv(jsonLayer, input.env);
+  validateJsonMemoryBlocks(jsonLayer, parserOverrides);
+  const projectedJson = projectMonoAgentConfigJson(jsonLayer, parserOverrides);
   try {
-    return loadMonoAgentConfig({ env: layeredEnv, cwd: input.cwd });
+    return resolveProjectedMonoAgentConfig({ env: projectedJson, cwd: input.cwd });
   } catch (error) {
-    // Two disjoint source sets, so the order is immaterial; both translate a diagnostic
-    // about the flattened env surface back to the file the operator actually edits.
-    throw remapJsonRuntimeError(remapJsonMemoryError(error, jsonLayer, input.env), jsonLayer, input.env);
+    throw remapJsonRuntimeError(
+      remapJsonMemoryError(error, jsonLayer, parserOverrides),
+      jsonLayer,
+      parserOverrides,
+    );
   }
+}
+
+/** @internal Legacy parser harness retained only for focused projection tests. */
+export async function loadProjectedConfigForTests(
+  input: LoadMonoAgentConfigInput & { readonly env: Record<string, string | undefined> },
+): Promise<MonoAgentConfig> {
+  return loadConfigFile(input, input.env);
 }
 
 /**
@@ -69,7 +70,7 @@ export async function loadMonoAgentConfigWithSources(
  * find. `memory.*` already translated back; the runtime, fallback and subagent sources did
  * not, which made the repair unactionable for exactly the fields a 0.21.0 migration touches.
  *
- * The reader per source is what makes this sound: `layerJsonOntoEnv` lets env win, so a
+ * The reader per source is what makes this sound: the legacy parser projection lets test overrides win, so a
  * diagnostic is only JSON's to claim when the variable is unset *and* the JSON layer supplied
  * the value.
  */
@@ -83,6 +84,7 @@ const JSON_RUNTIME_SOURCES: readonly {
   ) => boolean;
 }[] = [
   { env: "MONO_AGENT_MODEL", path: "runtime.model", read: (json) => json.runtime?.model },
+  { env: "MONO_AGENT_IDENTITY_PATH", path: "context.identityPath", read: (json) => json.context?.identityPath },
   { env: "MONO_AGENT_FALLBACKS_JSON", path: "runtime.fallbacks", read: (json) => json.runtime?.fallbacks },
   { env: "MONO_AGENT_SUBAGENTS_JSON", path: "subagents", read: (json) => json.subagents },
   { env: "MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV", path: "tools.web.search.parallel.apiKeyEnv", read: (json) => json.tools?.web?.search?.parallel?.apiKeyEnv },
@@ -122,7 +124,6 @@ function remapJsonRuntimeError(
   if (
     hasValue(env[source])
     || mapping.isOverriddenByEnv?.(json, env) === true
-    || mapping.read(json) === undefined
   ) return error;
   return remapConfigErrorToJson(error, source, mapping.path);
 }
@@ -702,9 +703,9 @@ function firstConfiguredEnv(
  * to the existing env-based loader. Env values present in `env` take
  * precedence over JSON-derived values.
  */
-export function layerJsonOntoEnv(
+export function projectMonoAgentConfigJson(
   json: MonoAgentConfigJson,
-  env: Record<string, string | undefined>,
+  env: Record<string, string | undefined> = {},
 ): Record<string, string | undefined> {
   assertNoRetiredMonoAgentConfigJson(json);
   for (const key of ["MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT", "MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT"]) {

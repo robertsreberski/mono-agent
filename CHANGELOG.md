@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Breaking: remove core environment configuration overrides.** Resolve core
+  settings only from `mono-agent.config.json`, then built-in defaults, and
+  silently ignore stale `MONO_AGENT_*` core variables. Environment values remain
+  available for adapter settings, secret references, and process plumbing.
+
 - **Breaking: remove the first-party terminal renderer.** Remove `mono-agent tui`,
   the `mono-agent-tui` binary, and `@mono-agent/tui`; use `mono-agent web run --loopback` for
   live operation, `mono-agent runs list|show` for bounded offline diagnostics,

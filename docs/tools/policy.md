@@ -192,16 +192,7 @@ Two families are never gated by `allowedTools` and are unaffected by the allow-a
 
 MCP servers are configured alongside the policy via `tools.mcpServers` (inline) or `tools.mcpConfigPath` (a path to a JSON file). Their tools are always available once the server is declared; the allowlist neither adds nor removes them (and on pi the denylist can't either — see the known limitation above). See [MCP servers](/tools/mcp/) for the server configuration shape.
 
-## Environment overrides
-
-The allow/deny lists can be supplied via environment variables (coverage: `config`):
-
-| Env var | Maps to |
-| --- | --- |
-| `MONO_AGENT_ALLOWED_TOOLS` | `tools.allowedTools` |
-| `MONO_AGENT_DISALLOWED_TOOLS` | `tools.disallowedTools` |
-
-The same rules apply through the environment: an **unset** `MONO_AGENT_ALLOWED_TOOLS` keeps the allow-all default, while an empty value (`MONO_AGENT_ALLOWED_TOOLS=""`) requests explicit chat-only `[]`, which every route enforces. Deny-wins / overlap-rejection are unchanged. See [Environment variables](/config/env-vars/).
+Core allow/deny policy is configured in JSON; former environment overrides are silently ignored.
 
 ## Back-compat: legacy tool names
 

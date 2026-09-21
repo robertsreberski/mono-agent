@@ -256,11 +256,10 @@ export async function validateMonoAgentFolder(
         ...buildMonoAgentConfigView({
           redacted: redactMonoAgentConfig(coreConfig),
           json: jsonResult.json,
-          env: options.env,
         }),
         ...(await collectChannelConfigViews(drivers, options)),
       ]),
-      ...findRemovedConfigWarnings({ json: jsonResult.json, env: options.env }),
+      ...findRemovedConfigWarnings({ json: jsonResult.json }),
     ];
     if (configWarnings.length > 0) {
       sections.push({ id: "secret-placement", label: "Config warnings", status: "waiting", details: configWarnings });

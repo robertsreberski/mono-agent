@@ -11,23 +11,23 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 
 | JSON key | Type | Env override | Default | Example | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `agent.name` | `string` | `MONO_AGENT_NAME` | unset | `Research Partner` | Public display identity used for trace labels and default A2A metadata; never used in paths or service ids. |
-| `artifacts.dir` | `string` | `MONO_AGENT_ARTIFACT_DIR` | .mono-agent/artifacts | `.mono-agent/artifacts` | Configures dir for the artifacts section. |
-| `artifacts.memoryRetention.dryRun` | `boolean` | `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_DRY_RUN` | false | `true` | Configures memoryRetention.dryRun for the artifacts section. |
-| `artifacts.memoryRetention.maxAgeDays` | `integer` | `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_AGE_DAYS` | 7 | `7` | Configures memoryRetention.maxAgeDays for the artifacts section. |
-| `artifacts.memoryRetention.maxCount` | `integer` | `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_COUNT` | 5000 | `5000` | Configures memoryRetention.maxCount for the artifacts section. |
-| `artifacts.retention.dryRun` | `boolean` | `MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN` | false | `true` | Configures retention.dryRun for the artifacts section. |
-| `artifacts.retention.maxAgeDays` | `integer` | `MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS` | 365 | `365` | Configures retention.maxAgeDays for the artifacts section. |
-| `artifacts.retention.maxCount` | `integer` | `MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT` | 50000 | `50000` | Configures retention.maxCount for the artifacts section. |
+| `agent.name` | `string` | `--` | unset | `Research Partner` | Public display identity used for trace labels and default A2A metadata; never used in paths or service ids. |
+| `artifacts.dir` | `string` | `--` | .mono-agent/artifacts | `.mono-agent/artifacts` | Configures dir for the artifacts section. |
+| `artifacts.memoryRetention.dryRun` | `boolean` | `--` | false | `true` | Configures memoryRetention.dryRun for the artifacts section. |
+| `artifacts.memoryRetention.maxAgeDays` | `integer` | `--` | 7 | `7` | Configures memoryRetention.maxAgeDays for the artifacts section. |
+| `artifacts.memoryRetention.maxCount` | `integer` | `--` | 5000 | `5000` | Configures memoryRetention.maxCount for the artifacts section. |
+| `artifacts.retention.dryRun` | `boolean` | `--` | false | `true` | Configures retention.dryRun for the artifacts section. |
+| `artifacts.retention.maxAgeDays` | `integer` | `--` | 365 | `365` | Configures retention.maxAgeDays for the artifacts section. |
+| `artifacts.retention.maxCount` | `integer` | `--` | 50000 | `50000` | Configures retention.maxCount for the artifacts section. |
 | `channels.plugins` | `array` | `--` | [] | `[{"package":"@mono-agent/whatsapp-adapter","config":{"enabled":true}}]` | External channel plugin envelopes loaded by package name. |
-| `concurrency.maxConcurrentRuns` | `integer` | `MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS` | unset | `1` | Configures maxConcurrentRuns for the concurrency section. |
-| `concurrency.maxPendingRuns` | `integer` | `MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS` | unset | `1` | Configures maxPendingRuns for the concurrency section. |
-| `context.identityPath` | `string` | `MONO_AGENT_IDENTITY_PATH` | required | `./IDENTITY.md` | Configures identityPath for the context section. |
-| `context.selectedSkills` | `string[]` | `MONO_AGENT_SELECTED_SKILLS` | [] | `["example"]` | Configures selectedSkills for the context section. |
-| `context.skillDisclosure` | `string` | `MONO_AGENT_SKILL_DISCLOSURE` | full | `full` | Configures skillDisclosure for the context section. |
-| `context.skillMaxBytes` | `integer` | `MONO_AGENT_SKILL_MAX_BYTES` | 48000 | `48000` | Configures skillMaxBytes for the context section. |
-| `context.skillsRoot` | `string` | `MONO_AGENT_SKILLS_ROOT` | unset | `example` | Configures skillsRoot for the context section. |
-| `context.soulPath` | `string` | `MONO_AGENT_SOUL_PATH` | unset | `example` | Configures soulPath for the context section. |
+| `concurrency.maxConcurrentRuns` | `integer` | `--` | unset | `1` | Configures maxConcurrentRuns for the concurrency section. |
+| `concurrency.maxPendingRuns` | `integer` | `--` | unset | `1` | Configures maxPendingRuns for the concurrency section. |
+| `context.identityPath` | `string` | `--` | required | `./IDENTITY.md` | Configures identityPath for the context section. |
+| `context.selectedSkills` | `string[]` | `--` | [] | `["example"]` | Configures selectedSkills for the context section. |
+| `context.skillDisclosure` | `string` | `--` | full | `full` | Configures skillDisclosure for the context section. |
+| `context.skillMaxBytes` | `integer` | `--` | 48000 | `48000` | Configures skillMaxBytes for the context section. |
+| `context.skillsRoot` | `string` | `--` | unset | `example` | Configures skillsRoot for the context section. |
+| `context.soulPath` | `string` | `--` | unset | `example` | Configures soulPath for the context section. |
 | `continuations.detachedServices` | `array` | `--` | [] | `[{"name":"work-control","tokenEnv":"WORK_CONTROL_CONTINUATION_TOKEN"}]` | Detached service names and the environment variable holding each bearer; raw tokens never belong in config. |
 | `continuations.enabled` | `boolean` | `--` | true | `true` | Enables the host-owned durable continuation service when the block is configured. |
 | `continuations.host` | `string` | `--` | 127.0.0.1 | `127.0.0.1` | Loopback bind host; non-loopback values are rejected. |
@@ -59,33 +59,33 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `cron.preflightTimeoutMs` | `integer` | `MONO_AGENT_CRON_PREFLIGHT_TIMEOUT_MS` | 5000 | `5000` | Wall-clock bound for one preflight evaluation before it is killed and fails open. Positive integer milliseconds, default 5000, capped at 60000; separate from maxRunMs. |
 | `cron.prompt` | `string` | `MONO_AGENT_CRON_PROMPT` | unset | `example` | Configures prompt for the cron section. |
 | `cron.timezone` | `string` | `MONO_AGENT_CRON_TIMEZONE` | UTC | `UTC` | Configures timezone for the cron section. |
-| `interaction.askUser.timeoutMs` | `integer` | `MONO_AGENT_ASK_USER_TIMEOUT_MS` | 600000 | `600000` | Maximum wait for one AskUser interaction (one to five questions); set null to disable automatic expiry. |
-| `interaction.bridge.host` | `string` | `MONO_AGENT_INTERACTION_BRIDGE_HOST` | 127.0.0.1 | `127.0.0.1` | Bind host for the app-owned AskUser/tool-progress bridge. Defaults to loopback; keep it local because non-loopback values are not rejected. |
-| `interaction.bridge.port` | `integer` | `MONO_AGENT_INTERACTION_BRIDGE_PORT` | 0 | `0` | Bridge port. 0 chooses an ephemeral port. |
-| `interaction.progress.enabled` | `boolean` | `MONO_AGENT_PROGRESS_ENABLED` | true | `true` | Whether tool progress posts are relayed to channel status messages. |
-| `memory.backend` | `string` | `MONO_AGENT_MEMORY_BACKEND` | bujo | `bujo` | Configures backend for the memory section. |
-| `memory.consolidation.cron` | `string` | `MONO_AGENT_MEMORY_CONSOLIDATION_CRON` | 0 */2 * * * | `0 */2 * * *` | Configures consolidation.cron for the memory section. |
-| `memory.consolidation.enabled` | `boolean` | `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED` | true | `true` | Enables the memory capability. |
-| `memory.embeddings.apiKey` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY` | unset | `example` | Secret value for memory.embeddings.apiKey; prefer the env override. |
-| `memory.embeddings.apiKeyEnv` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV` | unset | `example` | Environment-variable name containing an optional provider bearer token; an explicitly declared name must resolve before memory starts. |
-| `memory.embeddings.circuitBreaker.cooldownMs` | `integer` | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS` | 30000 | `30000` | Configures embeddings.circuitBreaker.cooldownMs for the memory section. |
-| `memory.embeddings.circuitBreaker.failureThreshold` | `integer` | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | 3 | `3` | Configures embeddings.circuitBreaker.failureThreshold for the memory section. |
-| `memory.embeddings.dim` | `integer` | `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | unset | `1` | Configures embeddings.dim for the memory section. |
-| `memory.embeddings.endpoint` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT` | unset | `example` | Provider service root. LM Studio uses <root>/v1/embeddings and defaults to http://localhost:1234. |
-| `memory.embeddings.model` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | unset | `nomic-embed-text:v1.5` | Configures embeddings.model for the memory section. |
-| `memory.embeddings.provider` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | unset | `ollama` | Embedding service used by Journal/BuJo memory: ollama, lmstudio, or openai. |
-| `memory.embeddings.timeoutMs` | `integer` | `MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS` | 10000 | `10000` | Configures embeddings.timeoutMs for the memory section. |
-| `memory.llm.endpoint` | `string` | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | unset | `example` | Configures llm.endpoint for the memory section. |
-| `memory.llm.model` | `string` | `MONO_AGENT_MEMORY_LLM_MODEL` | unset | `openai-codex:gpt-5.6-terra` | Configures llm.model for the memory section. |
-| `memory.llm.provider` | `string` | `MONO_AGENT_MEMORY_LLM_PROVIDER` | unset | `agent-host` | Configures llm.provider for the memory section. |
-| `memory.llm.timeoutMs` | `integer` | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | 60000 | `60000` | Configures llm.timeoutMs for the memory section. |
-| `memory.llm.trace` | `boolean` | `MONO_AGENT_MEMORY_LLM_TRACE` | true | `true` | Configures llm.trace for the memory section. |
-| `memory.maxBytes` | `integer` | `MONO_AGENT_MEMORY_MAX_BYTES` | 64000 | `64000` | Configures maxBytes for the memory section. |
-| `memory.mode` | `string` | `MONO_AGENT_MEMORY_MODE` | lite | `journal` | Configures mode for the memory section. |
-| `memory.path` | `string` | `MONO_AGENT_MEMORY_PATH` | unset | `./.mono-agent/memory` | Configures path for the memory section. |
-| `memory.recallTool.enabled` | `boolean` | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | true | `true` | Enables explicit memory reads: targeted MemoryRecall for every backend and chronological MemoryJournal when a local store supports it. Automatic recall is unchanged. |
-| `memory.rememberTool.enabled` | `boolean` | `MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED` | true | `true` | Enables the memory capability. |
-| `memory.writeMode` | `string` | `MONO_AGENT_MEMORY_WRITE_MODE` | disabled | `disabled` | Configures writeMode for the memory section. |
+| `interaction.askUser.timeoutMs` | `integer` | `--` | 600000 | `600000` | Maximum wait for one AskUser interaction (one to five questions); set null to disable automatic expiry. |
+| `interaction.bridge.host` | `string` | `--` | 127.0.0.1 | `127.0.0.1` | Bind host for the app-owned AskUser/tool-progress bridge. Defaults to loopback; keep it local because non-loopback values are not rejected. |
+| `interaction.bridge.port` | `integer` | `--` | 0 | `0` | Bridge port. 0 chooses an ephemeral port. |
+| `interaction.progress.enabled` | `boolean` | `--` | true | `true` | Whether tool progress posts are relayed to channel status messages. |
+| `memory.backend` | `string` | `--` | bujo | `bujo` | Configures backend for the memory section. |
+| `memory.consolidation.cron` | `string` | `--` | 0 */2 * * * | `0 */2 * * *` | Configures consolidation.cron for the memory section. |
+| `memory.consolidation.enabled` | `boolean` | `--` | true | `true` | Enables the memory capability. |
+| `memory.embeddings.apiKey` | `string` | `--` | unset | `example` | Secret value for memory.embeddings.apiKey; prefer the env override. |
+| `memory.embeddings.apiKeyEnv` | `string` | `--` | unset | `example` | Environment-variable name containing an optional provider bearer token; an explicitly declared name must resolve before memory starts. |
+| `memory.embeddings.circuitBreaker.cooldownMs` | `integer` | `--` | 30000 | `30000` | Configures embeddings.circuitBreaker.cooldownMs for the memory section. |
+| `memory.embeddings.circuitBreaker.failureThreshold` | `integer` | `--` | 3 | `3` | Configures embeddings.circuitBreaker.failureThreshold for the memory section. |
+| `memory.embeddings.dim` | `integer` | `--` | unset | `1` | Configures embeddings.dim for the memory section. |
+| `memory.embeddings.endpoint` | `string` | `--` | unset | `example` | Provider service root. LM Studio uses <root>/v1/embeddings and defaults to http://localhost:1234. |
+| `memory.embeddings.model` | `string` | `--` | unset | `nomic-embed-text:v1.5` | Configures embeddings.model for the memory section. |
+| `memory.embeddings.provider` | `string` | `--` | unset | `ollama` | Embedding service used by Journal/BuJo memory: ollama, lmstudio, or openai. |
+| `memory.embeddings.timeoutMs` | `integer` | `--` | 10000 | `10000` | Configures embeddings.timeoutMs for the memory section. |
+| `memory.llm.endpoint` | `string` | `--` | unset | `example` | Configures llm.endpoint for the memory section. |
+| `memory.llm.model` | `string` | `--` | unset | `openai-codex:gpt-5.6-terra` | Configures llm.model for the memory section. |
+| `memory.llm.provider` | `string` | `--` | unset | `agent-host` | Configures llm.provider for the memory section. |
+| `memory.llm.timeoutMs` | `integer` | `--` | 60000 | `60000` | Configures llm.timeoutMs for the memory section. |
+| `memory.llm.trace` | `boolean` | `--` | true | `true` | Configures llm.trace for the memory section. |
+| `memory.maxBytes` | `integer` | `--` | 64000 | `64000` | Configures maxBytes for the memory section. |
+| `memory.mode` | `string` | `--` | lite | `journal` | Configures mode for the memory section. |
+| `memory.path` | `string` | `--` | unset | `./.mono-agent/memory` | Configures path for the memory section. |
+| `memory.recallTool.enabled` | `boolean` | `--` | true | `true` | Enables explicit memory reads: targeted MemoryRecall for every backend and chronological MemoryJournal when a local store supports it. Automatic recall is unchanged. |
+| `memory.rememberTool.enabled` | `boolean` | `--` | true | `true` | Enables the memory capability. |
+| `memory.writeMode` | `string` | `--` | disabled | `disabled` | Configures writeMode for the memory section. |
 | `monitors` | `object` | `--` | unset | `{}` | Deprecated compatibility object. The whole object, including unknown nested keys, is accepted and ignored. Use background process jobs for finite work. |
 | `openaiApi.allowNonLoopback` | `boolean` | `MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK` | false | `true` | Configures allowNonLoopback for the openaiApi section. |
 | `openaiApi.apiKey` | `string` | `MONO_AGENT_OPENAI_API_KEY` | unset | `env:MONO_AGENT_OPENAI_API_KEY` | Secret value for openaiApi.apiKey; prefer the env override. |
@@ -108,43 +108,43 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `processJobs.retention.maxRecords` | `integer` | `--` | 1000 | `1000` | Maximum retained terminal process-job records (compiled cap 10000). |
 | `processJobs.stateDir` | `string` | `--` | .mono-agent/process-jobs | `.mono-agent/process-jobs` | Agent-root-confined owner-private process-job records and artifacts; must be disjoint from every restart --clear-sessions purge root. |
 | `processJobs.unsafeAllowUnprotectedState` | `boolean` | `--` | false | `false` | Dangerous trusted-host opt-in: with explicit sandbox.mode=off and Pi-only routes, retain ProcessJobs state without synthetic SRT protection; state and the operator secret become model-accessible. |
-| `providers` | `object` | `MONO_AGENT_PROVIDERS_JSON` | unset | `{"openai-codex":{},"ollama":{"baseUrl":"http://localhost:11434"}}` | Provider-id map that widens or narrows the selectable Pi model catalog; MONO_AGENT_PROVIDERS_JSON projects the whole object because provider ids are dynamic. |
-| `providers.piAuthPath` | `string` | `MONO_AGENT_PI_AUTH_PATH` | unset | `~/.pi/agent/auth.json` | Configures piAuthPath for the providers section. |
-| `providers.piNative.cacheRetention` | `string` | `MONO_AGENT_PI_CACHE_RETENTION` | long | `long` | Anthropic Messages cache retention (short or long; default long). Short opts out. MONO_AGENT env > JSON > long; resolved values override ambient PI_CACHE_RETENTION. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit. |
-| `providers.piNative.maxRetryDelayMs` | `integer` | `MONO_AGENT_MAX_RETRY_DELAY_MS` | 60000 | `60000` | Configures piNative.maxRetryDelayMs for the providers section. |
-| `providers.piNative.piMaxRetries` | `integer` | `MONO_AGENT_PI_MAX_RETRIES` | 2 | `2` | Configures piNative.piMaxRetries for the providers section. |
-| `providers.piNative.piSessionsRoot` | `string` | `MONO_AGENT_PI_SESSIONS_ROOT` | unset | `example` | Configures piNative.piSessionsRoot for the providers section. |
-| `providers.piNative.promptCacheDiagnostics` | `boolean` | `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS` | false | `true` | Emit metadata-only prompt-cache request fingerprints into run artifacts; never prompt text, tool arguments, cache keys, endpoints or credentials. |
-| `providers.piNative.transport` | `string` | `MONO_AGENT_PI_TRANSPORT` | auto | `sse` | Preferred Pi provider transport: auto, sse, websocket, or websocket-cached. Providers without multiple transports ignore it. |
-| `runtime.compaction.contextWindowOverride` | `integer` | `MONO_AGENT_COMPACTION_CONTEXT_WINDOW_OVERRIDE` | auto-detected | `128000` | Persistent correction for inaccurate provider context-window metadata; learned overflow ceilings may lower it process-locally. |
-| `runtime.compaction.enabled` | `boolean` | `MONO_AGENT_COMPACTION_ENABLED` | true | `true` | Enables adaptive proactive compaction and one-shot reactive overflow recovery. |
-| `runtime.compaction.fixedOverheadEnabled` | `boolean` | `MONO_AGENT_COMPACTION_FIXED_OVERHEAD_ENABLED` | true | `true` | Includes system instructions, tool schemas, and the current user turn in proactive request-size estimates. |
-| `runtime.compaction.keepRecentTokens` | `integer` | `MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS` | adaptive by model | `12800` | Explicit recent-context retention override; omitted derives 10% of the effective context window, clamped to 4,000-20,000 tokens. |
-| `runtime.compaction.minSavingsTokens` | `integer` | `MONO_AGENT_COMPACTION_MIN_SAVINGS_TOKENS` | adaptive by model | `12800` | Minimum verified token reduction required for proactive compaction; omitted derives 10% of the effective window, clamped to 4,000-20,000. Reactive recovery accepts any positive reduction. |
-| `runtime.compaction.summaryMaxTokens` | `integer` | `MONO_AGENT_COMPACTION_SUMMARY_MAX_TOKENS` | adaptive by model | `5120` | Explicit combined summary-output budget override; omitted derives 4% of the effective context window, clamped to 2,000-12,000 tokens. |
-| `runtime.compaction.triggerRatio` | `number` | `MONO_AGENT_COMPACTION_TRIGGER_RATIO` | 0.9 | `0.9` | Fraction of the effective model context window used for the proactive trigger, additionally capped by adaptive safety headroom (10% of the window, 16,000-48,000 tokens). |
-| `runtime.effort` | `string` | `MONO_AGENT_EFFORT` | unset | `medium` | Route-specific effort forwarded through Pi to the selected provider. Doctor warns when a configured value falls outside the model's advertised ladder but keeps turn-time handling permissive. Message text never changes effort. |
-| `runtime.fallbacks` | `array` | `MONO_AGENT_FALLBACKS_JSON` | [] | `[{"model":"openai-codex:gpt-5.6-sol"},{"model":"anthropic:claude-sonnet-4-6","effort":"high"}]` | Canonical ordered fallback routes. Omitted per-route effort means that provider's default. |
-| `runtime.maxTurns` | `integer` | `MONO_AGENT_MAX_TURNS` | unset | `1` | Configures maxTurns for the runtime section. |
-| `runtime.model` | `string` | `MONO_AGENT_MODEL` | required | `openai-codex:gpt-5.6-terra` | Configures model for the runtime section. |
-| `runtime.retry.backoffMs` | `integer` | `MONO_AGENT_RETRY_BACKOFF_MS` | 1000 | `2000` | Delay before the first same-model retry. Doubles on each further retry, capped by runtime.retry.maxBackoffMs. |
-| `runtime.retry.maxBackoffMs` | `integer` | `MONO_AGENT_RETRY_MAX_BACKOFF_MS` | 15000 | `30000` | Ceiling for the doubling same-model retry delay. |
-| `runtime.retry.primaryAttempts` | `integer` | `MONO_AGENT_RETRY_PRIMARY_ATTEMPTS` | 2 | `3` | Total attempts on runtime.model including the first, before the chain advances. Retries fire only for transient provider failures (overloaded, rate-limited, timeout, network, 5xx); context overflow and bad credentials advance immediately. Set 1 to disable. |
-| `runtime.session.idleTimeoutMs` | `integer` | `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS` | 1800000 | `1800000` | Configures session.idleTimeoutMs for the runtime section. |
-| `runtime.session.isolateProactive` | `boolean` | `MONO_AGENT_SESSION_ISOLATE_PROACTIVE` | false | `true` | Configures session.isolateProactive for the runtime section. |
-| `runtime.session.mode` | `string` | `MONO_AGENT_SESSION_MODE` | continuous | `continuous` | Configures session.mode for the runtime section. |
-| `runtime.session.rollover` | `string` | `MONO_AGENT_SESSION_ROLLOVER` | none | `none` | Configures session.rollover for the runtime section. |
-| `runtime.session.rolloverNotice` | `boolean` | `MONO_AGENT_SESSION_ROLLOVER_NOTICE` | false | `true` | Configures session.rolloverNotice for the runtime section. |
-| `runtime.session.rolloverTimezone` | `string` | `MONO_AGENT_SESSION_ROLLOVER_TIMEZONE` | unset | `example` | Configures session.rolloverTimezone for the runtime section. |
-| `runtime.workspace` | `string` | `MONO_AGENT_WORKSPACE` | . | `.` | Configures workspace for the runtime section. |
-| `sandbox.denyWrite` | `string[]` | `MONO_AGENT_SANDBOX_DENY_WRITE` | unset | `["example"]` | Configures denyWrite for the sandbox section. |
-| `sandbox.fallback` | `string` | `MONO_AGENT_SANDBOX_FALLBACK` | fail-closed | `fail-closed` | Configures fallback for the sandbox section. |
-| `sandbox.mode` | `string` | `MONO_AGENT_SANDBOX_MODE` | unset | `native` | Configures mode for the sandbox section. |
-| `sandbox.network.allowlist` | `string[]` | `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` | unset | `["example"]` | Configures network.allowlist for the sandbox section. |
-| `sandbox.network.mode` | `string` | `MONO_AGENT_SANDBOX_NETWORK` | none | `none` | Configures network.mode for the sandbox section. |
-| `sandbox.readableRoots` | `string[]` | `MONO_AGENT_SANDBOX_READABLE_ROOTS` | unset | `["example"]` | Configures readableRoots for the sandbox section. |
-| `sandbox.unsafeAllowHostProcess` | `boolean` | `MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS` | false | `true` | Configures unsafeAllowHostProcess for the sandbox section. |
-| `sandbox.writableRoots` | `string[]` | `MONO_AGENT_SANDBOX_WRITABLE_ROOTS` | unset | `["example"]` | Configures writableRoots for the sandbox section. |
+| `providers` | `object` | `--` | unset | `{"openai-codex":{},"ollama":{"baseUrl":"http://localhost:11434"}}` | Provider-id map that widens or narrows the selectable Pi model catalog. |
+| `providers.piAuthPath` | `string` | `--` | unset | `~/.pi/agent/auth.json` | Configures piAuthPath for the providers section. |
+| `providers.piNative.cacheRetention` | `string` | `--` | long | `long` | Anthropic Messages cache retention (short or long; default long). Short opts out. JSON > long; the resolved value overrides ambient PI_CACHE_RETENTION. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit. |
+| `providers.piNative.maxRetryDelayMs` | `integer` | `--` | 60000 | `60000` | Configures piNative.maxRetryDelayMs for the providers section. |
+| `providers.piNative.piMaxRetries` | `integer` | `--` | 2 | `2` | Configures piNative.piMaxRetries for the providers section. |
+| `providers.piNative.piSessionsRoot` | `string` | `--` | unset | `example` | Configures piNative.piSessionsRoot for the providers section. |
+| `providers.piNative.promptCacheDiagnostics` | `boolean` | `--` | false | `true` | Emit metadata-only prompt-cache request fingerprints into run artifacts; never prompt text, tool arguments, cache keys, endpoints or credentials. |
+| `providers.piNative.transport` | `string` | `--` | auto | `sse` | Preferred Pi provider transport: auto, sse, websocket, or websocket-cached. Providers without multiple transports ignore it. |
+| `runtime.compaction.contextWindowOverride` | `integer` | `--` | auto-detected | `128000` | Persistent correction for inaccurate provider context-window metadata; learned overflow ceilings may lower it process-locally. |
+| `runtime.compaction.enabled` | `boolean` | `--` | true | `true` | Enables adaptive proactive compaction and one-shot reactive overflow recovery. |
+| `runtime.compaction.fixedOverheadEnabled` | `boolean` | `--` | true | `true` | Includes system instructions, tool schemas, and the current user turn in proactive request-size estimates. |
+| `runtime.compaction.keepRecentTokens` | `integer` | `--` | adaptive by model | `12800` | Explicit recent-context retention override; omitted derives 10% of the effective context window, clamped to 4,000-20,000 tokens. |
+| `runtime.compaction.minSavingsTokens` | `integer` | `--` | adaptive by model | `12800` | Minimum verified token reduction required for proactive compaction; omitted derives 10% of the effective window, clamped to 4,000-20,000. Reactive recovery accepts any positive reduction. |
+| `runtime.compaction.summaryMaxTokens` | `integer` | `--` | adaptive by model | `5120` | Explicit combined summary-output budget override; omitted derives 4% of the effective context window, clamped to 2,000-12,000 tokens. |
+| `runtime.compaction.triggerRatio` | `number` | `--` | 0.9 | `0.9` | Fraction of the effective model context window used for the proactive trigger, additionally capped by adaptive safety headroom (10% of the window, 16,000-48,000 tokens). |
+| `runtime.effort` | `string` | `--` | unset | `medium` | Route-specific effort forwarded through Pi to the selected provider. Doctor warns when a configured value falls outside the model's advertised ladder but keeps turn-time handling permissive. Message text never changes effort. |
+| `runtime.fallbacks` | `array` | `--` | [] | `[{"model":"openai-codex:gpt-5.6-sol"},{"model":"anthropic:claude-sonnet-4-6","effort":"high"}]` | Canonical ordered fallback routes. Omitted per-route effort means that provider's default. |
+| `runtime.maxTurns` | `integer` | `--` | unset | `1` | Configures maxTurns for the runtime section. |
+| `runtime.model` | `string` | `--` | required | `openai-codex:gpt-5.6-terra` | Configures model for the runtime section. |
+| `runtime.retry.backoffMs` | `integer` | `--` | 1000 | `2000` | Delay before the first same-model retry. Doubles on each further retry, capped by runtime.retry.maxBackoffMs. |
+| `runtime.retry.maxBackoffMs` | `integer` | `--` | 15000 | `30000` | Ceiling for the doubling same-model retry delay. |
+| `runtime.retry.primaryAttempts` | `integer` | `--` | 2 | `3` | Total attempts on runtime.model including the first, before the chain advances. Retries fire only for transient provider failures (overloaded, rate-limited, timeout, network, 5xx); context overflow and bad credentials advance immediately. Set 1 to disable. |
+| `runtime.session.idleTimeoutMs` | `integer` | `--` | 1800000 | `1800000` | Configures session.idleTimeoutMs for the runtime section. |
+| `runtime.session.isolateProactive` | `boolean` | `--` | false | `true` | Configures session.isolateProactive for the runtime section. |
+| `runtime.session.mode` | `string` | `--` | continuous | `continuous` | Configures session.mode for the runtime section. |
+| `runtime.session.rollover` | `string` | `--` | none | `none` | Configures session.rollover for the runtime section. |
+| `runtime.session.rolloverNotice` | `boolean` | `--` | false | `true` | Configures session.rolloverNotice for the runtime section. |
+| `runtime.session.rolloverTimezone` | `string` | `--` | unset | `example` | Configures session.rolloverTimezone for the runtime section. |
+| `runtime.workspace` | `string` | `--` | . | `.` | Configures workspace for the runtime section. |
+| `sandbox.denyWrite` | `string[]` | `--` | unset | `["example"]` | Configures denyWrite for the sandbox section. |
+| `sandbox.fallback` | `string` | `--` | fail-closed | `fail-closed` | Configures fallback for the sandbox section. |
+| `sandbox.mode` | `string` | `--` | unset | `native` | Configures mode for the sandbox section. |
+| `sandbox.network.allowlist` | `string[]` | `--` | unset | `["example"]` | Configures network.allowlist for the sandbox section. |
+| `sandbox.network.mode` | `string` | `--` | none | `none` | Configures network.mode for the sandbox section. |
+| `sandbox.readableRoots` | `string[]` | `--` | unset | `["example"]` | Configures readableRoots for the sandbox section. |
+| `sandbox.unsafeAllowHostProcess` | `boolean` | `--` | false | `true` | Configures unsafeAllowHostProcess for the sandbox section. |
+| `sandbox.writableRoots` | `string[]` | `--` | unset | `["example"]` | Configures writableRoots for the sandbox section. |
 | `slack.allowAllChannels` | `boolean` | `MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS` | false | `true` | Configures allowAllChannels for the slack section. |
 | `slack.allowedChannelIds` | `string[]` | `MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS` | unset | `["example"]` | Configures allowedChannelIds for the slack section. |
 | `slack.appToken` | `string` | `MONO_AGENT_SLACK_APP_TOKEN` | unset | `env:MONO_AGENT_SLACK_APP_TOKEN` | Secret value for slack.appToken; prefer the env override. |
@@ -171,7 +171,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `slack.threadContext.timeoutMs` | `integer` | `MONO_AGENT_SLACK_THREAD_CONTEXT_TIMEOUT_MS` | 4000 | `4000` | Budget for the whole context phase, including name resolution. Exceeding it submits the turn with less context rather than delaying it. `0` bounds the phase only by the turn itself. |
 | `slack.unfurlLinks` | `boolean` | `MONO_AGENT_SLACK_UNFURL_LINKS` | unset | `false` | Controls link previews on native Slack agent `chat.postMessage` requests. When unset, the request field is omitted and Slack's current default behavior is preserved. |
 | `slack.unfurlMedia` | `boolean` | `MONO_AGENT_SLACK_UNFURL_MEDIA` | unset | `false` | Controls media previews on native Slack agent `chat.postMessage` requests. When unset, the request field is omitted and Slack's current default behavior is preserved. |
-| `subagents` | `object` | `MONO_AGENT_SUBAGENTS_JSON` | {"enabled":false} | `{"enabled":true,"maxConcurrent":5,"instances":{"enabled":true,"maxPerConversation":8,"idleTtlMs":86400000,"maxTurns":60},"models":[{"name":"fable","model":"anthropic:claude-fable-5-1"},"openai-codex:gpt-6-astra"],"definitions":[{"name":"researcher","description":"Reads code and docs to answer a factual question about the codebase. Read-only.","prompt":"You are a codebase researcher. Answer with file:line citations. Never modify files.","allowedTools":["Read","Glob","Grep"]}]}` | Subagent profiles the Agent tool can deploy, plus its caps. instances enables conversation-scoped persistent children when subagents are enabled and effective tool policy allows both Agent and AgentSend: root defaults to <artifacts.dir>/../subagents, maxPerConversation is 1–32 (default 8), idleTtlMs is 60000–604800000 (default 86400000), and maxTurns is 1–500 (default 60). Agent persist:true creates a child; AgentSend resumes or closes it. Persistent children automatically receive AskParent unless global/profile policy denies it; it durably saves a question and returns successful awaiting_reply. Answer through ordinary AgentSend in the same session. Disabling instances preserves stateless Agent. commandTimeoutMs (positive integer milliseconds, default 1800000) is the foreground Bash/Exec ceiling for detached persistent children, clamped to their process job's remaining runtime; interactive turns and foreground children keep the 120 s default. models is an operator allow-list of model reference strings or {name?, model} objects; an omitted name uses the canonical reference. Explicit names must be lowercase kebab-case (1-40 characters), unique, and distinct from profile names and general-purpose; duplicate models are rejected. Agent accepts model from that list and effort on every call shape. Each value resolves as call-time override, profile pin, parent effective value, then base/runtime default. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the "*" wildcard is rejected. The agent may also author a specialized subagent at call time unless inline.enabled is false; inline.allowedTools caps what an authored subagent may request, defaulting to the parent agent's own built-ins. maxConcurrent is a ceiling, not a scheduling guarantee: Pi 0.85 serializes all tool calls when any stateful/mutating or MCP tool is offered. |
+| `subagents` | `object` | `--` | {"enabled":false} | `{"enabled":true,"maxConcurrent":5,"instances":{"enabled":true,"maxPerConversation":8,"idleTtlMs":86400000,"maxTurns":60},"models":[{"name":"fable","model":"anthropic:claude-fable-5-1"},"openai-codex:gpt-6-astra"],"definitions":[{"name":"researcher","description":"Reads code and docs to answer a factual question about the codebase. Read-only.","prompt":"You are a codebase researcher. Answer with file:line citations. Never modify files.","allowedTools":["Read","Glob","Grep"]}]}` | Subagent profiles the Agent tool can deploy, plus its caps. instances enables conversation-scoped persistent children when subagents are enabled and effective tool policy allows both Agent and AgentSend: root defaults to <artifacts.dir>/../subagents, maxPerConversation is 1–32 (default 8), idleTtlMs is 60000–604800000 (default 86400000), and maxTurns is 1–500 (default 60). Agent persist:true creates a child; AgentSend resumes or closes it. Persistent children automatically receive AskParent unless global/profile policy denies it; it durably saves a question and returns successful awaiting_reply. Answer through ordinary AgentSend in the same session. Disabling instances preserves stateless Agent. commandTimeoutMs (positive integer milliseconds, default 1800000) is the foreground Bash/Exec ceiling for detached persistent children, clamped to their process job's remaining runtime; interactive turns and foreground children keep the 120 s default. models is an operator allow-list of model reference strings or {name?, model} objects; an omitted name uses the canonical reference. Explicit names must be lowercase kebab-case (1-40 characters), unique, and distinct from profile names and general-purpose; duplicate models are rejected. Agent accepts model from that list and effort on every call shape. Each value resolves as call-time override, profile pin, parent effective value, then base/runtime default. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the "*" wildcard is rejected. The agent may also author a specialized subagent at call time unless inline.enabled is false; inline.allowedTools caps what an authored subagent may request, defaulting to the parent agent's own built-ins. maxConcurrent is a ceiling, not a scheduling guarantee: Pi 0.85 serializes all tool calls when any stateful/mutating or MCP tool is offered. |
 | `telegram.allowAllChats` | `boolean` | `MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS` | false | `true` | Configures allowAllChats for the telegram section. |
 | `telegram.allowedChatIds` | `string[]` | `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS` | unset | `["example"]` | Configures allowedChatIds for the telegram section. |
 | `telegram.apiRoot` | `string` | `MONO_AGENT_TELEGRAM_API_ROOT` | unset | `example` | Configures apiRoot for the telegram section. |
@@ -193,35 +193,35 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `telegram.transcription.model` | `string` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL` | unset | `example` | Configures transcription.model for the telegram section. |
 | `telegram.transcription.timeoutMs` | `integer` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_TIMEOUT_MS` | unset | `1` | Configures transcription.timeoutMs for the telegram section. |
 | `telegram.transport.ipFamily` | `integer` | `MONO_AGENT_TELEGRAM_IP_FAMILY` | unset | `example` | Configures transport.ipFamily for the telegram section. |
-| `tools.allowedTools` | `string[]` | `MONO_AGENT_ALLOWED_TOOLS` | ["*"] | `["Read","Grep"]` | Configures allowedTools for the tools section. |
-| `tools.continuationServers` | `string[]` | `MONO_AGENT_CONTINUATION_SERVERS` | unset | `["example"]` | Configures continuationServers for the tools section. |
-| `tools.disallowedTools` | `string[]` | `MONO_AGENT_DISALLOWED_TOOLS` | [] | `["Read","Grep"]` | Configures disallowedTools for the tools section. |
-| `tools.filesystem.readableRoots` | `string[]` | `MONO_AGENT_FILE_TOOL_READABLE_ROOTS` | unset | `["/srv/shared/reference"]` | Extra roots for managed Read, Glob, and Grep while sandbox.mode is off. Access requires lexical and realpath containment; native sandbox roots remain authoritative when sandboxing is enabled. |
-| `tools.filesystem.writableRoots` | `string[]` | `MONO_AGENT_FILE_TOOL_WRITABLE_ROOTS` | unset | `["/srv/shared/output"]` | Extra roots for managed Write and Edit while sandbox.mode is off; writable roots are also readable. Access requires lexical and realpath containment; native sandbox roots remain authoritative when sandboxing is enabled. |
-| `tools.mcpCallMaxTotalTimeoutMs` | `integer` | `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | 2700000 | `2700000` | Configures mcpCallMaxTotalTimeoutMs for the tools section. |
-| `tools.mcpCallTimeoutMs` | `integer` | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | 120000 | `120000` | Configures mcpCallTimeoutMs for the tools section. |
-| `tools.mcpConfigPath` | `string` | `MONO_AGENT_MCP_CONFIG_PATH` | unset | `example` | Configures mcpConfigPath for the tools section. |
-| `tools.mcpRequestContextServers` | `string[]` | `MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS` | [] | `["transcribe"]` | Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context. |
-| `tools.web.coordination` | `string` | `MONO_AGENT_WEB_COORDINATION` | process | `process` | Host mode shares web request budgets and cooldowns across participating local mono-agent processes; process preserves isolated coordination. |
-| `tools.web.fetch.browserCommand` | `string` | `MONO_AGENT_WEB_BROWSER_COMMAND` | agent-browser | `agent-browser` | Direct executable name or path for agent-browser; shell fragments are not evaluated. |
-| `tools.web.fetch.parallel.apiKeyEnv` | `string` | `MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV` | unset | `example` | Secret value for tools.web.fetch.parallel.apiKeyEnv; prefer the env override. |
-| `tools.web.fetch.provider` | `string | string[]` | `MONO_AGENT_WEB_FETCH_PROVIDER` | local | `local` | WebFetch provider name or ordered chain: local (default), parallel, hound. Parallel cannot serve raw format, custom headers, or browser rendering. Hound is built-in HTTP-only local acquisition/extraction with proactive robots checks; it supports raw format and allowed headers but not browser rendering. |
-| `tools.web.fetch.render` | `string` | `MONO_AGENT_WEB_FETCH_RENDER` | never | `never` | Browser-render capability for sparse JavaScript pages. never forces every call to static extraction; auto permits an isolated agent-browser session when needed. |
-| `tools.web.search.backend` | `string | string[]` | `MONO_AGENT_WEB_SEARCH_BACKEND` | ["parallel","ollama"] | `parallel,ollama` | WebSearch provider name (strict) or non-empty ordered chain. Default [parallel, ollama] uses anonymous Parallel then local Ollama. Keyless engines are opt-in. auto was removed; the config error prints the previous explicit order. |
-| `tools.web.search.codex.model` | `string` | `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | gpt-5.6-luna | `gpt-5.6-luna` | Codex app-server model used for ChatGPT-subscription web search. The signed-in account must expose both this model and web search; default gpt-5.6-luna. |
-| `tools.web.search.endpoint` | `string` | `MONO_AGENT_WEB_SEARCH_ENDPOINT` | unset | `example` | Compatibility alias for tools.web.search.searxng.endpoint and MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT. Existing configurations remain valid; new configurations should use the provider-specific block. |
-| `tools.web.search.maxRequestsPerRun` | `integer` | `MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN` | 4 | `4` | Hard ceiling from 1 to 20 on answered provider searches in one logical runtime run, including empty answers; failures are refunded. Cache hits, coalesced followers, cooldown skips, and quota skips consume no request. A separate dispatch ceiling is four times this limit. Default 4. |
-| `tools.web.search.ollama.apiKeyEnv` | `string` | `MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV` | unset | `OLLAMA_API_KEY` | Environment variable containing the hosted Ollama API key. Required only for exact https://ollama.com and rejected for every other origin; the key value is never stored in JSON. |
-| `tools.web.search.ollama.baseUrl` | `string` | `MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL` | http://127.0.0.1:11434 | `https://ollama.com` | Ollama origin. Defaults to local http://127.0.0.1:11434 when Ollama is selected, including in a chain. Hosted search is exactly https://ollama.com; custom public origins require HTTPS and trustPublicUrl=true. |
-| `tools.web.search.ollama.trustPublicUrl` | `boolean` | `MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL` | false | `true` | Explicit acknowledgement for an HTTPS custom public Ollama origin. It never permits sending hosted credentials to that origin. |
-| `tools.web.search.parallel.apiKeyEnv` | `string` | `MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV` | unset | `example` | Secret value for tools.web.search.parallel.apiKeyEnv; prefer the env override. |
-| `tools.web.search.searxng.endpoint` | `string` | `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` | unset | `http://127.0.0.1:8088` | Optional unauthenticated loopback HTTP SearXNG base URL. Remote HTTPS, credentials, query strings, and fragments are rejected. |
-| `traceability.globalDiscovery` | `boolean` | `MONO_AGENT_TRACE_GLOBAL_DISCOVERY` | true | `true` | Configures globalDiscovery for the traceability section. |
-| `traceability.heartbeatMs` | `integer` | `MONO_AGENT_TRACE_HEARTBEAT_MS` | 10000 | `10000` | Configures heartbeatMs for the traceability section. |
-| `traceability.registryDir` | `string` | `MONO_AGENT_TRACE_REGISTRY_DIR` | .mono-agent/trace-sources | `.mono-agent/trace-sources` | Configures registryDir for the traceability section. |
-| `traceability.sourceId` | `string` | `MONO_AGENT_TRACE_SOURCE_ID` | unset | `my-agent` | Configures sourceId for the traceability section. |
-| `traceability.sourceLabel` | `string` | `MONO_AGENT_TRACE_SOURCE_LABEL` | unset | `My Agent` | Configures sourceLabel for the traceability section. |
-| `traceability.staleAfterMs` | `integer` | `MONO_AGENT_TRACE_STALE_AFTER_MS` | 30000 | `30000` | Configures staleAfterMs for the traceability section. |
+| `tools.allowedTools` | `string[]` | `--` | ["*"] | `["Read","Grep"]` | Configures allowedTools for the tools section. |
+| `tools.continuationServers` | `string[]` | `--` | unset | `["example"]` | Configures continuationServers for the tools section. |
+| `tools.disallowedTools` | `string[]` | `--` | [] | `["Read","Grep"]` | Configures disallowedTools for the tools section. |
+| `tools.filesystem.readableRoots` | `string[]` | `--` | unset | `["/srv/shared/reference"]` | Extra roots for managed Read, Glob, and Grep while sandbox.mode is off. Access requires lexical and realpath containment; native sandbox roots remain authoritative when sandboxing is enabled. |
+| `tools.filesystem.writableRoots` | `string[]` | `--` | unset | `["/srv/shared/output"]` | Extra roots for managed Write and Edit while sandbox.mode is off; writable roots are also readable. Access requires lexical and realpath containment; native sandbox roots remain authoritative when sandboxing is enabled. |
+| `tools.mcpCallMaxTotalTimeoutMs` | `integer` | `--` | 2700000 | `2700000` | Configures mcpCallMaxTotalTimeoutMs for the tools section. |
+| `tools.mcpCallTimeoutMs` | `integer` | `--` | 120000 | `120000` | Configures mcpCallTimeoutMs for the tools section. |
+| `tools.mcpConfigPath` | `string` | `--` | unset | `example` | Configures mcpConfigPath for the tools section. |
+| `tools.mcpRequestContextServers` | `string[]` | `--` | [] | `["transcribe"]` | Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context. |
+| `tools.web.coordination` | `string` | `--` | process | `process` | Host mode shares web request budgets and cooldowns across participating local mono-agent processes; process preserves isolated coordination. |
+| `tools.web.fetch.browserCommand` | `string` | `--` | agent-browser | `agent-browser` | Direct executable name or path for agent-browser; shell fragments are not evaluated. |
+| `tools.web.fetch.parallel.apiKeyEnv` | `string` | `--` | unset | `example` | Secret value for tools.web.fetch.parallel.apiKeyEnv; prefer the env override. |
+| `tools.web.fetch.provider` | `string | string[]` | `--` | local | `local` | WebFetch provider name or ordered chain: local (default), parallel, hound. Parallel cannot serve raw format, custom headers, or browser rendering. Hound is built-in HTTP-only local acquisition/extraction with proactive robots checks; it supports raw format and allowed headers but not browser rendering. |
+| `tools.web.fetch.render` | `string` | `--` | never | `never` | Browser-render capability for sparse JavaScript pages. never forces every call to static extraction; auto permits an isolated agent-browser session when needed. |
+| `tools.web.search.backend` | `string | string[]` | `--` | ["parallel","ollama"] | `parallel,ollama` | WebSearch provider name (strict) or non-empty ordered chain. Default [parallel, ollama] uses anonymous Parallel then local Ollama. Keyless engines are opt-in. auto was removed; the config error prints the previous explicit order. |
+| `tools.web.search.codex.model` | `string` | `--` | gpt-5.6-luna | `gpt-5.6-luna` | Codex app-server model used for ChatGPT-subscription web search. The signed-in account must expose both this model and web search; default gpt-5.6-luna. |
+| `tools.web.search.endpoint` | `string` | `--` | unset | `example` | Compatibility alias for tools.web.search.searxng.endpoint. Existing configurations remain valid; new configurations should use the provider-specific block. |
+| `tools.web.search.maxRequestsPerRun` | `integer` | `--` | 4 | `4` | Hard ceiling from 1 to 20 on answered provider searches in one logical runtime run, including empty answers; failures are refunded. Cache hits, coalesced followers, cooldown skips, and quota skips consume no request. A separate dispatch ceiling is four times this limit. Default 4. |
+| `tools.web.search.ollama.apiKeyEnv` | `string` | `--` | unset | `OLLAMA_API_KEY` | Environment variable containing the hosted Ollama API key. Required only for exact https://ollama.com and rejected for every other origin; the key value is never stored in JSON. |
+| `tools.web.search.ollama.baseUrl` | `string` | `--` | http://127.0.0.1:11434 | `https://ollama.com` | Ollama origin. Defaults to local http://127.0.0.1:11434 when Ollama is selected, including in a chain. Hosted search is exactly https://ollama.com; custom public origins require HTTPS and trustPublicUrl=true. |
+| `tools.web.search.ollama.trustPublicUrl` | `boolean` | `--` | false | `true` | Explicit acknowledgement for an HTTPS custom public Ollama origin. It never permits sending hosted credentials to that origin. |
+| `tools.web.search.parallel.apiKeyEnv` | `string` | `--` | unset | `example` | Secret value for tools.web.search.parallel.apiKeyEnv; prefer the env override. |
+| `tools.web.search.searxng.endpoint` | `string` | `--` | unset | `http://127.0.0.1:8088` | Optional unauthenticated loopback HTTP SearXNG base URL. Remote HTTPS, credentials, query strings, and fragments are rejected. |
+| `traceability.globalDiscovery` | `boolean` | `--` | true | `true` | Configures globalDiscovery for the traceability section. |
+| `traceability.heartbeatMs` | `integer` | `--` | 10000 | `10000` | Configures heartbeatMs for the traceability section. |
+| `traceability.registryDir` | `string` | `--` | .mono-agent/trace-sources | `.mono-agent/trace-sources` | Configures registryDir for the traceability section. |
+| `traceability.sourceId` | `string` | `--` | unset | `my-agent` | Configures sourceId for the traceability section. |
+| `traceability.sourceLabel` | `string` | `--` | unset | `My Agent` | Configures sourceLabel for the traceability section. |
+| `traceability.staleAfterMs` | `integer` | `--` | 30000 | `30000` | Configures staleAfterMs for the traceability section. |
 | `tui.allowNonLoopback` | `boolean` | `MONO_AGENT_TUI_ALLOW_NON_LOOPBACK` | false | `true` | Configures allowNonLoopback for the tui section. |
 | `tui.apiKey` | `string` | `MONO_AGENT_TUI_API_KEY` | unset | `example` | Secret value for tui.apiKey; prefer the env override. |
 | `tui.basePath` | `string` | `MONO_AGENT_TUI_BASE_PATH` | /gui | `/gui` | Configures basePath for the tui section. |

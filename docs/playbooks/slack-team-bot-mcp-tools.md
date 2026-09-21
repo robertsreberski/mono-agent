@@ -87,5 +87,5 @@ For Anthropic retention experiments, first satisfy the [prompt-cache measurement
 gates](/runtime/prompt-cache-measurement/). `providers.piNative.cacheRetention` is
 long by default (short opts out); model support is required. Separately approve
 spending experiments (1h writes 2× input, reads 0.1×; short writes 1.25×), with no
-guaranteed hit. `MONO_AGENT_PI_CACHE_RETENTION` overrides JSON; explicit short
+guaranteed hit. JSON `providers.piNative.cacheRetention` controls the value; explicit short
 also overrides ambient Pi long retention.

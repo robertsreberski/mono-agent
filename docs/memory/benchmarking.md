@@ -50,7 +50,7 @@ This calibration answers two bounded feasibility questions: whether the richer B
 Real providers and larger external suites are explicit opt-ins and are not part of normal CI:
 
 ```bash
-# Real local embeddings; uses MONO_AGENT_MEMORY_EMBEDDINGS_* overrides when set
+# Real local embeddings; uses the JSON memory.embeddings block
 node scripts/memory-benchmark.mjs --provider ollama --json
 
 # Download the upstream data separately, then point the adapter at that file

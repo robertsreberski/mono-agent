@@ -62,13 +62,13 @@ write, or after a filesystem failure can still lose the unsaved tail.
 
 | Key | Default | Env var | Coverage |
 | --- | --- | --- | --- |
-| `artifacts.dir` | `./.mono-agent/artifacts` | `MONO_AGENT_ARTIFACT_DIR` | config |
-| `artifacts.retention.maxAgeDays` | `365` | `MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS` | config |
-| `artifacts.retention.maxCount` | `50000` | `MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT` | config |
-| `artifacts.retention.dryRun` | `false` | `MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN` | config |
-| `artifacts.memoryRetention.maxAgeDays` | `7` | `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_AGE_DAYS` | config |
-| `artifacts.memoryRetention.maxCount` | `5000` | `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_COUNT` | config |
-| `artifacts.memoryRetention.dryRun` | `artifacts.retention.dryRun` | `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_DRY_RUN` | config |
+| `artifacts.dir` | `./.mono-agent/artifacts` | — | config |
+| `artifacts.retention.maxAgeDays` | `365` | — | config |
+| `artifacts.retention.maxCount` | `50000` | — | config |
+| `artifacts.retention.dryRun` | `false` | — | config |
+| `artifacts.memoryRetention.maxAgeDays` | `7` | — | config |
+| `artifacts.memoryRetention.maxCount` | `5000` | — | config |
+| `artifacts.memoryRetention.dryRun` | `artifacts.retention.dryRun` | — | config |
 
 The default audit, metrics, and operator views read agent runs only; pass `--include-memory` where supported to add memory-maintenance runs, including legacy top-level `mem-*` files from older mixed directories. The `error` / `failoverHistory` fields are written into the live record *and* re-canonicalized by the recorded-runs list reader, so they surface for both freshly failed runs and re-read artifacts (artifacts written before this field was added carry no source data to recover).
 
@@ -260,7 +260,7 @@ mono-agent runs report --include-memory --json
 | --- | --- |
 | `--artifacts <path>` | Read this artifact directory directly. Wins over config-based `artifacts.dir` resolution. |
 | `--config <path>` | Use a non-default config file when resolving `artifacts.dir`. |
-| `--env-file <path>` | Load env overrides before resolving `MONO_AGENT_ARTIFACT_DIR`. |
+| `--env-file <path>` | Load referenced credentials and adapter-owned settings. |
 | `--since <iso>` / `--until <iso>` | Include only summaries whose `startedAt` falls inside the ISO window. Summaries with missing or unparseable timestamps are excluded once a window is active. |
 | `--by model\|channel\|failureKind` | Add grouped buckets after the overall totals. Channel grouping is derived from the `conversationId` prefix before `:` until summaries carry a first-class channel field. |
 | `--include-memory` | Include memory-maintenance summaries in addition to default agent runs. |
@@ -301,12 +301,12 @@ When `registryDir` is a config-local override (as `mono-agent init` scaffolds), 
 
 | Key | Default | Env var | Notes |
 | --- | --- | --- | --- |
-| `traceability.registryDir` | `./.mono-agent/trace-sources` | `MONO_AGENT_TRACE_REGISTRY_DIR` | Directory of heartbeat manifests. |
-| `traceability.sourceId` | `my-agent` | `MONO_AGENT_TRACE_SOURCE_ID` | Stable id for this agent; keys its manifest. |
-| `traceability.sourceLabel` | `My Agent` | `MONO_AGENT_TRACE_SOURCE_LABEL` | Human-friendly name shown by local status and discovery surfaces. |
-| `traceability.heartbeatMs` | `10000` | `MONO_AGENT_TRACE_HEARTBEAT_MS` | How often the manifest is refreshed. |
-| `traceability.staleAfterMs` | `30000` | `MONO_AGENT_TRACE_STALE_AFTER_MS` | Age after which `status` marks a source stale. |
-| `traceability.globalDiscovery` | `true` | `MONO_AGENT_TRACE_GLOBAL_DISCOVERY` | When `registryDir` differs from the global default, also mirror this agent's manifest there. Set `false` to keep registration local-only. |
+| `traceability.registryDir` | `./.mono-agent/trace-sources` | — | Directory of heartbeat manifests. |
+| `traceability.sourceId` | `my-agent` | — | Stable id for this agent; keys its manifest. |
+| `traceability.sourceLabel` | `My Agent` | — | Human-friendly name shown by local status and discovery surfaces. |
+| `traceability.heartbeatMs` | `10000` | — | How often the manifest is refreshed. |
+| `traceability.staleAfterMs` | `30000` | — | Age after which `status` marks a source stale. |
+| `traceability.globalDiscovery` | `true` | — | When `registryDir` differs from the global default, also mirror this agent's manifest there. Set `false` to keep registration local-only. |
 
 ### Content-free memory health
 

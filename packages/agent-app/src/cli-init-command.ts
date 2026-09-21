@@ -107,12 +107,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
       ));
       return 0;
     }
-    let resolvedPiAuthPath = resolveEffectivePiAuthPath({
-      cwd,
-      ...(nonEmptyEnv(environment.dotenvEnv.MONO_AGENT_PI_AUTH_PATH)
-        ? { envPath: environment.dotenvEnv.MONO_AGENT_PI_AUTH_PATH }
-        : {}),
-    });
+    let resolvedPiAuthPath = resolveEffectivePiAuthPath({ cwd });
     const initial = await runInitWizard({
       cwd,
       piAuthPath: resolvedPiAuthPath,
@@ -147,9 +142,6 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
       });
       resolvedPiAuthPath = resolveEffectivePiAuthPath({
         cwd,
-        ...(nonEmptyEnv(dotenvSnapshot.env.MONO_AGENT_PI_AUTH_PATH)
-          ? { envPath: dotenvSnapshot.env.MONO_AGENT_PI_AUTH_PATH }
-          : {}),
         ...(nonEmptyEnv(plan.configJson.providers?.piAuthPath)
           ? { configPath: plan.configJson.providers.piAuthPath }
           : {}),

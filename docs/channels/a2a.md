@@ -124,7 +124,7 @@ Populates the identity block of the Agent Card.
 
 | Key | Required | Notes |
 | --- | --- | --- |
-| `name` | yes when no root name is available | Human-readable Agent Card name. Defaults from root `agent.name` / `MONO_AGENT_NAME`; plugin `config.agent.name` / `MONO_AGENT_A2A_AGENT_NAME` wins. |
+| `name` | yes when no root name is available | Human-readable Agent Card name. Defaults from root `agent.name`; plugin `config.agent.name` / `MONO_AGENT_A2A_AGENT_NAME` wins. |
 | `description` | yes | What the agent does. |
 | `version` | yes | Agent version string (e.g. `0.1.0`). |
 | `providerOrganization` | no | Organization that operates the agent. Emitted only when `providerUrl` is also set. |
@@ -160,7 +160,7 @@ Every key has a `MONO_AGENT_*` override. Strings split on commas where the value
 | `MONO_AGENT_A2A_IDEMPOTENCY_STATE_DIR` | plugin `config.provider.idempotency.stateDir` |
 | `MONO_AGENT_A2A_IDEMPOTENCY_RETENTION_MS` | plugin `config.provider.idempotency.retentionMs` |
 | `MONO_AGENT_A2A_IDEMPOTENCY_MAX_RECORDS` | plugin `config.provider.idempotency.maxRecords` |
-| `MONO_AGENT_A2A_AGENT_NAME` | plugin `config.agent.name` (wins over root `agent.name` / `MONO_AGENT_NAME`) |
+| `MONO_AGENT_A2A_AGENT_NAME` | plugin `config.agent.name` (wins over root `agent.name`) |
 | `MONO_AGENT_A2A_AGENT_DESCRIPTION` | plugin `config.agent.description` |
 | `MONO_AGENT_A2A_AGENT_VERSION` | plugin `config.agent.version` |
 | `MONO_AGENT_A2A_PROVIDER_ORGANIZATION` | plugin `config.agent.providerOrganization` |

@@ -63,11 +63,10 @@ For building the driver itself, see [Write your own channel adapter](/programmat
 When you do not want any built-in transport — you are embedding the agent in your own HTTP server, queue worker, or test — combine `@mono-agent/config` with `@mono-agent/agent-app`. `createConfiguredAgentResponder` turns a loaded `MonoAgentConfig` into a ready `AgentResponder`. It starts no channel, trace-registry, service, retention, or consolidation-scheduler lifecycle, but each turn still uses the configured JSONL recorder and per-run exporters. It is **async** (as is `createConfiguredAgentHarness`/`createConfiguredMemory`): local memory modules are imported lazily, so a config without a `memory` section never loads the SQLite/BuJo stack.
 
 ```ts
-import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
+import { loadMonoAgentConfig } from "@mono-agent/config";
 import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
 
-const config = await loadMonoAgentConfigWithSources({
-  env: process.env,
+const config = await loadMonoAgentConfig({
   cwd: process.cwd(),
   jsonPath: "./mono-agent.config.json",
 });

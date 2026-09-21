@@ -9,7 +9,8 @@ import { createAgentSendTool } from "../../../agent-runtime/src/agent/tools/agen
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 import { describe, expect, it, vi } from "vitest";
 
-import { loadMonoAgentConfig, type MonoAgentConfig } from "@mono-agent/config";
+import type { MonoAgentConfig } from "@mono-agent/config";
+import { resolveProjectedMonoAgentConfig } from "../../../config/dist/config.js";
 // Exercise the private tool-to-app seam without adding a public runtime export.
 // @ts-expect-error -- package-private JavaScript has no public declaration.
 import { createAgentTool } from "../../../agent-runtime/src/agent/tools/agent-tool.js";
@@ -726,7 +727,7 @@ describe("AskParent child policy and durable controller", () => {
 
 
 it.each([undefined, "short", "long"] as const)("forwards resolved %s retention to parent and child routes", async (cacheRetention) => {
-  const providers = loadMonoAgentConfig({ cwd: "/repo", env: { MONO_AGENT_IDENTITY_PATH: "IDENTITY.md", MONO_AGENT_MODEL: "anthropic:claude-sonnet-4-6", MONO_AGENT_PI_CACHE_RETENTION: cacheRetention, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "true" } }).providers;
+  const providers = resolveProjectedMonoAgentConfig({ cwd: "/repo", env: { MONO_AGENT_IDENTITY_PATH: "IDENTITY.md", MONO_AGENT_MODEL: "anthropic:claude-sonnet-4-6", MONO_AGENT_PI_CACHE_RETENTION: cacheRetention, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "true" } }).providers;
   const config = { ...monoConfig({ enabled: true, definitions: [RESEARCHER] }), providers } as MonoAgentConfig;
   const expectedRetention = cacheRetention ?? "long";
   const { runtime, subagents } = await buildSubagents(config);

@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CONFIG_ENV_KEYS, loadMonoAgentConfig } from "@mono-agent/config";
+import { CORE_CONFIG_FIELD_IDS } from "@mono-agent/config";
+import { resolveProjectedMonoAgentConfig } from "../../../config/dist/config.js";
 import type { ConfigViewFieldId } from "@mono-agent/config";
 import { loadSlackAdapterConfig } from "@mono-agent/slack-adapter";
 import { describe, expect, it } from "vitest";
@@ -296,12 +297,12 @@ describe("config reference", () => {
   });
 
   it("keeps every core field's inferred type aligned with the hand-written fidelity table", () => {
-    const registryIds = Object.keys(CONFIG_ENV_KEYS).sort() as ConfigViewFieldId[];
+    const registryIds = Object.keys(CORE_CONFIG_FIELD_IDS).sort() as ConfigViewFieldId[];
     const expectedIds = Object.keys(EXPECTED_CORE_FIELD_TYPES).sort();
     expect(expectedIds).toEqual(registryIds);
 
     const coreFields = allConfigReferenceFields().filter((field) =>
-      Object.prototype.hasOwnProperty.call(CONFIG_ENV_KEYS, field.jsonPath),
+      Object.prototype.hasOwnProperty.call(CORE_CONFIG_FIELD_IDS, field.jsonPath),
     );
     expect(coreFields).toHaveLength(registryIds.length);
     const fieldsById = new Map(coreFields.map((field) => [field.jsonPath, field]));
@@ -658,7 +659,7 @@ function rejectedMemoryProperties(rule: SchemaNode): readonly string[] {
 it.each(["", " ", "\t\n", "\u00a0", "children", "  children  "])("matches instance root schema and loader validation for %j", (root) => {
   const node = schemaNode(buildMonoAgentConfigSchema() as SchemaNode, "subagents", "instances", "root");
   const accepts = root.length >= Number(node.minLength) && new RegExp(String(node.pattern), "u").test(root);
-  const load = () => loadMonoAgentConfig({ cwd: process.cwd(), env: {
+  const load = () => resolveProjectedMonoAgentConfig({ cwd: process.cwd(), env: {
     MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
     MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root } }),
   } });
@@ -668,7 +669,7 @@ it.each(["", " ", "\t\n", "\u00a0", "children", "  children  "])("matches instan
 });
 
 it("continues to accept AskParent in global and profile deny policy", () => {
-  const config = loadMonoAgentConfig({ cwd: process.cwd(), env: {
+  const config = resolveProjectedMonoAgentConfig({ cwd: process.cwd(), env: {
     MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
     MONO_AGENT_DISALLOWED_TOOLS: "AskParent",
     MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, definitions: [{ name: "helper", description: "Help", prompt: "Help", disallowedTools: ["AskParent"] }] }),
@@ -678,7 +679,7 @@ it("continues to accept AskParent in global and profile deny policy", () => {
 });
 
 it("keeps the Anthropic retention schema default aligned with config normalization", () => {
-  const config = loadMonoAgentConfig({ cwd: process.cwd(), env: {
+  const config = resolveProjectedMonoAgentConfig({ cwd: process.cwd(), env: {
     MONO_AGENT_MODEL: "anthropic:claude-sonnet-4-6", MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
   } });
   const node = schemaNode(buildMonoAgentConfigSchema() as SchemaNode, "providers", "piNative", "cacheRetention");

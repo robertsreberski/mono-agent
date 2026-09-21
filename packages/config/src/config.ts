@@ -79,7 +79,12 @@ export class MonoAgentConfigError extends Error {
 const invalidEnv: ConfigErrorFactory = (message, details) =>
   new MonoAgentConfigError("invalid_env", message, details);
 
-export interface LoadMonoAgentConfigInput {
+interface ProjectedMonoAgentConfigInput {
+  /**
+   * Internal string projection of JSON values. This is not an environment
+   * contract: the public loader accepts only a JSON path and never reads
+   * process environment configuration.
+   */
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
 }
@@ -315,7 +320,7 @@ const DEFAULT_TRACE_STALE_AFTER_MS = 30_000;
 const DEFAULT_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
 export const MAX_AGENT_NAME_LENGTH = 80;
 
-export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentConfig {
+export function resolveProjectedMonoAgentConfig(input: ProjectedMonoAgentConfigInput): MonoAgentConfig {
   assertNoRetiredConfigEnv(input.env);
   const cwd = normalizeCwd(input.cwd);
   const agentName = readAgentName(input.env.MONO_AGENT_NAME);

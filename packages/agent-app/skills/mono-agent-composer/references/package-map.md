@@ -28,11 +28,10 @@ Every real host needs these concepts:
 Minimal local host:
 
 ```ts
-import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
+import { loadMonoAgentConfig } from "@mono-agent/config";
 import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
 
-const config = await loadMonoAgentConfigWithSources({
-  env: process.env,
+const config = await loadMonoAgentConfig({
   cwd: process.cwd(),
   jsonPath: "./mono-agent.config.json",
 });

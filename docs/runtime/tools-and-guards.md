@@ -252,7 +252,7 @@ These are gated by `tools.allowedTools` / `tools.disallowedTools`. Deny always w
 }
 ```
 
-Env equivalents: `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` (comma-separated tool names).
+Configure `tools.allowedTools` and `tools.disallowedTools` as JSON arrays.
 
 :::note
 An **omitted** `allowedTools` (or `["*"]`) allows **every** tool subject to `disallowedTools` — the allow-all default. Listing specific names narrows to those; an **explicit empty** `[]` allows none (a deliberate chat-only agent). Add names to `disallowedTools` to subtract from the open default without switching to a full allowlist.
@@ -342,7 +342,7 @@ This guard is always on (coverage: `auto`). You do not enable it; you only choos
 }
 ```
 
-Env: `MONO_AGENT_ARTIFACT_DIR`.
+Configure `artifacts.dir` in JSON.
 
 ## Usage & cost tracking (auto)
 

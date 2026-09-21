@@ -7,7 +7,7 @@ sidebar:
 
 A single `mono-agent.config.json` brings the agent's runtime, providers, context, memory, tools, sandbox, artifacts, traceability, and channels together. This page shows the major sections in one broad example. Use the [generated config reference](/config/reference/) for the exhaustive field list.
 
-In normal CLI use, relative paths resolve from the agent folder. For fields with a documented environment mapping, precedence is **passed environment > JSON > default**. Config fields may be JSON-only; the generated reference marks fields without a mapping as `--`.
+In normal CLI use, relative paths resolve from the agent folder. For fields with a documented environment mapping, precedence is **JSON > default**. Config fields may be JSON-only; the generated reference marks fields without a mapping as `--`.
 
 Only `runtime.model` and `context.identityPath` are required. Most other capabilities are opt-in, but `tui` defaults on at loopback and interaction can auto-start from the selected tool configuration.
 
@@ -187,7 +187,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       "dim": 768                           // default 768; must match the model output dimension
     },
     "llm": {                               // required for strict bujo; rejected for lite/journal
-      // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _EXECUTION_MODE / _ENDPOINT / _TIMEOUT_MS.
+      // Configure the memory LLM in this JSON block.
       "provider": "ollama",                // ollama | agent-host
       "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. openai-codex:gpt-5.6-terra
       "endpoint": "http://localhost:11434", // ollama only; invalid for agent-host

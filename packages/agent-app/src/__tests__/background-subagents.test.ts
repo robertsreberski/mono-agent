@@ -3,7 +3,7 @@ import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
 import { execToolRun } from "../../../agent-runtime/src/agent/tools/exec.js";
 import { parseProcessJobProjection, type ProcessJobProjection } from "@mono-agent/agent-contracts";
 import { fileURLToPath } from "node:url";
-import { loadMonoAgentConfig } from "@mono-agent/config";
+import { resolveProjectedMonoAgentConfig } from "../../../config/dist/config.js";
 import { createMonoRuntime, createSandboxPolicy } from "@mono-agent/runtime-adapter";
 import { buildSubagentsOptions } from "../configured-agent.js";
 // @ts-expect-error Real Pi test seam; transport only is fake.
@@ -1267,7 +1267,7 @@ describe("detached persistent subagents", () => {
 
 it.each(["missing", "run", "revision", "session", "model", "tip", "false", "throw"])("missing/mismatched recovery receipt never authorizes resume: %s", async (fault) => {
   const f = await managedFixture();
-  const config = loadMonoAgentConfig({ cwd: f.root, env: {
+  const config = resolveProjectedMonoAgentConfig({ cwd: f.root, env: {
     MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
     MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root: resolve(f.root, "children") } }),
   } });
@@ -1291,7 +1291,7 @@ it("stop seals first and resumed tool-bearing turns on the same native session",
   const f = await managedFixture(async (id, root) => owner.retireDurableSession!(id, root));
   try {
     await writeFile(resolve(f.root, "evidence.txt"), "prior tool evidence");
-    const config = loadMonoAgentConfig({ cwd: f.root, env: {
+    const config = resolveProjectedMonoAgentConfig({ cwd: f.root, env: {
       MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
       MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root: resolve(f.root, "children") } }),
     } });
@@ -1347,7 +1347,7 @@ it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-
   const owner = createMonoRuntime(); const releaseConfirmation = deferred<void>(); let delayed = false;
   const f = await managedFixture(async (id, root) => owner.retireDurableSession!(id, root));
   try {
-    const config = loadMonoAgentConfig({ cwd: f.root, env: {
+    const config = resolveProjectedMonoAgentConfig({ cwd: f.root, env: {
       MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
       MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, timeoutMs: 3000, instances: { root: resolve(f.root, "children") } }),
     } });
@@ -1408,7 +1408,7 @@ it.each([false, true])("real Pi fake transport: detached AskParent and backgroun
   const retire = async (id: string, root: string) => owner.retireDurableSession!(id, root);
   const f = managed ? await managedFixture(retire) : await fixture({}, retire);
   try {
-    const config = loadMonoAgentConfig({ cwd: f.root, env: {
+    const config = resolveProjectedMonoAgentConfig({ cwd: f.root, env: {
       MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"),
       MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
       MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root: resolve(f.root, "children") } }),
@@ -1841,7 +1841,7 @@ it.each([
   [900_000, 3_600_000, false, undefined],
 ] as const)("derives child command ceiling config=%s remaining=%s detached=%s", async (commandTimeoutMs, remaining, detached, expected) => {
   vi.useFakeTimers(); vi.setSystemTime(1_000_000);
-  const config = loadMonoAgentConfig({ cwd: process.cwd(), env: {
+  const config = resolveProjectedMonoAgentConfig({ cwd: process.cwd(), env: {
     MONO_AGENT_IDENTITY_PATH: resolve(process.cwd(), "IDENTITY.md"),
     MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
     MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, commandTimeoutMs }),

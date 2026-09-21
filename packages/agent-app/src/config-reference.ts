@@ -2,7 +2,7 @@ import type { JsonEnvFieldSpec, SettingsJsonValue } from "@mono-agent/agent-cont
 import { DEFAULT_AGENT_ATTACHMENT_MAX_BYTES } from "@mono-agent/agent-contracts";
 import {
   ALLOW_ALL_TOOLS,
-  CONFIG_ENV_KEYS,
+  CORE_CONFIG_FIELD_IDS,
   EFFORT_LEVELS,
   MEMORY_BACKENDS,
   MEMORY_EMBEDDINGS_PROVIDERS,
@@ -28,10 +28,10 @@ import { WEBHOOK_CONFIG_FIELDS } from "@mono-agent/webhook-adapter";
 export const MONO_AGENT_CONFIG_SCHEMA_URL =
   "https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packages/agent-app/schema/mono-agent.config.schema.json";
 
-const CORE_FIELDS: readonly ConfigReferenceField[] = Object.entries(CONFIG_ENV_KEYS).map(([jsonPath, env]) =>
+const CORE_FIELDS: readonly ConfigReferenceField[] = Object.keys(CORE_CONFIG_FIELD_IDS).map((jsonPath) =>
   referenceField({
     jsonPath,
-    env,
+    env: "--",
     type: inferType(jsonPath),
     defaultLabel: defaultLabelFor(jsonPath),
     defaultValue: defaultValueFor(jsonPath),
@@ -137,7 +137,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   },
   {
     jsonPath: "interaction.bridge.host",
-    env: "MONO_AGENT_INTERACTION_BRIDGE_HOST",
+    env: "--",
     type: "string",
     defaultLabel: "127.0.0.1",
     defaultValue: "127.0.0.1",
@@ -146,7 +146,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   },
   {
     jsonPath: "interaction.bridge.port",
-    env: "MONO_AGENT_INTERACTION_BRIDGE_PORT",
+    env: "--",
     type: "integer",
     defaultLabel: "0",
     defaultValue: 0,
@@ -155,7 +155,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   },
   {
     jsonPath: "interaction.askUser.timeoutMs",
-    env: "MONO_AGENT_ASK_USER_TIMEOUT_MS",
+    env: "--",
     type: "integer",
     defaultLabel: "600000",
     defaultValue: 600_000,
@@ -165,7 +165,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   },
   {
     jsonPath: "interaction.progress.enabled",
-    env: "MONO_AGENT_PROGRESS_ENABLED",
+    env: "--",
     type: "boolean",
     defaultLabel: "true",
     defaultValue: true,
@@ -1566,12 +1566,12 @@ function exampleFor(id: string): SettingsJsonValue {
 }
 
 function descriptionFor(id: string): string {
-  if (id === "providers.piNative.cacheRetention") return "Anthropic Messages cache retention (short or long; default long). Short opts out. MONO_AGENT env > JSON > long; resolved values override ambient PI_CACHE_RETENTION. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.";
+  if (id === "providers.piNative.cacheRetention") return "Anthropic Messages cache retention (short or long; default long). Short opts out. JSON > long; the resolved value overrides ambient PI_CACHE_RETENTION. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.";
   if (id === "providers.piNative.promptCacheDiagnostics") return "Emit metadata-only prompt-cache request fingerprints into run artifacts; never prompt text, tool arguments, cache keys, endpoints or credentials.";
   const section = id.split(".")[0] ?? "config";
   const name = id.split(".").slice(1).join(".");
   if (id === "providers") {
-    return "Provider-id map that widens or narrows the selectable Pi model catalog; MONO_AGENT_PROVIDERS_JSON projects the whole object because provider ids are dynamic.";
+    return "Provider-id map that widens or narrows the selectable Pi model catalog.";
   }
   if (id === "tui.requestToolEnvironment.allowedKeys") {
     return "Explicit environment-variable names an ACP request may pass to Bash, Exec, and nested subagents for one turn. Disabled when empty; dangerous process-loader, shell-startup, home, temp, and PATH keys are rejected.";
@@ -1699,7 +1699,7 @@ function descriptionFor(id: string): string {
     return "Explicit acknowledgement for an HTTPS custom public Ollama origin. It never permits sending hosted credentials to that origin.";
   }
   if (id === "tools.web.search.endpoint") {
-    return "Compatibility alias for tools.web.search.searxng.endpoint and MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT. Existing configurations remain valid; new configurations should use the provider-specific block.";
+    return "Compatibility alias for tools.web.search.searxng.endpoint. Existing configurations remain valid; new configurations should use the provider-specific block.";
   }
   if (id === "tools.web.search.codex.model") {
     return "Codex app-server model used for ChatGPT-subscription web search. The signed-in account must expose both this model and web search; default gpt-5.6-luna.";

@@ -5,7 +5,7 @@ sidebar:
   order: 0
 ---
 
-The runtime layer is what actually drives a model: which provider executes a turn, how reasoning effort and tool permissions are set, how failures fall back to backup models, how local providers are wired in, how provider sessions and concurrency are bounded, and which built-in tools (and their auto-guards) ship out of the box. Every turn runs through the Pi runtime. The config-first controls live under `runtime`, `providers`, and `concurrency` in `mono-agent.config.json`, with the documented `MONO_AGENT_*` environment overrides. Custom runtimes, interactive approval callbacks, direct live-input queues, and orchestration remain programmatic surfaces; managed Slack, Telegram, and web-console turns supply their own live-input queue automatically.
+The runtime layer is what actually drives a model: which provider executes a turn, how reasoning effort and tool permissions are set, how failures fall back to backup models, how local providers are wired in, how provider sessions and concurrency are bounded, and which built-in tools (and their auto-guards) ship out of the box. Every turn runs through the Pi runtime. The config-first controls live under `runtime`, `providers`, and `concurrency` in `mono-agent.config.json`. Custom runtimes, interactive approval callbacks, direct live-input queues, and orchestration remain programmatic surfaces; managed Slack, Telegram, and web-console turns supply their own live-input queue automatically.
 
 ## At a glance
 
@@ -26,16 +26,16 @@ A minimal runtime block selects a provider model and (optionally) backup models:
 }
 ```
 
-The `runtime.model` string is always `<provider>:<model>`. A leading `pi:` prefix is canonicalized away. Override it without touching config via `MONO_AGENT_MODEL`.
+The `runtime.model` string is always `<provider>:<model>`. A leading `pi:` prefix is canonicalized away. Configure it in JSON; former core environment overrides are ignored.
 
 Guided init searches every bundled model for the Pi catalog — Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go — plus discovered local models. Hand-authored `providers` refs remain compatible outside the guided cloud-provider set. Every provider listed in the [Providers](/runtime/providers/) map makes its full catalog selectable; `ollama` and `lmstudio` are zero-config autodiscovered. The offline entry does not fabricate effort metadata, so only provider-default effort is available until live discovery succeeds. GPT-6 Astra can be selected as `openai-codex:gpt-6-astra` for Codex subscriptions; the hand-authored `openai:gpt-6-astra` route uses an OpenAI API key. GPT-5.6 Sol remains available as `openai-codex:gpt-5.6-sol`.
 
 | Key | Env var | Default | Notes |
 | --- | --- | --- | --- |
-| `runtime.model` | `MONO_AGENT_MODEL` | `openai-codex:gpt-5.6-terra` | Guided init can initially select the live provider default; refs use `<provider>:<model>`. |
+| `runtime.model` | — | `openai-codex:gpt-5.6-terra` | Guided init can initially select the live provider default; refs use `<provider>:<model>`. |
 | `runtime.fallbacks` | `MONO_AGENT_FALLBACKS_JSON` | `[]` | ordered `{model, effort?}` routes; omitted effort = provider default |
-| `runtime.effort` | `MONO_AGENT_EFFORT` | provider/model default when unset | `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`; model support is narrower where advertised. Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. The doctor warns and names the nearest valid level when an advertised level is not supported |
-| `runtime.maxTurns` | `MONO_AGENT_MAX_TURNS` | `0` (unlimited) | `1`–`100` caps turns |
+| `runtime.effort` | — | provider/model default when unset | `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`; model support is narrower where advertised. Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. The doctor warns and names the nearest valid level when an advertised level is not supported |
+| `runtime.maxTurns` | — | `0` (unlimited) | `1`–`100` caps turns |
 | `runtime.workspace` | `MONO_AGENT_WORKSPACE` | `.` | working dir for runtime tools |
 
 ## Child pages
@@ -80,7 +80,7 @@ By default a conversation keeps a continuous provider session that is evicted af
 }
 ```
 
-`maxConcurrentRuns` (`MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS`) caps how many runs hit the provider at once; `maxPendingRuns` (`MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS`) caps how many runs may be admitted before the provider step. Details and the session-store semantics are on [Sessions & concurrency](/runtime/sessions-concurrency/).
+`concurrency.maxConcurrentRuns` caps how many runs hit the provider at once; `concurrency.maxPendingRuns` caps how many runs may be admitted before the provider step. Details and the session-store semantics are on [Sessions & concurrency](/runtime/sessions-concurrency/).
 
 ## Built-in tools & auto-guards
 

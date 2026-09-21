@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { loadMonoAgentConfig } from "@mono-agent/config";
+import { resolveProjectedMonoAgentConfig } from "../../../config/dist/config.js";
 import { createMonoRuntime, createSandboxPolicy } from "@mono-agent/runtime-adapter";
 import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
 import { buildSubagentsOptions, createSubagentsRuntimeExtension } from "../configured-agent.js";
@@ -23,7 +23,7 @@ describe("app persistent subagent durable sessions", () => {
     let deliver!: () => void; const delivery = new Promise<void>((done) => { deliver = done; });
     let nativeReturned = false;
     try {
-      const config = loadMonoAgentConfig({ cwd: root, env: {
+      const config = resolveProjectedMonoAgentConfig({ cwd: root, env: {
         MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend", MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"),
         MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, timeoutMs: mode === "late-timeout" ? 1500 : 10_000,
           inline: { enabled: false }, instances: { root: resolve(root, "children") } }),
@@ -94,7 +94,7 @@ describe("app persistent subagent durable sessions", () => {
     const root = await mkdtemp(resolve(process.cwd(), ".durable-subagent-test-"));
     const owner = createMonoRuntime();
     try {
-      const config = loadMonoAgentConfig({ cwd: root, env: {
+      const config = resolveProjectedMonoAgentConfig({ cwd: root, env: {
         MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
         MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
         MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"),
@@ -153,7 +153,7 @@ describe("app persistent subagent durable sessions", () => {
     const root = await mkdtemp(resolve(process.cwd(), ".durable-subagent-test-"));
     const owner = createMonoRuntime();
     try {
-      const config = loadMonoAgentConfig({ cwd: root, env: {
+      const config = resolveProjectedMonoAgentConfig({ cwd: root, env: {
         MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
         MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
         MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"),
@@ -231,7 +231,7 @@ describe("app persistent subagent durable sessions", () => {
     const root = await mkdtemp(resolve(process.cwd(), ".parent-dialogue-test-"));
     const owner = createMonoRuntime();
     try {
-      const config = loadMonoAgentConfig({ cwd: root, env: {
+      const config = resolveProjectedMonoAgentConfig({ cwd: root, env: {
         MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
         MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"),
         MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root: resolve(root, "children") } }),

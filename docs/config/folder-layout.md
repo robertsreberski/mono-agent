@@ -5,7 +5,7 @@ sidebar:
   order: 3
 ---
 
-A mono-agent lives in one folder. You edit its config and context files; the framework writes runtime state under `.mono-agent/`. In normal CLI use, relative config paths resolve from this folder. Only fields with a documented `MONO_AGENT_*` mapping accept an environment override.
+A mono-agent lives in one folder. You edit its config and context files; the framework writes runtime state under `.mono-agent/`. In normal CLI use, relative config paths resolve from this folder. Core fields do not accept environment overrides.
 
 ## The tree
 
@@ -99,4 +99,4 @@ The framework creates and writes everything under `.mono-agent/`. You generally 
 
 Edit `mono-agent.config.json` or its referenced markdown directly. The CLI does not watch those files, so run `mono-agent restart` to apply an edit. A programmatic host may call `app.applyConfigChange(reason)` explicitly. `start` prints the traceability source and each channel's initial state (`running`, `waiting_for_config`, `disabled`, or `failed`); a self-recovering running transport can later report `degraded`.
 
-See the [config blueprint](/config/blueprint/) for a broad example, [environment variables](/config/env-vars/) for overrides, and [programmatic composition](/programmatic/) for behavior that JSON cannot express.
+See the [config blueprint](/config/blueprint/) for a broad example, [operational environment variables](/config/env-vars/) for secrets and process plumbing, and [programmatic composition](/programmatic/) for behavior that JSON cannot express.
