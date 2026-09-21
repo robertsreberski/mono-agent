@@ -19,8 +19,8 @@ marketing/src/content/blog/<slug>/diagram.webp    # optional in-body figures
 - `<slug>` is the folder name, the entry id, and the URL
   (`https://mono-agent.dev/blog/<slug>/`). It must match
   `^[a-z0-9]+(-[a-z0-9]+)*$`, be at most 80 characters, and contain at least
-  one letter: purely numeric slugs are reserved for index pagination
-  (`/blog/2/`, …) and will collide with it.
+  one letter (enforced at build): purely numeric slugs are reserved for index
+  pagination (`/blog/2/`, …).
 - `index.md` is the only Markdown file per folder. Images are sibling files
   referenced as `./name.ext`, never remote URLs or absolute paths.
 - Keep the front matter flat: one `key: value` per line, double-quoted
@@ -31,14 +31,15 @@ marketing/src/content/blog/<slug>/diagram.webp    # optional in-body figures
 
 ## Front-matter schema
 
-Every field is validated by the Zod schema in `src/content.config.ts`; a
-violation fails `pnpm run build` with a schema error naming the post.
+Fields are validated by the Zod schema in `src/content.config.ts`; a
+violation fails `pnpm run build` with a schema error naming the post. Rules
+marked *advisory* are not machine-checked and are the author's responsibility.
 
 | Field | Required | Rule |
 | --- | --- | --- |
 | `title` | yes | Plain text, 20–70 characters. No H1 markup, no trailing punctuation games, no claims the body does not support. |
 | `description` | yes | Plain text, 110–160 characters. Summarizes the article; becomes the meta description, the RSS item text, and the JSON-LD description verbatim. |
-| `publishDate` | yes | Calendar date, `YYYY-MM-DD`. Must be the real approval/publication day, never the future. |
+| `publishDate` | yes | Calendar date, `YYYY-MM-DD`, read as UTC. Use the real approval/publication day (advisory: the schema does not reject future dates). |
 | `updatedDate` | no | Calendar date `>= publishDate`. Set it when an already-published post changes; it becomes `article:modified_time`, the sitemap `<lastmod>`, and the visible “Updated” date. |
 | `tags` | yes | 1–5 items, each matching `^[a-z0-9]+(-[a-z0-9]+)*$`. They render as plain-text chips (not links) and become RSS categories, `article:tag` metas, and JSON-LD keywords. |
 | `heroImage` | no | A sibling raster file, e.g. `./hero.png`. At most one per post. |
@@ -60,11 +61,11 @@ tags: ["local-first", "workflows"]
 
 ## Image rules
 
-- Hero: 16:9, at least 1200×675 px, PNG/WebP/JPEG, source file at most
-  2 MB. The build derives the 1200×630 social card from it; posts without a
+- Hero: at least 1200×675 px, PNG/WebP/JPEG, source file at most 2 MB
+  (enforced). Prefer 16:9 so the 1200×630 cover crop loses little (advisory). The build derives the 1200×630 social card from it; posts without a
   hero fall back to the site-wide card.
-- In-body figures: a few per post at most, sibling files referenced as
-  `![descriptive alt](./figure.webp)`. Source files at most 2 MB each.
+- In-body figures: sibling files referenced as `![descriptive alt](./figure.webp)`,
+  source files at most 2 MB each (enforced). Keep to a few per post (advisory).
 - Every image needs descriptive alt text stating what the image shows. State
   the format honestly: diagrams are diagrams, artwork is artwork.
 - Never present generated artwork or mockups as product screenshots or UI
@@ -90,8 +91,9 @@ tags: ["local-first", "workflows"]
   benchmarks, testimonials, or comparison verdicts about other projects.
 - Never include secrets, tokens, private file paths, machine hostnames,
   session identifiers, or personal data.
-- Code fences take a language label (```` ```ts ````); tables need a header
-  row; blockquotes and lists render in the article type scale.
+- Advisory: give code fences a language label (```` ```ts ````) and tables a
+  header row; blockquotes and lists render in the article type scale. Text
+  inside fenced code is ignored by the H1/word-count/image checks.
 
 ## What the tests enforce
 

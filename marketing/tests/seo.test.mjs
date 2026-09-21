@@ -18,6 +18,7 @@ import {
   POSTS_PER_PAGE,
   countWords,
   isValidSlug,
+  stripFences,
   toISODate,
 } from "../src/blog.mjs";
 
@@ -44,9 +45,18 @@ function decodeHtmlText(value) {
   return value
     .replaceAll("&quot;", '"')
     .replaceAll("&#39;", "'")
+    .replaceAll("&apos;", "'")
     .replaceAll("&lt;", "<")
     .replaceAll("&gt;", ">")
     .replaceAll("&amp;", "&");
+}
+
+// Text of the first element/attribute matching `pattern`, entity-decoded, so
+// front matter containing quotes, apostrophes or ampersands compares equal.
+function decodedMatch(html, pattern, label) {
+  const match = html.match(pattern);
+  assert.ok(match, `${label} must be present`);
+  return decodeHtmlText(match[1]);
 }
 
 // Minimal front-matter reader for the flat blog schema documented in
@@ -557,8 +567,8 @@ describe("marketing blog", () => {
     );
     for (const [index, item] of items.entries()) {
       const { slug, data } = published[index];
-      mustContain(item, `<title>${data.title}</title>`, `${slug} feed title`);
-      mustContain(item, `<description>${data.description}</description>`, `${slug} feed description`);
+      assert.equal(decodedMatch(item, /<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/, `${slug} feed title`), data.title, `${slug} feed title matches front matter`);
+      assert.equal(decodedMatch(item, /<description>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/, `${slug} feed description`), data.description, `${slug} feed description matches front matter`);
       assert.ok(/<pubDate>[^<]+<\/pubDate>/.test(item), `${slug} feed pubDate`);
       assert.ok(
         item.includes(`<pubDate>${new Date(data.publishDate).toUTCString()}</pubDate>`),
@@ -610,8 +620,8 @@ describe("marketing blog", () => {
       assert.equal(h1s.length, 1, `${slug} has exactly one H1`);
       assert.equal(decodeHtmlText(h1s[0].replace(/<[^>]+>/g, "")).trim(), data.title, `${slug} H1 is the title`);
       assert.ok(!/<div class="blog-body">[\s\S]*<h1/.test(html), `${slug} body carries no H1`);
-      mustContain(html, `<title>${data.title} — mono-agent blog</title>`, `${slug} title tag`);
-      mustContain(html, `<meta name="description" content="${data.description}"`, `${slug} meta description`);
+      assert.equal(decodedMatch(html, /<title>([^<]*)<\/title>/, `${slug} title tag`), `${data.title} — mono-agent blog`, `${slug} title tag matches front matter`);
+      assert.equal(decodedMatch(html, /<meta name="description" content="([^"]*)"/, `${slug} meta description`), data.description, `${slug} meta description matches front matter`);
       mustContain(html, `<link rel="canonical" href="${canonical}"`, `${slug} canonical`);
       mustContain(html, `<meta property="og:url" content="${canonical}"`, `${slug} social URL`);
       mustContain(html, '<meta property="og:type" content="article"', `${slug} og:type article`);
@@ -676,7 +686,7 @@ describe("marketing blog", () => {
       if (data.heroImage) {
         assert.ok(html.includes('<figure class="blog-hero">'), `${slug} renders the hero figure`);
         const hero = html.match(/<figure class="blog-hero">[\s\S]*?<img[^>]*>/)[0];
-        assert.ok(hero.includes(`alt="${data.heroAlt}"`), `${slug} hero alt matches front matter`);
+        assert.equal(decodedMatch(hero, /alt="([^"]*)"/, `${slug} hero alt`), data.heroAlt, `${slug} hero alt matches front matter`);
         assert.ok(!/alt=""/.test(hero), `${slug} hero alt is non-empty`);
         assert.ok(hero.includes('loading="eager"'), `${slug} hero loads eagerly`);
         assert.ok(hero.includes('fetchpriority="high"'), `${slug} hero is fetch-prioritized`);
@@ -754,8 +764,9 @@ describe("marketing blog", () => {
 
       // Body structure: no H1, H2/H3 sections, 900–1800 words outside code,
       // and at least one internal link to the docs site or repository.
-      assert.ok(!/^# /m.test(body), `${slug} body carries no H1`);
-      assert.ok(/^## /m.test(body), `${slug} body uses H2 sections`);
+      const prose = stripFences(body);
+      assert.ok(!/^# /m.test(prose), `${slug} body carries no H1`);
+      assert.ok(/^## /m.test(prose), `${slug} body uses H2 sections`);
       const words = countWords(body);
       assert.ok(
         words >= 900 && words <= 1800,
@@ -784,7 +795,7 @@ describe("marketing blog", () => {
       }
 
       // In-body figures: sibling files with descriptive alt text, no remote art.
-      for (const match of body.matchAll(/!\[([^\]]*)\]\(([^)]+)\)/g)) {
+      for (const match of prose.matchAll(/!\[([^\]]*)\]\(([^)]+)\)/g)) {
         const [, alt, target] = match;
         assert.ok(target.startsWith("./"), `${slug} body image is a sibling file (${target})`);
         assert.ok(alt.trim().length > 0, `${slug} body image has alt text`);

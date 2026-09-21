@@ -33,7 +33,7 @@ describe("blog slugs", () => {
   });
 
   it("rejects anything that is not a URL-safe folder slug", () => {
-    for (const slug of ["", "Hello", "has space", "has_underscore", "trailing-", "-leading", "double--dash", "UPPER", "café", "a/b", "x".repeat(MAX_SLUG_LENGTH + 1), undefined, 42]) {
+    for (const slug of ["", "Hello", "has space", "has_underscore", "trailing-", "-leading", "double--dash", "UPPER", "café", "a/b", "2026", "2", "12-3", "x".repeat(MAX_SLUG_LENGTH + 1), undefined, 42]) {
       assert.equal(isValidSlug(slug), false, `${String(slug)} is invalid`);
       assert.throws(() => assertValidSlug(slug), /Invalid blog slug/);
     }

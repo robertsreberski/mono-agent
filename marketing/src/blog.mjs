@@ -19,7 +19,9 @@ export function isValidSlug(slug) {
     typeof slug === "string" &&
     slug.length > 0 &&
     slug.length <= MAX_SLUG_LENGTH &&
-    SLUG_PATTERN.test(slug)
+    SLUG_PATTERN.test(slug) &&
+    // Purely numeric slugs are reserved for index pagination (`/blog/2/`).
+    /[a-z]/.test(slug)
   );
 }
 
@@ -27,7 +29,7 @@ export function isValidSlug(slug) {
 export function assertValidSlug(slug) {
   if (!isValidSlug(slug)) {
     throw new Error(
-      `Invalid blog slug ${JSON.stringify(slug)}: must match ${SLUG_PATTERN} and be at most ${MAX_SLUG_LENGTH} characters.`,
+      `Invalid blog slug ${JSON.stringify(slug)}: must match ${SLUG_PATTERN}, contain a letter, and be at most ${MAX_SLUG_LENGTH} characters.`,
     );
   }
   return slug;
@@ -61,6 +63,11 @@ export function countWords(body) {
     .trim()
     .split(/\s+/)
     .filter(Boolean).length;
+}
+
+/** Markdown `body` with fenced code blocks removed, for structural checks. */
+export function stripFences(body) {
+  return String(body ?? "").replace(/```[\s\S]*?```/g, " ");
 }
 
 /** Whole-minute reading time for Markdown `body` (at least 1 minute). */

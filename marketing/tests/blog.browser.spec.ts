@@ -15,7 +15,7 @@ async function blogPostPaths(request): Promise<string[]> {
   const xml = await response.text();
   return [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)]
     .map((match) => new URL(match[1]).pathname)
-    .filter((path) => /^\/blog\/[^/]+\/$/.test(path) && path !== "/blog/rss.xml");
+    .filter((path) => /^\/blog\/[^/]+\/$/.test(path) && !/^\/blog\/\d+\/$/.test(path));
 }
 
 test("blog index has no WCAG A/AA violations", async ({ page }) => {
