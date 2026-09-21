@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as agentHarness from "@mono-agent/agent-harness";
+import { MonoAgentConfigError } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
   RunSummary,
@@ -357,6 +358,72 @@ describe("agent host composition helpers", () => {
       .toMatchObject({ status: "succeeded", conversationId: "telegram:42" });
     await cache.list(artifactDir);
     expect(scanCalls).toBe(2);
+  });
+
+  it.each([
+    ["a trim-normalized retired selector", "  supermemory  ", {}],
+    ["an active retired block with BuJo", "bujo", { baseUrl: "https://retired.invalid/private", apiKey: "retired-key" }],
+    ["an active retired block without a selector", undefined, { baseUrl: "https://retired.invalid/private", apiKeyEnv: "PRIVATE_RETIRED_KEY" }],
+  ] as const)("rejects %s before direct configured-memory composition creates local state", async (_label, backend, supermemory) => {
+    const dir = await tempDir();
+    const memoryPath = join(dir, "store");
+    const config = monoConfig({
+      dir,
+      identityPath: join(dir, "IDENTITY.md"),
+      artifactDir: join(dir, "artifacts"),
+      memoryPath,
+    });
+    const legacyConfig = {
+      ...config,
+      memory: {
+        ...config.memory,
+        ...(backend === undefined ? {} : { backend }),
+        supermemory,
+      },
+    } as unknown as MonoAgentConfig;
+
+    let rejection: unknown;
+    try {
+      await createConfiguredMemory(legacyConfig, { cwd: dir });
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toBeInstanceOf(MonoAgentConfigError);
+    expect(rejection).toMatchObject({
+      code: "invalid_json",
+      details: {
+        path: backend?.trim() === "supermemory" ? "memory.backend" : "memory.supermemory",
+      },
+    });
+    const diagnostic = rejection instanceof Error
+      ? JSON.stringify({ message: rejection.message, ...(rejection instanceof MonoAgentConfigError ? { details: rejection.details } : {}) })
+      : "";
+    expect([
+      "https://retired.invalid/private",
+      "retired-key",
+      "PRIVATE_RETIRED_KEY",
+    ].some((value) => diagnostic.includes(value))).toBe(false);
+    await expect(access(memoryPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps an inert retired block compatible with direct local-memory composition", async () => {
+    const dir = await tempDir();
+    const memoryPath = join(dir, "store");
+    const config = monoConfig({
+      dir,
+      identityPath: join(dir, "IDENTITY.md"),
+      artifactDir: join(dir, "artifacts"),
+      memoryPath,
+    });
+    const compatibleConfig = {
+      ...config,
+      memory: { ...config.memory, backend: "bujo", supermemory: {} },
+    } as unknown as MonoAgentConfig;
+
+    const memory = await createConfiguredMemory(compatibleConfig, { cwd: dir });
+    expect(memory).toBeDefined();
+    await expect(access(memoryPath)).resolves.toBeUndefined();
+    await (memory as unknown as { close(): Promise<void> }).close();
   });
 
   it("forwards load and completed-turn persistence to a neutral injected MemoryStore", async () => {

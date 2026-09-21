@@ -33,6 +33,7 @@ import { resolve as resolvePath } from "node:path";
 
 import { setToolActivityPathRoots } from "@mono-agent/agent-contracts";
 import type { AgentResponder, MemoryStore } from "@mono-agent/agent-contracts";
+import { assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { LlmComplete, LlmCompleteOptions } from "@mono-agent/memory/bujo";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
@@ -1907,6 +1908,7 @@ async function createConfiguredMemoryInternal(
   deps: ConfiguredMemoryDependencies,
   protectionPosture?: ProcessJobsProtectionPosture,
 ): Promise<MemoryStore | undefined> {
+  assertNoRetiredMonoAgentConfig(config);
   if (config.memory === undefined) {
     return undefined;
   }

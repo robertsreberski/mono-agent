@@ -259,6 +259,35 @@ export const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
   },
 ] as const;
 
+/**
+ * Reject active retired fields on any config-shaped object, including direct
+ * JavaScript callers that bypass the JSON/environment loaders. Diagnostics name
+ * only stable field paths and migration guidance; retired values are never
+ * included because they may contain credentials or private service locations.
+ */
+export function assertNoRetiredMonoAgentConfig(config: object): void {
+  const retired = RETIRED_CONFIG_FIELDS.filter((field) => {
+    const found = ownConfigPathValue(config, field.path);
+    if (!found.present) return false;
+    return field.jsonValueIsActive?.(found.value) ?? true;
+  });
+  if (retired.length === 0) return;
+  throw new MonoAgentConfigError("invalid_json", retired.map((field) => field.message).join(" "), {
+    path: retired[0]!.path,
+    paths: retired.map((field) => field.path),
+  });
+}
+
+function ownConfigPathValue(config: object, path: string): { readonly present: boolean; readonly value?: unknown } {
+  let current: unknown = config;
+  for (const segment of path.split(".")) {
+    if (!isRecord(current) || Array.isArray(current)) return { present: false };
+    if (!Object.prototype.hasOwnProperty.call(current, segment)) return { present: false };
+    current = current[segment];
+  }
+  return { present: true, value: current };
+}
+
 const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MEMORY_MAX_BYTES = 64_000;
 const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
@@ -629,6 +658,7 @@ function assertNoRetiredConfigEnv(env: Record<string, string | undefined>): void
 }
 
 export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgentConfig {
+  assertNoRetiredMonoAgentConfig(config);
   const { web: configuredWeb, ...toolsWithoutWeb } = config.tools;
   const configuredSearch = configuredWeb?.search;
   const {
@@ -672,7 +702,10 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
     traceability: { ...config.traceability },
   };
   if (config.memory !== undefined) {
-    const { embeddings, ...memory } = config.memory;
+    // The only tolerated direct legacy shape is an inert empty tombstone. It is
+    // compatibility input, not resolved output, so never carry it into views.
+    const { embeddings, supermemory: _retiredSupermemory, ...memory } = config.memory as
+      NonNullable<MonoAgentConfig["memory"]> & { readonly supermemory?: unknown };
     return withRedactedProviders({
       ...redacted,
       memory: {

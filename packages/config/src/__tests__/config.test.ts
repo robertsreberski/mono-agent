@@ -1571,6 +1571,93 @@ describe("loadMonoAgentConfig", () => {
     expect(JSON.stringify(redacted)).not.toContain("embeddings-secret");
   });
 
+  it.each([
+    ["an explicit BuJo selector", "bujo"],
+    ["no selector", undefined],
+  ] as const)("rejects an active retired memory block at the public redaction boundary with %s", (_label, backend) => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
+        MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "supported-embedding-secret",
+      },
+    });
+    const retiredValues = [
+      "https://retired.invalid/private-location",
+      "retired-api-key",
+      "PRIVATE_RETIRED_KEY_ENV",
+    ];
+    const legacyConfig = {
+      ...config,
+      memory: {
+        ...config.memory,
+        ...(backend === undefined ? {} : { backend }),
+        supermemory: {
+          baseUrl: retiredValues[0],
+          apiKey: retiredValues[1],
+          apiKeyEnv: retiredValues[2],
+        },
+      },
+    } as unknown as typeof config;
+
+    let rejection: unknown;
+    try {
+      redactMonoAgentConfig(legacyConfig);
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toBeInstanceOf(MonoAgentConfigError);
+    expect(rejection).toMatchObject({
+      code: "invalid_json",
+      details: { path: "memory.supermemory", paths: ["memory.supermemory"] },
+    });
+    const diagnostic = rejection instanceof Error
+      ? JSON.stringify({ message: rejection.message, ...(rejection instanceof MonoAgentConfigError ? { details: rejection.details } : {}) })
+      : "";
+    expect(retiredValues.some((value) => diagnostic.includes(value))).toBe(false);
+  });
+
+  it("rejects a trim-normalized retired selector at the public redaction boundary", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "lite" },
+    });
+    const legacyConfig = {
+      ...config,
+      memory: { ...config.memory, backend: "  supermemory  ", supermemory: {} },
+    } as unknown as typeof config;
+
+    expect(() => redactMonoAgentConfig(legacyConfig)).toThrowError(expect.objectContaining({
+      code: "invalid_json",
+      details: expect.objectContaining({ path: "memory.backend", paths: ["memory.backend"] }),
+    }));
+  });
+
+  it("accepts but omits an inert retired memory tombstone while preserving supported redaction", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
+        MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "supported-embedding-secret",
+      },
+    });
+    const legacyConfig = {
+      ...config,
+      memory: { ...config.memory, supermemory: {} },
+    } as unknown as typeof config;
+
+    const redacted = redactMonoAgentConfig(legacyConfig);
+    expect(redacted.memory?.embeddings?.apiKey).toEqual({ present: true, redacted: true });
+    expect(redacted.memory).not.toHaveProperty("supermemory");
+    expect(JSON.stringify(redacted).includes("supported-embedding-secret")).toBe(false);
+  });
+
   it("loads context.skillMaxBytes from env", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",

@@ -1,5 +1,6 @@
 export {
   assertConfiguredProviderCoverage,
+  assertNoRetiredMonoAgentConfig,
   MAX_AGENT_NAME_LENGTH,
   loadMonoAgentConfig,
   MonoAgentConfigError,
