@@ -200,11 +200,10 @@ function infoModelEntryBytes(key: string, option: TuiModelOption | undefined): n
  * above — the fence adjudicates an oversized body, this function does not.
  *
  * `continue`, not `break`, where a ceiling does apply: one pathological entry
- * must cost only itself. The TUI never calls `/v1/models` — there is no call
- * site under `packages/tui/`, and `applyAgentInfo` builds the model picker from
- * `/v1/info.models` alone — so a ref withheld here is UNSELECTABLE, not merely
- * un-paginated. Breaking would delete every runnable ref sitting behind one
- * oversized row.
+ * must cost only itself. Clients deriving their model picker from
+ * `/v1/info.models` cannot select a ref withheld here, regardless of the
+ * separate `/v1/models` projection. Breaking would delete every runnable ref
+ * sitting behind one oversized row.
  */
 function admitInfoModels(
   refs: readonly RuntimeModelReference[],
