@@ -895,7 +895,7 @@ function readSubagentsConfig(
     ...(record.maxPerTurn === undefined ? {} : { maxPerTurn: readSubagentInteger(record.maxPerTurn, "maxPerTurn", 1, 200) }),
     ...(record.timeoutMs === undefined ? {} : { timeoutMs: readSubagentInteger(record.timeoutMs, "timeoutMs", 1_000, 3_600_000) }),
     ...(record.commandTimeoutMs === undefined ? {} : { commandTimeoutMs: readSubagentInteger(record.commandTimeoutMs, "commandTimeoutMs", 1, Number.MAX_SAFE_INTEGER) }),
-    ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, "maxTurns", 1, 200) }),
+    ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, "maxTurns", 1, 400) }),
     ...(definitions === undefined ? {} : { definitions }),
     ...(models === undefined ? {} : { models }),
     ...(record.inline === undefined ? {} : { inline: readInlineSubagentsConfig(record.inline) }),
@@ -1048,7 +1048,7 @@ function readSubagentDefinitions(
       ...(allowedTools === undefined ? {} : { allowedTools }),
       ...(disallowedTools === undefined ? {} : { disallowedTools }),
       ...(mcpServers === undefined ? {} : { mcpServers }),
-      ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, `definition "${name}" maxTurns`, 1, 200) }),
+      ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, `definition "${name}" maxTurns`, 1, 400) }),
       ...(record.timeoutMs === undefined ? {} : { timeoutMs: readSubagentInteger(record.timeoutMs, `definition "${name}" timeoutMs`, 1_000, 3_600_000) }),
     } satisfies MonoAgentSubagentConfig;
   });

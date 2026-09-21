@@ -7,6 +7,12 @@
   collection ships empty and the index reads intentionally until the first
   post lands; the authoring contract lives in `marketing/BLOG.md`.
 
+- Fix `subagents.maxTurns` and `subagents.definitions[].maxTurns` rejecting
+  the advertised 400 ceiling. The loader now accepts the full 1–400 range the
+  generated schema describes, so a config already set to the published maximum
+  loads instead of failing with a "between 1 and 200" error. Values above 400
+  are still rejected, and `subagents.instances.maxTurns` (1–500) is unchanged.
+
 - **Breaking: rename the built-in `hound` web provider to `local`.** Select
   `tools.web.search.backend: "local"` and `tools.web.fetch.provider: "local"`;
   the old `hound` value fails with a migration error naming the new value. For
