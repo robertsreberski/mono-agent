@@ -286,6 +286,7 @@ PiProviderAuthDescription
 PiProviderAuthInteraction
 PiProviderAuthPrompt
 PiReasoningLevel
+PiSupplementSnapshot
 ProviderCheckCode
 ProviderCheckOutcome
 RISK_TIERS
@@ -312,11 +313,13 @@ disposeAllProviderSessions
 disposeProviderSession
 generatePiNativeResponse
 getPiBuiltinModel
+getPiSupplementModel
 inferAllowlistMode
 invalidateProviderSession
 isLikelyContextTermination
 listPiBuiltinModels
 listPiBuiltinProviders
+listPiSupplementModels
 listRuntimeBridges
 loginPiOAuth
 loginPiProviderAuth
@@ -328,6 +331,7 @@ parseStoredAllowlist
 piNativeRuntimeBridge
 reasoningLevelsForPiModel
 refreshProviderSession
+registerPiSupplementModels
 renderResumeSnapshot
 resolveAgentCompactionPolicy
 resolveAllowlist
@@ -482,6 +486,7 @@ PiProviderAuthDescription
 PiProviderAuthInteraction
 PiProviderAuthPrompt
 PiReasoningLevel
+PiSupplementSnapshot
 ProviderCheckCode
 ProviderCheckOutcome
 RUNTIME_CAPABILITIES
@@ -502,9 +507,11 @@ disposeAllProviderSessions
 disposeProviderSession
 generatePiNativeResponse
 getPiBuiltinModel
+getPiSupplementModel
 invalidateProviderSession
 listPiBuiltinModels
 listPiBuiltinProviders
+listPiSupplementModels
 listRuntimeBridges
 loginPiOAuth
 loginPiProviderAuth
@@ -513,6 +520,7 @@ parseRuntimeModelReference
 piNativeRuntimeBridge
 reasoningLevelsForPiModel
 refreshProviderSession
+registerPiSupplementModels
 resolvePiOAuthApiKey
 resolveRuntimeBridge
 runPiProviderCheck

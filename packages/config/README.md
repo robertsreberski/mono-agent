@@ -335,6 +335,7 @@ LoadMonoAgentConfigInput
 MAX_AGENT_NAME_LENGTH
 MEMORY_BACKENDS
 MEMORY_EMBEDDINGS_PROVIDERS
+MEMORY_LLM_JSON_PATHS
 MEMORY_LLM_PROVIDERS
 MEMORY_MODES
 MEMORY_WRITE_MODES
@@ -375,6 +376,7 @@ RedactedMemoryEmbeddingsConfig
 RedactedMonoAgentConfig
 RedactedProviderDefinition
 RemovedConfigWarningsInput
+ResolveJsonMonoAgentConfigInput
 ResolvedProviders
 RuntimeFallbackConfig
 SessionMode
@@ -387,6 +389,7 @@ loadMonoAgentConfig
 readMonoAgentConfigJson
 redactMonoAgentConfig
 resolveConfiguredProviders
+resolveJsonMonoAgentConfig
 writeMonoAgentConfigJson
 ```
 
