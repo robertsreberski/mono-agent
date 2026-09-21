@@ -4,6 +4,7 @@ import {
   discoverLocalProviderModels,
   parseMonoRuntimeModelReference,
   resolveModelEffortLevels,
+  runtimeOptionsForLocalProvider,
   type LocalProviderDefinition,
 } from "../index.js";
 
@@ -330,4 +331,42 @@ describe("resolveModelEffortLevels", () => {
 
     expect(() => resolveModelEffortLevels(ref, brokenProviders)).not.toThrow();
   });
+});
+
+describe("runtimeOptionsForLocalProvider apiKeyEnv resolution", () => {
+  const provider: LocalProviderDefinition = {
+    id: "custom",
+    type: "openai_compat",
+    baseUrl: "http://localhost:11434",
+    enabled: true,
+    apiKeyEnv: "LOCAL_PROVIDER_TEST_KEY",
+  };
+  const ref = parseMonoRuntimeModelReference("custom:model");
+
+  it("resolves api_key from the named environment variable at use", () => {
+    // Without the fix the loader carries only the name, so no credential is
+    // sent and the provider fails to authenticate.
+    const options = runtimeOptionsForLocalProvider(modelRef(), [provider], {
+      LOCAL_PROVIDER_TEST_KEY: "env-resolved-key",
+    });
+    expect(options.customProvider).toMatchObject({ api_key: "env-resolved-key" });
+  });
+
+  it("falls back to the inline literal when the named variable is unset", () => {
+    const options = runtimeOptionsForLocalProvider(
+      modelRef(),
+      [{ ...provider, apiKey: "inline-key" }],
+      {},
+    );
+    expect(options.customProvider).toMatchObject({ api_key: "inline-key" });
+  });
+
+  it("sends no credential when neither source provides one", () => {
+    const options = runtimeOptionsForLocalProvider(modelRef(), [provider], {});
+    expect(options.customProvider).not.toHaveProperty("api_key");
+  });
+
+  function modelRef() {
+    return ref;
+  }
 });
