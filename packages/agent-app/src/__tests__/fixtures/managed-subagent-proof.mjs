@@ -15,13 +15,22 @@ import { createAgentTool } from "../../../../agent-runtime/src/agent/tools/agent
 import { generatePiNativeResponse } from "../../../../agent-runtime/src/ai/providers/pi-native.js";
 import { createToolContext, updateToolContext } from "../../../../agent-runtime/src/agent/tools/shared/tool-context.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js";
+import { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } from "./verification-scratch.mjs";
 
 const durationMs = Number(process.argv[2] ?? 250);
 assert(Number.isSafeInteger(durationMs) && durationMs >= 1 && durationMs <= 180_000);
+const keepScratch = keepVerificationScratch();
 const verification = resolve(process.cwd(), ".mono-agent/verification");
 await mkdir(verification, { recursive: true });
+await pruneVerificationScratch(verification, "managed-built-", "managed-built", { keep: keepScratch });
 const root = await mkdtemp(resolve(verification, "managed-built-"));
-const ownership = await acquireAgentRootOwnership(root);
+let ownership;
+try {
+  ownership = await acquireAgentRootOwnership(root);
+} catch (error) {
+  await removeVerificationScratch(root, { keep: keepScratch, label: "managed-built" });
+  throw error;
+}
 let service;
 let runtime;
 try {
@@ -96,4 +105,8 @@ try {
   await runtime?.disposeAllSessions?.();
   await service?.stop();
   ownership.release();
+  // Only this fixture creates the root, so only it removes it — after the
+  // service stopped and ownership released. Cleanup failures are reported,
+  // never thrown, so they cannot mask the proof verdict.
+  await removeVerificationScratch(root, { keep: keepScratch, label: "managed-built" });
 }
