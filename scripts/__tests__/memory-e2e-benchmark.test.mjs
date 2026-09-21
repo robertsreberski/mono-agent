@@ -2,14 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFile, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, armsFor, loadCorpus, makePlan, serializableProfile, sourceOnly, contextFor, validateCorpus } from "../lib/memory-e2e-dataset.mjs";
-import { Budget, canonicalFailureKind, captureLlm, failureKindOf, isFatalFailureKind, meteredEmbeddings, meteredRuntime, realProviders, scriptedProviders, usageOf } from "../lib/memory-e2e-providers.mjs";
+import { Budget, BenchmarkError, canonicalFailureKind, captureLlm, failureKindOf, isFatalFailureKind, meteredEmbeddings, meteredRuntime, realProviders, scriptedProviders, usageOf } from "../lib/memory-e2e-providers.mjs";
 import { percentiles, ratio, lexicalDiagnostic, safeArtifact, ownedParent, summarize } from "../lib/memory-e2e-report.mjs";
-import { automaticRecallObservation, awaitReady, captureFailureKindFor, cleanupTrial, readySnapshot } from "../lib/memory-e2e-runner.mjs";
+import { automaticRecallObservation, awaitReady, captureFailureKindFor, captureRetryCause, cleanupTrial, currentCaptureRetryCause, persistedCaptureRetrySchedule, readySnapshot } from "../lib/memory-e2e-runner.mjs";
 import { prepareRealBuild, verifyRealBuild, BUILD_POLICY } from "../lib/memory-e2e-build.mjs";
 import { main, parseArguments, profileFrom } from "../memory-e2e-benchmark.mjs";
+import { CompletedTurnIntakeManager, inspectCompletedTurnIntake } from "../../packages/memory/src/bujo/capture-intake.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const budgets = [];
@@ -17,6 +19,7 @@ const dirs = [];
 afterEach(async () => { for (const b of budgets.splice(0)) b.close(); for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true }); vi.restoreAllMocks(); });
 async function setup() { const loaded = await loadCorpus(); const plan = makePlan(loaded); const budget = new Budget(plan); budgets.push(budget); return { ...loaded, plan, budget }; }
 const ready = { intake: { pending: 0, dead: 0, due: 0, transitioning: 0, retrying: 0, resolved: 1 }, shutdown: { timedOut: false, discarded: 0 } };
+const realProviderPlan = { perCall: { embeddingTimeoutMs: 23_456 } };
 
 describe("memory E2E benchmark contracts (not model quality)", () => {
   it("standalone success exits after output even when a dependency retains a handle", () => {
@@ -35,6 +38,9 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(new Set(corpus.groups.filter((g) => g.split === "evaluation").map((g) => g.evaluation.category)).size).toBe(6);
     expect(plan.arms).toEqual(ARMS);
     expect(plan.workload).toEqual({ questions: 2, trials: 10, historicalTurnsPerMemoryArm: 8, captureStepsMaximum: 16, readerStepsMaximum: 30 });
+    expect(plan.perCall.embeddingTimeoutMs).toBe(30_000);
+    const shorterEmbeddingDeadline = makePlan({ corpus, sha256, perCall: { embeddingTimeoutMs: 29_999 } });
+    expect(shorterEmbeddingDeadline.confirmation).not.toBe(plan.confirmation);
     expect(makePlan({ corpus, sha256, split: "evaluation" }).limits.chatSteps).toBe(138);
   });
   it("keeps labels and arbitrary gold fields out of the closed source projection", async () => {
@@ -128,6 +134,7 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
         providerHint: "providerCheckMaxTokens",
         wireCap: "unsupported_by_selected_openai_codex_provider",
         strictRealExecutionSupported: false,
+        executionMode: "strict_output_cap_required",
       },
     });
     expect(output[0].limitations).toContain("providerCheckMaxTokens is not a universal wire-enforced output cap");
@@ -136,6 +143,25 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     await expect(main(["--real", ...profile, "--confirm-plan", output[0].confirmation], { prepareBuild }))
       .rejects.toThrow("strict_output_budget_unsupported");
     expect(prepareBuild).not.toHaveBeenCalled();
+    expect(network).not.toHaveBeenCalled();
+  });
+  it("binds an explicit measured-output opt-in and preserves build-first real execution", async () => {
+    const profile = ["--reader", "openai-codex:reader", "--extractor", "openai-codex:extractor", "--embedding-provider", "ollama", "--embedding-model", "fixture", "--dimension", "8", "--allow-measured-output"];
+    let plan;
+    await main(["--dry-run", ...profile], { stdout: (text) => { plan = JSON.parse(text); } });
+    expect(plan.profile.outputBudgetMode).toBe("measured");
+    expect(plan.budgetEnforcement.outputTokens).toMatchObject({
+      accounting: "pre_admission_reservation_plus_observed_usage",
+      wireCap: "unsupported_by_selected_openai_codex_provider",
+      strictRealExecutionSupported: false,
+      executionMode: "measured_output_explicit_opt_in",
+    });
+    expect(plan.limitations).toContain("explicit measured-output mode records observed usage but does not enforce a wire output cap");
+    const prepareBuild = vi.fn(async () => { throw new Error("synthetic_build_refused"); });
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
+    await expect(main(["--real", ...profile, "--confirm-plan", plan.confirmation], { prepareBuild }))
+      .rejects.toThrow("synthetic_build_refused");
+    expect(prepareBuild).toHaveBeenCalledOnce();
     expect(network).not.toHaveBeenCalled();
   });
   it("flush alone cannot certify pending, dead, dropped, delayed or missing index work", async () => {
@@ -148,46 +174,277 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     await expect(awaitReady({ flush: async () => {}, queueSnapshot: () => ({ ...ready, intake: { ...ready.intake, pending: 1 } }) }, 20)).rejects.toThrow("capture_not_ready");
     await expect(awaitReady({ flush: () => new Promise(() => {}) }, 5)).rejects.toThrow("readiness_timeout");
   });
-  it("replays only one structured model-output failure through native intake and preserves exhaustion", async () => {
-    let attempts = 0; let advancedMs = 0; const retries = [];
+  it("advances to persisted native retry schedules, reports recovery, and preserves non-output stops", async () => {
+    const id = "a".repeat(64);
+    let attempts = 0; let now = Date.parse("2026-09-20T00:00:00.000Z");
+    const retries = []; const outcomes = [];
     const recovered = await awaitReady({
       flush: async () => { attempts += 1; },
       queueSnapshot: () => attempts >= 2 ? ready : { ...ready, intake: { ...ready.intake, pending: 1, resolved: 0 } },
     }, 100, undefined, {
-      maxAttempts: 2,
-      delayMs: 60_000,
-      inspect: () => ({ items: [{ state: "pending", attempt: 1, lastError: "model_output" }] }),
-      advanceClock: (value) => { advancedMs += value; },
-      onRetry: (value) => retries.push(value),
+      id, maxAttempts: 16,
+      inspect: () => ({ items: [{ id, state: attempts >= 2 ? "resolved" : "pending", attempt: 1, ...(attempts >= 2 ? {} : { lastError: "model_output" }) }] }),
+      persistedSchedule: (item) => ({ id, attempt: item.attempt, nextAttemptAt: "2026-09-20T00:01:00.000Z" }),
+      advanceClock: (value) => { const advance = Date.parse(value) - now; now = Date.parse(value); return advance; },
+      onRetry: (value) => retries.push(value), onReady: (value) => outcomes.push(value),
     });
     expect(recovered).toEqual(ready);
     expect(attempts).toBe(2);
-    expect(advancedMs).toBe(60_000);
-    expect(retries).toEqual([{ attempt: 1, failureKind: "model_output" }]);
+    expect(now).toBe(Date.parse("2026-09-20T00:01:00.000Z"));
+    expect(retries).toEqual([{
+      attempt: 1, failureKind: "model_output", recoveryCause: "model_output",
+      nextAttemptAt: "2026-09-20T00:01:00.000Z", advanceMs: 60_000,
+    }]);
+    expect(outcomes).toEqual([{ attempt: 2, priorFailures: 1, status: "recovered_success" }]);
 
     let providerAttempts = 0;
     await expect(awaitReady({
       flush: async () => { providerAttempts += 1; },
       queueSnapshot: () => ({ ...ready, intake: { ...ready.intake, pending: 1, resolved: 0 } }),
     }, 100, undefined, {
-      maxAttempts: 2, delayMs: 60_000,
-      inspect: () => ({ items: [{ state: "pending", attempt: 1, lastError: "provider" }] }),
+      id, maxAttempts: 16,
+      inspect: () => ({ items: [{ id, state: "pending", attempt: 1, lastError: "provider" }] }),
+      persistedSchedule: () => { throw new Error("must not read schedule"); },
       advanceClock: () => { throw new Error("must not advance"); },
       onRetry: () => { throw new Error("must not retry"); },
     })).rejects.toThrow("capture_not_ready");
     expect(providerAttempts).toBe(1);
+  });
 
-    let exhaustedAttempts = 0; const exhausted = [];
+  it("admits only a current-attempt finite capture-step provider failure", () => {
+    const pending = { lastError: "provider" };
+    const finite = {
+      stage: "reconciliation", status: "capture_step_budget_exhausted",
+      failureKind: "budget_exceeded", providerReportedFailureKind: "usage_limit", maxTurnsHit: true,
+    };
+    expect(captureRetryCause(pending, finite)).toBe("finite_capture_step");
+    expect(captureRetryCause(pending, { ...finite, maxTurnsHit: false })).toBeNull();
+    expect(captureRetryCause(pending, { ...finite, providerReportedFailureKind: "provider_auth" })).toBeNull();
+    expect(captureRetryCause(pending, { ...finite, status: "provider_failed" })).toBeNull();
+    const correlated = currentCaptureRetryCause([
+      { groupId: "g", arm: "bujo", ...finite },
+      { groupId: "other", arm: "bujo", ...finite },
+      { groupId: "g", arm: "bujo", stage: "reconciliation", status: "completed" },
+    ], 1, { groupId: "g", arm: "bujo" }, pending);
+    expect(correlated).toEqual({ cause: null, nextCursor: 3 });
+    expect(captureRetryCause({ lastError: "processing" }, finite)).toBeNull();
+    expect(captureRetryCause({ lastError: "model_output" }, { status: "completed" })).toBe("model_output");
+    expect(captureRetryCause({ lastError: "model_output" }, { status: "capture_timeout_settled" }))
+      .toBe("settled_capture_timeout");
+
+    const structured = {
+      stage: "extraction",
+      status: "structured_result_missing",
+      runtimeSettlement: "fulfilled",
+      structuredOutputFailure: "structured_result_missing",
+      failureKind: null,
+      providerReportedFailureKind: null,
+      maxTurnsHit: false,
+    };
+    expect(captureRetryCause(pending, structured)).toBe("settled_structured_output");
+    for (const status of ["structured_result_key_missing", "structured_result_unserializable"]) {
+      expect(captureRetryCause(pending, {
+        ...structured, status, structuredOutputFailure: status, stage: "reconciliation",
+      })).toBe("settled_structured_output");
+    }
+    expect(captureRetryCause(pending, { ...structured, runtimeSettlement: "unknown" })).toBeNull();
+    expect(captureRetryCause(pending, { ...structured, structuredOutputFailure: "provider_failed" })).toBeNull();
+    expect(captureRetryCause(pending, { ...structured, failureKind: "provider_auth" })).toBeNull();
+    expect(captureRetryCause(pending, { ...structured, providerReportedFailureKind: "usage_limit" })).toBeNull();
+    expect(captureRetryCause(pending, { ...structured, maxTurnsHit: true })).toBeNull();
+    for (const status of ["provider_failed", "provider_timeout_or_cancelled", "provider_settlement_unknown", "output_limit_reached", "unfinished_tool_loop"]) {
+      expect(captureRetryCause(pending, { ...structured, status, structuredOutputFailure: status })).toBeNull();
+    }
+    const staleStructured = currentCaptureRetryCause([
+      { groupId: "g", arm: "bujo", ...structured },
+      { groupId: "g", arm: "bujo", stage: "extraction", status: "provider_failed" },
+    ], 0, { groupId: "g", arm: "bujo" }, pending);
+    expect(staleStructured).toEqual({ cause: null, nextCursor: 2 });
+  });
+
+  it("bounds persistent finite capture-step failures at the native provider dead letter", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "retry-step-exhaustion-test-")); dirs.push(directory);
+    const maxAttempts = 16; let attempts = 0; let now = new Date("2026-09-20T00:00:00.000Z");
+    const exhausted = []; const scheduled = [];
+    const intake = new CompletedTurnIntakeManager({
+      root: directory, clock: () => now, writeSummary: async () => {},
+      capture: async () => {
+        attempts += 1;
+        const error = new Error("finite capture step exhausted"); error.name = "MemoryModelError"; throw error;
+      },
+    });
+    const admission = intake.admit({
+      runId: "runner-native-step-exhaustion", conversationId: "conversation", summary: "summary", captureText: "source",
+    });
+    const finite = {
+      status: "capture_step_budget_exhausted", failureKind: "budget_exceeded",
+      providerReportedFailureKind: "usage_limit", maxTurnsHit: true,
+    };
     await expect(awaitReady({
-      flush: async () => { exhaustedAttempts += 1; },
-      queueSnapshot: () => ({ ...ready, intake: { ...ready.intake, pending: 1, resolved: 0 } }),
-    }, 100, undefined, {
-      maxAttempts: 2, delayMs: 60_000,
-      inspect: () => ({ items: [{ state: "pending", attempt: exhaustedAttempts, lastError: "model_output" }] }),
-      advanceClock: () => {}, onRetry: () => {}, onExhausted: (value) => exhausted.push(value),
+      flush: () => intake.flush(),
+      queueSnapshot: () => ({ intake: intake.snapshot(), shutdown: { timedOut: false, discarded: 0 } }),
+    }, 2000, undefined, {
+      id: admission.id, maxAttempts,
+      inspect: () => inspectCompletedTurnIntake(directory, now),
+      persistedSchedule: (item) => persistedCaptureRetrySchedule(admission.source, item),
+      advanceClock: (value) => { const advance = Date.parse(value) - now.getTime(); now = new Date(value); return advance; },
+      retryCause: (item) => captureRetryCause(item, finite),
+      onRetry: (value) => scheduled.push(value), onExhausted: (value) => exhausted.push(value),
     })).rejects.toThrow("capture_not_ready");
-    expect(exhaustedAttempts).toBe(2);
-    expect(exhausted).toEqual([{ attempt: 2, failureKind: "model_output" }]);
+    expect(attempts).toBe(16);
+    expect(scheduled).toHaveLength(15);
+    expect(scheduled.every((entry) => entry.failureKind === "provider"
+      && entry.recoveryCause === "finite_capture_step")).toBe(true);
+    expect(exhausted).toEqual([{
+      attempt: 16, failureKind: "provider", recoveryCause: "finite_capture_step",
+    }]);
+    expect(inspectCompletedTurnIntake(directory, now).items[0]).toMatchObject({
+      id: admission.id, state: "dead", attempt: 16, lastError: "provider",
+    });
+    intake.finishShutdown();
+  });
+
+  it("bounds repeated settled structured-contract failures at the native provider dead letter", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "retry-structured-exhaustion-test-")); dirs.push(directory);
+    const { budget } = await setup();
+    const maxAttempts = 16; let attempts = 0; let now = new Date("2026-09-20T00:00:00.000Z");
+    const exhausted = []; const scheduled = []; const tag = { groupId: "g", arm: "bujo" };
+    const llm = captureLlm({ run: async () => ({ text: "plausible fallback" }) }, {
+      model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag,
+    });
+    const intake = new CompletedTurnIntakeManager({
+      root: directory, clock: () => now, writeSummary: async () => {},
+      capture: async () => {
+        attempts += 1;
+        try {
+          await llm.complete("extract", { label: "capture:extract", outputSchema: { type: "object" } });
+        } catch (cause) {
+          const error = new Error("settled structured contract failure", { cause });
+          error.name = "MemoryModelError";
+          throw error;
+        }
+        return "captured";
+      },
+    });
+    const admission = intake.admit({
+      runId: "runner-native-structured-exhaustion", conversationId: "conversation", summary: "summary", captureText: "source",
+    });
+    let cursor = 0;
+    await expect(awaitReady({
+      flush: () => intake.flush(),
+      queueSnapshot: () => ({ intake: intake.snapshot(), shutdown: { timedOut: false, discarded: 0 } }),
+    }, 2000, budget, {
+      id: admission.id, maxAttempts,
+      inspect: () => inspectCompletedTurnIntake(directory, now),
+      persistedSchedule: (item) => persistedCaptureRetrySchedule(admission.source, item),
+      advanceClock: (value) => { const advance = Date.parse(value) - now.getTime(); now = new Date(value); return advance; },
+      retryCause: (item) => {
+        const classified = currentCaptureRetryCause(budget.events, cursor, tag, item);
+        cursor = classified.nextCursor;
+        return classified.cause;
+      },
+      onRetry: (value) => scheduled.push(value), onExhausted: (value) => exhausted.push(value),
+    })).rejects.toThrow("capture_not_ready");
+    expect(attempts).toBe(16);
+    expect(scheduled).toHaveLength(15);
+    expect(scheduled.every((entry) => entry.failureKind === "provider"
+      && entry.recoveryCause === "settled_structured_output")).toBe(true);
+    expect(exhausted).toEqual([{
+      attempt: 16, failureKind: "provider", recoveryCause: "settled_structured_output",
+    }]);
+    expect(budget.events).toHaveLength(16);
+    expect(budget.events.every((entry) => entry.status === "structured_result_missing"
+      && entry.runtimeSettlement === "fulfilled"
+      && entry.structuredOutputFailure === "structured_result_missing")).toBe(true);
+    expect(inspectCompletedTurnIntake(directory, now).items[0]).toMatchObject({
+      id: admission.id, state: "dead", attempt: 16, lastError: "provider",
+    });
+    intake.finishShutdown();
+  });
+
+  it("bounds persistent malformed output at the actual native dead letter and records exhaustion", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "retry-exhaustion-test-")); dirs.push(directory);
+    const maxAttempts = 16; let attempts = 0; let now = new Date("2026-09-20T00:00:00.000Z");
+    const exhausted = []; const scheduled = [];
+    const intake = new CompletedTurnIntakeManager({
+      root: directory, clock: () => now, writeSummary: async () => {},
+      capture: async () => {
+        attempts += 1;
+        const error = new Error("persistently malformed structured output"); error.name = "MemoryModelOutputError"; throw error;
+      },
+    });
+    const admission = intake.admit({
+      runId: "runner-native-exhaustion", conversationId: "conversation", summary: "summary", captureText: "source",
+    });
+    await expect(awaitReady({
+      flush: () => intake.flush(),
+      queueSnapshot: () => ({ intake: intake.snapshot(), shutdown: { timedOut: false, discarded: 0 } }),
+    }, 2000, undefined, {
+      id: admission.id, maxAttempts,
+      inspect: () => inspectCompletedTurnIntake(directory, now),
+      persistedSchedule: (item) => persistedCaptureRetrySchedule(admission.source, item),
+      advanceClock: (value) => { const advance = Date.parse(value) - now.getTime(); now = new Date(value); return advance; },
+      onRetry: (value) => scheduled.push(value), onExhausted: (value) => exhausted.push(value),
+    })).rejects.toThrow("capture_not_ready");
+    expect(attempts).toBe(16);
+    expect(scheduled).toHaveLength(15);
+    expect(scheduled.map((entry) => entry.advanceMs)).toEqual([
+      60_000, 120_000, 240_000, 480_000, 960_000, 1_920_000, 3_840_000, 7_680_000,
+      15_360_000, 21_600_000, 21_600_000, 21_600_000, 21_600_000, 21_600_000, 21_600_000,
+    ]);
+    expect(exhausted).toEqual([{
+      attempt: 16, failureKind: "model_output", recoveryCause: "model_output",
+    }]);
+    expect(inspectCompletedTurnIntake(directory, now).items[0]).toMatchObject({ state: "dead", attempt: 16 });
+    intake.finishShutdown();
+  });
+
+  it("drives actual durable intake from malformed first output to one atomic recovered success", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "retry-intake-test-")); dirs.push(directory);
+    let now = new Date("2026-09-20T00:00:00.000Z"); let captureAttempts = 0;
+    const commits = []; const outcomes = []; const retries = [];
+    const intake = new CompletedTurnIntakeManager({
+      root: directory, clock: () => now,
+      writeSummary: async () => {},
+      capture: async () => {
+        captureAttempts += 1;
+        if (captureAttempts === 1) {
+          const error = new Error("malformed structured output"); error.name = "MemoryModelOutputError"; throw error;
+        }
+        commits.push("complete-plan"); return "captured";
+      },
+    });
+    const admission = intake.admit({
+      runId: "runner-native-recovery", conversationId: "conversation", summary: "summary", captureText: "source",
+    });
+    const recovered = await awaitReady({
+      flush: () => intake.flush(),
+      queueSnapshot: () => ({ intake: intake.snapshot(), shutdown: { timedOut: false, discarded: 0 } }),
+    }, 1000, undefined, {
+      id: admission.id, maxAttempts: 16,
+      inspect: () => inspectCompletedTurnIntake(directory, now),
+      persistedSchedule: (item) => persistedCaptureRetrySchedule(admission.source, item),
+      advanceClock: (value) => { const advance = Date.parse(value) - now.getTime(); now = new Date(value); return advance; },
+      onRetry: (value) => retries.push(value), onReady: (value) => outcomes.push(value),
+    });
+    expect(recovered.intake).toMatchObject({ pending: 0, dead: 0, resolved: 1 });
+    expect(captureAttempts).toBe(2);
+    expect(commits).toEqual(["complete-plan"]);
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toMatchObject({ attempt: 1, advanceMs: 60_000 });
+    expect(outcomes).toEqual([{ attempt: 2, priorFailures: 1, status: "recovered_success" }]);
+    expect(inspectCompletedTurnIntake(directory, now).items[0]).toMatchObject({ state: "resolved", attempt: 1 });
+    intake.finishShutdown();
+  });
+
+  it("reads only validated retry coordinates from the persisted pending record", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "retry-schedule-test-")); dirs.push(directory);
+    const id = "c".repeat(64); const source = join(directory, "pending.json");
+    await writeFile(source, JSON.stringify({ state: "pending", id, attempt: 2, nextAttemptAt: "2026-09-20T00:03:00.000Z", captureText: "not returned" }));
+    await expect(persistedCaptureRetrySchedule(source, { id, attempt: 2 })).resolves.toEqual({
+      id, attempt: 2, nextAttemptAt: "2026-09-20T00:03:00.000Z",
+    });
+    await expect(persistedCaptureRetrySchedule(source, { id, attempt: 1 })).rejects.toThrow("capture_recovery_invalid");
   });
 
   it("reserves steps/output, pins SSE with no retries, and reports cap enforcement honestly", async () => {
@@ -246,15 +503,32 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     finish(); await budget.settle(10);
     expect(budget.pending.size).toBe(0);
   });
-  it.each(["deadline", "global abort"])("bounds an embedding body pending after headers: %s", async (mode) => {
+  it("accepts a valid embedding completion within the plan-bound deadline", async () => {
+    const { budget } = await setup();
+    budget.plan.perCall.embeddingTimeoutMs = 40;
+    const embeddings = meteredEmbeddings({
+      id: "fixture",
+      embed: async (texts) => new Promise((resolve) => setTimeout(() => resolve(texts.map(() => [1, 0])), 10)),
+    }, { budget, tag: {}, dimension: 2 });
+    await expect(embeddings.embed(["fictional"])).resolves.toEqual([[1, 0]]);
+    expect(budget.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: "embedding", status: "completed" }),
+      expect.objectContaining({ stage: "embedding_validation", status: "accepted" }),
+    ]));
+    expect(budget.admissionStopped).toBe(false);
+    expect(budget.pending.size).toBe(0);
+  });
+  it.each(["deadline", "caller abort", "global abort"])("bounds an embedding body pending after headers: %s", async (mode) => {
     const { budget } = await setup();
     budget.plan.perCall.embeddingTimeoutMs = mode === "deadline" ? 10 : 1000;
+    const caller = new AbortController();
     let rejectBody;
     const body = new Promise((_, reject) => { rejectBody = reject; });
     const headers = vi.fn(async () => ({ json: () => body }));
     const embeddings = meteredEmbeddings({ id: "fixture", embed: async () => (await headers()).json() }, { budget, tag: {} });
-    const pending = embeddings.embed(["fictional"]);
+    const pending = embeddings.embed(["fictional"], { abortSignal: caller.signal });
     const rejected = expect(pending).rejects.toThrow("embedding_timeout_or_cancelled");
+    if (mode === "caller abort") caller.abort();
     if (mode === "global abort") budget.controller.abort();
     await rejected;
     expect(headers).toHaveBeenCalledOnce();
@@ -273,6 +547,207 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(budget.pending.has(raw)).toBe(true);
     expect(budget.controller.signal.aborted).toBe(true);
     finish({ text: "late answer" }); await budget.settle(100);
+  });
+  it("keeps a non-settling capture timeout terminal and admits no second call", async () => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 10;
+    const run = vi.fn(() => new Promise(() => {}));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toThrow("provider_settlement_unknown");
+    expect(run).toHaveBeenCalledOnce();
+    expect(budget.controller.signal.aborted).toBe(true);
+    expect(budget.events[0]).toMatchObject({
+      status: "provider_settlement_unknown", timeoutScope: "capture_call_local",
+      timeoutSettlement: "unknown", timeoutUsage: "unknown", latePayloadAccepted: false,
+    });
+    await expect(metered.run("s", { messages: [] })).rejects.toThrow("provider_admission_stopped");
+    expect(run).toHaveBeenCalledOnce();
+  });
+  it("keeps global cancellation terminal even when a capture runtime settles after abort", async () => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 1000;
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = vi.fn((_system, options) => new Promise((resolve) => {
+      options.abortSignal.addEventListener("abort", () => resolve({ text: "late global result" }), { once: true });
+    }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    const pending = metered.run("s", { messages: [] });
+    await new Promise((resolve) => setImmediate(resolve));
+    budget.controller.abort(new BenchmarkError("runtime_budget_exhausted"));
+    await expect(pending).rejects.toThrow("provider_timeout_or_cancelled");
+    expect(budget.admissionStopped).toBe(true);
+    expect(budget.events[0]).not.toHaveProperty("timeoutSettlement");
+    await expect(metered.run("s", { messages: [] })).rejects.toThrow("provider_admission_stopped");
+    expect(run).toHaveBeenCalledOnce();
+    await budget.settle(100);
+  });
+  it.each(["global", "caller"])("keeps %s cancellation terminal during local timeout settlement", async (scope) => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 1000;
+    const caller = new AbortController();
+    let finish;
+    let sawTimeout;
+    const timeoutObserved = new Promise((resolve) => { sawTimeout = resolve; });
+    const run = vi.fn((_system, options) => new Promise((resolve) => {
+      finish = resolve;
+      options.abortSignal.addEventListener("abort", sawTimeout, { once: true });
+    }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    const pending = metered.run("s", { messages: [], abortSignal: caller.signal });
+    const assertion = expect(pending).rejects.toThrow("provider_timeout_or_cancelled");
+    await timeoutObserved;
+    await new Promise((resolve) => setImmediate(resolve));
+    (scope === "global" ? budget.controller : caller).abort();
+    finish({ text: "", cancelled: true, error: null, failureKind: null, diagnostics: { pi_stop_reason: "aborted" } });
+    await assertion;
+    expect(budget.admissionStopped).toBe(true);
+    expect(budget.controller.signal.aborted).toBe(true);
+    expect(budget.events[0].status).not.toBe("capture_timeout_settled");
+    await expect(metered.run("s", { messages: [] })).rejects.toThrow("provider_admission_stopped");
+    expect(run).toHaveBeenCalledOnce();
+    await budget.settle(100);
+  });
+  it.each(["provider_auth", "usage_limit"])("keeps capture %s terminal under timeout-recovery policy", async (failureKind) => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = vi.fn(async () => ({ text: "", error: "not retained", failureKind }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toMatchObject({ code: "provider_failed", failureKind });
+    expect(budget.providerStop).toMatchObject({ code: "provider_failed", failureKind });
+    await expect(metered.run("s", { messages: [] })).rejects.toThrow("provider_admission_stopped");
+    expect(run).toHaveBeenCalledOnce();
+  });
+  it("keeps a provider-auth result that settles after capture timeout sticky", async () => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = vi.fn((_system, options) => new Promise((resolve) => {
+      options.abortSignal.addEventListener("abort", () => resolve({
+        text: "", error: "not retained", failureKind: "provider_auth",
+      }), { once: true });
+    }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toMatchObject({ failureKind: "provider_auth" });
+    expect(budget.providerStop).toMatchObject({ failureKind: "provider_auth" });
+    expect(budget.events[0]).toMatchObject({
+      timeoutSettlement: "fulfilled_discarded", providerReportedFailureKind: "provider_auth",
+      latePayloadAccepted: false,
+    });
+    await expect(metered.run("s", { messages: [] })).rejects.toThrow("provider_admission_stopped");
+    expect(run).toHaveBeenCalledOnce();
+  });
+  it("records settled finite-step evidence before classifying a local capture timeout", async () => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = vi.fn((_system, options) => new Promise((resolve) => {
+      options.abortSignal.addEventListener("abort", () => resolve({
+        text: "", error: "not retained", failureKind: "usage_limit",
+        diagnostics: { max_turns_hit: true },
+      }), { once: true });
+    }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toMatchObject({
+      code: "capture_step_budget_exhausted", failureKind: "budget_exceeded",
+    });
+    expect(budget.providerStop).toBeNull();
+    expect(budget.events[0]).toMatchObject({
+      status: "capture_step_budget_exhausted",
+      failureKind: "budget_exceeded",
+      providerReportedFailureKind: "usage_limit",
+      maxTurnsHit: true,
+      timeoutSettlement: "fulfilled_discarded",
+      latePayloadAccepted: false,
+    });
+    expect(captureRetryCause({ lastError: "provider" }, budget.events[0])).toBe("finite_capture_step");
+  });
+  it.each([
+    { label: "provider auth even with a max-turn flag", failureKind: "provider_auth", maxTurnsHit: true },
+    { label: "hosted quota without a max-turn flag", failureKind: "usage_limit", maxTurnsHit: false },
+  ])("keeps settled $label terminal after a local capture timeout", async ({ failureKind, maxTurnsHit }) => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = vi.fn((_system, options) => new Promise((resolve) => {
+      options.abortSignal.addEventListener("abort", () => resolve({
+        text: "", error: "not retained", failureKind,
+        diagnostics: { max_turns_hit: maxTurnsHit },
+      }), { once: true });
+    }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toMatchObject({
+      code: "provider_failed", failureKind,
+    });
+    expect(budget.providerStop).toMatchObject({ code: "provider_failed", failureKind });
+    expect(budget.events[0]).toMatchObject({
+      status: "provider_failed", failureKind,
+      providerReportedFailureKind: failureKind, maxTurnsHit,
+    });
+    expect(captureRetryCause({ lastError: "provider" }, budget.events[0])).toBeNull();
+  });
+  it.each(["immediate", "after local timeout"])("keeps a generic runtime rejection %s terminal", async (timing) => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = timing === "immediate"
+      ? vi.fn(async () => { throw new Error("synthetic generic rejection"); })
+      : vi.fn((_system, options) => new Promise((_resolve, reject) => {
+          options.abortSignal.addEventListener("abort", () => reject(new Error("synthetic generic rejection")), { once: true });
+        }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toMatchObject({ code: "provider_failed" });
+    expect(budget.events[0].status).toBe("provider_failed");
+    expect(budget.events[0].status).not.toBe("capture_timeout_settled");
+    expect(captureRetryCause({ lastError: "provider" }, budget.events[0])).toBeNull();
+  });
+  it("keeps a positively identified local abort rejection on the settled-timeout recovery path", async () => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = vi.fn((_system, options) => new Promise((_resolve, reject) => {
+      options.abortSignal.addEventListener("abort", () => {
+        const error = new Error("synthetic local abort");
+        error.name = "AbortError";
+        reject(error);
+      }, { once: true });
+    }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toMatchObject({ code: "capture_timeout_settled" });
+    expect(budget.events[0]).toMatchObject({
+      status: "capture_timeout_settled", timeoutSettlement: "rejected", latePayloadAccepted: false,
+    });
+  });
+  it("keeps compaction observed while a capture timeout settles terminal", async () => {
+    const { budget } = await setup();
+    budget.plan.locomo = { captureRecovery: { timeoutPolicy: "settled_capture_runtime_only" } };
+    budget.plan.perCall.callTimeoutMs = 10;
+    budget.plan.perCall.captureTimeoutSettlementMs = 100;
+    const run = vi.fn((_system, options) => new Promise((resolve) => {
+      options.abortSignal.addEventListener("abort", () => {
+        options.onEvent({ type: "compaction" });
+        resolve({ text: "late compacted result" });
+      }, { once: true });
+    }));
+    const metered = meteredRuntime({ run }, { budget, stage: "extraction", tag: {} });
+    await expect(metered.run("s", { messages: [] })).rejects.toThrow("unexpected_compaction");
+    expect(budget.providerStop).toBeNull();
+    expect(budget.events[0]).toMatchObject({
+      status: "unexpected_compaction", timeoutSettlement: "fulfilled_discarded",
+      latePayloadAccepted: false,
+    });
+    expect(budget.events[0].status).not.toBe("capture_timeout_settled");
+    expect(run).toHaveBeenCalledOnce();
   });
   it("settlement follows promises created by a capture continuation", async () => {
     const { budget } = await setup(); let finishCapture, finishEmbedding;
@@ -449,18 +924,45 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     await expect(meteredRuntime({ run }, { budget, stage: "extraction", tag: {} })
       .run("s", { messages: [], outputSchema: { type: "object" } })).rejects.toThrow(code);
     expect(budget.events[0].status).toBe(code);
+    if (code === "structured_result_missing") {
+      expect(budget.events[0]).toMatchObject({
+        runtimeSettlement: "fulfilled",
+        structuredOutputFailure: "structured_result_missing",
+      });
+      expect(captureRetryCause({ lastError: "provider" }, budget.events[0]))
+        .toBe("settled_structured_output");
+    }
     if (result.cancelled) expect(budget.providerStop).toBeNull();
   });
 
-  it("fails closed on missing reconciliation projection and never records fallback text", async () => {
+  it.each([
+    ["missing key", { other: [] }, "structured_result_key_missing"],
+    ["unserializable selected value", { decisions: 1n }, "structured_result_unserializable"],
+  ])("fails closed on reconciliation projection %s and records the settled boundary", async (_label, structuredResult, code) => {
     const { budget } = await setup(); const trace = [];
-    const llm = captureLlm({ run: async () => ({ text: "[]", structuredResult: { other: [] } }) }, {
-      model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag: {}, capture: (entry) => trace.push(entry),
+    const llm = captureLlm({ run: async () => ({ text: "[]", structuredResult }) }, {
+      model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag: { groupId: "projection", arm: "bujo" }, capture: (entry) => trace.push(entry),
     });
     await expect(llm.complete("reconcile", {
       label: "capture:reconcile-batch", outputSchema: { type: "object" }, structuredResultKey: "decisions",
-    })).rejects.toThrow("structured_result_key_missing");
+    })).rejects.toThrow(code);
     expect(trace).toEqual([]);
+    expect(summarize([], budget.events, "scripted").arms.bujo.stages.reconciliation.attempted).toBe(1);
+    expect(budget.events).toHaveLength(2);
+    expect(budget.events[0]).toMatchObject({ stage: "reconciliation", status: "completed" });
+    expect(budget.events[1]).toMatchObject({
+      stage: "capture_projection", captureStage: "reconciliation",
+      status: code, runtimeSettlement: "fulfilled",
+      structuredOutputFailure: code, failureKind: null,
+      providerReportedFailureKind: null, maxTurnsHit: false,
+    });
+    expect(captureRetryCause({ lastError: "provider" }, budget.events[1]))
+      .toBe("settled_structured_output");
+    expect(currentCaptureRetryCause(budget.events, 0, { groupId: "projection", arm: "bujo" }, { lastError: "provider" }))
+      .toEqual({ cause: "settled_structured_output", nextCursor: 2 });
+    expect(currentCaptureRetryCause(budget.events, 2, { groupId: "projection", arm: "bujo" }, { lastError: "provider" }))
+      .toEqual({ cause: null, nextCursor: 2 });
+    expect(summarize([], budget.events, "scripted").arms.bujo.stages.capture_projection.attempted).toBe(1);
   });
 
   it("meters bounded embedding text into both the combined and embedding-specific hard budgets", async () => {
@@ -617,7 +1119,9 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
       search: { createEmbeddingProvider: vi.fn(() => ({})), createCircuitBreakerEmbeddingProvider: vi.fn((raw) => raw) },
     };
     const profile = { reader: "fixture:reader", extractor: "fixture:extractor", embeddingProvider: "ollama", embeddingModel: "m", dimension: 8, piAuthPath: "/tmp/fixture-auth.json" };
-    const provided = await realProviders(profile, { workspace: "workspace", modules });
+    await expect(realProviders(profile, { workspace: "workspace", modules, plan: null }))
+      .rejects.toThrow("invalid_embedding_timeout_plan");
+    const provided = await realProviders(profile, { workspace: "workspace", modules, plan: realProviderPlan });
     expect(provided.kind).toBe("real");
     expect(modules.runtime.createPiOAuthApiKeyResolver).toHaveBeenCalledOnce();
     expect(modules.runtime.createPiOAuthApiKeyResolver).toHaveBeenCalledWith({ path: "/tmp/fixture-auth.json" });
@@ -625,11 +1129,12 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     expect(modules.runtime.createMonoRuntime.mock.calls[0][0]).toMatchObject({ workspace: "workspace" });
     expect(modules.runtime.createMonoRuntime.mock.calls[0][0].resolvePiApiKey).toBe(resolver);
     expect(modules.runtime.createMonoRuntime.mock.calls[1][0].resolvePiApiKey).toBe(resolver);
+    expect(modules.search.createEmbeddingProvider).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 23_456 }));
     const ambientModules = { runtime: { createMonoRuntime: vi.fn(() => ({})), parseMonoRuntimeModelReference: (value) => ({ reference: value }) }, search: modules.search };
-    await realProviders({ ...profile, piAuthPath: undefined }, { workspace: "workspace", modules: ambientModules });
+    await realProviders({ ...profile, piAuthPath: undefined }, { workspace: "workspace", modules: ambientModules, plan: realProviderPlan });
     expect(ambientModules.runtime.createMonoRuntime.mock.calls[0][0]).toEqual({ workspace: "workspace" });
     expect(ambientModules.runtime.createMonoRuntime.mock.calls[1][0]).toEqual({ workspace: "workspace" });
-    await expect(realProviders(profile, { workspace: "workspace", modules: ambientModules })).rejects.toThrow("pi_auth_resolver_unavailable");
+    await expect(realProviders(profile, { workspace: "workspace", modules: ambientModules, plan: realProviderPlan })).rejects.toThrow("pi_auth_resolver_unavailable");
   });
   it("pins LoCoMo provider construction to explicit loopback endpoints and client context metadata", async () => {
     const optionsForLocal = vi.fn((model, providers) => ({ customProvider: providers[0], customModel: { model }, modelCapabilities: { context_window: 65_536 }, isPrivateProvider: true }));
@@ -646,14 +1151,14 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
       embeddingProvider: "ollama", embeddingModel: "bge-m3:latest", dimension: 1024,
       ollamaEndpoint: "http://127.0.0.1:11434", embeddingEndpoint: "http://127.0.0.1:11434", clientContextWindow: 65_536,
     };
-    await realProviders(profile, { workspace: "workspace", modules });
+    await realProviders(profile, { workspace: "workspace", modules, plan: realProviderPlan });
     const runtimeOptions = modules.runtime.createMonoRuntime.mock.calls[0][0];
     expect(runtimeOptions).toMatchObject({ workspace: "workspace", resolveAttempt: expect.any(Function) });
     runtimeOptions.resolveAttempt({ model: { provider: "ollama", model: "gemma4:31b", reference: "ollama:gemma4:31b" } });
     expect(optionsForLocal.mock.calls[0][1][0]).toMatchObject({ id: "ollama", type: "ollama", baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false });
     expect(optionsForLocal.mock.calls[0][1][0].models[0].capabilities).toMatchObject({ context_window: 65_536, max_tokens: 2048 });
     expect(modules.search.createEmbeddingProvider).toHaveBeenCalledWith(expect.objectContaining({ endpoint: "http://127.0.0.1:11434", model: "bge-m3:latest" }));
-    await expect(realProviders({ ...profile, ollamaEndpoint: "http://localhost:11434" }, { workspace: "workspace", modules })).rejects.toThrow("invalid_local_ollama_profile");
+    await expect(realProviders({ ...profile, ollamaEndpoint: "http://localhost:11434" }, { workspace: "workspace", modules, plan: realProviderPlan })).rejects.toThrow("invalid_local_ollama_profile");
   });
   it("uses the existing hosted Pi resolver while keeping LoCoMo embeddings on numeric loopback", async () => {
     const resolver = async () => "fixture-key";
@@ -672,7 +1177,7 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
       piAuthPath: "/private/existing-pi-auth.json", embeddingEndpoint: "http://127.0.0.1:11434",
       hostedChatContextWindow: 272_000, locomoDatasetTransferAck: "selected-public-locomo-projection-to-hosted-luna",
     };
-    await realProviders(profile, { workspace: "workspace", modules });
+    await realProviders(profile, { workspace: "workspace", modules, plan: realProviderPlan });
     expect(modules.runtime.createPiOAuthApiKeyResolver).toHaveBeenCalledWith({ path: "/private/existing-pi-auth.json" });
     expect(modules.runtime.createMonoRuntime).toHaveBeenCalledTimes(2);
     expect(modules.runtime.createMonoRuntime.mock.calls[0][0]).toEqual({ workspace: "workspace", resolvePiApiKey: resolver });

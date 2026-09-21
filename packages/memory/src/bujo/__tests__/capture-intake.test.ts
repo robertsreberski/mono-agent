@@ -1281,6 +1281,124 @@ describe("BujoMemoryStore completed-turn integration", () => {
     await store.close();
   });
 
+  it("reuses immutable admittedAt as the strict extraction anchor after provider retry and restart", async () => {
+    const memoryRoot = root();
+    const firstPrompts: string[] = [];
+    const first = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: {
+        id: "temporal-anchor-first-attempt",
+        complete: async (prompt) => {
+          firstPrompts.push(prompt);
+          throw new Error("retry after restart");
+        },
+      },
+      clock: () => FIXED,
+    });
+
+    await first.persistCompletedTurn(turn({
+      runId: "temporal-anchor-retry",
+      captureText: "User: The museum visit happened this past weekend.",
+    }));
+    await first.flush();
+    expect(firstPrompts).toHaveLength(1);
+    expect(firstPrompts[0]).toContain(`The outer completed turn was admitted at ${FIXED.toISOString()}.`);
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({ pending: 1, resolved: 0 });
+    await first.close();
+
+    const restartedAt = new Date("2026-07-13T10:15:00.000Z");
+    const restartPrompts: string[] = [];
+    const restarted = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: {
+        id: "temporal-anchor-recovered-attempt",
+        complete: async (prompt) => {
+          restartPrompts.push(prompt);
+          return '{"memories":[],"entities":[],"relations":[]}';
+        },
+      },
+      clock: () => restartedAt,
+    });
+    await restarted.flush();
+
+    expect(restartPrompts).toHaveLength(1);
+    expect(restartPrompts[0]).toContain(`The outer completed turn was admitted at ${FIXED.toISOString()}.`);
+    expect(restartPrompts[0]).not.toContain(restartedAt.toISOString());
+    expect(inspectCompletedTurnIntake(memoryRoot, restartedAt).snapshot).toMatchObject({ pending: 0, resolved: 1 });
+    await restarted.close();
+  });
+
+  it("round-trips a canned two-turn museum qualification through reconciliation after restart", async () => {
+    // This proves transport and canonical persistence of a supplied qualified
+    // payload. It deliberately does not claim that a real model will produce it.
+    const memoryRoot = root();
+    const firstObservedAt = new Date("2023-07-06T20:18:00.000Z");
+    const firstText = "Melanie reported taking her kids to a museum yesterday, relative to turn observed at 2023-07-06T20:18:00.000Z.";
+    const candidateText = "Melanie reported taking her kids to a museum yesterday, and said the dinosaur exhibit and bones excited them.";
+    const mergedText = "Melanie reported taking her kids to a dinosaur exhibit at a museum yesterday, relative to turn observed at 2023-07-06T20:18:00.000Z; the bones excited them.";
+    const plan = (text: string): string => JSON.stringify({
+      memories: [{ type: "event", text, salience: 0.8, isInsight: false, entityIds: [] }],
+      entities: [],
+      relations: [],
+    });
+    const first = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: { id: "museum-first", complete: async () => plan(firstText) },
+      clock: () => firstObservedAt,
+    });
+    await first.persistCompletedTurn(turn({
+      runId: "museum-turn-one",
+      captureText: "Melanie said: Yesterday I took the kids to the museum.",
+    }));
+    await first.flush();
+    await first.close();
+
+    const reconciliationPrompts: string[] = [];
+    const restarted = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: {
+        id: "museum-second",
+        complete: async (prompt, options) => {
+          if (options?.label === "capture:extract") return plan(candidateText);
+          reconciliationPrompts.push(prompt);
+          const input = JSON.parse(prompt.split("INPUT:\n")[1] ?? "[]") as Array<{
+            readonly index: number;
+            readonly existing: Array<{ readonly id: string }>;
+          }>;
+          const targetId = input[0]?.existing[0]?.id;
+          if (targetId === undefined) throw new Error("museum fixture expected a close existing memory");
+          return JSON.stringify([{ index: 0, action: "update", targetId, text: mergedText }]);
+        },
+      },
+      clock: () => new Date("2023-07-06T20:19:00.000Z"),
+    });
+    await restarted.persistCompletedTurn(turn({
+      runId: "museum-turn-two",
+      captureText: "Melanie said: They were excited by the dinosaur exhibit and thought the bones were cool.",
+    }));
+    await restarted.flush();
+    await restarted.close();
+
+    expect(reconciliationPrompts).toHaveLength(1);
+    expect(reconciliationPrompts[0]).toContain(firstText);
+    expect(reconciliationPrompts[0]).toContain(candidateText);
+    expect(reconciliationPrompts[0]).toContain("observation anchors");
+    const bullets = parseDailyFile(readFileSync(join(memoryRoot, "daily", "2023-07-06.md"), "utf8")).bullets;
+    expect(bullets.map((bullet) => bullet.text)).toEqual([mergedText]);
+  });
+
   it("does not duplicate the real audit bullet after a crash-window summary replay", async () => {
     const memoryRoot = root();
     let release!: () => void;

@@ -624,7 +624,9 @@ Use exactly one of these decision object shapes:
 
 Rules:
 - add means genuinely new; noop means duplicate; update means refinement; supersede means contradiction.
-- Compare the meaning as well as the topic: speaker attribution, stated scope, evidence limits, and correction-versus-state-change qualification are durable information.
+- Compare the meaning as well as the topic: speaker attribution, stated scope, evidence limits, temporal qualification, and correction-versus-state-change qualification are durable information.
+- Material dates, times, timezones, year/month boundaries, relative phrases, observation anchors, uncertainty, negation, speaker/event association, and event scope must survive update or supersede text. Never reinterpret a capture/observation anchor as the event time or invent a more exact event date than the input states.
+- Distinct repeated events remain distinct when their temporal qualifiers or anchors differ. Do not choose noop or merge them merely because their non-temporal wording is similar.
 - Replacement text must not turn an attributed or unchecked claim into an unqualified fact, turn an observed outcome into causal proof, or turn correction of an erroneous report into a former real-world state. Preserve an explicit rename or other real state change as history when material.
 - An explicit user report or preference may remain useful without outside proof; preserve its speaker and scope rather than discarding it for being unverified.
 - Preserve every input index exactly once. N is the exact JSON integer from that input item.

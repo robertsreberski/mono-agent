@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile, readdir, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { ARMS, digest, sourceOnly, contextFor, questionsFor } from "./memory-e2e-dataset.mjs";
@@ -39,9 +39,57 @@ export function readySnapshot(snapshot) {
   return !index || ["queued", "inFlight", "remainingBacklog", "recoveryFilesRemaining", "failed", "dropped", "discarded"].every((key) => index[key] === 0);
 }
 
+const SETTLED_CAPTURE_STRUCTURED_FAILURES = new Set([
+  "structured_result_missing",
+  "structured_result_key_missing",
+  "structured_result_unserializable",
+]);
+const SETTLED_CAPTURE_STRUCTURED_POLICY = "current_attempt_fulfilled_required_projection_only";
+
+/**
+ * Classify only evaluator-proven capture failures that may follow the production
+ * durable intake schedule. The caller supplies the latest capture event from the
+ * current attempt; this function never searches historical/global events.
+ */
+export function captureRetryCause(item, captureAttempt) {
+  if (item.lastError === "model_output") {
+    return captureAttempt?.status === "capture_timeout_settled"
+      ? "settled_capture_timeout" : "model_output";
+  }
+  if (item.lastError === "provider"
+    && captureAttempt?.status === "capture_step_budget_exhausted"
+    && captureAttempt?.failureKind === "budget_exceeded"
+    && captureAttempt?.providerReportedFailureKind === "usage_limit"
+    && captureAttempt?.maxTurnsHit === true) {
+    return "finite_capture_step";
+  }
+  if (item.lastError === "provider"
+    && SETTLED_CAPTURE_STRUCTURED_FAILURES.has(captureAttempt?.status)
+    && captureAttempt?.runtimeSettlement === "fulfilled"
+    && captureAttempt?.structuredOutputFailure === captureAttempt.status
+    && captureAttempt?.failureKind === null
+    && captureAttempt?.providerReportedFailureKind === null
+    && captureAttempt?.maxTurnsHit === false) {
+    return "settled_structured_output";
+  }
+  return null;
+}
+
+export function currentCaptureRetryCause(events, cursor, tag, item) {
+  const captureAttempt = events.slice(cursor).findLast((entry) => (
+    entry.groupId === tag.groupId && entry.arm === tag.arm
+    && (["extraction", "reconciliation"].includes(entry.stage)
+      || (entry.stage === "capture_projection"
+        && ["extraction", "reconciliation"].includes(entry.captureStage)))
+  ));
+  return { cause: captureRetryCause(item, captureAttempt), nextCursor: events.length };
+}
+
 /** A timeout returns no success; the caller must close/settle the owned store before deletion. */
 export async function awaitReady(store, timeoutMs, budget, recovery = null) {
   let timer;
+  let scheduledRetries = 0;
+  let previousSchedule = null;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new BenchmarkError("readiness_timeout")), timeoutMs);
   });
@@ -50,20 +98,75 @@ export async function awaitReady(store, timeoutMs, budget, recovery = null) {
       const flush = Promise.resolve().then(() => store.flush());
       await Promise.race([budget ? budget.track(flush) : flush, timeout]);
       const snapshot = store.queueSnapshot();
-      if (readySnapshot(snapshot)) return snapshot;
+      if (readySnapshot(snapshot)) {
+        if (recovery !== null) {
+          const inspection = await recovery.inspect();
+          const item = inspection.items.find((candidate) => candidate.id === recovery.id);
+          if (item?.state !== "resolved" || item.attempt !== scheduledRetries) {
+            throw new BenchmarkError("capture_recovery_invalid");
+          }
+          recovery.onReady?.({
+            attempt: item.attempt + 1,
+            priorFailures: item.attempt,
+            status: item.attempt === 0 ? "first_attempt_success" : "recovered_success",
+          });
+        }
+        return snapshot;
+      }
       if (recovery === null) throw new BenchmarkError("capture_not_ready");
-      const inspection = recovery.inspect();
-      const failed = inspection.items.filter((item) => item.state === "pending" && item.lastError === "model_output");
-      if (failed.length !== 1 || failed[0].attempt < 1) throw new BenchmarkError("capture_not_ready");
-      if (failed[0].attempt >= recovery.maxAttempts) {
-        recovery.onExhausted?.({ attempt: failed[0].attempt, failureKind: failed[0].lastError });
+      const inspection = await recovery.inspect();
+      const failed = inspection.items.filter((item) => ["pending", "dead"].includes(item.state));
+      if (failed.length !== 1 || failed[0].id !== recovery.id || failed[0].attempt < 1) {
         throw new BenchmarkError("capture_not_ready");
       }
-      recovery.onRetry({ attempt: failed[0].attempt, failureKind: failed[0].lastError });
-      recovery.advanceClock(recovery.delayMs);
+      const recoveryCause = recovery.retryCause?.(failed[0])
+        ?? (failed[0].lastError === "model_output" ? "model_output" : null);
+      if (recoveryCause === null) throw new BenchmarkError("capture_not_ready");
+      if (!["model_output", "settled_capture_timeout", "finite_capture_step", "settled_structured_output"].includes(recoveryCause)) {
+        throw new BenchmarkError("capture_recovery_invalid");
+      }
+      if (failed[0].state === "dead" || failed[0].attempt >= recovery.maxAttempts) {
+        recovery.onExhausted?.({
+          attempt: failed[0].attempt, failureKind: failed[0].lastError, recoveryCause,
+        });
+        throw new BenchmarkError("capture_not_ready");
+      }
+      if (scheduledRetries >= recovery.maxAttempts - 1) throw new BenchmarkError("capture_recovery_invalid");
+      const persisted = await recovery.persistedSchedule(failed[0]);
+      if (persisted.id !== failed[0].id || persisted.attempt !== failed[0].attempt
+        || !Number.isFinite(Date.parse(persisted.nextAttemptAt))) {
+        throw new BenchmarkError("capture_recovery_invalid");
+      }
+      const scheduleIdentity = `${persisted.id}:${persisted.attempt}:${persisted.nextAttemptAt}`;
+      if (scheduleIdentity === previousSchedule) throw new BenchmarkError("capture_recovery_stalled");
+      const advanceMs = recovery.advanceClock(persisted.nextAttemptAt);
+      if (!Number.isFinite(advanceMs) || advanceMs <= 0) throw new BenchmarkError("capture_recovery_invalid");
+      previousSchedule = scheduleIdentity;
+      scheduledRetries += 1;
+      recovery.onRetry({
+        attempt: failed[0].attempt,
+        failureKind: failed[0].lastError,
+        recoveryCause,
+        nextAttemptAt: persisted.nextAttemptAt,
+        advanceMs,
+      });
     }
   } finally { clearTimeout(timer); }
 }
+
+/** Read only the retry coordinates from the evaluator-owned durable intake record. */
+export async function persistedCaptureRetrySchedule(source, expected) {
+  let record;
+  try { record = JSON.parse(await readFile(source, "utf8")); } catch {
+    throw new BenchmarkError("capture_recovery_invalid");
+  }
+  if (record?.state !== "pending" || record.id !== expected.id || record.attempt !== expected.attempt
+    || typeof record.nextAttemptAt !== "string" || !Number.isFinite(Date.parse(record.nextAttemptAt))) {
+    throw new BenchmarkError("capture_recovery_invalid");
+  }
+  return { id: record.id, attempt: record.attempt, nextAttemptAt: record.nextAttemptAt };
+}
+
 /**
  * Latest structured capture (extraction/reconciliation) failure category for a
  * trial tag, or null. Readiness status stays primary; this preserves the second
@@ -245,7 +348,7 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
         await mkdir(workspace, { mode: 0o700 });
         await mkdir(sessionsRoot, { mode: 0o700 });
         await writeFile(identityPath, plan.readerPrompt?.text ?? "You are a helpful assistant. Answer the current request concisely using available evidence. Do not invent personal details.\n", { mode: 0o600 });
-        providers = await event(tag, "provider_setup", () => providerFactory({ workspace, sessionsRoot, tag, source, modules }));
+        providers = await event(tag, "provider_setup", () => providerFactory({ workspace, sessionsRoot, tag, source, modules, plan }));
         if (providers.kind !== kind) throw new BenchmarkError("provider_mode_mismatch");
         const memoryArm = ["lite", "journal", "bujo"].includes(arm);
         const base = {
@@ -485,7 +588,7 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
         await mkdir(workspace, { mode: 0o700 });
         await mkdir(sessionsRoot, { mode: 0o700 });
         await writeFile(identityPath, plan.readerPrompt?.text ?? "You are a helpful assistant. Answer the current request concisely using available evidence. Do not invent personal details.\n", { mode: 0o600 });
-        providers = await event(baseTag, "provider_setup", () => providerFactory({ workspace, sessionsRoot, tag: baseTag, source: providerSource, modules }));
+        providers = await event(baseTag, "provider_setup", () => providerFactory({ workspace, sessionsRoot, tag: baseTag, source: providerSource, modules, plan }));
         if (providers.kind !== kind) throw new BenchmarkError("provider_mode_mismatch");
         const base = {
           identityPath, cwd: workspace, model: providers.readerModel, now: () => now,
@@ -504,10 +607,18 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
           hooks.store?.(store, baseTag);
           let historicalAssistant = "";
           let admitted = 0;
+          // The harness is reused across turns, so its callback must close over
+          // shared per-turn slots rather than the first loop iteration's bindings.
+          let admissionStarted = 0;
+          let admission = null;
           for (const turn of captureTurns) {
+            // Each completed source turn owns its admission clock. The prior
+            // turn has fully resolved before this loop advances, so a virtual
+            // retry clock must not leak into the next source observation.
             now = new Date(turn.timestamp);
             historicalAssistant = turn.assistant;
-            let admissionStarted = 0;
+            admissionStarted = 0;
+            admission = null;
             ingest = ingest ?? modules.harness.createAgentHarness({
               ...base, runtime: { async run() { return { text: historicalAssistant }; } },
               memoryWriteMode: "capture",
@@ -517,36 +628,66 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
                   hooks.admission?.(completed, baseTag);
                   admissionStarted = performance.now();
                   const result = await event(baseTag, "admission", () => store.persistCompletedTurn(completed));
+                  admission = result;
                   if (result.admissionStatus !== "duplicate") admitted += 1;
                   return result;
                 },
               },
             });
+            // Scope capture-failure evidence to this turn before admission can
+            // start its background worker. Later retries advance this cursor.
+            let captureEventCursor = budget.events.length;
             const response = await event(baseTag, "replay", () => ingest.run({ conversationId: `${group.id}-${turn.sessionId}`, userMessage: turn.user, sender: { displayName: turn.speaker }, abortSignal: budget.controller.signal }));
             if (response.failure || sharedWarnings.includes("memory_warning")) throw new BenchmarkError("admission_failed");
-            const experiment = plan.locomo?.experiment;
+            const recoveryConfig = plan.locomo?.captureRecovery;
             // Recovery is a bounded plan capability, not a protocol-name side
-            // effect. This keeps derived sampled/full experiment labels from
-            // silently disabling their explicitly reserved second attempt.
-            const hasCaptureRecovery = Number.isSafeInteger(experiment?.captureModelOutputAttempts)
-              && experiment.captureModelOutputAttempts > 1
-              && Number.isFinite(experiment?.captureModelOutputRetryDelayMs)
-              && experiment.captureModelOutputRetryDelayMs >= 0;
-            const recovery = hasCaptureRecovery ? {
-              maxAttempts: experiment.captureModelOutputAttempts,
-              delayMs: experiment.captureModelOutputRetryDelayMs,
+            // effect. Only the native durable intake chooses retry timing.
+            const hasCaptureRecovery = Number.isSafeInteger(recoveryConfig?.maxAttempts)
+              && recoveryConfig.maxAttempts > 1
+              && recoveryConfig?.policy === "native_persisted_exponential_v1";
+            const recovery = hasCaptureRecovery && admission !== null ? {
+              id: admission.id,
+              maxAttempts: recoveryConfig.maxAttempts,
               inspect: () => modules.captureIntake.inspectCompletedTurnIntake(memoryRoot, now),
-              advanceClock: (delayMs) => { now = new Date(now.getTime() + delayMs); },
-              onRetry: ({ attempt, failureKind }) => budget.events.push({
-                ...baseTag, stage: "capture_recovery", status: "scheduled", attempt,
-                failureKind, delayMs: experiment.captureModelOutputRetryDelayMs, durationMs: 0,
+              persistedSchedule: (item) => persistedCaptureRetrySchedule(admission.source, item),
+              advanceClock: (nextAttemptAt) => {
+                const target = Date.parse(nextAttemptAt);
+                const advanceMs = target - now.getTime();
+                if (!Number.isFinite(target) || advanceMs <= 0) return Number.NaN;
+                now = new Date(target);
+                return advanceMs;
+              },
+              retryCause: (item) => {
+                const classified = currentCaptureRetryCause(
+                  budget.events, captureEventCursor, baseTag, item,
+                );
+                captureEventCursor = classified.nextCursor;
+                if (classified.cause === "finite_capture_step"
+                  && recoveryConfig.finiteStepPolicy !== "current_attempt_capture_max_turns_only") {
+                  return null;
+                }
+                if (classified.cause === "settled_structured_output"
+                  && recoveryConfig.structuredOutputPolicy !== SETTLED_CAPTURE_STRUCTURED_POLICY) {
+                  return null;
+                }
+                return classified.cause;
+              },
+              onRetry: ({ attempt, failureKind, recoveryCause, nextAttemptAt, advanceMs }) => {
+                budget.events.push({
+                  ...baseTag, stage: "capture_recovery", status: "scheduled", attempt,
+                  failureKind, recoveryCause, nextAttemptAt, advanceMs, durationMs: 0,
+                });
+              },
+              onReady: ({ attempt, priorFailures, status }) => budget.events.push({
+                ...baseTag, stage: "capture_recovery", status, attempt, priorFailures, durationMs: 0,
               }),
-              onExhausted: ({ attempt, failureKind }) => budget.events.push({
+              onExhausted: ({ attempt, failureKind, recoveryCause }) => budget.events.push({
                 ...baseTag, stage: "capture_recovery", status: "exhausted", attempt,
-                failureKind, delayMs: 0, durationMs: 0,
+                failureKind, recoveryCause, durationMs: 0,
               }),
             } : null;
-            if (recovery !== null && modules.captureIntake?.inspectCompletedTurnIntake === undefined) {
+            if (hasCaptureRecovery && (admission === null
+              || modules.captureIntake?.inspectCompletedTurnIntake === undefined)) {
               throw new BenchmarkError("capture_recovery_unavailable");
             }
             const snapshot = await event(baseTag, "readiness_wait", () => awaitReady(
