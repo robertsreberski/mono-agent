@@ -34,7 +34,7 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 let providerIndexCache;
 
 /**
- * `builtinProviders()` freshly constructs every provider (~37 objects) on each
+ * `builtinProviders()` freshly constructs every provider (~41 objects) on each
  * call, and `pi-auth.js` sits on the per-request credential path. The catalog is
  * static for the process lifetime, so index it once.
  *

@@ -67,7 +67,7 @@ describe("resolvePricing precedence", () => {
     });
   });
 
-  it("prices the opencode-go DeepSeek V4.1 Flash supplement from its own row", () => {
+  it("prices the opencode-go DeepSeek V4.1 Flash upstream row from the pi catalog", () => {
     const pricing = resolvePricing({ model: "opencode-go:deepseek-v4.1-flash" });
     expect(getBuiltinModel).toHaveBeenCalledWith("opencode-go", "deepseek-v4.1-flash");
     expect(pricing).toMatchObject({

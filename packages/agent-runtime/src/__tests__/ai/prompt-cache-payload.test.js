@@ -3,7 +3,7 @@
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createModels, fauxProvider } from '@earendil-works/pi-ai';
+import { createModels, fauxProvider, normalizeContext } from '@earendil-works/pi-ai';
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-responses';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentHarness, createInMemoryHistoryStore, createToolPolicy } from '../../../../agent-harness/src/index.ts';
@@ -308,7 +308,10 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MC
       }
       const envelope = composeHostTurnEnvelope(formatHostCapabilities(runOptions), kind); envelopes.add(envelope);
       let payload;
-      await send(model, { systemPrompt: 'fixed', tools: [...builtins, ...mcp.tools, ...adapterTools], messages: [{ role: 'user', content: envelope, timestamp: 1 }] }, {
+      // pi-ai 0.86.0 moved prompt/tool folding into `Models`: the api-level
+      // stream entry points take the normalized TranscriptContext, so fold
+      // here exactly as `Models.streamSimple` does before dispatch.
+      await send(model, normalizeContext({ systemPrompt: 'fixed', tools: [...builtins, ...mcp.tools, ...adapterTools], messages: [{ role: 'user', content: envelope, timestamp: 1 }] }), {
         apiKey: 'synthetic-test-value', maxRetries: 0, fetch: async (_url, init) => {
           payload = JSON.parse(init.body);
           return new Response(JSON.stringify({ error: { message: 'intercepted', type: 'test_error' } }), { status: 400, headers: { 'content-type': 'application/json' } });

@@ -15,7 +15,7 @@ import { createAgentSendTool } from "../../../agent-runtime/src/agent/tools/agen
 import { generatePiNativeResponse } from "../../../agent-runtime/src/ai/providers/pi-native.js";
 
 const piPath: string = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
-const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import(piPath);
+const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall, getCurrentTools } = await import(piPath);
 
 describe("app persistent subagent durable sessions", () => {
   it.each(["loss", "late-timeout"])("G07: configured foreground Pi %s stays registry-only and requires explicit replacement", async (mode) => {
@@ -248,7 +248,9 @@ describe("app persistent subagent durable sessions", () => {
       let observed = false;
       parent.setResponses([
         (context: any) => {
-          expect(context.tools.map((tool: any) => tool.name)).not.toContain("AskParent");
+          // pi-ai 0.86.0 folds request tools into the transcript's leading
+          // system message: replay them with getCurrentTools().
+          expect(getCurrentTools(context.messages).map((tool: any) => tool.name)).not.toContain("AskParent");
           return fauxAssistantMessage([fauxToolCall("Agent", { persist: true, id: "helper", prompt: "Review" })]);
         },
         (context: any) => {
