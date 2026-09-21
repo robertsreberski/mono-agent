@@ -5,7 +5,8 @@
 - Add a deliberate `MemoryRecall` original-query mode to configured per-turn
   memory, reusing the bounded automatic lookup after a safety abstention without
   changing ordinary query-local search or capability-free programmatic recall
-  tools.
+  tools. Preserve existing graph expansion and count delivered IDs once per turn,
+  including explicit recall through shared non-graph writable stores.
 
 - **Breaking: retire first-party Supermemory integration.** Remove the
   `@mono-agent/memory-supermemory` package, active backend/config/env surfaces,
