@@ -746,6 +746,28 @@ describe("pi-native AgentHarness bridge", () => {
     }
   });
 
+  it.each(["gpt-6-sol", "gpt-6-luna"])(
+    "routes the supplemented openai-codex %s through the run collection to provider_auth",
+    async (model) => {
+      // Same production path as the anthropic case, on a SECOND provider: no
+      // `piResolvedModel`/`piResolvedModels` seam, so only registration inside
+      // the real `builtinModels()` collection can carry this id to the auth
+      // stage. Effort is `none` here — unlike the anthropic row, these models
+      // support a disabled thinking level.
+      const result = await generatePiNativeResponse("system", {
+        model: { provider: "openai-codex", model, reference: `openai-codex:${model}` },
+        messages: [{ role: "user", content: "hello" }],
+        effort: "none",
+        allowedTools: [],
+        resolvePiApiKey: async () => null,
+        piSessionsRoot: sessionsRoot,
+      });
+
+      expect(result.error).toBe("Provider is not configured: openai-codex");
+      expect(result.failureKind).toBe("provider_auth");
+    },
+  );
+
   it("dispatches stable OpenCode headers and returns the attribution id as the fresh provider session", async () => {
     const model = setup({ id: "deepseek-v4-pro" }, "opencode-go");
     const dispatchedHeaders = [];

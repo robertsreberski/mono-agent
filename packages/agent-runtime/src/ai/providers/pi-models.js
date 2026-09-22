@@ -126,12 +126,13 @@ export function resolvePiRuntimeModel(resolved, options) {
     throw new Error("invalid pi model reference: provider and model are required");
   }
   if (options.customProvider) return resolveCustomPiModel(resolved, options);
-  // pi-supplement: one-model catalog backfill (see ai/pi-supplement.js). The
-  // upstream catalog is authoritative and is checked FIRST so a real pi
-  // builtin always wins (pi-ai 0.87.0 carries opencode-go:deepseek-v4.1-flash
-  // natively; anthropic:claude-opus-5-5 is the current backfill row); the
-  // supplement only fills a genuine miss and flows through the identical
-  // capabilities derivation below.
+  // pi-supplement: catalog backfill for models the pinned pi-ai does not ship
+  // yet (see ai/pi-supplement.js). The upstream catalog is authoritative and is
+  // checked FIRST so a real pi builtin always wins (pi-ai 0.87.0 carries
+  // opencode-go:deepseek-v4.1-flash and openai-codex:gpt-6-astra natively;
+  // anthropic:claude-opus-5-5 and openai-codex:gpt-6-sol/gpt-6-luna are the
+  // current backfill rows); the supplement only fills a genuine miss and flows
+  // through the identical capabilities derivation below.
   const catalogModel = getPiModel(/** @type {*} */ (provider), model)
     ?? getPiSupplementModel(provider, model);
   if (!catalogModel) {

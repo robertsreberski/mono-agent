@@ -251,6 +251,111 @@ describe("resolvePiRuntimeModel — Anthropic Claude Opus 5.5 supplement", () =>
   });
 });
 
+describe("resolvePiRuntimeModel — OpenAI Codex GPT-6 Sol/Luna supplement", () => {
+  // pi-ai 0.87.0's `openai-codex` catalog stops at gpt-5.6-* plus gpt-6-astra;
+  // these two rows are the mono-agent catalog supplement (ai/pi-supplement.js)
+  // mirroring the upstream gpt-5.6-sol row with each model's own prices, GPT-6
+  // context window and published >272K request tier. If pi-ai ever ships an id
+  // upstream, the upstream row wins and this test pins THAT behavior instead —
+  // update the expectations to the upstream row rather than deleting coverage.
+  const expected = {
+    "gpt-6-sol": {
+      name: "GPT-6 Sol",
+      cost: {
+        input: 2,
+        output: 10,
+        cacheRead: 0.2,
+        cacheWrite: 2.5,
+        tiers: [{
+          inputTokensAbove: 272_000,
+          input: 4,
+          output: 15,
+          cacheRead: 0.4,
+          cacheWrite: 5,
+        }],
+      },
+    },
+    "gpt-6-luna": {
+      name: "GPT-6 Luna",
+      cost: {
+        input: 0.1,
+        output: 0.5,
+        cacheRead: 0.01,
+        cacheWrite: 0.125,
+        tiers: [{
+          inputTokensAbove: 272_000,
+          input: 0.2,
+          output: 0.75,
+          cacheRead: 0.02,
+          cacheWrite: 0.25,
+        }],
+      },
+    },
+  };
+
+  for (const [model, metadata] of Object.entries(expected)) {
+    it(`resolves openai-codex:${model} exactly like a pi builtin`, () => {
+      const resolved = resolvePiRuntimeModel({
+        provider: "openai-codex",
+        model,
+        reference: `openai-codex:${model}`,
+      }, {});
+
+      expect(resolved.model).toMatchObject({
+        id: model,
+        name: metadata.name,
+        api: "openai-codex-responses",
+        provider: "openai-codex",
+        baseUrl: "https://chatgpt.com/backend-api",
+        reasoning: true,
+        input: ["text", "image"],
+        compat: {
+          supportsOpenAIGrammarTools: true,
+          supportsAdditionalTools: true,
+          supportsToolSearch: true,
+          supportsMidConvoSystemMessages: true,
+        },
+        contextWindow: 1_050_000,
+        maxTokens: 128_000,
+        thinkingLevelMap: { minimal: "low", xhigh: "xhigh", max: "max" },
+        cost: metadata.cost,
+      });
+      // `off` is not nulled (these models take `reasoning.effort: none`) and
+      // `minimal` aliases the provider's `low`, exactly like gpt-5.6-sol.
+      expect(resolved.capabilities).toMatchObject({
+        tool_use: true,
+        reasoning: true,
+        reasoning_mode: "effort",
+        reasoning_levels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        reasoning_disable_supported: true,
+        vision: true,
+        json_mode: true,
+      });
+      expect(thinkingLevelForEffort("max", resolved.capabilities)).toBe("max");
+      expect(thinkingLevelForEffort("minimal", resolved.capabilities)).toBe("minimal");
+      // mono-agent's `none` is pi's `off`, and this row genuinely supports it
+      // (`none` is in reasoning_levels above) — unlike the anthropic row.
+      expect(thinkingLevelForEffort("none", resolved.capabilities)).toBe("off");
+    });
+  }
+
+  it("still fails cleanly on a genuinely unknown openai-codex model", () => {
+    expect(() => resolvePiRuntimeModel({
+      provider: "openai-codex",
+      model: "gpt-6-nemesis",
+      reference: "openai-codex:gpt-6-nemesis",
+    }, {})).toThrow("pi model not found: openai-codex:gpt-6-nemesis");
+  });
+
+  it("does not leak the codex rows onto the openai provider", () => {
+    expect(() => resolvePiRuntimeModel({
+      provider: "openai",
+      model: "gpt-6-sol",
+      reference: "openai:gpt-6-sol",
+    }, {})).toThrow("pi model not found: openai:gpt-6-sol");
+  });
+});
+
 describe("resolvePiRuntimeModel — GPT-6 Astra metadata", () => {
   const expected = {
     openai: {

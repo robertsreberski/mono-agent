@@ -2,11 +2,14 @@
 
 ## Unreleased
 
-- Add `anthropic:claude-opus-5-5` (Claude Opus 5.5) everywhere the runtime
+- Add `anthropic:claude-opus-5-5` (Claude Opus 5.5), `openai-codex:gpt-6-sol`
+  (GPT-6 Sol) and `openai-codex:gpt-6-luna` (GPT-6 Luna) everywhere the runtime
   reads the pi model catalog: resolution, listing, run dispatch, pricing and
-  doctor validation, with effort levels low through max. The pinned pi-ai
-  catalog does not ship it yet, so it rides a temporary supplement that stays
-  subordinate to upstream and yields to the real pi-ai row once shipped.
+  doctor validation. Opus 5.5 offers effort levels low through max; the two
+  GPT-6 models offer none through max over a 1,050,000-token context, and price
+  the published above-272K-input request tier. The pinned pi-ai catalog does not
+  ship them yet, so they ride a temporary supplement that stays subordinate to
+  upstream and yields to each real pi-ai row once shipped.
 
 ## 0.23.0 — Framework simplification and AgentManage (2026-09-22)
 
