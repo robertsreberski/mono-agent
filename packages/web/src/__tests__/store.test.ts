@@ -3568,7 +3568,9 @@ describe("WebStore subagent parts", () => {
     return detail.messages.at(-1)?.parts ?? [];
   }
 
-  it.each(["Agent", "AgentSend"])("preserves an exact detached %s receipt against late child bookends and calls", async (tool) => {
+  // "AgentSend" is retained history only: the tool was renamed to
+  // "AgentManage" with no alias, and stored transcripts still carry it.
+  it.each(["Agent", "AgentManage", "AgentSend"])("preserves an exact detached %s receipt against late child bookends and calls", async (tool) => {
     const receipt = { schema: "mono-agent.process-job-start-receipt.v1", tool, jobId: "job", state: "running", startedAt: "2026-09-13T10:00:00.000Z" };
     const parts = await turnWith([
       { kind: "event", event: { type: "tool_call_started", id: "launch", name: tool } },

@@ -26,6 +26,7 @@ export {
   processJobPublicError,
 } from "./process-jobs.js";
 export type {
+  InternalProcessJobTool,
   ProcessJobErrorCode,
   ProcessJobOperator,
   ProcessJobProjection,

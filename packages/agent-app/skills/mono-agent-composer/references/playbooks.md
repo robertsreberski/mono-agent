@@ -265,12 +265,12 @@ minutes.
 
 ### Detached persistent delegation
 
-Enable persistent Agent/AgentSend and ProcessJobs on an exact-conversation Pi
-route. Use `Agent` with `persist:true, background:true`, then `AgentSend` with a
+Enable persistent Agent/AgentManage and ProcessJobs on an exact-conversation Pi
+route. Use `Agent` with `persist:true, background:true`, then `AgentManage` with a
 message and optional `background:true`. A durable started receipt schedules an
 exact-origin wake, including AskParent questions. Do not poll or replay; a
 terminal job with `childStillBusy:true` does not permit another send until the
-child actually settles. Use `AgentSend({id, stop:true})` alone for cooperative
+child actually settles. Use `AgentManage({id, stop:true})` alone for cooperative
 stop (detached turns only, no rollback or force-kill). A `resumable:true` receipt
 permits ordinary message continuation on the same session or `close:true`;
 `stop_requested` retains ownership and blocks messages/close. Lost or unknown

@@ -20,6 +20,7 @@ import {
   isProcessJobErrorCode,
   isProcessJobState,
   isProcessJobSubagentProgress,
+  type InternalProcessJobTool,
   type ProcessJobSubagentProgress,
   processJobPublicError,
   type ProcessJobErrorCode,
@@ -88,7 +89,12 @@ export interface DurableProcessJobRecord {
   readonly schemaVersion: typeof PROCESS_JOB_RECORD_SCHEMA;
   generation: string;
   readonly jobId: string;
-  readonly tool: "Exec" | "Bash" | "Agent" | "AgentSend";
+  /**
+   * `"AgentSend"` is legacy history only: the tool was renamed to
+   * `AgentManage` with no alias, so records written before the rename keep the
+   * old name and must still load. New records never emit it.
+   */
+  readonly tool: "Exec" | "Bash" | InternalProcessJobTool;
   readonly kind?: "internal";
   readonly instanceId?: string;
   childStillBusy?: boolean;
@@ -723,7 +729,7 @@ export function projectProcessJob(record: DurableProcessJobRecord): ProcessJobPr
   return {
     schema: "mono-agent.process-job-projection.v1",
     jobId: record.jobId,
-    ...(record.kind === "internal" ? { tool: record.tool as "Agent" | "AgentSend", kind: record.kind, instanceId: record.instanceId!, childStillBusy: hasUnresolvedSubagentOwnership(record), ...(record.subagentProgress ? { subagentProgress: record.subagentProgress } : {}), ...(record.subagentQuestion ? { subagentQuestion: record.subagentQuestion } : {}) } : { tool: record.tool as "Exec" | "Bash" }),
+    ...(record.kind === "internal" ? { tool: record.tool as InternalProcessJobTool, kind: record.kind, instanceId: record.instanceId!, childStillBusy: hasUnresolvedSubagentOwnership(record), ...(record.subagentProgress ? { subagentProgress: record.subagentProgress } : {}), ...(record.subagentQuestion ? { subagentQuestion: record.subagentQuestion } : {}) } : { tool: record.tool as "Exec" | "Bash" }),
     state: record.state,
     summary: record.summary,
     origin: {
@@ -1148,7 +1154,9 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
     || value.schemaVersion !== 1
     || !isUuid(value.generation)
     || !isJobId(value.jobId)
-    || (value.kind === "internal" ? !["Agent", "AgentSend"].includes(String(value.tool))
+    // "AgentSend" is legacy history: renamed to "AgentManage" with no alias, so
+    // records persisted before the rename must still validate. Never emitted.
+    || (value.kind === "internal" ? !["Agent", "AgentManage", "AgentSend"].includes(String(value.tool))
       || typeof value.instanceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(value.instanceId)
       || (value.subagentVerification !== undefined && (value.kind !== "internal" || !value.subagentOwnership || !isSubagentVerificationTarget(value.subagentVerification)))
       || (value.subagentObservation !== undefined && (value.kind !== "internal" || !value.subagentOwnership || !isSubagentVerificationObservation(value.subagentObservation)))

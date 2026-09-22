@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Breaking: rename the `AgentSend` tool to `AgentManage`.** The tool that
+  continues, closes, stops, inspects and acknowledges a persistent subagent
+  instance is now `AgentManage`; its modes, parameters, results and behavior are
+  unchanged. There is no alias and no compatibility shim: calling `AgentSend` is
+  an unknown tool. Rename it in `tools.allowedTools` and `tools.disallowedTools`,
+  in subagent profile tool lists, and in any prompt or identity file that names
+  the tool — a stale allow entry grants nothing, and a stale deny entry no longer
+  denies the renamed tool. A subagent tool list that still names `AgentSend`
+  fails config validation with the migration message, and `doctor` reports the
+  rename for the global tool policy instead of calling it an unknown name. The
+  turn envelope now publishes `AgentManage`, `AgentManage.background`,
+  `AgentManage.inspect` and `AgentManage.ack`. Process-job records and
+  transcripts written before the rename keep the old tool name: they still
+  validate, load and render as history, and nothing emits it again.
+
 - Add subscription burn-pace reporting to the `ProviderUsage` tool and the web
   console usage meters. Both surfaces share one constant-rate projection
   anchored at the measurement: per-window pace (1 = on track), a projected
@@ -12,12 +27,12 @@
   on-track tick per bar and a one-decimal pace chip beside the percentage. The
   v1 snapshot transport is unchanged and on-track meters stay quiet.
 
-- Make the `AskUser` and `AgentSend` tool descriptions decision-bearing. `AskUser`
+- Make the `AskUser` and `AgentManage` tool descriptions decision-bearing. `AskUser`
   now states when to ask — before work whose scope, destination or irreversible
   effects depend on a missing decision — instead of only listing mechanics, and
   it is exposed ahead of the channel send tools. When the host admits `AskUser`
   but the surface cannot serve it, the turn envelope now says to put the question
-  in the final reply with numbered options. `AgentSend` is described as five
+  in the final reply with numbered options. `AgentManage` is described as five
   explicit modes (continue, close, stop, inspect, ack) matching its handler, and
   every parameter carries its own schema description. No tool contract, schema
   shape or handler behavior changed.

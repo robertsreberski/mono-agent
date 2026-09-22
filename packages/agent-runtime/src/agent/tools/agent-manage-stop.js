@@ -70,5 +70,5 @@ export async function stopSubagent(subagents, params, signal) {
 
 function receipt(stop, isError = false) {
   return { ...(isError ? { isError: true } : {}), content: [{ type: "text", text: JSON.stringify(stop) }],
-    details: { tool: "AgentSend", stop, executed: false } };
+    details: { tool: "AgentManage", stop, executed: false } };
 }

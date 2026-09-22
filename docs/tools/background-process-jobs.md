@@ -560,7 +560,7 @@ The command refuses remote endpoints, derives an independent owner capability
 from the selected agent's private store, and exits `1` with
 `agent_unreachable` when the agent cannot be reached. Misuse exits `2`.
 
-Successful background `Exec`/`Bash` and persistent `Agent`/`AgentSend` launches carry a bounded versioned start
+Successful background `Exec`/`Bash` and persistent `Agent`/`AgentManage` launches carry a bounded versioned start
 receipt in their machine-readable tool result. The receipt records the exact job
 id, tool, admission state, and real start stamp when one exists; the human result
 text is not an identity source. The web console uses that causal receipt only
@@ -612,14 +612,14 @@ paths, does not mutate the live controller, and never creates a missing store.
 
 When ProcessJobs is enabled and healthy on an exact-conversation Pi-native route,
 `Agent({persist:true, background:true, prompt:"Review the change"})` returns a
-durable started receipt. `AgentSend({id:"helper", message:"Continue", background:true})`
-continues the same child transcript. Both require the ordinary Agent/AgentSend
+durable started receipt. `AgentManage({id:"helper", message:"Continue", background:true})`
+continues the same child transcript. Both require the ordinary Agent/AgentManage
 policy. Close-only calls remain synchronous. Bare runtime hosts need a supplied
 background controller; unsupported calls fail clearly.
 
 In the web console, detached launches keep their receipt in the parent's Activity,
 which shows `Agent job started` / `Agent job succeeded` (or the actual terminal
-state); `AgentSend` uses the corresponding label. The child no longer streams
+state); `AgentManage` uses the corresponding label. The child no longer streams
 foreground-style subagent rows into the parent response. Its Background jobs
 card uses the subagent glyph and a height-bounded scroll region with clustered
 tool calls, running/complete/failed status, durations, and a plain-text terminal
@@ -656,12 +656,12 @@ queue, runtime/output limits, lineage, lifecycle card and exact-origin wake.
 A queued child is reserved before the receipt returns, so another send or close
 reports busy. Its prompt and raw parameters are never stored in job metadata.
 Completion, failure and AskParent deliver one terminal wake; AskParent preserves
-`awaiting_reply` and its structured question for a later AgentSend. Do not poll or
+`awaiting_reply` and its structured question for a later AgentManage. Do not poll or
 replay a started job. Message plus close closes only after a successful answer.
 
 ### Parent stop and resume
 
-Use `AgentSend({id, stop: true})` to cooperatively stop a queued or running
+Use `AgentManage({id, stop: true})` to cooperatively stop a queued or running
 managed detached child. An optional `description` string of at most 80 characters
 is accepted and ignored: stop creates no job to label. Stop is exclusive with
 message, close, background, inspect and ack (even explicitly false values).
@@ -691,8 +691,8 @@ The operation waits at most six seconds, including storage work:
   Ordinary messages and close remain blocked; do not poll or replay the job.
 
 After a resumable receipt (`stopped` or `already_idle`), use
-`AgentSend({id, message: "Continue"})` (optionally `background:true`) to resume
-the same warm instance and prior context, or `AgentSend({id, close:true})` to
+`AgentManage({id, message: "Continue"})` (optionally `background:true`) to resume
+the same warm instance and prior context, or `AgentManage({id, close:true})` to
 retire it. While a `stop_requested` receipt stands the instance is still busy,
 so both are rejected until it settles. A queued stop charges no
 turn; a begun stopped turn charges one. Completion winning the race keeps its
@@ -755,7 +755,7 @@ verification. These private receipts do not widen ProcessJob/wake projections.
 
 ### Explicit child recovery inspection and acknowledgement
 
-`AgentSend({id, inspect: true})` is separate from message/close/background/ack
+`AgentManage({id, inspect: true})` is separate from message/close/background/ack
 requests and invokes no provider. It can perform one bounded owner reconciliation
 pass, then returns held/unavailable or current-policy-authorized recovery facts.
 Acknowledgement is the parent's own decision after reading that evidence: the

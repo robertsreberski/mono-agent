@@ -2076,7 +2076,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         `Process-job chain depth cannot exceed ${String(this.settings.maxChainDepth)}.`,
       );
     }
-    if ((isInternal(request) ? !["Agent", "AgentSend"].includes(request.tool) || typeof request.run !== "function" || typeof request.cleanup !== "function"
+    if ((isInternal(request) ? !["Agent", "AgentManage"].includes(request.tool) || typeof request.run !== "function" || typeof request.cleanup !== "function"
       || !/^[a-f0-9-]{36}$/u.test(request.jobId) || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(request.instanceId)
       : (request.tool !== "Exec" && request.tool !== "Bash") || typeof request.launch !== "function")
       || (request.wakeOnCompletion !== undefined && typeof request.wakeOnCompletion !== "boolean")) {

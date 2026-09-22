@@ -110,7 +110,7 @@ describe("known-tools", () => {
     expect(BUILTIN_TOOL_NAMES).toHaveLength(13);
     for (const name of [
       "Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec", "NodeRepl",
-      "WebFetch", "WebSearch", "Agent", "AgentSend",
+      "WebFetch", "WebSearch", "Agent", "AgentManage",
     ]) {
       expect(BUILTIN_TOOL_NAMES).toContain(name);
     }
@@ -118,7 +118,7 @@ describe("known-tools", () => {
 
   it("keeps conditionally registered built-ins out of the safe defaults", () => {
     // Agent deploys subagents. Neither belongs in a new agent's pre-checked set.
-    for (const name of ["Agent", "AgentSend"]) {
+    for (const name of ["Agent", "AgentManage"]) {
       expect(DEFAULT_SAFE_TOOLS as readonly string[]).not.toContain(name);
     }
   });

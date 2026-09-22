@@ -1349,7 +1349,7 @@ describe("Agent tool max-turns wrap-up", () => {
   it("propagates a wrap-up continuity loss to the instance outcome", async () => {
     // The host reports session continuity per run: a wrap-up that answered
     // outside the instance session must not leave the instance recorded
-    // retained on the first run's fields, or the next AgentSend resumes a
+    // retained on the first run's fields, or the next AgentManage resumes a
     // lost session.
     const finished = [];
     const run = scripted(

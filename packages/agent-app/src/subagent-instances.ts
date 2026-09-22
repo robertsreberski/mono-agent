@@ -162,7 +162,7 @@ function validRecord(value: unknown, conversationId: string, sessionsRoot: strin
   for (const key of ["allowedTools", "disallowedTools", "mcpServerNames"]) {
     if (Array.isArray(d[key]) && d[key].some((item: string) => !/^[A-Za-z0-9_.*-]+$/u.test(item))) return false;
   }
-  if (Array.isArray(d.allowedTools) && d.allowedTools.some((tool) => ["*", "Agent", "AgentSend", "AskUser", "SlackSendMessage", "TelegramSendMessage", "TelegramSendFile"].includes(tool))) return false;
+  if (Array.isArray(d.allowedTools) && d.allowedTools.some((tool) => ["*", "Agent", "AgentManage", "AskUser", "SlackSendMessage", "TelegramSendMessage", "TelegramSendFile"].includes(tool))) return false;
   for (const key of ["maxTurns", "timeoutMs"]) if (d[key] !== undefined && (!integer(d[key]) || d[key] === 0)) return false;
   return true;
 }
@@ -170,7 +170,7 @@ function validRecord(value: unknown, conversationId: string, sessionsRoot: strin
 /** The persistent capability requires both halves of its effective built-in policy. */
 export function persistentSubagentsEnabled(config: Pick<MonoAgentConfig, "subagents" | "tools">): boolean {
   return config.subagents?.enabled === true && config.subagents.instances?.enabled !== false
-    && ["Agent", "AgentSend"].every((name) => (config.tools.allowedTools.includes("*") || config.tools.allowedTools.includes(name))
+    && ["Agent", "AgentManage"].every((name) => (config.tools.allowedTools.includes("*") || config.tools.allowedTools.includes(name))
       && !config.tools.disallowedTools.includes(name));
 }
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");

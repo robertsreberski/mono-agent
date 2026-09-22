@@ -16,7 +16,7 @@ independently and reports back. It exists only on the pi runtime, and only when
 
 ```json
 {
-  "tools": { "allowedTools": ["Read", "Glob", "Grep", "Agent", "AgentSend"] },
+  "tools": { "allowedTools": ["Read", "Glob", "Grep", "Agent", "AgentManage"] },
   "subagents": {
     "enabled": true,
     "maxConcurrent": 5,
@@ -118,7 +118,7 @@ hitting the concurrency cap. Each subagent gets `maxTurns` (default 100) and
 `timeoutMs` (default 5 minutes), and its timeout starts only once it actually
 begins, not while queued.
 
-Detached persistent children (`Agent` / `AgentSend` with `background: true`)
+Detached persistent children (`Agent` / `AgentManage` with `background: true`)
 get a foreground Bash/Exec `timeout_ms` ceiling of the smaller of their own
 process job’s remaining runtime at child-run setup and
 `subagents.commandTimeoutMs` (positive integer milliseconds, default 30 minutes).
@@ -129,7 +129,7 @@ commands remain unsupported and are out of scope for this rule.
 
 **Guardrails.** A subagent is read-only unless its profile enumerates more (or,
 for one built at call time, unless its `tools` request survives the ceiling), and
-it never receives `Agent`, `AgentSend`, `AskUser`, or any channel-send tool — it cannot
+it never receives `Agent`, `AgentManage`, `AskUser`, or any channel-send tool — it cannot
 message the user or spawn subagents of its own. It inherits the parent's sandbox
 and cannot widen it, gets no MCP servers unless its profile names them, and runs
 with no provider session of its own. Without a call-time override or profile pin,
@@ -152,11 +152,11 @@ non-empty skill list makes skill support a routing requirement.
 ### Persistent subagents
 
 With subagents enabled, persistence is available when effective tool policy
-allows both `Agent` and `AgentSend` (explicitly or through `"*"`, with denies
+allows both `Agent` and `AgentManage` (explicitly or through `"*"`, with denies
 applied). When only `Agent` is allowed, it keeps its stateless schema and the
 Session envelope omits instance guidance. `Agent({name: "researcher", prompt: "Review the design", persist: true,
 id: "reviewer"})` creates an instance and runs its first turn.
-`AgentSend({id: "reviewer", message: "Now check this revision"})` resumes its own
+`AgentManage({id: "reviewer", message: "Now check this revision"})` resumes its own
 Pi-native durable session. The parent transcript is never seeded into the child.
 The selected model, effort, prompt, and profile are retained for that instance.
 The tool copy states that a child is stateless by default and that `persist`
@@ -171,7 +171,7 @@ configuration or silently changing the selected model.
 IDs are conversation-scoped lowercase kebab-case, 1–40 characters. If omitted,
 an id such as `researcher-1` is generated. Results include the id, turn count,
 and status; the parent's Session envelope lists live instances on every turn.
-Use `AgentSend({id: "reviewer", close: true})` when done, or combine a final
+Use `AgentManage({id: "reviewer", close: true})` when done, or combine a final
 `message` with `close: true`. A combined call closes only after a successful
 message; busy, cancelled, timed-out, or failed turns keep the instance live.
 Close-only calls do not spend the parent call budget.
@@ -185,9 +185,9 @@ The tool durably saves the question before ending the child turn. It never
 blocks waiting for a reply, calls the parent directly, or contacts the user.
 `AskUser` and channel send tools remain unavailable to children.
 
-The enclosing `Agent` or `AgentSend` result is successful with
+The enclosing `Agent` or `AgentManage` result is successful with
 `details.subagent.status: "awaiting_reply"` and structured `question` details.
-Reply with ordinary `AgentSend({id, message})` into the same child transcript.
+Reply with ordinary `AgentManage({id, message})` into the same child transcript.
 The Session envelope also includes a bounded, quoted pending question for
 restart or compaction recovery. Failed replies retain the question; a successful
 answer clears it; another `AskParent` replaces it. Close-only retires it.
@@ -197,7 +197,7 @@ Configure `subagents.instances`:
 
 | Field | Default | Limits / behavior |
 | --- | --- | --- |
-| `enabled` | `true` when subagents are enabled | `false` keeps stateless `Agent`, without persistence parameters, and removes `AgentSend`. |
+| `enabled` | `true` when subagents are enabled | `false` keeps stateless `Agent`, without persistence parameters, and removes `AgentManage`. |
 | `root` | `<artifacts.dir>/../subagents` | Relative paths resolve like other config paths. |
 | `maxPerConversation` | `8` | 1–32 live instances. |
 | `idleTtlMs` | `86400000` (one day) | 60000–604800000; expiry is applied on registry access. Running instances do not expire. |

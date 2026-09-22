@@ -217,7 +217,7 @@ Terminal states reuse the observability taxonomy: `success` has no failure kind;
 provider-supplied known kind when available and otherwise `runtime_error`.
 
 Persistent Agent can declare observation-only `verification` metadata; it does
-not change the child cwd or authorize a command. Recovery-capable AgentSend
+not change the child cwd or authorize a command. Recovery-capable AgentManage
 supports mutually exclusive `inspect: true` and explicit message + `ack`.
 Inspection starts no provider. Consumed/conflicting acknowledgements return a
 typed non-executing response rather than replaying an execution receipt; the app
@@ -855,22 +855,22 @@ Pinned or overridden routes appear in the result header and `details.subagent.re
 `details.subagent.executed` records the successful child route when available.
 
 Hosts may inject a conversation-scoped `subagents.instances` facade to enable
-`Agent({persist: true, id?})` and `AgentSend({id, message?, close?, stop?})`. Continuations
+`Agent({persist: true, id?})` and `AgentManage({id, message?, close?, stop?})`. Continuations
 retain the child’s selected profile and use `sessionId`, `piSessionsRoot`, and
 `sessionKeepAlive` for true durable resume. Both tools share caps and deny child
 recursion. A persistent child's host injects `askParentController.submit(question)`
 to publish a bounded question durably before `AskParent` returns `terminate: true`.
-The enclosing result carries `subagentQuestion`, surfaced by Agent/AgentSend as
-successful `awaiting_reply` with structured question/options. AgentSend replies
+The enclosing result carries `subagentQuestion`, surfaced by Agent/AgentManage as
+successful `awaiting_reply` with structured question/options. AgentManage replies
 resume the same transcript; failed replies preserve the pending question.
 AskParent is child-only and automatic unless denied by global/profile policy.
-Without the facade, `Agent` stays stateless and `AgentSend` is absent.
+Without the facade, `Agent` stays stateless and `AgentManage` is absent.
 
-Persistent Agent/AgentSend can run detached through the app-private in-process
+Persistent Agent/AgentManage can run detached through the app-private in-process
 ProcessJobs lane. Durable admission reserves the child; completion and AskParent
 wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
-`AgentSend({id, stop:true})` cooperatively stops managed detached work without
+`AgentManage({id, stop:true})` cooperatively stops managed detached work without
 starting a new turn. Only a proven `resumable:true` receipt permits ordinary
 message continuation on the same session or `close:true`; `stop_requested`
 keeps messages/close blocked. Stop neither force-kills nor undoes external effects.
@@ -882,7 +882,7 @@ See [background subagents](../../docs/tools/background-process-jobs.md#detached-
 ### Built-in tools
 
 The agent kernel's managed tools are `Read`, `Write`, `Edit`, `Glob`, `Grep`,
-`Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`, `Agent`, `AgentSend`, and child-only `AskParent`.
+`Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`, `Agent`, `AgentManage`, and child-only `AskParent`.
 `Exec({ executable, args })` invokes one executable directly; `Bash` is the
 clean non-interactive shell surface for pipelines, redirection, and other shell
 syntax. Both preserve bounded partial stdout/stderr and structured exit,
