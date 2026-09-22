@@ -3,6 +3,8 @@
 import { isProviderUsageId, PROVIDER_USAGE_LABELS } from "@mono-agent/agent-contracts/provider-usage";
 import { Popover } from "@base-ui/react/popover";
 import { type CSSProperties, type ReactNode, useState } from "react";
+import type { AgentManualCompactionResult } from "@mono-agent/agent-contracts";
+import { api } from "../../api";
 import type { AgentSummary, ProviderUsageId } from "../../types";
 import { formatUsd, type ConsoleContextProjection } from "../../usage";
 import { Icon } from "../Icon";
@@ -18,6 +20,10 @@ export interface ContextDisplayUsage {
 }
 
 export interface ContextDisplayProps {
+  /** Selected writable thread on an agent advertising manual compaction v1. */
+  readonly compactThreadId?: string;
+  /** A turn is running on that thread; the action waits for it to settle. */
+  readonly compactBlocked?: boolean;
   readonly context: ConsoleContextProjection;
   readonly processed?: ContextDisplayUsage;
   readonly conversationCost?: number;
@@ -133,6 +139,8 @@ function ProviderUsageSection({
 }
 
 export function ContextDisplay({
+  compactThreadId,
+  compactBlocked = false,
   context,
   processed,
   conversationCost,
@@ -140,6 +148,22 @@ export function ContextDisplay({
   className,
 }: ContextDisplayProps) {
   const [open, setOpen] = useState(false);
+  const [compacting, setCompacting] = useState(false);
+  const [compactResult, setCompactResult] = useState<AgentManualCompactionResult | null>(null);
+  const [compactError, setCompactError] = useState<string | null>(null);
+  const compact = async () => {
+    if (compactThreadId === undefined || compacting || compactBlocked) return;
+    setCompacting(true);
+    setCompactError(null);
+    setCompactResult(null);
+    try {
+      setCompactResult(await api.compactThread(compactThreadId));
+    } catch (error) {
+      setCompactError(error instanceof Error ? error.message : "Compaction failed.");
+    } finally {
+      setCompacting(false);
+    }
+  };
   const usage = context.usage;
   const totalTokens = tokenCount(usage?.total);
   const cost = knownCost(conversationCost);
@@ -251,6 +275,25 @@ export function ContextDisplay({
                 )}
                 <Breakdown usage={usage} total={totalTokens} />
               </section>
+            )}
+
+            {compactThreadId !== undefined && (
+              <div className="context-display-compact">
+                <button type="button" onClick={() => { void compact(); }} disabled={compacting || compactBlocked}>
+                  {compacting ? "Compacting…" : "Compact"}
+                </button>
+                {compactBlocked && !compacting && <p>Available when the current turn finishes.</p>}
+                {compacting && <p role="status">Compacting conversation context…</p>}
+                {compactResult !== null && (
+                  <p role={compactResult.status === "failed" ? "alert" : "status"}>
+                    {compactResult.status === "succeeded" ? "Context compacted" : compactResult.status === "skipped" ? "Nothing to compact" : "Compaction failed"}
+                    {compactResult.tokensBefore !== undefined && compactResult.tokensAfter !== undefined
+                      ? `: ${compactResult.tokenCountsExact === true ? "" : "~"}${formatTokenCount(compactResult.tokensBefore)} → ${compactResult.tokenCountsExact === true ? "" : "~"}${formatTokenCount(compactResult.tokensAfter)} tokens`
+                      : ""}
+                  </p>
+                )}
+                {compactError !== null && <p role="alert">{compactError}</p>}
+              </div>
             )}
 
             {open && availableProviderUsage !== undefined && (

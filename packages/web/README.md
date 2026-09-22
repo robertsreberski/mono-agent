@@ -309,7 +309,13 @@ tokens and conversation cost. Running turns are labeled `Updating`; failed
 turns and model changes are `Last measured`. A running or successful compaction
 suppresses the older number until the next exact snapshot, while legacy and
 unsupported-runtime threads show `Context —` instead of deriving a percentage
-from aggregate work.
+from aggregate work. On capable connected agents, **Compact** in the context
+usage popup summarizes the selected idle conversation without a chat turn;
+it is disabled while running and reports approximate before/after tokens,
+no useful reduction, or an error. It also works after a cold restart by
+resuming or seeding the agent's provider session. The next exact context
+percentage awaits a fresh provider measurement; this action does not change
+automatic compaction thresholds.
 Structured reasoning, routine tools, process-job lifecycle evidence, and one
 update-in-place row per compaction share the stream-aware Activity disclosure,
 which collapses at every terminal message state without reordering answer

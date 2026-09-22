@@ -573,6 +573,50 @@ describe("operator probe failure tolerance", () => {
 });
 
 describe("WebService", () => {
+  it("only compacts an owned idle thread and rejects concurrent actions", async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const admitted = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const compacted: string[] = [];
+    const service = await createService({ fetchImpl: operatorFetch({ supportsManualCompaction: true,
+      onCompact: async (id) => {
+        compacted.push(id);
+        started();
+        await gate;
+        return { status: "succeeded", operationId: "manual-1", trigger: "manual", tokensBefore: 1000, tokensAfter: 200 };
+      },
+    }) });
+    try {
+      await service.refreshAgents();
+      const thread = service.createThread("agent-one");
+      const turn = service.store.beginTurn({ threadId: thread.id, text: "hello", attachmentIds: [] });
+      service.store.completeTurn(turn.turnId, "hello back");
+      expect((await service.bootstrap()).agents[0]?.supportsManualCompaction).toBe(true);
+      const pending = service.compactThread(thread.id);
+      await admitted;
+      await expect(service.compactThread(thread.id)).rejects.toMatchObject({ code: "compaction_busy" });
+      await expect(service.startTurn(thread.id, { text: "wait" })).rejects.toMatchObject({ code: "compaction_busy" });
+      release();
+      await expect(pending).resolves.toMatchObject({ status: "succeeded", tokensAfter: 200 });
+      expect(compacted).toEqual([`web:${thread.id}`]);
+      expect(JSON.stringify(service.store.getThreadDetail(thread.id)?.messages.at(-1)?.parts))
+        .toContain('"operationId":"manual-1"');
+    } finally {
+      release();
+      await service.stop();
+    }
+  });
+
+  it("rejects an older agent without manual compaction and an unknown thread", async () => {
+    const service = await createService();
+    try {
+      await service.refreshAgents();
+      const thread = service.createThread("agent-one");
+      await expect(service.compactThread(thread.id)).rejects.toMatchObject({ code: "compaction_unsupported" });
+      await expect(service.compactThread("missing")).rejects.toMatchObject({ code: "thread_not_found" });
+    } finally { await service.stop(); }
+  });
   it("includes a current live agent's provider-auth capabilities in bootstrap", async () => {
     const service = await createService({ fetchImpl: operatorFetch({ supportsProviderAuthChecks: true }) });
     try {

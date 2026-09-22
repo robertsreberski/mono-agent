@@ -847,6 +847,22 @@ export interface UpsertWebProcessJobCardInput {
 const STREAM_SEQUENCE_CONFLICT = Symbol("stream sequence conflict");
 
 export class WebStore {
+  /** Persist a promptless compaction notice on this thread's last settled answer. */
+  recordManualCompaction(threadId: string, result: import("@mono-agent/agent-contracts").AgentManualCompactionResult): string | undefined {
+    this.requireThread(threadId);
+    const row = this.database.prepare(`SELECT id, parts_json FROM messages
+      WHERE thread_id = ? AND role = 'assistant' AND status != 'running'
+      ORDER BY created_at DESC, id DESC LIMIT 1`).get(threadId) as { id: string; parts_json: string } | undefined;
+    if (row === undefined) return undefined;
+    const parts = parseParts(row.parts_json);
+    upsertContextCompaction(parts, {
+      type: "runtime_telemetry", kind: "context_compaction",
+      data: { ...result, sdk: "pi", timestamp: Date.now() },
+    });
+    this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ?, seq = seq + 1 WHERE id = ?")
+      .run(serializeParts(parts), this.now(), row.id);
+    return row.id;
+  }
   private readonly streamSnapshots = new Map<string, WebMessage>();
   readonly paths: WebStatePaths;
   private readonly database: DatabaseSync;

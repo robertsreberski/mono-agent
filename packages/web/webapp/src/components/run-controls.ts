@@ -180,6 +180,10 @@ export function useRunControls() {
 
   return {
     usage,
+    compactThreadId: selectedAgent?.supportsManualCompaction === true
+      && selectedAgent.status !== "offline" && selectedThread?.canSend === true
+      && selectedThread.trigger?.kind !== "cron" ? selectedThread.id : undefined,
+    compactBlocked: selectedThread?.runState.status === "running",
     providerUsage: selectedAgent !== null && providerUsageId !== null
       ? { agent: selectedAgent, providerId: providerUsageId }
       : undefined,

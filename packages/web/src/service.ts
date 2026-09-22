@@ -624,6 +624,7 @@ export class WebService {
   private readonly lease: WebStateLease;
   private readonly subscribers = new Set<(event: WebEvent) => boolean | void>();
   private readonly activeTurns = new Map<string, ActiveTurn>();
+  private readonly activeCompactions = new Set<string>();
   private readonly activeLiveInputs = new Map<string, ActiveLiveInput>();
   private readonly drainingLiveInputThreads = new Set<string>();
   private readonly activeUploads = new Map<string, number>();
@@ -874,6 +875,7 @@ export class WebService {
     return {
       ...agent,
       ...(providerAuth ? { supportsProviderAuth: true as const } : {}),
+      ...(connection?.info.supportsManualCompaction === true ? { supportsManualCompaction: true as const } : {}),
       ...(providerUsage ? { supportsProviderUsage: true as const } : {}),
       ...(providerUsage && connection?.info.supportsProviderUsageRefresh === true ? { supportsProviderUsageRefresh: true as const } : {}),
       ...(providerAuthChecks ? { supportsProviderAuthChecks: true as const } : {}),
@@ -890,6 +892,7 @@ export class WebService {
       projected.supportsProviderUsage === true ? "providerUsage" : "",
       projected.supportsProviderUsageRefresh === true ? "providerUsageRefresh" : "",
       projected.supportsProviderAuth === true ? "providerAuth" : "",
+      projected.supportsManualCompaction === true ? "manualCompaction" : "",
       projected.supportsProviderAuthChecks === true ? "providerAuthChecks" : "",
     ].join("|");
   }
@@ -1909,6 +1912,34 @@ export class WebService {
     return job;
   }
 
+  async compactThread(threadId: string): Promise<import("@mono-agent/agent-contracts").AgentManualCompactionResult> {
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    threadId = thread.id;
+    if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
+    const connection = this.connections.get(thread.sourceId);
+    if (connection === undefined || !thread.canSend) {
+      throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    }
+    if (connection.info.supportsManualCompaction !== true) {
+      throw new WebConsoleError("compaction_unsupported", "This agent does not support manual compaction.", 409);
+    }
+    if (thread.runState.status === "running" || this.activeTurns.has(threadId) || this.activeCompactions.has(threadId)) {
+      throw new WebConsoleError("compaction_busy", "Wait for the current turn or compaction to finish.", 409);
+    }
+    this.activeCompactions.add(threadId);
+    try {
+      const result = await connection.client.compactConversation(this.conversationIdForThread(threadId));
+      const messageId = this.store.recordManualCompaction(threadId, result);
+      if (messageId !== undefined) {
+        this.emit("message.changed", threadId, { messageId, updatedAt: new Date().toISOString() });
+      }
+      return result;
+    } finally {
+      this.activeCompactions.delete(threadId);
+    }
+  }
+
   async startTurn(threadId: string, input: StartWebTurnInput): Promise<{ readonly thread: WebThread; readonly turn: WebThread["runState"] }> {
     const text = input.text ?? "";
     const quotedText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);
@@ -1921,6 +1952,7 @@ export class WebService {
     const { thread, model, effort, requestedModel, requestedEffort } = selection;
     threadId = thread.id;
     const connection = this.connections.get(thread.sourceId);
+    if (this.activeCompactions.has(threadId)) throw new WebConsoleError("compaction_busy", "Wait for compaction to finish.", 409);
     if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
     if (connection === undefined || !thread.canSend) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
@@ -1955,6 +1987,7 @@ export class WebService {
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     threadId = thread.id;
+    if (this.activeCompactions.has(threadId)) throw new WebConsoleError("compaction_busy", "Wait for compaction to finish.", 409);
     const text = input.text ?? "";
     const attachmentIds = input.attachmentIds ?? [];
     const quotedText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);

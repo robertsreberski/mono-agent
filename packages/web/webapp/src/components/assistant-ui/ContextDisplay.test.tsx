@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { agent } from "../../test/fixtures";
 import type { ProviderUsageSnapshot } from "../../types";
 
-const apiMock = vi.hoisted(() => ({ providerUsage: vi.fn(), refreshProviderUsage: vi.fn() }));
+const apiMock = vi.hoisted(() => ({ providerUsage: vi.fn(), refreshProviderUsage: vi.fn(), compactThread: vi.fn() }));
 vi.mock("../../api", () => ({ api: apiMock }));
 import { ContextDisplay } from "./ContextDisplay";
 
@@ -28,6 +28,40 @@ const codexSnapshot: ProviderUsageSnapshot = {
 afterEach(() => { vi.clearAllMocks(); });
 
 describe("ContextDisplay", () => {
+  it("only offers manual compaction when capable, and disables duplicate clicks until the result", async () => {
+    let finish!: (value: unknown) => void;
+    apiMock.compactThread.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const context = { status: "current" as const, usage: { total: 50_000, contextWindow: 100_000 } };
+    const { rerender } = render(<ContextDisplay context={context} />);
+    fireEvent.click(screen.getByRole("button", { name: /context usage/i }));
+    expect(screen.queryByRole("button", { name: "Compact" })).not.toBeInTheDocument();
+    rerender(<ContextDisplay context={context} compactThreadId="thread-1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Compact" }));
+    expect(screen.getByRole("button", { name: "Compacting…" })).toBeDisabled();
+    expect(apiMock.compactThread).toHaveBeenCalledExactlyOnceWith("thread-1");
+    await act(async () => { finish({ status: "succeeded", operationId: "c1", trigger: "manual", tokensBefore: 40000, tokensAfter: 12000 }); });
+    expect(screen.getByRole("status", { name: "" })).toHaveTextContent("~40k → ~12k tokens");
+    expect(screen.getByRole("button", { name: "Compact" })).toBeEnabled();
+  });
+
+  it("disables compaction while the selected thread is running", () => {
+    render(<ContextDisplay context={{ status: "unavailable" }} compactThreadId="thread-3" compactBlocked />);
+    fireEvent.click(screen.getByRole("button", { name: /context usage/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Compact" }));
+    expect(screen.getByRole("button", { name: "Compact" })).toBeDisabled();
+    expect(apiMock.compactThread).not.toHaveBeenCalled();
+  });
+
+  it("shows skip and errors without inventing token savings", async () => {
+    apiMock.compactThread.mockResolvedValueOnce({ status: "skipped", operationId: "c2", trigger: "manual" });
+    apiMock.compactThread.mockRejectedValueOnce(new Error("This conversation is busy."));
+    render(<ContextDisplay context={{ status: "unavailable" }} compactThreadId="thread-2" />);
+    fireEvent.click(screen.getByRole("button", { name: /context usage/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Compact" }));
+    expect(await screen.findByText("Nothing to compact")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Compact" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("busy");
+  });
   it("renders exact current context and last-turn work as separate sections", async () => {
     const { container } = render(
       <ContextDisplay

@@ -97,6 +97,8 @@ export function operatorFetch(options: {
   readonly supportsAttachments?: boolean;
   readonly supportsHistoryAppend?: boolean;
   readonly supportsContextImport?: boolean;
+  readonly supportsManualCompaction?: boolean;
+  readonly onCompact?: (conversationId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
   readonly supportsAskUser?: boolean;
   readonly supportsAskById?: boolean;
   readonly supportsLiveInput?: boolean;
@@ -166,6 +168,7 @@ export function operatorFetch(options: {
           ...(options.supportsContextImport === true
             ? { contextImport: { version: 1, maxTextBytes: 32 * 1024 } }
             : {}),
+          ...(options.supportsManualCompaction === true ? { manualCompaction: { version: 1 } } : {}),
           askUser: options.supportsAskUser ?? false,
           ...(options.supportsAskById === true ? { askById: true } : {}),
           liveInput: options.supportsLiveInput ?? false,
@@ -287,6 +290,10 @@ export function operatorFetch(options: {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       await options.onVerbatim?.(decodeURIComponent(encodedConversationId), body);
       return Response.json({ recorded: true }, { status: 200 });
+    }
+    if (url.includes("/v1/conversations/") && url.endsWith("/compact")) {
+      const id = decodeURIComponent(url.slice(url.lastIndexOf("/v1/conversations/") + "/v1/conversations/".length, -"/compact".length));
+      return Response.json(await options.onCompact?.(id) ?? { status: "succeeded", trigger: "manual", operationId: "manual-1", tokensBefore: 1000, tokensAfter: 200 });
     }
     if (url.includes("/v1/conversations/") && url.endsWith("/context-imports")) {
       const encodedConversationId = url.slice(
