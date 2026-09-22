@@ -1,4 +1,5 @@
 import type { SubagentVerificationTarget } from "./subagent-verification-observer.js";
+import type { LiveInputMailbox } from "@mono-agent/agent-harness";
 import type { OwnedForegroundProcesses } from "@mono-agent/runtime-adapter";
 import type { InstanceOutcome } from "./subagent-instances.js";
 import type { SubagentContinuity, SubagentFailureReason, SubagentOwnerIdentity } from "./subagent-registry-ownership.js";
@@ -18,6 +19,8 @@ export interface ManagedSubagentAdmission {
 }
 export interface ManagedSubagentExecution {
   readonly ownedForegroundProcesses: OwnedForegroundProcesses;
+  /** In-process steering mailbox for this detached turn; absent means steering is unavailable. */
+  readonly liveInput?: LiveInputMailbox;
   started(): Promise<void>;
   /** Attached to the actual provider promise BEFORE the reporting race. */
   settled(outcome?: InstanceOutcome): Promise<void>;

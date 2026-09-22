@@ -172,7 +172,13 @@ IDs are conversation-scoped lowercase kebab-case, 1–40 characters. If omitted,
 an id such as `researcher-1` is generated. Results include the id, turn count,
 and status; the parent's Session envelope lists live instances on every turn.
 Use `AgentManage({id: "reviewer", close: true})` when done, or combine a final
-`message` with `close: true`. A combined call closes only after a successful
+`message` with `close: true`. While a detached turn runs,
+`AgentManage({id, steer: "<text>"})` offers text into that in-progress turn and
+returns an honest receipt (`applied` / `pending` / `not_applied` / `unsupported`);
+it starts no turn, and a foreground child can be reached by neither steer nor
+stop, because it blocks the parent's own turn. See
+[Background process jobs](../tools/background-process-jobs.md) for the receipt
+table and the in-process, restart-truthful mailbox. A combined call closes only after a successful
 message; busy, cancelled, timed-out, or failed turns keep the instance live.
 Close-only calls do not spend the parent call budget.
 

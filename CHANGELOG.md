@@ -7,6 +7,24 @@
   only by the 32 KiB context-import limit, and later summary polls no longer
   downgrade already-stored fuller run text to the clipped prefix.
 
+- **Steer a running detached subagent.** `AgentManage({id, steer: "<text>"})`
+  offers text into a persistent child's in-progress detached turn, the way live
+  input reaches a running conversation, and returns an honest receipt: `applied`
+  when the child consumed it, `pending` when the offer was accepted but had not
+  settled within the bounded three-second wait, `not_applied` with a reason
+  (`not_started`, `inactive`, `cancelled`, `closed`, …) when it was refused, and
+  `unsupported` when the child's runtime route cannot take live input at all.
+  Steering starts no turn, forces no answer and is exclusive with every other
+  parameter, including `description`; a queued or running instance still rejects
+  `message` and `close`. A foreground child can be reached by neither steer nor
+  stop — it blocks the parent's own turn, so only cancelling that turn ends it.
+  The mailbox is in-process and never persisted: it is closed at every
+  detached-turn termination path and is never handed to the max-turns wrap-up
+  continuation, and a started turn with no live mailbox — including after a host
+  restart — answers with a truthful negative receipt rather than a retryable
+  one. The turn envelope now publishes `AgentManage.steer`. Stop behaviour is
+  unchanged.
+
 - **Breaking: rename the `AgentSend` tool to `AgentManage`.** The tool that
   continues, closes, stops, inspects and acknowledges a persistent subagent
   instance is now `AgentManage`; its modes, parameters, results and behavior are

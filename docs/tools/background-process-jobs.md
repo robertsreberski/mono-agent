@@ -665,9 +665,10 @@ Use `AgentManage({id, stop: true})` to cooperatively stop a queued or running
 managed detached child. An optional `description` string of at most 80 characters
 is accepted and ignored: stop creates no job to label. Stop is exclusive with
 message, close, background, inspect and ack (even explicitly false values).
-It invokes no new provider turn (`executed:false`) and accepts no job id. Foreground children are
-not stoppable through this operation. Stop never force-kills an in-process
-provider or rolls back filesystem/network effects.
+It invokes no new provider turn (`executed:false`) and accepts no job id. Foreground
+children are reachable by neither stop nor steer: a foreground child blocks the
+parent's own turn, so only cancelling that parent turn ends it. Stop never
+force-kills an in-process provider or rolls back filesystem/network effects.
 
 Invalid requests return a JSON error receipt with a human-readable `message`,
 `stopRequested:false` and `executed:false`, before instance lookup:
@@ -705,6 +706,53 @@ resumable receipt. Unsupported ownership/storage returns
 authorize bypassing recovery fences. Intentional, certified parent stops do not
 require a failure acknowledgement; unrelated timeout, cancellation and failure
 recovery rules below are unchanged.
+
+### Parent steering
+
+Use `AgentManage({id, steer: "<text>"})` to offer text to a managed detached turn
+that is already in progress, the way live input reaches a running conversation.
+Steering starts no turn, invokes no new provider turn (`executed:false`), forces
+no answer and changes no ownership: the child's model loop decides what to do
+with the text on its next step. Steer is exclusive with every other parameter,
+including `description` — one mode per call — and a queued or running instance
+keeps rejecting `message` and `close` exactly as before.
+
+Invalid requests return a JSON error receipt with a human-readable `message`,
+`status:"not_applied"`, `applied:false` and `executed:false`, before instance lookup:
+
+- `subagent_steer_invalid_request`: `steer` must be a non-empty string of at most
+  8000 characters.
+- `subagent_steer_invalid_id`: `id` must be a string of 1–40 lowercase letters,
+  digits or hyphens, starting with a letter or digit.
+- `subagent_steer_unexpected_parameters`: only `id` and `steer` are accepted; the
+  message lists unexpected keys in sorted order.
+- `subagent_steer_unavailable`: no steering controller, or the offer's delivery
+  stayed unknown within the bounded wait.
+- `subagent_steer_foreground_unsupported`: the instance's active turn is foreground.
+- `subagent_steer_instance_not_found`, `subagent_steer_not_running`: unknown or
+  closed instance, or no detached turn to steer — use `message` to start one.
+
+The offer waits at most three seconds for the child to settle it, and the whole
+operation is bounded at six seconds. The receipt reports only what this offer did:
+
+| `status` | Meaning |
+| --- | --- |
+| `applied` | The child consumed the text into its turn (`applied:true`). |
+| `pending` | Offered and still unsettled within the bounded wait; it may still be consumed, so do not resend. |
+| `not_applied` | Refused. `not_started` means the turn is still queued with no provider loop yet, and is the only retryable reason. `inactive` means the turn has started but can no longer take input — it settled, was cancelled, moved on to its wrap-up continuation, or lost its mailbox to a host restart. `cancelled`, `closed`, `full`, `too_large` and `invalid` come from the mailbox itself. |
+| `unsupported` | This child's runtime route cannot take live input at all. |
+
+The mailbox is in-process and never persisted: it is created with the detached
+turn and closed and removed at every termination path, including cancellation,
+reporting, release and host shutdown. After a host restart there is no mailbox,
+and steer answers with a truthful negative receipt — the provider loop it would
+have steered did not survive either. A steer that arrives after the turn settles
+is refused, never silently queued for a later turn.
+
+Steering reaches the main run only. When a child exhausts `maxTurns`, the
+mailbox closes before the commit-and-report wrap-up continuation and is not
+handed to it at all, so a late steer reads `not_applied` (`inactive`) instead of
+being injected into that wrap-up.
 
 Timeout/cancellation requests abort and wait through the Agent grace period.
 If execution remains unresolved, the terminal job reports `childStillBusy:true`.

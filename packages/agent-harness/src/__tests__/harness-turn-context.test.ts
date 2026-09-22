@@ -521,3 +521,18 @@ it("tells the model where to put its question only when AskUser is admitted but 
     expect(formatHostCapabilities(options)).not.toContain(fallback);
   }
 });
+
+it("reports steering admission as an observation of the bound controller", async () => {
+  const { formatHostCapabilities } = await import("../context/turn-envelope.js");
+  const instances = { reserve: () => undefined, releaseReservation: () => undefined };
+  const withSteer = formatHostCapabilities({ subagents: { instances, backgroundSubagentController: { stop: () => undefined, steer: () => undefined } } } as never);
+  const withoutSteer = formatHostCapabilities({ subagents: { instances, backgroundSubagentController: { stop: () => undefined } } } as never);
+  expect(withSteer).toContain('"AgentManage.steer":{"available":true}');
+  expect(withoutSteer).toContain('"AgentManage.steer":{"available":false,"reason":"controller_unavailable"}');
+  // A controller without background admission cannot be steered either.
+  expect(formatHostCapabilities({ subagents: { backgroundSubagentController: { steer: () => undefined } } } as never))
+    .toContain('"AgentManage.steer":{"available":false,"reason":"controller_unavailable"}');
+  const operations = Object.keys(JSON.parse(withSteer.slice(withSteer.indexOf("{"))).operations);
+  expect(operations).toEqual([...operations].sort());
+  expect(operations).toContain("AgentManage.steer");
+});

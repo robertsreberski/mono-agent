@@ -1,4 +1,5 @@
 import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
+import { formatHostCapabilities } from "@mono-agent/agent-harness";
 // @ts-expect-error Real direct kernel execution seam.
 import { execToolRun } from "../../../agent-runtime/src/agent/tools/exec.js";
 import { parseProcessJobProjection, type ProcessJobProjection } from "@mono-agent/agent-contracts";
@@ -359,6 +360,120 @@ describe("parent stop", () => {
     expect((await send.execute("stop", { id: "helper", stop: true })).details.stop).toMatchObject({ code: "subagent_stop_recovery_required", stopRequested: true });
     await expect(send.execute("resume", { id: "helper", message: "next" })).rejects.toThrow("subagent_recovery_required");
   }, 15_000);
+});
+
+describe("parent steer", () => {
+  const liveMailbox = (f: Awaited<ReturnType<typeof managedFixture>>): ReadonlyMap<string, unknown> =>
+    (f.service as unknown as { readonly subagentLiveInput: ReadonlyMap<string, unknown> }).subagentLiveInput;
+
+  it("steers a running detached turn and proves the text reached the child's turn", async () => {
+    const f = await managedFixture(); const entered = deferred<void>(); const steered: string[] = [];
+    const run = vi.fn(async (request: any) => {
+      entered.resolve();
+      const iterator = request.liveInput[Symbol.asyncIterator]();
+      const next = await iterator.next();
+      steered.push(next.value.body);
+      expect(next.value.acknowledge()).toBe("recorded");
+      return { text: `acted on: ${next.value.body}`, subagentContinuity: { turnToken: request.turnToken, state: "retained" } };
+    });
+    const { agent, send } = tools(f, run);
+    const first = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" }); await entered.promise;
+    const result = await send.execute("steer", { id: "helper", steer: "prefer the smaller diff" });
+    expect(result.isError).toBeUndefined();
+    expect(result.details.steer).toMatchObject({ instanceId: "helper", jobId: first.details.jobId, status: "applied", applied: true, delivery: "consumed" });
+    const job = await done(f.service, first.details.jobId);
+    expect(steered).toEqual(["prefer the smaller diff"]);
+    expect(job.output.preview).toContain("acted on: prefer the smaller diff");
+    // Every termination path must remove the mailbox, not merely close it.
+    await vi.waitFor(() => expect(liveMailbox(f).size).toBe(0), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    const late = await f.service.internalController!(origin, 0).steer!(
+      { instanceId: "helper", instanceIncarnation: (await f.instances.get("helper"))!.incarnation!, turnToken: first.details.jobId }, "too late");
+    expect(late).toMatchObject({ jobId: first.details.jobId, delivery: "rejected", reason: "inactive" });
+    expect((await send.execute("late", { id: "helper", steer: "too late" })).details.steer)
+      .toMatchObject({ code: "subagent_steer_not_running", status: "not_applied", applied: false });
+    await send.execute("close", { id: "helper", close: true });
+  }, 20_000);
+
+  it("reports pending when the child cannot read its mailbox within the bounded wait", async () => {
+    const f = await managedFixture(); const entered = deferred<void>();
+    const run = vi.fn(async (request: any) => { entered.resolve(); await new Promise<void>((resolve) => request.abortSignal.addEventListener("abort", () => resolve(), { once: true })); return { text: "cancelled" }; });
+    const { agent, send } = tools(f, run);
+    const first = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" }); await entered.promise;
+    const result = await send.execute("steer", { id: "helper", steer: "look at the tests too" });
+    expect(result.details.steer).toMatchObject({ status: "pending", applied: false, delivery: "offered", reason: "not_settled" });
+    await send.execute("stop", { id: "helper", stop: true });
+    await done(f.service, first.details.jobId);
+    await vi.waitFor(() => expect(liveMailbox(f).size).toBe(0), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+  }, 25_000);
+
+  it.each([false, true])("reports unsupported whichever side of the offer observed it (offerFirst=%s)", async (offerFirst) => {
+    const f = await managedFixture(); const entered = deferred<void>(); const gate = deferred<any>(); const offered = deferred<void>();
+    const run = vi.fn(async (request: any) => {
+      entered.resolve();
+      // An accepted offer that is only later told the route cannot take live
+      // input is the same fact as an upfront refusal, and must read the same.
+      if (offerFirst) await offered.promise;
+      request.liveInput.markUnsupported();
+      return await gate.promise;
+    });
+    const { agent, send } = tools(f, run);
+    const first = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" }); await entered.promise;
+    try {
+      const steering = send.execute("steer", { id: "helper", steer: "go" });
+      offered.resolve();
+      const result = await steering;
+      expect(result.isError).toBeUndefined();
+      expect(result.details.steer).toMatchObject({ status: "unsupported", applied: false, delivery: "unsupported", reason: "unsupported" });
+    } finally { gate.resolve({ text: "done" }); await done(f.service, first.details.jobId); }
+  }, 20_000);
+
+  it("calls a settled turn inactive, not retryable, before its terminal state is persisted", async () => {
+    const f = await managedFixture(); const entered = deferred<void>(); const gate = deferred<any>();
+    const run = vi.fn(async () => { entered.resolve(); return await gate.promise; });
+    const { agent } = tools(f, run);
+    const first = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" }); await entered.promise;
+    const identity = { instanceId: "helper", instanceIncarnation: (await f.instances.get("helper"))!.incarnation!, turnToken: first.details.jobId };
+    const controller = f.service.internalController!(origin, 0);
+    // Reproduce the window between the child's last breath and the durable
+    // terminal record exactly: the mailbox is closed while the job record is
+    // still running, which is where a missing entry would have lied.
+    (f.service as unknown as { closeSubagentLiveInput(jobId: string): void }).closeSubagentLiveInput(first.details.jobId);
+    expect(liveMailbox(f).has(first.details.jobId)).toBe(true);
+    expect((await f.service.get(first.details.jobId))?.state).toBe("running");
+    expect(await controller.steer!(identity, "too late")).toMatchObject({ jobId: first.details.jobId, delivery: "rejected", reason: "inactive" });
+    gate.resolve({ text: "done" });
+    await done(f.service, first.details.jobId);
+    await vi.waitFor(() => expect(liveMailbox(f).size).toBe(0), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    // Once the entry is gone the started job still reads inactive, never not_started.
+    expect(await controller.steer!(identity, "too late")).toMatchObject({ delivery: "rejected", reason: "inactive" });
+  }, 20_000);
+
+  it("refuses a queued turn that has no provider loop yet, and a foreground turn", async () => {
+    const f = await managedFixture(undefined, { maxQueued: 1 }); const gate = deferred<any>();
+    const run = vi.fn(() => gate.promise); const { agent, send } = tools(f, run);
+    const first = await agent.execute("hold", { id: "holder", persist: true, background: true, prompt: "hold" });
+    try {
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+      await agent.execute("queue", { id: "helper", persist: true, background: true, prompt: "queue" });
+      expect((await send.execute("steer", { id: "helper", steer: "go" })).details.steer)
+        .toMatchObject({ status: "not_applied", applied: false, delivery: "rejected", reason: "not_started" });
+      await send.execute("drop", { id: "helper", stop: true });
+    } finally { gate.resolve({ text: "done" }); await done(f.service, first.details.jobId); }
+  }, 20_000);
+
+  it("cannot reach a foreground child and admits steering in the envelope only with a controller", async () => {
+    const f = await managedFixture(); const entered = deferred<void>(); const gate = deferred<any>();
+    const run = vi.fn(async () => { entered.resolve(); return await gate.promise; });
+    const { options, agent, send } = tools(f, run);
+    const foreground = agent.execute("start", { id: "helper", persist: true, prompt: "first" }); await entered.promise;
+    try {
+      expect((await send.execute("steer", { id: "helper", steer: "go" })).details.steer)
+        .toMatchObject({ code: "subagent_steer_foreground_unsupported", status: "not_applied", applied: false });
+      expect(formatHostCapabilities({ subagents: options } as never)).toContain('"AgentManage.steer":{"available":true}');
+      expect(formatHostCapabilities({ subagents: { instances: f.instances } } as never))
+        .toContain('"AgentManage.steer":{"available":false,"reason":"controller_unavailable"}');
+    } finally { gate.resolve({ text: "done" }); await foreground; }
+  }, 20_000);
 });
 
 describe("managed detached production execution", () => {

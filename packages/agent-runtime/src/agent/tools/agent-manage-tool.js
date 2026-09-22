@@ -1,4 +1,5 @@
 // @ts-check
+import { steerSubagent } from "./agent-manage-steer.js";
 import { stopSubagent } from "./agent-manage-stop.js";
 import { createAgentTool } from "./agent-tool.js";
 
@@ -17,9 +18,10 @@ export function createAgentManageTool(subagents, context = {}) {
       + "\n- Continue: {id, message} runs one more turn with the instance's full prior context and returns its answer. Add background: true to run it detached — this exact conversation wakes when that turn completes, fails, is interrupted or the child asks through AskParent. Add close: true to close the instance after a successful turn."
       + "\n- Close: {id, close: true} alone closes an instance that is not queued or running, and runs no model."
       + "\n- Stop: {id, stop: true} alone cooperatively stops a queued or running DETACHED turn (a foreground turn cannot be stopped this way; an optional description is accepted and ignored). It sends no instructions, does not force-kill and does not undo external effects. Read the receipt: resumable: true permits a later message or close; stop_requested keeps both blocked until the child actually settles."
+      + "\n- Steer: {id, steer: \"<text>\"} alone offers text to a DETACHED turn already in progress, the way live input reaches a running conversation. It starts no turn and forces no answer: read the receipt (applied / pending / not_applied / unsupported). A foreground turn cannot be reached, and an idle instance needs message."
       + "\n- Inspect: {id, inspect: true} alone returns bounded recovery evidence and runs no model."
       + "\n- Ack: {id, ack, message} authorizes exactly one continuation of an instance whose retained recovery evidence you have read; only 'retained' continuity can be acknowledged, and recovering a detached job also requires background: true. Lost or unknown continuity cannot be acknowledged — close that instance and create a new one carrying the context it needs."
-      + "\nA queued or running instance rejects message and close; stop it or wait for its receipt. A delivery timeout is an unknown outcome: inspect rather than re-sending. The Session envelope reports which of these modes are currently admitted.",
+      + "\nA queued or running instance rejects message and close; stop it, steer it, or wait for its receipt. A delivery timeout is an unknown outcome: inspect rather than re-sending. The Session envelope reports which of these modes are currently admitted.",
     parameters: {
       type: "object", additionalProperties: false, required: ["id"],
       properties: {
@@ -27,14 +29,16 @@ export function createAgentManageTool(subagents, context = {}) {
         message: { type: "string", minLength: 1, description: "Next instruction or brief for the child; required to continue, to run detached and with ack." },
         close: { type: "boolean", description: "Close the instance: alone, or after this turn succeeds." },
         stop: { type: "boolean", const: true, description: "Cooperatively stop the instance's detached turn; use alone with id." },
+        steer: { type: "string", minLength: 1, maxLength: 8000, description: "Text offered to the instance's in-progress detached turn; use alone with id." },
         background: { type: "boolean", description: "Run this continuation detached and wake this conversation when it settles; requires message." },
         description: { type: "string", maxLength: 80, description: "Short label for the job card (at most 80 characters); accepted and ignored by stop." },
         inspect: { type: "boolean", description: "Return recovery evidence only, running no model; use alone with id." },
         ack: { type: "string", maxLength: 128, description: "Acknowledgement token from the inspect evidence; authorizes one continuation and requires message." },
       },
     },
-    /** @param {string} callId @param {{id: string, message?: string, close?: boolean, stop?: boolean, description?: string, background?: boolean, inspect?: boolean, ack?: string}} params @param {AbortSignal} [signal] */
+    /** @param {string} callId @param {{id: string, message?: string, close?: boolean, stop?: boolean, steer?: string, description?: string, background?: boolean, inspect?: boolean, ack?: string}} params @param {AbortSignal} [signal] */
     async execute(callId, params, signal) {
+      if (Object.hasOwn(params, "steer")) return steerSubagent(subagents, params, signal);
       if (Object.hasOwn(params, "stop")) return stopSubagent(subagents, params, signal);
       if (!instances) throw new Error("Error: persistent subagent instances are unavailable in this conversation.");
       if (signal?.aborted) throw new Error("tool execution aborted");

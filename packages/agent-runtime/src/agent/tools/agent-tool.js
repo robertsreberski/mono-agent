@@ -553,9 +553,13 @@ export function createAgentTool(subagents, context = {}, continuation) {
          * its spend, tool calls and detached-job accounting behave exactly
          * like the main turn's.
          */
-        const invokeChildRun = (childPrompt, childMaxTurns) => subagents.run({
+        const invokeChildRun = (childPrompt, childMaxTurns, steerable = true) => subagents.run({
           ...(detached && execution ? { detached: true, deadlineAt: execution.deadlineAt } : {}),
-          ...(execution?.managed ? { ownedForegroundProcesses: execution.managed.ownedForegroundProcesses, turnToken: instance?.activeTurn?.token } : {}),
+          ...(execution?.managed ? { ownedForegroundProcesses: execution.managed.ownedForegroundProcesses, turnToken: instance?.activeTurn?.token,
+            // Opaque host mailbox for parent steering; the host decides whether
+            // this route can consume it at all. The wrap-up continuation is not
+            // steerable, so it is never handed the mailbox at all.
+            ...(steerable && execution.managed.liveInput ? { liveInput: execution.managed.liveInput } : {}) } : {}),
           ...(instance ? { instance: { id: instance.id, sessionId: instance.sessionId, sessionsRoot: instance.sessionsRoot } } : {}),
           systemPrompt: instance?.systemPrompt ?? profile.systemPrompt,
           prompt: childPrompt,
@@ -611,7 +615,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
               ...(params.verification?.reportPath === undefined ? {} : { reportPath: params.verification.reportPath }),
               persistent: instance !== undefined,
             });
-            const wrapResult = await invokeChildRun(prompt, WRAP_UP_MAX_TURNS);
+            const wrapResult = await invokeChildRun(prompt, WRAP_UP_MAX_TURNS, false);
             return attachWrapUpSignals(toWrapUpRecord(wrapResult, { turnsUsed, turnsAllowed: maxTurns }), first, wrapResult);
           } catch (error) {
             return attachWrapUpSignals({
@@ -630,6 +634,10 @@ export function createAgentTool(subagents, context = {}, continuation) {
           await execution?.managed?.started();
           const underlying = Promise.resolve().then(async () => {
             const first = await invokeChildRun(params.prompt, maxTurns);
+            // The steering mailbox belongs to the main run only. The max-turns
+            // wrap-up is a commit-and-report continuation, so a late steer must
+            // read as not applied instead of being injected into it.
+            execution?.managed?.liveInput?.close();
             const wrapUp = await maybeRunWrapUp(first);
             if (!wrapUp || first === null || typeof first !== "object") return first;
             // The host sets session-continuity signals per run
