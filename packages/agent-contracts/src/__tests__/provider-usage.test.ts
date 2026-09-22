@@ -51,7 +51,7 @@ const weekly = (usedPercent: number, fetchedAt: string = halfWeek, resetsAt?: st
 });
 describe("provider usage burn projection", () => {
   it("reports on-track burn below 1x pace without a run-out", () => {
-    expect(projectProviderUsageWindow(weekly(25), halfWeek)).toEqual({ pace: 0.5, elapsedFraction: 0.5, severity: "ok", confidence: "normal" });
+    expect(projectProviderUsageWindow(weekly(25), halfWeek)).toEqual({ pace: 0.5, elapsedFraction: 0.5, severity: "ok", confidence: "normal", projectedUnusedPercent: 50 });
   });
   it("treats exactly 1.0 pace as on track with no run-out", () => {
     expect(projectProviderUsageWindow(weekly(50), halfWeek)).toEqual({ pace: 1, elapsedFraction: 0.5, severity: "ok", confidence: "normal" });
@@ -92,7 +92,19 @@ describe("provider usage burn projection", () => {
     expect(projectProviderUsageWindow(weekly(96, halfWeek, null), halfWeek)).toBeUndefined();
   });
   it("reports zero usage as still with no run-out", () => {
-    expect(projectProviderUsageWindow(weekly(0), halfWeek)).toEqual({ pace: 0, elapsedFraction: 0.5, severity: "ok", confidence: "normal" });
+    expect(projectProviderUsageWindow(weekly(0), halfWeek)).toEqual({ pace: 0, elapsedFraction: 0.5, severity: "ok", confidence: "normal", projectedUnusedPercent: 100 });
+  });
+  it("emits the unused share just below 1x pace", () => {
+    const projection = projectProviderUsageWindow(weekly(49.5), halfWeek)!;
+    expect(projection.pace).toBeCloseTo(0.99, 10);
+    expect(projection.projectedUnusedPercent).toBeCloseTo(1, 5);
+    expect(projection.exhaustsAt).toBeUndefined();
+  });
+  it("suppresses the unused share at low confidence even when under pace", () => {
+    const projection = projectProviderUsageWindow(weekly(4, "2026-09-19T16:34:22.000Z"), "2026-09-19T16:34:22.000Z")!;
+    expect(projection.confidence).toBe("low");
+    expect(projection.pace).toBeLessThan(1);
+    expect(projection.projectedUnusedPercent).toBeUndefined();
   });
   it("clamps full usage to a run-out at the measurement", () => {
     const projection = projectProviderUsageWindow(weekly(100), halfWeek)!;

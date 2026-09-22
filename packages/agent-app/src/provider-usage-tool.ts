@@ -16,7 +16,9 @@ function projectSnapshot(snapshot: ProviderUsageSnapshot): Record<string, unknow
       windows.push({ kind, pace: round2(projection.pace), elapsedFraction: round2(projection.elapsedFraction),
         severity: projection.severity, confidence: projection.confidence,
         ...(projection.exhaustsAt === undefined || projection.leadMs === undefined ? {}
-          : { exhaustsAt: projection.exhaustsAt, leadMs: projection.leadMs }) });
+          : { exhaustsAt: projection.exhaustsAt, leadMs: projection.leadMs }),
+        ...(projection.projectedUnusedPercent === undefined ? {}
+          : { projectedUnusedPercent: round2(projection.projectedUnusedPercent) }) });
       if (projection.exhaustsAt !== undefined && projection.leadMs !== undefined) {
         const window = provider.windows.find((item) => item.kind === kind);
         warnings.push(`${provider.label} ${window?.label ?? kind} is projected to run out ${projection.exhaustsAt}, ${formatProviderUsageLead(projection.leadMs)} before its ${window?.resetsAt} reset.`);

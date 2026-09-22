@@ -208,7 +208,7 @@ describe("ContextDisplay", () => {
     const provider = screen.getByRole("region", { name: "Codex usage" });
     expect(within(provider).getByRole("heading", { name: "Codex usage" })).toBeVisible();
     expect(within(provider).getByText("Pro")).toHaveClass("provider-usage-plan");
-    expect(within(provider).getByRole("progressbar", { name: "Codex Weekly used" })).toHaveAttribute("value", "42");
+    expect(within(provider).getByRole("progressbar", { name: /Codex Weekly used/ })).toHaveAttribute("value", "42");
   });
 
   it.each([
@@ -251,6 +251,6 @@ describe("ContextDisplay", () => {
     expect(await screen.findByText("Last known usage")).toBeVisible();
     expect(screen.getByText("Usage unavailable — Provider usage is unavailable.")).toBeVisible();
     expect(screen.getByRole("progressbar", { name: "Context window used" })).toBeVisible();
-    expect(screen.getByRole("progressbar", { name: "Codex Weekly used" })).toBeVisible();
+    expect(screen.getByRole("progressbar", { name: /Codex Weekly used/ })).toBeVisible();
   });
 });

@@ -48,6 +48,8 @@ export interface ProviderUsageProjection {
   readonly exhaustsAt?: string;
   /** Gap between exhaustsAt and resetsAt in ms; present exactly when exhaustsAt is. */
   readonly leadMs?: number;
+  /** Share of the window's quota projected to go unused at reset; only at normal confidence when pace < 1. */
+  readonly projectedUnusedPercent?: number;
 }
 /** One window's projection, for consumers that render per-window state. */
 export interface ProviderUsageWindowProjection {
@@ -69,9 +71,11 @@ export function projectProviderUsageWindow(
   if (elapsedFraction > 1) return undefined;
   const confidence = elapsedFraction < 0.1 ? "low" : "normal";
   // Very early in a window one call extrapolates wildly: report pace, force ok, no run-out.
-  if (window.usedPercent === 0) return { pace: 0, elapsedFraction, severity: "ok", confidence };
+  if (window.usedPercent === 0) return { pace: 0, elapsedFraction, severity: "ok", confidence,
+    ...(confidence === "normal" ? { projectedUnusedPercent: 100 } : {}) };
   const pace = window.usedPercent / (100 * elapsedFraction);
-  if (confidence === "low" || pace <= 1) return { pace, elapsedFraction, severity: "ok", confidence };
+  if (confidence === "low" || pace <= 1) return { pace, elapsedFraction, severity: "ok", confidence,
+    ...(confidence === "normal" && pace < 1 ? { projectedUnusedPercent: 100 - pace * 100 } : {}) };
   const severity = pace >= 1.5 ? "unsustainable" : "ahead";
   const roundedExhaustMs = window.usedPercent >= 100 ? Math.round(anchorMs)
     : Math.round(anchorMs + (100 - window.usedPercent) / (window.usedPercent / elapsedMs));

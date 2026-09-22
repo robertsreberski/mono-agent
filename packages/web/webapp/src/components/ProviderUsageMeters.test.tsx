@@ -114,12 +114,26 @@ function codexUsage(usedPercent: number, stale = false): ProviderUsage {
     windows: [{ kind: "weekly", label: "Weekly", usedPercent, periodMs: weekMs, resetsAt: weekReset }] };
 }
 describe("burn-pace projection lines", () => {
-  it("renders healthy windows exactly as before, with no projection line", () => {
+  it("renders healthy windows with a tick, chip and unused note instead of a warning", () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
-    // 25 % at half the window: pace 0.5, on track.
-    render(<ProviderUsageMeters usage={{ ...codexUsage(25), fetchedAt: "2026-09-22T20:10:22.000Z" }} />);
+    // 25 % at half the window: pace 0.5, on track, half the quota unused.
+    const view = render(<ProviderUsageMeters usage={{ ...codexUsage(25), fetchedAt: "2026-09-22T20:10:22.000Z" }} />);
     expect(screen.queryByText(/empty/)).toBeNull();
-    expect(screen.getByRole("progressbar").getAttribute("aria-label")).toBe("Codex Weekly used");
+    expect(screen.getByText("≈ 50% unused at reset")).toHaveClass("provider-usage-projection", "is-unused");
+    expect(screen.getByText("0.5×")).toHaveClass("provider-usage-pace", "is-steady");
+    expect(view.container.querySelector(".provider-usage-tick")).toHaveStyle({ left: "50%" });
+    expect(screen.getByRole("progressbar").getAttribute("aria-label"))
+      .toBe("Codex Weekly used, 25 %, 50 % of the window elapsed, pace 0.5x");
+  });
+  it("shows the unused note at exactly 5 % and hides it below", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    const view = render(<ProviderUsageMeters usage={{ ...codexUsage(47.5), fetchedAt: "2026-09-22T20:10:22.000Z" }} />);
+    expect(screen.getByText("≈ 5% unused at reset")).toBeInTheDocument();
+    view.rerender(<ProviderUsageMeters usage={{ ...codexUsage(48), fetchedAt: "2026-09-22T20:10:22.000Z" }} />);
+    expect(screen.queryByText(/unused at reset/)).toBeNull();
+    // The tick and chip still render: the trajectory is a fact even without a note.
+    expect(view.container.querySelector(".provider-usage-tick")).not.toBeNull();
+    expect(screen.getByText("1.0×")).toBeInTheDocument();
   });
   it("marks ahead and unsustainable tiers with distinct classes and accessible names", () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
@@ -128,13 +142,29 @@ describe("burn-pace projection lines", () => {
     expect(ahead).toHaveClass("provider-usage-projection", "is-ahead");
     expect(ahead.textContent).toMatch(/\(.+ before reset\)/);
     expect(ahead.getAttribute("title")).toMatch(/Projected to run out .* at current pace 1\.26x/);
-    expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/projected to run out before reset \(ahead\)/);
+    // A window is never both ahead and under: the run-out excludes the unused note.
+    expect(screen.queryByText(/unused at reset/)).toBeNull();
+    expect(screen.getByText("1.3×")).toHaveClass("provider-usage-pace", "is-ahead");
+    expect(screen.getByRole("progressbar").getAttribute("aria-label"))
+      .toBe("Codex Weekly used, 55 %, 44 % of the window elapsed, pace 1.3x, projected to run out before reset (ahead)");
     view.rerender(<ProviderUsageMeters usage={codexUsage(96)} />);
     const exhausted = screen.getByText(/empty/);
     expect(exhausted).toHaveClass("provider-usage-projection", "is-unsustainable");
     expect(exhausted.textContent).toMatch(/\(.+ before reset\)/);
+    expect(screen.getByText("2.2×")).toHaveClass("provider-usage-pace", "is-unsustainable");
     expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/projected to run out before reset \(unsustainable\)/);
     expect(exhausted).not.toHaveClass("is-ahead");
+  });
+  it("suppresses the chip and both lines at low confidence while keeping the tick", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-19T12:00:00Z"));
+    // 8 % elapsed with 50 % burned: 10x pace, but too early to say so.
+    const view = render(<ProviderUsageMeters usage={codexUsage(50, false)} />);
+    view.rerender(<ProviderUsageMeters usage={{ ...codexUsage(50, false), fetchedAt: "2026-09-19T16:34:22.000Z" }} />);
+    expect(screen.queryByText(/empty/)).toBeNull();
+    expect(screen.queryByText(/unused at reset/)).toBeNull();
+    expect(view.container.querySelector(".provider-usage-pace")).toBeNull();
+    expect(view.container.querySelector(".provider-usage-tick")).not.toBeNull();
+    expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/pace 10\.0x/);
   });
   it("keeps the anchored projection on stale snapshots and reads empty once the run-out passes", async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));

@@ -105,6 +105,7 @@ describe("ProviderUsage tool", () => {
       expect(Date.parse(window.exhaustsAt as string)).toBeGreaterThan(Date.parse(codex.fetchedAt));
       expect(Date.parse(window.exhaustsAt as string)).toBeLessThan(Date.parse(codex.windows[0]!.resetsAt!));
       expect(window.leadMs).toBe(Date.parse(codex.windows[0]!.resetsAt!) - Date.parse(window.exhaustsAt as string));
+      expect(window).not.toHaveProperty("projectedUnusedPercent");
       expect(projection.warning).toMatch(/Codex Weekly is projected to run out \S+, \d+d \d+h before its \S+ reset\./);
       expect(projection.warning).toContain(`${formatProviderUsageLead(window.leadMs as number)} before its`);
       expect(JSON.parse((result.content as [{ text: string }])[0]!.text)).toEqual(body);
@@ -125,7 +126,7 @@ describe("ProviderUsage tool", () => {
       expect(body.providers).toEqual(calm.providers);
       expect(body.projection).toEqual({ providers: [{
         providerId: "anthropic", anchor: calm.providers[0]!.fetchedAt,
-        windows: [{ kind: "weekly", pace: 0.5, elapsedFraction: 0.5, severity: "ok", confidence: "normal" }],
+        windows: [{ kind: "weekly", pace: 0.5, elapsedFraction: 0.5, severity: "ok", confidence: "normal", projectedUnusedPercent: 50 }],
       }] });
     } finally { await client.close(); await bound.cleanup?.(); }
   });

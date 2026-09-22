@@ -204,5 +204,6 @@ extra vendor calls. No quota purchases or routing decisions are performed.
 Both surfaces also report a constant-rate burn projection anchored at each
 measurement: per-window pace (1 = on track to consume the window by its reset),
 a projected run-out with its lead time before the reset only when ahead of
-pace, and `ahead`/`unsustainable` (1.5x and above) warnings — an extrapolation,
-not a forecast.
+pace, a neutral unused-share note when clearly under pace, and
+`ahead`/`unsustainable` (1.5x and above) warnings — an extrapolation, not a
+forecast. Meters add an on-track tick and a pace chip.

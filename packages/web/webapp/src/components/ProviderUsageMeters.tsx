@@ -112,17 +112,29 @@ export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage 
       <span title={`Fetched ${new Date(usage.fetchedAt).toLocaleString()}`}>Last known usage</span>
     </div>}
     {usage.windows.map((window) => {
-      // Anchored at the measurement, never wall-clock; only ahead/unsustainable windows add a line.
+      // One shared derivation, anchored at the measurement: a window is never both ahead and under.
       const projection = projectProviderUsageWindow(window, usage.fetchedAt);
-      const alert = projection !== undefined && projection.exhaustsAt !== undefined
+      const alert = projection !== undefined && projection.exhaustsAt !== undefined && projection.leadMs !== undefined
         && (projection.severity === "ahead" || projection.severity === "unsustainable") ? projection : undefined;
+      const unused = alert === undefined && projection?.projectedUnusedPercent !== undefined && projection.projectedUnusedPercent >= 5
+        ? Math.round(projection.projectedUnusedPercent) : undefined;
+      const chip = projection !== undefined && projection.confidence === "normal"
+        ? { text: `${projection.pace.toFixed(1)}×`, tier: projection.severity === "ok" ? "is-steady" : `is-${projection.severity}` } : undefined;
+      const name = projection === undefined ? `${usage.label} ${window.label} used`
+        : `${usage.label} ${window.label} used, ${window.usedPercent} %, ${Math.round(projection.elapsedFraction * 100)} % of the window elapsed, pace ${projection.pace.toFixed(1)}x`
+          + (alert === undefined ? "" : `, projected to run out before reset (${alert.severity})`);
       return <div className="provider-usage-window" key={window.kind}>
-        <div className="provider-usage-label"><span>{window.label}</span><span>{window.usedPercent}%</span></div>
-        <progress aria-label={alert === undefined ? `${usage.label} ${window.label} used`
-          : `${usage.label} ${window.label} used, projected to run out before reset (${alert.severity})`} max={100} value={window.usedPercent} />
+        <div className="provider-usage-label"><span>{window.label}</span><span>{window.usedPercent}%{chip !== undefined && <> <span className={`provider-usage-pace ${chip.tier}`}>{chip.text}</span></>}</span></div>
+        <span className="provider-usage-bar">
+          <progress aria-label={name} max={100} value={window.usedPercent} />
+          {projection !== undefined && <span className="provider-usage-tick" aria-hidden="true" style={{ left: `${projection.elapsedFraction * 100}%` }} />}
+        </span>
         {window.resetsAt && <time dateTime={window.resetsAt} title={new Date(window.resetsAt).toLocaleString()}>{countdown(window.resetsAt, now)}</time>}
-        {alert?.exhaustsAt !== undefined && alert.leadMs !== undefined && <span className={`provider-usage-projection is-${alert.severity}`}
-          title={`Projected to run out ${new Date(alert.exhaustsAt).toLocaleString()} at current pace ${alert.pace.toFixed(2)}x`}>{projectionLine(alert.exhaustsAt, alert.leadMs, now)}</span>}
+        {alert?.exhaustsAt !== undefined && alert.leadMs !== undefined
+          ? <span className={`provider-usage-projection is-${alert.severity}`}
+            title={`Projected to run out ${new Date(alert.exhaustsAt).toLocaleString()} at current pace ${alert.pace.toFixed(2)}x`}>{projectionLine(alert.exhaustsAt, alert.leadMs, now)}</span>
+          : unused !== undefined
+            ? <span className="provider-usage-projection is-unused">≈ {unused}% unused at reset</span> : null}
       </div>;
     })}
     {usage.error && <p className="provider-usage-error" role="status">Usage unavailable — {usage.error.message}</p>}
