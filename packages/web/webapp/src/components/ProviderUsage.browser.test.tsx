@@ -262,6 +262,11 @@ describe("compact Agent settings subscription meters", () => {
       const tick = codexWindow.querySelector(".provider-usage-tick")!;
       expect(parseFloat(tick.getAttribute("style")!.match(/left: ([\d.]+)%/)![1]!)).toBeCloseTo(7.14, 1);
       expect(tick).toHaveClass("is-passed");
+      // The dot rides inside the bar, never above or below it.
+      const barBox = codexWindow.querySelector("progress")!.getBoundingClientRect();
+      const dotBox = tick.getBoundingClientRect();
+      expect(dotBox.top).toBeGreaterThanOrEqual(barBox.top - 0.01);
+      expect(dotBox.bottom).toBeLessThanOrEqual(barBox.bottom + 0.01);
       // The tail is part of the meter's own palette, never a foreign marker colour.
       expect(getComputedStyle(tick).backgroundColor).not.toBe(getComputedStyle(document.body).color);
       expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(viewport.width);
