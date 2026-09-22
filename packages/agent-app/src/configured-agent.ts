@@ -196,6 +196,7 @@ export interface ConfiguredAgentHarnessOptions {
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
+  readonly runtimeOptionsForManualCompaction?: AgentHarnessOptions["runtimeOptionsForManualCompaction"];
   /** Best-effort diagnostic when the default MemoryRecall endpoint cannot start. */
   readonly onMemoryRecallUnavailable?: (error: unknown) => void;
   /** Best-effort diagnostic when the chronological MemoryJournal endpoint cannot start. */
@@ -1392,6 +1393,9 @@ async function createConfiguredAgentHarnessInternal(
     ...(runtimeOptionsForRequest === undefined
       ? {}
       : { runtimeOptionsForRequest }),
+    ...(options.runtimeOptionsForManualCompaction === undefined
+      ? {}
+      : { runtimeOptionsForManualCompaction: options.runtimeOptionsForManualCompaction }),
     // Same predicate the process-jobs extension uses, so the session block only
     // describes backgrounding on turns whose Exec/Bash actually offer it.
     backgroundSubagentsAvailable: (input) => backgroundSubagentsAvailableForRequest(input, {

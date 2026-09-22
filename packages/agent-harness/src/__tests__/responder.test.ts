@@ -63,21 +63,21 @@ describe("createAgentResponder", () => {
     const responder = createAgentResponder({
       harness: {
         run: async (request) => { order.push("turn"); return okResponse(request.conversationId); },
-        compactConversation: async () => {
-          order.push("compact:start");
+        compactConversation: async (_id, compactionOptions) => {
+          order.push(`compact:start:${compactionOptions?.model ?? "default"}`);
           await compactGate;
           order.push("compact:end");
           return { status: "succeeded", trigger: "manual", operationId: "c1" };
         },
       },
     });
-    const compaction = responder.compactConversation!("web:one");
+    const compaction = responder.compactConversation!("web:one", { model: "anthropic:claude-opus-4-8" });
     const turn = responder.respond(baseRequest("web:one"), noopStream());
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(order).toEqual(["compact:start"]);
+    expect(order).toEqual(["compact:start:anthropic:claude-opus-4-8"]);
     finishCompact();
     await Promise.all([compaction, turn]);
-    expect(order).toEqual(["compact:start", "compact:end", "turn"]);
+    expect(order).toEqual(["compact:start:anthropic:claude-opus-4-8", "compact:end", "turn"]);
   });
   it("positively exposes context import and serializes it onto the responder bucket", async () => {
     const calls: Array<[string, string, string]> = [];

@@ -98,7 +98,7 @@ export function operatorFetch(options: {
   readonly supportsHistoryAppend?: boolean;
   readonly supportsContextImport?: boolean;
   readonly supportsManualCompaction?: boolean;
-  readonly onCompact?: (conversationId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  readonly onCompact?: (conversationId: string, body: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
   readonly supportsAskUser?: boolean;
   readonly supportsAskById?: boolean;
   readonly supportsLiveInput?: boolean;
@@ -293,7 +293,8 @@ export function operatorFetch(options: {
     }
     if (url.includes("/v1/conversations/") && url.endsWith("/compact")) {
       const id = decodeURIComponent(url.slice(url.lastIndexOf("/v1/conversations/") + "/v1/conversations/".length, -"/compact".length));
-      return Response.json(await options.onCompact?.(id) ?? { status: "succeeded", trigger: "manual", operationId: "manual-1", tokensBefore: 1000, tokensAfter: 200 });
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return Response.json(await options.onCompact?.(id, body) ?? { status: "succeeded", trigger: "manual", operationId: "manual-1", tokensBefore: 1000, tokensAfter: 200 });
     }
     if (url.includes("/v1/conversations/") && url.endsWith("/context-imports")) {
       const encodedConversationId = url.slice(

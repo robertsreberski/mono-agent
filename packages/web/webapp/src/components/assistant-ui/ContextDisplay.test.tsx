@@ -4,8 +4,9 @@ import { agent } from "../../test/fixtures";
 import type { ProviderUsageSnapshot } from "../../types";
 
 const apiMock = vi.hoisted(() => ({ providerUsage: vi.fn(), refreshProviderUsage: vi.fn(), compactThread: vi.fn() }));
-vi.mock("../../api", () => ({ api: apiMock }));
+vi.mock("../../api", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../api")>()), api: apiMock }));
 import { ContextDisplay } from "./ContextDisplay";
+import { ApiError } from "../../api";
 
 const codexSnapshot: ProviderUsageSnapshot = {
   schema: "mono-agent.provider-usage.v1",
@@ -44,6 +45,16 @@ describe("ContextDisplay", () => {
     expect(screen.getByRole("button", { name: "Compact" })).toBeEnabled();
   });
 
+  it("reports a lost connection as an unknown compaction outcome", async () => {
+    apiMock.compactThread.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    render(<ContextDisplay context={{ status: "unavailable" }} compactThreadId="thread-4" />);
+    fireEvent.click(screen.getByRole("button", { name: /context usage/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Compact" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Connection lost; the compaction outcome is unknown. Refresh this conversation.");
+    expect(alert).not.toHaveTextContent("Failed to fetch");
+  });
+
   it("disables compaction while the selected thread is running", () => {
     render(<ContextDisplay context={{ status: "unavailable" }} compactThreadId="thread-3" compactBlocked />);
     fireEvent.click(screen.getByRole("button", { name: /context usage/i }));
@@ -54,7 +65,7 @@ describe("ContextDisplay", () => {
 
   it("shows skip and errors without inventing token savings", async () => {
     apiMock.compactThread.mockResolvedValueOnce({ status: "skipped", operationId: "c2", trigger: "manual" });
-    apiMock.compactThread.mockRejectedValueOnce(new Error("This conversation is busy."));
+    apiMock.compactThread.mockRejectedValueOnce(new ApiError("This conversation is busy.", 409));
     render(<ContextDisplay context={{ status: "unavailable" }} compactThreadId="thread-2" />);
     fireEvent.click(screen.getByRole("button", { name: /context usage/i }));
     fireEvent.click(screen.getByRole("button", { name: "Compact" }));

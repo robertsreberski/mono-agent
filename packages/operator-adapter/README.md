@@ -74,8 +74,10 @@ Keep bearer values out of source config when possible. Set
   expose a bounded `skills` snapshot with ready/error state and per-item
   inlined/on-demand/unavailable status. `info` may be a function so local-model
   choices and skills can refresh without restarting the endpoint.
-- `POST {basePath}/v1/conversations/:id/compact` accepts `{}` and requests
-  guarded, promptless compaction of the exact idle conversation. It is present
+- `POST {basePath}/v1/conversations/:id/compact` accepts `{}` or
+  `{ "model": "<provider:model>" }` (the model selection a turn on that
+  conversation would declare) and requests guarded, promptless compaction of
+  the exact idle conversation. It is present
   only with `capabilities.manualCompaction: { version: 1 }`, uses the normal
   operator bearer, and returns bounded manual status/counts without summary
   text. Busy conversations return 409 `compaction_busy`, unsupported hosts 501

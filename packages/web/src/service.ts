@@ -624,7 +624,8 @@ export class WebService {
   private readonly lease: WebStateLease;
   private readonly subscribers = new Set<(event: WebEvent) => boolean | void>();
   private readonly activeTurns = new Map<string, ActiveTurn>();
-  private readonly activeCompactions = new Set<string>();
+  /** Threads with an in-flight manual compaction; wakes wait on the promise. */
+  private readonly activeCompactions = new Map<string, Promise<unknown>>();
   private readonly activeLiveInputs = new Map<string, ActiveLiveInput>();
   private readonly drainingLiveInputThreads = new Set<string>();
   private readonly activeUploads = new Map<string, number>();
@@ -1924,19 +1925,33 @@ export class WebService {
     if (connection.info.supportsManualCompaction !== true) {
       throw new WebConsoleError("compaction_unsupported", "This agent does not support manual compaction.", 409);
     }
-    if (thread.runState.status === "running" || this.activeTurns.has(threadId) || this.activeCompactions.has(threadId)) {
+    if (thread.runState.status === "running" || this.activeTurns.has(threadId) || this.activeCompactions.has(threadId)
+      || this.hostWakeReservations.has(threadId) || this.drainingLiveInputThreads.has(threadId)) {
       throw new WebConsoleError("compaction_busy", "Wait for the current turn or compaction to finish.", 409);
     }
-    this.activeCompactions.add(threadId);
-    try {
-      const result = await connection.client.compactConversation(this.conversationIdForThread(threadId));
-      const messageId = this.store.recordManualCompaction(threadId, result);
-      if (messageId !== undefined) {
-        this.emit("message.changed", threadId, { messageId, updatedAt: new Date().toISOString() });
+    // The model the next turn on this thread would declare (see launchTurn metadata).
+    const { model } = this.resolveTurnSelection(threadId);
+    const operation = (async () => {
+      const result = await connection.client.compactConversation(
+        this.conversationIdForThread(threadId),
+        model === undefined ? undefined : { model },
+      );
+      // A thread deleted meanwhile keeps the agent's outcome but records nothing.
+      if (this.store.getThread(threadId) !== undefined) {
+        const messageId = this.store.recordManualCompaction(threadId, result);
+        if (messageId !== undefined) {
+          this.emit("message.changed", threadId, { messageId, updatedAt: new Date().toISOString() });
+        }
       }
       return result;
+    })();
+    this.activeCompactions.set(threadId, operation.catch(() => undefined));
+    try {
+      return await operation;
     } finally {
       this.activeCompactions.delete(threadId);
+      // Live input queued while compacting was held back; drain it now.
+      if (!this.stopped) void this.drainQueuedLiveInputs(threadId);
     }
   }
 
@@ -2604,6 +2619,7 @@ export class WebService {
   private async drainQueuedLiveInputs(threadId: string): Promise<void> {
     if (this.stopped
       || this.activeTurns.has(threadId)
+      || this.activeCompactions.has(threadId)
       || this.hostWakeReservations.has(threadId)
       || this.drainingLiveInputThreads.has(threadId)) return;
     this.drainingLiveInputThreads.add(threadId);
@@ -2794,6 +2810,9 @@ export class WebService {
           };
         }
       }
+      // Like an active turn, an in-flight manual compaction is waited out; the
+      // wake's reservation keeps any new compaction from starting meanwhile.
+      await this.activeCompactions.get(input.threadId);
       if (this.stopped) {
         this.store.abandonProcessJobWake({
           sourceId: input.sourceId,

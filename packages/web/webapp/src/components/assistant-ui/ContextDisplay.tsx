@@ -4,7 +4,7 @@ import { isProviderUsageId, PROVIDER_USAGE_LABELS } from "@mono-agent/agent-cont
 import { Popover } from "@base-ui/react/popover";
 import { type CSSProperties, type ReactNode, useState } from "react";
 import type { AgentManualCompactionResult } from "@mono-agent/agent-contracts";
-import { api } from "../../api";
+import { api, ApiError } from "../../api";
 import type { AgentSummary, ProviderUsageId } from "../../types";
 import { formatUsd, type ConsoleContextProjection } from "../../usage";
 import { Icon } from "../Icon";
@@ -159,7 +159,11 @@ export function ContextDisplay({
     try {
       setCompactResult(await api.compactThread(compactThreadId));
     } catch (error) {
-      setCompactError(error instanceof Error ? error.message : "Compaction failed.");
+      // A server answer is authoritative; a lost connection (e.g. a network
+      // TypeError) may have compacted anyway, so never imply that it did not.
+      setCompactError(error instanceof ApiError
+        ? error.message
+        : "Connection lost; the compaction outcome is unknown. Refresh this conversation.");
     } finally {
       setCompacting(false);
     }

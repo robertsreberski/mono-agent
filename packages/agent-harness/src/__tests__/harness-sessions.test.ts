@@ -185,6 +185,7 @@ function createSpyMemoryStore() {
   return { store, hostSummaryCalls: () => hostSummaryCalls, captureCalls: () => captureCalls };
 }
 
+const OVERRIDE_MODEL = "anthropic:claude-opus-4-8";
 type ManualRunOptions = RuntimeRunOptions & { manualCompaction?: boolean };
 const isManual = (options: RuntimeRunOptions): boolean => (options as ManualRunOptions).manualCompaction === true;
 const manualResult = (options: RuntimeRunOptions, status: "succeeded" | "skipped" = "succeeded"): RuntimeResult => ({
@@ -199,6 +200,7 @@ async function manualFixture(options: {
   readonly sync?: (providerSessionId: string, call: number) => Promise<boolean | void>;
   readonly failNextCommit?: { armed: boolean };
   readonly seedHistory?: boolean;
+  readonly defaultPrivateEndpoint?: boolean;
 } = {}) {
   const identityPath = await identityFixture();
   const root = await mkdtemp(join(tmpdir(), "agent-manual-compact-"));
@@ -219,8 +221,20 @@ async function manualFixture(options: {
     },
   }) as ConversationHistoryStore;
   const fake = createSessionFakeRuntime(options.run ?? defaultManualRun, options.sync);
+  // Mirrors the app's request-model extension: a declared web model selects the route.
+  const runtimeOptionsForRequest = ({ request: turn }: { request: { metadata?: Record<string, unknown> } }) => {
+    const selected = (turn.metadata?.web as { model?: string } | undefined)?.model;
+    return { runtimeOptions: selected === undefined ? {} : {
+      model: parseMonoRuntimeModelReference(selected), ...(options.defaultPrivateEndpoint ? { isPrivateProvider: null } : {}),
+    } };
+  };
   const makeHarness = () => createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore,
-    session, piSessionsRoot: join(root, "pi") });
+    session, piSessionsRoot: join(root, "pi"), runtimeOptionsForRequest,
+    ...(options.defaultPrivateEndpoint ? {
+      runtimeOptions: { isPrivateProvider: true },
+      runtimeOptionsForManualCompaction: async () => ({ isPrivateProvider: null }),
+    } : {}),
+  });
   return { fake, historyStore, makeHarness, revision: async () => (await readHistoryRecord(historyRoot, "manual")).providerSession.revision };
 }
 
@@ -361,6 +375,70 @@ describe("AgentHarness manual compaction", () => {
     releaseTurn();
     await turn;
     expect(fake.calls).toHaveLength(3);
+  });
+
+  it("compacts an override-bound conversation's own session and keeps the next override turn warm", async () => {
+    const { fake, makeHarness, revision } = await manualFixture({ defaultPrivateEndpoint: true });
+    const harness = makeHarness();
+    const overrideTurn = (text: string) => ({ ...request("manual", text), metadata: { web: { model: OVERRIDE_MODEL } } });
+    await harness.run(overrideTurn("first"));
+    const sessionId = fake.calls[0]?.options.sessionId;
+    await expect(harness.compactConversation!("manual", { model: OVERRIDE_MODEL })).resolves.toMatchObject({ status: "succeeded" });
+    expect(fake.calls[1]?.options.model?.reference).toBe(OVERRIDE_MODEL);
+    expect(fake.calls[1]?.options.isPrivateProvider).toBeUndefined();
+    expect(fake.calls[1]?.options.sessionId).toBe(sessionId);
+    expect(fake.calls[1]?.options.messages).toEqual([]);
+    expect(fake.invalidatedSessions).toEqual([]);
+    expect(await revision()).toBe(2);
+    await harness.run(overrideTurn("next"));
+    expect(fake.calls[2]?.options.sessionId).toBe(sessionId);
+    expect(fake.calls[2]?.options.messages).toHaveLength(1);
+    expect(await revision()).toBe(3);
+  });
+
+  it("declines a conversation bound to another model without rotating or retiring it", async () => {
+    const { fake, historyStore, makeHarness, revision } = await manualFixture();
+    const harness = makeHarness();
+    await harness.run({ ...request("manual", "first"), metadata: { web: { model: OVERRIDE_MODEL } } });
+    const sessionId = fake.calls[0]?.options.sessionId;
+    // The store also fences the mismatch atomically if another process changes
+    // the binding after the harness's read-only preflight.
+    await expect(historyStore.beginProviderSessionTurn!("manual", "mismatch-probe",
+      { modelKey: "other:model", skipModelRotation: true })).rejects.toMatchObject({ failureKind: "compaction_model_changed" });
+    await expect(harness.compactConversation!("manual")).resolves.toMatchObject({ status: "skipped", reason: "model_changed" });
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.invalidatedSessions).toEqual([]);
+    expect(fake.retiredSessions).toEqual([]);
+    expect(await revision()).toBe(1);
+    await harness.run({ ...request("manual", "next"), metadata: { web: { model: OVERRIDE_MODEL } } });
+    expect(fake.calls[1]?.options.sessionId).toBe(sessionId);
+    expect(fake.calls[1]?.options.messages).toHaveLength(1);
+  });
+
+  it("aborts a hung compaction on dispose, releases its leases, and reseeds on the next harness", async () => {
+    let seenSignal: AbortSignal | undefined;
+    const { fake, historyStore, makeHarness } = await manualFixture({
+      run: async (_prompt, options) => {
+        if (!isManual(options)) return { text: "answer", providerSessionId: options.sessionId as string };
+        seenSignal = options.abortSignal;
+        return await new Promise<RuntimeResult>(() => undefined);
+      },
+    });
+    const harness = makeHarness();
+    await harness.run(request("manual", "first"));
+    const sessionId = fake.calls[0]?.options.sessionId as string;
+    const before = await historyStore.load("manual");
+    const pending = harness.compactConversation!("manual").catch((error: unknown) => error);
+    await vi.waitFor(() => { expect(fake.calls).toHaveLength(2); });
+    await harness.dispose!();
+    expect(seenSignal?.aborted).toBe(true);
+    expect(await pending).toMatchObject({ failureKind: "compaction_failed" });
+    expect(fake.invalidatedSessions).toContain(sessionId);
+    expect(await historyStore.load("manual")).toEqual(before);
+    const next = makeHarness();
+    await next.run(request("manual", "next"));
+    expect(fake.calls[2]?.options.sessionId).not.toBe(sessionId);
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain(HISTORY_MARKER);
   });
 
   it("skips an empty conversation and rejects hosts without durable Pi sessions", async () => {

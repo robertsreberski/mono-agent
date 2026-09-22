@@ -86,7 +86,12 @@ describe("startTuiAdapter", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toContain("no-store");
     expect(await response.json()).toMatchObject({ status: "succeeded", tokensBefore: 1500, tokensAfter: 600 });
-    expect(compactConversation).toHaveBeenCalledExactlyOnceWith("web:one");
+    expect(compactConversation).toHaveBeenCalledExactlyOnceWith("web:one", undefined);
+    const withModel = await fetch(path, { method: "POST", headers, body: '{"model":"anthropic:claude-opus-4-8"}' });
+    expect(withModel.status).toBe(200);
+    expect(compactConversation).toHaveBeenLastCalledWith("web:one", { model: "anthropic:claude-opus-4-8" });
+    expect((await fetch(path, { method: "POST", headers, body: '{"model":42}' })).status).toBe(400);
+    expect((await fetch(path, { method: "POST", headers, body: '{"model":"a:b","extra":1}' })).status).toBe(400);
     expect(JSON.stringify(await (await fetch(path, { method: "POST", headers, body: "{}" })).json())).not.toContain("PRIVATE SUMMARY");
   });
 
@@ -111,7 +116,9 @@ describe("startTuiAdapter", () => {
       [undefined, 500, "compaction_failed"],
     ] as const) {
       await running.stop();
-      running = await startTuiAdapter({ responder: { respond: async () => ({ text: "unused" }),
+      const logged: unknown[] = [];
+      running = await startTuiAdapter({ logger: { error: (...args: unknown[]) => { logged.push(args); } },
+        responder: { respond: async () => ({ text: "unused" }),
         compactConversation: async () => { throw Object.assign(new Error("PRIVATE PROVIDER ERROR"), { failureKind }); } } });
       const failed = await fetch(`${running.baseUrl}/v1/conversations/web%3Aone/compact`, {
         method: "POST", headers: { "content-type": "application/json" }, body: "{}",
@@ -121,6 +128,8 @@ describe("startTuiAdapter", () => {
       const body = JSON.stringify(await failed.json());
       expect(body).toContain(code);
       expect(body).not.toContain("PRIVATE");
+      // Unexpected failures are diagnosable host-side only.
+      expect(logged).toHaveLength(status === 500 ? 1 : 0);
     }
   });
   it("accepts an allowlisted ACP tool environment as host-only request state", async () => {

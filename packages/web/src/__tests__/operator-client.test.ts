@@ -56,7 +56,11 @@ describe("OperatorClient", () => {
     }) as typeof fetch });
     await expect(client.info()).resolves.toMatchObject({ supportsManualCompaction: true });
     await expect(client.compactConversation("web:a/b")).resolves.toMatchObject({ status: "succeeded", tokensAfter: 200 });
-    expect(calls).toEqual([{ url: "http://127.0.0.1:1234/gui/v1/conversations/web%3Aa%2Fb/compact", body: "{}" }]);
+    await client.compactConversation("web:a", { model: "anthropic:claude-opus-4-8" });
+    expect(calls).toEqual([
+      { url: "http://127.0.0.1:1234/gui/v1/conversations/web%3Aa%2Fb/compact", body: "{}" },
+      { url: "http://127.0.0.1:1234/gui/v1/conversations/web%3Aa/compact", body: '{"model":"anthropic:claude-opus-4-8"}' },
+    ]);
   });
   it("parses account verification and a model-less credential rejection through the shared contract", async () => {
     const snapshot = {

@@ -44,6 +44,8 @@ export interface ProviderSessionTurnCommitOptions {
 
 export interface ProviderSessionTurnBinding {
   readonly modelKey: string;
+  /** Manual compaction only: reject an existing different binding without retiring it. */
+  readonly skipModelRotation?: boolean;
 }
 
 /** A conversation-exclusive provider turn owned by durable history state. */
@@ -141,6 +143,12 @@ export interface ConversationHistoryStore {
     runId: string,
     binding?: ProviderSessionTurnBinding,
   ): Promise<ConversationHistoryProviderSessionTurn>;
+  /**
+   * Optional read-only view of the provider-session model binding, without
+   * taking the turn lock or marking the session dirty. Manual compaction uses
+   * it to decline a conversation bound to another model instead of rotating it.
+   */
+  readProviderSessionBinding?(conversationId: string): Promise<{ readonly modelKey?: string; readonly revision: number } | undefined>;
 }
 
 export interface InMemoryHistoryStoreOptions {
@@ -204,7 +212,10 @@ export interface AgentHarnessResponse {
 }
 
 export interface AgentHarness {
-  compactConversation?(conversationId: string): Promise<import("@mono-agent/agent-contracts").AgentManualCompactionResult>;
+  compactConversation?(
+    conversationId: string,
+    options?: import("@mono-agent/agent-contracts").AgentManualCompactionOptions,
+  ): Promise<import("@mono-agent/agent-contracts").AgentManualCompactionResult>;
   readonly liveInputOwnership?: { readonly version: 1 };
   run(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
   /** Offer user guidance to this conversation's active interactive turn. */
@@ -465,6 +476,12 @@ export interface AgentHarnessOptions {
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
+  /** Model-only endpoint selection for promptless manual compaction. Must not allocate turn tools. */
+  readonly runtimeOptionsForManualCompaction?: (
+    model: string,
+  ) => Partial<Pick<NonNullable<AgentHarnessRuntimeOptionsExtension["runtimeOptions"]>,
+    "customProvider" | "customModel" | "modelCapabilities" | "isPrivateProvider">> | Promise<Partial<Pick<NonNullable<AgentHarnessRuntimeOptionsExtension["runtimeOptions"]>,
+    "customProvider" | "customModel" | "modelCapabilities" | "isPrivateProvider">>>;
   readonly mcpRequestContext?: AgentHarnessMcpRequestContextOptions;
   readonly continuationContext?: AgentHarnessContinuationContextOptions;
   /**

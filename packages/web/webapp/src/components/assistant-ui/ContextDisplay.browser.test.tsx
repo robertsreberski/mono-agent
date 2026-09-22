@@ -6,8 +6,9 @@ import type { ProviderUsageSnapshot } from "../../types";
 import "../../styles.css";
 
 const apiMock = vi.hoisted(() => ({ providerUsage: vi.fn(), refreshProviderUsage: vi.fn(), compactThread: vi.fn() }));
-vi.mock("../../api", () => ({ api: apiMock }));
+vi.mock("../../api", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../api")>()), api: apiMock }));
 import { ContextDisplay } from "./ContextDisplay";
+import { ApiError } from "../../api";
 
 const snapshot: ProviderUsageSnapshot = {
   schema: "mono-agent.provider-usage.v1",
@@ -73,8 +74,9 @@ describe("Context usage provider meters", () => {
     let finish!: (result: unknown) => void;
     apiMock.compactThread.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }))
       .mockResolvedValueOnce({ status: "skipped", trigger: "manual", operationId: "second" })
-      .mockRejectedValueOnce(new Error("This conversation is busy."))
-      .mockRejectedValueOnce(new Error("Context compaction failed."));
+      .mockRejectedValueOnce(new ApiError("This conversation is busy.", 409))
+      .mockRejectedValueOnce(new ApiError("Context compaction failed.", 500))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"));
     const context = { status: "current" as const, usage: { total: 50_000, contextWindow: 100_000 } };
     const { rerender } = render(<ContextDisplay context={context} />);
     fireEvent.click(screen.getByRole("button", { name: /context usage/i }));
@@ -108,7 +110,10 @@ describe("Context usage provider meters", () => {
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("Context compaction failed.");
     await shot("error");
     expect(within(dialog).queryByRole("status")).toBeNull();
-    expect(apiMock.compactThread).toHaveBeenCalledTimes(4);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Compact" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("the compaction outcome is unknown");
+    await shot("unknown-outcome");
+    expect(apiMock.compactThread).toHaveBeenCalledTimes(5);
     expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth);
   });
 });

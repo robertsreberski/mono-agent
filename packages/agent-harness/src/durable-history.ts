@@ -26,6 +26,7 @@ import type {
   ProviderSessionTurnBinding,
 } from "./types.js";
 import { assertSessionModelKey, uniqueSessionHandles, type ProviderSessionHandle } from "./session-runtime.js";
+import { AgentHarnessError } from "./harness/error.js";
 import { isProcessAlive } from "./history-process-liveness.js";
 
 const LEGACY_STORE_VERSION = 1;
@@ -282,6 +283,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const record = await this.readRecord(normalizedId, rootIdentity);
     const retained = retainHistoryMessages(record.messages, this.maxMessages);
     return retained.map(cloneMessage);
+  }
+
+  async readProviderSessionBinding(conversationId: string): Promise<{ readonly modelKey?: string; readonly revision: number } | undefined> {
+    const normalizedId = normalizeConversationId(conversationId);
+    const rootIdentity = await this.ensureRoot();
+    const record = await this.readRecord(normalizedId, rootIdentity);
+    const provider = record.sourceVersion === STORE_VERSION ? record.providerSession : undefined;
+    return provider === undefined ? undefined : { ...modelBinding(provider.modelKey), revision: provider.revision ?? 0 };
   }
 
   async append(conversationId: string, messages: readonly HistoryMessage[]): Promise<void> {
@@ -631,6 +640,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const releaseRoot = await this.acquireRootTransaction(rootIdentity);
       try {
         const existingFence = await this.findDirtyFence(conversationKey, locksIdentity);
+        // The read-only preflight can race another process. Guard the binding
+        // again under the root transaction before any rotation or retirement.
+        if (binding?.skipModelRotation === true && existingProvider !== undefined
+          && (existingProvider.modelKey === undefined
+            ? (existingProvider.revision ?? 0) > 0
+            : existingProvider.modelKey !== binding.modelKey)) {
+          throw new AgentHarnessError("compaction_model_changed", "Conversation model changed before compaction.");
+        }
         const reusable = (binding === undefined || existingProvider?.modelKey === binding.modelKey)
           && this.maxMessages > 0
           && existingFence === undefined

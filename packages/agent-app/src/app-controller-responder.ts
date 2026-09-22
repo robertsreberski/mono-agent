@@ -122,6 +122,7 @@ export interface ResponderControllerPort {
     coreConfig: MonoAgentConfig,
   ): {
     readonly extension: RuntimeOptionsExtension;
+    readonly compactionEndpoint: (model: string) => Promise<Awaited<ReturnType<ReturnType<typeof createRequestModelOverrideRuntimeExtension>>>["runtimeOptions"]>;
     readonly targetsProcessJobsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
   };
   buildRuntimeForModel(
@@ -365,6 +366,17 @@ export async function buildResponder(
       ? {}
       : { continuationCapabilityIssuer: controller.continuationService }),
     ...(runtimeOptionsForRequest === undefined ? {} : { runtimeOptionsForRequest }),
+    // Resolve only the model endpoint block: the composed turn extension also
+    // allocates tools and request-scoped resources, which compaction must not run.
+    runtimeOptionsForManualCompaction: async (model: string) => {
+      const runtimeOptions = await requestModelOverride.compactionEndpoint(model);
+      return {
+        customProvider: runtimeOptions?.customProvider,
+        customModel: runtimeOptions?.customModel,
+        modelCapabilities: runtimeOptions?.modelCapabilities,
+        isPrivateProvider: runtimeOptions?.isPrivateProvider,
+      };
+    },
     onMemoryRememberUnavailable: (error) => {
       controller.logger?.warn?.(
         "Remember tool endpoint could not start; durable memory writes are unavailable this run.",
@@ -430,6 +442,7 @@ export function requestModelOverrideRuntimeOptions(
   coreConfig: MonoAgentConfig,
 ): {
   readonly extension: RuntimeOptionsExtension;
+  readonly compactionEndpoint: (model: string) => Promise<Awaited<ReturnType<ReturnType<typeof createRequestModelOverrideRuntimeExtension>>>["runtimeOptions"]>;
   readonly targetsProcessJobsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
 } {
   const options = {
@@ -447,6 +460,7 @@ export function requestModelOverrideRuntimeOptions(
   const extension = createRequestModelOverrideRuntimeExtension(options);
   return {
     extension: async (input) => extension({ request: input.request }),
+    compactionEndpoint: async (model) => (await extension({ request: { metadata: { web: { model } } } })).runtimeOptions,
     targetsProcessJobsPiNative: (metadata) => requestModelOverrideRoutesOnlyPiNative(metadata, options),
   };
 }

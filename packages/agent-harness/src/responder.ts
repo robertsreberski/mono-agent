@@ -2,6 +2,7 @@ import type { AgentHarness, AgentHarnessFailure, AgentHarnessSessionBoundary } f
 import { AgentHarnessError } from "./harness/error.js";
 import type {
   AgentLiveInputRequest,
+  AgentManualCompactionOptions,
   AgentMessageStream,
   AgentRequestBase,
   AgentResponder,
@@ -74,7 +75,7 @@ export function createAgentResponder(options: {
   return {
     ...(options.harness.liveInputOwnership === undefined ? {} : { liveInputOwnership: options.harness.liveInputOwnership }),
     ...(options.harness.compactConversation === undefined ? {} : {
-      async compactConversation(conversationId: string) {
+      async compactConversation(conversationId: string, compactionOptions?: AgentManualCompactionOptions) {
         const key = responseSerializationKey(conversationId, options.rollover);
         // Reject rather than joining the normal turn queue. serializeByKey
         // reserves synchronously before its first await, fencing later turns.
@@ -82,7 +83,7 @@ export function createAgentResponder(options: {
           throw new AgentHarnessError("compaction_busy", "This conversation has a turn or compaction in progress.");
         }
         return await serializeByKey(responseTailsByBaseConversation, key, async () =>
-          await options.harness.compactConversation!(bucket(conversationId)));
+          await options.harness.compactConversation!(bucket(conversationId), compactionOptions));
       },
     }),
     async dispose(): Promise<void> {

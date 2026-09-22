@@ -1956,6 +1956,27 @@ describe("pi-native auto-compaction", () => {
     expect(JSON.stringify(resumedContext)).not.toContain("u0 xxxxx");
   });
 
+  it("aborts an in-flight manual summary when the host cancels", async () => {
+    const base = setup();
+    const controller = new AbortController();
+    let summarySignal;
+    faux.setResponses([async (_context, streamOptions) => {
+      summarySignal = streamOptions?.signal;
+      controller.abort();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return fauxAssistantMessage([fauxText("SUMMARY too late")]);
+    }]);
+    const result = await generatePiNativeResponse("system", runOptions(base, {
+      manualCompaction: true,
+      messages: bigHistory(60, 2000),
+      abortSignal: controller.signal,
+      resolvePiApiKey: async () => "faux-key",
+    }));
+    expect(result.manualCompaction).toBeUndefined();
+    expect(result.cancelled).toBe(true);
+    expect(summarySignal?.aborted).toBe(true);
+  });
+
   it("does not answer a user turn when a manual summary fails or there is nothing to cut", async () => {
     const base = setup();
     faux.setResponses([]);

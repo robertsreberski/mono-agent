@@ -676,6 +676,13 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       // A prefix smaller than the retained recent tail cannot yield a useful
       // cut. Avoid spending a summary call merely to discover this afterward.
       const tooSmall = transcriptTokens !== null && transcriptTokens < policy.keepRecentTokens;
+      // Host cancellation (e.g. shutdown) aborts the in-flight summary operation.
+      if (options.abortSignal) {
+        const abortManual = () => { void harness.abort().catch(() => {}); };
+        options.abortSignal.addEventListener("abort", abortManual, { once: true });
+        runState.removeAbortHandler = () => options.abortSignal.removeEventListener?.("abort", abortManual);
+        if (options.abortSignal.aborted) throw new Error("Manual compaction was cancelled.");
+      }
       if (!tooSmall) await tryCompact(harness, {
         trigger: "manual",
         onEvent,

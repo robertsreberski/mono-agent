@@ -181,7 +181,10 @@ conversation through the runtime's guarded Pi driver. It acquires the provider
 session exactly as a turn would (warm, strict cold refresh, or create-on-miss
 seed from canonical history), rejects a running or queued turn as
 `compaction_busy`, commits `[]` so only the provider revision advances, and
-retires the epoch fail-closed on any failure. Canonical history stays full.
+retires the epoch fail-closed on any failure, including a shutdown abort. It
+resolves the conversation's model like a turn's model override and returns a
+`skipped` `model_changed` result, without rotating, when the durable session is
+bound to another model. Canonical history stays full.
 
 Persistent-child Session guidance surfaces a blocked-recovery marker and safe
 job identity, not private owner roots, verification paths or acknowledgement

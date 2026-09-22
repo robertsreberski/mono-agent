@@ -503,12 +503,18 @@ export class OperatorClient {
     throw new WebConsoleError("invalid_operator_live_input", "The agent returned an invalid live-input settlement.", 502);
   }
 
-  async compactConversation(conversationId: string): Promise<AgentManualCompactionResult> {
+  async compactConversation(conversationId: string, options?: { readonly model?: string }): Promise<AgentManualCompactionResult> {
     let response: Response;
     try {
       response = await this.request(
         `${this.baseUrl}/v1/conversations/${encodeURIComponent(conversationId)}/compact`,
-        { method: "POST", headers: this.headers(true), body: "{}", signal: AbortSignal.timeout(180_000) },
+        {
+          method: "POST",
+          headers: this.headers(true),
+          // The same model selection the next turn would declare; {} means the agent default.
+          body: JSON.stringify(options?.model === undefined ? {} : { model: options.model }),
+          signal: AbortSignal.timeout(180_000),
+        },
         PRESERVED_COMPACTION_ERRORS,
       );
     } catch (error) {
