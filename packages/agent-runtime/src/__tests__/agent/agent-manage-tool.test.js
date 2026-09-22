@@ -17,7 +17,9 @@ function setup(overrides = {}) {
       const record = { ...spec, id, sessionId: "sub-test", sessionsRoot: "/test/sessions", status: "idle", turns: 0, updatedAt: Date.now() - 120_000 };
       records.set(id, record); return record;
     }),
-    begin: vi.fn(async (id) => { const r = records.get(id); if (r.status === "running") throw new Error("busy"); r.status = "running"; return r; }),
+    // Mirrors the real registry: a route supplied with the turn is applied to
+    // the stored definition inside the admission, so later reads see it.
+    begin: vi.fn(async (id, _token, _ack, _access, route) => { const r = records.get(id); if (r.status === "running") throw new Error("busy"); if (route) r.definition = { ...r.definition, ...route }; r.status = "running"; return r; }),
     finish: vi.fn(async (id, outcome) => { const r = records.get(id); r.status = "idle"; r.turns++; r.lastStatus = outcome.status; return r; }),
     close: vi.fn(async (id) => { const r = records.get(id); r.status = "closed"; return r; }),
   };
@@ -349,5 +351,221 @@ describe("AgentManage stop", () => {
       await vi.runAllTicks();
       vi.useRealTimers();
     }
+  });
+});
+
+describe("AgentManage steer", () => {
+  const runningRecord = { id: "helper", incarnation: "epoch", status: "running", turns: 1, activeTurn: { kind: "detached", token: "owned-token" } };
+  it.each([
+    ...[undefined, "", "   ", 7, "a".repeat(8001)].map((steer) => [{ steer }, "subagent_steer_invalid_request",
+      "steer must be a non-empty string of at most 8000 characters."]),
+    [{ steer: "go", id: "NOPE" }, "subagent_steer_invalid_id",
+      "id must be a string matching ^[a-z0-9][a-z0-9-]{0,39}$ (1-40 lowercase letters, digits or hyphens, starting with a letter or digit)."],
+    ...[["message", "next"], ["close", true], ["stop", true], ["background", true], ["inspect", true], ["ack", "token"], ["description", "label"]]
+      .map(([key, value]) => [{ steer: "go", [key]: value }, "subagent_steer_unexpected_parameters",
+        `steer takes only id and steer (unexpected: ${key}).`]),
+  ])("rejects a malformed or multi-mode steer before instance access: %j", async (extra, code, message) => {
+    const steer = vi.fn();
+    const f = setup({ backgroundSubagentController: { steer } });
+    const params = { id: "helper", ...extra };
+    const result = await f.send.execute("steer", params);
+    const receipt = { code, instanceId: typeof params.id === "string" ? params.id : null, jobId: null, status: "not_applied", applied: false, message };
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: JSON.stringify(receipt) }],
+      details: { tool: "AgentManage", executed: false, steer: receipt } });
+    expect(f.instances.get).not.toHaveBeenCalled(); expect(steer).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it("reports an unavailable controller instead of pretending to steer", async () => {
+    const f = setup();
+    const result = await f.send.execute("steer", { id: "helper", steer: "go" });
+    expect(result).toMatchObject({ isError: true, details: { steer: { code: "subagent_steer_unavailable", status: "not_applied", applied: false } } });
+    expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it.each([
+    [undefined, "subagent_steer_instance_not_found"],
+    [{ id: "helper", status: "idle", turns: 1 }, "subagent_steer_not_running"],
+    [{ id: "helper", incarnation: "epoch", status: "running", turns: 1, activeTurn: { kind: "foreground", token: "owned-token" } }, "subagent_steer_foreground_unsupported"],
+    [{ id: "helper", incarnation: "epoch", status: "running", turns: 1 }, "subagent_steer_not_running"],
+  ])("refuses an unreachable target: %j", async (record, code) => {
+    const steer = vi.fn();
+    const f = setup({ backgroundSubagentController: { steer } });
+    if (record) f.records.set("helper", record);
+    const result = await f.send.execute("steer", { id: "helper", steer: "go" });
+    expect(result).toMatchObject({ isError: true, details: { steer: { code, applied: false } } });
+    expect(steer).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["consumed", "applied", true, undefined],
+    ["offered", "pending", false, "not_settled"],
+    ["rejected", "not_applied", false, "not_started"],
+    ["unsupported", "unsupported", false, "unsupported"],
+  ])("maps delivery %s onto an honest receipt", async (delivery, status, applied, reason) => {
+    const steer = vi.fn(async () => ({ jobId: "owned-token", delivery, ...(reason === undefined ? {} : { reason }) }));
+    const f = setup({ backgroundSubagentController: { steer } });
+    f.records.set("helper", { ...runningRecord });
+    const result = await f.send.execute("steer", { id: "helper", steer: "prefer the smaller diff" });
+    expect(steer).toHaveBeenCalledWith({ instanceId: "helper", instanceIncarnation: "epoch", turnToken: "owned-token" }, "prefer the smaller diff");
+    expect(result.isError).toBeUndefined();
+    expect(result.details).toEqual({ tool: "AgentManage", executed: false, steer: { instanceId: "helper", jobId: "owned-token",
+      status, applied, delivery, ...(reason === undefined ? {} : { reason }) } });
+    expect(JSON.parse(result.content[0].text)).toEqual(result.details.steer);
+    expect(f.options.run).not.toHaveBeenCalled();
+    await expect(f.send.execute("message", { id: "helper", message: "next" })).rejects.toThrow("busy");
+    await expect(f.send.execute("close", { id: "helper", close: true })).rejects.toThrow("busy");
+  });
+  it.each([
+    { jobId: "other-token", delivery: "consumed" },
+    { jobId: "owned-token", delivery: "delivered" },
+  ])("never trusts a proof that does not describe this turn: %j", async (proof) => {
+    const f = setup({ backgroundSubagentController: { steer: vi.fn(async () => proof) } });
+    f.records.set("helper", { ...runningRecord });
+    const result = await f.send.execute("steer", { id: "helper", steer: "go" });
+    expect(result).toMatchObject({ isError: true, details: { steer: { code: "subagent_steer_unavailable", applied: false } } });
+  });
+  it("bounds a hung controller without claiming delivery", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = setup({ backgroundSubagentController: { steer: vi.fn(() => new Promise(() => {})) } });
+      f.records.set("helper", { ...runningRecord });
+      const result = f.send.execute("steer", { id: "helper", steer: "go" });
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(await result).toMatchObject({ isError: true, details: { steer: { code: "subagent_steer_unavailable", status: "not_applied", applied: false } } });
+    } finally { vi.useRealTimers(); }
+  });
+  it("offers the steering mode and its limits in the stable description and schema", () => {
+    const { send } = setup({ backgroundSubagentController: { steer: vi.fn() } });
+    expect(send.parameters.properties.steer).toEqual({ type: "string", minLength: 1, maxLength: 8000,
+      description: "Text offered to the instance's in-progress detached turn; use alone with id." });
+    expect(send.description).toContain("applied / pending / not_applied / unsupported");
+    expect(send.description).toContain("A foreground turn cannot be reached");
+    expect(send.description).toContain("stop it, steer it, or wait for its receipt");
+  });
+});
+
+describe("AgentManage retarget", () => {
+  const FABLE = { provider: "anthropic", model: "claude-fable-5-1", reference: "anthropic:claude-fable-5-1" };
+  const SOL = { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" };
+  const MODELS = [{ name: "fable", model: FABLE, key: "anthropic:claude-fable-5-1" },
+    { name: "sol", model: SOL, key: "openai-codex:gpt-5.6-sol" }];
+
+  /** setup() plus configured model choices, a reservation-capable registry and a detached controller. */
+  function retarget(overrides = {}, context = {}) {
+    const started = [];
+    const f = setup({ models: MODELS, ...overrides });
+    f.instances.reserve = vi.fn(async (id, token, _ack, _access, route) => {
+      const r = f.records.get(id);
+      if (route) r.definition = { ...r.definition, ...route };
+      r.status = "queued"; r.reservation = { token }; return r;
+    });
+    f.instances.releaseReservation = vi.fn(async (id) => { const r = f.records.get(id); r.status = "idle"; delete r.reservation; });
+    f.options.backgroundSubagentController ??= { startInternal: vi.fn(async ({ jobId }) => { started.push(jobId); return { jobId, state: "queued", startedAt: null }; }) };
+    const toolContext = { parentRunId: "parent", ...context };
+    return { ...f, started, agent: createAgentTool(f.options, toolContext), send: createAgentManageTool(f.options, toolContext) };
+  }
+
+  it("offers model and effort only where the host configured them, without touching the stable description", () => {
+    const withModels = retarget().send;
+    const withoutModels = setup().send;
+    expect(withModels.description).toBe(withoutModels.description);
+    expect(withModels.parameters.properties.model).toEqual({ type: "string", enum: ["fable", "sol"],
+      description: expect.stringContaining("instead of the instance's retained one; requires message") });
+    expect(withoutModels.parameters.properties.model).toBeUndefined();
+    for (const send of [withModels, withoutModels]) {
+      expect(send.parameters.properties.effort.enum).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+      expect(send.parameters.properties.effort.description).toContain("requires message");
+    }
+  });
+
+  it("runs the next foreground continuation on the new route and persists it on the instance", async () => {
+    const events = [];
+    const f = retarget({}, { onEvent: (event) => events.push(event), model: FABLE, effort: "medium" });
+    await f.agent.execute("a", { prompt: "first", persist: true, id: "critic-1" });
+    const result = await f.send.execute("b", { id: "critic-1", message: "second", model: "sol", effort: "high" });
+    expect(f.instances.begin).toHaveBeenLastCalledWith("critic-1", undefined, undefined, undefined, { model: SOL, effort: "high" });
+    expect(f.records.get("critic-1").definition).toMatchObject({ model: SOL, effort: "high" });
+    expect(f.options.run.mock.calls[1][0].definition).toMatchObject({ model: SOL, effort: "high" });
+    expect(result.details.subagent.requested).toEqual({ model: "openai-codex:gpt-5.6-sol", effort: "high" });
+    const startedEvent = events.filter((event) => event.phase === "agent_started").at(-1);
+    expect(startedEvent.subagent.attribution.requested).toEqual({ model: "openai-codex:gpt-5.6-sol", effort: "high" });
+    // A later continuation inherits the retained route without repeating it.
+    const inherited = await f.send.execute("c", { id: "critic-1", message: "third" });
+    expect(f.instances.begin).toHaveBeenLastCalledWith("critic-1", undefined, undefined, undefined, undefined);
+    expect(inherited.details.subagent.requested).toEqual({ model: "openai-codex:gpt-5.6-sol", effort: "high" });
+  });
+
+  it("retargets effort alone and composes with close: true", async () => {
+    const f = retarget();
+    await f.agent.execute("a", { prompt: "first", persist: true, id: "critic-1" });
+    const result = await f.send.execute("b", { id: "critic-1", message: "last", effort: "low", close: true });
+    expect(f.instances.begin).toHaveBeenLastCalledWith("critic-1", undefined, undefined, undefined, { effort: "low" });
+    expect(f.records.get("critic-1").definition.model).toBeUndefined();
+    expect(result.details.subagent.requested).toEqual({ effort: "low" });
+    expect(f.instances.close).toHaveBeenCalledWith("critic-1");
+  });
+
+  it("carries the route through a detached continuation and through an acknowledged one", async () => {
+    const f = retarget();
+    f.instances.checkAcknowledgement = vi.fn(async () => undefined);
+    await f.agent.execute("a", { prompt: "first", persist: true, id: "critic-1" });
+    f.records.get("critic-1").status = "idle";
+    const send = createAgentManageTool(f.options, { parentRunId: "parent" });
+    await send.execute("b", { id: "critic-1", message: "detached", background: true, model: "fable" });
+    expect(f.instances.reserve.mock.calls[0][4]).toEqual({ model: FABLE });
+    expect(f.records.get("critic-1").definition.model).toEqual(FABLE);
+    f.records.get("critic-1").status = "idle";
+    await send.execute("c", { id: "critic-1", ack: "token", message: "recovered", background: true, effort: "xhigh" });
+    expect(f.instances.reserve.mock.calls[1][2]).toMatchObject({ ack: "token", message: "recovered" });
+    expect(f.instances.reserve.mock.calls[1][4]).toEqual({ effort: "xhigh" });
+  });
+
+  it("keeps the new route when the detached start fails after the reservation", async () => {
+    const f = retarget({ backgroundSubagentController: { startInternal: vi.fn(async () => { throw new Error("job admission refused"); }) } });
+    await f.agent.execute("a", { prompt: "first", persist: true, id: "critic-1" });
+    f.records.get("critic-1").status = "idle";
+    await expect(f.send.execute("b", { id: "critic-1", message: "detached", background: true, model: "sol" })).rejects.toThrow(/job admission refused/);
+    expect(f.instances.releaseReservation).toHaveBeenCalled();
+    expect(f.records.get("critic-1").definition.model).toEqual(SOL);
+  });
+
+  it.each([
+    [{ stop: true }, "stop"],
+    [{ steer: "go" }, "steer"],
+  ])("refuses a retarget on the %s mode without reading the registry", async (mode, label) => {
+    const f = retarget();
+    const result = await f.send.execute("x", { id: "critic-1", ...mode, model: "sol" });
+    expect(result.isError).toBe(true);
+    expect(result.details[label].code).toBe(`subagent_${label}_unexpected_parameters`);
+    expect(result.details[label].message).toContain("model");
+    expect(f.instances.get).not.toHaveBeenCalled();
+    expect(f.instances.begin).not.toHaveBeenCalled();
+    expect(f.instances.reserve).not.toHaveBeenCalled();
+    expect(f.options.run).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ inspect: true, model: "sol" }, "inspect must be used alone"],
+    [{ inspect: true, effort: "low" }, "inspect must be used alone"],
+    [{ close: true, model: "sol" }, "model and effort only apply to a continuation with message"],
+    [{ close: true, effort: "low" }, "model and effort only apply to a continuation with message"],
+    [{ model: "sol" }, "model and effort only apply to a continuation with message"],
+    [{ message: "next", model: "muse" }, 'unknown model "muse". Choices: fable, sol.'],
+    [{ message: "next", effort: "turbo" }, 'unknown effort "turbo". Choices: none, minimal, low, medium, high, xhigh, max, ultra.'],
+  ])("rejects %j before any turn or registry write", async (params, message) => {
+    const f = retarget();
+    f.instances.inspect = vi.fn(async () => ({ schema: "mono-agent.subagent-recovery.v1", status: "held" }));
+    await f.agent.execute("a", { prompt: "first", persist: true, id: "critic-1" });
+    f.instances.begin.mockClear();
+    await expect(f.send.execute("x", { id: "critic-1", ...params })).rejects.toThrow(message);
+    expect(f.instances.begin).not.toHaveBeenCalled();
+    expect(f.instances.reserve).not.toHaveBeenCalled();
+    expect(f.instances.inspect).not.toHaveBeenCalled();
+    expect(f.instances.close).not.toHaveBeenCalled();
+    expect(f.options.run).toHaveBeenCalledTimes(1);
+    expect(f.records.get("critic-1").definition.model).toBeUndefined();
+  });
+
+  it("reports an unknown model with Agent's wording when the host configured none", async () => {
+    const { send } = setup();
+    await expect(send.execute("x", { id: "critic-1", message: "next", model: "sol" })).rejects
+      .toThrow('Error: unknown model "sol". Choices: none configured.');
   });
 });

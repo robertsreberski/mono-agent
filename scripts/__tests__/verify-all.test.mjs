@@ -541,9 +541,38 @@ describe("verify-all", () => {
       "          CHANGELOG_BASE_REF: ${{ github.event.pull_request.base.sha }}",
       "          CHANGELOG_PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}",
       "          CHANGELOG_PR_BODY: ${{ github.event.pull_request.body }}",
+      "          CHANGELOG_PR_DRAFT: ${{ github.event.pull_request.draft }}",
       "        run: pnpm run check:changelog",
     ].join("\n");
     expect(source).toContain(changelogStep);
+  });
+
+  it("triggers on ready_for_review so a draft deferral cannot outlive the draft state", () => {
+    const source = readCiWorkflow();
+    expect(source).toContain(
+      [
+        "on:",
+        "  pull_request:",
+        "    types:",
+        "      - opened",
+        "      - synchronize",
+        "      - reopened",
+        "      - ready_for_review",
+        "      - converted_to_draft",
+        "  push:",
+        "    branches:",
+        "      - main",
+      ].join("\n"),
+    );
+    const workflow = parseDocument(source, { uniqueKeys: true }).toJS();
+    expect(workflow.on.pull_request.types).toEqual([
+      "opened",
+      "synchronize",
+      "reopened",
+      "ready_for_review",
+      "converted_to_draft",
+    ]);
+    expect(workflow.on.push).toEqual({ branches: ["main"] });
   });
 
   it("rejects changelog PR-context env drift and env on any other step", () => {
@@ -735,6 +764,7 @@ describe("verify-all", () => {
       "          CHANGELOG_BASE_REF: ${{ github.event.pull_request.base.sha }}",
       "          CHANGELOG_PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}",
       "          CHANGELOG_PR_BODY: ${{ github.event.pull_request.body }}",
+      "          CHANGELOG_PR_DRAFT: ${{ github.event.pull_request.draft }}",
       "        run: pnpm run check:changelog",
     ].join("\n");
     const mutations = [
@@ -1114,6 +1144,7 @@ const CHANGELOG_PR_CONTEXT_ENV = Object.freeze([
   Object.freeze(["CHANGELOG_BASE_REF", "${{ github.event.pull_request.base.sha }}"]),
   Object.freeze(["CHANGELOG_PR_LABELS", "${{ toJSON(github.event.pull_request.labels.*.name) }}"]),
   Object.freeze(["CHANGELOG_PR_BODY", "${{ github.event.pull_request.body }}"]),
+  Object.freeze(["CHANGELOG_PR_DRAFT", "${{ github.event.pull_request.draft }}"]),
 ]);
 
 function assertChangelogPrContextEnv(envNode, name) {

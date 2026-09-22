@@ -335,6 +335,11 @@
  * @typedef {{ack: string, message: string, background?: boolean, close?: boolean, description?: string}} RuntimeSubagentRecoveryRequest
  */
 /**
+ * A new route for the turn being admitted. The host persists it on the stored
+ * definition, so later continuations inherit it.
+ * @typedef {{model?: RuntimeModelRef, effort?: string}} RuntimeSubagentRoute
+ */
+/**
  * Host-owned, conversation-scoped persistent instance facade. No filesystem implementation belongs in the kernel.
  * @typedef {Object} RuntimeSubagentInstances
  * @property {() => Promise<RuntimeSubagentInstance[]>} list
@@ -344,9 +349,9 @@
  * @property {(id: string, question: {question: string, options?: string[]}) => Promise<RuntimeSubagentInstance>} markAwaiting
  * @property {(id: string, access?: unknown) => Promise<unknown>} [inspect]
  * @property {(id: string, acknowledgement: RuntimeSubagentRecoveryRequest, access?: unknown) => Promise<void>} [checkAcknowledgement]
- * @property {(id: string, token: string, acknowledgement?: RuntimeSubagentRecoveryRequest, access?: unknown) => Promise<RuntimeSubagentInstance>} [reserve]
+ * @property {(id: string, token: string, acknowledgement?: RuntimeSubagentRecoveryRequest, access?: unknown, route?: RuntimeSubagentRoute) => Promise<RuntimeSubagentInstance>} [reserve]
  * @property {(id: string, token: string) => Promise<void>} [releaseReservation]
- * @property {(id: string, token?: string, acknowledgement?: RuntimeSubagentRecoveryRequest, access?: unknown) => Promise<RuntimeSubagentInstance>} begin
+ * @property {(id: string, token?: string, acknowledgement?: RuntimeSubagentRecoveryRequest, access?: unknown, route?: RuntimeSubagentRoute) => Promise<RuntimeSubagentInstance>} begin
  * @property {(id: string, outcome: {status: string, failureKind?: "session_continuity_lost", question?: {question: string, options?: string[]}, usage?: {input?: number, output?: number, cacheRead?: number, cacheWrite?: number, costUsd?: number}, answerHead?: string}, token?: string) => Promise<RuntimeSubagentInstance>} finish
  * @property {(id: string, access?: unknown) => Promise<RuntimeSubagentInstance>} close
  */
@@ -355,7 +360,7 @@
  * @typedef {Object} RuntimeSubagentsOptions
  * @property {ReadonlyArray<RuntimeSubagentDefinition>} [definitions] Named profiles.
  * @property {ReadonlyArray<{name: string, model: RuntimeModelRef, key: string}>} [models] Call-time model choices. Absent means no model parameter.
- * @property {{managed?: boolean, stop?(identity: {instanceId: string, instanceIncarnation: string, turnToken: string}): Promise<{jobId: string, stopRequested: boolean, childStillBusy: boolean, resumable: boolean, disposition: string|null}>, startInternal(request: {managed?: {instanceIncarnation: string, turnToken: string}, kind: "internal", tool: "Agent"|"AgentManage", jobId: string, instanceId: string, description?: string, timeoutMs: number, cleanup(): Promise<void>, run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: *) => void, execution?: {deadlineAt: number, managed?: any}): Promise<{answer?: string, output: string, status: string, childStillBusy?: boolean, question?: {question: string, options?: string[]}}>}): Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null}>}} [backgroundSubagentController]
+ * @property {{managed?: boolean, stop?(identity: {instanceId: string, instanceIncarnation: string, turnToken: string}): Promise<{jobId: string, stopRequested: boolean, childStillBusy: boolean, resumable: boolean, disposition: string|null}>, steer?(identity: {instanceId: string, instanceIncarnation: string, turnToken: string}, text: string): Promise<{jobId: string, delivery: "consumed"|"offered"|"rejected"|"unsupported", reason?: string}>, startInternal(request: {managed?: {instanceIncarnation: string, turnToken: string}, kind: "internal", tool: "Agent"|"AgentManage", jobId: string, instanceId: string, description?: string, timeoutMs: number, cleanup(): Promise<void>, run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: *) => void, execution?: {deadlineAt: number, managed?: any}): Promise<{answer?: string, output: string, status: string, childStillBusy?: boolean, question?: {question: string, options?: string[]}}>}): Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null}>}} [backgroundSubagentController]
  * @property {RuntimeSubagentInstances} [instances] Conversation-scoped persistence; absent preserves stateless Agent.
  * @property {RuntimeInlineSubagentsOptions} [inline] Call-time authoring policy.
  * @property {number} [maxConcurrent] In-flight subagents per parent turn. Default 5.

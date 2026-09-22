@@ -270,3 +270,23 @@ it("physically kills the owner after consumption but before admission; duplicate
     await expect(handle.create({ ...spec, id: "bypass" })).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
   } finally { clearTimeout(deadline); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
 }, 15_000);
+
+it("admits an acknowledged continuation that also retargets the instance, and still refuses the replay", async () => {
+  const f = await fixture();
+  const inspection = await f.handle.inspect(spec.id);
+  const model = { provider: "anthropic", model: "claude-fable-5-1", reference: "anthropic:claude-fable-5-1" };
+  const request = { ack: inspection.ack!, message: "verified; continue", background: true };
+  const token = randomUUID();
+  // The acknowledgement digest covers [systemPrompt, definition], so the route
+  // is applied only after consumption; it is deliberately outside the digest.
+  await expect(f.handle.reserve(spec.id, token, request, undefined, { model, effort: "low" }))
+    .resolves.toMatchObject({ status: "queued", definition: { model, effort: "low" } });
+  await expect(f.handle.reserve(spec.id, randomUUID(), request)).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
+  await expect(f.handle.reserve(spec.id, randomUUID(), { ...request, message: "something else" })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
+  // Detached turns apply the same route twice; the second application is a no-op.
+  await expect(f.handle.begin(spec.id, token, undefined, undefined, { model, effort: "low" }))
+    .resolves.toMatchObject({ status: "running", definition: { model, effort: "low" } });
+  const stored = JSON.parse(await readFile(f.file, "utf8"))[0];
+  expect(stored.definition).toMatchObject({ model, effort: "low" });
+  expect(stored.recovery).toBeUndefined();
+});

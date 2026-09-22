@@ -1,6 +1,6 @@
 import { isSubagentVerificationTarget, type SubagentVerificationTarget, type SubagentVerificationDeclaration, type SubagentVerificationObservation } from "./subagent-verification-observer.js";
 import type { SubagentCommandReceipts } from "./subagent-command-receipts.js";
-import { newSubagentRecoveryBinding, isSubagentRecoveryBinding, issueRecoveryAcknowledgement, checkRecoveryAcknowledgement, consumeRecoveryAcknowledgement, recoveryToken, type SubagentRecoveryBinding, type SubagentRecoveryAcknowledgement } from "./subagent-recovery-binding.js";
+import { newSubagentRecoveryBinding, isSubagentRecoveryBinding, issueRecoveryAcknowledgement, checkRecoveryAcknowledgement, consumeRecoveryAcknowledgement, rebindConsumedAcknowledgement, recoveryToken, type SubagentRecoveryBinding, type SubagentRecoveryAcknowledgement } from "./subagent-recovery-binding.js";
 import type { SubagentRegistryPublication } from "./subagent-managed-turn.js";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -78,6 +78,8 @@ export interface SubagentRecoveryInspection {
   readonly ack?: string;
 }
 export interface InstanceSpec { verification?: SubagentVerificationDeclaration; id?: string; name: string; systemPrompt: string; definition: InstanceDefinition }
+/** A new route for the turn being admitted, persisted on the stored definition so later continuations inherit it. */
+export interface InstanceRoute { model?: RuntimeModelReference; effort?: string }
 export interface InstanceOutcome { status: string; continuity?: { turnToken: string; state: "retained" | "lost" | "unknown" }; closeAfterSuccess?: boolean; failureKind?: "session_continuity_lost"; usage?: Partial<InstanceUsage>; answerHead?: string; question?: SubagentQuestion }
 export interface InstanceRegistryHandle {
   verifyOwner(identity: SubagentOwnerIdentity): Promise<{ retained: boolean; verification?: SubagentVerificationTarget }>;
@@ -87,9 +89,9 @@ export interface InstanceRegistryHandle {
   list(): Promise<SubagentInstance[]>;
   get(id: string): Promise<SubagentInstance | undefined>;
   create(spec: InstanceSpec, access?: unknown): Promise<SubagentInstance>;
-  reserve(id: string, token: string, acknowledgement?: SubagentRecoveryAcknowledgement, access?: unknown): Promise<SubagentInstance>;
+  reserve(id: string, token: string, acknowledgement?: SubagentRecoveryAcknowledgement, access?: unknown, route?: InstanceRoute): Promise<SubagentInstance>;
   releaseReservation(id: string, token: string): Promise<void>;
-  begin(id: string, token?: string, acknowledgement?: SubagentRecoveryAcknowledgement, access?: unknown): Promise<SubagentInstance>;
+  begin(id: string, token?: string, acknowledgement?: SubagentRecoveryAcknowledgement, access?: unknown, route?: InstanceRoute): Promise<SubagentInstance>;
   fence(id: string, outcome: { status: "timeout" | "cancelled" }, turnToken?: string): Promise<void>;
   markAwaiting(id: string, question: SubagentQuestion): Promise<SubagentInstance>;
   finish(id: string, outcome: InstanceOutcome, token?: string): Promise<SubagentInstance>;
@@ -101,6 +103,8 @@ const DAY = 86_400_000;
 export const SUBAGENT_REGISTRY_MAX_BYTES = 16 * 1024 * 1024;
 export const SUBAGENT_TERMINAL_MAX_COUNT = 64;
 const OUTCOMES = ["ok", "failed", "empty", "timeout", "cancelled", "busy", "interrupted", "awaiting_reply"];
+/** Mirrors EFFORT_LEVELS in @mono-agent/config, which this module does not import. */
+const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const keys = (value: Record<string, unknown>, allowed: readonly string[]): boolean => Object.keys(value).every((key) => allowed.includes(key));
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
@@ -113,6 +117,38 @@ function validQuestion(value: unknown): value is SubagentQuestion {
       && value.options.every((option) => text(option) && option === option.trim() && option.length <= 200)
       && new Set(value.options).size === value.options.length));
 }
+/** A stored route must be a self-consistent runtime reference: the parsed `reference` is the authority. */
+function validModelReference(value: unknown): value is RuntimeModelReference {
+  if (!object(value) || !keys(value, ["provider", "model", "reference"])
+    || !text(value.provider) || !text(value.model) || !text(value.reference)) return false;
+  try {
+    const parsed = parseMonoRuntimeModelReference(String(value.reference));
+    return parsed.provider === value.provider && parsed.model === value.model;
+  } catch { return false; }
+}
+
+/**
+ * Persist a caller-supplied route on the stored definition, inside the turn's
+ * own transaction. Deliberately applied AFTER acknowledgement consumption: the
+ * recovery digest covers [systemPrompt, definition], so mutating the definition
+ * first would make every acknowledged continuation stale. The route is
+ * therefore intentionally OUTSIDE the digest — single-use consumption already
+ * prevents replaying one acknowledgement on a differently routed turn.
+ *
+ * Idempotent: a detached turn applies the same route at `reserve` and again at
+ * `begin`.
+ */
+function applyRoute(record: StoredSubagentInstance, route: InstanceRoute | undefined): void {
+  if (!route || (route.model === undefined && route.effort === undefined)) return;
+  if (route.model !== undefined && !validModelReference(route.model)) throw new Error("Subagent route model must be a runtime model reference.");
+  if (route.effort !== undefined && (typeof route.effort !== "string" || !EFFORTS.includes(route.effort))) {
+    throw new Error(`Subagent route effort must be one of ${EFFORTS.join(", ")}.`);
+  }
+  record.definition = { ...record.definition,
+    ...(route.model === undefined ? {} : { model: structuredClone(route.model) }),
+    ...(route.effort === undefined ? {} : { effort: route.effort }) };
+}
+
 function validRecord(value: unknown, conversationId: string, sessionsRoot: string): value is StoredSubagentInstance {
   if (!object(value) || !keys(value, ["id", "conversationId", "name", "systemPrompt", "definition", "sessionId", "sessionsRoot", "status", "turns", "usage", "createdAt", "updatedAt", "lastStatus", "lastAnswerHead", "pendingQuestion", "reservation", "incarnation", "activeTurn", "recovery", "ownerLink", "ownerReceipt", "recoveryBinding", "verificationTarget"])) return false;
   if (value.verificationTarget !== undefined && !isSubagentVerificationTarget(value.verificationTarget)) return false;
@@ -148,16 +184,8 @@ function validRecord(value: unknown, conversationId: string, sessionsRoot: strin
     || typeof usage.costUsd !== "number" || !Number.isFinite(usage.costUsd) || usage.costUsd < 0
     || !object(d) || !keys(d, ["name", "description", "systemPrompt", "model", "effort", "allowedTools", "disallowedTools", "mcpServerNames", "maxTurns", "timeoutMs"])
     || d.name !== value.name || d.systemPrompt !== value.systemPrompt || !text(d.description)) return false;
-  if (d.model !== undefined && (!object(d.model) || !keys(d.model, ["provider", "model", "reference"])
-    || !text(d.model.provider) || !text(d.model.model) || !text(d.model.reference)
-    )) return false;
-  if (object(d.model)) {
-    try {
-      const parsed = parseMonoRuntimeModelReference(String(d.model.reference));
-      if (parsed.provider !== d.model.provider || parsed.model !== d.model.model) return false;
-    } catch { return false; }
-  }
-  if (d.effort !== undefined && (typeof d.effort !== "string" || !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(d.effort))) return false;
+  if (d.model !== undefined && !validModelReference(d.model)) return false;
+  if (d.effort !== undefined && (typeof d.effort !== "string" || !EFFORTS.includes(d.effort))) return false;
   for (const key of ["allowedTools", "disallowedTools", "mcpServerNames"]) if (d[key] !== undefined && !strings(d[key])) return false;
   for (const key of ["allowedTools", "disallowedTools", "mcpServerNames"]) {
     if (Array.isArray(d[key]) && d[key].some((item: string) => !/^[A-Za-z0-9_.*-]+$/u.test(item))) return false;
@@ -553,7 +581,7 @@ export function createSubagentInstanceRegistry(options: {
           records.push(record);
           return record;
         }),
-        reserve: async (id, token, acknowledgement, access) => {
+        reserve: async (id, token, acknowledgement, access, route) => {
           let acquired: { release(): Promise<void> } | undefined;
           try { return await transaction(async (records) => {
             const record = required(records, id);
@@ -567,6 +595,8 @@ export function createSubagentInstanceRegistry(options: {
               consumeRecoveryAcknowledgement(record.recoveryBinding!, acknowledgement, profileOf(record), token);
               delete record.recovery;
             }
+            applyRoute(record, route);
+            if (acknowledgement && route) rebindConsumedAcknowledgement(record.recoveryBinding!, acknowledgement, profileOf(record));
             record.status = "queued";
             record.reservation = { token };
             record.incarnation ??= randomUUID();
@@ -599,7 +629,7 @@ export function createSubagentInstanceRegistry(options: {
             }
           }
         },
-        begin: async (id, token, acknowledgement, access) => {
+        begin: async (id, token, acknowledgement, access, route) => {
           let acquired: { release(): Promise<void> } | undefined;
           try { return await transaction(async (records) => {
           const record = required(records, id);
@@ -618,6 +648,8 @@ export function createSubagentInstanceRegistry(options: {
             consumeRecoveryAcknowledgement(record.recoveryBinding!, acknowledgement, profileOf(record), record.activeTurn.token);
             delete record.recovery;
           }
+          applyRoute(record, route);
+          if (acknowledgement && route) rebindConsumedAcknowledgement(record.recoveryBinding!, acknowledgement, profileOf(record));
           record.status = "running";
           record.updatedAt = now();
           return record;

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Change a persistent subagent's model or effort on its next turn.**
+  `AgentManage({id, message, model, effort})` runs the continuation on the new
+  route while the child keeps its durable session and full prior context, and
+  persists that route on the instance so later continuations inherit it without
+  repeating it. `model` offers the same configured choices as `Agent` and only
+  appears when the host configured any; `effort` takes the usual levels. Both
+  compose with `background: true`, `close: true` and `ack`, and are rejected —
+  with no turn started and no registry write — for `stop`, `steer`, `inspect`
+  and close-only calls, and for an unknown model name or effort level. The
+  result reports `requested` and `executed` exactly as `Agent` does, and the new
+  route badges the activity row from the moment the turn starts. A turn that
+  fails keeps the new route, because the next continuation should inherit what
+  was asked for; a failed foreground retarget still leaves the instance
+  close-only until its recovery evidence is acknowledged, exactly as any other
+  failed foreground turn does.
+
 - Restyle the usage meters' on-track marker as a dot inside the bar in the
   meter's own accent palette, instead of a full-contrast hairline drawn across
   it. Once the fill passes the dot it flips to the surface colour, so it stays
@@ -12,6 +28,24 @@
   result. The reply context now carries the full stored result text, bounded
   only by the 32 KiB context-import limit, and later summary polls no longer
   downgrade already-stored fuller run text to the clipped prefix.
+
+- **Steer a running detached subagent.** `AgentManage({id, steer: "<text>"})`
+  offers text into a persistent child's in-progress detached turn, the way live
+  input reaches a running conversation, and returns an honest receipt: `applied`
+  when the child consumed it, `pending` when the offer was accepted but had not
+  settled within the bounded three-second wait, `not_applied` with a reason
+  (`not_started`, `inactive`, `cancelled`, `closed`, …) when it was refused, and
+  `unsupported` when the child's runtime route cannot take live input at all.
+  Steering starts no turn, forces no answer and is exclusive with every other
+  parameter, including `description`; a queued or running instance still rejects
+  `message` and `close`. A foreground child can be reached by neither steer nor
+  stop — it blocks the parent's own turn, so only cancelling that turn ends it.
+  The mailbox is in-process and never persisted: it is closed at every
+  detached-turn termination path and is never handed to the max-turns wrap-up
+  continuation, and a started turn with no live mailbox — including after a host
+  restart — answers with a truthful negative receipt rather than a retryable
+  one. The turn envelope now publishes `AgentManage.steer`. Stop behaviour is
+  unchanged.
 
 - **Breaking: rename the `AgentSend` tool to `AgentManage`.** The tool that
   continues, closes, stops, inspects and acknowledges a persistent subagent

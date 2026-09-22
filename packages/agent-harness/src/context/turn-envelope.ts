@@ -19,7 +19,7 @@ export function composeHostTurnEnvelope(turnContext: string, userMessage: string
 /** Format current admission observations, never controllers or executable authority. */
 export function formatHostCapabilities(options: Partial<RuntimeRunOptions>): string {
   const fact = (available: boolean, reason = "controller_unavailable") => ({ available, ...(available ? {} : { reason }) });
-  const subagents = options.subagents as { instances?: { reserve?: unknown; releaseReservation?: unknown; inspect?: unknown; checkAcknowledgement?: unknown }; backgroundSubagentController?: unknown } | undefined;
+  const subagents = options.subagents as { instances?: { reserve?: unknown; releaseReservation?: unknown; inspect?: unknown; checkAcknowledgement?: unknown }; backgroundSubagentController?: { steer?: unknown } } | undefined;
   const instances = subagents?.instances;
   const background = Boolean(instances?.reserve && instances?.releaseReservation && subagents?.backgroundSubagentController);
   const facts = {
@@ -29,6 +29,7 @@ export function formatHostCapabilities(options: Partial<RuntimeRunOptions>): str
     AgentManage: fact(Boolean(instances)),
     "AgentManage.background": fact(background),
     "AgentManage.inspect": fact(Boolean(instances?.inspect)),
+    "AgentManage.steer": fact(background && Boolean(subagents?.backgroundSubagentController?.steer)),
     "AgentManage.ack": fact(Boolean(instances?.checkAcknowledgement)),
     AskParent: fact(Boolean(options.askParentController)),
     ...options.hostCapabilities,
