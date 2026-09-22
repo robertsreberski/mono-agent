@@ -1744,7 +1744,9 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .provider-usage-pace.is-ahead { color: var(--warning); }
 .provider-usage-pace.is-unsustainable { color: var(--danger); }
 .provider-usage-bar { position: relative; display: block; }
-.provider-usage-tick { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); }
+/* Where usage would be if exactly on track: a hairline notch inside the bar,
+   readable on both the filled and unfilled track without competing with it. */
+.provider-usage-tick { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -0.5px; background: var(--text); opacity: 0.32; }
 .provider-usage progress { appearance: none; width: 100%; height: 4px; overflow: hidden; border: 0; border-radius: 3px; background: var(--line-strong); }
 .provider-usage progress::-webkit-progress-bar { background: var(--line-strong); border-radius: 3px; }
 .provider-usage progress::-webkit-progress-value { background: var(--accent); border-radius: 3px; }

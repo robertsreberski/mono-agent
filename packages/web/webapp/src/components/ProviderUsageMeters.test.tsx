@@ -119,7 +119,7 @@ describe("burn-pace projection lines", () => {
     // 25 % at half the window: pace 0.5, on track, half the quota unused.
     const view = render(<ProviderUsageMeters usage={{ ...codexUsage(25), fetchedAt: "2026-09-22T20:10:22.000Z" }} />);
     expect(screen.queryByText(/empty/)).toBeNull();
-    expect(screen.getByText("≈ 50% unused at reset")).toHaveClass("provider-usage-projection", "is-unused");
+    expect(screen.getByText(/50% unused/)).toHaveClass("provider-usage-projection", "is-unused");
     expect(screen.getByText("0.5×")).toHaveClass("provider-usage-pace", "is-steady");
     expect(view.container.querySelector(".provider-usage-tick")).toHaveStyle({ left: "50%" });
     expect(screen.getByRole("progressbar").getAttribute("aria-label"))
@@ -128,9 +128,9 @@ describe("burn-pace projection lines", () => {
   it("shows the unused note at exactly 5 % and hides it below", () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
     const view = render(<ProviderUsageMeters usage={{ ...codexUsage(47.5), fetchedAt: "2026-09-22T20:10:22.000Z" }} />);
-    expect(screen.getByText("≈ 5% unused at reset")).toBeInTheDocument();
+    expect(screen.getByText(/5% unused/)).toBeInTheDocument();
     view.rerender(<ProviderUsageMeters usage={{ ...codexUsage(48), fetchedAt: "2026-09-22T20:10:22.000Z" }} />);
-    expect(screen.queryByText(/unused at reset/)).toBeNull();
+    expect(screen.queryByText(/% unused/)).toBeNull();
     // The tick and chip still render: the trajectory is a fact even without a note.
     expect(view.container.querySelector(".provider-usage-tick")).not.toBeNull();
     expect(screen.getByText("1.0×")).toBeInTheDocument();
@@ -140,17 +140,17 @@ describe("burn-pace projection lines", () => {
     const view = render(<ProviderUsageMeters usage={codexUsage(55)} />);
     const ahead = screen.getByText(/empty/);
     expect(ahead).toHaveClass("provider-usage-projection", "is-ahead");
-    expect(ahead.textContent).toMatch(/\(.+ before reset\)/);
+    expect(ahead.textContent).toMatch(/empty .+ early/);
     expect(ahead.getAttribute("title")).toMatch(/Projected to run out .* at current pace 1\.26x/);
     // A window is never both ahead and under: the run-out excludes the unused note.
-    expect(screen.queryByText(/unused at reset/)).toBeNull();
+    expect(screen.queryByText(/% unused/)).toBeNull();
     expect(screen.getByText("1.3×")).toHaveClass("provider-usage-pace", "is-ahead");
     expect(screen.getByRole("progressbar").getAttribute("aria-label"))
       .toBe("Codex Weekly used, 55 %, 44 % of the window elapsed, pace 1.3x, projected to run out before reset (ahead)");
     view.rerender(<ProviderUsageMeters usage={codexUsage(96)} />);
     const exhausted = screen.getByText(/empty/);
     expect(exhausted).toHaveClass("provider-usage-projection", "is-unsustainable");
-    expect(exhausted.textContent).toMatch(/\(.+ before reset\)/);
+    expect(exhausted.textContent).toMatch(/empty .+ early/);
     expect(screen.getByText("2.2×")).toHaveClass("provider-usage-pace", "is-unsustainable");
     expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/projected to run out before reset \(unsustainable\)/);
     expect(exhausted).not.toHaveClass("is-ahead");
@@ -161,19 +161,19 @@ describe("burn-pace projection lines", () => {
     const view = render(<ProviderUsageMeters usage={codexUsage(50, false)} />);
     view.rerender(<ProviderUsageMeters usage={{ ...codexUsage(50, false), fetchedAt: "2026-09-19T16:34:22.000Z" }} />);
     expect(screen.queryByText(/empty/)).toBeNull();
-    expect(screen.queryByText(/unused at reset/)).toBeNull();
+    expect(screen.queryByText(/% unused/)).toBeNull();
     expect(view.container.querySelector(".provider-usage-pace")).toBeNull();
     expect(view.container.querySelector(".provider-usage-tick")).not.toBeNull();
     expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/pace 10\.0x/);
   });
-  it("keeps the anchored projection on stale snapshots and reads empty once the run-out passes", async () => {
+  it("keeps the anchored projection unchanged on stale snapshots as wall-clock advances", async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
     render(<ProviderUsageMeters usage={codexUsage(96, true)} />);
     expect(screen.getByText("Last known usage")).toBeInTheDocument();
-    expect(screen.getByText(/empty/)).toBeInTheDocument();
-    // Same measurement, later wall-clock: the anchor does not move, so the run-out is now past.
+    const line = screen.getByText(/empty/).textContent;
+    // Same measurement, later wall-clock: the anchor does not move, so the lead stays put.
     vi.setSystemTime(new Date("2026-09-25T12:00:00Z"));
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-    expect(screen.getByText(/Projected empty \(.+ before reset\)/)).toBeInTheDocument();
+    expect(screen.getByText(/empty/).textContent).toBe(line);
   });
 });

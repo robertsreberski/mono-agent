@@ -91,13 +91,9 @@ function countdown(reset: string, now: number): string {
   if (Math.max(0, Math.ceil(diffMs / 60_000)) === 0) return "Reset due";
   return `Resets in ${formatProviderUsageLead(diffMs)}`;
 }
-/** Absolute run-out in compact meter type; a past projection reads as already empty. */
-function projectionLine(exhaustsAt: string, leadMs: number, now: number): string {
-  const lead = `${formatProviderUsageLead(leadMs)} before reset`;
-  if (Date.parse(exhaustsAt) <= now) return `Projected empty (${lead})`;
-  const at = new Date(exhaustsAt);
-  return `≈ empty ${at.toLocaleDateString(undefined, { weekday: "short" })} ${at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })} (${lead})`;
-}
+// How early the window runs out is the decision, so it rides on the countdown
+// line as one fragment. The absolute instant stays in the title.
+const earlyLine = (leadMs: number): string => `empty ${formatProviderUsageLead(leadMs)} early`;
 /** The plan chip is rendered inline by the provider heading; this shows only the meters. */
 export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage }) {
   const [now, setNow] = useState(Date.now);
@@ -129,12 +125,15 @@ export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage 
           <progress aria-label={name} max={100} value={window.usedPercent} />
           {projection !== undefined && <span className="provider-usage-tick" aria-hidden="true" style={{ left: `${projection.elapsedFraction * 100}%` }} />}
         </span>
-        {window.resetsAt && <time dateTime={window.resetsAt} title={new Date(window.resetsAt).toLocaleString()}>{countdown(window.resetsAt, now)}</time>}
-        {alert?.exhaustsAt !== undefined && alert.leadMs !== undefined
-          ? <span className={`provider-usage-projection is-${alert.severity}`}
-            title={`Projected to run out ${new Date(alert.exhaustsAt).toLocaleString()} at current pace ${alert.pace.toFixed(2)}x`}>{projectionLine(alert.exhaustsAt, alert.leadMs, now)}</span>
-          : unused !== undefined
-            ? <span className="provider-usage-projection is-unused">≈ {unused}% unused at reset</span> : null}
+        {window.resetsAt && <time dateTime={window.resetsAt} title={new Date(window.resetsAt).toLocaleString()}>
+          {countdown(window.resetsAt, now)}
+          {alert?.exhaustsAt !== undefined && alert.leadMs !== undefined
+            ? <span className={`provider-usage-projection is-${alert.severity}`}
+              title={`Projected to run out ${new Date(alert.exhaustsAt).toLocaleString()} at current pace ${alert.pace.toFixed(2)}x`}> · {earlyLine(alert.leadMs)}</span>
+            : unused !== undefined
+              ? <span className="provider-usage-projection is-unused"
+                title={`At this pace about ${unused} % of the window is left unused at reset`}> · {unused}% unused</span> : null}
+        </time>}
       </div>;
     })}
     {usage.error && <p className="provider-usage-error" role="status">Usage unavailable — {usage.error.message}</p>}

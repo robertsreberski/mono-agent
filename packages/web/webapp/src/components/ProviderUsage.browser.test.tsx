@@ -241,13 +241,13 @@ describe("compact Agent settings subscription meters", () => {
       expect(runouts).toHaveLength(1);
       const goLine = runouts[0]!;
       expect(goLine).toHaveClass("provider-usage-projection", "is-unsustainable");
-      expect(goLine.textContent).toMatch(/\(.+ before reset\)/);
+      expect(goLine.textContent).toMatch(/empty .+ early/);
       expect(goLine.closest(".provider-usage-window")).toContainElement(screen.getByRole("progressbar", { name: /OpenCode Go Weekly used/ }));
       expect(screen.getByRole("progressbar", { name: "OpenCode Go Weekly used, 96 %, 44 % of the window elapsed, pace 2.2x, projected to run out before reset (unsustainable)" })).toBeVisible();
       // Underutilized sessions note their unused share, neutrally.
       for (const label of ["Claude Session", "OpenCode Go Session"]) {
         const bar = screen.getByRole("progressbar", { name: new RegExp(`${label} used`) });
-        expect(bar.closest(".provider-usage-window")!.querySelector(".provider-usage-projection.is-unused")).toHaveTextContent(/≈ \d+% unused at reset/);
+        expect(bar.closest(".provider-usage-window")!.querySelector(".provider-usage-projection.is-unused")).toHaveTextContent(/\d+% unused/);
       }
       // On-track monthly: tick and steady chip, but no line.
       const monthlyBar = screen.getByRole("progressbar", { name: /OpenCode Go Monthly used/ });
