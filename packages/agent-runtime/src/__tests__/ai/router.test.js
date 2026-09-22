@@ -38,6 +38,16 @@ beforeEach(() => {
 
 
 describe("createRouterRuntime — basic", () => {
+  it("never retries or falls back a manual compaction of the primary session", async () => {
+    executeMock.mockResolvedValueOnce({ error: "summary failed", failureKind: "provider_unavailable" });
+    const primary = modelRef("anthropic", "claude-opus-4-7");
+    const router = createRouterRuntime({ chain: [primary, modelRef("openai-codex", "gpt-5.5")] });
+    const result = await router.run("sys", { model: primary, manualCompaction: true,
+      sessionId: "owned", sessionKeepAlive: true, messages: [] });
+    expect(result.error).toBe("summary failed");
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(executeMock.mock.calls[0][1]).toMatchObject({ sessionId: "owned", manualCompaction: true });
+  });
   it("rejects an empty chain", () => {
     expect(() => createRouterRuntime({ chain: [] })).toThrow(/non-empty chain/);
   });

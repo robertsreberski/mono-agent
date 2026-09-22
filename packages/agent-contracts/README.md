@@ -268,6 +268,7 @@ AgentLiveInputOwnership
 AgentLiveInputRequest
 AgentLiveInputSettlement
 AgentLiveInputUnavailableReason
+AgentManualCompactionResult
 AgentMcpAppHostRequest
 AgentMcpAppLoadRequest
 AgentMcpAppResource

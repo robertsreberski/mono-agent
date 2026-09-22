@@ -75,26 +75,9 @@ export async function prepareHarnessContext(
     // Durable tool records are a separate store, not HistoryMessage entries.
     // A cold reseed gets a bounded neutral text projection; a confirmed warm
     // provider session gets none because it already owns the live transcript.
-    let toolProjection: ReturnType<typeof buildToolHistoryProjection> = undefined;
-    if (contextOptions.historyMode !== "omitted" && options.toolHistory !== undefined) {
-      try {
-        toolProjection = buildToolHistoryProjection(
-          options.toolHistory.reader,
-          options.toolHistory.logicalConversationId(request.conversationId),
-          request.conversationId,
-          contextOptions.turnId,
-          representedContinuityToolRecordIds(history),
-        );
-      } catch (error) {
-        const errorCode = toolHistoryProjectionErrorCode(error);
-        emit?.({
-          type: "runtime_warning",
-          warning_kind: "tool_history_projection_degraded",
-          error_code: errorCode,
-          message: `Tool history projection failed (${errorCode}); continuing without automatic tool history.`,
-        });
-      }
-    }
+    const toolProjection = contextOptions.historyMode === "omitted"
+      ? undefined
+      : loadToolHistoryProjection(options, request.conversationId, contextOptions.turnId, history, emit);
     const context = toolProjection === undefined
       ? baseContext
       : projectToolHistoryBeforeCurrentTurn(baseContext, toolProjection.text, toolProjection.recordCount);
@@ -114,6 +97,39 @@ export async function prepareHarnessContext(
       historyAsMessages: contextOptions.historyMode === "messages",
       toolHistoryProjection: contextOptions.historyMode === "messages" ? toolProjection?.text : undefined,
     };
+}
+
+/**
+ * Bounded neutral projection of durable tool records for a cold provider
+ * reseed. Shared by turns and promptless manual compaction so both seed a
+ * created-on-miss provider session with identical canonical context.
+ */
+export function loadToolHistoryProjection(
+  options: AgentHarnessOptions,
+  conversationId: string,
+  turnId: string,
+  history: readonly HistoryMessage[],
+  emit?: (event: RuntimeEventLike) => void,
+): ReturnType<typeof buildToolHistoryProjection> {
+    if (options.toolHistory === undefined) return undefined;
+    try {
+      return buildToolHistoryProjection(
+        options.toolHistory.reader,
+        options.toolHistory.logicalConversationId(conversationId),
+        conversationId,
+        turnId,
+        representedContinuityToolRecordIds(history),
+      );
+    } catch (error) {
+      const errorCode = toolHistoryProjectionErrorCode(error);
+      emit?.({
+        type: "runtime_warning",
+        warning_kind: "tool_history_projection_degraded",
+        error_code: errorCode,
+        message: `Tool history projection failed (${errorCode}); continuing without automatic tool history.`,
+      });
+      return undefined;
+    }
 }
 
 function toolHistoryProjectionErrorCode(error: unknown): string {

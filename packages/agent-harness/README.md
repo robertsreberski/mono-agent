@@ -174,6 +174,15 @@ The harness is the request-to-runtime composition boundary:
 | `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history, including positive atomic v1 context import and non-provider exclusive turns |
 | `src/tool-history-*.ts` | Secure sidecar schema, single-writer worker/ownership, incremental lifecycle persistence, recovery, bounded read/query, and cold projection |
 
+With continuous sessions, `piSessionsRoot`, and a fail-closed durable history
+store, the harness and responder also expose `compactConversation()`: a
+promptless provider-history transaction that compacts the exact idle
+conversation through the runtime's guarded Pi driver. It acquires the provider
+session exactly as a turn would (warm, strict cold refresh, or create-on-miss
+seed from canonical history), rejects a running or queued turn as
+`compaction_busy`, commits `[]` so only the provider revision advances, and
+retires the epoch fail-closed on any failure. Canonical history stays full.
+
 Persistent-child Session guidance surfaces a blocked-recovery marker and safe
 job identity, not private owner roots, verification paths or acknowledgement
 binding material. It directs inspection before continuation and prohibits replay.

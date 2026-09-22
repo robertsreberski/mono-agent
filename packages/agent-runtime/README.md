@@ -98,6 +98,12 @@ The runtime forwards retention only to Anthropic Messages, including child
 routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
 unsupported models receive no one-hour TTL.
 
+Manual compaction on a durable Pi session uses the same guarded summary driver
+as automatic proactive compaction, but an explicit operator action bypasses the
+automatic trigger (including `compaction.enabled:false`). No new user prompt or
+assistant turn is generated. The host coordinates the provider transcript with
+its canonical history revision and reports only bounded counts to the operator.
+
 One-hour writes cost **2× normal input**, reads **0.1×**, versus **1.25×** for
 short-cache writes. Model support is required, and no cache hit is guaranteed.
 Metadata-only diagnostics record the requested setting and observed cache TTL;

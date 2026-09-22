@@ -204,6 +204,7 @@ export interface AgentHarnessResponse {
 }
 
 export interface AgentHarness {
+  compactConversation?(conversationId: string): Promise<import("@mono-agent/agent-contracts").AgentManualCompactionResult>;
   readonly liveInputOwnership?: { readonly version: 1 };
   run(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
   /** Offer user guidance to this conversation's active interactive turn. */
