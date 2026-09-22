@@ -71,6 +71,58 @@ async function postTurn(
 }
 
 describe("startTuiAdapter", () => {
+  it("advertises and protects manual compaction without returning the summary", async () => {
+    const compactConversation = vi.fn(async () => ({ status: "succeeded" as const, trigger: "manual" as const,
+      operationId: "c-1", tokensBefore: 1500, tokensAfter: 600, summary: "PRIVATE SUMMARY" }));
+    running = await startTuiAdapter({
+      apiKey: "test-owner", responder: { respond: async () => ({ text: "unused" }), compactConversation },
+    });
+    const headers = { authorization: "Bearer test-owner", "content-type": "application/json" };
+    const path = `${running.baseUrl}/v1/conversations/web%3Aone/compact`;
+    expect(((await (await fetch(running.infoUrl, { headers })).json()) as { capabilities: { manualCompaction?: unknown } }).capabilities.manualCompaction).toEqual({ version: 1 });
+    expect((await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
+    expect((await fetch(path, { method: "POST", headers, body: '{"unexpected":true}' })).status).toBe(400);
+    const response = await fetch(path, { method: "POST", headers, body: "{}" });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(await response.json()).toMatchObject({ status: "succeeded", tokensBefore: 1500, tokensAfter: 600 });
+    expect(compactConversation).toHaveBeenCalledExactlyOnceWith("web:one");
+    expect(JSON.stringify(await (await fetch(path, { method: "POST", headers, body: "{}" })).json())).not.toContain("PRIVATE SUMMARY");
+  });
+
+  it("rejects absent compaction and bounds a busy result", async () => {
+    running = await startTuiAdapter({ responder: { respond: async () => ({ text: "unused" }) } });
+    const path = `${running.baseUrl}/v1/conversations/web%3Aone/compact`;
+    expect(((await (await fetch(running.infoUrl)).json()) as { capabilities: { manualCompaction?: unknown } }).capabilities.manualCompaction).toBeUndefined();
+    const response = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    expect(response.status).toBe(501);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    await running.stop();
+    running = await startTuiAdapter({ responder: { respond: async () => ({ text: "unused" }),
+      compactConversation: async () => { throw Object.assign(new Error("PRIVATE PROVIDER ERROR"), { failureKind: "compaction_busy" }); } } });
+    const busy = await fetch(`${running.baseUrl}/v1/conversations/web%3Aone/compact`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    });
+    expect(busy.status).toBe(409);
+    expect(JSON.stringify(await busy.json())).not.toContain("PRIVATE PROVIDER ERROR");
+    for (const [failureKind, status, code] of [
+      ["compaction_unsupported", 501, "compaction_unsupported"],
+      ["compaction_failed", 500, "compaction_failed"],
+      [undefined, 500, "compaction_failed"],
+    ] as const) {
+      await running.stop();
+      running = await startTuiAdapter({ responder: { respond: async () => ({ text: "unused" }),
+        compactConversation: async () => { throw Object.assign(new Error("PRIVATE PROVIDER ERROR"), { failureKind }); } } });
+      const failed = await fetch(`${running.baseUrl}/v1/conversations/web%3Aone/compact`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+      });
+      expect(failed.status).toBe(status);
+      expect(failed.headers.get("cache-control")).toContain("no-store");
+      const body = JSON.stringify(await failed.json());
+      expect(body).toContain(code);
+      expect(body).not.toContain("PRIVATE");
+    }
+  });
   it("accepts an allowlisted ACP tool environment as host-only request state", async () => {
     let seen: AgentRequestBase | undefined;
     running = await startTuiAdapter({
