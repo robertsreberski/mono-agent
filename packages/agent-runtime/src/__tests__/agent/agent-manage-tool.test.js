@@ -351,3 +351,90 @@ describe("AgentManage stop", () => {
     }
   });
 });
+
+describe("AgentManage steer", () => {
+  const runningRecord = { id: "helper", incarnation: "epoch", status: "running", turns: 1, activeTurn: { kind: "detached", token: "owned-token" } };
+  it.each([
+    ...[undefined, "", "   ", 7, "a".repeat(8001)].map((steer) => [{ steer }, "subagent_steer_invalid_request",
+      "steer must be a non-empty string of at most 8000 characters."]),
+    [{ steer: "go", id: "NOPE" }, "subagent_steer_invalid_id",
+      "id must be a string matching ^[a-z0-9][a-z0-9-]{0,39}$ (1-40 lowercase letters, digits or hyphens, starting with a letter or digit)."],
+    ...[["message", "next"], ["close", true], ["stop", true], ["background", true], ["inspect", true], ["ack", "token"], ["description", "label"]]
+      .map(([key, value]) => [{ steer: "go", [key]: value }, "subagent_steer_unexpected_parameters",
+        `steer takes only id and steer (unexpected: ${key}).`]),
+  ])("rejects a malformed or multi-mode steer before instance access: %j", async (extra, code, message) => {
+    const steer = vi.fn();
+    const f = setup({ backgroundSubagentController: { steer } });
+    const params = { id: "helper", ...extra };
+    const result = await f.send.execute("steer", params);
+    const receipt = { code, instanceId: typeof params.id === "string" ? params.id : null, jobId: null, status: "not_applied", applied: false, message };
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: JSON.stringify(receipt) }],
+      details: { tool: "AgentManage", executed: false, steer: receipt } });
+    expect(f.instances.get).not.toHaveBeenCalled(); expect(steer).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it("reports an unavailable controller instead of pretending to steer", async () => {
+    const f = setup();
+    const result = await f.send.execute("steer", { id: "helper", steer: "go" });
+    expect(result).toMatchObject({ isError: true, details: { steer: { code: "subagent_steer_unavailable", status: "not_applied", applied: false } } });
+    expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it.each([
+    [undefined, "subagent_steer_instance_not_found"],
+    [{ id: "helper", status: "idle", turns: 1 }, "subagent_steer_not_running"],
+    [{ id: "helper", incarnation: "epoch", status: "running", turns: 1, activeTurn: { kind: "foreground", token: "owned-token" } }, "subagent_steer_foreground_unsupported"],
+    [{ id: "helper", incarnation: "epoch", status: "running", turns: 1 }, "subagent_steer_not_running"],
+  ])("refuses an unreachable target: %j", async (record, code) => {
+    const steer = vi.fn();
+    const f = setup({ backgroundSubagentController: { steer } });
+    if (record) f.records.set("helper", record);
+    const result = await f.send.execute("steer", { id: "helper", steer: "go" });
+    expect(result).toMatchObject({ isError: true, details: { steer: { code, applied: false } } });
+    expect(steer).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["consumed", "applied", true, undefined],
+    ["offered", "pending", false, "not_settled"],
+    ["rejected", "not_applied", false, "not_started"],
+    ["unsupported", "unsupported", false, "unsupported"],
+  ])("maps delivery %s onto an honest receipt", async (delivery, status, applied, reason) => {
+    const steer = vi.fn(async () => ({ jobId: "owned-token", delivery, ...(reason === undefined ? {} : { reason }) }));
+    const f = setup({ backgroundSubagentController: { steer } });
+    f.records.set("helper", { ...runningRecord });
+    const result = await f.send.execute("steer", { id: "helper", steer: "prefer the smaller diff" });
+    expect(steer).toHaveBeenCalledWith({ instanceId: "helper", instanceIncarnation: "epoch", turnToken: "owned-token" }, "prefer the smaller diff");
+    expect(result.isError).toBeUndefined();
+    expect(result.details).toEqual({ tool: "AgentManage", executed: false, steer: { instanceId: "helper", jobId: "owned-token",
+      status, applied, delivery, ...(reason === undefined ? {} : { reason }) } });
+    expect(JSON.parse(result.content[0].text)).toEqual(result.details.steer);
+    expect(f.options.run).not.toHaveBeenCalled();
+    await expect(f.send.execute("message", { id: "helper", message: "next" })).rejects.toThrow("busy");
+    await expect(f.send.execute("close", { id: "helper", close: true })).rejects.toThrow("busy");
+  });
+  it.each([
+    { jobId: "other-token", delivery: "consumed" },
+    { jobId: "owned-token", delivery: "delivered" },
+  ])("never trusts a proof that does not describe this turn: %j", async (proof) => {
+    const f = setup({ backgroundSubagentController: { steer: vi.fn(async () => proof) } });
+    f.records.set("helper", { ...runningRecord });
+    const result = await f.send.execute("steer", { id: "helper", steer: "go" });
+    expect(result).toMatchObject({ isError: true, details: { steer: { code: "subagent_steer_unavailable", applied: false } } });
+  });
+  it("bounds a hung controller without claiming delivery", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = setup({ backgroundSubagentController: { steer: vi.fn(() => new Promise(() => {})) } });
+      f.records.set("helper", { ...runningRecord });
+      const result = f.send.execute("steer", { id: "helper", steer: "go" });
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(await result).toMatchObject({ isError: true, details: { steer: { code: "subagent_steer_unavailable", status: "not_applied", applied: false } } });
+    } finally { vi.useRealTimers(); }
+  });
+  it("offers the steering mode and its limits in the stable description and schema", () => {
+    const { send } = setup({ backgroundSubagentController: { steer: vi.fn() } });
+    expect(send.parameters.properties.steer).toEqual({ type: "string", minLength: 1, maxLength: 8000,
+      description: "Text offered to the instance's in-progress detached turn; use alone with id." });
+    expect(send.description).toContain("applied / pending / not_applied / unsupported");
+    expect(send.description).toContain("A foreground turn cannot be reached");
+    expect(send.description).toContain("stop it, steer it, or wait for its receipt");
+  });
+});
