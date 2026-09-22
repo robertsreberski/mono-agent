@@ -152,6 +152,14 @@ describe("persistent Agent and AgentSend", () => {
       await expect(agent.execute("denied", { prompt: "x", persist: true })).rejects.toThrow(/unavailable/);
     }
   });
+  it("documents every AgentSend parameter and every call mode", () => {
+    const send = setup().send;
+    for (const [name, schema] of Object.entries(send.parameters.properties)) {
+      expect(typeof schema.description, `${name} description`).toBe("string");
+      expect(schema.description.trim().length, `${name} description`).toBeGreaterThan(0);
+    }
+    for (const mode of ["Continue:", "Close:", "Stop:", "Inspect:", "Ack:"]) expect(send.description).toContain(mode);
+  });
   it("registers AgentSend next to Agent only with a registry", () => {
     const names = (subagents) => getPiBuiltinTools(undefined, { ctx, subagents }).map((tool) => tool.name);
     expect(names(setup().options)).toContain("AgentSend");

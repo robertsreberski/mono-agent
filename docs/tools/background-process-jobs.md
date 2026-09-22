@@ -690,9 +690,11 @@ The operation waits at most six seconds, including storage work:
   accepted, but settlement remains unproven. Ownership and capacity remain held.
   Ordinary messages and close remain blocked; do not poll or replay the job.
 
-Only after a resumable receipt, use `AgentSend({id, message: "Continue"})`
-(optionally `background:true`) to resume the same warm instance and prior
-context, or `AgentSend({id, close:true})` to retire it. A queued stop charges no
+After a resumable receipt (`stopped` or `already_idle`), use
+`AgentSend({id, message: "Continue"})` (optionally `background:true`) to resume
+the same warm instance and prior context, or `AgentSend({id, close:true})` to
+retire it. While a `stop_requested` receipt stands the instance is still busy,
+so both are rejected until it settles. A queued stop charges no
 turn; a begun stopped turn charges one. Completion winning the race keeps its
 actual disposition, and pending AskParent questions survive stopping.
 
@@ -756,8 +758,9 @@ verification. These private receipts do not widen ProcessJob/wake projections.
 `AgentSend({id, inspect: true})` is separate from message/close/background/ack
 requests and invokes no provider. It can perform one bounded owner reconciliation
 pass, then returns held/unavailable or current-policy-authorized recovery facts.
-After independently verifying the work, a retained-only acknowledgement may be
-submitted with a message; recovery of a detached job requires `background: true`.
+Acknowledgement is the parent's own decision after reading that evidence: the
+handler requires a retained-only token plus a message, not a preceding
+`inspect` call, and recovery of a detached job requires `background: true`.
 The same token and request semantics return `subagent_recovery_already_consumed`
 without execution, even while the first continuation is busy. Changed semantics
 return conflict. Consumption and the new reservation are durable before admission.
