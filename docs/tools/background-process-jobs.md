@@ -617,6 +617,13 @@ continues the same child transcript. Both require the ordinary Agent/AgentManage
 policy. Close-only calls remain synchronous. Bare runtime hosts need a supplied
 background controller; unsupported calls fail clearly.
 
+A detached continuation can also carry `model` and `effort`
+(`AgentManage({id:"helper", message:"Continue", background:true, model:"fable"})`).
+The route is persisted on the instance when the turn is reserved, before the job
+starts, so it survives a failed start or a failed turn and later continuations
+inherit it. Retargeting is rejected for `stop`, `steer`, `inspect` and
+close-only calls, which start no turn.
+
 In the web console, detached launches keep their receipt in the parent's Activity,
 which shows `Agent job started` / `Agent job succeeded` (or the actual terminal
 state); `AgentManage` uses the corresponding label. The child no longer streams

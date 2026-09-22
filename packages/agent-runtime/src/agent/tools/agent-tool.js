@@ -59,7 +59,7 @@ const WRAP_UP_MAX_TURNS = 3;
 /** Shape an authored subagent's name must take, mirroring a configured one. */
 const INLINE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/u;
 /** Effort levels a caller may pin on an authored subagent. Mirrors EFFORT_LEVELS in @mono-agent/config. */
-const EFFORT_LEVELS = Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+export const EFFORT_LEVELS = Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 /** Grace after the abort signal before the deadline stops waiting on a runner. */
 const DEADLINE_GRACE_MS = 5_000;
 /** Sentinel distinguishing "deadline won the race" from a real child result. */
@@ -226,7 +226,7 @@ function positiveInt(value, fallback) {
  *
  * @param {RuntimeSubagentsOptions|null|undefined} subagents
  * @param {{recoveryAccess?: unknown, instancesEnabled?: boolean, persistentExposure?: boolean, model?: *, effort?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
- * @param {{record: import("../../ai/types.js").RuntimeSubagentInstance, close?: boolean, acknowledgement?: import("../../ai/types.js").RuntimeSubagentRecoveryRequest}} [continuation] Internal AgentManage dispatch; never model supplied.
+ * @param {{record: import("../../ai/types.js").RuntimeSubagentInstance, close?: boolean, acknowledgement?: import("../../ai/types.js").RuntimeSubagentRecoveryRequest, route?: import("../../ai/types.js").RuntimeSubagentRoute}} [continuation] Internal AgentManage dispatch; never model supplied.
  * @returns {*|null}
  */
 export function createAgentTool(subagents, context = {}, continuation) {
@@ -376,7 +376,16 @@ export function createAgentTool(subagents, context = {}, continuation) {
         throw new Error(`Error: unknown subagent "${params?.name}". Available: ${available}.`);
       }
 
-      const profile = continuation ? continuation.record.definition : {
+      // A retarget applies to this turn and is persisted on the instance inside
+      // the same admission transaction, so the route has to be merged here:
+      // `requested`, `launch` and `routeLabel` below are computed before
+      // `reserve`/`begin` ever runs and would otherwise report the old route.
+      const route = continuation?.route;
+      const profile = continuation ? (route === undefined ? continuation.record.definition : {
+        ...continuation.record.definition,
+        ...(route.model === undefined ? {} : { model: route.model }),
+        ...(route.effort === undefined ? {} : { effort: route.effort }),
+      }) : {
         ...selectedProfile,
         ...(override === undefined ? {} : { model: override.model }),
         ...(params.effort === undefined ? {} : { effort: params.effort }),
@@ -424,8 +433,8 @@ export function createAgentTool(subagents, context = {}, continuation) {
       if (detached) {
         const retained = continuation?.record ?? await createInstance();
         instance = continuation?.acknowledgement
-          ? await instances.reserve(retained.id, reservation, continuation.acknowledgement, context.recoveryAccess)
-          : await instances.reserve(retained.id, reservation);
+          ? await instances.reserve(retained.id, reservation, continuation.acknowledgement, context.recoveryAccess, route)
+          : await instances.reserve(retained.id, reservation, undefined, undefined, route);
         try {
           const started = await background.startInternal({ kind: "internal", tool: continuation ? "AgentManage" : "Agent",
             jobId: reservation, instanceId: retained.id,
@@ -476,10 +485,10 @@ export function createAgentTool(subagents, context = {}, continuation) {
           throw new Error("tool execution aborted");
         }
         try {
-          if (detached) instance = await instances.begin(instance.id, reservation);
+          if (detached) instance = await instances.begin(instance.id, reservation, undefined, undefined, route);
           else if (continuation) instance = continuation.acknowledgement
-            ? await instances.begin(continuation.record.id, undefined, continuation.acknowledgement, context.recoveryAccess)
-            : await instances.begin(continuation.record.id);
+            ? await instances.begin(continuation.record.id, undefined, continuation.acknowledgement, context.recoveryAccess, route)
+            : await instances.begin(continuation.record.id, undefined, undefined, undefined, route);
           else if (params.persist) {
             const created = await createInstance();
             instance = await instances.begin(created.id);

@@ -168,6 +168,19 @@ retained; their configuration is resolved from the current catalog. A removed
 server or unavailable retained route causes an error rather than using stale
 configuration or silently changing the selected model.
 
+`AgentManage({id, message, model, effort})` runs that continuation on a
+different route. The child keeps its durable session and full prior context; the
+new route is persisted on the instance, so later continuations inherit it
+without repeating it. `model` takes the same configured choices as `Agent` and
+is offered only when the host configured any; `effort` takes the usual levels.
+Both compose with `background: true`, `close: true` and `ack`, and both are
+rejected — starting no turn and writing nothing — with `stop`, `steer`,
+`inspect` and close-only calls, and for an unknown model name or effort level.
+A turn that fails keeps the new route, because the next continuation should
+inherit what was asked for; a failed foreground retarget leaves the instance
+close-only until its recovery evidence is inspected and acknowledged, exactly
+like any other failed foreground turn.
+
 IDs are conversation-scoped lowercase kebab-case, 1–40 characters. If omitted,
 an id such as `researcher-1` is generated. Results include the id, turn count,
 and status; the parent's Session envelope lists live instances on every turn.

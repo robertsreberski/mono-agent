@@ -1,7 +1,7 @@
 // @ts-check
 import { steerSubagent } from "./agent-manage-steer.js";
 import { stopSubagent } from "./agent-manage-stop.js";
-import { createAgentTool } from "./agent-tool.js";
+import { createAgentTool, EFFORT_LEVELS } from "./agent-tool.js";
 
 /**
  * Continue the stored definition through the same execution, timeout, budget and activity path as Agent.
@@ -12,6 +12,9 @@ export function createAgentManageTool(subagents, context = {}) {
   if (context.instancesEnabled === false || !(context.persistentExposure ?? Boolean(subagents?.instances)) || !subagents?.run || Number(subagents.depth ?? 0) > 0) return null;
   const instances = subagents.instances;
   const background = instances?.reserve && instances?.releaseReservation && subagents.backgroundSubagentController;
+  // Same admission as Agent's `model`: the property exists only when the host
+  // configured call-time choices, so the schema is self-describing.
+  const models = [...(subagents.models ?? [])].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   return {
     name: "AgentManage", label: "AgentManage",
     description: "Manage a persistent subagent instance created by Agent with persist: true — continue it, run it detached, stop a detached turn, inspect its recovery state, or close it. Instance ids appear in Agent results and the Session envelope. One mode per call:"
@@ -34,9 +37,13 @@ export function createAgentManageTool(subagents, context = {}) {
         description: { type: "string", maxLength: 80, description: "Short label for the job card (at most 80 characters); accepted and ignored by stop." },
         inspect: { type: "boolean", description: "Return recovery evidence only, running no model; use alone with id." },
         ack: { type: "string", maxLength: 128, description: "Acknowledgement token from the inspect evidence; authorizes one continuation and requires message." },
+        effort: { type: "string", enum: [...EFFORT_LEVELS],
+          description: "Run this continuation and every later one at this reasoning effort instead of the instance's retained one; requires message. The child keeps its full prior context." },
+        ...(models.length === 0 ? {} : { model: { type: "string", enum: models.map((choice) => choice.name),
+          description: `Run this continuation and every later one on this model instead of the instance's retained one; requires message. The child keeps its full prior context. Choices: ${models.map((choice) => `${choice.name} → ${choice.key}`).join(", ")}.` } }),
       },
     },
-    /** @param {string} callId @param {{id: string, message?: string, close?: boolean, stop?: boolean, steer?: string, description?: string, background?: boolean, inspect?: boolean, ack?: string}} params @param {AbortSignal} [signal] */
+    /** @param {string} callId @param {{id: string, message?: string, close?: boolean, stop?: boolean, steer?: string, description?: string, background?: boolean, inspect?: boolean, ack?: string, model?: string, effort?: string}} params @param {AbortSignal} [signal] */
     async execute(callId, params, signal) {
       if (Object.hasOwn(params, "steer")) return steerSubagent(subagents, params, signal);
       if (Object.hasOwn(params, "stop")) return stopSubagent(subagents, params, signal);
@@ -44,11 +51,27 @@ export function createAgentManageTool(subagents, context = {}) {
       if (signal?.aborted) throw new Error("tool execution aborted");
       if (params.inspect !== undefined && typeof params.inspect !== "boolean") throw new Error("Error: inspect must be a boolean.");
       if (params.inspect === true) {
-        if ([params.message, params.close, params.background, params.ack, params.description].some((value) => value !== undefined)) throw new Error("Error: inspect must be used alone with id.");
+        if ([params.message, params.close, params.background, params.ack, params.description, params.model, params.effort].some((value) => value !== undefined)) throw new Error("Error: inspect must be used alone with id.");
         if (!instances.inspect) throw new Error("Error: subagent recovery inspection is unavailable.");
         const recovery = await instances.inspect(params.id, context.recoveryAccess);
         return { content: [{ type: "text", text: JSON.stringify(recovery) }], details: { tool: "AgentManage", recovery, executed: false } };
       }
+      // Retargeting is a property of the turn this call starts, so it is
+      // rejected before any registry read for every mode that starts no turn.
+      // Stop and steer have already returned above, both rejecting unexpected
+      // parameters in their own structured receipts.
+      if ((params.model !== undefined || params.effort !== undefined) && params.message === undefined) {
+        throw new Error("Error: model and effort only apply to a continuation with message.");
+      }
+      const override = params.model === undefined ? undefined : models.find((choice) => choice.name === params.model);
+      if (params.model !== undefined && override === undefined) {
+        throw new Error(`Error: unknown model "${params.model}". Choices: ${models.map((choice) => choice.name).join(", ") || "none configured"}.`);
+      }
+      if (params.effort !== undefined && !EFFORT_LEVELS.includes(params.effort)) {
+        throw new Error(`Error: unknown effort "${params.effort}". Choices: ${EFFORT_LEVELS.join(", ")}.`);
+      }
+      const route = override === undefined && params.effort === undefined ? undefined
+        : { ...(override === undefined ? {} : { model: override.model }), ...(params.effort === undefined ? {} : { effort: params.effort }) };
       if (params.ack !== undefined && (typeof params.ack !== "string" || !params.ack || params.ack.length > 128 || params.message === undefined || !instances.checkAcknowledgement)) throw new Error("Error: ack requires a recovery-capable instance and a message.");
       const acknowledgement = params.ack === undefined ? undefined : { ack: params.ack, message: params.message,
         ...(params.background === undefined ? {} : { background: params.background }), ...(params.close === undefined ? {} : { close: params.close }),
@@ -73,7 +96,7 @@ export function createAgentManageTool(subagents, context = {}) {
         return { content: [{ type: "text", text: `<subagent: ${record.name} · instance ${record.id} · turn ${record.turns} · closed>` }],
           details: { tool: "AgentManage", subagent: { name: record.name, status: "ok", instance: { id: closed.id, turns: closed.turns, status: closed.status } } } };
       }
-      const tool = createAgentTool(subagents, context, { record, close: params.close, ...(acknowledgement ? { acknowledgement } : {}) });
+      const tool = createAgentTool(subagents, context, { record, close: params.close, ...(acknowledgement ? { acknowledgement } : {}), ...(route === undefined ? {} : { route }) });
       const minutes = Math.max(0, Math.floor((Date.now() - record.updatedAt) / 60_000));
       return await tool.execute(callId, {
         ...(params.background === undefined ? {} : { background: params.background }),
