@@ -404,7 +404,7 @@ describe("AgentHarness manual compaction", () => {
     // The store also fences the mismatch atomically if another process changes
     // the binding after the harness's read-only preflight.
     await expect(historyStore.beginProviderSessionTurn!("manual", "mismatch-probe",
-      { modelKey: "other:model", skipModelRotation: true })).rejects.toMatchObject({ failureKind: "compaction_model_changed" });
+      { modelKey: "other:model", skipModelRotation: true })).rejects.toMatchObject({ name: "ProviderSessionModelChangedError" });
     await expect(harness.compactConversation!("manual")).resolves.toMatchObject({ status: "skipped", reason: "model_changed" });
     expect(fake.calls).toHaveLength(1);
     expect(fake.invalidatedSessions).toEqual([]);

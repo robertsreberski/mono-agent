@@ -25,8 +25,7 @@ import type {
   ProviderSessionTurnCommitOptions,
   ProviderSessionTurnBinding,
 } from "./types.js";
-import { assertSessionModelKey, uniqueSessionHandles, type ProviderSessionHandle } from "./session-runtime.js";
-import { AgentHarnessError } from "./harness/error.js";
+import { assertSessionModelKey, ProviderSessionModelChangedError, uniqueSessionHandles, type ProviderSessionHandle } from "./session-runtime.js";
 import { isProcessAlive } from "./history-process-liveness.js";
 
 const LEGACY_STORE_VERSION = 1;
@@ -646,7 +645,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           && (existingProvider.modelKey === undefined
             ? (existingProvider.revision ?? 0) > 0
             : existingProvider.modelKey !== binding.modelKey)) {
-          throw new AgentHarnessError("compaction_model_changed", "Conversation model changed before compaction.");
+          throw new ProviderSessionModelChangedError();
         }
         const reusable = (binding === undefined || existingProvider?.modelKey === binding.modelKey)
           && this.maxMessages > 0

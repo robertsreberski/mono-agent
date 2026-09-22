@@ -86,7 +86,7 @@ import {
 import { coldReplayMessages, runHarnessRuntime } from "./harness/runtime-execution.js";
 import { mergeRuntimeOptions } from "./harness/runtime-options.js";
 import { sessionEventFromRecord, withSessionBoundaryTimestamp } from "./harness/session-events.js";
-import { createSessionRuntimeResolver, sessionModelKey, type ProviderSessionHandle, type SessionRuntimeResolver } from "./session-runtime.js";
+import { createSessionRuntimeResolver, ProviderSessionModelChangedError, sessionModelKey, type ProviderSessionHandle, type SessionRuntimeResolver } from "./session-runtime.js";
 import { retireRunResultSession } from "./harness/session-retirement.js";
 import { validateOptions, validateRequest } from "./harness/validation.js";
 import { errorToDetails } from "./harness/value-utils.js";
@@ -285,7 +285,7 @@ export class MonoAgentHarness implements AgentHarness {
       try {
         providerTurn = await beginProviderSessionTurn(conversationId, runId, ...(bound ? [{ modelKey, skipModelRotation: true }] : []));
       } catch (error) {
-        if (error instanceof AgentHarnessError && error.failureKind === "compaction_model_changed") {
+        if (error instanceof ProviderSessionModelChangedError) {
           return { status: "skipped", trigger: "manual", operationId: randomUUID(), reason: "model_changed" };
         }
         throw error;
