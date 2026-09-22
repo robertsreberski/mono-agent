@@ -253,7 +253,7 @@ describe("Pi interoperability facade", () => {
     expect(suppliedOptions.credentials).toBeDefined();
   });
 
-  describe("pi catalog reads (pure upstream, no backfill)", () => {
+  describe("pi catalog reads for providers with no supplemented rows", () => {
     it("lists exactly what the upstream catalog reports, snapshot-cloned", () => {
       piMocks.getBuiltinModels.mockReturnValue([rawModel]);
 
@@ -273,9 +273,9 @@ describe("Pi interoperability facade", () => {
     });
 
     it("reads one row straight from upstream with no miss-fallback", () => {
-      // pi-ai 0.87.0 ships every model mono-agent needs (including the former
-      // opencode-go:deepseek-v4.1-flash backfill), so the facade reports the
-      // upstream row verbatim and undefined on a genuine miss.
+      // `provider-1` carries no supplemented row, so the facade reports the
+      // upstream row verbatim and undefined on a genuine miss. The supplement
+      // fallback is exercised in the sibling describe below.
       piMocks.getBuiltinModel.mockImplementation((provider, id) =>
         id === "model-1" ? rawModel : undefined);
 
