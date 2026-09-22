@@ -4,10 +4,17 @@
  * `pi-bridge.js` (built-ins) and `adapter-send-tools.ts` (adapter send tools).
  */
 
-import { ALLOW_ALL_TOOLS } from "@mono-agent/config";
+import { ALLOW_ALL_TOOLS, RENAMED_TOOL_NAMES, renamedToolMessage, renamedToolName } from "@mono-agent/config";
 
 /** Re-export the allow-all sentinel so agent-app callers share one canonical value. */
 export { ALLOW_ALL_TOOLS };
+
+/**
+ * Re-export the single retired-tool registry. `AgentSend` was renamed to
+ * `AgentManage` with no alias, so an unmigrated policy entry is reported by
+ * doctor rather than silently dropped (allow) or silently widened (deny).
+ */
+export { RENAMED_TOOL_NAMES, renamedToolMessage, renamedToolName };
 
 /** Mono-agent-managed built-ins gated by `tools.allowedTools` (pi-bridge.js). */
 export const BUILTIN_TOOL_NAMES = [
@@ -24,7 +31,7 @@ export const BUILTIN_TOOL_NAMES = [
   // Registered only when `subagents.enabled` is true; deliberately absent from
   // DEFAULT_SAFE_TOOLS because deploying agents is not a read-only capability.
   "Agent",
-  "AgentSend",
+  "AgentManage",
   "AskParent",
 ] as const;
 

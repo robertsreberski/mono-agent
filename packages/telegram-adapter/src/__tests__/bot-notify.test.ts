@@ -254,7 +254,7 @@ describe("createTelegramBot notify (proactive)", () => {
 
   it.each(["timed_out", "succeeded"] as const)("retains bounded internal busy and question state as plain Telegram text (%s)", async (state) => {
     const { controller, calls } = buildNotifiableBot({ async respond() { return { text: "unused" }; } });
-    const internal: ProcessJobProjection = { ...processJobProjection("running"), kind: "internal", tool: "AgentSend",
+    const internal: ProcessJobProjection = { ...processJobProjection("running"), kind: "internal", tool: "AgentManage",
       instanceId: "helper", childStillBusy: false };
     await controller.updateProcessJob(42, internal);
     await controller.updateProcessJob(42, { ...internal, state, childStillBusy: state === "timed_out",

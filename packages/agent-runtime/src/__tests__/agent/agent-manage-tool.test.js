@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createAgentTool, SUBAGENT_HARD_DENY } from "../../agent/tools/agent-tool.js";
-import { createAgentSendTool } from "../../agent/tools/agent-send-tool.js";
+import { createAgentManageTool } from "../../agent/tools/agent-manage-tool.js";
 import { getPiBuiltinTools } from "../../agent/tools/pi-bridge.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 
@@ -23,9 +23,9 @@ function setup(overrides = {}) {
   };
   const options = { instances, run: vi.fn(async () => ({ text: "answer" })), ...overrides };
   const context = { parentRunId: "parent" };
-  return { records, instances, options, agent: createAgentTool(options, context), send: createAgentSendTool(options, context) };
+  return { records, instances, options, agent: createAgentTool(options, context), send: createAgentManageTool(options, context) };
 }
-describe("persistent Agent and AgentSend", () => {
+describe("persistent Agent and AgentManage", () => {
   it("preserves stateless registration and gates persistence and recursion", async () => {
     const options = { run: vi.fn() };
     const agent = createAgentTool(options);
@@ -33,10 +33,10 @@ describe("persistent Agent and AgentSend", () => {
     expect(agent.parameters.properties.id).toBeUndefined();
     await expect(agent.execute("a", { prompt: "x", persist: false })).rejects.toThrow(/unavailable/);
     await expect(agent.execute("a", { prompt: "x", id: "a" })).rejects.toThrow(/unavailable/);
-    expect(createAgentSendTool(options)).toBeNull();
+    expect(createAgentManageTool(options)).toBeNull();
     expect(createAgentTool({ ...setup().options, depth: 1 })).toBeNull();
-    expect(createAgentSendTool({ ...setup().options, depth: 1 })).toBeNull();
-    expect(SUBAGENT_HARD_DENY).toContain("AgentSend");
+    expect(createAgentManageTool({ ...setup().options, depth: 1 })).toBeNull();
+    expect(SUBAGENT_HARD_DENY).toContain("AgentManage");
   });
   it("creates, resumes a stored definition, reports turns and closes", async () => {
     const { agent, send, options, instances } = setup();
@@ -48,7 +48,7 @@ describe("persistent Agent and AgentSend", () => {
     expect(options.run.mock.calls[1][0]).toMatchObject({ instance: { sessionId: "sub-test", sessionsRoot: "/test/sessions" } });
     expect(options.run.mock.calls[1][0].prompt).toMatch(/turn 2; 2 min.*Prior context is retained\.\n\nsecond/);
     expect(instances.finish).toHaveBeenCalledTimes(2);
-    expect(second.details.tool).toBe("AgentSend");
+    expect(second.details.tool).toBe("AgentManage");
   });
   it("continues the stored profile without resolving general-purpose against the current ceiling", async () => {
     const profile = { name: "writer", description: "Writes", systemPrompt: "Write", allowedTools: ["Bash"] };
@@ -110,14 +110,14 @@ describe("persistent Agent and AgentSend", () => {
     expect(instances.close).not.toHaveBeenCalled();
     expect(instances.finish).toHaveBeenLastCalledWith("critic-1", expect.objectContaining({ status: "cancelled" }));
   });
-  it("attributes spilled continuation output to AgentSend", async () => {
+  it("attributes spilled continuation output to AgentManage", async () => {
     const { agent, options } = setup();
     await agent.execute("a", { prompt: "first", persist: true });
     options.run.mockResolvedValueOnce({ text: "output ".repeat(20_000) });
     const persistArtifact = vi.fn(() => "/artifacts/continued.txt");
-    const send = createAgentSendTool(options, { parentRunId: "next", persistArtifact });
+    const send = createAgentManageTool(options, { parentRunId: "next", persistArtifact });
     const result = await send.execute("send-id", { id: "critic-1", message: "more" });
-    expect(persistArtifact).toHaveBeenCalledWith(expect.objectContaining({ filename: "AgentSend__send-id__full.txt", toolName: "AgentSend", toolUseId: "send-id" }));
+    expect(persistArtifact).toHaveBeenCalledWith(expect.objectContaining({ filename: "AgentManage__send-id__full.txt", toolName: "AgentManage", toolUseId: "send-id" }));
     expect(result.details.tool_payload_saved_paths).toContain("/artifacts/continued.txt");
   });
 
@@ -140,19 +140,19 @@ describe("persistent Agent and AgentSend", () => {
     expect(instances.finish.mock.calls[0][1].status).toBe("busy");
   });
   it.each([
-    [["Agent"], [], false], [["*"], ["AgentSend"], false], [["*"], [], true],
+    [["Agent"], [], false], [["*"], ["AgentManage"], false], [["*"], [], true],
   ])("gates persistence at the effective pi tool boundary: %j/%j", async (allowed, denied, enabled) => {
     const { options } = setup();
     const tools = getPiBuiltinTools(allowed, { ctx, disallowedTools: denied, subagents: options });
     const agent = tools.find((tool) => tool.name === "Agent");
     expect(agent.parameters.properties.persist !== undefined).toBe(enabled);
-    expect(tools.some((tool) => tool.name === "AgentSend")).toBe(enabled);
+    expect(tools.some((tool) => tool.name === "AgentManage")).toBe(enabled);
     if (!enabled) {
-      expect(agent.description).not.toContain("AgentSend");
+      expect(agent.description).not.toContain("AgentManage");
       await expect(agent.execute("denied", { prompt: "x", persist: true })).rejects.toThrow(/unavailable/);
     }
   });
-  it("documents every AgentSend parameter and every call mode", () => {
+  it("documents every AgentManage parameter and every call mode", () => {
     const send = setup().send;
     for (const [name, schema] of Object.entries(send.parameters.properties)) {
       expect(typeof schema.description, `${name} description`).toBe("string");
@@ -160,10 +160,10 @@ describe("persistent Agent and AgentSend", () => {
     }
     for (const mode of ["Continue:", "Close:", "Stop:", "Inspect:", "Ack:"]) expect(send.description).toContain(mode);
   });
-  it("registers AgentSend next to Agent only with a registry", () => {
+  it("registers AgentManage next to Agent only with a registry", () => {
     const names = (subagents) => getPiBuiltinTools(undefined, { ctx, subagents }).map((tool) => tool.name);
-    expect(names(setup().options)).toContain("AgentSend");
-    expect(names({ run: vi.fn() })).not.toContain("AgentSend");
+    expect(names(setup().options)).toContain("AgentManage");
+    expect(names({ run: vi.fn() })).not.toContain("AgentManage");
   });
 });
 
@@ -184,11 +184,11 @@ it("closes an awaiting instance without running an answer, but keeps a new quest
   expect(second.instances.close).not.toHaveBeenCalled();
 });
 
-describe("AgentSend recovery boundary", () => {
+describe("AgentManage recovery boundary", () => {
   it("passes only host access to inspection and never invokes a provider", async () => {
     const f = setup(); const recoveryAccess = { host: true };
     f.instances.inspect = vi.fn(async () => ({ schema: "mono-agent.subagent-recovery.v1", status: "held" }));
-    const send = createAgentSendTool(f.options, { recoveryAccess });
+    const send = createAgentManageTool(f.options, { recoveryAccess });
     const result = await send.execute("inspect", { id: "helper", inspect: true });
     expect(result.details).toMatchObject({ executed: false, recovery: { status: "held" } });
     expect(f.instances.inspect).toHaveBeenCalledWith("helper", recoveryAccess);
@@ -197,7 +197,7 @@ describe("AgentSend recovery boundary", () => {
   it.each([{ message: "next" }, { close: false }, { background: false }, { ack: "token" }, { description: "purpose" }])(
     "rejects mixed inspection semantics %j without execution", async (extra) => {
       const f = setup(); f.instances.inspect = vi.fn();
-      await expect(createAgentSendTool(f.options).execute("inspect", { id: "helper", inspect: true, ...extra })).rejects.toThrow("inspect must be used alone");
+      await expect(createAgentManageTool(f.options).execute("inspect", { id: "helper", inspect: true, ...extra })).rejects.toThrow("inspect must be used alone");
       expect(f.instances.inspect).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
     },
   );
@@ -205,8 +205,8 @@ describe("AgentSend recovery boundary", () => {
     "returns typed %s before busy lookup and never replays a receipt", async (code) => {
       const f = setup(); f.instances.checkAcknowledgement = vi.fn(async () => { throw Object.assign(new Error(code), { code }); });
       const request = { id: "helper", ack: "token", message: "exact bytes ", background: true, close: false, description: "purpose" };
-      const result = await createAgentSendTool(f.options).execute("ack", request);
-      expect(result.details).toEqual({ tool: "AgentSend", recovery: { code }, executed: false });
+      const result = await createAgentManageTool(f.options).execute("ack", request);
+      expect(result.details).toEqual({ tool: "AgentManage", recovery: { code }, executed: false });
       expect(f.instances.checkAcknowledgement).toHaveBeenCalledWith("helper", { ack: "token", message: "exact bytes ", background: true, close: false, description: "purpose" }, undefined);
       expect(f.instances.get).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
     },
@@ -217,9 +217,9 @@ describe("AgentSend recovery boundary", () => {
 it("keeps optional continuation definitions stable and refuses unavailable operations before instance access", async () => {
   const { options, instances } = setup();
   const context = { persistentExposure: true };
-  const unavailable = createAgentSendTool({ run: options.run }, context);
-  const current = createAgentSendTool(options, context);
-  const capable = createAgentSendTool({ ...options, instances: { ...instances, reserve: vi.fn(), releaseReservation: vi.fn(), inspect: vi.fn(), checkAcknowledgement: vi.fn() }, backgroundSubagentController: {} }, context);
+  const unavailable = createAgentManageTool({ run: options.run }, context);
+  const current = createAgentManageTool(options, context);
+  const capable = createAgentManageTool({ ...options, instances: { ...instances, reserve: vi.fn(), releaseReservation: vi.fn(), inspect: vi.fn(), checkAcknowledgement: vi.fn() }, backgroundSubagentController: {} }, context);
   const definition = ({ name, description, parameters }) => JSON.stringify({ name, description, parameters });
   expect(definition(current)).toBe(definition(unavailable)); expect(definition(capable)).toBe(definition(current));
   await expect(unavailable.execute("no", { id: "x", message: "work" })).rejects.toThrow(/unavailable/);
@@ -229,7 +229,7 @@ it("keeps optional continuation definitions stable and refuses unavailable opera
 });
 
 
-describe("AgentSend stop", () => {
+describe("AgentManage stop", () => {
   it.each([
     [{ message: "next" }, "message"], [{ close: false }, "close"], [{ background: false }, "background"],
     [{ inspect: false }, "inspect"], [{ ack: "token" }, "ack"], [{ jobId: "arbitrary" }, "jobId"],
@@ -240,7 +240,7 @@ describe("AgentSend stop", () => {
     const stop = { code: "subagent_stop_unexpected_parameters", instanceId: "helper", jobId: null, stopRequested: false,
       message: `stop takes only id and optional description (unexpected: ${keys}).` };
     expect(result).toEqual({ isError: true, content: [{ type: "text", text: JSON.stringify(stop) }],
-      details: { tool: "AgentSend", executed: false, stop } });
+      details: { tool: "AgentManage", executed: false, stop } });
     expect(f.instances.get).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
   });
   it.each([
@@ -255,7 +255,7 @@ describe("AgentSend stop", () => {
     const result = await f.send.execute("stop", params);
     const stop = { code, instanceId: typeof params.id === "string" ? params.id : null, jobId: null, stopRequested: false, message };
     expect(result).toEqual({ isError: true, content: [{ type: "text", text: JSON.stringify(stop) }],
-      details: { tool: "AgentSend", executed: false, stop } });
+      details: { tool: "AgentManage", executed: false, stop } });
     expect(f.instances.get).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
   });
   it.each([undefined, "stop", "", "a".repeat(80)])("accepts and ignores description on the real stop path: %j", async (description) => {
@@ -277,7 +277,7 @@ describe("AgentSend stop", () => {
   it("stop unavailable does not execute", async () => {
     const f = setup();
     const result = await f.send.execute("stop", { id: "helper", stop: true });
-    expect(result.details).toEqual({ tool: "AgentSend", executed: false, stop: { code: "subagent_stop_unavailable", instanceId: "helper", jobId: null, stopRequested: false } });
+    expect(result.details).toEqual({ tool: "AgentManage", executed: false, stop: { code: "subagent_stop_unavailable", instanceId: "helper", jobId: null, stopRequested: false } });
     expect(result.isError).toBe(true); expect(f.options.run).not.toHaveBeenCalled();
   });
   it.each([{}, { description: "stop" }])("resolves only the captured active turn and returns bounded busy evidence: %j", async (extra) => {
@@ -287,7 +287,7 @@ describe("AgentSend stop", () => {
     const result = await f.send.execute("stop", { id: "helper", stop: true, ...extra });
     expect(f.instances.get).toHaveBeenCalledWith("helper");
     expect(stop).toHaveBeenCalledWith({ instanceId: "helper", instanceIncarnation: "epoch", turnToken: "owned-token" });
-    expect(result.details).toEqual({ tool: "AgentSend", executed: false, stop: { instanceId: "helper", jobId: "owned-token", status: "stop_requested", instanceStatus: "running", turns: 1, disposition: "cancelled", stopRequested: true, childStillBusy: true, resumable: false } });
+    expect(result.details).toEqual({ tool: "AgentManage", executed: false, stop: { instanceId: "helper", jobId: "owned-token", status: "stop_requested", instanceStatus: "running", turns: 1, disposition: "cancelled", stopRequested: true, childStillBusy: true, resumable: false } });
     expect(JSON.parse(result.content[0].text)).toEqual(result.details.stop);
     expect(f.options.run).not.toHaveBeenCalled();
     await expect(f.send.execute("message", { id: "helper", message: "next" })).rejects.toThrow("busy");
@@ -300,9 +300,9 @@ describe("AgentSend stop", () => {
       f.records.set("helper", { id: "helper", incarnation: "epoch", status: "idle", turns: 1, settledTurnToken: successor ? "successor" : "owned-token" });
       return { jobId: "owned-token", stopRequested: true, childStillBusy: false, resumable: true, disposition: "cancelled" };
     } };
-    const result = await createAgentSendTool(f.options).execute("stop", { id: "helper", stop: true });
+    const result = await createAgentManageTool(f.options).execute("stop", { id: "helper", stop: true });
     if (successor) expect(result).toMatchObject({ isError: true, details: { stop: { code: "subagent_stale_turn" } } });
-    else expect(result.details).toEqual({ tool: "AgentSend", executed: false, stop: { instanceId: "helper", jobId: "owned-token", status: "stopped", instanceStatus: "idle", turns: 1, disposition: "cancelled", stopRequested: true, childStillBusy: false, resumable: true } });
+    else expect(result.details).toEqual({ tool: "AgentManage", executed: false, stop: { instanceId: "helper", jobId: "owned-token", status: "stopped", instanceStatus: "idle", turns: 1, disposition: "cancelled", stopRequested: true, childStillBusy: false, resumable: true } });
     expect(f.options.run).not.toHaveBeenCalled();
   });
   it("bounds controller/storage hangs without claiming acceptance", async () => {
@@ -338,7 +338,7 @@ describe("AgentSend stop", () => {
       }
       return await read(id);
     });
-    const result = createAgentSendTool(f.options).execute("stop", { id: "helper", stop: true });
+    const result = createAgentManageTool(f.options).execute("stop", { id: "helper", stop: true });
     try {
       await readEntered;
       await vi.advanceTimersByTimeAsync(6_000);

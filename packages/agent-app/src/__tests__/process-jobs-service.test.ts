@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
-import { processJobPublicError, type ProcessJobProjection } from "@mono-agent/agent-contracts";
+import { parseProcessJobProjection, processJobPublicError, type ProcessJobProjection } from "@mono-agent/agent-contracts";
 import type {
   ProcessJobProcessHandle,
   ProcessJobProcessResult,
@@ -32,6 +32,7 @@ import {
   PROCESS_JOB_QUARANTINE_DIRECTORY,
   PROCESS_JOB_STORE_MAX_RECORD_ENTRIES,
   PROCESS_JOB_TRANSACTION_FILE,
+  projectProcessJob,
   type DurableProcessJobRecord,
   type ProcessJobOriginRecord,
   type ProcessJobStore,
@@ -3228,6 +3229,28 @@ describe("process job store", () => {
     await expect(openProcessJobStore(fixture.cwd, fixture.settings.stateDir))
       .rejects.toThrow(/unsupported entry|single-link regular file/u);
     expect(await readFile(target, "utf8")).toBe("must stay untouched\n");
+  });
+
+  it("loads and projects a stored internal job that still carries the legacy AgentSend tool name", async () => {
+    // `AgentSend` was renamed to `AgentManage` with no alias. Records written
+    // before the rename must still validate on reopen and project unchanged;
+    // nothing emits the old name for a new job.
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "1a1a1a1a-1a1a-41a1-81a1-1a1a1a1a1a1a";
+    await store.ensureArtifacts(jobId);
+    const record = durableRecord(jobId, {
+      tool: "AgentSend", kind: "internal", instanceId: "critic-1", childStillBusy: false,
+      pid: null, pgid: null, state: "succeeded", completedAt: "2026-08-14T10:00:03.000Z",
+    });
+    delete (record as { processIncarnation?: unknown }).processIncarnation;
+    await store.mutate((records) => records.set(jobId, record));
+
+    const reopened = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const loaded = await reopened.get(jobId);
+    expect(loaded?.tool).toBe("AgentSend");
+    expect(parseProcessJobProjection(projectProcessJob(loaded!)))
+      .toMatchObject({ tool: "AgentSend", kind: "internal", instanceId: "critic-1", childStillBusy: false });
   });
 
   it("fails closed when a retained record points at a missing artifact", async () => {

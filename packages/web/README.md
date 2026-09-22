@@ -86,7 +86,7 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   conversation-level stack after the transcript. Queued, starting, and running
   cards stay visible by default; terminal cards remain mounted behind
   expandable history so status counts and live transitions stay current.
-  When a loaded launching `Exec`/`Bash`/`Agent`/`AgentSend` call has its exact persisted machine
+  When a loaded launching `Exec`/`Bash`/`Agent`/`AgentManage` call has its exact persisted machine
   receipt, that response's Activity shows one start row for the launch: the
   launch call folds into the `<Tool> job started` row, which carries the launch
   arguments behind its disclosure alongside the job facts. The

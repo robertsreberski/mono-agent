@@ -52,7 +52,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // service ids, sessions, or provider identity.
   "agent": { "name": "Research Companion" },
 
-  // Subagents the Agent tool can deploy. Allow AgentSend too for persistent continuations.
+  // Subagents the Agent tool can deploy. Allow AgentManage too for persistent continuations.
   "subagents": {
     "enabled": true,
     "models": [{ "name": "fable", "model": "anthropic:claude-fable-5-1" }, "openai-codex:gpt-6-astra"],

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { buildSubagentsOptions, createSubagentsRuntimeExtension } from "../configured-agent.js";
 // @ts-expect-error Private runtime seam.
-import { createAgentSendTool } from "../../../agent-runtime/src/agent/tools/agent-send-tool.js";
+import { createAgentManageTool } from "../../../agent-runtime/src/agent/tools/agent-manage-tool.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 import { describe, expect, it, vi } from "vitest";
 
@@ -165,7 +165,7 @@ describe("configured subagents", () => {
     expect(definitions[0]?.disallowedTools).toEqual([
       "Bash",
       "Agent",
-      "AgentSend",
+      "AgentManage",
       "AskUser",
       "SlackSendMessage",
       "TelegramSendMessage",
@@ -507,7 +507,7 @@ it("G11: configured registry callback through actual harness Session context exc
   try {
     const registryRoot = resolve(root, "PRIVATE-REGISTRY-CANARY"); const key = "beef".repeat(16);
     const observationPath = resolve(root, "PRIVATE-OBSERVATION-CANARY"); const reportBody = "PRIVATE-REPORT-BODY-CANARY";
-    const config = monoConfig({ enabled: true, instances: { root: registryRoot } }, { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] });
+    const config = monoConfig({ enabled: true, instances: { root: registryRoot } }, { allowedTools: ["Agent", "AgentManage"], disallowedTools: [] });
     const local = { ...config, runtime: { ...config.runtime, workspace: root }, context: { ...config.context, identityPath: resolve(root, "IDENTITY.md") },
       artifacts: { ...config.artifacts, dir: resolve(root, "artifacts") }, traceability: { ...config.traceability, registryDir: resolve(root, "trace") } };
     await writeFile(local.context.identityPath, "Handle the current request safely."); await writeFile(resolve(root, "report.txt"), reportBody);
@@ -527,7 +527,7 @@ it("G11: configured registry callback through actual harness Session context exc
     expect(runtime.run).toHaveBeenCalledOnce();
     const [prompt, runtimeOptions] = runtime.run.mock.calls[0]!;
     const visible = JSON.stringify([prompt, runtimeOptions.messages]);
-    expect(visible).toContain(created.id); expect(visible).toContain("recovery blocked: inspect with AgentSend");
+    expect(visible).toContain(created.id); expect(visible).toContain("recovery blocked: inspect with AgentManage");
     expect(JSON.stringify(runtimeOptions.messages)).toContain("<host_turn_context>");
     for (const canary of [key, registryRoot, observationPath, reportBody]) expect(visible).not.toContain(canary);
     expect(JSON.stringify(runtimeOptions)).not.toContain(key);
@@ -558,7 +558,7 @@ it.each(["disabled", "failed-start", "undefined-standalone", "retained-history"]
       }
       process.exit(0);
     `], { cwd: root, timeout: 10_000 });
-    const base = monoConfig({ enabled: true, instances: { root: instancesRoot } }, { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] });
+    const base = monoConfig({ enabled: true, instances: { root: instancesRoot } }, { allowedTools: ["Agent", "AgentManage"], disallowedTools: [] });
     const config = { ...base, runtime: { ...base.runtime, workspace: root }, context: { ...base.context, identityPath: resolve(root, "IDENTITY.md") },
       artifacts: { ...base.artifacts, dir: resolve(root, "artifacts") }, traceability: { ...base.traceability, registryDir: resolve(root, "trace") },
       processJobs: { enabled: mode !== "disabled" && mode !== "undefined-standalone" } } as MonoAgentConfig;
@@ -581,7 +581,7 @@ it.each(["disabled", "failed-start", "undefined-standalone", "retained-history"]
     const options = harnessMock.mock.calls[0]![0] as { runtimeOptionsForRequest(input: unknown): Promise<{ runtimeOptions?: { subagents?: unknown } }> };
     const extension = await options.runtimeOptionsForRequest({ request: { conversationId: "conversation", metadata: { channel: "slack" } }, runId: "run", context: { sections: [] } });
     const scoped = extension.runtimeOptions!.subagents as never;
-    await expect(createAgentSendTool(scoped).execute("send", { id: "child", message: "must not run" }))
+    await expect(createAgentManageTool(scoped).execute("send", { id: "child", message: "must not run" }))
       .rejects.toThrow(/busy|subagent_owner_unavailable/u);
     await expect(createAgentTool(scoped).execute("replacement", { persist: true, id: "replacement", prompt: "must not run" }))
       .rejects.toMatchObject({ code: "subagent_owner_unavailable" });
@@ -596,7 +596,7 @@ it("G02: configured no-service composition preserves a clean foreground continua
     const instancesRoot = resolve(root, "children");
     const registry = createSubagentInstanceRegistry({ root: instancesRoot, retireSession: async () => {} });
     await (await registry.open("conversation")).create({ id: "child", name: "child", systemPrompt: "Review", definition: { name: "child", description: "Review", systemPrompt: "Review" } });
-    const base = monoConfig({ enabled: true, instances: { root: instancesRoot } }, { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] });
+    const base = monoConfig({ enabled: true, instances: { root: instancesRoot } }, { allowedTools: ["Agent", "AgentManage"], disallowedTools: [] });
     const config = { ...base, runtime: { ...base.runtime, workspace: root }, context: { ...base.context, identityPath: resolve(root, "IDENTITY.md") },
       artifacts: { ...base.artifacts, dir: resolve(root, "artifacts") }, traceability: { ...base.traceability, registryDir: resolve(root, "trace") },
       processJobs: { enabled: false } } as MonoAgentConfig;
@@ -606,7 +606,7 @@ it("G02: configured no-service composition preserves a clean foreground continua
     responder = await createConfiguredAgentResponderForApp({ config, runtime: runtime as never } as never, {});
     const options = harnessMock.mock.calls[0]![0] as { runtimeOptionsForRequest(input: unknown): Promise<{ runtimeOptions?: { subagents?: unknown } }> };
     const extension = await options.runtimeOptionsForRequest({ request: { conversationId: "conversation" }, runId: "run", context: { sections: [] } });
-    const result = await createAgentSendTool(extension.runtimeOptions!.subagents as never).execute("send", { id: "child", message: "continue" });
+    const result = await createAgentManageTool(extension.runtimeOptions!.subagents as never).execute("send", { id: "child", message: "continue" });
     expect(result.details).toMatchObject({ subagent: { status: "ok" } }); expect(runtime.run).toHaveBeenCalledOnce();
   } finally { await (responder as { dispose?: () => Promise<void> } | undefined)?.dispose?.(); await rm(root, { recursive: true, force: true }); }
 });
@@ -614,7 +614,7 @@ it("G02: configured no-service composition preserves a clean foreground continua
 it("wires the Session envelope to the current conversation's live registry", async () => {
   const root = await mkdtemp(resolve(process.cwd(), ".subagent-envelope-"));
   try {
-    await buildSubagents(monoConfig({ enabled: true, instances: { root } }, { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] }));
+    await buildSubagents(monoConfig({ enabled: true, instances: { root } }, { allowedTools: ["Agent", "AgentManage"], disallowedTools: [] }));
     const options = harnessMock.mock.calls[0]![0] as { subagentInstancesFor: (input: unknown) => Promise<unknown[]> };
     expect(await options.subagentInstancesFor({ request: { conversationId: "one" }, runId: "a" })).toEqual([]);
     const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {} });
@@ -629,8 +629,8 @@ it("wires the Session envelope to the current conversation's live registry", asy
 
 
 it.each([
-  [["Agent"], [], false], [["*"], [], true], [["*"], ["AgentSend"], false],
-  [["*"], ["Agent"], false], [["Agent", "AgentSend"], [], true],
+  [["Agent"], [], false], [["*"], [], true], [["*"], ["AgentManage"], false],
+  [["*"], ["Agent"], false], [["Agent", "AgentManage"], [], true],
 ])("gates persistent configured-harness surfaces on both effective tools: %j/%j", async (allowedTools, disallowedTools, enabled) => {
   const root = await mkdtemp(resolve(process.cwd(), ".subagent-policy-"));
   try {
@@ -643,7 +643,7 @@ it.each([
     const result = await extension({ request: { conversationId: "c" }, runId: "r" } as never);
     const scoped = result.runtimeOptions!.subagents;
     expect(createAgentTool(scoped).parameters.properties.persist !== undefined).toBe(enabled);
-    expect(createAgentSendTool(scoped) !== null).toBe(enabled);
+    expect(createAgentManageTool(scoped) !== null).toBe(enabled);
     expect(createAgentTool(subagents).parameters.properties.persist).toBeUndefined();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -654,7 +654,7 @@ it("reapplies current denies and MCP catalog after registry/config restart while
     const mcpConfigPath = resolve(root, "mcp.json");
     await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: { selected: { command: "old-server" } } }));
     const config = monoConfig({ enabled: true, definitions: [{ ...RESEARCHER, mcpServers: ["selected"] }], instances: { root: resolve(root, "instances") } },
-      { allowedTools: ["Agent", "AgentSend"], disallowedTools: [], mcpConfigPath });
+      { allowedTools: ["Agent", "AgentManage"], disallowedTools: [], mcpConfigPath });
     const registry = () => createSubagentInstanceRegistry({ root: config.subagents!.instances!.root!, retireSession: async () => {} });
     const runtime = { run: vi.fn(async (_prompt: string, options: Record<string, unknown>) => ({ text: "answer", providerSessionId: options.sessionId })) };
     const initial = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: PRIMARY }, { conversationId: "c", runId: "r", instances: await registry().open("c") })!;
@@ -667,13 +667,13 @@ it("reapplies current denies and MCP catalog after registry/config restart while
     const changed = { ...config, tools: { ...config.tools, disallowedTools: ["Read", "mcp__selected__danger"] }, subagents: { ...config.subagents, definitions: [] } } as MonoAgentConfig;
     const extension = createSubagentsRuntimeExtension(changed, { runtime: runtime as never, baseModel: PRIMARY }, registry());
     const resumed = await extension({ request: { conversationId: "c" }, runId: "r2" } as never);
-    await createAgentSendTool(resumed.runtimeOptions!.subagents).execute("b", { id: "research", message: "next" });
+    await createAgentManageTool(resumed.runtimeOptions!.subagents).execute("b", { id: "research", message: "next" });
     const [prompt, options] = runtime.run.mock.calls[1]!;
     expect(prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
     expect(options).toMatchObject({ model: PRIMARY, effort: "high", mcpServers: { selected: { command: "new-server" } } });
-    expect(options.disallowedTools).toEqual(expect.arrayContaining(["Read", "mcp__selected__danger", "Agent", "AgentSend"]));
+    expect(options.disallowedTools).toEqual(expect.arrayContaining(["Read", "mcp__selected__danger", "Agent", "AgentManage"]));
     await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: {} }));
-    const failed = await createAgentSendTool(resumed.runtimeOptions!.subagents).execute("c", { id: "research", message: "next", close: true });
+    const failed = await createAgentManageTool(resumed.runtimeOptions!.subagents).execute("c", { id: "research", message: "next", close: true });
     expect(failed.details.subagent.status).toBe("failed");
     expect(runtime.run).toHaveBeenCalledTimes(2);
     expect((await (await registry().open("c")).get("research"))!.status).toBe("idle");
@@ -697,7 +697,7 @@ describe("AskParent child policy and durable controller", () => {
     try {
       const config = monoConfig({ enabled: true, definitions: [{ name: "helper", description: "help", prompt: "Help", allowedTools: ["Read"],
         ...(policy === "profile-deny" ? { disallowedTools: ["AskParent"] } : {}) }] },
-      { allowedTools: ["Agent", "AgentSend"], disallowedTools: policy === "global-deny" ? ["AskParent"] : [] });
+      { allowedTools: ["Agent", "AgentManage"], disallowedTools: policy === "global-deny" ? ["AskParent"] : [] });
       const handle = await createSubagentInstanceRegistry({ root, retireSession: async () => {} }).open("conversation");
       if (policy === "retry") vi.spyOn(handle, "markAwaiting").mockRejectedValueOnce(new Error("transient publication failure"));
       const calls: any[] = [];

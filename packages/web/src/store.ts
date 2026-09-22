@@ -7561,10 +7561,17 @@ function withEventHistoryUpdate<T extends WebToolCall | SubagentPart>(
  * the operator wire, so a malformed payload must fall through to an ordinary
  * tool-call part instead of keying a group on a non-string.
  */
-/** Late child stream events cannot replace a canonical detached launch receipt. */
+/**
+ * Late child stream events cannot replace a canonical detached launch receipt.
+ *
+ * `"AgentSend"` is legacy history: the tool was renamed to `AgentManage` with
+ * no alias, and retained transcripts still carry the old tool name on their
+ * stored receipts. Accepted on this read path only; never emitted.
+ */
 function hasDetachedSubagentReceipt(parts: readonly WebMessagePart[], id: string): boolean {
   const part = parts.find((candidate) => candidate.type === "tool-call" && candidate.toolCallId === id);
-  if (part?.type !== "tool-call" || (part.toolName !== "Agent" && part.toolName !== "AgentSend")) return false;
+  if (part?.type !== "tool-call"
+    || (part.toolName !== "Agent" && part.toolName !== "AgentManage" && part.toolName !== "AgentSend")) return false;
   const value = part.structuredResult;
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const receipt = value as Record<string, unknown>;

@@ -986,7 +986,7 @@ describe("process-job request availability", () => {
 
 it("detached child holds an independent generation lease after parent settlement and abort", async () => {
   const coreConfig = { runtime: { model: CLAUDE_MODEL, workspace: "/agent" },
-    tools: { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] }, subagents: { enabled: true } } as never;
+    tools: { allowedTools: ["Agent", "AgentManage"], disallowedTools: [] }, subagents: { enabled: true } } as never;
   const boundary = processJobsBoundary(coreConfig);
   const releases: ReturnType<typeof vi.fn>[] = [];
   const ownership = { coordinator: { acquireRequestLease: () => {

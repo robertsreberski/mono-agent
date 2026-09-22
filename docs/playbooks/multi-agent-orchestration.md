@@ -11,7 +11,7 @@ For in-process helpers, the built-in [Agent tool](/runtime/tools-and-guards/#sub
 provides a config-first option. Configure `subagents.models` to offer model choices,
 then select `model` and `effort` on each call; omitted values inherit profile pins
 or the parent's effective route. For continued work in one conversation, create a
-helper with `persist: true` and resume or close it using `AgentSend`; configure
+helper with `persist: true` and resume or close it using `AgentManage`; configure
 `subagents.instances` for its idle TTL and caps. The collaborator setup below remains useful for
 separately composed responders.
 
@@ -97,7 +97,7 @@ Start a child with `Agent({persist: true, prompt: "Review the design"})`.
 A child can call `AskParent({question: "Which scope?", options: ["API", "UI"]})`
 to save its question and end its turn. The successful parent-facing result has
 status `awaiting_reply`, an instance id, and the structured question. Answer with
-`AgentSend({id, message: "Focus on the API"})`; the child resumes its own durable
+`AgentManage({id, message: "Focus on the API"})`; the child resumes its own durable
 context. Global or profile `AskParent` denies disable this dialogue. The child
 cannot contact the user: the parent decides whether to answer or ask the user.
 Failed replies leave the question pending. Close-only retires the instance;
@@ -106,10 +106,10 @@ there is no background execution or automatic wake in this dialogue path.
 ## Detached persistent work
 
 Use `Agent` with `persist:true, background:true` when the current reply need not
-wait for the child. Continue it with `AgentSend` and `background:true` plus a
+wait for the child. Continue it with `AgentManage` and `background:true` plus a
 message. The started receipt is durable, and the exact originating conversation
 wakes on completion, failure, interruption or AskParent. Answer an awaiting
-child with AgentSend. Do not poll or replay. A terminal `childStillBusy:true` job
+child with AgentManage. Do not poll or replay. A terminal `childStillBusy:true` job
 means another send must wait for ownership resolution. Late settlement is not
 proof that a failed transcript was retained: lost/unknown continuity requires
 explicit close/create, and unavailable owners cannot be bypassed. See

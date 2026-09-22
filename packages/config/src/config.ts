@@ -43,6 +43,8 @@ import {
   MEMORY_LLM_PROVIDERS,
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
+  renamedToolMessage,
+  renamedToolName,
 } from "./enums.js";
 import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryWriteMode, MonoAgentConfig, PiNativeProviderConfig, RedactedMonoAgentConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentModelChoice, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
@@ -982,8 +984,8 @@ function readInlineSubagentsConfig(value: unknown): MonoAgentInlineSubagentsConf
   if (allowedTools?.includes(ALLOW_ALL_TOOLS)) {
     throw invalidSubagents(`inline allowedTools cannot use the ${ALLOW_ALL_TOOLS} wildcard; list the tools it needs.`);
   }
-  if (allowedTools?.some((tool) => tool === "Agent" || tool === "AgentSend")) {
-    throw invalidSubagents("inline allowedTools cannot allow Agent or AgentSend; subagents never spawn subagents or continue other instances.");
+  if (allowedTools?.some((tool) => tool === "Agent" || tool === "AgentManage")) {
+    throw invalidSubagents("inline allowedTools cannot allow Agent or AgentManage; subagents never spawn subagents or continue other instances.");
   }
   return {
     ...(record.enabled === undefined ? {} : { enabled: readSubagentBoolean(record.enabled, "inline.enabled") }),
@@ -1033,8 +1035,8 @@ function readSubagentDefinitions(
     if (allowedTools?.includes(ALLOW_ALL_TOOLS)) {
       throw invalidSubagents(`definition "${name}" cannot use the ${ALLOW_ALL_TOOLS} wildcard; list the tools it needs.`);
     }
-    if (allowedTools?.some((tool) => tool === "Agent" || tool === "AgentSend")) {
-      throw invalidSubagents(`definition "${name}" cannot allow Agent or AgentSend; subagents never spawn subagents or continue other instances.`);
+    if (allowedTools?.some((tool) => tool === "Agent" || tool === "AgentManage")) {
+      throw invalidSubagents(`definition "${name}" cannot allow Agent or AgentManage; subagents never spawn subagents or continue other instances.`);
     }
     return {
       name,
@@ -1078,7 +1080,16 @@ function readSubagentTools(value: unknown, subject: string, field: string): read
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || entry.trim().length === 0)) {
     throw invalidSubagents(`${subject} ${field} must be an array of non-empty strings.`);
   }
-  return value.map((entry) => String(entry).trim());
+  const tools = value.map((entry) => String(entry).trim());
+  if (field !== "mcpServers") {
+    // A renamed tool has no alias, so a stale entry would grant or deny
+    // nothing. Name the migration instead of accepting it silently.
+    const retired = tools.find((tool) => renamedToolName(tool) !== undefined);
+    if (retired !== undefined) {
+      throw invalidSubagents(renamedToolMessage(retired, `${subject} ${field}`));
+    }
+  }
+  return tools;
 }
 
 function readSubagentBoolean(value: unknown, field: string): boolean {

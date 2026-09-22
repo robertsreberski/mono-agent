@@ -21,7 +21,7 @@ import { launchInternalProcessJob } from "../process-jobs-internal.js";
 // @ts-expect-error Private kernel test seam.
 import { createAgentTool, subagentUsageForRun } from "../../../agent-runtime/src/agent/tools/agent-tool.js";
 // @ts-expect-error Private kernel test seam.
-import { createAgentSendTool } from "../../../agent-runtime/src/agent/tools/agent-send-tool.js";
+import { createAgentManageTool } from "../../../agent-runtime/src/agent/tools/agent-manage-tool.js";
 
 const origin = { conversationId: "slack:C1:1.1#bucket", baseConversationId: "slack:C1:1.1", bucket: "bucket",
   replyToConversationId: "slack:C1:1.1", normalizedReplyTarget: "slack:C1:1.1", runId: "parent", historyBoundary: "parent", channel: "slack" };
@@ -58,7 +58,7 @@ async function fixture(overrides = {}, retireSession: (id: string, root: string)
 function tools(f: Awaited<ReturnType<typeof fixture>>, run: (request: any) => Promise<any>, extra = {}) {
   const options = { instances: f.instances, run, backgroundSubagentController: f.service.internalController(origin, 0), ...extra };
   const context = { recoveryAccess: { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) } };
-  return { options, agent: createAgentTool(options, context), send: createAgentSendTool(options, context) };
+  return { options, agent: createAgentTool(options, context), send: createAgentManageTool(options, context) };
 }
 const done = async (service: ProcessJobsServiceHandle, id: string) => {
   await vi.waitFor(async () => expect((await service.get(id))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
@@ -260,7 +260,7 @@ describe("parent stop", () => {
     } };
     let observedProof: Awaited<ReturnType<NonNullable<typeof controller.stop>>> | undefined;
     let completionOrder = 0; let proofObservedAt = 0;
-    const send = createAgentSendTool({ ...options, instances, backgroundSubagentController: { ...controller,
+    const send = createAgentManageTool({ ...options, instances, backgroundSubagentController: { ...controller,
       stop: async (identity: any) => {
         reached.resolve();
         try {
@@ -1237,7 +1237,7 @@ describe("detached persistent subagents", () => {
   it("keeps cancellation authoritative when its grace crosses the original timeout", async () => {
     vi.useFakeTimers();
     const gate = deferred<any>();
-    const launched = launchInternalProcessJob({ kind: "internal", tool: "AgentSend", jobId: randomUUID(), instanceId: "helper",
+    const launched = launchInternalProcessJob({ kind: "internal", tool: "AgentManage", jobId: randomUUID(), instanceId: "helper",
       run: () => gate.promise, cleanup: async () => {} }, 10, 64, 20);
     await vi.advanceTimersByTimeAsync(5);
     launched.cancel();
@@ -1268,7 +1268,7 @@ describe("detached persistent subagents", () => {
 it.each(["missing", "run", "revision", "session", "model", "tip", "false", "throw"])("missing/mismatched recovery receipt never authorizes resume: %s", async (fault) => {
   const f = await managedFixture();
   const config = loadMonoAgentConfig({ cwd: f.root, env: {
-    MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
+    MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage",
     MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root: resolve(f.root, "children") } }),
   } });
   const instance = await f.instances.create(spec); const turnToken = randomUUID();
@@ -1292,7 +1292,7 @@ it("stop seals first and resumed tool-bearing turns on the same native session",
   try {
     await writeFile(resolve(f.root, "evidence.txt"), "prior tool evidence");
     const config = loadMonoAgentConfig({ cwd: f.root, env: {
-      MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
+      MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage",
       MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root: resolve(f.root, "children") } }),
     } });
     const piPath = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
@@ -1307,7 +1307,7 @@ it("stop seals first and resumed tool-bearing turns on the same native session",
       { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
     subagents.backgroundSubagentController = f.service.internalController(origin, 0);
     const agent = createAgentTool(subagents, { model: config.runtime.model, cwd: f.root });
-    const send = createAgentSendTool(subagents, { model: config.runtime.model, cwd: f.root });
+    const send = createAgentManageTool(subagents, { model: config.runtime.model, cwd: f.root });
     for (let turn = 0; turn < 2; turn++) {
       const entered = deferred<void>();
       faux.setResponses([
@@ -1348,7 +1348,7 @@ it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-
   const f = await managedFixture(async (id, root) => owner.retireDurableSession!(id, root));
   try {
     const config = loadMonoAgentConfig({ cwd: f.root, env: {
-      MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
+      MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage",
       MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, timeoutMs: 3000, instances: { root: resolve(f.root, "children") } }),
     } });
     const piPath = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
@@ -1363,7 +1363,7 @@ it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-
       { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
     subagents.backgroundSubagentController = f.service.internalController(origin, 0);
     const context = { model: config.runtime.model, recoveryAccess: { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) } };
-    const agent = createAgentTool(subagents, context); const send = createAgentSendTool(subagents, context);
+    const agent = createAgentTool(subagents, context); const send = createAgentManageTool(subagents, context);
     f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
       verify: async (identity) => (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
       publish: async (phase, publication) => {
@@ -1410,7 +1410,7 @@ it.each([false, true])("real Pi fake transport: detached AskParent and backgroun
   try {
     const config = loadMonoAgentConfig({ cwd: f.root, env: {
       MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"),
-      MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
+      MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage",
       MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root: resolve(f.root, "children") } }),
     } });
     const piPath = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
@@ -1439,13 +1439,13 @@ it.each([false, true])("real Pi fake transport: detached AskParent and backgroun
     await owner.disposeSession!(record.sessionId);
     let input: any;
     faux.setResponses([(context: any) => { input = context; return fauxAssistantMessage([fauxText("Small scope answer")]); }]);
-    const second = await createAgentSendTool(subagents).execute("second", { id: "helper", message: "Small", background: true });
+    const second = await createAgentManageTool(subagents).execute("second", { id: "helper", message: "Small", background: true });
     expect((await done(f.service, second.details.jobId)).state).toBe("succeeded");
     expect(JSON.stringify(input.messages)).toContain("first task"); expect(JSON.stringify(input.messages)).toContain("Which scope?");
     expect(await transcripts()).toEqual(files);
     expect(await f.instances.get("helper")).toMatchObject({ status: "idle", turns: 2 });
     faux.setResponses([fauxAssistantMessage([fauxText("Closed successfully")])]);
-    const third = await createAgentSendTool(subagents).execute("third", { id: "helper", message: "Finish", background: true, close: true });
+    const third = await createAgentManageTool(subagents).execute("third", { id: "helper", message: "Finish", background: true, close: true });
     await done(f.service, third.details.jobId);
     expect((await f.instances.get("helper"))?.status).toBe("closed");
     expect(await transcripts()).toEqual([]); expect(f.wake).toHaveBeenCalledTimes(3);
@@ -1780,7 +1780,7 @@ it("coalesces a burst of private progress and terminally persists the latest bou
   const gate = deferred<any>();
   let emit!: (event: any) => void;
   const id = randomUUID();
-  await f.service.internalController(origin, 0).startInternal({ kind: "internal", tool: "AgentSend", jobId: id, instanceId: "helper", cleanup: async () => {},
+  await f.service.internalController(origin, 0).startInternal({ kind: "internal", tool: "AgentManage", jobId: id, instanceId: "helper", cleanup: async () => {},
     run: async (_signal, _write, report) => { emit = report; return gate.promise; } });
   await vi.waitFor(() => expect(emit).toBeTypeOf("function"));
   surface.mockClear();
@@ -1810,7 +1810,7 @@ it("does not append private progress or the UI answer to the internal stdout lan
   expect(await launched.completion).toMatchObject({ stdout: output, answer: "Separate UI report" });
 });
 
-it("propagates only detached Agent/AgentSend admitted deadlines, not foreground ones", async () => {
+it("propagates only detached Agent/AgentManage admitted deadlines, not foreground ones", async () => {
   const f = await fixture({ maxRuntimeMs: 900_000 });
   const run = vi.fn(async (_r: any) => ({ text: "done" }));
   const { agent, send } = tools(f, run, { timeoutMs: 1_800_000 });

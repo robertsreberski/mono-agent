@@ -605,7 +605,7 @@ function selectMcpServers(
 /** Denied for every subagent regardless of profile. Mirrors the kernel's own list. */
 const SUBAGENT_HARD_DENY = [
   "Agent",
-  "AgentSend",
+  "AgentManage",
   "AskUser",
   "SlackSendMessage",
   "TelegramSendMessage",

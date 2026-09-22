@@ -10,7 +10,7 @@ import { createSubagentInstanceRegistry, subagentConversationRoot } from "../sub
 // @ts-expect-error Private kernel test seam; no new public tool export.
 import { createAgentTool } from "../../../agent-runtime/src/agent/tools/agent-tool.js";
 // @ts-expect-error Private kernel test seam; no new public tool export.
-import { createAgentSendTool } from "../../../agent-runtime/src/agent/tools/agent-send-tool.js";
+import { createAgentManageTool } from "../../../agent-runtime/src/agent/tools/agent-manage-tool.js";
 // @ts-expect-error Private provider seam uses the real Pi harness and durable repository.
 import { generatePiNativeResponse } from "../../../agent-runtime/src/ai/providers/pi-native.js";
 
@@ -24,7 +24,7 @@ describe("app persistent subagent durable sessions", () => {
     let nativeReturned = false;
     try {
       const config = loadMonoAgentConfig({ cwd: root, env: {
-        MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend", MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"),
+        MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage", MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"),
         MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, timeoutMs: mode === "late-timeout" ? 1500 : 10_000,
           inline: { enabled: false }, instances: { root: resolve(root, "children") } }),
       } });
@@ -52,7 +52,7 @@ describe("app persistent subagent durable sessions", () => {
       const options = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
         { conversationId: "foreground-recovery", runId: "parent", instances: handle })!.subagents;
       const context = { model: config.runtime.model, recoveryAccess: access };
-      const agent = createAgentTool(options, context); const send = createAgentSendTool(options, context);
+      const agent = createAgentTool(options, context); const send = createAgentManageTool(options, context);
       expect(options).not.toHaveProperty("backgroundSubagentController");
       faux.setResponses([fauxAssistantMessage([fauxText("first native answer is not continuation authority")])]);
       const failed = await agent.execute("foreground", { id: "critic", persist: true, prompt: "first foreground task" });
@@ -90,13 +90,13 @@ describe("app persistent subagent durable sessions", () => {
     } finally { deliver(); await owner.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
   }, 15_000);
 
-  it("creates and resumes a real Pi transcript through AgentSend after warm-session disposal, then retires it", async () => {
+  it("creates and resumes a real Pi transcript through AgentManage after warm-session disposal, then retires it", async () => {
     const root = await mkdtemp(resolve(process.cwd(), ".durable-subagent-test-"));
     const owner = createMonoRuntime();
     try {
       const config = loadMonoAgentConfig({ cwd: root, env: {
         MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
-        MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
+        MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage",
         MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"),
         MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, inline: { enabled: false }, instances: { root: resolve(root, "children") } }),
       } });
@@ -131,7 +131,7 @@ describe("app persistent subagent durable sessions", () => {
       const resumed = await extension({ request: { conversationId: "conversation-1" }, runId: "parent-2" } as never);
       let context: { messages: { role: string; content: unknown }[] } | undefined;
       faux.setResponses([(input: typeof context) => { context = input; return fauxAssistantMessage([fauxText("second-answer")]); }]);
-      const second = await createAgentSendTool(resumed.runtimeOptions!.subagents, { parentRunId: "parent-2" }).execute("call-2", { id: "critic", message: "second-task" });
+      const second = await createAgentManageTool(resumed.runtimeOptions!.subagents, { parentRunId: "parent-2" }).execute("call-2", { id: "critic", message: "second-task" });
       expect(second.details.subagent.status).toBe("ok");
       expect(second.details.subagent.instance.turns).toBe(2);
       expect(calls[1]?.sessionId).toBe(calls[0]?.sessionId);
@@ -144,18 +144,18 @@ describe("app persistent subagent durable sessions", () => {
       expect(JSON.stringify(users[1])).toContain("second-task");
       expect((await transcript()).length).toBeGreaterThan(before.length);
       expect((await handle.get("critic"))!.usage.input).toBeGreaterThan(0);
-      await createAgentSendTool(resumed.runtimeOptions!.subagents).execute("close", { id: "critic", close: true });
+      await createAgentManageTool(resumed.runtimeOptions!.subagents).execute("close", { id: "critic", close: true });
       expect((await handle.get("critic"))!.status).toBe("closed");
       expect(await transcript()).toBe("");
     } finally { await owner.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
   });
-  it.each(["single", "mixed", "preceding-error"])("AskParent terminates %s and AgentSend resumes the same durable transcript after restart", async (batch) => {
+  it.each(["single", "mixed", "preceding-error"])("AskParent terminates %s and AgentManage resumes the same durable transcript after restart", async (batch) => {
     const root = await mkdtemp(resolve(process.cwd(), ".durable-subagent-test-"));
     const owner = createMonoRuntime();
     try {
       const config = loadMonoAgentConfig({ cwd: root, env: {
         MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
-        MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
+        MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage",
         MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"),
         MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, inline: { enabled: false }, instances: { root: resolve(root, "children") } }),
       } });
@@ -203,7 +203,7 @@ describe("app persistent subagent durable sessions", () => {
       const resumed = await extension({ request: { conversationId: "conversation-1" }, runId: "parent-2" } as never);
       let context: { messages: { role: string; content: unknown }[] } | undefined;
       faux.setResponses([(input: typeof context) => { context = input; return fauxAssistantMessage([fauxText("second-answer")]); }]);
-      const second = await createAgentSendTool(resumed.runtimeOptions!.subagents, { parentRunId: "parent-2" }).execute("call-2", { id: "critic", message: "second-task" });
+      const second = await createAgentManageTool(resumed.runtimeOptions!.subagents, { parentRunId: "parent-2" }).execute("call-2", { id: "critic", message: "second-task" });
       expect(second.details.subagent.status).toBe("ok");
       expect((await handle.get("critic"))?.pendingQuestion).toBeUndefined();
       expect((await handle.get("critic"))?.status).toBe("idle");
@@ -222,7 +222,7 @@ describe("app persistent subagent durable sessions", () => {
       expect(questionResult?.isError).toBe(false);
       expect((await transcript()).length).toBeGreaterThan(before.length);
       expect((await handle.get("critic"))!.usage.input).toBeGreaterThan(0);
-      await createAgentSendTool(resumed.runtimeOptions!.subagents).execute("close", { id: "critic", close: true });
+      await createAgentManageTool(resumed.runtimeOptions!.subagents).execute("close", { id: "critic", close: true });
       expect((await handle.get("critic"))!.status).toBe("closed");
       expect(await transcript()).toBe("");
     } finally { await owner.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
@@ -232,7 +232,7 @@ describe("app persistent subagent durable sessions", () => {
     const owner = createMonoRuntime();
     try {
       const config = loadMonoAgentConfig({ cwd: root, env: {
-        MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
+        MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage",
         MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"),
         MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root: resolve(root, "children") } }),
       } });
@@ -263,7 +263,7 @@ describe("app persistent subagent durable sessions", () => {
         },
       ]);
       const result = await generatePiNativeResponse("Coordinate the review", { model: config.runtime.model,
-        messages: [{ role: "user", content: "Review" }], allowedTools: ["Agent", "AgentSend", "AskParent"], subagents,
+        messages: [{ role: "user", content: "Review" }], allowedTools: ["Agent", "AgentManage", "AskParent"], subagents,
         piResolvedModel: parent.getModel(), piResolvedModels: parentModels, resolvePiApiKey: async () => "faux-key" });
       expect(result.error).toBeFalsy();
       expect(observed).toBe(true);

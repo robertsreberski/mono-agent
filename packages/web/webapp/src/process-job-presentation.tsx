@@ -29,10 +29,27 @@ export interface ProcessJobPresentation {
   readonly jobsById: ReadonlyMap<string, ProcessJobProjection>;
 }
 
+/**
+ * Tool a process-job receipt or activity row can name.
+ *
+ * `"AgentSend"` is legacy history: the tool was renamed to `AgentManage` with
+ * no alias, and retained transcripts still carry the old name on their stored
+ * receipts and activity rows. Accepted on these read paths so old job cards
+ * keep rendering identically; never emitted for new work.
+ */
+export type ProcessJobToolName = "Exec" | "Bash" | "Agent" | "AgentManage" | "AgentSend";
+
+/** Accepted process-job tool names, including the legacy `AgentSend` history value. */
+export const PROCESS_JOB_TOOL_NAMES: readonly ProcessJobToolName[] = ["Exec", "Bash", "Agent", "AgentManage", "AgentSend"];
+
+/** Whether a stored or live process-job row belongs to a subagent tool (legacy name included). */
+export const isSubagentProcessJobTool = (tool: string): boolean =>
+  tool === "Agent" || tool === "AgentManage" || tool === "AgentSend";
+
 export interface ProcessJobStartReceipt {
   readonly schema: "mono-agent.process-job-start-receipt.v1";
   readonly jobId: string;
-  readonly tool: "Exec" | "Bash" | "Agent" | "AgentSend";
+  readonly tool: ProcessJobToolName;
   readonly state: "queued" | "starting" | "running";
   readonly startedAt: string | null;
   readonly maxRuntimeMs?: number;
@@ -43,7 +60,7 @@ export interface ProcessJobActivityEvent {
   readonly id: string;
   readonly toolCallId: string;
   readonly jobId: string;
-  readonly tool: "Exec" | "Bash" | "Agent" | "AgentSend";
+  readonly tool: ProcessJobToolName;
   readonly summary: string;
   readonly phase: "started" | "terminal";
   readonly state: ProcessJobProjection["state"];
@@ -115,7 +132,7 @@ export const parseProcessJobStartReceipt = (
       || keys.some((key) => !allowed.includes(key))
       || keys.length !== required.length + (Object.prototype.hasOwnProperty.call(value, "maxRuntimeMs") ? 1 : 0)
       || value.schema !== "mono-agent.process-job-start-receipt.v1"
-      || !["Exec", "Bash", "Agent", "AgentSend"].includes(String(value.tool))
+      || !PROCESS_JOB_TOOL_NAMES.includes(String(value.tool) as ProcessJobToolName)
       || value.tool !== containingTool
       || typeof value.jobId !== "string"
       || value.jobId.trim().length === 0

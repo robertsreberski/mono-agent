@@ -1,5 +1,5 @@
 // @ts-check
-import { stopSubagent } from "./agent-send-stop.js";
+import { stopSubagent } from "./agent-manage-stop.js";
 import { createAgentTool } from "./agent-tool.js";
 
 /**
@@ -7,12 +7,12 @@ import { createAgentTool } from "./agent-tool.js";
  * @param {import('../../ai/types.js').RuntimeSubagentsOptions|null|undefined} subagents
  * @param {Parameters<typeof createAgentTool>[1]} [context]
  */
-export function createAgentSendTool(subagents, context = {}) {
+export function createAgentManageTool(subagents, context = {}) {
   if (context.instancesEnabled === false || !(context.persistentExposure ?? Boolean(subagents?.instances)) || !subagents?.run || Number(subagents.depth ?? 0) > 0) return null;
   const instances = subagents.instances;
   const background = instances?.reserve && instances?.releaseReservation && subagents.backgroundSubagentController;
   return {
-    name: "AgentSend", label: "AgentSend",
+    name: "AgentManage", label: "AgentManage",
     description: "Manage a persistent subagent instance created by Agent with persist: true — continue it, run it detached, stop a detached turn, inspect its recovery state, or close it. Instance ids appear in Agent results and the Session envelope. One mode per call:"
       + "\n- Continue: {id, message} runs one more turn with the instance's full prior context and returns its answer. Add background: true to run it detached — this exact conversation wakes when that turn completes, fails, is interrupted or the child asks through AskParent. Add close: true to close the instance after a successful turn."
       + "\n- Close: {id, close: true} alone closes an instance that is not queued or running, and runs no model."
@@ -43,7 +43,7 @@ export function createAgentSendTool(subagents, context = {}) {
         if ([params.message, params.close, params.background, params.ack, params.description].some((value) => value !== undefined)) throw new Error("Error: inspect must be used alone with id.");
         if (!instances.inspect) throw new Error("Error: subagent recovery inspection is unavailable.");
         const recovery = await instances.inspect(params.id, context.recoveryAccess);
-        return { content: [{ type: "text", text: JSON.stringify(recovery) }], details: { tool: "AgentSend", recovery, executed: false } };
+        return { content: [{ type: "text", text: JSON.stringify(recovery) }], details: { tool: "AgentManage", recovery, executed: false } };
       }
       if (params.ack !== undefined && (typeof params.ack !== "string" || !params.ack || params.ack.length > 128 || params.message === undefined || !instances.checkAcknowledgement)) throw new Error("Error: ack requires a recovery-capable instance and a message.");
       const acknowledgement = params.ack === undefined ? undefined : { ack: params.ack, message: params.message,
@@ -67,7 +67,7 @@ export function createAgentSendTool(subagents, context = {}) {
       if (params.message === undefined) {
         const closed = context.recoveryAccess === undefined ? await instances.close(record.id) : await instances.close(record.id, context.recoveryAccess);
         return { content: [{ type: "text", text: `<subagent: ${record.name} · instance ${record.id} · turn ${record.turns} · closed>` }],
-          details: { tool: "AgentSend", subagent: { name: record.name, status: "ok", instance: { id: closed.id, turns: closed.turns, status: closed.status } } } };
+          details: { tool: "AgentManage", subagent: { name: record.name, status: "ok", instance: { id: closed.id, turns: closed.turns, status: closed.status } } } };
       }
       const tool = createAgentTool(subagents, context, { record, close: params.close, ...(acknowledgement ? { acknowledgement } : {}) });
       const minutes = Math.max(0, Math.floor((Date.now() - record.updatedAt) / 60_000));
@@ -79,7 +79,7 @@ export function createAgentSendTool(subagents, context = {}) {
       } catch (error) {
         const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
         if (["subagent_recovery_already_consumed", "subagent_recovery_ack_conflict", "subagent_recovery_ack_stale", "subagent_recovery_ack_invalid", "subagent_recovery_not_retained", "subagent_recovery_background_required", "subagent_recovery_policy_denied", "subagent_recovery_policy_unavailable"].includes(code)) {
-          return { content: [{ type: "text", text: code }], details: { tool: "AgentSend", recovery: { code }, executed: false } };
+          return { content: [{ type: "text", text: code }], details: { tool: "AgentManage", recovery: { code }, executed: false } };
         }
         throw error;
       }

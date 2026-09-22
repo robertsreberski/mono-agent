@@ -6,7 +6,7 @@ import type { ProcessJobProcessResult, ProcessJobStartResult } from "@mono-agent
 export interface InternalProcessJobRequest {
   readonly kind: "internal";
   readonly managed?: ManagedSubagentAdmission;
-  readonly tool: "Agent" | "AgentSend";
+  readonly tool: "Agent" | "AgentManage";
   readonly jobId: string;
   readonly instanceId: string;
   readonly timeoutMs?: number;

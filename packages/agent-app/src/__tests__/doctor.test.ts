@@ -532,14 +532,14 @@ describe("validateMonoAgentFolder", () => {
   it.each([false, true])("reports detached subagent configuration with persistence=%s", async (enabled) => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" }, tools: { allowedTools: ["Agent", "AgentSend"] },
+      runtime: { model: "openai-codex:gpt-5.5" }, tools: { allowedTools: ["Agent", "AgentManage"] },
       context: { identityPath: "./IDENTITY.md" }, processJobs: { enabled: true },
       subagents: { enabled, instances: { enabled } },
     });
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false, allowFilesystemWrites: false });
     const text = sectionById(report, "process-jobs").details.join("\n");
     expect(text).toContain(enabled ? "Background subagents: configured" : "Background subagents unavailable");
-    expect(text).toContain("persistent Agent/AgentSend");
+    expect(text).toContain("persistent Agent/AgentManage");
   });
 
   it("reports enabled process jobs without creating their local state", async () => {
@@ -678,7 +678,7 @@ describe("validateMonoAgentFolder", () => {
     const configPath = await writeConfig({
       runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "./IDENTITY.md" },
       processJobs: { enabled: true }, subagents: { enabled: true, instances: { enabled: true } },
-      tools: { allowedTools: ["Agent", "AgentSend"] },
+      tools: { allowedTools: ["Agent", "AgentManage"] },
     });
 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
@@ -4668,7 +4668,7 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
 
   it("checks a persistent subagent root without creating it and rejects a file as its parent", async () => {
     const root = join(dir, "children", "nested");
-    const configPath = await writeToolsConfig({ allowedTools: ["Agent", "AgentSend"] }, {
+    const configPath = await writeToolsConfig({ allowedTools: ["Agent", "AgentManage"] }, {
       subagents: { enabled: true, instances: { root } },
     });
     const good = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
@@ -4681,18 +4681,18 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
   });
 
   it.each([
-    [["Agent"], [], false], [["*"], [], true], [["*"], ["AgentSend"], false],
+    [["Agent"], [], false], [["*"], [], true], [["*"], ["AgentManage"], false],
     [["*"], ["Agent"], false],
   ])("reports persistence only when both tools are effective: %j/%j", async (allowedTools, disallowedTools, enabled) => {
     const configPath = await writeToolsConfig({ allowedTools, disallowedTools }, { subagents: { enabled: true } });
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
     const details = sectionById(report, "tools").details.join("\n");
     expect(details.includes("Persistent subagents:")).toBe(enabled);
-    expect(details.includes("effective tool policy must expose both Agent and AgentSend")).toBe(!enabled);
+    expect(details.includes("effective tool policy must expose both Agent and AgentManage")).toBe(!enabled);
   });
 
   it("reports an explicit AskParent deny as an operator choice", async () => {
-    const configPath = await writeToolsConfig({ allowedTools: ["Agent", "AgentSend"], disallowedTools: ["AskParent"] }, { subagents: { enabled: true } });
+    const configPath = await writeToolsConfig({ allowedTools: ["Agent", "AgentManage"], disallowedTools: ["AskParent"] }, { subagents: { enabled: true } });
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
     expect(sectionById(report, "tools").details.join("\n")).toContain("AskParent dialogue disabled by global tool policy (operator choice)");
     expect(sectionById(report, "tools").status).not.toBe("error");
@@ -5099,6 +5099,35 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(tools.status).toBe("waiting");
     expect(tools.details.join("\n")).toMatch(/Unknown tool name "read".*did you mean Read/u);
     expect(report.ok).toBe(true);
+  });
+
+  it("names the AgentManage rename for a stale AgentSend allow entry (waiting)", async () => {
+    // The rename ships without an alias, so an unmigrated allow entry grants
+    // nothing; doctor must say what to rename instead of calling it unknown.
+    const configPath = await writeToolsConfig({ allowedTools: ["Read", "AgentSend"] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("waiting");
+    expect(tools.details.join("\n")).toContain(
+      "allowedTools lists AgentSend, which was renamed to AgentManage. There is no alias: rename the entry to AgentManage.",
+    );
+    expect(tools.details.join("\n")).not.toContain('Unknown tool name "AgentSend"');
+  });
+
+  it("names the AgentManage rename for a stale AgentSend deny entry (waiting)", async () => {
+    // The dangerous direction: a stale deny entry stops matching, so the
+    // renamed tool would be silently allowed again.
+    const configPath = await writeToolsConfig({ allowedTools: ["Read"], disallowedTools: ["AgentSend"] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("waiting");
+    expect(tools.details.join("\n")).toContain(
+      "disallowedTools lists AgentSend, which was renamed to AgentManage. There is no alias: rename the entry to AgentManage. The old name denies nothing.",
+    );
   });
 
   it("recognizes NodeRepl as a built-in tool", async () => {
