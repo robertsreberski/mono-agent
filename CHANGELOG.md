@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix Anthropic OAuth requests for `anthropic:claude-opus-5-5` by sending the
+  Claude Code 2.1.280 identity required by the model. API-key requests and
+  other Anthropic models keep their existing identity.
+
 - Add `anthropic:claude-opus-5-5` (Claude Opus 5.5), `openai-codex:gpt-6-sol`
   (GPT-6 Sol) and `openai-codex:gpt-6-luna` (GPT-6 Luna) everywhere the runtime
   reads the pi model catalog: resolution, listing, run dispatch, pricing and
