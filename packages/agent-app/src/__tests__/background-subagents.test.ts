@@ -95,7 +95,7 @@ describe("parent stop", () => {
     const run = vi.fn(() => gate.promise); const { agent, send } = tools(f, run);
     const first = await agent.execute("hold", { id: "holder", persist: true, background: true, prompt: "hold" });
     try {
-      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
       const queued = await agent.execute("queue", { id: "helper", persist: true, background: true, prompt: "queue" });
       const stopped = await send.execute("stop", { id: "helper", stop: true });
       expect(stopped.details.stop).toMatchObject({ status: "stopped", turns: 0, resumable: true, jobId: queued.details.jobId });
@@ -134,7 +134,7 @@ describe("parent stop", () => {
     const f = await managedFixture(); const gate = deferred<any>(); let request: any;
     const run = vi.fn(async (input: any) => { request = input; return gate.promise; }); const { agent, send } = tools(f, run);
     const first = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
-    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     try {
       const stopped = await send.execute("stop", { id: "helper", stop: true });
       expect(stopped.details.stop).toMatchObject({ status: "stop_requested", childStillBusy: true, resumable: false });
@@ -333,7 +333,7 @@ describe("parent stop", () => {
     const f = await managedFixture(); const gate = deferred<any>(); let request: any;
     const { agent, send } = tools(f, async (input: any) => { request = input; return gate.promise; });
     const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
-    await vi.waitFor(() => expect(request).toBeDefined());
+    await vi.waitFor(() => expect(request).toBeDefined(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     await f.service.cancel(started.details.jobId);
     const stopping = send.execute("stop", { id: "helper", stop: true });
     gate.resolve({ text: "partial", subagentContinuity: { turnToken: request.turnToken, state: "retained" } });
@@ -523,7 +523,7 @@ describe("managed detached production execution", () => {
       provider.resolve({ text: "late settlement starts publication" });
       await entered.promise; // Real registry transaction owns its lock and is at its actual write boundary.
       shutdown = f.service.stop().then(() => { stopped = true; });
-      await vi.waitFor(() => expect((f.service as unknown as { managedWritesClosed: boolean }).managedWritesClosed).toBe(true));
+      await vi.waitFor(() => expect((f.service as unknown as { managedWritesClosed: boolean }).managedWritesClosed).toBe(true), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
       expect((f.service as unknown as { managedPublicationRearmPending: Set<string> }).managedPublicationRearmPending.size).toBe(0);
       expect(releaseOwner, "entered registry I/O must finish before owner-lock release").not.toHaveBeenCalled();
       expect(stopped).toBe(false);
@@ -563,7 +563,7 @@ describe("managed detached production execution", () => {
     const { agent } = tools(f, run, { backgroundSubagentController });
     try {
       const receipt = await agent.execute("live-owner", { persist: true, background: true, id: "helper", prompt: "ignore abort until explicitly released" });
-      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
       // Default real owner-private lifetime lock, not fixture's no-op lock.
       await expect(openProcessJobsService(f.options)).rejects.toMatchObject({ code: "process_job_controller_unavailable" });
       if (mode === "degraded") {
@@ -724,7 +724,7 @@ describe("managed detached production execution", () => {
     if (mode === "late-provider") await f.instances.create({ ...spec, id: "second" });
     try {
       const a = await first.agent.execute("A", { persist: true, background: true, id: "first", prompt: "hold" });
-      await vi.waitFor(() => expect(firstRun).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(firstRun).toHaveBeenCalledOnce(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
       if (mode === "late-provider") {
         // The reporting boundary includes its existing bounded abandonment grace.
         await vi.waitFor(async () => expect((await f.service.get(a.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
@@ -765,10 +765,10 @@ describe("managed detached production execution", () => {
     const run = vi.fn(() => provider.promise);
     const { agent } = tools(f, run, { timeoutMs: 1500 });
     const receipt = await agent.execute("certificate-fault", { persist: true, background: true, id: "helper", prompt: "work" });
-    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     provider.resolve({ text: "late completion" });
-    await vi.waitFor(() => expect(intercepted).toBe(true), { timeout: 3000 });
+    await vi.waitFor(() => expect(intercepted).toBe(true), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     const registryFile = resolve(subagentConversationRoot(resolve(f.root, "children"), origin.conversationId), "instances.json");
     expect(JSON.parse(await readFile(registryFile, "utf8"))[0].ownerReceipt.finalized).toBe(fault === "after-write-lost-ack");
     expect(await f.store.get(receipt.details.jobId)).toMatchObject({ wake: { state: "delivered" },
@@ -1075,7 +1075,7 @@ describe("managed detached production execution", () => {
     const run = vi.fn(() => gate.promise);
     const { agent, send } = tools(f, run, { timeoutMs: 1500 });
     const receipt = await agent.execute("managed-late", { persist: true, background: true, id: "helper", prompt: "work" });
-    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     const beforeLate = await f.service.get(receipt.details.jobId);
     expect(beforeLate).toMatchObject({ kind: "internal" });
@@ -1084,12 +1084,12 @@ describe("managed detached production execution", () => {
     expect((await f.store.get(receipt.details.jobId))?.subagentOwnership).toMatchObject({ owner: { settlement: "running" }, publication: { state: "confirmed" } });
     await expect(send.execute("blocked", { id: "helper", message: "next" })).rejects.toThrow();
     gate.resolve({ text: "late", usage: { input_tokens: 7 }, cost: { total: 0.08 } });
-    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("idle"), { timeout: 3000 });
+    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("idle"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     expect(await f.instances.get("helper")).toMatchObject({ turns: 1, usage: { input: 7, costUsd: 0.08 }, recovery: { continuity: "unknown" } });
     expect(await f.service.get(receipt.details.jobId)).toMatchObject({ state: "timed_out", childStillBusy: false,
       subagentProgress: { costUsd: 0.08 } });
     expect(f.wake).toHaveBeenCalledOnce();
-    await vi.waitFor(async () => expect((await f.store.get(receipt.details.jobId))?.subagentOwnership?.publication.receiptPending).toBe(false), { timeout: 3000 });
+    await vi.waitFor(async () => expect((await f.store.get(receipt.details.jobId))?.subagentOwnership?.publication.receiptPending).toBe(false), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     await expect(send.execute("not-retained", { id: "helper", message: "next" })).rejects.toThrow("subagent_recovery_required");
   }, 30_000);
 });
@@ -1160,7 +1160,7 @@ describe("detached persistent subagents", () => {
     await expect(send.execute("busy", { id: "helper", message: "reply" })).rejects.toThrow(/busy/);
     await f.service.stop(); // Already abandoned children do not hold the service open.
     gate.resolve({ text: "late", usage: { input_tokens: 7, output_tokens: 2 }, cost: { total: 0.1 } });
-    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("awaiting_reply"));
+    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("awaiting_reply"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     expect((await f.instances.get("helper"))?.lastStatus).toBe(mode === "timeout" ? "timeout" : "cancelled");
     expect(await f.service.get(receipt.details.jobId)).toEqual(job);
     expect(f.wake).toHaveBeenCalledOnce();
@@ -1189,7 +1189,7 @@ describe("detached persistent subagents", () => {
     expect(await f.service.get(receipt.details.jobId)).toMatchObject({ state: "interrupted", childStillBusy: true, wake: { state: "pending" } });
     expect((await f.instances.get("helper"))?.status).toBe("running");
     gate.resolve({ text: "late" });
-    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("idle"));
+    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("idle"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     const restarted = await openProcessJobsService(f.options); services.push(restarted); await restarted.activateWakes();
     await done(restarted, receipt.details.jobId);
     expect(f.wake).toHaveBeenCalledOnce(); expect(f.signalProcess).not.toHaveBeenCalled();
@@ -1201,7 +1201,7 @@ describe("detached persistent subagents", () => {
     const live = await openProcessJobsService(f.options); services.push(live);
     const id = randomUUID();
     await live.internalController(origin, 0).startInternal({ kind: "internal", jobId: id, instanceId: "helper", tool: "Agent", run: async () => ({ status: "ok", output: "done" }), cleanup: async () => {} });
-    await vi.waitFor(async () => expect((await live.get(id))?.state).toBe("succeeded")); await live.stop();
+    await vi.waitFor(async () => expect((await live.get(id))?.state).toBe("succeeded"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS }); await live.stop();
     const store = await openProcessJobStore(f.root, f.options.settings.stateDir);
     await store.mutate((records) => { const r = records.get(id)!; r.state = "running"; r.completedAt = null; r.exitCode = null; r.durationMs = null; r.wake.state = "pending"; });
     const restarted = await openProcessJobsService({ ...f.options, store }); services.push(restarted); await restarted.activateWakes();
@@ -1687,7 +1687,7 @@ it("keeps detached live progress out of the parent stream and persists it separa
   }, { onEvent: parentEvents });
   const receipt = await agent.execute("parent-call", { persist: true, background: true, id: "helper", prompt: "PRIVATE_PROMPT" });
   const id = receipt.details.jobId;
-  await vi.waitFor(async () => expect((await f.service.get(id) as any).subagentProgress?.toolCalls).toBe(1));
+  await vi.waitFor(async () => expect((await f.service.get(id) as any).subagentProgress?.toolCalls).toBe(1), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
   expect(parentEvents.mock.calls.flat().some((event: any) => event.type === "subagent_activity")).toBe(false);
   await vi.waitFor(async () => expect((await f.store.get(id))?.subagentProgress?.toolCalls).toBe(1), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
   expect(JSON.stringify((await f.store.get(id))?.subagentProgress)).not.toContain("PRIVATE_PROMPT");
@@ -1722,7 +1722,7 @@ it("projects the requested detached route while running and the executed fallbac
   const id = receipt.details.jobId;
   await vi.waitFor(async () => expect((await f.service.get(id) as any).subagentProgress?.route).toEqual({
     requested: { model: "provider:primary", effort: "high" },
-  }));
+  }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
   gate.resolve(undefined);
   const job = await done(f.service, id);
   expect(job.subagentProgress?.route).toEqual({
@@ -1782,7 +1782,7 @@ it("coalesces a burst of private progress and terminally persists the latest bou
   const id = randomUUID();
   await f.service.internalController(origin, 0).startInternal({ kind: "internal", tool: "AgentSend", jobId: id, instanceId: "helper", cleanup: async () => {},
     run: async (_signal, _write, report) => { emit = report; return gate.promise; } });
-  await vi.waitFor(() => expect(emit).toBeTypeOf("function"));
+  await vi.waitFor(() => expect(emit).toBeTypeOf("function"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
   surface.mockClear();
   for (let i = 0; i < 100; i++) {
     emit({ type: "tool_started", id: String(i), toolName: "Read", argsSummary: "src/file.ts" });
@@ -1790,7 +1790,7 @@ it("coalesces a burst of private progress and terminally persists the latest bou
   }
   expect((await f.service.get(id) as any).subagentProgress).toMatchObject({ toolCalls: 100, failedCalls: 50 });
   await vi.waitFor(async () => expect((await f.store.get(id))?.subagentProgress?.toolCalls).toBe(100), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
-  await vi.waitFor(() => expect(surface).toHaveBeenCalled());
+  await vi.waitFor(() => expect(surface).toHaveBeenCalled(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
   expect(surface.mock.calls.length).toBeLessThanOrEqual(2);
   gate.resolve({ status: "ok", output: '{"answer":"original output"}', answer: "Separate report" });
   const job = await done(f.service, id);
