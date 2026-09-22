@@ -2,10 +2,10 @@
 
 ## Unreleased
 
-- Restyle the usage meters' on-track marker as a rounded cap in the meter's own
-  accent palette instead of a full-contrast hairline across the bar, lightened
-  where the fill has already passed it so it stays readable on both the filled
-  and unfilled track in light and dark themes. Screenshot evidence now covers
+- Restyle the usage meters' on-track marker as a dot inside the bar in the
+  meter's own accent palette, instead of a full-contrast hairline drawn across
+  it. Once the fill passes the dot it flips to the surface colour, so it stays
+  readable on both the filled and unfilled track in light and dark themes. Screenshot evidence now covers
   both themes. No projection, contract or accessible-name change.
 
 - Fix `Reply` on a cron run importing only the first 2 KiB of a longer
