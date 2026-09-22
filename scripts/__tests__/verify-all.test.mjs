@@ -547,6 +547,34 @@ describe("verify-all", () => {
     expect(source).toContain(changelogStep);
   });
 
+  it("triggers on ready_for_review so a draft deferral cannot outlive the draft state", () => {
+    const source = readCiWorkflow();
+    expect(source).toContain(
+      [
+        "on:",
+        "  pull_request:",
+        "    types:",
+        "      - opened",
+        "      - synchronize",
+        "      - reopened",
+        "      - ready_for_review",
+        "      - converted_to_draft",
+        "  push:",
+        "    branches:",
+        "      - main",
+      ].join("\n"),
+    );
+    const workflow = parseDocument(source, { uniqueKeys: true }).toJS();
+    expect(workflow.on.pull_request.types).toEqual([
+      "opened",
+      "synchronize",
+      "reopened",
+      "ready_for_review",
+      "converted_to_draft",
+    ]);
+    expect(workflow.on.push).toEqual({ branches: ["main"] });
+  });
+
   it("rejects changelog PR-context env drift and env on any other step", () => {
     const source = readCiWorkflow();
     const architecture = [

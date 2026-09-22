@@ -1,7 +1,19 @@
 name: ci
 
+# Explicit pull_request activity types: the defaults (opened, synchronize,
+# reopened) do not include draft transitions. The changelog gate defers its
+# entry check for drafts, so ready_for_review must re-run CI against the
+# ready state (otherwise a draft run's deferred verdict would stand as a
+# silent bypass), and converted_to_draft keeps the verdict fresh in the
+# other direction.
 on:
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - converted_to_draft
   push:
     branches:
       - main
