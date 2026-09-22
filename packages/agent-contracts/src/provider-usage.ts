@@ -46,6 +46,8 @@ export interface ProviderUsageProjection {
   readonly confidence: "normal" | "low";
   /** ISO run-out timestamp; present only when projected to hit 100 % before resetsAt. */
   readonly exhaustsAt?: string;
+  /** Gap between exhaustsAt and resetsAt in ms; present exactly when exhaustsAt is. */
+  readonly leadMs?: number;
 }
 /** One window's projection, for consumers that render per-window state. */
 export interface ProviderUsageWindowProjection {
@@ -71,9 +73,17 @@ export function projectProviderUsageWindow(
   const pace = window.usedPercent / (100 * elapsedFraction);
   if (confidence === "low" || pace <= 1) return { pace, elapsedFraction, severity: "ok", confidence };
   const severity = pace >= 1.5 ? "unsustainable" : "ahead";
-  const exhaustMs = window.usedPercent >= 100 ? anchorMs
-    : anchorMs + (100 - window.usedPercent) / (window.usedPercent / elapsedMs);
-  return { pace, elapsedFraction, severity, confidence, exhaustsAt: new Date(Math.round(exhaustMs)).toISOString() };
+  const roundedExhaustMs = window.usedPercent >= 100 ? Math.round(anchorMs)
+    : Math.round(anchorMs + (100 - window.usedPercent) / (window.usedPercent / elapsedMs));
+  return { pace, elapsedFraction, severity, confidence,
+    exhaustsAt: new Date(roundedExhaustMs).toISOString(), leadMs: resetMs - roundedExhaustMs };
+}
+/** Compact lead shape (`3d 2h` / `5h 20m` / `12m`); same granularity as the meter countdown. */
+export function formatProviderUsageLead(leadMs: number): string {
+  const minutes = Math.max(0, Math.ceil(leadMs / 60_000));
+  if (minutes >= 1440) return `${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h`;
+  if (minutes >= 60) return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  return `${minutes}m`;
 }
 /** Per-window projections for one provider; windows without a projection are omitted, never null. */
 export function projectProviderUsage(usage: Pick<ProviderUsage, "windows" | "fetchedAt">): readonly ProviderUsageWindowProjection[] {

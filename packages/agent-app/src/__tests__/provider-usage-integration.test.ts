@@ -7,6 +7,7 @@ import { startTuiAdapter } from "@mono-agent/operator-adapter";
 import { startWebServer, OperatorClient } from "@mono-agent/web";
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
 import { describe, expect, it, vi } from "vitest";
+import { formatProviderUsageLead } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import { createAgentProviderUsage } from "../provider-usage-scope.js";
@@ -103,7 +104,9 @@ describe("ProviderUsage tool", () => {
       expect(window.elapsedFraction).toBeCloseTo(0.44, 2);
       expect(Date.parse(window.exhaustsAt as string)).toBeGreaterThan(Date.parse(codex.fetchedAt));
       expect(Date.parse(window.exhaustsAt as string)).toBeLessThan(Date.parse(codex.windows[0]!.resetsAt!));
-      expect(projection.warning).toMatch(/Codex Weekly is projected to run out .* before its .* reset\./);
+      expect(window.leadMs).toBe(Date.parse(codex.windows[0]!.resetsAt!) - Date.parse(window.exhaustsAt as string));
+      expect(projection.warning).toMatch(/Codex Weekly is projected to run out \S+, \d+d \d+h before its \S+ reset\./);
+      expect(projection.warning).toContain(`${formatProviderUsageLead(window.leadMs as number)} before its`);
       expect(JSON.parse((result.content as [{ text: string }])[0]!.text)).toEqual(body);
     } finally { await client.close(); await bound.cleanup?.(); }
   });

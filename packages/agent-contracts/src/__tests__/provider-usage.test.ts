@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseProviderUsageSnapshot, projectProviderUsage, projectProviderUsageWindow, PROVIDER_USAGE_SCHEMA } from "../provider-usage.js";
+import { formatProviderUsageLead, parseProviderUsageSnapshot, projectProviderUsage, projectProviderUsageWindow, PROVIDER_USAGE_SCHEMA } from "../provider-usage.js";
 const good = { schema: PROVIDER_USAGE_SCHEMA, providers: [{ providerId: "anthropic", label: "Claude", fetchedAt: "2026-09-14T12:00:00.000Z", stale: false, windows: [{ kind: "session", label: "Session", usedPercent: 38, periodMs: 18000000 }] }] };
 describe("provider usage wire projection", () => {
   it("accepts valid snapshots and returns fresh copies", () => {
@@ -63,11 +63,30 @@ describe("provider usage burn projection", () => {
     expect(projection.confidence).toBe("normal");
     expect(Date.parse(projection.exhaustsAt!)).toBeGreaterThan(Date.parse(halfWeek));
     expect(Date.parse(projection.exhaustsAt!)).toBeLessThan(Date.parse(weekReset));
+    expect(projection.leadMs).toBe(Date.parse(weekReset) - Date.parse(projection.exhaustsAt!));
   });
   it.each([75, 90])("flags %s%% at half the window as unsustainable", (usedPercent) => {
     const projection = projectProviderUsageWindow(weekly(usedPercent), halfWeek)!;
     expect(projection.severity).toBe("unsustainable");
     expect(Date.parse(projection.exhaustsAt!)).toBeLessThan(Date.parse(weekReset));
+    expect(projection.leadMs).toBeGreaterThan(0);
+  });
+  it("omits the run-out and its lead together whenever nothing is projected", () => {
+    for (const projection of [
+      projectProviderUsageWindow(weekly(25), halfWeek)!,
+      projectProviderUsageWindow(weekly(50), halfWeek)!,
+      projectProviderUsageWindow(weekly(0), halfWeek)!,
+      projectProviderUsageWindow(weekly(50, "2026-09-19T16:34:22.000Z"), "2026-09-19T16:34:22.000Z")!,
+    ]) {
+      expect(projection.exhaustsAt).toBeUndefined();
+      expect(projection.leadMs).toBeUndefined();
+    }
+  });
+  it.each([
+    [0, "0m"], [-1000, "0m"], [12 * 60_000, "12m"], [61_000, "2m"], [60 * 60_000, "1h 0m"],
+    [(5 * 60 + 20) * 60_000, "5h 20m"], [25 * 3_600_000, "1d 1h"], [(3 * 24 + 2) * 3_600_000, "3d 2h"],
+  ])("formats lead %s ms as %s", (leadMs, text) => {
+    expect(formatProviderUsageLead(leadMs)).toBe(text);
   });
   it("returns undefined without a reset", () => {
     expect(projectProviderUsageWindow(weekly(96, halfWeek, null), halfWeek)).toBeUndefined();

@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { PROVIDER_USAGE_IDS, projectProviderUsage, type ProviderUsageOperator, type ProviderUsageSnapshot } from "@mono-agent/agent-contracts";
+import { PROVIDER_USAGE_IDS, formatProviderUsageLead, projectProviderUsage, type ProviderUsageOperator, type ProviderUsageSnapshot } from "@mono-agent/agent-contracts";
 import type { ToolPolicyInput } from "@mono-agent/agent-harness";
 import * as z from "zod/v4";
 import { createRequestScopedMcpRuntimeExtension } from "./request-scoped-mcp.js";
@@ -15,10 +15,11 @@ function projectSnapshot(snapshot: ProviderUsageSnapshot): Record<string, unknow
     for (const { kind, projection } of projectProviderUsage(provider)) {
       windows.push({ kind, pace: round2(projection.pace), elapsedFraction: round2(projection.elapsedFraction),
         severity: projection.severity, confidence: projection.confidence,
-        ...(projection.exhaustsAt === undefined ? {} : { exhaustsAt: projection.exhaustsAt }) });
-      if (projection.exhaustsAt !== undefined) {
+        ...(projection.exhaustsAt === undefined || projection.leadMs === undefined ? {}
+          : { exhaustsAt: projection.exhaustsAt, leadMs: projection.leadMs }) });
+      if (projection.exhaustsAt !== undefined && projection.leadMs !== undefined) {
         const window = provider.windows.find((item) => item.kind === kind);
-        warnings.push(`${provider.label} ${window?.label ?? kind} is projected to run out ${projection.exhaustsAt}, before its ${window?.resetsAt} reset.`);
+        warnings.push(`${provider.label} ${window?.label ?? kind} is projected to run out ${projection.exhaustsAt}, ${formatProviderUsageLead(projection.leadMs)} before its ${window?.resetsAt} reset.`);
       }
     }
     if (windows.length > 0) providers.push({ providerId: provider.providerId, anchor: provider.fetchedAt, windows });

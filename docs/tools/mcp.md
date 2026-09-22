@@ -571,14 +571,17 @@ never verify the agent’s inference credential or refresh on rejection.
 Alongside the unchanged v1 snapshot the tool adds a `projection` sibling with
 one constant-rate burn projection per window that has a reset: `pace` (1 means
 on track to consume the window by its reset), `elapsedFraction`, `severity`
-(`ok`/`ahead`/`unsustainable`), `confidence`, and `exhaustsAt` only when the
-window is projected to run out before its reset. A `warning` sentence names each
-affected provider window with its projected run-out and reset. Pace and fractions
-are rounded to two decimals; windows without a projection are omitted. The
-derivation is anchored at each provider's `fetchedAt`, not wall-clock: `ahead`
-means burning above 1x, `unsustainable` at 1.5x and above, and very early
-windows report pace at low confidence with severity held at `ok` and no run-out.
-It is an extrapolation from the last measurement, not a forecast.
+(`ok`/`ahead`/`unsustainable`), `confidence`, and `exhaustsAt` with `leadMs`
+(the gap to the reset in milliseconds) only when the window is projected to
+run out before its reset. A `warning` sentence names each affected provider
+window with its projected run-out, lead time and reset, e.g. `Codex Weekly is
+projected to run out 2026-09-22T13:20:11.000Z, 3d 19h before its
+2026-09-26T08:10:22.000Z reset.` Pace and fractions are rounded to two
+decimals; windows without a projection are omitted. The derivation is anchored
+at each provider's `fetchedAt`, not wall-clock: `ahead` means burning above 1x,
+`unsustainable` at 1.5x and above, and very early windows report pace at low
+confidence with severity held at `ok` and no run-out. It is an extrapolation
+from the last measurement, not a forecast.
 
 Allow-all exposes it automatically. A restrictive `tools.allowedTools` must
 include `ProviderUsage`, `mcp__mono-agent-provider-usage__ProviderUsage`, or

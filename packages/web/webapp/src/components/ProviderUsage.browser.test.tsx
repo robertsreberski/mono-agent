@@ -240,6 +240,8 @@ describe("compact Agent settings subscription meters", () => {
     expect(goLine.textContent).toMatch(/empty/);
     expect(goLine.closest(".provider-usage-window")).toContainElement(screen.getByRole("progressbar", { name: /OpenCode Go Weekly used/ }));
     expect(codexLine).not.toHaveClass("is-ahead");
+    expect(codexLine.textContent).toMatch(/\(.+ before reset\)/);
+    expect(goLine.textContent).toMatch(/\(.+ before reset\)/);
     expect(getComputedStyle(codexLine).color).not.toBe(getComputedStyle(goLine).color);
     expect(screen.getByRole("progressbar", { name: /projected to run out before reset \(unsustainable\)/ })).toBeVisible();
     expect(screen.getByRole("progressbar", { name: /projected to run out before reset \(ahead\)/ })).toBeVisible();

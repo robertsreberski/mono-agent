@@ -126,11 +126,13 @@ describe("burn-pace projection lines", () => {
     const view = render(<ProviderUsageMeters usage={codexUsage(55)} />);
     const ahead = screen.getByText(/empty/);
     expect(ahead).toHaveClass("provider-usage-projection", "is-ahead");
+    expect(ahead.textContent).toMatch(/\(.+ before reset\)/);
     expect(ahead.getAttribute("title")).toMatch(/Projected to run out .* at current pace 1\.26x/);
     expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/projected to run out before reset \(ahead\)/);
     view.rerender(<ProviderUsageMeters usage={codexUsage(96)} />);
     const exhausted = screen.getByText(/empty/);
     expect(exhausted).toHaveClass("provider-usage-projection", "is-unsustainable");
+    expect(exhausted.textContent).toMatch(/\(.+ before reset\)/);
     expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/projected to run out before reset \(unsustainable\)/);
     expect(exhausted).not.toHaveClass("is-ahead");
   });
@@ -142,6 +144,6 @@ describe("burn-pace projection lines", () => {
     // Same measurement, later wall-clock: the anchor does not move, so the run-out is now past.
     vi.setSystemTime(new Date("2026-09-25T12:00:00Z"));
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-    expect(screen.getByText("Projected empty")).toBeInTheDocument();
+    expect(screen.getByText(/Projected empty \(.+ before reset\)/)).toBeInTheDocument();
   });
 });

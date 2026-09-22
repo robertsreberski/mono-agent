@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { projectProviderUsageWindow } from "@mono-agent/agent-contracts/provider-usage";
+import { formatProviderUsageLead, projectProviderUsageWindow } from "@mono-agent/agent-contracts/provider-usage";
 import { api } from "../api";
 import type { AgentSummary, ProviderUsage, ProviderUsageSnapshot } from "../types";
 
@@ -87,17 +87,16 @@ export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
 }
 
 function countdown(reset: string, now: number): string {
-  const minutes = Math.max(0, Math.ceil((Date.parse(reset) - now) / 60_000));
-  if (minutes === 0) return "Reset due";
-  if (minutes >= 1440) return `Resets in ${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h`;
-  if (minutes >= 60) return `Resets in ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-  return `Resets in ${minutes}m`;
+  const diffMs = Date.parse(reset) - now;
+  if (Math.max(0, Math.ceil(diffMs / 60_000)) === 0) return "Reset due";
+  return `Resets in ${formatProviderUsageLead(diffMs)}`;
 }
 /** Absolute run-out in compact meter type; a past projection reads as already empty. */
-function projectionLine(exhaustsAt: string, now: number): string {
-  if (Date.parse(exhaustsAt) <= now) return "Projected empty";
+function projectionLine(exhaustsAt: string, leadMs: number, now: number): string {
+  const lead = `${formatProviderUsageLead(leadMs)} before reset`;
+  if (Date.parse(exhaustsAt) <= now) return `Projected empty (${lead})`;
   const at = new Date(exhaustsAt);
-  return `≈ empty ${at.toLocaleDateString(undefined, { weekday: "short" })} ${at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+  return `≈ empty ${at.toLocaleDateString(undefined, { weekday: "short" })} ${at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })} (${lead})`;
 }
 /** The plan chip is rendered inline by the provider heading; this shows only the meters. */
 export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage }) {
@@ -122,8 +121,8 @@ export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage 
         <progress aria-label={alert === undefined ? `${usage.label} ${window.label} used`
           : `${usage.label} ${window.label} used, projected to run out before reset (${alert.severity})`} max={100} value={window.usedPercent} />
         {window.resetsAt && <time dateTime={window.resetsAt} title={new Date(window.resetsAt).toLocaleString()}>{countdown(window.resetsAt, now)}</time>}
-        {alert?.exhaustsAt !== undefined && <span className={`provider-usage-projection is-${alert.severity}`}
-          title={`Projected to run out ${new Date(alert.exhaustsAt).toLocaleString()} at current pace ${alert.pace.toFixed(2)}x`}>{projectionLine(alert.exhaustsAt, now)}</span>}
+        {alert?.exhaustsAt !== undefined && alert.leadMs !== undefined && <span className={`provider-usage-projection is-${alert.severity}`}
+          title={`Projected to run out ${new Date(alert.exhaustsAt).toLocaleString()} at current pace ${alert.pace.toFixed(2)}x`}>{projectionLine(alert.exhaustsAt, alert.leadMs, now)}</span>}
       </div>;
     })}
     {usage.error && <p className="provider-usage-error" role="status">Usage unavailable — {usage.error.message}</p>}

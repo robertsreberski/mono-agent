@@ -147,11 +147,12 @@ session costs. A sole weekly Codex limit stays Weekly even when it occupies the
 primary slot. Reset countdowns include an absolute time on hover; vendor reset
 timestamps are authoritative (the nominal monthly period is 30 days). Windows
 burning ahead of pace add one small run-out line under the countdown —
-`≈ empty <weekday time>` in amber when ahead, red when unsustainable (1.5x pace
-or more) — with the full local run-out time and pace on hover; healthy windows
-show no extra line. The projection is a constant-rate extrapolation anchored at
+`≈ empty Tue 02:58 PM (3d 21h before reset)` in amber when ahead, red when
+unsustainable (1.5x pace or more) — with the full local run-out time and pace
+on hover; healthy windows show no extra line. The line wraps naturally in the
+narrow meter column. The projection is a constant-rate extrapolation anchored at
 the measurement fetch, so stale **Last known usage** meters keep their original
-run-out and an already-past run-out reads `Projected empty`. The state is also
+run-out and an already-past run-out reads `Projected empty (… before reset)`. The state is also
 carried in the meter's accessible name, never colour alone. No Spark,
 Codex credits, Sonnet, extra-usage, organization billing or cost meters are included. Unsupported providers
 and absent/unusable credentials add no placeholders. Successfully mapped usage
