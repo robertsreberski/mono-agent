@@ -127,7 +127,7 @@ the operator response ceiling.
 
 ## Architecture
 
-`provider-usage.ts` defines the strict `mono-agent.provider-usage.v1` subscription projection, at most four providers (Claude, Codex, OpenCode Go and GitHub Copilot), at most three core percent windows per provider, fixed errors and read-only `ProviderUsageOperator`. Copilot alone admits Credits/Chat/Completions window kinds; existing provider rules stay unchanged. It carries no credentials or vendor account identifiers. Provider-auth status distinguishes additive `verified_by_account_request` (vendor account API accepted the credential, not inference or model entitlement) from stronger `verified_by_live_request`; `lastFailure.model` is optional for account-level rejection.
+`provider-usage.ts` defines the strict `mono-agent.provider-usage.v1` subscription projection, at most four providers (Claude, Codex, OpenCode Go and GitHub Copilot), at most three core percent windows per provider, fixed errors and read-only `ProviderUsageOperator`. Copilot alone admits Credits/Chat/Completions window kinds; existing provider rules stay unchanged. It carries no credentials or vendor account identifiers. Dependency-free burn-projection helpers (`projectProviderUsageWindow`, `projectProviderUsage`) derive constant-rate pace, run-out and ok/ahead/unsustainable severity from fields already present, anchored at the measurement. Provider-auth status distinguishes additive `verified_by_account_request` (vendor account API accepted the credential, not inference or model entitlement) from stronger `verified_by_live_request`; `lastFailure.model` is optional for account-level rejection.
 
 ### Data flow
 
@@ -457,8 +457,10 @@ ProviderUsage
 ProviderUsageErrorCode
 ProviderUsageId
 ProviderUsageOperator
+ProviderUsageProjection
 ProviderUsageSnapshot
 ProviderUsageWindow
+ProviderUsageWindowProjection
 ReadSettingsJsonResult
 RedactedSecretValue
 ResilientAgentMessageStream
@@ -536,6 +538,8 @@ parseProviderAuthSessionStartInput
 parseProviderAuthStatusSnapshot
 parseProviderUsageSnapshot
 processJobPublicError
+projectProviderUsage
+projectProviderUsageWindow
 readAuthorizationBearer
 readBoolean
 readChoice
@@ -573,10 +577,14 @@ ProviderUsage
 ProviderUsageErrorCode
 ProviderUsageId
 ProviderUsageOperator
+ProviderUsageProjection
 ProviderUsageSnapshot
 ProviderUsageWindow
+ProviderUsageWindowProjection
 isProviderUsageId
 parseProviderUsageSnapshot
+projectProviderUsage
+projectProviderUsageWindow
 ```
 
 <!-- public-api-inventory:end -->
@@ -599,6 +607,11 @@ are required.
 
 The browser-safe `@mono-agent/agent-contracts/provider-usage` entrypoint exposes
 the same strict parser and usage DTOs without the Node-only root helpers.
+`projectProviderUsageWindow()` and `projectProviderUsage()` share one pure
+burn-pace derivation for the tool and the console meters: constant-rate pace
+(1 = on track), projected run-out only when ahead of pace, and ok/ahead
+(above 1x) versus unsustainable (1.5x and above) severity, all anchored at the
+measurement `fetchedAt` — an extrapolation, not a forecast.
 `ProviderUsageOperator.snapshot()` retains its cached-read contract. Optional
 `refresh()` awaits shared account-usage work, bypassing successful freshness but
 not error backoff. Capability-aware hosts expose it separately; snapshot-only

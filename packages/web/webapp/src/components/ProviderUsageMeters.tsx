@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { projectProviderUsageWindow } from "@mono-agent/agent-contracts/provider-usage";
 import { api } from "../api";
 import type { AgentSummary, ProviderUsage, ProviderUsageSnapshot } from "../types";
 
@@ -92,6 +93,12 @@ function countdown(reset: string, now: number): string {
   if (minutes >= 60) return `Resets in ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   return `Resets in ${minutes}m`;
 }
+/** Absolute run-out in compact meter type; a past projection reads as already empty. */
+function projectionLine(exhaustsAt: string, now: number): string {
+  if (Date.parse(exhaustsAt) <= now) return "Projected empty";
+  const at = new Date(exhaustsAt);
+  return `≈ empty ${at.toLocaleDateString(undefined, { weekday: "short" })} ${at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+}
 /** The plan chip is rendered inline by the provider heading; this shows only the meters. */
 export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage }) {
   const [now, setNow] = useState(Date.now);
@@ -105,11 +112,20 @@ export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage 
     {usage.stale && <div className="provider-usage-meta">
       <span title={`Fetched ${new Date(usage.fetchedAt).toLocaleString()}`}>Last known usage</span>
     </div>}
-    {usage.windows.map((window) => <div className="provider-usage-window" key={window.kind}>
-      <div className="provider-usage-label"><span>{window.label}</span><span>{window.usedPercent}%</span></div>
-      <progress aria-label={`${usage.label} ${window.label} used`} max={100} value={window.usedPercent} />
-      {window.resetsAt && <time dateTime={window.resetsAt} title={new Date(window.resetsAt).toLocaleString()}>{countdown(window.resetsAt, now)}</time>}
-    </div>)}
+    {usage.windows.map((window) => {
+      // Anchored at the measurement, never wall-clock; only ahead/unsustainable windows add a line.
+      const projection = projectProviderUsageWindow(window, usage.fetchedAt);
+      const alert = projection !== undefined && projection.exhaustsAt !== undefined
+        && (projection.severity === "ahead" || projection.severity === "unsustainable") ? projection : undefined;
+      return <div className="provider-usage-window" key={window.kind}>
+        <div className="provider-usage-label"><span>{window.label}</span><span>{window.usedPercent}%</span></div>
+        <progress aria-label={alert === undefined ? `${usage.label} ${window.label} used`
+          : `${usage.label} ${window.label} used, projected to run out before reset (${alert.severity})`} max={100} value={window.usedPercent} />
+        {window.resetsAt && <time dateTime={window.resetsAt} title={new Date(window.resetsAt).toLocaleString()}>{countdown(window.resetsAt, now)}</time>}
+        {alert?.exhaustsAt !== undefined && <span className={`provider-usage-projection is-${alert.severity}`}
+          title={`Projected to run out ${new Date(alert.exhaustsAt).toLocaleString()} at current pace ${alert.pace.toFixed(2)}x`}>{projectionLine(alert.exhaustsAt, now)}</span>}
+      </div>;
+    })}
     {usage.error && <p className="provider-usage-error" role="status">Usage unavailable — {usage.error.message}</p>}
   </div>;
 }

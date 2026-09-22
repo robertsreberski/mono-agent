@@ -201,3 +201,7 @@ are omitted. Retained usage successes provide weaker **Credential OK** evidence,
 not inference/model entitlement or live **OK**; final auth rejections show
 **Needs action**. Evidence is fenced against credential replacement and adds no
 extra vendor calls. No quota purchases or routing decisions are performed.
+Both surfaces also report a constant-rate burn projection anchored at each
+measurement: per-window pace (1 = on track to consume the window by its reset),
+a projected run-out only when ahead of pace, and `ahead`/`unsustainable` (1.5x
+and above) warnings — an extrapolation, not a forecast.

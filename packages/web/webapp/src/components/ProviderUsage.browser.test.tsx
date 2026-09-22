@@ -15,6 +15,11 @@ declare module "vitest" {
 }
 const touch = inject("providerUsageTouch");
 const viewport = touch ? { width: 390, height: 844 } : { width: 1280, height: 800 };
+/**
+ * Screenshot evidence is opt-in: `VITE_PROVIDER_USAGE_SHOTS=<absolute dir>`
+ * captures the burn-pace meters, and CI runs the same assertions without it.
+ */
+const shotDirectory = import.meta.env.VITE_PROVIDER_USAGE_SHOTS as string | undefined;
 const reset = new Date(Date.now() + 3_600_000).toISOString();
 const snapshot: ProviderUsageSnapshot = { schema: "mono-agent.provider-usage.v1", providers: [
   { providerId: "anthropic", label: "Claude", fetchedAt: new Date().toISOString(), stale: false, windows: [
@@ -206,6 +211,43 @@ describe("compact Agent settings subscription meters", () => {
     expect(screen.queryAllByRole("button", { name: "Re-authenticate" })).toHaveLength(configured ? 1 : 0);
     expect(screen.queryAllByText("Usage only")).toHaveLength(0);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(viewport.width);
+  });
+
+  it("warns with two tiers when windows burn ahead of pace, keeping healthy meters unchanged", async () => {
+    await page.viewport(viewport.width, viewport.height);
+    const fetchedAt = new Date().toISOString();
+    const paceReset = new Date(Date.now() + 3.9 * 86_400_000).toISOString();
+    mocks.providerUsage.mockResolvedValue({ schema: snapshot.schema, providers: [
+      { providerId: "anthropic", label: "Claude", fetchedAt, stale: false, windows: [
+        { kind: "session", label: "Session", usedPercent: 17, periodMs: 18000000, resetsAt: reset },
+        { kind: "weekly", label: "Weekly", usedPercent: 18, periodMs: 604800000, resetsAt: paceReset },
+      ] },
+      { providerId: "openai-codex", label: "Codex", plan: "Pro 20x", fetchedAt, stale: false, windows: [
+        { kind: "weekly", label: "Weekly", usedPercent: 96, periodMs: 604800000, resetsAt: paceReset },
+      ] },
+      { providerId: "opencode-go", label: "OpenCode Go", plan: "Go", fetchedAt, stale: false, windows: [
+        { kind: "weekly", label: "Weekly", usedPercent: 55, periodMs: 604800000, resetsAt: paceReset },
+        { kind: "monthly", label: "Monthly", usedPercent: 10, periodMs: 2592000000, resetsAt: paceReset },
+      ] },
+    ] });
+    render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    await screen.findByRole("progressbar", { name: /Codex Weekly used/ });
+    const lines = [...document.querySelectorAll(".provider-usage-projection")];
+    expect(lines).toHaveLength(2);
+    const codexLine = screen.getByText(/empty/, { selector: ".provider-usage-projection.is-unsustainable" });
+    expect(codexLine.closest(".provider-usage-window")).toContainElement(screen.getByRole("progressbar", { name: /Codex Weekly used/ }));
+    const goLine = document.querySelector(".provider-usage-projection.is-ahead")!;
+    expect(goLine.textContent).toMatch(/empty/);
+    expect(goLine.closest(".provider-usage-window")).toContainElement(screen.getByRole("progressbar", { name: /OpenCode Go Weekly used/ }));
+    expect(codexLine).not.toHaveClass("is-ahead");
+    expect(getComputedStyle(codexLine).color).not.toBe(getComputedStyle(goLine).color);
+    expect(screen.getByRole("progressbar", { name: /projected to run out before reset \(unsustainable\)/ })).toBeVisible();
+    expect(screen.getByRole("progressbar", { name: /projected to run out before reset \(ahead\)/ })).toBeVisible();
+    // Healthy windows render exactly as before: no line, base accessible name.
+    expect(screen.getByRole("progressbar", { name: "Claude Weekly used" }).getAttribute("aria-label")).toBe("Claude Weekly used");
+    expect(screen.getByRole("progressbar", { name: "OpenCode Go Monthly used" }).getAttribute("aria-label")).toBe("OpenCode Go Monthly used");
+    expect(codexLine.getAttribute("title")).toMatch(/Projected to run out .* at current pace .*x/);
+    if (shotDirectory) await page.screenshot({ path: `${shotDirectory}/provider-usage-pace-${viewport.width}x${viewport.height}-${touch ? "coarse-touch" : "fine-desktop"}.png` });
   });
 
 });

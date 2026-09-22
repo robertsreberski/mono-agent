@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agent } from "../test/fixtures";
-import type { AgentSummary, ProviderUsageSnapshot } from "../types";
+import type { AgentSummary, ProviderUsage, ProviderUsageSnapshot } from "../types";
 const mocks = vi.hoisted(() => ({ providerUsage: vi.fn(), refreshProviderUsage: vi.fn() }));
 vi.mock("../api", () => ({ api: mocks }));
 import { ProviderUsageMeters, useProviderUsage } from "./ProviderUsageMeters";
@@ -105,5 +105,43 @@ describe("usage rows and lifecycle", () => {
     view.unmount();
     await vi.advanceTimersByTimeAsync(600_000);
     expect(mocks.providerUsage).toHaveBeenCalledTimes(2);
+  });
+});
+const weekMs = 604800000;
+const weekReset = "2026-09-26T08:10:22.000Z";
+function codexUsage(usedPercent: number, stale = false): ProviderUsage {
+  return { providerId: "openai-codex", label: "Codex", plan: "Pro 20x", fetchedAt: "2026-09-22T09:35:00.000Z", stale,
+    windows: [{ kind: "weekly", label: "Weekly", usedPercent, periodMs: weekMs, resetsAt: weekReset }] };
+}
+describe("burn-pace projection lines", () => {
+  it("renders healthy windows exactly as before, with no projection line", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    // 25 % at half the window: pace 0.5, on track.
+    render(<ProviderUsageMeters usage={{ ...codexUsage(25), fetchedAt: "2026-09-22T20:10:22.000Z" }} />);
+    expect(screen.queryByText(/empty/)).toBeNull();
+    expect(screen.getByRole("progressbar").getAttribute("aria-label")).toBe("Codex Weekly used");
+  });
+  it("marks ahead and unsustainable tiers with distinct classes and accessible names", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    const view = render(<ProviderUsageMeters usage={codexUsage(55)} />);
+    const ahead = screen.getByText(/empty/);
+    expect(ahead).toHaveClass("provider-usage-projection", "is-ahead");
+    expect(ahead.getAttribute("title")).toMatch(/Projected to run out .* at current pace 1\.26x/);
+    expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/projected to run out before reset \(ahead\)/);
+    view.rerender(<ProviderUsageMeters usage={codexUsage(96)} />);
+    const exhausted = screen.getByText(/empty/);
+    expect(exhausted).toHaveClass("provider-usage-projection", "is-unsustainable");
+    expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/projected to run out before reset \(unsustainable\)/);
+    expect(exhausted).not.toHaveClass("is-ahead");
+  });
+  it("keeps the anchored projection on stale snapshots and reads empty once the run-out passes", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    render(<ProviderUsageMeters usage={codexUsage(96, true)} />);
+    expect(screen.getByText("Last known usage")).toBeInTheDocument();
+    expect(screen.getByText(/empty/)).toBeInTheDocument();
+    // Same measurement, later wall-clock: the anchor does not move, so the run-out is now past.
+    vi.setSystemTime(new Date("2026-09-25T12:00:00Z"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(screen.getByText("Projected empty")).toBeInTheDocument();
   });
 });

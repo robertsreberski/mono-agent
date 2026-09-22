@@ -36,6 +36,54 @@ export interface ProviderUsageSnapshot {
   readonly schema: typeof PROVIDER_USAGE_SCHEMA;
   readonly providers: readonly ProviderUsage[];
 }
+/** Constant-rate burn projection for one window, anchored at the measurement `fetchedAt`, not wall-clock. */
+export interface ProviderUsageProjection {
+  /** 1 = exactly on track to consume the window by its reset. */
+  readonly pace: number;
+  /** 0..1 of the window elapsed at the measurement anchor. */
+  readonly elapsedFraction: number;
+  readonly severity: "ok" | "ahead" | "unsustainable";
+  readonly confidence: "normal" | "low";
+  /** ISO run-out timestamp; present only when projected to hit 100 % before resetsAt. */
+  readonly exhaustsAt?: string;
+}
+/** One window's projection, for consumers that render per-window state. */
+export interface ProviderUsageWindowProjection {
+  readonly kind: ProviderUsageWindow["kind"];
+  readonly projection: ProviderUsageProjection;
+}
+/** Shared pure derivation: constant-rate extrapolation from the last measurement, not a forecast. */
+export function projectProviderUsageWindow(
+  window: ProviderUsageWindow, fetchedAt: string,
+): ProviderUsageProjection | undefined {
+  if (window.resetsAt === undefined) return undefined;
+  const resetMs = Date.parse(window.resetsAt);
+  const anchorMs = Date.parse(fetchedAt);
+  if (!Number.isFinite(resetMs) || !Number.isFinite(anchorMs)
+    || !Number.isFinite(window.periodMs) || window.periodMs <= 0) return undefined;
+  const elapsedMs = anchorMs - (resetMs - window.periodMs);
+  if (elapsedMs <= 0) return undefined;
+  const elapsedFraction = elapsedMs / window.periodMs;
+  if (elapsedFraction > 1) return undefined;
+  const confidence = elapsedFraction < 0.1 ? "low" : "normal";
+  // Very early in a window one call extrapolates wildly: report pace, force ok, no run-out.
+  if (window.usedPercent === 0) return { pace: 0, elapsedFraction, severity: "ok", confidence };
+  const pace = window.usedPercent / (100 * elapsedFraction);
+  if (confidence === "low" || pace <= 1) return { pace, elapsedFraction, severity: "ok", confidence };
+  const severity = pace >= 1.5 ? "unsustainable" : "ahead";
+  const exhaustMs = window.usedPercent >= 100 ? anchorMs
+    : anchorMs + (100 - window.usedPercent) / (window.usedPercent / elapsedMs);
+  return { pace, elapsedFraction, severity, confidence, exhaustsAt: new Date(Math.round(exhaustMs)).toISOString() };
+}
+/** Per-window projections for one provider; windows without a projection are omitted, never null. */
+export function projectProviderUsage(usage: Pick<ProviderUsage, "windows" | "fetchedAt">): readonly ProviderUsageWindowProjection[] {
+  const out: ProviderUsageWindowProjection[] = [];
+  for (const window of usage.windows) {
+    const projection = projectProviderUsageWindow(window, usage.fetchedAt);
+    if (projection !== undefined) out.push({ kind: window.kind, projection });
+  }
+  return out;
+}
 export interface ProviderUsageOperator {
   snapshot(provider?: ProviderUsageId): Promise<ProviderUsageSnapshot>;
   /** Explicit account-usage refresh; awaits shared fetches, never bypasses error backoff. */

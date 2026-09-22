@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add subscription burn-pace reporting to the `ProviderUsage` tool and the web
+  console usage meters. Both surfaces share one constant-rate projection
+  anchored at the measurement: per-window pace (1 = on track), a projected
+  run-out timestamp only when ahead of pace, and `ahead`/`unsustainable` (1.5x
+  and above) warnings. The v1 snapshot transport is unchanged and healthy
+  meters look as before.
+
 - Make the `AskUser` and `AgentSend` tool descriptions decision-bearing. `AskUser`
   now states when to ask — before work whose scope, destination or irreversible
   effects depend on a missing decision — instead of only listing mechanics, and

@@ -43,7 +43,7 @@ describe("ProviderUsage tool", () => {
     try {
       await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
       expect((await client.listTools()).tools[0]?.description).toMatch(/refresh is true/);
-      expect((await client.callTool({ name: "ProviderUsage", arguments: {} })).structuredContent).toEqual(cached);
+      expect((await client.callTool({ name: "ProviderUsage", arguments: {} })).structuredContent).toEqual({ ...cached, projection: { providers: [] } });
       expect(snapshot).toHaveBeenCalledTimes(1);
       expect(refresh).not.toHaveBeenCalled();
       await client.callTool({ name: "ProviderUsage", arguments: { provider: "anthropic" } });
@@ -51,8 +51,8 @@ describe("ProviderUsage tool", () => {
       expect(snapshot).toHaveBeenLastCalledWith("anthropic");
       expect(refresh).not.toHaveBeenCalled();
       const forced = await client.callTool({ name: "ProviderUsage", arguments: { refresh: true, provider: "opencode-go" } });
-      expect(forced.structuredContent).toEqual(fresh);
-      expect(forced.content).toEqual([{ type: "text", text: JSON.stringify(fresh) }]);
+      expect(forced.structuredContent).toEqual({ ...fresh, projection: { providers: [] } });
+      expect(forced.content).toEqual([{ type: "text", text: JSON.stringify({ ...fresh, projection: { providers: [] } }) }]);
       expect(refresh).toHaveBeenCalledTimes(1);
       expect(refresh).toHaveBeenCalledWith("opencode-go");
       await client.callTool({ name: "ProviderUsage", arguments: { refresh: false } });
@@ -73,9 +73,57 @@ describe("ProviderUsage tool", () => {
       await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
       const forced = await client.callTool({ name: "ProviderUsage", arguments: { refresh: true } });
       expect(forced.isError ?? false).toBe(false);
-      expect(forced.structuredContent).toEqual(cached);
+      expect(forced.structuredContent).toEqual({ ...cached, projection: { providers: [] } });
       expect(snapshot).toHaveBeenCalledTimes(1);
       expect(snapshot).toHaveBeenCalledWith(undefined);
+    } finally { await client.close(); await bound.cleanup?.(); }
+  });
+  it("projects burn pace with a warning for over-pace windows and omits it on track", async () => {
+    const codex = { providerId: "openai-codex" as const, label: "Codex", plan: "Pro 20x", fetchedAt: "2026-09-22T09:35:00.000Z", stale: false,
+      windows: [{ kind: "weekly" as const, label: "Weekly" as const, usedPercent: 96, resetsAt: "2026-09-26T08:10:22.000Z", periodMs: 604800000 }] };
+    const snapshot = { schema: "mono-agent.provider-usage.v1" as const, providers: [codex] };
+    const bound = await createProviderUsageRuntimeExtension({ snapshot: async () => snapshot }, { allowedTools: ["ProviderUsage"] })(request());
+    const spec = (bound.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-provider-usage"]!;
+    const client = new Client({ name: "synthetic-test", version: "1" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const result = await client.callTool({ name: "ProviderUsage", arguments: {} });
+      const body = result.structuredContent as Record<string, unknown>;
+      expect(body.schema).toBe("mono-agent.provider-usage.v1");
+      expect(body.providers).toEqual(snapshot.providers);
+      const projection = body.projection as { providers: { providerId: string; anchor: string; windows: Record<string, unknown>[] }[]; warning?: string };
+      expect(projection.providers).toHaveLength(1);
+      expect(projection.providers[0]).toMatchObject({ providerId: "openai-codex", anchor: codex.fetchedAt });
+      const window = projection.providers[0]!.windows[0]!;
+      expect(window.kind).toBe("weekly");
+      expect(window.severity).toBe("unsustainable");
+      expect(window.confidence).toBe("normal");
+      expect(window.pace as number).toBeGreaterThan(1.5);
+      expect(window.pace).toBeCloseTo(2.2, 2);
+      expect(window.elapsedFraction).toBeCloseTo(0.44, 2);
+      expect(Date.parse(window.exhaustsAt as string)).toBeGreaterThan(Date.parse(codex.fetchedAt));
+      expect(Date.parse(window.exhaustsAt as string)).toBeLessThan(Date.parse(codex.windows[0]!.resetsAt!));
+      expect(projection.warning).toMatch(/Codex Weekly is projected to run out .* before its .* reset\./);
+      expect(JSON.parse((result.content as [{ text: string }])[0]!.text)).toEqual(body);
+    } finally { await client.close(); await bound.cleanup?.(); }
+  });
+  it("omits warning when everything is on track", async () => {
+    const calm = { schema: "mono-agent.provider-usage.v1" as const, providers: [{
+      providerId: "anthropic" as const, label: "Claude", fetchedAt: "2026-09-22T20:10:22.000Z", stale: false,
+      windows: [{ kind: "weekly" as const, label: "Weekly" as const, usedPercent: 25, resetsAt: "2026-09-26T08:10:22.000Z", periodMs: 604800000 }],
+    }] };
+    const bound = await createProviderUsageRuntimeExtension({ snapshot: async () => calm }, { allowedTools: ["ProviderUsage"] })(request());
+    const spec = (bound.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-provider-usage"]!;
+    const client = new Client({ name: "synthetic-test", version: "1" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const result = await client.callTool({ name: "ProviderUsage", arguments: {} });
+      const body = result.structuredContent as Record<string, unknown>;
+      expect(body.providers).toEqual(calm.providers);
+      expect(body.projection).toEqual({ providers: [{
+        providerId: "anthropic", anchor: calm.providers[0]!.fetchedAt,
+        windows: [{ kind: "weekly", pace: 0.5, elapsedFraction: 0.5, severity: "ok", confidence: "normal" }],
+      }] });
     } finally { await client.close(); await bound.cleanup?.(); }
   });
   it("returns a current read for refresh:true instead of a fresh cached value", async () => {
@@ -130,7 +178,7 @@ describe("ProviderUsage tool", () => {
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name)).toEqual(["ProviderUsage"]);
       expect(tools.tools[0]?.annotations?.readOnlyHint).toBe(true);
-      expect((await client.callTool({ name: "ProviderUsage", arguments: { provider: "anthropic" } })).structuredContent).toEqual({ schema: "mono-agent.provider-usage.v1", providers: [] });
+      expect((await client.callTool({ name: "ProviderUsage", arguments: { provider: "anthropic" } })).structuredContent).toEqual({ schema: "mono-agent.provider-usage.v1", providers: [], projection: { providers: [] } });
       expect(resolver.readCredential).not.toHaveBeenCalled();
       expect(vendor).not.toHaveBeenCalled();
       const result = await client.callTool({ name: "ProviderUsage", arguments: { provider: id } });
@@ -151,7 +199,9 @@ describe("ProviderUsage tool", () => {
       expect(response.status).toBe(200);
       expect(response.headers.get("cache-control")).toContain("no-store");
       const body = await response.json();
-      expect(body).toEqual(result.structuredContent);
+      // The web route serves the raw v1 snapshot; the tool adds a sibling projection key.
+      const toolResult = result.structuredContent as { schema: unknown; providers: unknown };
+      expect(body).toEqual({ schema: toolResult.schema, providers: toolResult.providers });
       expect(JSON.stringify(body)).not.toMatch(/synthetic-key|synthetic-inference|synthetic-github|DROP_IDENTIFIER/);
       expect(vendor).toHaveBeenCalledTimes(1);
       expect(resolver).not.toHaveBeenCalled();
