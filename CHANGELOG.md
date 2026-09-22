@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Change a persistent subagent's model or effort on its next turn.**
+  `AgentManage({id, message, model, effort})` runs the continuation on the new
+  route while the child keeps its durable session and full prior context, and
+  persists that route on the instance so later continuations inherit it without
+  repeating it. `model` offers the same configured choices as `Agent` and only
+  appears when the host configured any; `effort` takes the usual levels. Both
+  compose with `background: true`, `close: true` and `ack`, and are rejected —
+  with no turn started and no registry write — for `stop`, `steer`, `inspect`
+  and close-only calls, and for an unknown model name or effort level. The
+  result reports `requested` and `executed` exactly as `Agent` does, and the new
+  route badges the activity row from the moment the turn starts. A turn that
+  fails keeps the new route, because the next continuation should inherit what
+  was asked for; a failed foreground retarget still leaves the instance
+  close-only until its recovery evidence is acknowledged, exactly as any other
+  failed foreground turn does.
+
 - Fix `Reply` on a cron run importing only the first 2 KiB of a longer
   result. The reply context now carries the full stored result text, bounded
   only by the 32 KiB context-import limit, and later summary polls no longer
