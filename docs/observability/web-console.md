@@ -153,7 +153,9 @@ on hover; on-track windows add nothing. How early the run-out lands is the
 decision, so the absolute instant stays on hover rather than in the meter.
 Windows clearly under pace instead append `· 45% unused` in muted type (at
 least 5 % unused, never a warning). Every projected
-bar also carries an on-track tick at the elapsed share of the window and a
+bar also carries an on-track dot at the elapsed share of the window — inside
+the bar, in the meter's accent family, flipping to the surface colour where the
+fill has already passed it — and a
 one-decimal pace chip beside the percentage (`1.2×`, tier-coloured when ahead,
 muted otherwise, withheld while confidence is low); the meter's accessible name
 states the elapsed share and pace so the comparison is not visual-only. The

@@ -1743,10 +1743,13 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .provider-usage-pace { font-size: 9px; font-weight: 600; color: var(--text-muted); }
 .provider-usage-pace.is-ahead { color: var(--warning); }
 .provider-usage-pace.is-unsustainable { color: var(--danger); }
-.provider-usage-bar { position: relative; display: block; }
-/* Where usage would be if exactly on track: a hairline notch inside the bar,
-   readable on both the filled and unfilled track without competing with it. */
-.provider-usage-tick { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -0.5px; background: var(--text); opacity: 0.32; }
+.provider-usage-bar { position: relative; display: flex; align-items: center; line-height: 0; }
+/* Where an on-track window would be: a dot riding inside the bar, in the
+   meter's own accent family. Once the fill passes it the dot sits on the
+   accent, so it flips to the surface colour to stay legible in either theme. */
+.provider-usage-tick { position: absolute; top: 50%; width: 3px; height: 3px; margin: -1.5px 0 0 -1.5px; border-radius: 50%; background: var(--accent-strong); }
+.provider-usage progress { display: block; }
+.provider-usage-tick.is-passed { background: var(--surface); }
 .provider-usage progress { appearance: none; width: 100%; height: 4px; overflow: hidden; border: 0; border-radius: 3px; background: var(--line-strong); }
 .provider-usage progress::-webkit-progress-bar { background: var(--line-strong); border-radius: 3px; }
 .provider-usage progress::-webkit-progress-value { background: var(--accent); border-radius: 3px; }

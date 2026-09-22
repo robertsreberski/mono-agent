@@ -116,6 +116,9 @@ export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage 
         ? Math.round(projection.projectedUnusedPercent) : undefined;
       const chip = projection !== undefined && projection.confidence === "normal"
         ? { text: `${projection.pace.toFixed(1)}×`, tier: projection.severity === "ok" ? "is-steady" : `is-${projection.severity}` } : undefined;
+      // Where an on-track window would be, drawn in the meter's own palette: a
+      // small rounded cap in the accent family, not a foreign line across the bar.
+      const expected = projection === undefined ? undefined : Math.min(100, Math.max(0, projection.elapsedFraction * 100));
       const name = projection === undefined ? `${usage.label} ${window.label} used`
         : `${usage.label} ${window.label} used, ${window.usedPercent} %, ${Math.round(projection.elapsedFraction * 100)} % of the window elapsed, pace ${projection.pace.toFixed(1)}x`
           + (alert === undefined ? "" : `, projected to run out before reset (${alert.severity})`);
@@ -123,7 +126,8 @@ export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage 
         <div className="provider-usage-label"><span>{window.label}</span><span>{window.usedPercent}%{chip !== undefined && <> <span className={`provider-usage-pace ${chip.tier}`}>{chip.text}</span></>}</span></div>
         <span className="provider-usage-bar">
           <progress aria-label={name} max={100} value={window.usedPercent} />
-          {projection !== undefined && <span className="provider-usage-tick" aria-hidden="true" style={{ left: `${projection.elapsedFraction * 100}%` }} />}
+          {expected !== undefined && <span className={`provider-usage-tick${window.usedPercent > expected ? " is-passed" : ""}`}
+            aria-hidden="true" style={{ left: `${expected}%` }} />}
         </span>
         {window.resetsAt && <time dateTime={window.resetsAt} title={new Date(window.resetsAt).toLocaleString()}>
           {countdown(window.resetsAt, now)}
