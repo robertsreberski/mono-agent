@@ -508,3 +508,16 @@ it("capability facts change only the current envelope and forged envelopes canno
     expect(result.details.outcome.code).toBe("background_unsupported");
   }
 });
+
+it("tells the model where to put its question only when AskUser is admitted but unavailable", async () => {
+  const { formatHostCapabilities } = await import("../context/turn-envelope.js");
+  const fallback = "AskUser is unavailable on this surface: put any question the user must answer in your final reply, with numbered options.";
+  const unavailable = formatHostCapabilities({ hostCapabilities: { AskUser: { available: false, reason: "bridge_or_target_unavailable" } } });
+  expect(unavailable).toContain('"AskUser":{"available":false,"reason":"bridge_or_target_unavailable"}');
+  expect(unavailable.endsWith(`\n${fallback}`)).toBe(true);
+  // Deterministic: the same facts always produce the same envelope text.
+  expect(formatHostCapabilities({ hostCapabilities: { AskUser: { available: false, reason: "bridge_or_target_unavailable" } } })).toBe(unavailable);
+  for (const options of [{ hostCapabilities: { AskUser: { available: true } } }, {}]) {
+    expect(formatHostCapabilities(options)).not.toContain(fallback);
+  }
+});

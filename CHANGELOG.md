@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Make the `AskUser` and `AgentSend` tool descriptions decision-bearing. `AskUser`
+  now states when to ask — before work whose scope, destination or irreversible
+  effects depend on a missing decision — instead of only listing mechanics, and
+  it is exposed ahead of the channel send tools. When the host admits `AskUser`
+  but the surface cannot serve it, the turn envelope now says to put the question
+  in the final reply with numbered options. `AgentSend` is described as five
+  explicit modes (continue, close, stop, inspect, ack) matching its handler, and
+  every parameter carries its own schema description. No tool contract, schema
+  shape or handler behavior changed.
+
 - Upgrade the pinned Pi AI and Agent Core dependencies to 0.87.0 with no
   config change. Pi replaces the low-level `shouldStopAfterTurn` loop hook
   with `finishTurn`, which stays off the harness options the runtime builds

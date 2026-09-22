@@ -122,7 +122,7 @@ function toolDescription(subagents, definitions, ceiling, instancesEnabled) {
     : `\n\nTools you may grant a subagent you build: ${ceiling.join(", ")}. Anything else is dropped. Omit \`tools\` for a read-only helper.`;
   const base = instancesEnabled
     ? DESCRIPTION_BASE.replace("Bad: anything needing back-and-forth, anything where", "Bad: anything where")
-      .replace("- It cannot ask you or the user anything. One shot.", "- A persistent child can ask you through AskParent and return awaiting_reply. Reply with AgentSend. It cannot contact the user.")
+      .replace("- It cannot ask you or the user anything. One shot.", "- A persistent child can ask you through AskParent and return awaiting_reply. Reply with AgentSend({id, message}). It cannot contact the user.")
     : DESCRIPTION_BASE;
   return `${base}${parallel}${named}${shapes}${inline}`;
 }

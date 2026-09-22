@@ -33,10 +33,15 @@ export function formatHostCapabilities(options: Partial<RuntimeRunOptions>): str
     AskParent: fact(Boolean(options.askParentController)),
     ...options.hostCapabilities,
   };
+  // An admitted-but-unusable AskUser otherwise reads as a bare fact the model
+  // cannot act on; the stable fallback names the only remaining channel.
+  const askUserFallback = options.hostCapabilities?.AskUser?.available === false
+    ? "\nAskUser is unavailable on this surface: put any question the user must answer in your final reply, with numbered options."
+    : "";
   // Stable ordering is useful for inspection; values describe only this turn.
   return "Current tool admission (observations, not authorization):\n" + JSON.stringify({
     operations: Object.fromEntries(Object.entries(facts).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)),
     command: { foregroundTimeoutMs: options.toolLimits?.bashTimeoutMs ?? 120_000, backgroundMaxRuntimeMs: options.processJobs?.limits?.maxRuntimeMs ?? null },
     processLineage: options.processJobsAvailability ?? null,
-  });
+  }) + askUserFallback;
 }

@@ -1985,6 +1985,21 @@ describe("AskUser tool", () => {
     expect(adapterSendToolNames(settings as AdapterSendToolsSettings)).toEqual(["AskUser"]);
   });
 
+  it("names AskUser before every channel send tool", () => {
+    const names = adapterSendToolNames({
+      slack: { botToken: "xoxb", allowedChannelIds: ["C1"], allowAllChannels: false },
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        tools: { send: true, file: true },
+      },
+      askUser: { bridgeUrl: "http://127.0.0.1:9999", bridgeToken: "bridge-token", timeoutMs: 5_000 },
+    });
+
+    expect(names).toEqual(["AskUser", "SlackSendMessage", "TelegramSendMessage", "TelegramSendFile"]);
+  });
+
   it("omits askUser when the interaction bridge env is missing", async () => {
     const configPath = await writeConfig(baseConfig());
 
@@ -2030,7 +2045,11 @@ describe("AskUser tool", () => {
     );
     await withMcpClient(server, async (client) => {
       const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toEqual(["TelegramSendMessage", "AskUser"]);
+      // AskUser leads the exposed list, ahead of the channel send tools.
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["AskUser", "TelegramSendMessage"]);
+      // The description carries the trigger condition, not only the mechanics.
+      expect(tools.tools.find((tool) => tool.name === "AskUser")?.description)
+        .toContain("before doing the work, not after");
       expect((await client.callTool({ name: "AskUser", arguments: { questions: [{ header: "Test", question: "Proceed?", options: [{ label: "Yes", description: "Proceed" }, { label: "No", description: "Stop" }] }] } })).isError).toBe(true);
     });
   });
