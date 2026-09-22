@@ -802,7 +802,7 @@ a compatibility subpath.
 
 ## Version
 
-This guide describes the published `0.22.x` package contract. Keep
+This guide describes the published `0.23.x` package contract. Keep
 `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, and other
 `@mono-agent/*` packages on the same lockstep version when upgrading. The paired
 runtime adapter no longer exposes `piReasoningSummary` in its run-options type.
