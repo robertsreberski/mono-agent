@@ -21,5 +21,5 @@ Preflight:
 - pnpm run release:pack -- --tag vX.Y.Z
 - git diff --check
 
-Registry checks must bypass the machine's machine-level proxy .npmrc by using --registry https://registry.npmjs.org/ or --userconfig /dev/null. Report version, tag, CI run status, post-publish verification, and any publish-graph changes.
+Registry checks must bypass any machine-level proxy .npmrc by using --registry https://registry.npmjs.org/ or --userconfig /dev/null. Report version, tag, CI run status, post-publish verification, and any publish-graph changes.
 """

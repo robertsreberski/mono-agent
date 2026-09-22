@@ -14,7 +14,7 @@ Preconditions:
 - Use real models/providers only when provider behavior is the changed boundary. Local lifecycle and operator-surface checks should not spend model calls.
 
 Safety:
-- Do not touch ~/example-instance, ~/ops-agents/*, launchd services, or an existing :4599 production web instance unless the task explicitly says fleet.
+- Do not touch other agents' live instance directories, launchd services, or an existing :4599 production web instance unless the task explicitly says fleet.
 - Clean up child processes and throwaway directories on success or failure.
 
 Report each scenario as PASS or FAIL with exact command, evidence snippet, and cleanup confirmation.

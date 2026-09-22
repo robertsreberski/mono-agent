@@ -9,7 +9,7 @@ UI labels, descriptions, and default prompts while keeping `SKILL.md` as the
 agent-facing workflow.
 
 They are **NOT runtime skills for mono-agent instances** — those live in each
-agent's own folder (e.g. `~/example-instance/skills/`) and are selected via
+agent's own folder (e.g. `<instance-dir>/skills/`) and are selected via
 `context.selectedSkills` in `mono-agent.config.json`.
 
 ## File layout

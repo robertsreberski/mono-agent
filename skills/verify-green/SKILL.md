@@ -37,7 +37,7 @@ Before merging such a diff:
 # in-repo consumers
 grep -rn "<old protocol literal>" packages/*/src extras/*/src --include="*.ts"
 # out-of-repo consumers — the fleet parses these contracts too
-grep -rn "<old protocol literal>" ~/example-instance ~/agents/*/ ~/ops-agents/*/ \
+grep -rn "<old protocol literal>" <instance-dir> <other-instance-dirs> \
   --include="*.mjs" --include="*.ts" --include="*.md" 2>/dev/null \
   | grep -v node_modules | grep -v "/dist/"
 ```

@@ -1025,8 +1025,8 @@ describe("buildFleetReport", () => {
     const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [greenInstance(), down] });
     expect(report.verdict).toBe("RED");
     expect(report.exitCode).toBe(1);
-    expect(report.reason).toBe("personal-agent-00000001: not running (last exit 1)");
-    expect(report.verdictLine).toBe(`VERDICT: RED ${DATE} — personal-agent-00000001: not running (last exit 1)`);
+    expect(report.reason).toBe("example-instance-00000001: not running (last exit 1)");
+    expect(report.verdictLine).toBe(`VERDICT: RED ${DATE} — example-instance-00000001: not running (last exit 1)`);
   });
 
   it("RED-loaded-stale: a running pre-build process drives RED in its own column", () => {
@@ -1125,7 +1125,7 @@ describe("buildFleetReport", () => {
     cancelled.metrics = metrics({ totalRuns: 25, failedRuns: 0, failureKinds: [{ kind: "cancelled_stale", count: 1 }] });
     const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [greenInstance(), cancelled] });
     expect(report.verdict).toBe("GREEN");
-    expect(report.table).toContain("| personal-agent-00000001 | ok | ok | ok | ok | healthy | ok | 25 runs, 0 failed, 1 cancelled |");
+    expect(report.table).toContain("| example-instance-00000001 | ok | ok | ok | ok | healthy | ok | 25 runs, 0 failed, 1 cancelled |");
   });
 
   it("--min-runs escalates a too-quiet instance to RED", () => {

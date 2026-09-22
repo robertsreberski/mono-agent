@@ -39,7 +39,7 @@ tool name, on-disk shape, notification payload), zero in-repo callers is the
 normal state even when live consumers exist. Sweep the fleet before removing:
 
 ```bash
-grep -rn "<protocol literal>" ~/example-instance ~/agents/*/ ~/ops-agents/*/ \
+grep -rn "<protocol literal>" <instance-dir> <other-instance-dirs> \
   --include="*.mjs" --include="*.ts" --include="*.md" 2>/dev/null \
   | grep -v node_modules | grep -v "/dist/"
 ```
@@ -121,7 +121,7 @@ S=<symbol>
 grep -rln "$S" packages/*/src extras/*/src --include="*.ts" | grep -v __tests__   # 1
 # Append every task-specific top-level executable path found during inventory.
 grep -rln "$S" scripts/                                                            # 2
-grep -rln "$S" ~/example-instance ~/agents ~/personal ~/Library/LaunchAgents/com.mono-agent.*.plist  # 3
+grep -rln "$S" <instance-dir> <other-instance-dirs> ~/Library/LaunchAgents/com.mono-agent.*.plist  # 3
 grep -rln "$S" docs/                                                               # 4
 grep -n "\"bin\"" packages/*/package.json                                          # 5, if a CLI
 ```
@@ -142,9 +142,9 @@ instance's state:
 
 ```bash
 # read-only — turns "is this used?" from speculative into proven-with-a-timestamp:
-cat ~/example-instance/.mono-agent/memory/.index/manifest.json
-cat ~/example-instance/.mono-agent/memory/.index/runtime.json
-cat ~/example-instance/.mono-agent/memory/.memory-forget-backup-*/manifest.json
+cat <instance-dir>/.mono-agent/memory/.index/manifest.json
+cat <instance-dir>/.mono-agent/memory/.index/runtime.json
+cat <instance-dir>/.mono-agent/memory/.memory-forget-backup-*/manifest.json
 ```
 
 A referenced hash / recent timestamp in the manifest proves the path is live;

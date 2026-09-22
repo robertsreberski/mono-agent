@@ -6,7 +6,7 @@ description: Cut and registry-verify a lockstep npm release of all @mono-agent p
 # Lockstep npm release
 
 This workflow ends when the tag is published and the public registry is
-verified. Restarting Personal Agent, other mono-agent instances, OPS agents, or
+verified. Restarting the primary instance, other mono-agent instances, separate-product agents, or
 the web console is separate work and happens only when explicitly requested.
 
 All catalog-publishable packages release in lockstep.
