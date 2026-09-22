@@ -249,22 +249,23 @@ describe("compact Agent settings subscription meters", () => {
         const bar = screen.getByRole("progressbar", { name: new RegExp(`${label} used`) });
         expect(bar.closest(".provider-usage-window")!.querySelector(".provider-usage-projection.is-unused")).toHaveTextContent(/\d+% unused/);
       }
-      // On-track monthly: tick and steady chip, but no line.
+      // On-track monthly: a tail and a steady chip, but no line.
       const monthlyBar = screen.getByRole("progressbar", { name: /OpenCode Go Monthly used/ });
       const monthlyWindow = monthlyBar.closest(".provider-usage-window")!;
       expect(monthlyWindow.querySelector(".provider-usage-projection")).toBeNull();
       expect(monthlyWindow.querySelector(".provider-usage-pace")).toHaveClass("is-steady");
       expect(monthlyWindow.querySelector(".provider-usage-tick")).not.toBeNull();
-      // Low confidence: the tick is a fact, the chip and lines are withheld.
+      // Low confidence: the overshoot is a fact, the chip, lines and alarm colour are withheld.
       const codexWindow = screen.getByRole("progressbar", { name: /Codex Weekly used/ }).closest(".provider-usage-window")!;
       expect(codexWindow.querySelector(".provider-usage-projection")).toBeNull();
       expect(codexWindow.querySelector(".provider-usage-pace")).toBeNull();
       const tick = codexWindow.querySelector(".provider-usage-tick")!;
       expect(parseFloat(tick.getAttribute("style")!.match(/left: ([\d.]+)%/)![1]!)).toBeCloseTo(7.14, 1);
-      // The tick token follows body text so it reads on the fill and the track in both themes.
-      expect(getComputedStyle(tick).backgroundColor).toBe(getComputedStyle(document.body).color);
+      expect(tick).toHaveClass("is-passed");
+      // The tail is part of the meter's own palette, never a foreign marker colour.
+      expect(getComputedStyle(tick).backgroundColor).not.toBe(getComputedStyle(document.body).color);
       expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(viewport.width);
-      if (theme === "light" && shotDirectory) await page.screenshot({ path: `${shotDirectory}/provider-usage-pace-${viewport.width}x${viewport.height}-${touch ? "coarse-touch" : "fine-desktop"}.png` });
+      if (shotDirectory) await page.screenshot({ path: `${shotDirectory}/provider-usage-pace-${theme}-${viewport.width}x${viewport.height}-${touch ? "coarse-touch" : "fine-desktop"}.png` });
       view.unmount();
     }
   });

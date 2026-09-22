@@ -121,7 +121,9 @@ describe("burn-pace projection lines", () => {
     expect(screen.queryByText(/empty/)).toBeNull();
     expect(screen.getByText(/50% unused/)).toHaveClass("provider-usage-projection", "is-unused");
     expect(screen.getByText("0.5×")).toHaveClass("provider-usage-pace", "is-steady");
+    // Used 25 % against 50 % elapsed: a soft headroom tail covers the unclaimed quarter.
     expect(view.container.querySelector(".provider-usage-tick")).toHaveStyle({ left: "50%" });
+    expect(view.container.querySelector(".provider-usage-tick")).not.toHaveClass("is-passed");
     expect(screen.getByRole("progressbar").getAttribute("aria-label"))
       .toBe("Codex Weekly used, 25 %, 50 % of the window elapsed, pace 0.5x");
   });
@@ -145,6 +147,7 @@ describe("burn-pace projection lines", () => {
     // A window is never both ahead and under: the run-out excludes the unused note.
     expect(screen.queryByText(/% unused/)).toBeNull();
     expect(screen.getByText("1.3×")).toHaveClass("provider-usage-pace", "is-ahead");
+    expect(view.container.querySelector(".provider-usage-tick")).toHaveClass("is-passed");
     expect(screen.getByRole("progressbar").getAttribute("aria-label"))
       .toBe("Codex Weekly used, 55 %, 44 % of the window elapsed, pace 1.3x, projected to run out before reset (ahead)");
     view.rerender(<ProviderUsageMeters usage={codexUsage(96)} />);
@@ -152,6 +155,7 @@ describe("burn-pace projection lines", () => {
     expect(exhausted).toHaveClass("provider-usage-projection", "is-unsustainable");
     expect(exhausted.textContent).toMatch(/empty .+ early/);
     expect(screen.getByText("2.2×")).toHaveClass("provider-usage-pace", "is-unsustainable");
+    expect(view.container.querySelector(".provider-usage-tick")).toHaveClass("is-passed");
     expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/projected to run out before reset \(unsustainable\)/);
     expect(exhausted).not.toHaveClass("is-ahead");
   });
@@ -163,7 +167,8 @@ describe("burn-pace projection lines", () => {
     expect(screen.queryByText(/empty/)).toBeNull();
     expect(screen.queryByText(/% unused/)).toBeNull();
     expect(view.container.querySelector(".provider-usage-pace")).toBeNull();
-    expect(view.container.querySelector(".provider-usage-tick")).not.toBeNull();
+    // Over pace but too early to say so: the cap sits behind the fill, no alarm colour.
+    expect(view.container.querySelector(".provider-usage-tick")).toHaveClass("is-passed");
     expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/pace 10\.0x/);
   });
   it("keeps the anchored projection unchanged on stale snapshots as wall-clock advances", async () => {
