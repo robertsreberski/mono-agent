@@ -7,6 +7,7 @@ import {
   compareSemver,
   evaluatePrGate,
   isRealCalendarDate,
+  parsePrDraft,
   parsePrLabels,
   parseSemver,
   releasedVersionsFromTags,
@@ -227,6 +228,49 @@ describe("check-changelog PR entry gate", () => {
     expect(parsePrLabels("")).toEqual([]);
     expect(parsePrLabels("null")).toEqual([]);
   });
+
+  it("defers the entry gate for a draft PR with no entry", () => {
+    const result = evaluatePrGate({ baseText: base, headText: base, draft: true });
+    expect(result.status).toBe("pass");
+    expect(result.detail).toContain("draft PR: entry gate deferred until ready for review");
+  });
+
+  it("still fails a ready PR in the identical situation", () => {
+    const noFlag = evaluatePrGate({ baseText: base, headText: base });
+    expect(noFlag.status).toBe("fail");
+    const explicit = evaluatePrGate({ baseText: base, headText: base, draft: false });
+    expect(explicit.status).toBe("fail");
+    expect(explicit.detail).toContain("adds no new bullet under `## Unreleased`");
+  });
+
+  it("reports a real entry instead of the draft deferral", () => {
+    const result = evaluatePrGate({ baseText: base, headText: withBullet, draft: true });
+    expect(result.status).toBe("pass");
+    expect(result.detail).toContain("new bullet(s) under `## Unreleased`");
+    expect(result.detail).not.toContain("draft");
+  });
+
+  it("reports the label and body escape hatches instead of the draft deferral", () => {
+    const label = evaluatePrGate({ baseText: base, headText: base, labels: ["skip-changelog"], draft: true });
+    expect(label.status).toBe("pass");
+    expect(label.detail).toContain("`skip-changelog` label");
+    const body = evaluatePrGate({ baseText: base, headText: base, prBody: "Routine work.\n\nChangelog: none\n", draft: true });
+    expect(body.status).toBe("pass");
+    expect(body.detail).toContain("`Changelog: none`");
+  });
+
+  it("parses the draft flag fail-closed", () => {
+    expect(parsePrDraft("true")).toBe(true);
+    expect(parsePrDraft("True")).toBe(true);
+    expect(parsePrDraft(" true ")).toBe(true);
+    expect(parsePrDraft("false")).toBe(false);
+    expect(parsePrDraft("")).toBe(false);
+    expect(parsePrDraft(undefined)).toBe(false);
+    expect(parsePrDraft("null")).toBe(false);
+    expect(parsePrDraft("yes")).toBe(false);
+    expect(parsePrDraft("1")).toBe(false);
+    expect(parsePrDraft("draft")).toBe(false);
+  });
 });
 
 describe("runCheckChangelog", () => {
@@ -290,5 +334,31 @@ describe("runCheckChangelog", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(stdout.text).toContain("PR entry gate: pass");
+  });
+
+  it("defers the PR gate for a draft via CHANGELOG_PR_DRAFT and fails closed without it", async () => {
+    const draftStdout = sink();
+    const draft = await runCheckChangelog({
+      cwd: "/repo",
+      env: { CHANGELOG_BASE_REF: "base-sha", CHANGELOG_PR_DRAFT: "true" },
+      stdout: draftStdout,
+      stderr: sink(),
+      git: gitWith({ tags: ["v0.2.0"], baseText: GOOD }),
+      changelogText: GOOD,
+    });
+    expect(draft.exitCode).toBe(0);
+    expect(draftStdout.text).toContain("PR entry gate: pass (draft PR: entry gate deferred until ready for review)");
+
+    const readyStderr = sink();
+    const ready = await runCheckChangelog({
+      cwd: "/repo",
+      env: { CHANGELOG_BASE_REF: "base-sha", CHANGELOG_PR_DRAFT: "false" },
+      stdout: sink(),
+      stderr: readyStderr,
+      git: gitWith({ tags: ["v0.2.0"], baseText: GOOD }),
+      changelogText: GOOD,
+    });
+    expect(ready.exitCode).toBe(1);
+    expect(readyStderr.text).toContain("adds no new bullet under `## Unreleased`");
   });
 });
