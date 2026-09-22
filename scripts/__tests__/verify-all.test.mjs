@@ -541,6 +541,7 @@ describe("verify-all", () => {
       "          CHANGELOG_BASE_REF: ${{ github.event.pull_request.base.sha }}",
       "          CHANGELOG_PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}",
       "          CHANGELOG_PR_BODY: ${{ github.event.pull_request.body }}",
+      "          CHANGELOG_PR_DRAFT: ${{ github.event.pull_request.draft }}",
       "        run: pnpm run check:changelog",
     ].join("\n");
     expect(source).toContain(changelogStep);
@@ -735,6 +736,7 @@ describe("verify-all", () => {
       "          CHANGELOG_BASE_REF: ${{ github.event.pull_request.base.sha }}",
       "          CHANGELOG_PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}",
       "          CHANGELOG_PR_BODY: ${{ github.event.pull_request.body }}",
+      "          CHANGELOG_PR_DRAFT: ${{ github.event.pull_request.draft }}",
       "        run: pnpm run check:changelog",
     ].join("\n");
     const mutations = [
@@ -1114,6 +1116,7 @@ const CHANGELOG_PR_CONTEXT_ENV = Object.freeze([
   Object.freeze(["CHANGELOG_BASE_REF", "${{ github.event.pull_request.base.sha }}"]),
   Object.freeze(["CHANGELOG_PR_LABELS", "${{ toJSON(github.event.pull_request.labels.*.name) }}"]),
   Object.freeze(["CHANGELOG_PR_BODY", "${{ github.event.pull_request.body }}"]),
+  Object.freeze(["CHANGELOG_PR_DRAFT", "${{ github.event.pull_request.draft }}"]),
 ]);
 
 function assertChangelogPrContextEnv(envNode, name) {
