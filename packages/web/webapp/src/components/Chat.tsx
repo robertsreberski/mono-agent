@@ -236,7 +236,7 @@ function ConversationTitle() {
 
 export function ModelControls() {
   const {
-    usage, providerUsage, selectorModels, model, effort, setModel, setEffort,
+    usage, providerUsage, compactThreadId, compactBlocked, selectorModels, model, effort, setModel, setEffort,
     agentDefaultModel, hasRunOverride, resetRunOverride, disabled, hasSettings,
     catalogStatusByProvider, openCatalog, requestProvider, agentProviders,
     showModelChangeHint,
@@ -267,6 +267,9 @@ export function ModelControls() {
     <div className="model-controls" aria-label="Next turn settings">
       {usage && (
         <ContextDisplay
+          key={compactThreadId ?? "context-only"}
+          compactThreadId={compactThreadId}
+          compactBlocked={compactBlocked}
           context={usage.context}
           processed={usage.processed}
           conversationCost={usage.cost}

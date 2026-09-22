@@ -247,6 +247,7 @@ describe("reply artifact responder composition", () => {
       adapterSendToolsRuntimeOptions: async () => ({ blockingToolNames: [] }),
       requestModelOverrideRuntimeOptions: () => ({
         extension: async () => ({ runtimeOptions: {}, cleanup: async () => {} }),
+        compactionEndpoint: async () => ({}),
         targetsDirectOpenCode: () => false,
         targetsUnsupportedHistoryTool: () => false,
         targetsPiNative: () => true,
@@ -324,6 +325,22 @@ describe("reply artifact responder composition", () => {
 const PI_ROUTE = "openai-codex:gpt-5.6-sol";
 const PI_FALLBACK_ROUTE = "ollama:qwen3:8b";
 describe("process-job mixed fallback route guard", () => {
+  it("selects the same model-owned endpoint block for promptless compaction as for a web turn", async () => {
+    const baseModel = parseMonoRuntimeModelReference("openai:gpt-4.1");
+    const model = "anthropic:claude-sonnet-4-6";
+    const selection = createRequestModelOverrideRuntimeOptions({} as ResponderControllerPort, {
+      runtime: { model: baseModel },
+    } as Parameters<typeof createRequestModelOverrideRuntimeOptions>[1]);
+    const turn = await selection.extension({ request: { metadata: { web: { model } } } } as never);
+    const compact = await selection.compactionEndpoint(model);
+    expect(compact).toMatchObject({
+      customProvider: turn.runtimeOptions?.customProvider,
+      customModel: turn.runtimeOptions?.customModel,
+      modelCapabilities: turn.runtimeOptions?.modelCapabilities,
+      isPrivateProvider: turn.runtimeOptions?.isPrivateProvider,
+    });
+    expect(compact.customProvider).toBeNull();
+  });
   it("keeps degraded all-Pi fallback turns protected without exposing a controller", async () => {
     const fixture = await createRouteGuardFixture(PI_ROUTE, PI_FALLBACK_ROUTE, "degraded");
     try {

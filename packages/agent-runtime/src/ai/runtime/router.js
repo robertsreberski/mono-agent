@@ -147,6 +147,38 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
      * @returns {Promise<RuntimeResult>}
      */
     async run(systemPrompt, options = {}) {
+      if (options.manualCompaction === true) {
+        // A provider session belongs to exactly one route. Never retry/fail over
+        // a mutating manual operation against a different model or session.
+        const primary = entries[0];
+        if (!primary || !entrySupportsSessionResume(primary)
+          || (options.model && modelKey(options.model) !== modelKey(primary.model))) {
+          throw new Error("Manual compaction is unavailable for this session model.");
+        }
+        /** @type {*} */
+        let attemptOptions = { ...options, model: primary.model };
+        let attemptRuntime = inner;
+        let cleanup;
+        try {
+          const resolution = normalizeAttemptResolution(await resolveAttempt?.({
+            model: primary.model, attemptIndex: 0, retryIndex: 0,
+          }));
+          cleanup = resolution?.cleanup;
+          if (resolution) {
+            attemptOptions = /** @type {typeof attemptOptions} */ (mergeAttemptOptions(attemptOptions, resolution.options));
+            attemptOptions = /** @type {typeof attemptOptions} */ (mergeAttemptPolicyOptions(attemptOptions, resolution.policyOptions));
+            if (resolution.runtime) {
+              assertRuntimeLike(resolution.runtime);
+              attemptRuntime = resolution.runtime;
+              projectPiRuntimeToolContext(attemptRuntime, effectiveRouterToolOptions(host, configuredTools));
+            }
+          }
+          applyEntryEffort(attemptOptions, primary.effort);
+          return await attemptRuntime.run(systemPrompt, attemptOptions);
+        } finally {
+          await cleanup?.();
+        }
+      }
       options = {
         ...options,
         webSearchState: createWebSearchRunState(options.webSearchConfig, options.webSearchState),

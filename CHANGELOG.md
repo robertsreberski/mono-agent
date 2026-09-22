@@ -5,6 +5,11 @@
 - Fix installed iOS 27 consoles showing system blur over the top of the screen;
   the status-bar band now takes the header colour without changing layout.
 
+- Add a Compact action to the web console's context-usage popup for capable
+  agents. It summarizes the selected conversation on demand without sending a
+  new chat turn, reports token estimates or errors, and leaves automatic
+  compaction thresholds unchanged.
+
 - Fix Anthropic OAuth requests for `anthropic:claude-opus-5-5` by sending the
   Claude Code 2.1.280 identity required by the model. API-key requests and
   other Anthropic models keep their existing identity.

@@ -693,10 +693,9 @@ export class MonoAgentAppController implements MonoAgentApp {
    */
   requestModelOverrideRuntimeOptions(
     coreConfig: MonoAgentConfig,
-  ): {
-    readonly extension: RuntimeOptionsExtension;
-    readonly targetsProcessJobsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
-  } { return responderOperations.requestModelOverrideRuntimeOptions(this, coreConfig); }
+  ): ReturnType<typeof responderOperations.requestModelOverrideRuntimeOptions> {
+    return responderOperations.requestModelOverrideRuntimeOptions(this, coreConfig);
+  }
 
   /**
    * Memoized factory for runtimes bound to a per-request override model. Reuses

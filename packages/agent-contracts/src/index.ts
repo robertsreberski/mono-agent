@@ -942,6 +942,21 @@ export type AgentLiveInputOffer =
   | { readonly status: "unavailable"; readonly reason: AgentLiveInputUnavailableReason }
   | { readonly status: "accepted"; readonly settled: Promise<AgentLiveInputSettlement> };
 
+export type AgentManualCompactionOptions = {
+  /** Canonical `<provider>:<model>` selection, resolved exactly like a turn's model override. */
+  readonly model?: string;
+};
+
+export type AgentManualCompactionResult = {
+  readonly status: "succeeded" | "skipped" | "failed";
+  readonly operationId: string;
+  readonly trigger: "manual";
+  readonly tokensBefore?: number;
+  readonly tokensAfter?: number;
+  readonly tokenCountsExact?: boolean;
+  readonly reason?: string;
+};
+
 export interface AgentResponder<
   Request extends AgentRequestBase = AgentRequestBase,
   Stream extends AgentMessageStream = AgentMessageStream,
@@ -949,6 +964,12 @@ export interface AgentResponder<
 > {
   readonly liveInputOwnership?: { readonly version: 1 };
   respond(request: Request, stream: Stream): Promise<Response>;
+  /**
+   * Compact the exact idle conversation without submitting a user turn.
+   * `model` is the same per-conversation model selection a turn would carry;
+   * omitted means the host default.
+   */
+  compactConversation?(conversationId: string, options?: AgentManualCompactionOptions): Promise<AgentManualCompactionResult>;
   /**
    * Optional: offer a text follow-up to the active turn without starting a
    * parallel response. Callers reserve their ordinary queue position first so

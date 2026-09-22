@@ -45,6 +45,23 @@ const replyPartOutcomes = [{
 }];
 
 describe("OperatorClient", () => {
+  it("feature-detects v1 manual compaction and posts only the exact conversation", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "fixture", fetchImpl: (async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/v1/info")) return Response.json({ schema: 1, capabilities: { manualCompaction: { version: 1 } } });
+      calls.push({ url, body: init?.body });
+      expect((init?.headers as Record<string, string>).authorization).toBe("Bearer fixture");
+      return Response.json({ status: "succeeded", trigger: "manual", operationId: "one", tokensBefore: 1000, tokensAfter: 200 });
+    }) as typeof fetch });
+    await expect(client.info()).resolves.toMatchObject({ supportsManualCompaction: true });
+    await expect(client.compactConversation("web:a/b")).resolves.toMatchObject({ status: "succeeded", tokensAfter: 200 });
+    await client.compactConversation("web:a", { model: "anthropic:claude-opus-4-8" });
+    expect(calls).toEqual([
+      { url: "http://127.0.0.1:1234/gui/v1/conversations/web%3Aa%2Fb/compact", body: "{}" },
+      { url: "http://127.0.0.1:1234/gui/v1/conversations/web%3Aa/compact", body: '{"model":"anthropic:claude-opus-4-8"}' },
+    ]);
+  });
   it("parses account verification and a model-less credential rejection through the shared contract", async () => {
     const snapshot = {
       schema: "mono-agent.provider-auth.v1", generatedAt: "2026-09-14T12:00:00.000Z",

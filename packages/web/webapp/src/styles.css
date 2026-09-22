@@ -809,6 +809,11 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .context-display-provider-heading .context-display-section-title { margin-bottom: 0; }
 .context-display-provider-usage .provider-usage { grid-template-columns: 1fr; padding-top: 8px; }
 .context-display-provider-loading { margin: 8px 0 0; color: var(--text-muted); font-size: 10px; }
+.context-display-compact { padding-top: 10px; border-top: 1px solid var(--line); font-size: 10px; }
+.context-display-compact button { padding: 5px 10px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 7px; cursor: pointer; }
+.context-display-compact button:disabled { opacity: 0.55; cursor: wait; }
+.context-display-compact [role="alert"] { color: var(--danger); }
+.context-display-compact p { margin: 7px 0 0; }
 .context-display-window { display: grid; gap: 7px; margin-bottom: 12px; }
 .context-display-window-summary { display: flex; justify-content: space-between; gap: 12px; color: var(--text-muted); font-size: 10px; }
 .context-display-percent { color: var(--accent); font-family: var(--font-mono); font-weight: 700; }

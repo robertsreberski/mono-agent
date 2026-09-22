@@ -374,6 +374,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const cancelPath = `${basePath}/v1/conversations/:conversationId/cancel`;
   const verbatimPath = `${basePath}/v1/conversations/:conversationId/verbatim`;
   const contextImportPath = `${basePath}/v1/conversations/:conversationId/context-imports`;
+  const manualCompactionPath = `${basePath}/v1/conversations/:conversationId/compact`;
   const liveInputPath = `${basePath}/v1/conversations/:conversationId/live-input`;
   const replyArtifactPath = `${basePath}/v1/conversations/:conversationId/reply-artifacts/:artifactId`;
   const mcpAppPath = `${basePath}/v1/conversations/:conversationId/mcp-apps/:invocationId`;
@@ -443,6 +444,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
             ...(typeof options.responder.importContext === "function"
               ? { contextImport: { version: AGENT_CONTEXT_IMPORT_VERSION, maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES } }
               : {}),
+            ...(typeof options.responder.compactConversation === "function" ? { manualCompaction: { version: 1 } } : {}),
             ...(options.interaction === undefined ? {} : { askUser: true }),
             ...(typeof options.interaction?.getAsk === "function" ? { askById: true } : {}),
             ...(cronState.kind === "absent"
@@ -803,6 +805,55 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       });
     },
   );
+
+  app.post(manualCompactionPath, express.json({ limit: "1kb", strict: true }), (req, res) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    if (!authorize(req, res, apiKey)) return;
+    const id = req.params.conversationId;
+    if (typeof id !== "string" || id.length === 0 || id.includes("\0")
+      || Buffer.byteLength(id, "utf8") > 4096
+      || typeof req.body !== "object" || req.body === null || Array.isArray(req.body)
+      || Object.keys(req.body as object).some((key) => key !== "model")) {
+      res.status(400).json({ error: { code: "invalid_compaction_request", message: "A conversation id and a body of {} or { model } are required." } });
+      return;
+    }
+    // Optional: the same model selection a turn on this conversation carries.
+    const model = (req.body as { model?: unknown }).model;
+    if (model !== undefined && (typeof model !== "string" || model.trim().length === 0
+      || Buffer.byteLength(model, "utf8") > 256)) {
+      res.status(400).json({ error: { code: "invalid_compaction_request", message: "model must be a non-empty model reference." } });
+      return;
+    }
+    if (typeof options.responder.compactConversation !== "function") {
+      res.status(501).json({ error: { code: "compaction_unsupported", message: "This agent does not support manual compaction." } });
+      return;
+    }
+    void options.responder.compactConversation(id, model === undefined ? undefined : { model }).then((result) => {
+      const status = ["succeeded", "skipped", "failed"].includes(result.status) ? result.status : "failed";
+      res.status(200).json({
+        status,
+        trigger: "manual",
+        operationId: typeof result.operationId === "string" ? result.operationId.slice(0, 128) : "",
+        ...(typeof result.reason === "string" ? { reason: result.reason.slice(0, 128) } : {}),
+        ...(typeof result.tokensBefore === "number" && Number.isFinite(result.tokensBefore) && result.tokensBefore >= 0 ? { tokensBefore: result.tokensBefore } : {}),
+        ...(typeof result.tokensAfter === "number" && Number.isFinite(result.tokensAfter) && result.tokensAfter >= 0 ? { tokensAfter: result.tokensAfter } : {}),
+        tokenCountsExact: result.tokenCountsExact === true,
+      });
+    }).catch((error: unknown) => {
+      const kind = typeof error === "object" && error !== null && "failureKind" in error ? error.failureKind : undefined;
+      const busy = kind === "compaction_busy";
+      const unsupported = kind === "compaction_unsupported";
+      if (!busy && !unsupported) {
+        // Host-side diagnostics only; the response stays generic.
+        options.logger?.error?.("TUI manual compaction failed.", { error: errorToMessage(error).slice(0, 512) });
+      }
+      res.status(busy ? 409 : unsupported ? 501 : 500).json({ error: {
+        code: busy ? "compaction_busy" : unsupported ? "compaction_unsupported" : "compaction_failed",
+        message: busy ? "This conversation is busy; wait for the turn to finish." : unsupported
+          ? "Manual compaction is unavailable for this agent." : "Context compaction failed.",
+      } });
+    });
+  });
 
   app.post(liveInputPath, express.json({ limit: MAX_LIVE_INPUT_BODY_BYTES, strict: true }), (req, res, next) => {
     if (!authorize(req, res, apiKey)) return;

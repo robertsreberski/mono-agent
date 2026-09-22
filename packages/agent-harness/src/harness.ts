@@ -5,6 +5,8 @@ import type {
   AgentContextImportResult,
   AgentLiveInputOffer,
   AgentLiveInputRequest,
+  AgentManualCompactionOptions,
+  AgentManualCompactionResult,
 } from "@mono-agent/agent-contracts";
 import { randomUUID } from "node:crypto";
 import {
@@ -51,7 +53,7 @@ import {
   type FailedTurnReason,
   type TurnContinuityOutcome,
 } from "./harness/turn-continuity.js";
-import { loadHarnessHistory, prepareHarnessContext } from "./harness/context-preparation.js";
+import { loadHarnessHistory, loadToolHistoryProjection, prepareHarnessContext } from "./harness/context-preparation.js";
 import { AgentHarnessError } from "./harness/error.js";
 import {
   activateContinuationOriginContexts,
@@ -81,9 +83,10 @@ import {
   shouldRetrySessionResumeError,
   shouldRetryWithoutSession,
 } from "./harness/run-results.js";
-import { runHarnessRuntime } from "./harness/runtime-execution.js";
+import { coldReplayMessages, runHarnessRuntime } from "./harness/runtime-execution.js";
+import { mergeRuntimeOptions } from "./harness/runtime-options.js";
 import { sessionEventFromRecord, withSessionBoundaryTimestamp } from "./harness/session-events.js";
-import { createSessionRuntimeResolver, sessionModelKey, type ProviderSessionHandle, type SessionRuntimeResolver } from "./session-runtime.js";
+import { createSessionRuntimeResolver, ProviderSessionModelChangedError, sessionModelKey, type ProviderSessionHandle, type SessionRuntimeResolver } from "./session-runtime.js";
 import { retireRunResultSession } from "./harness/session-retirement.js";
 import { validateOptions, validateRequest } from "./harness/validation.js";
 import { errorToDetails } from "./harness/value-utils.js";
@@ -95,6 +98,11 @@ export { AgentHarnessError };
 export { requestOverridesModel, runSourceFromRequest };
 
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
+/**
+ * Non-empty placeholder required by the runtime adapter for promptless manual
+ * compaction. It is never persisted nor sent to a model (see compactConversation).
+ */
+const MANUAL_COMPACTION_SYSTEM_PROMPT = "Manual context compaction; no reply is generated.";
 // Warn before failing the waiter closed; the publication itself keeps ownership.
 const TURN_CONTINUITY_PUBLICATION_SLOW_WARNING_MS = 5_000;
 const TURN_CONTINUITY_PUBLICATION_WARNING_INTERVAL_MS = 15_000;
@@ -142,6 +150,8 @@ export class MonoAgentHarness implements AgentHarness {
   private pendingRuns = 0;
   private supportsResumeCache: boolean | undefined;
   private activeRuns = 0;
+  private readonly activeCompactions = new Set<string>();
+  private readonly compactionControllers = new Set<AbortController>();
   private readonly activeRunWaiters = new Set<() => void>();
   private readonly activeRunWarningSinks = new Set<(event: RuntimeEventLike) => void>();
   private readonly pendingTerminalReseeds = new Map<string, TurnContinuityOutcome>();
@@ -189,6 +199,199 @@ export class MonoAgentHarness implements AgentHarness {
     this.maxPendingRuns = typeof maxPendingRuns === "number" && maxPendingRuns > 0
       ? Math.floor(maxPendingRuns)
       : undefined;
+  }
+
+  /**
+   * Promptless provider-history transaction: compact this conversation's
+   * durable Pi session through the runtime's guarded driver without a user
+   * prompt. Canonical host history stays full; only the provider revision
+   * advances (synced) or the epoch rotates fail-closed (unsynced/failed).
+   */
+  async compactConversation(
+    conversationId: string,
+    compactionOptions?: AgentManualCompactionOptions,
+  ): Promise<AgentManualCompactionResult> {
+    this.assertAcceptingRuns();
+    if (typeof conversationId !== "string" || conversationId.trim().length === 0) {
+      throw new AgentHarnessError("invalid_conversation", "Conversation id is required.");
+    }
+    const historyStore = this.options.historyStore;
+    const beginProviderSessionTurn = historyStore?.beginProviderSessionTurn?.bind(historyStore);
+    if (!this.sessionsEnabled() || this.options.piSessionsRoot === undefined
+      || historyStore?.providerSessionRetirement !== "fail-closed"
+      || beginProviderSessionTurn === undefined) {
+      throw new AgentHarnessError("compaction_unsupported", "Manual compaction needs a durable Pi session.");
+    }
+    // Resolve the conversation's model exactly as a turn carrying the same
+    // selection would (invalid selections fall back to the host default).
+    const requestedModel = requestSessionModel({
+      conversationId, userMessage: "manual compaction", abortSignal: new AbortController().signal,
+      ...(typeof compactionOptions?.model === "string" ? { metadata: { web: { model: compactionOptions.model } } } : {}),
+    }, this.options.model);
+    const modelKey = modelReferenceKey(requestedModel);
+    const bound = historyStore.providerSessionModelBinding === "v1";
+    if (modelKey !== sessionModelKey(this.options.model) && (!bound
+      // A default local endpoint cannot serve an override without the host's
+      // model-only resolver (the ordinary turn extension owns this block).
+      || (this.options.runtimeOptions as Record<string, unknown> | undefined)?.customProvider !== undefined
+        && this.options.runtimeOptionsForManualCompaction === undefined)) {
+      throw new AgentHarnessError("compaction_unsupported", "Manual compaction is unavailable for this conversation's model.");
+    }
+    if (bound && historyStore.readProviderSessionBinding === undefined) {
+      throw new AgentHarnessError("compaction_unsupported", "The history store cannot report the session model binding.");
+    }
+    const runtime = this.runtimeForSession(modelKey);
+    if (runtime.syncSession === undefined || runtime.refreshSession === undefined) {
+      throw new AgentHarnessError("compaction_unsupported", "The runtime cannot compact a durable session.");
+    }
+    // Synchronous admission: every check and the local lease below happen
+    // before the first await, so no turn or second compaction can interleave.
+    // The durable provider-turn lock remains the cross-process backstop.
+    if (this.activeCompactions.has(conversationId)
+      || this.activeLiveInputs.has(conversationId)
+      || this.turnContinuityPublicationBarriers.has(conversationId)
+      || this.sessionStore?.list?.().some((entry) => entry.conversationId === conversationId && entry.busy) === true) {
+      throw new AgentHarnessError("compaction_busy", "This conversation is already running.");
+    }
+    this.activeCompactions.add(conversationId);
+    // Shutdown-owned: dispose() aborts it so a hung summary cannot hold the
+    // durable lease, the local session lease, or a concurrency slot.
+    const controller = new AbortController();
+    this.compactionControllers.add(controller);
+    let record = this.sessionStore?.acquire(conversationId);
+    this.activeRuns += 1;
+    let providerTurn: ConversationHistoryProviderSessionTurn | undefined;
+    let prepared: PreparedHistoryAppend | undefined;
+    let slotHeld = false;
+    const retire = async (...handles: readonly ProviderSessionHandle[]): Promise<void> => {
+      await retireRunResultSession(this.options, this.runtimeForSession, this.sessionStore,
+        true, conversationId, record, ...handles);
+    };
+    try {
+      if ((await historyStore.load(conversationId)).length === 0) {
+        return { status: "skipped", trigger: "manual", operationId: randomUUID(), reason: "nothing_to_compact" };
+      }
+      if (bound) {
+        // A turn under this model would rotate a session bound to another
+        // (or a legacy unbound) model. Compaction must not: decline untouched.
+        const binding = await historyStore.readProviderSessionBinding!(conversationId);
+        if (binding !== undefined && (binding.modelKey === undefined ? binding.revision > 0 : binding.modelKey !== modelKey)) {
+          return { status: "skipped", trigger: "manual", operationId: randomUUID(), reason: "model_changed" };
+        }
+      }
+      const runId = this.options.createRunId?.() ?? createDefaultRunId();
+      // Same durable acquisition as runActive(): binding, warm check, strict
+      // refresh of an unconfirmed epoch, and retirement of a stale mapping.
+      try {
+        providerTurn = await beginProviderSessionTurn(conversationId, runId, ...(bound ? [{ modelKey, skipModelRotation: true }] : []));
+      } catch (error) {
+        if (error instanceof ProviderSessionModelChangedError) {
+          return { status: "skipped", trigger: "manual", operationId: randomUUID(), reason: "model_changed" };
+        }
+        throw error;
+      }
+      if (bound && providerTurn.modelKey !== modelKey) {
+        throw new AgentHarnessError("provider_session_model_binding_mismatch",
+          "Durable history did not acknowledge the requested session model binding.");
+      }
+      const sessionId = providerTurn.providerSessionId;
+      const revision = providerTurn.providerSessionRevision;
+      if (record !== undefined && record.modelKey !== modelKey) {
+        await retire(record);
+        record = undefined;
+      }
+      const warm = record !== undefined
+        && record.providerSessionId === sessionId
+        && record.providerSessionRevision === revision;
+      if (!warm) {
+        try {
+          await runtime.refreshSession(sessionId);
+        } finally {
+          if (record?.providerSessionId === sessionId) this.sessionStore?.forget(conversationId, sessionId);
+        }
+        if (record !== undefined && record.providerSessionId !== sessionId) await retire(record);
+        record = undefined;
+      }
+      const history = warm ? [] : await loadHarnessHistory(this.options, conversationId);
+      if (this.runLimiter !== undefined) {
+        await this.runLimiter.acquire(controller.signal);
+        slotHeld = true;
+      }
+      // The host system prompt is deliberately absent: Pi persists no system
+      // prompt in the session JSONL, the summary request uses Pi's own
+      // summarization instructions, and manual mode never generates a reply.
+      // A later turn supplies its real prompt as usual.
+      const endpoint = modelKey === sessionModelKey(this.options.model)
+        ? undefined : await this.options.runtimeOptionsForManualCompaction?.(modelKey);
+      if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
+      const run = runtime.run(MANUAL_COMPACTION_SYSTEM_PROMPT, {
+        ...mergeRuntimeOptions(this.options.runtimeOptions, endpoint),
+        model: requestedModel,
+        abortSignal: controller.signal,
+        messages: warm ? [] : coldReplayMessages(history,
+          loadToolHistoryProjection(this.options, conversationId, runId, history)?.text),
+        sessionId,
+        providerSessionId: sessionId,
+        sessionKeepAlive: true,
+        sessionIdleTimeoutMs: this.options.session?.idleTimeoutMs,
+        piSessionsRoot: this.options.piSessionsRoot,
+        allowedTools: [],
+        disallowedTools: ["*"],
+        mcpServers: {},
+        manualCompaction: true,
+      } as Parameters<typeof runtime.run>[1]) as Promise<RuntimeResult & { manualCompaction?: AgentManualCompactionResult }>;
+      // An aborted run is abandoned (not awaited): the catch below retires the
+      // epoch fail-closed before any lease or slot is released.
+      void run.catch(() => undefined);
+      const manual = await raceAbort(run, controller.signal);
+      const outcome = manual.manualCompaction;
+      const accepted = (manual.error === undefined || manual.error === null)
+        && outcome !== undefined && outcome.status !== "failed" && manual.providerSessionId === sessionId;
+      let synced = false;
+      if (accepted) {
+        try { synced = await runtime.syncSession(sessionId) === true; } catch { /* rotate the unsynced epoch */ }
+      }
+      // An unsynced or failed attempt may already have written a summary into
+      // the live handle: retire it before the durable record rotates the epoch.
+      if (!synced) await retire({ providerSessionId: sessionId, modelKey });
+      prepared = await providerTurn.prepareCommit([], { providerSessionSynced: synced });
+      await prepared.commit();
+      providerTurn = undefined;
+      if (!synced) throw new AgentHarnessError("compaction_failed", "Context compaction failed; the session was retired safely.");
+      // prepareCommit(synced) publishes exactly revision + 1 (durable-history.ts),
+      // matching the turn path's saveSession.
+      this.saveSession(conversationId, sessionId, record, revision + 1, undefined, modelKey);
+      return {
+        status: outcome!.status,
+        trigger: "manual",
+        operationId: outcome!.operationId,
+        ...(outcome!.reason === undefined ? {} : { reason: outcome!.reason }),
+        ...(outcome!.tokensBefore === undefined ? {} : { tokensBefore: outcome!.tokensBefore }),
+        ...(outcome!.tokensAfter === undefined ? {} : { tokensAfter: outcome!.tokensAfter }),
+        tokenCountsExact: outcome!.tokenCountsExact === true,
+      };
+    } catch (error) {
+      if (providerTurn !== undefined) {
+        // Canonical history is untouched; leave the durable session dirty and
+        // retire any live handle so the next turn reseeds fail-closed.
+        await prepared?.abort().catch(() => undefined);
+        await providerTurn.abort().catch(() => undefined);
+        await retire({ providerSessionId: providerTurn.providerSessionId, modelKey });
+      }
+      throw error instanceof AgentHarnessError && error.failureKind.startsWith("compaction_")
+        ? error
+        : new AgentHarnessError("compaction_failed", "Context compaction failed; the conversation history is unchanged.");
+    } finally {
+      this.compactionControllers.delete(controller);
+      if (slotHeld) this.runLimiter?.release();
+      if (record !== undefined) this.sessionStore?.release(conversationId, record);
+      this.activeCompactions.delete(conversationId);
+      this.activeRuns -= 1;
+      if (this.activeRuns === 0) {
+        for (const resolve of this.activeRunWaiters) resolve();
+        this.activeRunWaiters.clear();
+      }
+    }
   }
 
   async submit(request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
@@ -1815,6 +2018,7 @@ export class MonoAgentHarness implements AgentHarness {
     // sessions and the shared lifecycle writer be released.
     for (const mailbox of this.activeLiveInputs.values()) mailbox.cancel();
     this.activeLiveInputs.clear();
+    for (const controller of this.compactionControllers) controller.abort(new Error("Agent harness is shutting down."));
     const liveSessionDisposal = this.liveSessionManager?.dispose();
     void liveSessionDisposal?.catch(() => undefined);
     const drained = await this.waitForActiveRuns();
@@ -1945,6 +2149,21 @@ export class MonoAgentHarness implements AgentHarness {
 
   private sessionStoreSnapshot(): readonly RuntimeSessionSnapshot[] {
     return this.sessionStore?.list?.() ?? [];
+  }
+}
+
+/** Settle with `work`, or reject as soon as `signal` aborts. */
+async function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new AgentHarnessError("compaction_failed", "Context compaction was cancelled."));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
   }
 }
 

@@ -28,6 +28,57 @@ function baseRequest(conversationId = "c1") {
 }
 
 describe("createAgentResponder", () => {
+  it("rejects manual compaction during an active or queued turn and fences concurrent clicks", async () => {
+    let finishTurn!: () => void;
+    let finishCompact!: () => void;
+    const turnGate = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const compactGate = new Promise<void>((resolve) => { finishCompact = resolve; });
+    const seen: string[] = [];
+    const responder = createAgentResponder({
+      rollover: "daily", rolloverTimezone: "UTC", now: () => new Date("2026-09-08T10:00:00.000Z"),
+      harness: {
+        run: async (request) => { await turnGate; return okResponse(request.conversationId); },
+        compactConversation: async (id) => {
+          seen.push(id);
+          await compactGate;
+          return { status: "skipped", trigger: "manual", operationId: "c1" };
+        },
+      },
+    });
+    const turn = responder.respond(baseRequest("web:one"), noopStream());
+    const queued = responder.respond(baseRequest("web:one"), noopStream());
+    await expect(responder.compactConversation!("web:one")).rejects.toMatchObject({ failureKind: "compaction_busy" });
+    finishTurn();
+    await Promise.all([turn, queued]);
+    const pending = responder.compactConversation!("web:one");
+    await expect(responder.compactConversation!("web:one")).rejects.toMatchObject({ failureKind: "compaction_busy" });
+    finishCompact();
+    await expect(pending).resolves.toMatchObject({ status: "skipped" });
+    expect(seen).toEqual(["web:one#2026-09-08"]);
+  });
+  it("holds a turn that arrives during manual compaction until the compaction settles", async () => {
+    let finishCompact!: () => void;
+    const compactGate = new Promise<void>((resolve) => { finishCompact = resolve; });
+    const order: string[] = [];
+    const responder = createAgentResponder({
+      harness: {
+        run: async (request) => { order.push("turn"); return okResponse(request.conversationId); },
+        compactConversation: async (_id, compactionOptions) => {
+          order.push(`compact:start:${compactionOptions?.model ?? "default"}`);
+          await compactGate;
+          order.push("compact:end");
+          return { status: "succeeded", trigger: "manual", operationId: "c1" };
+        },
+      },
+    });
+    const compaction = responder.compactConversation!("web:one", { model: "anthropic:claude-opus-4-8" });
+    const turn = responder.respond(baseRequest("web:one"), noopStream());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(order).toEqual(["compact:start:anthropic:claude-opus-4-8"]);
+    finishCompact();
+    await Promise.all([compaction, turn]);
+    expect(order).toEqual(["compact:start:anthropic:claude-opus-4-8", "compact:end", "turn"]);
+  });
   it("positively exposes context import and serializes it onto the responder bucket", async () => {
     const calls: Array<[string, string, string]> = [];
     const responder = createAgentResponder({

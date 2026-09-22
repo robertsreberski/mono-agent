@@ -142,7 +142,7 @@ export async function estimateCurrentContextTokens(session, fixedOverheadTokens 
 // the old large value even after the transcript prefix was summarized. Summing
 // pi's per-message estimator gives a stable before/after comparison over the
 // actual context the session will build next.
-async function estimateSessionMessageTokens(session) {
+export async function estimateSessionMessageTokens(session) {
   if (!session || typeof session.buildContext !== "function") return null;
   try {
     const context = await session.buildContext();
