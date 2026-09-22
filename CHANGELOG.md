@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix `Reply` on a cron run importing only the first 2 KiB of a longer
+  result. The reply context now carries the full stored result text, bounded
+  only by the 32 KiB context-import limit, and later summary polls no longer
+  downgrade already-stored fuller run text to the clipped prefix.
+
 - **Breaking: rename the `AgentSend` tool to `AgentManage`.** The tool that
   continues, closes, stops, inspects and acknowledges a persistent subagent
   instance is now `AgentManage`; its modes, parameters, results and behavior are
