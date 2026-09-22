@@ -1663,6 +1663,29 @@ export class WebStore {
       throw new WebConsoleError("cron_reply_unavailable", "Only visible terminal cron results can be replied to.", 422);
     }
     if (snapshotKind === "summary") {
+      // A gate skip is not a failure: its bounded reason rides in `error` on
+      // the wire, so surface it as result text rather than a failure message.
+      // That text is synthesized here, never a truncation of `run.text`, so no
+      // fuller-text recovery applies to it.
+      const gateSkip = run.status === "skipped_gate";
+      const compactText = gateSkip
+        ? `Skipped by preflight gate${run.error === undefined ? "" : `: ${run.error}`}`
+        : run.text ?? "";
+      // The summary projection clips `text` to a 2 KiB prefix, but the verbatim
+      // notification text (or a loaded detail) for this exact run is already
+      // persisted in the run's message parts or turn. Hand the fuller copy to
+      // the 32 KiB context import instead of the clipped prefix. Provenance
+      // stays honest: `text` leaves `sourceFieldsTruncated` only when the
+      // handed text is complete; otherwise the truncation blame is unchanged.
+      const storedTextParts: string[] = [];
+      for (const part of parseParts(row.parts_json)) {
+        if (part.type === "text") storedTextParts.push(part.text);
+      }
+      const recoveredText = !gateSkip
+        && run.fieldsTruncated?.includes("text") === true
+        && typeof run.text === "string" && run.text.length > 0
+        ? fullerStoredTextForTruncatedPrefix(run.text, [...storedTextParts, row.text])
+        : undefined;
       return {
         sourceId,
         jobId,
@@ -1670,14 +1693,12 @@ export class WebStore {
         snapshotKind,
         capturedAt: this.now(),
         run,
-        // A gate skip is not a failure: its bounded reason rides in `error` on
-        // the wire, so surface it as result text rather than a failure message.
-        text: run.status === "skipped_gate"
-          ? `Skipped by preflight gate${run.error === undefined ? "" : `: ${run.error}`}`
-          : run.text ?? "",
+        text: recoveredText ?? compactText,
         ...(run.failureKind === undefined ? {} : { errorCode: run.failureKind }),
         ...(run.error === undefined || run.status === "skipped_gate" ? {} : { errorMessage: run.error }),
-        sourceFieldsTruncated: run.fieldsTruncated ?? [],
+        sourceFieldsTruncated: recoveredText === undefined
+          ? run.fieldsTruncated ?? []
+          : (run.fieldsTruncated ?? []).filter((field) => field !== "text"),
         sourceTruncationKnown: true,
       };
     }
@@ -1973,13 +1994,24 @@ export class WebStore {
           && priorParts.some((part) => part.type === "telemetry"
             && part.event === "cron_run"
             && record(part.data)?.activityLoaded === true);
+        // A later summary poll must not downgrade an already-stored fuller turn
+        // text to the 2 KiB prefix either. Unlike the activity-loaded case
+        // above, this needs no load flag: the prefix-consistency guard inside
+        // `fullerStoredTextForTruncatedPrefix` only preserves the stored text
+        // when it is strictly longer than, and starts with, this poll's
+        // prefix — so a genuinely new result still replaces a stale turn.
+        const preserveFullerTurnText = run.projection === "summary"
+          && run.fieldsTruncated?.includes("text") === true
+          && typeof run.text === "string" && run.text.length > 0
+          && existingTurn !== undefined
+          && fullerStoredTextForTruncatedPrefix(run.text, [existingTurn.text]) !== undefined;
         const preserveLoadedError = run.projection === "summary"
           && priorParts.some((part) => part.type === "telemetry"
             && part.event === "cron_run"
             && record(part.data)?.activityLoaded === true)
           && (run.fieldsTruncated?.includes("error") === true
             || run.fieldsTruncated?.includes("failureKind") === true);
-        const turnText = preserveLoadedText && existingTurn !== undefined
+        const turnText = (preserveLoadedText || preserveFullerTurnText) && existingTurn !== undefined
           ? existingTurn.text
           : run.text ?? "";
         const turnErrorCode = preserveLoadedError && existingTurn !== undefined
@@ -6901,6 +6933,38 @@ function withoutCronSilentFlag(data: unknown): Record<string, unknown> {
 function clearSilentCronPart(part: WebMessagePart): WebMessagePart {
   return part.type === "telemetry" && part.event === "cron_run" && record(part.data)?.silent === true
     ? { ...part, data: withoutCronSilentFlag(part.data) } : part;
+}
+
+/**
+ * Recover fuller result text already persisted for a run whose compact summary
+ * projection truncated `text` to its 2 KiB prefix.
+ *
+ * The operator summary prefix is UTF-8-boundary-safe, so a genuine fuller copy
+ * starts with the prefix byte-for-byte. A candidate only wins when it is
+ * strictly longer AND has the prefix as a prefix: this keeps a later summary
+ * poll (or a reply capture) from grafting stale or mismatched text from an
+ * earlier reconciliation onto a newer run result. The bare
+ * `NOTHING_TO_REPORT` sentinel never qualifies — a fuller copy that short
+ * cannot exist under an honest 2 KiB truncation flag, and claiming a bare
+ * sentinel as the complete result would overstate what was reported.
+ */
+function fullerStoredTextForTruncatedPrefix(
+  prefix: string,
+  candidates: readonly (string | undefined | null)[],
+): string | undefined {
+  const prefixBytes = Buffer.byteLength(prefix, "utf8");
+  let best: string | undefined;
+  let bestBytes = prefixBytes;
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string" || candidate.length === 0) continue;
+    if (candidate.trim().toUpperCase() === NOTHING_TO_REPORT_SENTINEL) continue;
+    if (!candidate.startsWith(prefix)) continue;
+    const bytes = Buffer.byteLength(candidate, "utf8");
+    if (bytes <= bestBytes) continue;
+    best = candidate;
+    bestBytes = bytes;
+  }
+  return best;
 }
 
 function definitelySilentCronRun(run: WebCronRun): boolean {
