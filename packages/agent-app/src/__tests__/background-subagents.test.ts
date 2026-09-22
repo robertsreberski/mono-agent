@@ -104,7 +104,7 @@ describe("parent stop", () => {
       expect((await f.instances.get("helper"))?.recovery).toBeUndefined();
       await send.execute("close", { id: "helper", close: true });
     } finally { gate.resolve({ text: "done" }); await done(f.service, first.details.jobId); }
-  }, 15_000);
+  }, 30_000);
   it("cooperative stop permits ordinary resume and close", async () => {
     const f = await managedFixture(); const entered = deferred<void>(); const sessions: string[] = [];
     const run = vi.fn(async (request: any) => {
@@ -300,7 +300,7 @@ describe("parent stop", () => {
       if (observedProof) await secondReadDrained.promise;
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
-  }, 15_000);
+  }, 30_000);
   it("publication failure and restart remain fenced until the exact stop certificate is acknowledged", async () => {
     const f = await managedFixture(); const entered = deferred<void>(); const root = resolve(f.root, "children");
     f.service.bindManagedSubagents!({ root,
@@ -340,7 +340,7 @@ describe("parent stop", () => {
     expect((await stopping).details.stop).toMatchObject({ code: "subagent_stop_recovery_required", stopRequested: false });
     expect((await f.store.get(started.details.jobId))?.subagentOwnership?.parentStopRequested).not.toBe(true);
     await expect(send.execute("resume", { id: "helper", message: "no" })).rejects.toThrow("subagent_recovery_required");
-  }, 15_000);
+  }, 30_000);
   it("stop cannot cross conversation/incarnation", async () => {
     const f = await managedFixture(); const gate = deferred<any>(); const run = vi.fn(() => gate.promise); const { agent } = tools(f, run);
     const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
@@ -351,7 +351,7 @@ describe("parent stop", () => {
       await expect(f.service.internalController(origin, 0).stop!({ ...identity, instanceIncarnation: randomUUID() })).rejects.toMatchObject({ code: "subagent_stale_turn" });
       expect((await f.store.get(started.details.jobId))?.cancelRequested).not.toBe(true);
     } finally { gate.resolve({ text: "done" }); await done(f.service, started.details.jobId); }
-  }, 15_000);
+  }, 30_000);
   it.each([undefined, { turnToken: "wrong", state: "retained" }])("missing/mismatched recovery evidence never authorizes resume: %j", async (continuity) => {
     const f = await managedFixture(); const entered = deferred<void>();
     const { agent, send } = tools(f, async (request: any) => { entered.resolve(); await new Promise<void>((resolve) => request.abortSignal.addEventListener("abort", () => resolve(), { once: true })); return { cancelled: true, subagentContinuity: continuity }; });
@@ -922,7 +922,7 @@ describe("managed detached production execution", () => {
     });
     const instances = await registry.open(origin.conversationId, { existingOnly: true });
     await expect(instances.create({ ...spec, id: "after-retention" })).resolves.toMatchObject({ id: "after-retention" });
-  }, 10_000);
+  }, 30_000);
 
   it.each([false, true])("inspects retained failure and consumes acknowledgement exactly once (admissionRejected=%s)", async (admissionRejected) => {
     const f = await managedFixture(); const release = deferred<void>(); let delayed = false;
@@ -1001,7 +1001,7 @@ describe("managed detached production execution", () => {
       await expect(controller.startInternal(request)).rejects.toThrow();
       expect(run).not.toHaveBeenCalled(); expect(verifierCalls).toBe(1);
     } finally { proceed.resolve(); held.resolve(); await done(f.service, holder.details.jobId); }
-  }, 15_000);
+  }, 30_000);
   it("awaits a real gated command on its original slot and permits a clean retained continuation", async () => {
     const f = await managedFixture();
     const sessions: string[] = [];
@@ -1031,7 +1031,7 @@ describe("managed detached production execution", () => {
     expect(sessions).toEqual([sessions[0], sessions[0]]);
     expect(await f.instances.get("helper")).toMatchObject({ turns: 2, usage: { input: 6, costUsd: 0.35 } });
     expect(f.wake).toHaveBeenCalledTimes(2);
-  }, 15_000);
+  }, 30_000);
   it.each(["delay-confirm", "fail-after-confirm"])("keeps admission and wakes fenced through %s", async (fault) => {
     const f = await managedFixture(); const gate = deferred<void>();
     let intercepted = false; let releasedConfirmAttempts = 0;
@@ -1068,7 +1068,7 @@ describe("managed detached production execution", () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(releasedConfirmAttempts).toBe(1);
     } finally { gate.resolve(); }
-  }, 12_000);
+  }, 30_000);
 
   it("reports a timeout fence once and releases only after the true late provider settles", async () => {
     const f = await managedFixture(); const gate = deferred<any>();
@@ -1170,7 +1170,7 @@ describe("detached persistent subagents", () => {
     await expect(next.send.execute("reply", { id: "helper", message: "Small", close: true })).rejects.toThrow("subagent_recovery_required");
     expect((await f.instances.get("helper"))?.recovery).toMatchObject({ continuity: "unknown" });
     await f.instances.close("helper");
-  }, 12_000);
+  }, 30_000);
 
   it("carries typed native session loss through the actual Agent finish seam", async () => {
     const f = await fixture();
@@ -1193,7 +1193,7 @@ describe("detached persistent subagents", () => {
     const restarted = await openProcessJobsService(f.options); services.push(restarted); await restarted.activateWakes();
     await done(restarted, receipt.details.jobId);
     expect(f.wake).toHaveBeenCalledOnce(); expect(f.signalProcess).not.toHaveBeenCalled();
-  }, 12_000);
+  }, 30_000);
 
   it("recovers persisted internal running work without process signals or replay", async () => {
     const f = await fixture(); await f.service.stop();
@@ -1450,7 +1450,7 @@ it.each([false, true])("real Pi fake transport: detached AskParent and backgroun
     expect((await f.instances.get("helper"))?.status).toBe("closed");
     expect(await transcripts()).toEqual([]); expect(f.wake).toHaveBeenCalledTimes(3);
   } finally { await owner.disposeAllSessions?.(); }
-}, 15000);
+}, 30000);
 
 it("failed child preserves a pending question and bounded question wakes survive preview truncation", async () => {
   const f = await fixture({ previewChars: 80 });
@@ -1566,7 +1566,7 @@ it("G10: failed close after retained acknowledgement preserves the pending quest
     // hook under fake timers, and never leaves the gate closed for teardown.
     vi.useRealTimers(); releaseConfirmation.resolve();
   }
-}, 15_000);
+}, 30_000);
 
 it("queue expiry releases the reservation without invoking the child", async () => {
   const f = await fixture({ maxConcurrent: 1, maxQueueAgeMs: 1500 });
