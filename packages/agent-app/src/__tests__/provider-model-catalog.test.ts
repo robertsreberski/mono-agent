@@ -145,6 +145,74 @@ describe("provider-model-catalog", () => {
     expect(catalog.describe([ref])[ref.reference]?.effortLevels).toEqual(effort.effortLevels);
   });
 
+  it("advertises the supplemented anthropic Claude Opus 5.5 like a builtin", () => {
+    const catalog = buildProviderModelCatalog({ providers: [{ id: "anthropic" }] });
+    const provider = catalog.listProviders().find((entry) => entry.id === "anthropic");
+
+    const full = listPiBuiltinModels("anthropic");
+    expect(full.some((model) => model.id === "claude-opus-5-5")).toBe(true);
+    // Upstream rows plus the one supplement: far below the 100 default cap,
+    // so maxAdvertisedModels behavior is unchanged (no totalModelCount).
+    expect(provider?.modelCount).toBe(full.length);
+    expect(provider?.totalModelCount).toBeUndefined();
+
+    const models = catalog.listModels("anthropic").models;
+    const advertised = models.find((model) => model.id === "claude-opus-5-5");
+    const snapshot = full.find((model) => model.id === "claude-opus-5-5")!;
+    const effort = resolveAdvertisedModelEffortForBuiltin(snapshot);
+    expect(advertised).toMatchObject({
+      id: "claude-opus-5-5",
+      name: "Claude Opus 5.5",
+      provider: "anthropic",
+      contextWindow: 1000000,
+      reasoning: effort.reasoning,
+    });
+    expect(advertised?.effortLevels).toEqual(effort.effortLevels);
+    expect(advertised?.effortLevels).toEqual(["low", "medium", "high", "xhigh", "max"]);
+
+    const ref = parseMonoRuntimeModelReference("anthropic:claude-opus-5-5");
+    expect(catalog.describe([ref])[ref.reference]?.effortLevels).toEqual(effort.effortLevels);
+  });
+
+  it("advertises both supplemented openai-codex GPT-6 models like builtins", () => {
+    const catalog = buildProviderModelCatalog({ providers: [{ id: "openai-codex" }] });
+    const provider = catalog.listProviders().find((entry) => entry.id === "openai-codex");
+
+    const full = listPiBuiltinModels("openai-codex");
+    // Upstream rows plus the two supplements: far below the 100 default cap, so
+    // maxAdvertisedModels behavior is unchanged (no totalModelCount).
+    expect(provider?.modelCount).toBe(full.length);
+    expect(provider?.totalModelCount).toBeUndefined();
+
+    const models = catalog.listModels("openai-codex").models;
+    for (const [id, name] of [["gpt-6-sol", "GPT-6 Sol"], ["gpt-6-luna", "GPT-6 Luna"]]) {
+      expect(full.some((model) => model.id === id)).toBe(true);
+      const advertised = models.find((model) => model.id === id);
+      const snapshot = full.find((model) => model.id === id)!;
+      const effort = resolveAdvertisedModelEffortForBuiltin(snapshot);
+      expect(advertised).toMatchObject({
+        id,
+        name,
+        provider: "openai-codex",
+        contextWindow: 1_050_000,
+        reasoning: effort.reasoning,
+      });
+      expect(advertised?.effortLevels).toEqual(effort.effortLevels);
+      expect(advertised?.effortLevels)
+        .toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+      const ref = parseMonoRuntimeModelReference(`openai-codex:${id}`);
+      expect(catalog.describe([ref])[ref.reference]?.effortLevels).toEqual(effort.effortLevels);
+    }
+
+    // The upstream sibling the rows were modelled on is still advertised from
+    // pi-ai's own catalog, unchanged.
+    expect(models.find((model) => model.id === "gpt-5.6-sol")).toMatchObject({
+      name: "GPT-5.6 Sol",
+      contextWindow: 272_000,
+    });
+  });
+
   it("caps openrouter at 100 and reports totalModelCount when not narrowed", () => {
     const catalog = buildProviderModelCatalog({ providers: [{ id: "openrouter" }] });
     const openrouter = catalog.listProviders().find((provider) => provider.id === "openrouter");

@@ -253,7 +253,7 @@ describe("Pi interoperability facade", () => {
     expect(suppliedOptions.credentials).toBeDefined();
   });
 
-  describe("pi catalog reads (pure upstream, no backfill)", () => {
+  describe("pi catalog reads for providers with no supplemented rows", () => {
     it("lists exactly what the upstream catalog reports, snapshot-cloned", () => {
       piMocks.getBuiltinModels.mockReturnValue([rawModel]);
 
@@ -273,9 +273,9 @@ describe("Pi interoperability facade", () => {
     });
 
     it("reads one row straight from upstream with no miss-fallback", () => {
-      // pi-ai 0.87.0 ships every model mono-agent needs (including the former
-      // opencode-go:deepseek-v4.1-flash backfill), so the facade reports the
-      // upstream row verbatim and undefined on a genuine miss.
+      // `provider-1` carries no supplemented row, so the facade reports the
+      // upstream row verbatim and undefined on a genuine miss. The supplement
+      // fallback is exercised in the sibling describe below.
       piMocks.getBuiltinModel.mockImplementation((provider, id) =>
         id === "model-1" ? rawModel : undefined);
 
@@ -288,6 +288,131 @@ describe("Pi interoperability facade", () => {
       piMocks.getBuiltinModels.mockReturnValue([rawModel]);
       expect(listPiBuiltinModels("provider-1")).toHaveLength(1);
       expect(listPiBuiltinModels("provider-1")[0].id).toBe("model-1");
+    });
+  });
+
+  describe("pi catalog supplement (ai/pi-supplement.js)", () => {
+    it("merges the supplemented model into list/get on an upstream miss", () => {
+      piMocks.getBuiltinModels.mockReturnValue([]);
+      piMocks.getBuiltinModel.mockReturnValue(undefined);
+
+      const listed = listPiBuiltinModels("anthropic");
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({
+        id: "claude-opus-5-5",
+        name: "Claude Opus 5.5",
+        provider: "anthropic",
+      });
+      expect(piMocks.getBuiltinModels).toHaveBeenCalledWith("anthropic");
+
+      expect(getPiBuiltinModel("anthropic", "claude-opus-5-5")).toMatchObject({
+        id: "claude-opus-5-5",
+        provider: "anthropic",
+        input: ["text", "image"],
+      });
+      expect(getPiBuiltinModel("anthropic", "claude-opus-9")).toBeUndefined();
+    });
+
+    it("prefers the upstream row when pi-ai ships the supplemented id", () => {
+      const upstream = {
+        ...rawModel,
+        id: "claude-opus-5-5",
+        name: "Claude Opus 5.5 (upstream)",
+        provider: "anthropic",
+        cost: { input: 9, output: 9, cacheRead: 9, cacheWrite: 9 },
+      };
+      piMocks.getBuiltinModels.mockReturnValue([upstream]);
+      piMocks.getBuiltinModel.mockImplementation((provider, id) =>
+        id === "claude-opus-5-5" ? upstream : undefined);
+
+      const listed = listPiBuiltinModels("anthropic");
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({ id: "claude-opus-5-5", name: "Claude Opus 5.5 (upstream)" });
+
+      expect(getPiBuiltinModel("anthropic", "claude-opus-5-5")).toMatchObject({
+        name: "Claude Opus 5.5 (upstream)",
+        cost: { input: 9, output: 9, cacheRead: 9, cacheWrite: 9 },
+      });
+    });
+
+    it("snapshot-clones supplemented rows like upstream ones", () => {
+      piMocks.getBuiltinModels.mockReturnValue([]);
+      piMocks.getBuiltinModel.mockReturnValue(undefined);
+
+      const listed = listPiBuiltinModels("anthropic");
+      listed[0].cost.input = 999;
+      listed[0].input.push("video");
+      expect(listPiBuiltinModels("anthropic")[0]).toMatchObject({
+        cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+        input: ["text", "image"],
+      });
+
+      const selected = getPiBuiltinModel("anthropic", "claude-opus-5-5");
+      selected.compat.supportsTemperature = true;
+      expect(getPiBuiltinModel("anthropic", "claude-opus-5-5")).toMatchObject({
+        compat: expect.objectContaining({ supportsTemperature: false }),
+      });
+    });
+
+    it("merges both openai-codex rows into list/get on an upstream miss", () => {
+      piMocks.getBuiltinModels.mockReturnValue([]);
+      piMocks.getBuiltinModel.mockReturnValue(undefined);
+
+      const listed = listPiBuiltinModels("openai-codex");
+      expect(listed.map((model) => model.id)).toEqual(["gpt-6-sol", "gpt-6-luna"]);
+      expect(piMocks.getBuiltinModels).toHaveBeenCalledWith("openai-codex");
+
+      expect(getPiBuiltinModel("openai-codex", "gpt-6-sol")).toMatchObject({
+        id: "gpt-6-sol",
+        name: "GPT-6 Sol",
+        provider: "openai-codex",
+        api: "openai-codex-responses",
+        contextWindow: 1_050_000,
+        cost: { input: 2, output: 10 },
+      });
+      expect(getPiBuiltinModel("openai-codex", "gpt-6-luna")).toMatchObject({
+        id: "gpt-6-luna",
+        name: "GPT-6 Luna",
+        provider: "openai-codex",
+        cost: { input: 0.1, output: 0.5 },
+      });
+      expect(getPiBuiltinModel("openai-codex", "gpt-6-nemesis")).toBeUndefined();
+    });
+
+    it("keeps upstream codex rows and appends only the missing supplement ids", () => {
+      const upstream = {
+        ...rawModel,
+        id: "gpt-6-sol",
+        name: "GPT-6 Sol (upstream)",
+        provider: "openai-codex",
+        cost: { input: 9, output: 9, cacheRead: 9, cacheWrite: 9 },
+      };
+      piMocks.getBuiltinModels.mockReturnValue([upstream]);
+      piMocks.getBuiltinModel.mockImplementation((provider, id) =>
+        id === "gpt-6-sol" ? upstream : undefined);
+
+      // Upstream shipped one of the two ids: it wins outright and is never
+      // duplicated, while the still-missing row is still appended.
+      const listed = listPiBuiltinModels("openai-codex");
+      expect(listed.map((model) => model.id)).toEqual(["gpt-6-sol", "gpt-6-luna"]);
+      expect(listed[0]).toMatchObject({ name: "GPT-6 Sol (upstream)" });
+
+      expect(getPiBuiltinModel("openai-codex", "gpt-6-sol")).toMatchObject({
+        name: "GPT-6 Sol (upstream)",
+        cost: { input: 9, output: 9, cacheRead: 9, cacheWrite: 9 },
+      });
+      expect(getPiBuiltinModel("openai-codex", "gpt-6-luna")).toMatchObject({
+        name: "GPT-6 Luna",
+      });
+    });
+
+    it("leaves unrelated providers supplement-free", () => {
+      piMocks.getBuiltinModels.mockReturnValue([rawModel]);
+      expect(listPiBuiltinModels("provider-1")).toHaveLength(1);
+      expect(listPiBuiltinModels("provider-1")[0].id).toBe("model-1");
+      // `openai` carries no supplemented rows even though `openai-codex` does.
+      expect(listPiBuiltinModels("openai")).toHaveLength(1);
+      expect(listPiBuiltinModels("openai")[0].id).toBe("model-1");
     });
   });
 });
