@@ -107,9 +107,9 @@ try {
       },
       backgroundSubagentController: service.internalController(origin, 0),
     };
-    const tools = getPiBuiltinTools(["Agent", "AgentSend"], { subagents, ctx, sandboxPolicy: policy, sandboxEngine: engine });
+    const tools = getPiBuiltinTools(["Agent", "AgentManage"], { subagents, ctx, sandboxPolicy: policy, sandboxEngine: engine });
     const agent = tools.find((tool) => tool.name === "Agent");
-    const send = tools.find((tool) => tool.name === "AgentSend");
+    const send = tools.find((tool) => tool.name === "AgentManage");
     assert(agent && send);
     const receipt = await agent.execute("seed", { name: "seed", persist: true, background: true, id: "observer", prompt: "Seed only", verification: { workdir: worktree, reportPath: "report.md" } });
     const deadline = Date.now() + 10_000;

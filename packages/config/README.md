@@ -422,6 +422,7 @@ MonoAgentRuntimeFallbackJson
 PiNativeProviderConfig
 ProviderCoverageRoute
 ProviderDefinition
+RENAMED_TOOL_NAMES
 RETIRED_CONFIG_FIELDS
 ReadMonoAgentConfigJsonResult
 RedactedLocalProviderDefinition
@@ -442,6 +443,8 @@ loadMonoAgentConfig
 loadMonoAgentConfigWithSources
 readMonoAgentConfigJson
 redactMonoAgentConfig
+renamedToolMessage
+renamedToolName
 resolveConfiguredProviders
 writeMonoAgentConfigJson
 ```

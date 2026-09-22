@@ -11,7 +11,7 @@ import { openProcessJobsService } from "../dist/process-jobs-service.js";
 import { openProcessJobStore } from "../dist/process-jobs-store.js";
 import { PROCESS_JOBS_DEFAULTS } from "../dist/process-jobs-config.js";
 import { createAgentTool } from "../../agent-runtime/src/agent/tools/agent-tool.js";
-import { createAgentSendTool } from "../../agent-runtime/src/agent/tools/agent-send-tool.js";
+import { createAgentManageTool } from "../../agent-runtime/src/agent/tools/agent-manage-tool.js";
 import { generatePiNativeResponse } from "../../agent-runtime/src/ai/providers/pi-native.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js";
 
@@ -50,7 +50,7 @@ try {
   const instances = await registry.open(origin.conversationId);
   await writeFile(resolve(root, "evidence.txt"), "smoke retained tool evidence");
   const config = loadMonoAgentConfig({ cwd: root, env: {
-    MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
+    MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage",
     MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root: registryRoot } }),
   } });
   const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
@@ -63,7 +63,7 @@ try {
   const subagents = buildSubagentsOptions(config, { runtime, baseModel: config.runtime.model }, { conversationId: origin.conversationId, runId: "parent", instances }).subagents;
   subagents.backgroundSubagentController = service.internalController(origin, 0);
   const context = { cwd: root, model: config.runtime.model };
-  const agent = createAgentTool(subagents, context); const send = createAgentSendTool(subagents, context);
+  const agent = createAgentTool(subagents, context); const send = createAgentManageTool(subagents, context);
   const toolBearing = deferred();
   faux.setResponses([
     fauxAssistantMessage([fauxToolCall("Read", { file_path: "evidence.txt" }, { id: "smoke-read" })]),
@@ -98,7 +98,7 @@ try {
 
   const late = deferred(); releaseLate = late.resolve; let lateRequest;
   const held = { ...subagents, run: async (request) => { lateRequest = request; return late.promise; } };
-  const heldAgent = createAgentTool(held, context); const heldSend = createAgentSendTool(held, context);
+  const heldAgent = createAgentTool(held, context); const heldSend = createAgentManageTool(held, context);
   const uncooperative = await heldAgent.execute("hold", { id: "held", persist: true, background: true, prompt: "hold" });
   await until(() => lateRequest !== undefined);
   const began = Date.now(); const busy = await heldSend.execute("stop", { id: "held", stop: true }); const elapsedMs = Date.now() - began;

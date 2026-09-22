@@ -37,7 +37,7 @@ export const DEFAULT_SUBAGENT_TOOLS = Object.freeze(["Read", "Glob", "Grep", "We
  */
 export const SUBAGENT_HARD_DENY = Object.freeze([
   "Agent",
-  "AgentSend",
+  "AgentManage",
   "AskUser",
   "SlackSendMessage",
   "TelegramSendMessage",
@@ -122,7 +122,7 @@ function toolDescription(subagents, definitions, ceiling, instancesEnabled) {
     : `\n\nTools you may grant a subagent you build: ${ceiling.join(", ")}. Anything else is dropped. Omit \`tools\` for a read-only helper.`;
   const base = instancesEnabled
     ? DESCRIPTION_BASE.replace("Bad: anything needing back-and-forth, anything where", "Bad: anything where")
-      .replace("- It cannot ask you or the user anything. One shot.", "- A persistent child can ask you through AskParent and return awaiting_reply. Reply with AgentSend({id, message}). It cannot contact the user.")
+      .replace("- It cannot ask you or the user anything. One shot.", "- A persistent child can ask you through AskParent and return awaiting_reply. Reply with AgentManage({id, message}). It cannot contact the user.")
     : DESCRIPTION_BASE;
   return `${base}${parallel}${named}${shapes}${inline}`;
 }
@@ -226,7 +226,7 @@ function positiveInt(value, fallback) {
  *
  * @param {RuntimeSubagentsOptions|null|undefined} subagents
  * @param {{recoveryAccess?: unknown, instancesEnabled?: boolean, persistentExposure?: boolean, model?: *, effort?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
- * @param {{record: import("../../ai/types.js").RuntimeSubagentInstance, close?: boolean, acknowledgement?: import("../../ai/types.js").RuntimeSubagentRecoveryRequest}} [continuation] Internal AgentSend dispatch; never model supplied.
+ * @param {{record: import("../../ai/types.js").RuntimeSubagentInstance, close?: boolean, acknowledgement?: import("../../ai/types.js").RuntimeSubagentRecoveryRequest}} [continuation] Internal AgentManage dispatch; never model supplied.
  * @returns {*|null}
  */
 export function createAgentTool(subagents, context = {}, continuation) {
@@ -312,7 +312,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         verification: { type: "object", additionalProperties: false, required: ["workdir"], properties: {
           workdir: { type: "string", maxLength: 2048 }, reportPath: { type: "string", maxLength: 512 },
         }, description: "Optional observation-only worktree and relative report presence target. Does not change command cwd, widen permissions, authorize work, or establish verification success." },
-        persist: { type: "boolean", description: "Keep this subagent alive so you can continue it with AgentSend. Off by default; set it only when a follow-up turn is actually expected, and close the instance when that follow-up is done." },
+        persist: { type: "boolean", description: "Keep this subagent alive so you can continue it with AgentManage. Off by default; set it only when a follow-up turn is actually expected, and close the instance when that follow-up is done." },
         id: { type: "string", pattern: INLINE_NAME_RE.source, description: "Instance id; only with persist." },
       } : {}),
       ...(persistentExposure ? { background: { type: "boolean", description: "Run the child detached (requires persist: true); this conversation wakes on completion or AskParent. Only for sustained work that outlives a reply — a short answer you need now stays foreground. Do not poll or replay." } } : {}),
@@ -329,7 +329,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
   return {
     name: "Agent",
     label: "Agent",
-    description: toolDescription(subagents, definitions, ceiling, persistentExposure) + (persistentExposure ? "\n\nA child is stateless by default: it answers once and holds nothing afterwards, which is right for most delegations. Set persist: true only when you will actually continue this child with AgentSend — corrections, follow-up questions, a multi-step assignment — because a persistent instance keeps its transcript and one of this conversation’s live instance slots until you close it; close it as soon as the follow-up is done." : "") + (persistentExposure ? " background: true detaches the child (it currently requires persist: true) and returns a durable started receipt; this exact conversation wakes when the child settles or asks you a question. Reserve it for sustained work that outlives a reply, not for a short question whose answer you need now. Do not poll or replay." : ""),
+    description: toolDescription(subagents, definitions, ceiling, persistentExposure) + (persistentExposure ? "\n\nA child is stateless by default: it answers once and holds nothing afterwards, which is right for most delegations. Set persist: true only when you will actually continue this child with AgentManage — corrections, follow-up questions, a multi-step assignment — because a persistent instance keeps its transcript and one of this conversation’s live instance slots until you close it; close it as soon as the follow-up is done." : "") + (persistentExposure ? " background: true detaches the child (it currently requires persist: true) and returns a durable started receipt; this exact conversation wakes when the child settles or asks you a question. Reserve it for sustained work that outlives a reply, not for a short question whose answer you need now. Do not poll or replay." : ""),
     parameters,
     // MUST stay undefined. Agent-only batches can overlap when the offered tool
     // set contains no sequential tool. Pi 0.85 exposes only a global harness
@@ -427,7 +427,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           ? await instances.reserve(retained.id, reservation, continuation.acknowledgement, context.recoveryAccess)
           : await instances.reserve(retained.id, reservation);
         try {
-          const started = await background.startInternal({ kind: "internal", tool: continuation ? "AgentSend" : "Agent",
+          const started = await background.startInternal({ kind: "internal", tool: continuation ? "AgentManage" : "Agent",
             jobId: reservation, instanceId: retained.id,
             ...(background.managed ? { managed: { instanceIncarnation: instance.incarnation ?? "", turnToken: instance.activeTurn?.token ?? "" } } : {}),
             // `description` is the model-authored activity label (never the prompt); it names the job card.
@@ -445,7 +445,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
             },
           });
           return { content: [{ type: "text", text: `Background subagent started. This conversation will wake on completion or AskParent. Do not poll, replay, or report completion yet.\n${JSON.stringify({ jobId: started.jobId, instanceId: retained.id, state: started.state })}` }],
-            details: { tool: continuation ? "AgentSend" : "Agent", jobId: started.jobId, instanceId: retained.id, state: started.state,
+            details: { tool: continuation ? "AgentManage" : "Agent", jobId: started.jobId, instanceId: retained.id, state: started.state,
               outcome: { status: "ok", code: "background_started", retryable: false, attempts: 1, durationMs: 0,
                 bytes: 0, truncated: false, exitCode: null, signal: null, timedOut: false, background: true,
                 job_id: started.jobId, state: started.state, started_at: started.startedAt } } };
@@ -636,7 +636,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
             // (configured-agent.ts): without propagating the wrap-up's, a
             // wrap-up that answered outside the instance session would leave
             // the instance recorded retained on the first run's fields and the
-            // next AgentSend would resume a lost session. An ordinary failed
+            // next AgentManage would resume a lost session. An ordinary failed
             // or unavailable wrap-up carries no such signal, so the merged
             // result still reads as a max-turns exhaustion.
             return {
@@ -757,7 +757,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           ...(droppedTools.length === 0 ? {} : {
             notice: `${droppedTools.join(", ")} ${droppedTools.length === 1 ? "is" : "are"} not available to a subagent you build; it ran with ${profile.allowedTools.join(", ")}.`,
           }),
-          persist: (full) => persistSubagentResult(context.persistArtifact, toolCallId, full, continuation ? "AgentSend" : "Agent"),
+          persist: (full) => persistSubagentResult(context.persistArtifact, toolCallId, full, continuation ? "AgentManage" : "Agent"),
         });
         if (!detached) budget.bytes += Buffer.byteLength(text, "utf8");
         // `details.subagent.status` is the load-bearing signal: pi hardcodes
@@ -772,7 +772,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           ...(detached ? { answer: outcomeWithWrapUp.answer } : {}),
           content: [{ type: "text", text }],
           details: {
-            tool: continuation ? "AgentSend" : "Agent",
+            tool: continuation ? "AgentManage" : "Agent",
             subagent: { ...(recoveryUnavailable ? { recoveryUnavailable: true } : {}), ...(detached ? { childStillBusy: abandoned, usage: detachedUsage(result, collector.usage()) } : {}), ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}), name: profile.name, callIndex, status: outcome.status, ...(outcome.question ? { question: outcome.question } : {}), toolCalls: collector.entries().length,
               ...(wrapUp === null ? {} : { wrapUp: {
                 budget: "maxTurns",

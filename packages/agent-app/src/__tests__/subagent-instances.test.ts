@@ -168,7 +168,7 @@ describe("persistent subagent registry", () => {
     { definition: { ...spec.definition, model: { provider: "openai", model: "a", reference: "openai:b" } } },
     { definition: { ...spec.definition, effort: ["high"] } },
     { definition: { ...spec.definition, allowedTools: [42] } },
-    { definition: { ...spec.definition, allowedTools: ["AgentSend"] } },
+    { definition: { ...spec.definition, allowedTools: ["AgentManage"] } },
     { definition: { ...spec.definition, disallowedTools: {} } },
     { definition: { ...spec.definition, mcpServerNames: [{ command: "stale" }] } },
     { definition: { ...spec.definition, mcpServers: { stale: { command: "old" } } } },

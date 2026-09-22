@@ -60,7 +60,7 @@ import { isRememberToolAllowed, isRememberToolPolicyName } from "./memory-rememb
 import { isMemoryJournalToolAllowed, isMemoryJournalToolPolicyName } from "./memory-journal.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { adapterSendToolNames, isAdapterSendToolAllowed, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
-import { canonicalToolName, isAllowAllTools, isKnownToolName, isMcpToolName, suggestToolName } from "./modules/known-tools.js";
+import { canonicalToolName, isAllowAllTools, isKnownToolName, isMcpToolName, renamedToolMessage, renamedToolName, suggestToolName } from "./modules/known-tools.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
@@ -1497,6 +1497,13 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     details.push(`Allowed tools: ${allowedTools.join(", ")}.`);
     let mcpNoteAdded = false;
     for (const name of allowedTools) {
+      const renamedTo = renamedToolName(name);
+      if (renamedTo !== undefined) {
+        // A renamed built-in has no alias, so the old entry grants nothing.
+        status = "waiting";
+        details.push(`${renamedToolMessage(name, "allowedTools")} The old name is not registered, so it grants nothing.`);
+        continue;
+      }
       if (isMemoryJournalToolPolicyName(name)) {
         // This app-owned MCP surface must be checked before the generic MCP
         // branch, using the same deny-wins spellings as runtime composition.
@@ -1584,6 +1591,14 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
   if (!allowAll && config.tools.disallowedTools.length > 0) {
     // Under allow-all the disallow list is already folded into the "except" clause above.
     details.push(`Disallowed tools: ${config.tools.disallowedTools.join(", ")}.`);
+  }
+  for (const name of config.tools.disallowedTools) {
+    // A stale deny entry is the dangerous direction of a rename: it stops
+    // matching and silently broadens access to the renamed tool.
+    if (renamedToolName(name) !== undefined) {
+      status = "waiting";
+      details.push(`${renamedToolMessage(name, "disallowedTools")} The old name denies nothing.`);
+    }
   }
   let configuredMcpServerNames: string[] = [];
   let configuredMcpServers: Record<string, unknown> = {};
@@ -1675,7 +1690,7 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
   const agentAllowed = (allowAll || allowedTools.includes("Agent")) && !config.tools.disallowedTools.includes("Agent");
   if (subagents?.enabled === true) {
     if (subagents.instances?.enabled !== false && !persistentSubagentsEnabled(config)) {
-      details.push("Persistent subagents unavailable: effective tool policy must expose both Agent and AgentSend; Agent remains stateless when allowed.");
+      details.push("Persistent subagents unavailable: effective tool policy must expose both Agent and AgentManage; Agent remains stateless when allowed.");
     }
     if (persistentSubagentsEnabled(config)) {
       details.push(config.tools.disallowedTools.includes("AskParent")
@@ -2216,7 +2231,7 @@ async function processJobsSection(
     ...(posture === undefined ? [] : [`Private-state protection: ${posture.kind}${posture.retainedRoots ? " (roots retained)" : ""}.`]),
     persistentSubagentsEnabled(config) && settings.enabled && process.platform !== "win32"
       ? "Background subagents: configured for Pi-native, exact-conversation ProcessJobs routes; live availability also requires a healthy controller and remaining lineage."
-      : "Background subagents unavailable: persistent Agent/AgentSend and supported, enabled ProcessJobs are required.",
+      : "Background subagents unavailable: persistent Agent/AgentManage and supported, enabled ProcessJobs are required.",
   ];
   if (!settings.enabled) {
     return {
@@ -2246,7 +2261,7 @@ async function processJobsSection(
     `Owner-only local state: ${settings.stateDir}.`,
     `Concurrency: ${String(settings.maxConcurrent)} global, ${String(settings.maxActivePerConversation)} per conversation, ${String(settings.maxQueued)} queued.`,
     `Caps: runtime=${String(settings.maxRuntimeMs)}ms, queue-age=${String(settings.maxQueueAgeMs)}ms, output=${String(settings.maxOutputBytes)} bytes, chain-depth=${String(settings.maxChainDepth)}.`,
-    `Runtime availability: Pi-native Exec/Bash and enabled persistent Agent/AgentSend; configured primary provider is ${displayText(config.runtime.model.provider)}.`,
+    `Runtime availability: Pi-native Exec/Bash and enabled persistent Agent/AgentManage; configured primary provider is ${displayText(config.runtime.model.provider)}.`,
   ];
   const inspection = await inspectProcessJobState(input.cwd, settings.stateDir);
   return {

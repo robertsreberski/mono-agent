@@ -68,7 +68,7 @@ describe("process-job contracts", () => {
   });
 
   it("discriminates private subagent projections and bounds structured questions", () => {
-    const internal = { ...projection(), kind: "internal", tool: "AgentSend", instanceId: "helper", childStillBusy: true,
+    const internal = { ...projection(), kind: "internal", tool: "AgentManage", instanceId: "helper", childStillBusy: true,
       subagentQuestion: { question: "Which branch?", options: ["one", "two"] } };
     expect(parseProcessJobProjection(internal)).toEqual(internal);
     for (const invalid of [
@@ -78,6 +78,13 @@ describe("process-job contracts", () => {
       { ...internal, subagentQuestion: { question: "q", options: ["same", "same"] } },
       { ...projection(), childStillBusy: false },
     ]) expect(() => parseProcessJobProjection(invalid)).toThrow(TypeError);
+  });
+
+  it("still parses a stored projection carrying the legacy AgentSend tool name", () => {
+    // `AgentSend` was renamed to `AgentManage` with no alias. Jobs persisted
+    // before the rename must keep loading; nothing emits the old name again.
+    const legacy = { ...projection(), kind: "internal", tool: "AgentSend", instanceId: "helper", childStillBusy: false };
+    expect(parseProcessJobProjection(legacy)).toEqual(legacy);
   });
 
   it("accepts the configured retention plus transient active-record boundary", () => {

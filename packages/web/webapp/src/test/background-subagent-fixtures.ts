@@ -2,7 +2,15 @@ import { processJob } from "./fixtures";
 import type { ProcessJobProjection, ProcessJobSubagentProgress, WebMessage } from "../types";
 
 /** Synthetic UI evidence: no prompts, provider data, or real report content. */
-export function backgroundSubagentJob(finished = false, tool: "Agent" | "AgentSend" = "Agent"): Extract<ProcessJobProjection, { kind: "internal" }> {
+/**
+ * `tool` accepts the legacy `AgentSend` name as well: it was renamed to
+ * `AgentManage` with no alias, so retained job records still carry it and must
+ * render identically.
+ */
+export function backgroundSubagentJob(
+  finished = false,
+  tool: Extract<ProcessJobProjection, { kind: "internal" }>["tool"] = "Agent",
+): Extract<ProcessJobProjection, { kind: "internal" }> {
   const base = processJob();
   const recent: ProcessJobSubagentProgress["recent"] = Array.from({ length: 45 }, (_, index) => {
     const toolName = index < 6 ? "Bash" : index < 9 ? "Read" : ["Bash", "Read", "Grep"][index % 3]!;

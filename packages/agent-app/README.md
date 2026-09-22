@@ -159,11 +159,11 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   preserving agent-owned configuration, workspace, sandbox, tools, MCP servers,
   and credentials.
 
-Persistent Agent/AgentSend can run detached through the app-private in-process
+Persistent Agent/AgentManage can run detached through the app-private in-process
 ProcessJobs lane. Durable admission reserves the child; completion and AskParent
 wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
-`AgentSend({id, stop:true})` cooperatively stops managed detached work without
+`AgentManage({id, stop:true})` cooperatively stops managed detached work without
 starting a new turn. Only a proven `resumable:true` receipt permits ordinary
 message continuation on the same session or `close:true`; `stop_requested`
 keeps messages/close blocked. Stop neither force-kills nor undoes external effects.

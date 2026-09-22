@@ -96,7 +96,7 @@ async function owner(root, scenario) {
   const timeoutMs = shortCommand ? 6000 : 300_000;
   const config = loadMonoAgentConfig({ cwd: root, env: {
     MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
-    MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend,Exec", MONO_AGENT_SANDBOX_MODE: "off",
+    MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage,Exec", MONO_AGENT_SANDBOX_MODE: "off",
     MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, timeoutMs, commandTimeoutMs: 300_000, instances: { root: resolve(root, "children") },
       definitions: [{ name: "verifier", description: "Bounded verification", prompt: "Run the supplied verification once.", allowedTools: ["Exec"] }] }),
   } });

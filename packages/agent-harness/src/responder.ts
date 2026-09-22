@@ -816,7 +816,7 @@ function processJobStartReceipt(
   details: Record<string, unknown>,
   toolName: string | undefined,
 ): Record<string, unknown> | undefined {
-  if (!["Exec", "Bash", "Agent", "AgentSend"].includes(toolName ?? "")) return undefined;
+  if (!["Exec", "Bash", "Agent", "AgentManage"].includes(toolName ?? "")) return undefined;
   try {
     if (details.tool !== toolName || !isPlainRecord(details.outcome)) return undefined;
     const outcome = details.outcome;

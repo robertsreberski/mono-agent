@@ -1103,7 +1103,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
       id,
       name: subagentName,
       toolName,
-      closing: isAgentSendToolName(toolName) && typeof toolArguments === "object" && toolArguments !== null && "close" in toolArguments && toolArguments.close === true,
+      closing: isAgentManageToolName(toolName) && typeof toolArguments === "object" && toolArguments !== null && "close" in toolArguments && toolArguments.close === true,
       header: formatToolActivityLine(toolName, toolArguments),
       callCount: 0,
       terminal: false,
@@ -1153,7 +1153,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     }
 
     const parts = [
-      `${group.isError ? "⚠️" : "🤖"} ${isAgentSendToolName(group.toolName) ? (group.closing ? "Close agent" : "Continue agent") : "Agent"} ${JSON.stringify(group.name)}`,
+      `${group.isError ? "⚠️" : "🤖"} ${isAgentManageToolName(group.toolName) ? (group.closing ? "Close agent" : "Continue agent") : "Agent"} ${JSON.stringify(group.name)}`,
       ...(group.isError ? ["failed"] : []),
       `${group.callCount} tool call${group.callCount === 1 ? "" : "s"}`,
       ...(group.executionMs === undefined ? [] : [formatSeconds(group.executionMs)]),
@@ -1431,9 +1431,9 @@ function isSubagentLifecycle(
   return event.metadata?.subagentLifecycle === true;
 }
 
-/** Whether a built-in or namespace-qualified launch name is AgentSend. */
-function isAgentSendToolName(toolName: string): boolean {
-  return toolNameLeaf(toolName).toLowerCase().replace(/[^a-z0-9]+/gu, "") === "agentsend";
+/** Whether a built-in or namespace-qualified launch name is AgentManage. */
+function isAgentManageToolName(toolName: string): boolean {
+  return toolNameLeaf(toolName).toLowerCase().replace(/[^a-z0-9]+/gu, "") === "agentmanage";
 }
 
 /** The profile a launch call names, falling back to the runtime's own default. */
@@ -1441,7 +1441,7 @@ function subagentNameFromArguments(toolArguments: unknown, toolName = "Agent"): 
   if (typeof toolArguments !== "object" || toolArguments === null || Array.isArray(toolArguments)) {
     return "general-purpose";
   }
-  const name = (toolArguments as Record<string, unknown>)[isAgentSendToolName(toolName) ? "id" : "name"];
+  const name = (toolArguments as Record<string, unknown>)[isAgentManageToolName(toolName) ? "id" : "name"];
   return typeof name === "string" && name.trim().length > 0 ? name.trim() : "general-purpose";
 }
 
