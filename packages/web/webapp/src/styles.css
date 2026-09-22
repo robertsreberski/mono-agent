@@ -156,14 +156,13 @@
    `dvh` is the same unit `.app-shell` already uses, so the shell and the
    document it lives in now measure the same viewport everywhere. */
 html, body, #root { width: 100%; min-width: 320px; height: 100dvh; margin: 0; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-/* Installed iOS can sample a real fixed element at the viewport top rather
-   than theme-color. With `black-translucent` the header's own surface is what
-   shows behind the status bar, so this is now the launch and document fallback
-   for the same band — it still paints the header's surface, without overlaying
-   UI or participating in layout, and it still matters for an older install that
-   has not been re-added to the Home Screen yet. CSS variables follow the same
-   theme/media changes as the header, not a JS color snapshot. */
-html { --status-bar-bg: var(--panel); background: var(--status-bar-bg); }
+/* WebKit's LocalFrameView::fixedContainerEdges hit-tests the viewport's top
+   midpoint at y=4 and needs a fixed/sticky box spanning >=90% of that edge.
+   The full-width, opaque status band below is that box: WebKit extends its
+   colour into the status bar and hides the installed app's soft scroll pocket.
+   The shared inset also lets browser tests simulate the safe area in Chromium;
+   without an override it is exactly the platform's safe-area-inset-top. */
+html { --status-bar-inset: env(safe-area-inset-top); --status-bar-bg: var(--panel); background: var(--status-bar-bg); }
 /* These full-screen states deliberately use a different surface. */
 html:has(#root > :is(.initial-state, .fatal-state)) { --status-bar-bg: var(--surface); }
 /* `overscroll-behavior: none` is the second half of that fix: the console owns
@@ -176,10 +175,15 @@ body { overflow: hidden; overscroll-behavior: none; background: var(--status-bar
   top: 0;
   left: 0;
   width: 100%;
-  height: 1px;
+  height: var(--status-bar-inset);
   background: var(--status-bar-bg);
   pointer-events: none;
-  z-index: -1;
+  z-index: 50; /* Above the phone chat (40), below dialogs and popovers (100+). */
+}
+/* Some installed iOS apps report a zero safe-area inset. Five pixels still
+   contain WebKit's y=4 probe, inside the headers' >=7px top-padding floor. */
+@media (display-mode: standalone) {
+  .status-bar-surface { height: max(5px, var(--status-bar-inset)); }
 }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { border: 0; }
@@ -268,7 +272,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
   background: var(--panel);
   border-right: 1px solid var(--line);
 }
-.dashboard-header { min-height: 64px; display: flex; align-items: center; gap: 12px; flex: none; padding: max(10px, env(safe-area-inset-top)) var(--gutter-right) 10px var(--gutter-left); }
+.dashboard-header { min-height: 64px; display: flex; align-items: center; gap: 12px; flex: none; padding: max(10px, var(--status-bar-inset)) var(--gutter-right) 10px var(--gutter-left); }
 .dashboard-title-block { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .dashboard-brand { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dashboard-agent-name { min-width: 0; margin: 0; overflow: hidden; color: var(--text); font-size: 18px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
@@ -549,7 +553,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
    on the Dashboard's scale (the rows' 12px title, the labels' 10px caps), so
    the page and the list it came from read as one surface. */
 .project-page { --gutter-left: 17px; --gutter-right: 17px; width: 100%; height: 100%; min-width: 0; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); }
-.project-header { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: max(10px, env(safe-area-inset-top)) var(--gutter-right) 10px var(--gutter-left); }
+.project-header { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: max(10px, var(--status-bar-inset)) var(--gutter-right) 10px var(--gutter-left); }
 /* Back is navigation, not a tile: the bare glyph and the thumb-sized target
    the conversation header's back control keeps. */
 .project-back { min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 4px; flex: 1; margin-left: -6px; padding: 0; color: var(--text-soft); background: transparent; cursor: pointer; text-align: left; font-size: 13px; font-weight: 500; }
@@ -616,7 +620,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 @media (max-width: 900px) {
   .dashboard-panel .project-page { border-right: 0; }
   .project-page { --gutter-left: max(17px, env(safe-area-inset-left)); --gutter-right: max(17px, env(safe-area-inset-right)); }
-  .project-header { min-height: 58px; padding-block: max(7px, env(safe-area-inset-top)) 7px; }
+  .project-header { min-height: 58px; padding-block: max(7px, var(--status-bar-inset)) 7px; }
 }
 
 /* Chat shell
@@ -626,7 +630,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
    already share their measures; sharing the palette is what makes them read as
    one interface rather than two apps in one window. */
 .chat-panel { position: relative; min-width: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: var(--panel); }
-.chat-header { min-height: 64px; display: flex; align-items: center; gap: 15px; padding: max(10px, env(safe-area-inset-top)) max(17px, env(safe-area-inset-right)) 10px max(17px, env(safe-area-inset-left)); background: color-mix(in srgb, var(--panel) 94%, transparent); border-bottom: 1px solid var(--line); z-index: 5; }
+.chat-header { min-height: 64px; display: flex; align-items: center; gap: 15px; padding: max(10px, var(--status-bar-inset)) max(17px, env(safe-area-inset-right)) 10px max(17px, env(safe-area-inset-left)); background: color-mix(in srgb, var(--panel) 94%, transparent); border-bottom: 1px solid var(--line); z-index: 5; }
 /* The conversation's trailing actions are the Dashboard header's trailing
    actions: the same 36px tile, the same subtle fill, the same hover. Back is
    not one of them -- it is navigation, and it keeps the bare glyph and the
@@ -1448,8 +1452,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .app-shell { grid-template-columns: minmax(0, 1fr); }
   .mobile-navigation { display: flex; align-items: center; gap: 2px; margin-left: -6px; }
   .mobile-navigation .icon-button { width: 44px; height: 44px; }
-  .chat-header { min-height: 58px; gap: 8px; padding-block: max(7px, env(safe-area-inset-top)) 7px; }
-  .dashboard-header { min-height: 58px; padding-block: max(7px, env(safe-area-inset-top)) 7px; }
+  .chat-header { min-height: 58px; gap: 8px; padding-block: max(7px, var(--status-bar-inset)) 7px; }
+  .dashboard-header { min-height: 58px; padding-block: max(7px, var(--status-bar-inset)) 7px; }
   .conversation-title { max-width: min(42vw, 340px); }
   .chat-status { display: none; }
   /* The mobile shell has no ⌘↵: the shortcut line is noise there, and the row

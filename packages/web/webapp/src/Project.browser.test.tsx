@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { commands, page, userEvent } from "@vitest/browser/context";
+import indexHtml from "../index.html?raw";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -169,6 +170,8 @@ beforeEach(async () => {
 afterEach(async () => {
   await commands.emulateColorScheme(null);
   cleanup();
+  document.querySelectorAll(".status-bar-surface, #root").forEach((element) => element.remove());
+  document.documentElement.style.removeProperty("--status-bar-inset");
   localStorage.clear();
 });
 
@@ -309,6 +312,37 @@ describe.each([
     expect(card.querySelector(".project-badge")).toHaveTextContent("Web console");
     await capture(`labelled-project-chats-${label}`);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  });
+
+  it("exposes the fixed top edge above the project page without covering its header controls", async () => {
+    await page.viewport(width, height);
+    document.documentElement.style.setProperty("--status-bar-inset", "47px");
+    const initial = new DOMParser().parseFromString(indexHtml, "text/html");
+    const strip = initial.querySelector<HTMLElement>(".status-bar-surface")!;
+    const root = initial.getElementById("root")!;
+    const shell = document.createElement("div");
+    shell.className = "app-shell";
+    const panel = document.createElement("div");
+    panel.className = "dashboard-panel";
+    shell.append(panel);
+    root.append(shell);
+    document.body.append(strip, root);
+    storeMock.current = dashboardStore({ openProjectId: webProject.id, openProject: webProject });
+    render(<WebRuntimeProvider><Dashboard highlightSelected={false} /></WebRuntimeProvider>, { container: panel });
+    expect(await screen.findByRole("heading", { name: "Web console" })).toBeVisible();
+    const header = document.querySelector<HTMLElement>(".project-header")!;
+    expect(getComputedStyle(header).paddingTop).toBe("47px");
+    expect(strip.getBoundingClientRect().height).toBe(47);
+    for (const control of header.querySelectorAll<HTMLElement>("button")) {
+      expect(control.getBoundingClientRect().top).toBeGreaterThanOrEqual(strip.getBoundingClientRect().bottom);
+    }
+    expect(strip.getBoundingClientRect().width).toBeGreaterThanOrEqual(innerWidth * 0.9);
+    expect(getComputedStyle(strip).backgroundColor).toBe(getComputedStyle(shell).backgroundColor);
+    strip.inert = false; // Chromium omits inert nodes in normal hit tests.
+    strip.style.pointerEvents = "auto";
+    expect(document.elementFromPoint(innerWidth / 2, 4)).toBe(strip);
+    strip.style.removeProperty("pointer-events");
+    strip.inert = true;
   });
 
   it("draws the project page with its context card and members", async () => {

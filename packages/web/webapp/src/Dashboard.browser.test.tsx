@@ -158,6 +158,7 @@ beforeEach(async () => {
 afterEach(async () => {
   cleanup();
   document.querySelectorAll(".status-bar-surface, #root").forEach((element) => element.remove());
+  document.documentElement.style.removeProperty("--status-bar-inset");
   await commands.emulateColorScheme(null);
   await persistence.clearAll();
   localStorage.clear();
@@ -492,11 +493,22 @@ function expectStatusBarSurface(surface: Element): void {
   expect(getComputedStyle(document.body).backgroundColor).toBe(color);
   expect(getComputedStyle(document.documentElement).backgroundColor).toBe(color);
   expect(sampler.getBoundingClientRect().top).toBe(0);
-  expect(sampler.getBoundingClientRect().height).toBe(1);
-  expect(sampler.getBoundingClientRect().width).toBe(window.innerWidth);
+  expect(sampler.getBoundingClientRect().height).toBe(47);
+  expect(sampler.getBoundingClientRect().width).toBeGreaterThanOrEqual(window.innerWidth * 0.9);
   expect(sampler.inert).toBe(true);
-  expect(getComputedStyle(sampler).pointerEvents).toBe("none");
-  expect(document.elementsFromPoint(10, 0)).not.toContain(sampler);
+  const style = getComputedStyle(sampler);
+  expect(style.position).toBe("fixed");
+  expect(style.zIndex).toBe("50"); // Chat is 40; interactive overlays are 100+.
+  expect(style.opacity).toBe("1");
+  expect(style.backdropFilter).toBe("none");
+  expect(style.pointerEvents).toBe("none");
+  // Chromium excludes inert nodes from normal hit tests too; remove inert only
+  // for this geometric probe and restore both interaction guards immediately.
+  sampler.inert = false;
+  sampler.style.pointerEvents = "auto";
+  expect(document.elementFromPoint(window.innerWidth / 2, 4)).toBe(sampler);
+  sampler.style.removeProperty("pointer-events");
+  sampler.inert = true;
 }
 
 /**
@@ -531,6 +543,7 @@ const expectStationary = (rect: DOMRect, before: DOMRectReadOnly): void => {
 describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
   it.each(["light", "dark"] as const)("tracks the %s Dashboard and conversation without changing layout", async (scheme) => {
     await page.viewport(viewport.width, viewport.height);
+    document.documentElement.style.setProperty("--status-bar-inset", "47px");
     await commands.emulateColorScheme(scheme);
     const snapshot = bootstrap(agents, [alphaThread, cronThread, failedThread], alphaThread.id, { threadsSourceId: "alpha" });
     vi.mocked(api.bootstrap).mockResolvedValue({
@@ -544,6 +557,9 @@ describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
     const sampler = document.querySelector<HTMLElement>(".status-bar-surface")!;
     expectStatusBarSurface(shell);
     expectStatusBarSurface(dashboard);
+    for (const control of dashboard.querySelectorAll<HTMLElement>(".dashboard-header button")) {
+      expect(control.getBoundingClientRect().top).toBeGreaterThanOrEqual(sampler.getBoundingClientRect().bottom);
+    }
     expect(shell.getBoundingClientRect().height).toBe(viewport.height);
     expect(shell.getBoundingClientRect().top).toBe(0);
 
@@ -562,8 +578,13 @@ describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
     await waitFor(() => expect(chat.getBoundingClientRect().left).toBe(viewport.name === "phone" ? 0 : 340));
     await slideSettled();
     expectStatusBarSurface(chat);
+    for (const control of header.querySelectorAll<HTMLElement>("button")) {
+      if (control.getClientRects().length > 0) {
+        expect(control.getBoundingClientRect().top).toBeGreaterThanOrEqual(sampler.getBoundingClientRect().bottom);
+      }
+    }
     expect(header.getBoundingClientRect().top).toBe(0);
-    expect(getComputedStyle(header).paddingTop).toBe(viewport.name === "phone" ? "7px" : "10px");
+    expect(getComputedStyle(header).paddingTop).toBe("47px");
     for (let step = 0; step < 4; step += 1) {
       await userEvent.keyboard("{Tab}");
       expect(document.activeElement).not.toBe(sampler);
@@ -575,6 +596,7 @@ describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
 
   it("keeps the status surface and header stationary while the transcript scrolls", async () => {
     await page.viewport(viewport.width, viewport.height);
+    document.documentElement.style.setProperty("--status-bar-inset", "47px");
     vi.mocked(api.thread).mockResolvedValue(detail(alphaThread,
       `Alpha transcript\n\n${Array.from({ length: 80 }, (_, index) => `Transcript paragraph ${index}.`).join("\n\n")}`,
     ));
@@ -598,6 +620,7 @@ describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
 
   it.each(["loading", "service-error", "render-error"] as const)("preserves the distinct %s screen surface", async (state) => {
     await page.viewport(viewport.width, viewport.height);
+    document.documentElement.style.setProperty("--status-bar-inset", "47px");
     if (state === "render-error") {
       render(<RootErrorFallback />, { container: mountDocument() });
     } else {
