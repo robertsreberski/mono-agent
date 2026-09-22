@@ -290,4 +290,74 @@ describe("Pi interoperability facade", () => {
       expect(listPiBuiltinModels("provider-1")[0].id).toBe("model-1");
     });
   });
+
+  describe("pi catalog supplement (ai/pi-supplement.js)", () => {
+    it("merges the supplemented model into list/get on an upstream miss", () => {
+      piMocks.getBuiltinModels.mockReturnValue([]);
+      piMocks.getBuiltinModel.mockReturnValue(undefined);
+
+      const listed = listPiBuiltinModels("anthropic");
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({
+        id: "claude-opus-5-5",
+        name: "Claude Opus 5.5",
+        provider: "anthropic",
+      });
+      expect(piMocks.getBuiltinModels).toHaveBeenCalledWith("anthropic");
+
+      expect(getPiBuiltinModel("anthropic", "claude-opus-5-5")).toMatchObject({
+        id: "claude-opus-5-5",
+        provider: "anthropic",
+        input: ["text", "image"],
+      });
+      expect(getPiBuiltinModel("anthropic", "claude-opus-9")).toBeUndefined();
+    });
+
+    it("prefers the upstream row when pi-ai ships the supplemented id", () => {
+      const upstream = {
+        ...rawModel,
+        id: "claude-opus-5-5",
+        name: "Claude Opus 5.5 (upstream)",
+        provider: "anthropic",
+        cost: { input: 9, output: 9, cacheRead: 9, cacheWrite: 9 },
+      };
+      piMocks.getBuiltinModels.mockReturnValue([upstream]);
+      piMocks.getBuiltinModel.mockImplementation((provider, id) =>
+        id === "claude-opus-5-5" ? upstream : undefined);
+
+      const listed = listPiBuiltinModels("anthropic");
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({ id: "claude-opus-5-5", name: "Claude Opus 5.5 (upstream)" });
+
+      expect(getPiBuiltinModel("anthropic", "claude-opus-5-5")).toMatchObject({
+        name: "Claude Opus 5.5 (upstream)",
+        cost: { input: 9, output: 9, cacheRead: 9, cacheWrite: 9 },
+      });
+    });
+
+    it("snapshot-clones supplemented rows like upstream ones", () => {
+      piMocks.getBuiltinModels.mockReturnValue([]);
+      piMocks.getBuiltinModel.mockReturnValue(undefined);
+
+      const listed = listPiBuiltinModels("anthropic");
+      listed[0].cost.input = 999;
+      listed[0].input.push("video");
+      expect(listPiBuiltinModels("anthropic")[0]).toMatchObject({
+        cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+        input: ["text", "image"],
+      });
+
+      const selected = getPiBuiltinModel("anthropic", "claude-opus-5-5");
+      selected.compat.supportsTemperature = true;
+      expect(getPiBuiltinModel("anthropic", "claude-opus-5-5")).toMatchObject({
+        compat: expect.objectContaining({ supportsTemperature: false }),
+      });
+    });
+
+    it("leaves unrelated providers supplement-free", () => {
+      piMocks.getBuiltinModels.mockReturnValue([rawModel]);
+      expect(listPiBuiltinModels("provider-1")).toHaveLength(1);
+      expect(listPiBuiltinModels("provider-1")[0].id).toBe("model-1");
+    });
+  });
 });

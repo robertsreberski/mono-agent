@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add `anthropic:claude-opus-5-5` (Claude Opus 5.5) everywhere the runtime
+  reads the pi model catalog: resolution, listing, run dispatch, pricing and
+  doctor validation, with effort levels low through max. The pinned pi-ai
+  catalog does not ship it yet, so it rides a temporary supplement that stays
+  subordinate to upstream and yields to the real pi-ai row once shipped.
+
 ## 0.23.0 — Framework simplification and AgentManage (2026-09-22)
 
 - **Change a persistent subagent's model or effort on its next turn.**

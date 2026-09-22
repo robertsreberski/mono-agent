@@ -188,6 +188,69 @@ describe("resolvePiRuntimeModel — OpenCode Go DeepSeek V4.1 Flash upstream bui
   });
 });
 
+describe("resolvePiRuntimeModel — Anthropic Claude Opus 5.5 supplement", () => {
+  // pi-ai 0.87.0 does not ship this model; the row below is the mono-agent
+  // catalog supplement (ai/pi-supplement.js) mirroring the upstream opus-5 row
+  // with this model's own prices. If pi-ai ever ships the id upstream, the
+  // upstream row wins and this test pins THAT behavior instead — update the
+  // expectations to the upstream row rather than deleting the coverage.
+  it("resolves anthropic:claude-opus-5-5 exactly like a pi builtin", () => {
+    const resolved = resolvePiRuntimeModel({
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      reference: "anthropic:claude-opus-5-5",
+    }, {});
+
+    expect(resolved.model).toMatchObject({
+      id: "claude-opus-5-5",
+      name: "Claude Opus 5.5",
+      api: "anthropic-messages",
+      provider: "anthropic",
+      baseUrl: "https://api.anthropic.com",
+      reasoning: true,
+      input: ["text", "image"],
+      compat: {
+        supportsMidConvoEffort: true,
+        supportsMidConvoSystemMessages: true,
+        supportsMidConvoToolChanges: true,
+        forceAdaptiveThinking: true,
+        supportsTemperature: false,
+        supportsStrictTools: true,
+      },
+      contextWindow: 1000000,
+      maxTokens: 128000,
+      thinkingLevelMap: { off: null, minimal: null, xhigh: "xhigh", max: "max" },
+      cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+    });
+    // Thinking is always on: `off` and `minimal` are nulled in the
+    // thinkingLevelMap, so the derived levels carry no `none` entry.
+    expect(resolved.capabilities).toMatchObject({
+      tool_use: true,
+      reasoning: true,
+      reasoning_mode: "effort",
+      reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
+      reasoning_disable_supported: true,
+      vision: true,
+      json_mode: true,
+    });
+    expect(thinkingLevelForEffort("max", resolved.capabilities)).toBe("max");
+    expect(thinkingLevelForEffort("high", resolved.capabilities)).toBe("high");
+    expect(thinkingLevelForEffort("low", resolved.capabilities)).toBe("low");
+  });
+
+  it("still fails cleanly on a genuinely unknown anthropic model", () => {
+    expect(() => resolvePiRuntimeModel({
+      provider: "anthropic",
+      model: "claude-opus-9",
+      reference: "anthropic:claude-opus-9",
+    }, {})).toThrow("pi model not found: anthropic:claude-opus-9");
+    expect(retryableProviderFailureInfo({
+      errorText: "pi model not found: anthropic:claude-opus-9",
+      failureKind: "provider_unavailable",
+    })).toMatchObject({ retryable: false, subkind: "non_retryable" });
+  });
+});
+
 describe("resolvePiRuntimeModel — GPT-6 Astra metadata", () => {
   const expected = {
     openai: {

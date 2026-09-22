@@ -4139,6 +4139,19 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(sectionById(report, "credentials").status).toBe("ok");
   });
 
+  it("accepts the supplemented anthropic Claude Opus 5.5 model", async () => {
+    const authPath = await writeAuthStore({ "anthropic": { type: "api_key", key: "sk-ant-test" } });
+    const configPath = await writeCredConfig({
+      runtime: { model: "anthropic:claude-opus-5-5" },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "runtime").status).toBe("ok");
+    expect(sectionById(report, "credentials").status).toBe("ok");
+  });
+
   it("rejects an unknown exact Pi fallback before execution", async () => {
     const authPath = await writeAuthStore({
       "openai-codex": { type: "oauth", expires: FUTURE, refresh: "r" },

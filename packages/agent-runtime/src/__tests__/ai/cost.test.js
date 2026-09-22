@@ -85,6 +85,24 @@ describe("resolvePricing precedence", () => {
     })).toBeCloseTo(0.15 + 0.6, 6);
   });
 
+  it("prices the anthropic Claude Opus 5.5 supplement from its own row", () => {
+    const pricing = resolvePricing({ model: "anthropic:claude-opus-5-5" });
+    expect(getBuiltinModel).toHaveBeenCalledWith("anthropic", "claude-opus-5-5");
+    expect(pricing).toMatchObject({
+      source: "pi-catalog",
+      priced: true,
+      input: 4,
+      output: 20,
+      cacheRead: 0.2,
+      cacheWrite: 5,
+    });
+    expect(estimateCost({
+      model: "anthropic:claude-opus-5-5",
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    })).toBeCloseTo(4 + 20, 6);
+  });
+
   it("preserves colons inside model ids when consulting the catalog", () => {
     getBuiltinModel.mockReturnValue(undefined);
     const pricing = resolvePricing({ model: "amazon-bedrock:anthropic.claude-opus-4-5-20251101-v1:0" });
