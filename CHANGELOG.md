@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.23.0 — Framework simplification and AgentManage (2026-09-22)
+
 - **Change a persistent subagent's model or effort on its next turn.**
   `AgentManage({id, message, model, effort})` runs the continuation on the new
   route while the child keeps its durable session and full prior context, and
