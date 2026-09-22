@@ -145,7 +145,22 @@ cards without auth badges or controls:
 Numbers are vendor-reported percent used, clamped to 0–100, not estimates from
 session costs. A sole weekly Codex limit stays Weekly even when it occupies the
 primary slot. Reset countdowns include an absolute time on hover; vendor reset
-timestamps are authoritative (the nominal monthly period is 30 days). No Spark,
+timestamps are authoritative (the nominal monthly period is 30 days). Windows
+burning ahead of pace append one fragment to the countdown line —
+`Resets in 3d 21h · empty 3d 18h early` in amber when ahead, red when
+unsustainable (1.5x pace or more) — with the full local run-out time and pace
+on hover; on-track windows add nothing. How early the run-out lands is the
+decision, so the absolute instant stays on hover rather than in the meter.
+Windows clearly under pace instead append `· 45% unused` in muted type (at
+least 5 % unused, never a warning). Every projected
+bar also carries an on-track tick at the elapsed share of the window and a
+one-decimal pace chip beside the percentage (`1.2×`, tier-coloured when ahead,
+muted otherwise, withheld while confidence is low); the meter's accessible name
+states the elapsed share and pace so the comparison is not visual-only. The
+projection is a constant-rate extrapolation anchored at
+the measurement fetch, so stale **Last known usage** meters keep their original
+lead unchanged as wall-clock advances. The state is also
+carried in the meter's accessible name, never colour alone. No Spark,
 Codex credits, Sonnet, extra-usage, organization billing or cost meters are included. Unsupported providers
 and absent/unusable credentials add no placeholders. Successfully mapped usage
 reads using the agent’s Pi credential provide weaker **Credential OK** evidence,

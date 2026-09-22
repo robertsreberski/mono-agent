@@ -15,6 +15,11 @@ declare module "vitest" {
 }
 const touch = inject("providerUsageTouch");
 const viewport = touch ? { width: 390, height: 844 } : { width: 1280, height: 800 };
+/**
+ * Screenshot evidence is opt-in: `VITE_PROVIDER_USAGE_SHOTS=<absolute dir>`
+ * captures the burn-pace meters, and CI runs the same assertions without it.
+ */
+const shotDirectory = import.meta.env.VITE_PROVIDER_USAGE_SHOTS as string | undefined;
 const reset = new Date(Date.now() + 3_600_000).toISOString();
 const snapshot: ProviderUsageSnapshot = { schema: "mono-agent.provider-usage.v1", providers: [
   { providerId: "anthropic", label: "Claude", fetchedAt: new Date().toISOString(), stale: false, windows: [
@@ -56,7 +61,7 @@ describe("compact Agent settings subscription meters", () => {
     expect(matchMedia("(pointer: fine)").matches).toBe(!touch);
     expect(navigator.maxTouchPoints > 0).toBe(touch);
     render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
-    await screen.findByRole("progressbar", { name: "Codex Weekly used" });
+    await screen.findByRole("progressbar", { name: /Codex Weekly used/ });
     expect(screen.getAllByRole("progressbar")).toHaveLength(8);
     expect(screen.queryByRole("progressbar", { name: "Codex Session used" })).toBeNull();
     expect(screen.getByText("Pro 20x")).toBeVisible();
@@ -93,7 +98,7 @@ describe("compact Agent settings subscription meters", () => {
     expect(screen.queryByText("Usage only")).toBeNull();
     expect(copilot.querySelector(".provider-auth-state")).not.toBeNull();
     expect([...document.querySelectorAll(".provider-auth-card b")].map((element) => element.textContent)).toEqual(["Claude", "Codex", "OpenCode Go", "GitHub Copilot"]);
-    expect(screen.getByRole("progressbar", { name: "GitHub Copilot Credits used" })).toHaveAttribute("value", "42.1");
+    expect(screen.getByRole("progressbar", { name: /GitHub Copilot Credits used/ })).toHaveAttribute("value", "42.1");
     const refreshButton = screen.getByRole("button", { name: "Refresh usage" });
     expect(refreshButton).toHaveAttribute("title", "Refresh usage");
     const runButton = screen.getByRole("button", { name: "Check access" });
@@ -116,8 +121,8 @@ describe("compact Agent settings subscription meters", () => {
     expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth);
     expect(dialog.getBoundingClientRect().width).toBeLessThanOrEqual(width);
     expect(screen.getByRole("button", { name: "Save for new conversations" })).toBeVisible();
-    await waitFor(() => expect(screen.getByRole("progressbar", { name: "OpenCode Go Monthly used" })).toBeVisible());
-    expect(screen.getByRole("progressbar", { name: "GitHub Copilot Credits used" })).toBeVisible();
+    await waitFor(() => expect(screen.getByRole("progressbar", { name: /OpenCode Go Monthly used/ })).toBeVisible());
+    expect(screen.getByRole("progressbar", { name: /GitHub Copilot Credits used/ })).toBeVisible();
     const directory = import.meta.env.VITE_PROVIDER_USAGE_SHOTS;
     if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-settings-${width}x${height}-${touch ? "coarse-touch" : "fine-desktop"}-${theme}.png` });
   });
@@ -127,7 +132,7 @@ describe("compact Agent settings subscription meters", () => {
     let reject!: (error: Error) => void;
     mocks.refreshProviderUsage.mockReturnValueOnce(new Promise((_resolve, fail) => { reject = fail; }));
     render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
-    await screen.findByRole("progressbar", { name: "Codex Weekly used" });
+    await screen.findByRole("progressbar", { name: /Codex Weekly used/ });
     const button = screen.getByRole("button", { name: "Refresh usage" });
     fireEvent.click(button);
     expect(button).toBeDisabled();
@@ -140,9 +145,9 @@ describe("compact Agent settings subscription meters", () => {
     await act(async () => reject(new Error("PRIVATE_VENDOR_DETAIL")));
     await screen.findByText(/Usage refresh failed/);
     expect(button).toBeEnabled();
-    expect(screen.getByRole("progressbar", { name: "Codex Weekly used" })).toHaveAttribute("value", "48");
+    expect(screen.getByRole("progressbar", { name: /Codex Weekly used/ })).toHaveAttribute("value", "48");
     expect(document.body.textContent).not.toContain("PRIVATE_VENDOR_DETAIL");
-    expect(screen.getByRole("progressbar", { name: "GitHub Copilot Credits used" })).toHaveAttribute("value", "42.1");
+    expect(screen.getByRole("progressbar", { name: /GitHub Copilot Credits used/ })).toHaveAttribute("value", "42.1");
     expect(screen.queryByText("Usage only")).toBeNull();
     if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-settings-${name}-refresh-error.png` });
   });
@@ -151,7 +156,7 @@ describe("compact Agent settings subscription meters", () => {
     await page.viewport(viewport.width, viewport.height);
     store.selectedAgent = agent("fixture", { supportsProviderUsage: true, supportsProviderUsageRefresh: true });
     render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
-    await screen.findByRole("progressbar", { name: "GitHub Copilot Credits used" });
+    await screen.findByRole("progressbar", { name: /GitHub Copilot Credits used/ });
     expect(screen.getByRole("heading", { name: "Subscription usage" })).toBeVisible();
     expect(screen.getAllByRole("progressbar")).toHaveLength(8);
     expect(document.querySelectorAll(".provider-auth-card")).toHaveLength(4);
@@ -169,7 +174,7 @@ describe("compact Agent settings subscription meters", () => {
     const auth: ProviderAuthStatusSnapshot = await mocks.providerAuthStatus();
     mocks.providerAuthStatus.mockResolvedValue({ ...auth, providers: auth.providers.filter((provider) => provider.providerId === "openai-codex") });
     render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
-    await screen.findByRole("progressbar", { name: "Codex Weekly used" });
+    await screen.findByRole("progressbar", { name: /Codex Weekly used/ });
     expect(screen.getAllByRole("progressbar")).toHaveLength(1);
     expect([...document.querySelectorAll(".provider-auth-card b")].map((element) => element.textContent)).toEqual(["Codex"]);
     expect(screen.queryByText("GitHub Copilot")).toBeNull();
@@ -200,12 +205,68 @@ describe("compact Agent settings subscription meters", () => {
     await screen.findByRole("progressbar", { name: "GitHub Copilot Chat used" });
     expect(screen.getAllByText("GitHub Copilot")).toHaveLength(1);
     expect(screen.getByRole("progressbar", { name: "GitHub Copilot Completions used" })).toHaveAttribute("value", "25");
-    expect(screen.queryByRole("progressbar", { name: "GitHub Copilot Credits used" })).toBeNull();
+    expect(screen.queryByRole("progressbar", { name: /GitHub Copilot Credits used/ })).toBeNull();
     expect(document.querySelectorAll(".provider-auth-card")).toHaveLength(1);
     expect(document.querySelectorAll(".provider-auth-state")).toHaveLength(configured ? 1 : 0);
     expect(screen.queryAllByRole("button", { name: "Re-authenticate" })).toHaveLength(configured ? 1 : 0);
     expect(screen.queryAllByText("Usage only")).toHaveLength(0);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(viewport.width);
+  });
+
+  it("warns with two tiers when windows burn ahead of pace, keeping healthy meters unchanged", async () => {
+    await page.viewport(viewport.width, viewport.height);
+    const fetchedAt = new Date().toISOString();
+    const paceReset = new Date(Date.now() + 3.9 * 86_400_000).toISOString();
+    const lowReset = new Date(Date.now() + 6.5 * 86_400_000).toISOString();
+    mocks.providerUsage.mockResolvedValue({ schema: snapshot.schema, providers: [
+      { providerId: "anthropic", label: "Claude", fetchedAt, stale: false, windows: [
+        { kind: "session", label: "Session", usedPercent: 17, periodMs: 18000000, resetsAt: reset },
+      ] },
+      // Low confidence: half the quota burned 7 % into the week — tick only, no chip, no line.
+      { providerId: "openai-codex", label: "Codex", plan: "Pro 20x", fetchedAt, stale: false, windows: [
+        { kind: "weekly", label: "Weekly", usedPercent: 50, periodMs: 604800000, resetsAt: lowReset },
+      ] },
+      // Hard case: one unsustainable, one underutilized, one on-track window side by side.
+      { providerId: "opencode-go", label: "OpenCode Go", plan: "Go", fetchedAt, stale: false, windows: [
+        { kind: "session", label: "Session", usedPercent: 17, periodMs: 18000000, resetsAt: reset },
+        { kind: "weekly", label: "Weekly", usedPercent: 96, periodMs: 604800000, resetsAt: paceReset },
+        { kind: "monthly", label: "Monthly", usedPercent: 85, periodMs: 2592000000, resetsAt: paceReset },
+      ] },
+    ] });
+    for (const theme of ["light", "dark"] as const) {
+      await commands.emulateColorScheme(theme);
+      const view = render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+      await screen.findByRole("progressbar", { name: /OpenCode Go Weekly used/ });
+      const runouts = [...document.querySelectorAll(".provider-usage-projection.is-unsustainable, .provider-usage-projection.is-ahead")];
+      expect(runouts).toHaveLength(1);
+      const goLine = runouts[0]!;
+      expect(goLine).toHaveClass("provider-usage-projection", "is-unsustainable");
+      expect(goLine.textContent).toMatch(/empty .+ early/);
+      expect(goLine.closest(".provider-usage-window")).toContainElement(screen.getByRole("progressbar", { name: /OpenCode Go Weekly used/ }));
+      expect(screen.getByRole("progressbar", { name: "OpenCode Go Weekly used, 96 %, 44 % of the window elapsed, pace 2.2x, projected to run out before reset (unsustainable)" })).toBeVisible();
+      // Underutilized sessions note their unused share, neutrally.
+      for (const label of ["Claude Session", "OpenCode Go Session"]) {
+        const bar = screen.getByRole("progressbar", { name: new RegExp(`${label} used`) });
+        expect(bar.closest(".provider-usage-window")!.querySelector(".provider-usage-projection.is-unused")).toHaveTextContent(/\d+% unused/);
+      }
+      // On-track monthly: tick and steady chip, but no line.
+      const monthlyBar = screen.getByRole("progressbar", { name: /OpenCode Go Monthly used/ });
+      const monthlyWindow = monthlyBar.closest(".provider-usage-window")!;
+      expect(monthlyWindow.querySelector(".provider-usage-projection")).toBeNull();
+      expect(monthlyWindow.querySelector(".provider-usage-pace")).toHaveClass("is-steady");
+      expect(monthlyWindow.querySelector(".provider-usage-tick")).not.toBeNull();
+      // Low confidence: the tick is a fact, the chip and lines are withheld.
+      const codexWindow = screen.getByRole("progressbar", { name: /Codex Weekly used/ }).closest(".provider-usage-window")!;
+      expect(codexWindow.querySelector(".provider-usage-projection")).toBeNull();
+      expect(codexWindow.querySelector(".provider-usage-pace")).toBeNull();
+      const tick = codexWindow.querySelector(".provider-usage-tick")!;
+      expect(parseFloat(tick.getAttribute("style")!.match(/left: ([\d.]+)%/)![1]!)).toBeCloseTo(7.14, 1);
+      // The tick token follows body text so it reads on the fill and the track in both themes.
+      expect(getComputedStyle(tick).backgroundColor).toBe(getComputedStyle(document.body).color);
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(viewport.width);
+      if (theme === "light" && shotDirectory) await page.screenshot({ path: `${shotDirectory}/provider-usage-pace-${viewport.width}x${viewport.height}-${touch ? "coarse-touch" : "fine-desktop"}.png` });
+      view.unmount();
+    }
   });
 
 });

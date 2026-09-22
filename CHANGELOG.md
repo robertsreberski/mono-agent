@@ -17,6 +17,16 @@
   transcripts written before the rename keep the old tool name: they still
   validate, load and render as history, and nothing emits it again.
 
+- Add subscription burn-pace reporting to the `ProviderUsage` tool and the web
+  console usage meters. Both surfaces share one constant-rate projection
+  anchored at the measurement: per-window pace (1 = on track), a projected
+  run-out timestamp only when ahead of pace together with its lead time before
+  the reset (`3d 2h` shape, also inline in the meter line and the tool
+  warning), a neutral unused-share note for windows clearly under pace, and
+  `ahead`/`unsustainable` (1.5x and above) warnings. Meters also show an
+  on-track tick per bar and a one-decimal pace chip beside the percentage. The
+  v1 snapshot transport is unchanged and on-track meters stay quiet.
+
 - Make the `AskUser` and `AgentManage` tool descriptions decision-bearing. `AskUser`
   now states when to ask — before work whose scope, destination or irreversible
   effects depend on a missing decision — instead of only listing mechanics, and
