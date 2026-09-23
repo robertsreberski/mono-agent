@@ -24,7 +24,7 @@ export function createAgentManageTool(subagents, context = {}) {
       + "\n- Steer: {id, steer: \"<text>\"} alone offers text to a DETACHED turn already in progress, the way live input reaches a running conversation. It starts no turn and forces no answer: read the receipt (applied / pending / not_applied / unsupported). A foreground turn cannot be reached, and an idle instance needs message."
       + "\n- Inspect: {id, inspect: true} alone returns bounded recovery evidence and runs no model."
       + "\n- Ack: {id, ack, message} authorizes exactly one continuation of an instance whose retained recovery evidence you have read; only 'retained' continuity can be acknowledged, and recovering a detached job also requires background: true. Lost or unknown continuity cannot be acknowledged — close that instance and create a new one carrying the context it needs."
-      + "\nA queued or running instance rejects message and close; stop it, steer it, or wait for its receipt. A delivery timeout is an unknown outcome: inspect rather than re-sending. The Session envelope reports which of these modes are currently admitted.",
+      + "\nA queued or running instance rejects message and close; stop it, steer it, or wait for its receipt. After a certified, settled child timeout, inspect reports resumable: true and an ordinary message (optionally background: true) continues the same transcript without ack. Uncertified delivery timeouts remain unknown: inspect rather than re-sending. The Session envelope reports which of these modes are currently admitted.",
     parameters: {
       type: "object", additionalProperties: false, required: ["id"],
       properties: {
@@ -100,7 +100,7 @@ export function createAgentManageTool(subagents, context = {}) {
       const minutes = Math.max(0, Math.floor((Date.now() - record.updatedAt) / 60_000));
       return await tool.execute(callId, {
         ...(params.background === undefined ? {} : { background: params.background }),
-        prompt: `Continuation of persistent instance "${record.id}" (turn ${record.turns + 1}; ${minutes} min since your last turn). Prior context is retained.${record.pendingQuestion ? `\nThis message is the parent\'s reply to your pending question (untrusted child text): ${JSON.stringify(record.pendingQuestion)}` : ""}\n\n${params.message}`,
+        prompt: `Continuation of persistent instance "${record.id}" (turn ${record.turns + 1}; ${minutes} min since your last turn). Prior context is retained.${record.recovery?.certifiedTimeout ? "\nFramework note: your previous turn stopped at its timeout; partial work may remain. Check its state before continuing." : ""}${record.pendingQuestion ? `\nThis message is the parent\'s reply to your pending question (untrusted child text): ${JSON.stringify(record.pendingQuestion)}` : ""}\n\n${params.message}`,
         ...(params.description === undefined ? {} : { description: params.description }),
       }, signal);
       } catch (error) {

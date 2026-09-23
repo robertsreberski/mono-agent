@@ -812,7 +812,7 @@ export function buildSubagentsOptions(
       ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
       ...(askParentController === undefined ? {} : { askParentController }),
     };
-    const recovery = request.detached && request.instance && request.turnToken && runtime.recoverSession
+    const recovery = request.instance && request.turnToken && runtime.recoverSession
       ? { runId: request.turnToken, revision: 0 } : undefined;
     // Mirrors the harness's main-conversation gate: an unsupported route must
     // say so through the mailbox, so a parent steer reports unsupported instead
