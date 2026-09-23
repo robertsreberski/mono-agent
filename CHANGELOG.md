@@ -10,18 +10,15 @@
   new chat turn, reports token estimates or errors, and leaves automatic
   compaction thresholds unchanged.
 
-- Fix Anthropic OAuth requests for `anthropic:claude-opus-5-5` by sending the
-  Claude Code 2.1.280 identity required by the model. API-key requests and
-  other Anthropic models keep their existing identity.
+- Let Pi 0.87.1 provide Claude Opus 5.5 and GPT-6 Sol/Luna directly in model
+  discovery, runtime routing and pricing (Sol/Luna on both OpenAI and Codex).
+  Sol/Luna now have Pi's 272,000-token context window instead of the temporary
+  1,050,000-token backfill, so compaction uses the smaller limit. Anthropic
+  OAuth now uses Pi's Claude Code identity.
 
-- Add `anthropic:claude-opus-5-5` (Claude Opus 5.5), `openai-codex:gpt-6-sol`
-  (GPT-6 Sol) and `openai-codex:gpt-6-luna` (GPT-6 Luna) everywhere the runtime
-  reads the pi model catalog: resolution, listing, run dispatch, pricing and
-  doctor validation. Opus 5.5 offers effort levels low through max; the two
-  GPT-6 models offer none through max over a 1,050,000-token context, and price
-  the published above-272K-input request tier. The pinned pi-ai catalog does not
-  ship them yet, so they ride a temporary supplement that stays subordinate to
-  upstream and yields to each real pi-ai row once shipped.
+- Use Pi 0.87.1's lower GPT-5.6 Sol catalog rates: input/output $4/$20 per
+  million tokens, down from $5/$30; requests above 272,000 input tokens use
+  $8/$30 instead of $10/$45. Cache read/write rates also decrease.
 
 ## 0.23.0 — Framework simplification and AgentManage (2026-09-22)
 

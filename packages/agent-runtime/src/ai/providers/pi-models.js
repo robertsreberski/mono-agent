@@ -4,7 +4,6 @@
 // `undefined` on an unknown provider/model exactly like the old `getModel`.
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
-import { getPiSupplementModel } from "../pi-supplement.js";
 import { DEFAULT_RUNTIME_BRAND } from "../../runtime-brand.js";
 
 export const EMPTY_USAGE = {
@@ -126,15 +125,9 @@ export function resolvePiRuntimeModel(resolved, options) {
     throw new Error("invalid pi model reference: provider and model are required");
   }
   if (options.customProvider) return resolveCustomPiModel(resolved, options);
-  // pi-supplement: catalog backfill for models the pinned pi-ai does not ship
-  // yet (see ai/pi-supplement.js). The upstream catalog is authoritative and is
-  // checked FIRST so a real pi builtin always wins (pi-ai 0.87.0 carries
-  // opencode-go:deepseek-v4.1-flash and openai-codex:gpt-6-astra natively;
-  // anthropic:claude-opus-5-5 and openai-codex:gpt-6-sol/gpt-6-luna are the
-  // current backfill rows); the supplement only fills a genuine miss and flows
-  // through the identical capabilities derivation below.
-  const catalogModel = getPiModel(/** @type {*} */ (provider), model)
-    ?? getPiSupplementModel(provider, model);
+  // The upstream catalog is authoritative: every former backfill row resolves
+  // exactly as pi-ai ships it.
+  const catalogModel = getPiModel(/** @type {*} */ (provider), model);
   if (!catalogModel) {
     // Phrasing matters: this must match ai/failure.js's NON_RETRYABLE_PROVIDER_RE
     // `model[_ ]not[_ ]found` alternation so the router classifies a catalog miss

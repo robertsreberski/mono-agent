@@ -35,8 +35,6 @@ import { closePiMcpClients } from "../../agent/tools/pi-bridge.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
 import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "./pi-models.js";
-import { registerPiSupplementModels } from "../pi-supplement.js";
-import { withOpus55OAuthVersion } from "./pi-native/opus-55-oauth-compat.js";
 import {
   textFromContent,
   thinkingFromContent,
@@ -222,17 +220,6 @@ function buildRunModels(runtime, options, runtimeWarnings, providerAttributionSe
           ? {}
           : { authContext: options.providerCheckAuthContext }),
       });
-      // pi-supplement: the pi-agent-core drive path re-resolves the run's model
-      // by id inside THIS collection (`lane.models.getModel(provider, modelId)`),
-      // so a supplemented row must be registered here, not just returned by
-      // `resolvePiRuntimeModel`. Upstream ids already in the collection are left
-      // untouched (upstream wins). The `piResolvedModels` seam above stays
-      // verbatim and never receives supplements.
-      registerPiSupplementModels(models);
-      // pi-ai 0.87.0 still sends an obsolete Claude Code version for OAuth.
-      // Scope the temporary transport fix to Opus 5.5, regardless of whether
-      // its catalog row came from pi or our upstream-miss supplement.
-      withOpus55OAuthVersion(models);
     }
   }
   return withProviderCheckOutputCap(

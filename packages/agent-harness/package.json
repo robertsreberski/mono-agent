@@ -39,6 +39,6 @@
     "access": "public"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.87.0"
+    "@earendil-works/pi-ai": "0.87.1"
   }
 }

@@ -4139,10 +4139,15 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(sectionById(report, "credentials").status).toBe("ok");
   });
 
-  it("accepts the supplemented anthropic Claude Opus 5.5 model", async () => {
-    const authPath = await writeAuthStore({ "anthropic": { type: "api_key", key: "sk-ant-test" } });
+  it.each([
+    ["anthropic:claude-opus-5-5", "anthropic", { type: "api_key", key: "sk-ant-test" }],
+    ["openai-codex:gpt-6-sol", "openai-codex", { type: "oauth", expires: FUTURE, refresh: "r" }],
+    ["openai-codex:gpt-6-luna", "openai-codex", { type: "oauth", expires: FUTURE, refresh: "r" }],
+    ["openai:gpt-6-sol", "openai", { type: "api_key", key: "sk-test" }],
+  ])("accepts Pi 0.87.1 native model %s", async (model, provider, credential) => {
+    const authPath = await writeAuthStore({ [provider]: credential });
     const configPath = await writeCredConfig({
-      runtime: { model: "anthropic:claude-opus-5-5" },
+      runtime: { model },
       providers: { piAuthPath: authPath },
     });
 
@@ -4150,40 +4155,6 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
 
     expect(sectionById(report, "runtime").status).toBe("ok");
     expect(sectionById(report, "credentials").status).toBe("ok");
-  });
-
-  it.each(["gpt-6-sol", "gpt-6-luna"])(
-    "accepts the supplemented openai-codex %s model",
-    async (model) => {
-      const authPath = await writeAuthStore({
-        "openai-codex": { type: "oauth", expires: FUTURE, refresh: "r" },
-      });
-      const configPath = await writeCredConfig({
-        runtime: { model: `openai-codex:${model}` },
-        providers: { piAuthPath: authPath },
-      });
-
-      const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
-
-      expect(sectionById(report, "runtime").status).toBe("ok");
-      expect(sectionById(report, "credentials").status).toBe("ok");
-    },
-  );
-
-  it("still rejects an unknown openai-codex model the supplement does not carry", async () => {
-    const authPath = await writeAuthStore({
-      "openai-codex": { type: "oauth", expires: FUTURE, refresh: "r" },
-    });
-    const configPath = await writeCredConfig({
-      runtime: { model: "openai-codex:gpt-6-nemesis" },
-      providers: { piAuthPath: authPath },
-    });
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
-
-    const runtime = sectionById(report, "runtime");
-    expect(runtime.status).toBe("error");
-    expect(runtime.details.join("\n")).toContain("pi model not found: openai-codex:gpt-6-nemesis");
   });
 
   it("rejects an unknown exact Pi fallback before execution", async () => {

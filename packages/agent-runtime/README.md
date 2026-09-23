@@ -293,7 +293,6 @@ PiProviderAuthDescription
 PiProviderAuthInteraction
 PiProviderAuthPrompt
 PiReasoningLevel
-PiSupplementSnapshot
 ProviderCheckCode
 ProviderCheckOutcome
 RISK_TIERS
@@ -320,13 +319,11 @@ disposeAllProviderSessions
 disposeProviderSession
 generatePiNativeResponse
 getPiBuiltinModel
-getPiSupplementModel
 inferAllowlistMode
 invalidateProviderSession
 isLikelyContextTermination
 listPiBuiltinModels
 listPiBuiltinProviders
-listPiSupplementModels
 listRuntimeBridges
 loginPiOAuth
 loginPiProviderAuth
@@ -338,7 +335,6 @@ parseStoredAllowlist
 piNativeRuntimeBridge
 reasoningLevelsForPiModel
 refreshProviderSession
-registerPiSupplementModels
 renderResumeSnapshot
 resolveAgentCompactionPolicy
 resolveAllowlist
@@ -493,7 +489,6 @@ PiProviderAuthDescription
 PiProviderAuthInteraction
 PiProviderAuthPrompt
 PiReasoningLevel
-PiSupplementSnapshot
 ProviderCheckCode
 ProviderCheckOutcome
 RUNTIME_CAPABILITIES
@@ -514,11 +509,9 @@ disposeAllProviderSessions
 disposeProviderSession
 generatePiNativeResponse
 getPiBuiltinModel
-getPiSupplementModel
 invalidateProviderSession
 listPiBuiltinModels
 listPiBuiltinProviders
-listPiSupplementModels
 listRuntimeBridges
 loginPiOAuth
 loginPiProviderAuth
@@ -527,7 +520,6 @@ parseRuntimeModelReference
 piNativeRuntimeBridge
 reasoningLevelsForPiModel
 refreshProviderSession
-registerPiSupplementModels
 resolvePiOAuthApiKey
 resolveRuntimeBridge
 runPiProviderCheck
@@ -771,7 +763,12 @@ reasoning vocabulary, including `none` rather than Pi's `off`.
 Pi 0.87.0 exposes GPT-6 Astra through these same catalog APIs as
 `openai:gpt-6-astra` for OpenAI API keys and
 `openai-codex:gpt-6-astra` for Codex subscriptions; no separate model allowlist
-is maintained by mono-agent.
+is maintained by mono-agent. Pi 0.87.1 also exposes
+`anthropic:claude-opus-5-5` and `gpt-6-sol`/`gpt-6-luna` on both
+`openai` and `openai-codex` without a runtime backfill. Sol and Luna use
+Pi's 272,000-token context window
+and a pricing tier above 272,000 input tokens; Opus 5.5 supports low through
+max effort. Anthropic OAuth requests use Pi's Claude Code 2.1.280 identity.
 `resolvePiOAuthApiKey(providerId, credentials)` refreshes a caller-owned
 credential snapshot and returns `{ apiKey, newCredentials }` or `null`, while
 `loginPiOAuth(providerId, callbacks)` runs the selected supported login flow.

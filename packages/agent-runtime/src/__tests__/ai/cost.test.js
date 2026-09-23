@@ -85,43 +85,6 @@ describe("resolvePricing precedence", () => {
     })).toBeCloseTo(0.15 + 0.6, 6);
   });
 
-  it("prices the anthropic Claude Opus 5.5 supplement from its own row", () => {
-    const pricing = resolvePricing({ model: "anthropic:claude-opus-5-5" });
-    expect(getBuiltinModel).toHaveBeenCalledWith("anthropic", "claude-opus-5-5");
-    expect(pricing).toMatchObject({
-      source: "pi-catalog",
-      priced: true,
-      input: 4,
-      output: 20,
-      cacheRead: 0.2,
-      cacheWrite: 5,
-    });
-    expect(estimateCost({
-      model: "anthropic:claude-opus-5-5",
-      inputTokens: 1_000_000,
-      outputTokens: 1_000_000,
-    })).toBeCloseTo(4 + 20, 6);
-  });
-
-  it.each([
-    ["gpt-6-sol", { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }],
-    ["gpt-6-luna", { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 }],
-  ])("prices the openai-codex %s supplement from its own row", (model, rates) => {
-    const pricing = resolvePricing({ model: `openai-codex:${model}` });
-    expect(getBuiltinModel).toHaveBeenCalledWith("openai-codex", model);
-    expect(pricing).toMatchObject({ source: "pi-catalog", priced: true, ...rates });
-    // Below the 272K threshold the base rates apply; the tier is asserted
-    // separately in the estimateCost suite.
-    expect(estimateCost({
-      model: `openai-codex:${model}`,
-      inputTokens: 100_000,
-      outputTokens: 100_000,
-    })).toBeCloseTo(0.1 * rates.input + 0.1 * rates.output, 6);
-    // The supplement is scoped to `openai-codex`: the same id on `openai` has
-    // no catalog row and stays unpriced.
-    expect(resolvePricing({ model: `openai:${model}` }).source).toBe("unknown");
-  });
-
   it("preserves colons inside model ids when consulting the catalog", () => {
     getBuiltinModel.mockReturnValue(undefined);
     const pricing = resolvePricing({ model: "amazon-bedrock:anthropic.claude-opus-4-5-20251101-v1:0" });
@@ -169,8 +132,8 @@ describe("estimateCost", () => {
       outputTokens: 1_000_000,
     });
 
-    expect(atThreshold).toBeCloseTo(1.36 + 30, 6);
-    expect(aboveThreshold).toBeCloseTo(2.72001 + 45, 6);
+    expect(atThreshold).toBeCloseTo(1.088 + 20, 6);
+    expect(aboveThreshold).toBeCloseTo(2.176008 + 30, 6);
   });
 
   it.each(["openai", "openai-codex"])("delegates GPT-6 Astra tier selection for %s", (provider) => {
@@ -179,22 +142,6 @@ describe("estimateCost", () => {
       .toBeCloseTo(2.72 + 50, 6);
     expect(estimateCost({ model, inputTokens: 272_001, outputTokens: 1_000_000 }))
       .toBeCloseTo(5.44002 + 75, 6);
-  });
-
-  it.each([
-    ["gpt-6-sol", { base: 2, tier: 4, output: 10, tierOutput: 15, cacheWrite: 2.5 }],
-    ["gpt-6-luna", { base: 0.1, tier: 0.2, output: 0.5, tierOutput: 0.75, cacheWrite: 0.125 }],
-  ])("applies the supplemented %s request-wide tier above 272K input", (model, rates) => {
-    // The supplemented rows carry the published ">272K input tokens bills the
-    // FULL request at 2x input/cache and 1.5x output" rule as a pi
-    // `cost.tiers` entry, so Pi's own tier selection drives the estimate.
-    const reference = `openai-codex:${model}`;
-    expect(estimateCost({ model: reference, inputTokens: 272_000, outputTokens: 1_000_000 }))
-      .toBeCloseTo((272_000 / 1e6) * rates.base + rates.output, 6);
-    expect(estimateCost({ model: reference, inputTokens: 272_001, outputTokens: 1_000_000 }))
-      .toBeCloseTo((272_001 / 1e6) * rates.tier + rates.tierOutput, 6);
-    expect(estimateCost({ model: reference, cacheWriteTokens: 100_000 }))
-      .toBeCloseTo(0.1 * rates.cacheWrite, 6);
   });
 
   it("uses Pi's cache-write rate in the native catalog estimate", () => {
