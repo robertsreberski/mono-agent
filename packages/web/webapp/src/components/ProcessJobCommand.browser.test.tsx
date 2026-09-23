@@ -10,6 +10,7 @@ vi.mock("../api", async (importOriginal) => ({
 }));
 import { api } from "../api";
 import { ProcessJobPart } from "./ProcessJob";
+import { ProcessJobSubagentProgress } from "./ProcessJobSubagentProgress";
 
 const shotDirectory = import.meta.env.VITE_JOB_COMMAND_SHOTS as string | undefined;
 type Props = Parameters<typeof ProcessJobPart>[0];
@@ -36,7 +37,10 @@ describe("synthetic background agent job commands", () => {
       const card = screen.getByRole("group", { name: "Agent background job running" });
       card.setAttribute("open", "");
       const cluster = view.container.querySelector(".process-job-subagent-progress .activity-step")!;
-      expect(cluster.querySelector(".activity-step-summary")?.textContent).toContain("pnpm");
+      expect(cluster.querySelector(".process-job-command-preview")?.getAttribute("title"))
+        .toBe("pnpm --dir packages/web/webapp run typecheck");
+      expect(cluster.querySelector(".process-job-command-preview-mobile")?.getAttribute("title"))
+        .toBe("pnpm --dir packages/web/webapp run typecheck");
       expect(cluster.querySelector(".process-job-command-location")?.getAttribute("title")).toBe("/synthetic/work tree");
       const displayedPreview = cluster.querySelector(width === 390 ? ".process-job-command-preview-mobile" : ".process-job-command-preview")!;
       expect(displayedPreview.scrollWidth).toBeLessThanOrEqual(displayedPreview.clientWidth + 1);
@@ -53,5 +57,13 @@ describe("synthetic background agent job commands", () => {
       expect(rows[0]!.querySelector(".process-job-subagent-status")!.getBoundingClientRect().right)
         .toBeCloseTo(rows[1]!.querySelector(".process-job-subagent-status")!.getBoundingClientRect().right, 0);
       if (shotDirectory) await page.elementLocator(view.container.querySelector(".process-job-stack")!).screenshot({ path: `${shotDirectory}/synthetic-job-command-expanded-${width}.png` });
+
+      // With no running member the same cluster should describe its latest call,
+      // not the earlier command (or the previously running middle call).
+      cleanup();
+      const settled = render(<ProcessJobSubagentProgress open progress={{ ...fixture.subagentProgress, revision: 92,
+        recent: fixture.subagentProgress.recent.map((entry) => ({ ...entry, status: "complete" as const })) }} />);
+      expect(settled.container.querySelector(".process-job-command-preview")?.getAttribute("title"))
+        .toBe("echo synthetic fixture result");
     });
 });

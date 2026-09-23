@@ -91,17 +91,23 @@ export function ProcessJobSubagentProgress({ progress, open }: {
             const duration = durations.length ? formatToolDuration(durations.reduce((a, b) => a + b, 0)) : undefined;
             const formatted = calls.map((call) => formatToolPreview(call.toolName, call.argsSummary, call.workdir, 48));
             const previews = formatted.flatMap((preview) => preview === undefined ? [] : [preview.preview]);
-            const summary = formatted[0]?.command ? formatted[0].preview : clusterSummary(previews);
-            const mobileSummary = formatted[0]?.command
-              ? formatToolPreview(first.toolName, first.argsSummary, first.workdir, 26)?.preview : summary;
+            // A cluster is progress: describe its most recent running call, or its
+            // last completed call, not the oldest operation in the run.
+            const runningIndex = calls.reduce((selected, call, index) => call.status === "running" ? index : selected, -1);
+            const currentIndex = runningIndex < 0 ? calls.length - 1 : runningIndex;
+            const current = calls[currentIndex]!;
+            const currentPreview = formatted[currentIndex];
+            const summary = currentPreview?.command ? currentPreview.preview : clusterSummary(previews);
+            const mobileSummary = currentPreview?.command
+              ? formatToolPreview(current.toolName, current.argsSummary, current.workdir, 24)?.preview : summary;
             const location = formatted[0]?.location;
             const sameLocation = location !== undefined && formatted.every((preview) => preview?.location === location);
             return <ActivityStep key={first.id} toolName={calls.length > 1 ? `${first.toolName} ×${calls.length}` : first.toolName}
               summary={summary === undefined ? undefined : <span className="process-job-command-summary">
-                <span className="process-job-command-preview" title={formatted[0]?.full}>{summary}</span>
-                {formatted[0]?.command && <span className="process-job-command-preview-mobile" title={formatted[0].full}>{mobileSummary}</span>}
+                <span className="process-job-command-preview" title={currentPreview?.full}>{summary}</span>
+                {currentPreview?.command && <span className="process-job-command-preview-mobile" title={currentPreview.full}>{mobileSummary}</span>}
                 {sameLocation && <span className="process-job-command-location" title={location} aria-label={`Directory: ${location}`}>
-                  {formatted[0]?.locationLabel}
+                  {currentPreview?.locationLabel}
                 </span>}
               </span>} failed={failedLabel(failed, calls.length > 1)}
               duration={running ? "running" : duration ?? (failed ? "failed" : "complete")}>
