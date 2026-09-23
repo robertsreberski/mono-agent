@@ -9,7 +9,7 @@ import { redactSecrets } from "./redact-secrets.js";
 export type SubagentProgressEvent =
   | { readonly type: "started"; readonly profile: string; readonly label?: string }
   | { readonly type: "route"; readonly requested?: unknown; readonly executed?: unknown; readonly disposition?: unknown }
-  | { readonly type: "tool_started"; readonly id: string; readonly toolName: string; readonly argsSummary?: string }
+  | { readonly type: "tool_started"; readonly id: string; readonly toolName: string; readonly argsSummary?: string; readonly workdir?: string }
   | { readonly type: "tool_completed"; readonly id: string; readonly failed: boolean; readonly executionMs?: number };
 
 type Call = ProcessJobSubagentProgress["recent"][number];
@@ -229,7 +229,8 @@ export class SubagentJobProgress {
       if (event.type === "tool_started") {
         if (index !== -1) return false;
         const call: Call = { id: event.id, toolName: this.safe(event.toolName, 128), status: "running",
-          ...(event.argsSummary ? { argsSummary: utf8Head(redactSubagentArgumentPreview(event.argsSummary, this.secrets), 256) } : {}) };
+          ...(event.argsSummary ? { argsSummary: utf8Head(redactSubagentArgumentPreview(event.argsSummary, this.secrets), 256) } : {}),
+          ...(event.workdir ? { workdir: utf8Head(redactSubagentArgumentPreview(event.workdir, this.secrets), 256) } : {}) };
         this.value = { ...previous, toolCalls: previous.toolCalls + 1, recent: [...previous.recent, call].slice(-50) };
       } else {
         if (index !== -1 && previous.recent[index]?.status !== "running") return false;

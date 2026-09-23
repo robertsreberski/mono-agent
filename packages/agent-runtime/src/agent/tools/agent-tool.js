@@ -989,12 +989,17 @@ function reportDetachedProgress(event, report, launch = {}) {
   } else if (event.phase === "started") {
     const args = event.arguments;
     // No prompt/message or unknown-object fallback. Redaction precedes retention in the host.
+    const toolName = event.name.slice(event.name.indexOf("▸") + 1);
     const summary = args && typeof args === "object" && !Array.isArray(args)
-      ? ["file_path", "path", "filePath", "pattern", "command", "query", "url", "description", "name", "executable"]
-        .map((key) => args[key]).find((value) => typeof value === "string" && value.trim()) : undefined;
-    report({ type: "tool_started", id: event.id,
-      toolName: event.name.slice(event.name.indexOf("▸") + 1),
-      ...(summary === undefined ? {} : { argsSummary: summary }) });
+      ? toolName === "Exec" && typeof args.executable === "string"
+        ? [args.executable, ...(Array.isArray(args.args) ? args.args.filter((value) => typeof value === "string") : [])]
+          .map((value) => /[^\w@%+=:,./-]/u.test(value) ? `'${value.replaceAll("'", "'\\''")}'` : value).join(" ")
+        : ["file_path", "path", "filePath", "pattern", "command", "query", "url", "description", "name", "executable"]
+          .map((key) => args[key]).find((value) => typeof value === "string" && value.trim()) : undefined;
+    report({ type: "tool_started", id: event.id, toolName,
+      ...(summary === undefined ? {} : { argsSummary: summary }),
+      ...((toolName === "Bash" || toolName === "Exec") && typeof args?.workdir === "string" && args.workdir.trim()
+        ? { workdir: args.workdir } : {}) });
   } else if (event.phase === "completed" && !event.name.endsWith("▸?")) {
     report({ type: "tool_completed", id: event.id, failed: event.isError === true,
       ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }) });

@@ -217,6 +217,15 @@ describe("internal subagent progress projection", () => {
     expect(() => parseProcessJobProjection({ ...projection(), subagentProgress: progress })).toThrow();
   });
 
+  it("accepts a bounded optional command directory and rejects malformed locations", () => {
+    const withDirectory = { ...progress, recent: [{ ...progress.recent[0], workdir: "~/worktrees/project" }] };
+    expect(parseProcessJobProjection({ ...internal(), subagentProgress: withDirectory }))
+      .toEqual({ ...internal(), subagentProgress: withDirectory });
+    for (const workdir of ["😀".repeat(65), 17, null]) {
+      expect(isProcessJobSubagentProgress({ ...withDirectory, recent: [{ ...withDirectory.recent[0], workdir }] })).toBe(false);
+    }
+  });
+
   it("accepts absent and non-negative bounded cost while rejecting malformed prices", () => {
     const { costUsd: _costUsd, ...withoutCost } = progress;
     expect(isProcessJobSubagentProgress(withoutCost)).toBe(true);

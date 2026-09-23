@@ -103,50 +103,8 @@ const delegationPrompt = (args: unknown): string | undefined => {
   return typeof prompt === "string" && prompt.trim().length > 0 ? prompt.trim() : undefined;
 };
 
-const PREVIEW_MAX = 72;
-
-/**
- * The argument keys tools use to name what they are acting on, most specific
- * first. A path beats a pattern so `Grep` reads as the directory it searched
- * rather than the regex, which is the part an operator scans for.
- */
-const PREVIEW_KEYS = [
-  "file_path",
-  "path",
-  "filePath",
-  "pattern",
-  "command",
-  "query",
-  "url",
-  "prompt",
-  "description",
-  "name",
-] as const;
-
-/**
- * A one-line stand-in for a tool call's arguments, so a column of `Read` rows
- * says which files were read instead of repeating the tool's name.
- */
-export function toolArgumentPreview(args: unknown): string | undefined {
-  // Arguments the server truncated arrive as the head of their JSON text rather
-  // than as an object. A row still has to say what it acted on, so the string
-  // is previewed as itself instead of leaving the row anonymous.
-  if (typeof args === "string") return nonEmptyString(args) === undefined ? undefined : shortened(args);
-  if (args === null || typeof args !== "object" || Array.isArray(args)) return undefined;
-  const record = args as Record<string, unknown>;
-  const named = PREVIEW_KEYS.map((key) => nonEmptyString(record[key])).find((value) => value !== undefined);
-  const value = named ?? Object.values(record).map(nonEmptyString).find((entry) => entry !== undefined);
-  return value === undefined ? undefined : shortened(value);
-}
-
-/** A path's tail identifies it, so keep the end; anything else reads forwards. */
-function shortened(value: string): string {
-  const text = value.replace(/\s+/gu, " ").trim();
-  if (text.length <= PREVIEW_MAX) return text;
-  return text.includes("/")
-    ? `…${text.slice(text.length - (PREVIEW_MAX - 1))}`
-    : `${text.slice(0, PREVIEW_MAX - 1)}…`;
-}
+export { toolArgumentPreview } from "./tool-preview";
+import { formatToolPreview, shortenPreview } from "./tool-preview";
 
 /**
  * Read a delegation out of its data part. Deliberately defensive: the part
@@ -244,13 +202,29 @@ const clusterSubagentCalls = (
 const joinPayloads = (values: readonly unknown[]): unknown =>
   values.length === 1 ? values[0] : values.map((value) => safeJson(value)).join("\n\n");
 
+function CommandSummary({ preview, summary }: {
+  readonly preview: ReturnType<typeof formatToolPreview>;
+  readonly summary?: string;
+}) {
+  if (summary === undefined) return null;
+  if (preview?.location === undefined) return <>{summary}</>;
+  return <span className="process-job-command-summary" title={preview.location}>
+    <span className="process-job-command-preview" title={preview.location}>{summary}</span>
+    <span className="process-job-command-preview-mobile" title={preview.location}>
+      {shortenPreview(preview.full, "command", 36)}
+    </span>
+  </span>;
+}
+
 function SubagentStep({ call }: { readonly call: SubagentCallView }) {
   const repairToolCall = useToolCallRepair();
   const historyFailure = toolHistoryFailure(call.history);
+  const preview = formatToolPreview(call.toolName, call.args, undefined,
+    call.toolName === "Bash" || call.toolName === "Exec" ? 48 : 72);
   return (
     <ActivityStep
       toolName={call.toolName}
-      summary={toolArgumentPreview(call.args)}
+      summary={<CommandSummary preview={preview} summary={preview?.preview} />}
       failed={failedLabel(call.status === "failed" ? 1 : 0, false)}
       duration={call.executionMs === undefined
         ? call.status === "running" ? "running" : undefined
@@ -327,15 +301,17 @@ function SubagentClusterStep({ cluster }: { readonly cluster: SubagentCallCluste
     const failure = toolHistoryFailure(call.history);
     return failure === undefined ? [] : [failure];
   });
+  const previews = cluster.calls.map((call) => formatToolPreview(call.toolName, call.args, undefined,
+    call.toolName === "Bash" || call.toolName === "Exec" ? 48 : 72));
+  const first = previews[0];
+  const location = first?.location !== undefined && previews.every((preview) => preview?.location === first.location)
+    ? first : undefined;
+  const summary = first?.command ? first.preview
+    : clusterSummary(previews.flatMap((preview) => preview === undefined ? [] : [preview.preview]));
   return (
     <ActivityStep
       toolName={`${cluster.toolName} ×${String(cluster.calls.length)}`}
-      summary={clusterSummary(
-        cluster.calls.flatMap((call) => {
-          const preview = toolArgumentPreview(call.args);
-          return preview === undefined ? [] : [preview];
-        }),
-      )}
+      summary={<CommandSummary preview={location} summary={summary} />}
       failed={failedLabel(cluster.failedCount, true)}
       duration={cluster.executionMs === undefined ? undefined : formatToolDuration(cluster.executionMs)}
     >

@@ -20,6 +20,14 @@ describe("private subagent job progress", () => {
     expect(JSON.stringify(snapshot).length).toBeLessThan(50_000);
   });
 
+  it("retains a separate redacted command directory without leaking credentials", () => {
+    const progress = new SubagentJobProgress(["private-token"]);
+    progress.report({ type: "tool_started", id: "command", toolName: "Bash", argsSummary: "pnpm test",
+      workdir: "/repo/private-token/tests" });
+    expect(progress.snapshot().recent[0]).toMatchObject({ argsSummary: "pnpm test", workdir: "/repo/[REDACTED]/tests" });
+    expect(isProcessJobSubagentProgress(progress.snapshot())).toBe(true);
+  });
+
   it("redacts before retention and byte truncation, bounds Unicode, seals and clones snapshots", () => {
     const progress = new SubagentJobProgress(["a private credential"]);
     progress.report({ type: "started", profile: "😀".repeat(200), label: "token=hidden" });
