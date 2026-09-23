@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -204,6 +204,29 @@ describe("peer ACP client over a real spawned bridge", () => {
     await expect(f.turn()).rejects.toThrow(/AskUser interaction is unsupported.*interaction_required/u);
     expect(f.turns).toHaveLength(1);
   }, 30_000);
+
+  it("SIGKILLs an owned bridge child that ignores SIGTERM", async () => {
+    const f = await fixture();
+    const script = join(f.root, "stubborn.cjs");
+    const pidPath = join(f.root, "stubborn.pid");
+    await writeFile(script, `require('node:fs').writeFileSync(process.env.PEER_PID_PATH, String(process.pid));\nprocess.on('SIGTERM', () => {});\nsetInterval(() => {}, 1000);\n`);
+    const controller = new AbortController();
+    let pid: number | undefined;
+    const turn = runPeerAcpTurn({ sourceId: "peer-test", cliPath: script,
+      workspace: f.root, artifactDir: f.artifactDir, caller: "agent-test", conversation: "web:caller",
+      depth: 1, text: "request", env: { ...process.env, PEER_PID_PATH: pidPath },
+      signal: controller.signal, onSession: async () => {},
+    });
+    try {
+      await vi.waitFor(async () => { pid = Number(await readFile(pidPath, "utf8")); expect(pid).toBeGreaterThan(0); }, { timeout: 4_000 });
+      controller.abort();
+      await expect(turn).rejects.toThrow(/Peer ACP turn failed/u);
+      await vi.waitFor(() => expect(() => process.kill(pid!, 0)).toThrow(/ESRCH/u), { timeout: 4_000, interval: 25 });
+    } finally {
+      controller.abort();
+      if (pid !== undefined) { try { process.kill(pid, "SIGKILL"); } catch { /* already exited */ } }
+    }
+  }, 15_000);
 
   it("rejects a child spawn failure without an uncaught process error", async () => {
     const f = await fixture();
