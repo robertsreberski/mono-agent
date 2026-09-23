@@ -114,6 +114,19 @@ describe("peer ACP client over a real spawned bridge", () => {
     await expect(f.turn()).rejects.toThrow(/frame exceeds 256 KiB|transport failed/u);
   }, 30_000);
 
+  it("refuses dispatch when stop races with the signed handoff", async () => {
+    const f = await fixture();
+    const controller = new AbortController();
+    await expect(runPeerAcpTurn({
+      sourceId: "peer-test", cliPath, workspace: f.root, artifactDir: f.artifactDir,
+      caller: "agent-test", conversation: "web:caller", depth: 1, text: "request text",
+      env: { ...process.env, MONO_AGENT_TRACE_REGISTRY_DIR: join(f.root, "registry") },
+      signal: controller.signal, onSession: async () => {},
+      onActive: () => controller.abort(),
+    })).rejects.toThrow(/interrupted before dispatch/u);
+    expect(f.turns).toHaveLength(0);
+  }, 30_000);
+
   it("cancels an active ACP turn without returning a fabricated answer", async () => {
     const f = await fixture("ok", false, false, true);
     const controller = new AbortController();

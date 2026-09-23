@@ -108,6 +108,8 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
       depth: options.depth, text: options.text,
     });
     options.onActive?.(cancel);
+    // Stop may arrive while signing the handoff; never send a prompt after it.
+    if (options.signal.aborted || timeout.aborted) throw new Error("Peer turn interrupted before dispatch; prompt was not replayed.");
     const result = await connection.agent.request(methods.agent.session.prompt, {
       sessionId, prompt: [{ type: "text", text: options.text }],
       _meta: { "mono-agent.peer": handoff },
