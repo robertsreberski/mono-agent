@@ -6,6 +6,11 @@
   or a `ProposeRestart` reply card. Show interruption confirmation and durable
   progress, then report success only for a new ready process; refusals and
   unconfirmed requests stay distinct. Other channels do not receive the tool.
+- Add config-declared local `PeerAgent` calls with named ACP threads, foreground
+  replies, and optional durable background wakes on wake-capable turns. Reject
+  replayed handoffs and peer cycles; recover lost or exhausted sessions only
+  on a new explicit send, without imposing a sandbox on any turn. Peer AskUser
+  interaction relay is not supported yet; requests fail explicitly.
 
 ## 0.24.0 — JSON-only core configuration (2026-09-23)
 

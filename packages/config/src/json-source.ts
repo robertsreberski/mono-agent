@@ -146,6 +146,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly isolateProactive?: boolean;
     };
   };
+  readonly peers?: Readonly<Record<string, { readonly sourceId: string }>>;
   readonly subagents?: {
   readonly instances?: {
     /** Default true when subagents are enabled. */

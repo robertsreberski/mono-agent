@@ -88,6 +88,65 @@ Use this handshake:
 
 The bridge advertises `sessionCapabilities.resume` but not `loadSession`. Resume continues the exact mono-agent conversation without replaying history to the ACP client. A session id is accepted only when its owner-only authorization record belongs to the exact source and workspace; invented, corrupt, cross-source, pre-upgrade, and reset ids are rejected.
 
+## Call configured local peers from another mono-agent
+
+`PeerAgent` is an app-owned tool, separate from subagent profiles and from
+`acpx`. Configure a named local peer and explicitly allow the tool:
+
+```json
+{
+  "peers": { "finance": { "sourceId": "finance-ai" } },
+  "tools": { "allowedTools": ["Read", "PeerAgent"] }
+}
+```
+
+The tool lists only configured, running, bridge-compatible sources and rechecks
+before dispatch. The caller must also have a unique running local trace-source
+registration matching its artifacts directory; otherwise provenance cannot be
+attested and the send is refused. `PeerAgent({action:"send",peer:"finance",thread:"portfolio",
+message:"Summarize the latest allocation"})` waits for a bounded, labelled
+**untrusted** answer. A later send on the same caller conversation, peer and
+thread resumes the exact ACP session, including after restarting either agent;
+it never automatically replays a prompt interrupted by a restart. If the peer
+cleared its ACP session, or its bounded single-use generation ledger reaches
+1024 sends, the current send fails explicitly (`unknown_session_id` or
+`peer_session_exhausted`) without dispatch; the old session mapping is removed
+and only the next explicitly requested send starts a fresh session. A concurrent send to one thread is rejected. `PeerAgent({action:"stop",peer:"finance",
+thread:"portfolio"})` requests ACP `session/cancel` for the active turn.
+
+With a wake-capable caller origin and enabled process jobs, `background:true`
+returns a durable started job receipt and wakes **that exact originating
+conversation** at terminal settlement. ACP-served turns have no background
+wake origin: they can call further peers in the foreground only. The verified
+handoff carries depth and the signed, bounded source chain across ACP. A send
+to a source already in that chain (including itself) fails immediately rather
+than queuing behind a foreground turn on that source. The chain-depth ceiling
+still applies. Peer AskUser has **no question relay yet**: it fails with
+`interaction_required`, never an invented answer. Do not use this version for
+peer tasks expected to ask the caller questions.
+
+Peer-specific bounded ACP `_meta` carries a source-bound, owner-private HMAC
+handoff. The proof binds target source, session, caller conversation, turn
+generation, message digest and depth. The bridge validates and durably consumes
+each generation once before dispatch; replay fails closed, while exhaustion
+returns a distinct recoverable error without replay. Consumed ledgers are
+pruned when the bridge detects that their ACP session authorization is gone;
+short bounded lock contention between bridges does not immediately fail a
+valid distinct generation. It replaces the client proof with a domain-separated operator
+attestation (no raw `proof` in operator metadata); the runtime independently
+verifies before rendering an explicit Session notice that this is a request
+from another agent, not the owner's approval, and before using depth.
+Ordinary clients, including `acpx`, need no handoff and retain their existing
+behavior. Metadata and peer prompt text do not grant authority or owner
+approval. Verifying an invalid handoff never creates a secret. Peer state
+never starts a synthetic sandbox: private peer roots are added only when
+process-job protection is **already active** on that turn. Otherwise owner-only
+file permissions protect the state, without changing ordinary turns or blocking
+an unsandboxed target. An unsandboxed agent whose tools can read its own or the
+peer's handoff secret falls outside this provenance boundary, as does a
+malicious same-UID process with local secret access. Attribution remains
+advisory, never authority.
+
 ## Use through acpx
 
 A mono-agent source is an ACP agent identity, not a model. Keep model and effort selection in `mono-agent.config.json`; route the source through an ordinary acpx agent alias:

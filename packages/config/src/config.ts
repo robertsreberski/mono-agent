@@ -49,6 +49,38 @@ import {
 import type { MonoAgentConfigJson } from "./json-source.js";
 import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryWriteMode, MonoAgentConfig, PiNativeProviderConfig, RedactedMonoAgentConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentModelChoice, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
+const PEER_NAME = /^[a-z][a-z0-9-]{0,39}$/u;
+const PEER_SOURCE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
+
+/** Reject ambiguous peer aliases, prototype keys, and duplicate target identities. */
+function readPeerConfig(value: unknown): MonoAgentConfig["peers"] {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new MonoAgentConfigError("invalid_json", "peers must be an object.", { path: "peers" });
+  }
+  const result: Record<string, { sourceId: string }> = Object.create(null) as Record<string, { sourceId: string }>;
+  const sources = new Set<string>();
+  for (const [name, entry] of Object.entries(value)) {
+    if (!PEER_NAME.test(name) || name.endsWith("-") || name === "__proto__" || name === "constructor") {
+      throw new MonoAgentConfigError("invalid_json", `Invalid peer name '${name}'.`, { path: "peers" });
+    }
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)
+      || Object.keys(entry).sort().join(",") !== "sourceId"
+      || typeof (entry as { sourceId?: unknown }).sourceId !== "string"
+      || !PEER_SOURCE_ID.test((entry as { sourceId: string }).sourceId)
+      || (entry as { sourceId: string }).sourceId.includes("..")) {
+      throw new MonoAgentConfigError("invalid_json", `Peer '${name}' requires only a valid sourceId.`, { path: `peers.${name}` });
+    }
+    const sourceId = (entry as { sourceId: string }).sourceId;
+    if (sources.has(sourceId)) {
+      throw new MonoAgentConfigError("invalid_json", `Duplicate peer sourceId '${sourceId}'.`, { path: `peers.${name}.sourceId` });
+    }
+    sources.add(sourceId);
+    result[name] = { sourceId };
+  }
+  return result;
+}
+
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
   | "invalid_env"
@@ -421,6 +453,7 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
 
   const effort = readEffort(jsonString(runtimeJson?.effort, "runtime.effort"));
   const concurrency = readConcurrencyConfig(json.concurrency);
+  const peers = readPeerConfig(json.peers);
   const subagents = readSubagentsConfig(json.subagents, cwd);
   const subagentRoutes = subagentProviderRoutes(subagents);
   const runtime: MonoAgentConfig["runtime"] = {
@@ -570,6 +603,7 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
     ...(agentName === undefined ? {} : { agent: { name: agentName } }),
     runtime,
     ...(concurrency === undefined ? {} : { concurrency }),
+    ...(peers === undefined ? {} : { peers }),
     ...(subagents === undefined ? {} : { subagents }),
     context,
     tools,
@@ -705,6 +739,7 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
     ...(config.agent === undefined ? {} : { agent: { ...config.agent } }),
     runtime: { ...config.runtime },
     ...(config.concurrency === undefined ? {} : { concurrency: { ...config.concurrency } }),
+    ...(config.peers === undefined ? {} : { peers: Object.fromEntries(Object.entries(config.peers).map(([name, peer]) => [name, { ...peer }])) }),
     context: { ...config.context, selectedSkills: [...config.context.selectedSkills] },
     tools: {
       ...toolsWithoutWeb,

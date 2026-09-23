@@ -1804,6 +1804,26 @@
         }
       }
     },
+    "peers": {
+      "type": "object",
+      "description": "Named local mono-agent ACP targets; only running compatible sources can be called.",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9-]{0,39}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sourceId"
+        ],
+        "properties": {
+          "sourceId": {
+            "type": "string",
+            "pattern": "^(?!.*\\.\\.)[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$"
+          }
+        }
+      }
+    },
     "processJobs": {
       "type": "object",
       "additionalProperties": false,

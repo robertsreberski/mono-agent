@@ -80,6 +80,13 @@ describe("process-job contracts", () => {
     ]) expect(() => parseProcessJobProjection(invalid)).toThrow(TypeError);
   });
 
+  it("parses a PeerAgent job without classifying it as a managed subagent", () => {
+    const peer = { ...projection(), kind: "internal", tool: "PeerAgent", instanceId: "finance", childStillBusy: false };
+    expect(parseProcessJobProjection(peer)).toEqual(peer);
+    expect(() => parseProcessJobProjection({ ...peer, subagentQuestion: { question: "Owner approval?" } })).toThrow(TypeError);
+    expect(() => parseProcessJobProjection({ ...peer, subagentProgress: {} })).toThrow(TypeError);
+  });
+
   it("still parses a stored projection carrying the legacy AgentSend tool name", () => {
     // `AgentSend` was renamed to `AgentManage` with no alias. Jobs persisted
     // before the rename must keep loading; nothing emits the old name again.

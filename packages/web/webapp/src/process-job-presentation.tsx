@@ -37,10 +37,10 @@ export interface ProcessJobPresentation {
  * receipts and activity rows. Accepted on these read paths so old job cards
  * keep rendering identically; never emitted for new work.
  */
-export type ProcessJobToolName = "Exec" | "Bash" | "Agent" | "AgentManage" | "AgentSend";
+export type ProcessJobToolName = "Exec" | "Bash" | "Agent" | "AgentManage" | "AgentSend" | "PeerAgent";
 
 /** Accepted process-job tool names, including the legacy `AgentSend` history value. */
-export const PROCESS_JOB_TOOL_NAMES: readonly ProcessJobToolName[] = ["Exec", "Bash", "Agent", "AgentManage", "AgentSend"];
+export const PROCESS_JOB_TOOL_NAMES: readonly ProcessJobToolName[] = ["Exec", "Bash", "Agent", "AgentManage", "AgentSend", "PeerAgent"];
 
 /** Whether a stored or live process-job row belongs to a subagent tool (legacy name included). */
 export const isSubagentProcessJobTool = (tool: string): boolean =>

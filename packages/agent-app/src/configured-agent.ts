@@ -81,6 +81,8 @@ import {
   isMemoryJournalToolAllowed,
 } from "./memory-journal.js";
 import { BUILTIN_TOOL_NAMES, canonicalToolName, isAllowAllTools } from "./modules/known-tools.js";
+import { createPeerAgentRuntimeExtension } from "./peer-agent.js";
+import { verifyPeerOperatorHandoff } from "./peer-provenance.js";
 import {
   createSharedMemoryRecallRuntimeExtension,
   isSharedRecallStore,
@@ -1240,7 +1242,13 @@ async function createConfiguredAgentHarnessInternal(
   }
   const persistentSubagents = instanceRegistry === undefined ? undefined
     : createSubagentsRuntimeExtension(config, subagentDeps, instanceRegistry);
+  const peerAgent = createPeerAgentRuntimeExtension({
+    config, service: internalHooks.processJobs?.service,
+    channelId: internalHooks.processJobs?.channelId,
+    conversationScheme: internalHooks.processJobs?.conversationScheme,
+  });
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
+    peerAgent,
     memoryRecall,
     memoryJournal,
     memoryRemember,
@@ -1398,6 +1406,12 @@ async function createConfiguredAgentHarnessInternal(
       : { runtimeOptionsForManualCompaction: options.runtimeOptionsForManualCompaction }),
     // Same predicate the process-jobs extension uses, so the session block only
     // describes backgrounding on turns whose Exec/Bash actually offer it.
+    verifiedPeerCallerFor: async ({ request }) => {
+      if (request.metadata?.source !== "acp" || request.metadata.peerHandoff === undefined) return undefined;
+      const verified = await verifyPeerOperatorHandoff(config.artifacts.dir, request.metadata.peerHandoff,
+        request.conversationId, request.userMessage, config.traceability.sourceId);
+      return verified?.caller;
+    },
     backgroundSubagentsAvailable: (input) => backgroundSubagentsAvailableForRequest(input, {
       service: internalHooks.processJobs?.service,
       coreConfig: config,

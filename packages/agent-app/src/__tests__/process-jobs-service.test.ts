@@ -3532,6 +3532,31 @@ function resetStoreWorkCounter(counter: ProcessJobStoreWorkCounter): void {
   Object.assign(counter, emptyStoreWorkCounter());
 }
 
+it("delivers a bounded PeerAgent completion to the exact caller without subagent ownership", async () => {
+  const fixture = await createFixture();
+  const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+  const service = await startService(fixture, { wake });
+  await service.activateWakes();
+  const started = await service.internalController(ORIGIN, 0).startInternal({
+    kind: "internal", tool: "PeerAgent", jobId: "77777777-7777-4777-8777-777777777777",
+    instanceId: "finance", description: "Peer finance thread portfolio", wakeOnCompletion: true,
+    run: async () => ({ status: "ok", output: "[Untrusted peer answer] done", answer: "[Untrusted peer answer] done" }),
+    cleanup: async () => {},
+  });
+  await waitFor(async () => (await service.get(started.jobId))?.state === "succeeded");
+  const record = await service.get(started.jobId);
+  expect(record).toMatchObject({ tool: "PeerAgent", kind: "internal", state: "succeeded" });
+  expect(record).not.toHaveProperty("subagentOwnership");
+  expect(record?.output.preview).toContain("Untrusted peer answer");
+  await waitFor(() => wake.mock.calls.length === 1);
+  expect(wake).toHaveBeenCalledOnce();
+  expect(wake.mock.calls[0]?.[0]).toMatchObject({
+    conversationId: ORIGIN.replyToConversationId,
+    projection: { tool: "PeerAgent", kind: "internal" },
+    prompt: expect.stringContaining("<untrusted_process_job_result>"),
+  });
+});
+
 it("external and internal jobs share the same durable admission and queue", async () => {
   const fixture = await createFixture({ maxConcurrent: 1, maxQueued: 1 });
   const completion = deferred<ProcessJobProcessResult>();
