@@ -35,7 +35,8 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function setup(depth?: number | "forged", surface: "web" | "acp" = "web", eager = false, chain?: readonly string[]) {
+async function setup(depth?: number | "forged", surface: "web" | "acp" = "web", eager = false,
+  chain?: readonly string[], rejectStart = false) {
   const root = await mkdtemp(join(tmpdir(), "mono-agent-peer-tool-"));
   roots.push(root);
   const artifactDir = join(root, "artifacts");
@@ -60,11 +61,14 @@ async function setup(depth?: number | "forged", surface: "web" | "acp" = "web", 
   let pending: InternalProcessJobRequest | undefined;
   let eagerRun: Promise<unknown> | undefined;
   let admittedOrigin: unknown;
+  const settledQuestions: Array<{ jobId: string; questionId: string; state: string }> = [];
   const service = {
     settings: { maxChainDepth: 4 },
+    settlePeerQuestion: async (jobId: string, questionId: string, state: string) => { settledQuestions.push({ jobId, questionId, state }); },
     internalController: (origin: unknown) => {
       admittedOrigin = origin;
       return { startInternal: async (request: InternalProcessJobRequest) => {
+        if (rejectStart) throw new Error("Background admission refused.");
         pending = request;
         if (eager) {
           eagerRun = request.run(new AbortController().signal, () => {}, () => {});
@@ -91,7 +95,8 @@ async function setup(depth?: number | "forged", surface: "web" | "acp" = "web", 
   const spec = (extension.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-peer-agent"]!;
   const client = new Client({ name: "peer-agent-test", version: "1.0.0" });
   await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
-  return { client, config, request, factory, abort: () => requestController.abort(), pending: () => pending, eagerRun: () => eagerRun, admittedOrigin: () => admittedOrigin,
+  return { client, config, request, factory, abort: () => requestController.abort(),
+    settledQuestions: () => settledQuestions, pending: () => pending, eagerRun: () => eagerRun, admittedOrigin: () => admittedOrigin,
     close: async () => { await client.close(); await extension.cleanup?.(); },
     send: async (background = false) => await client.callTool({ name: "PeerAgent", arguments: {
       action: "send", peer: "finance", thread: "portfolio", message: "do work", background,
@@ -356,6 +361,21 @@ describe("PeerAgent request lifecycle", () => {
     } finally { await Promise.all(opened.map(async ({ client, cleanup }) => { await client.close(); await cleanup?.(); })); await f.close(); }
   });
 
+  it("retires a background peer question projection when stopped", async () => {
+    const f = await setup();
+    mocks.run.mockImplementation(parked);
+    try {
+      expect((await f.send(true)).isError).not.toBe(true);
+      const firstJob = f.pending()!;
+      const asked = await firstJob.run(new AbortController().signal, () => {}, () => {});
+      const questionId = asked.peerQuestion!.questionId;
+      const stopped = await f.client.callTool({ name: "PeerAgent", arguments: { action: "stop", peer: "finance", thread: "portfolio" } });
+      expect(stopped.isError).not.toBe(true);
+      await vi.waitFor(() => expect(f.settledQuestions()).toEqual([{ jobId: firstJob.jobId,
+        questionId, state: "interrupted" }]));
+    } finally { await f.close(); }
+  });
+
   it("settles a background question wake then a continuation wake on the exact original origin", async () => {
     const f = await setup();
     mocks.run.mockImplementation(parked);
@@ -373,6 +393,7 @@ describe("PeerAgent request lifecycle", () => {
       expect(f.admittedOrigin()).toMatchObject({ conversationId: "web:origin", replyToConversationId: "web:origin" });
       const completion = await f.pending()!.run(new AbortController().signal, () => {}, () => {});
       expect(completion).toMatchObject({ status: "ok", answer: "[Untrusted peer answer] continued" });
+      expect(f.settledQuestions()).toEqual([{ jobId: questionJob.jobId, questionId, state: "answered" }]);
     } finally { await f.close(); }
   });
   it("persists started before dispatch and binds the exact caller for terminal wake", async () => {
@@ -448,6 +469,19 @@ describe("PeerAgent request lifecycle", () => {
       expect(receipt.content).toEqual([{ type: "text", text: expect.stringContaining('"state":"started"') }]);
       expect(await f.eagerRun()).toMatchObject({ status: "ok" });
       expect(mocks.turns).toEqual(["do work"]);
+    } finally { await f.close(); }
+  });
+
+  it("removes an unadmitted peer relay and reports interruption, never stale question", async () => {
+    const f = await setup(undefined, "web", false, undefined, true);
+    try {
+      expect((await f.send(true)).isError).toBe(true);
+      const answer = await f.client.callTool({ name: "PeerAgent", arguments: { action: "answer", peer: "finance",
+        thread: "portfolio", questionId: "11111111-1111-4111-8111-111111111111",
+        answers: { question_1: "yes" } } });
+      expect(answer.isError).toBe(true);
+      expect(answer.content).toEqual([{ type: "text", text: expect.stringContaining("interrupted") }]);
+      expect(mocks.run).not.toHaveBeenCalled();
     } finally { await f.close(); }
   });
 

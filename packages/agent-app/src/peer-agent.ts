@@ -229,6 +229,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
               if (entry.background) {
                 if (!service || !entry.origin) { reservedQuestions.delete(key); throw new Error("Original peer wake origin is unavailable."); }
                 let answerAllowed = false;
+                let continuationJobId: string | undefined;
                 let continuationStarted = false;
                 let allowAnswer!: () => void;
                 const answerGate = new Promise<void>((resolve) => { allowAnswer = resolve; });
@@ -246,6 +247,9 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                         await answerGate;
                         if (!answerAllowed || signal.aborted) throw new Error("Peer answer continuation was cancelled before dispatch.");
                         await entry.relay.respond(args.questionId!, response);
+                        // Retire the *previous* question on its original job before
+                        // switching the owner to this continuation's next question.
+                        if (continuationJobId) entry.setQuestionJobId(continuationJobId);
                         const event = await entry.relay.next();
                         if (signal.aborted) throw new Error("Peer answer continuation was cancelled after dispatch.");
                         return peerJobEvent(event);
@@ -261,7 +265,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                       if (!continuationStarted) cancelParked();
                     },
                   });
-                  entry.setQuestionJobId(started.jobId);
+                  continuationJobId = started.jobId;
                   const receipt = reply(JSON.stringify({ peer: args.peer, thread: args.thread, jobId: started.jobId, state: "started" }));
                   answerAllowed = true;
                   setImmediate(allowAnswer);
