@@ -502,6 +502,25 @@ const isSteerPart = (part: Record<string, unknown>): boolean => {
     && typeof record.messageId === "string" && record.messageId.length > 0;
 };
 
+const isRestartProposalPart = (part: Record<string, unknown>): boolean => {
+  const bounded = (value: unknown, maxBytes: number): value is string =>
+    typeof value === "string" && value.length > 0 && new TextEncoder().encode(value).length <= maxBytes
+    && !/[\x00-\x1f\x7f-\x9f]/u.test(value);
+  if (!Object.keys(part).every((key) => ["type", "id", "reason", "restartable"].includes(key))
+    || !bounded(part.id, 256)) return false;
+  if (part.reason !== undefined && (!bounded(part.reason, 1_120) || (part.reason as string).length > 280
+    || (part.reason as string).trim() !== part.reason)) return false;
+  const restartable = part.restartable;
+  if (restartable === null || typeof restartable !== "object" || Array.isArray(restartable)) return false;
+  const state = restartable as Record<string, unknown>;
+  if (!Object.keys(state).every((key) => ["state", "reason", "operationId"].includes(key))
+    || !["available", "stale", "offline", "unsupported", "in_progress", "used"].includes(String(state.state))) return false;
+  if (state.reason !== undefined && !bounded(state.reason, 280)) return false;
+  return state.state === "used"
+    ? bounded(state.operationId, 128)
+    : state.operationId === undefined;
+};
+
 const isMessagePart = (value: unknown): value is MessagePart => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const part = value as Record<string, unknown>;
@@ -546,6 +565,8 @@ const isMessagePart = (value: unknown): value is MessagePart => {
       return text("id") && text("invocationId") && text("connectionId") && text("serverName")
         && text("toolName") && text("resourceUri") && text("mediaType")
         && text("protocolVersion");
+    case "restart_proposal":
+      return isRestartProposalPart(part);
     case "failure":
       return text("id") && text("code") && text("message");
     default:
