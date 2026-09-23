@@ -11,6 +11,17 @@ export interface SupervisedRestartLatch {
 }
 
 export const AGENT_RESTART_EXIT_CODE = 42;
+export const AGENT_RESTART_EXIT_FALLBACK_MS = 10_000;
+
+/** Graceful exit wins normally; only a leaked referenced handle needs forced relaunch. */
+export function armAcceptedRestartExitFallback(options: {
+  readonly exit?: (code: number) => void;
+  readonly schedule?: (handler: () => void, ms: number) => NodeJS.Timeout;
+} = {}): void {
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+  const timer = (options.schedule ?? setTimeout)(() => exit(AGENT_RESTART_EXIT_CODE), AGENT_RESTART_EXIT_FALLBACK_MS);
+  timer.unref();
+}
 
 export function createSupervisedRestartLatch(): SupervisedRestartLatch {
   let phase: "available" | "accepted" | "stopping" | "stopping-without-restart" = "available";

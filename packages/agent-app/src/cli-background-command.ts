@@ -879,7 +879,7 @@ export function waitForShutdownSignal(
           }
           // Resolve so runForeground's finally block can retry idempotent app
           // cleanup and release the process-lifetime singleton lease.
-          resolve(1);
+          resolve(restartLatch?.exitCode || 1);
         }
       })();
     };
