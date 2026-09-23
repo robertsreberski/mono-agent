@@ -175,7 +175,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     "maxConcurrent": 4,                   // cap 32
     "maxActivePerConversation": 2,        // cap 8
     "maxQueued": 8,                       // cap 64
-    "maxRuntimeMs": 1800000,              // 30 min; cap 24 h
+    "maxRuntimeMs": 1800000,              // 30 min; cap 24 h; use > 14415000 for full four-hour detached child turns
     "maxQueueAgeMs": 300000,              // 5 min; cap 1 h
     "maxOutputBytes": 1048576,            // 1 MiB; cap 8 MiB
     "previewChars": 2000,                 // cap 8000
@@ -187,7 +187,14 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     }
   },
 
-
+  // Optional native child delegation. Both timeout fields accept 1000–14400000 ms.
+  // Detached children stop at min(child timeout, remaining job time less 10%/15s
+  // settlement reserve); the process-job hard deadline stays authoritative.
+  "subagents": {
+    "enabled": true,
+    "timeoutMs": 14400000,
+    "definitions": [{ "name": "researcher", "description": "Research", "prompt": "Read and summarize evidence.", "timeoutMs": 14400000 }]
+  },
 
   // Human-in-the-loop bridge: structured blocking AskUser plus
   // run-scoped project-MCP progress. It auto-starts when either ask tool is

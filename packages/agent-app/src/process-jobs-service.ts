@@ -830,7 +830,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     const status = (["ok", "awaiting_reply", "timeout", "cancelled", "empty", "interrupted", "busy"].includes(outcome.status) ? outcome.status : "failed") as SubagentDisposition["status"];
     const incomingFailure = !["ok", "awaiting_reply", "busy"].includes(status);
     const certifiedTimeout = outcome.certifiedTimeout === true && status === "timeout" && !owner.parentStopRequested
-      && owner.owner.settlement === "settled" && outcome.continuity?.turnToken === owner.turnToken && outcome.continuity.state === "retained";
+      && owner.owner.settlement === "settled" && (!owner.disposition?.reason || owner.disposition.reason === "timeout")
+      && outcome.continuity?.turnToken === owner.turnToken && outcome.continuity.state === "retained";
     const continuity = outcome.failureKind === "session_continuity_lost" ? "lost"
       : certifiedTimeout ? "retained"
       : owner.parentStopRequested && outcome.continuity?.turnToken === owner.turnToken ? outcome.continuity.state

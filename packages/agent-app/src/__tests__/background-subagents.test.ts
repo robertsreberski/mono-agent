@@ -1264,7 +1264,7 @@ describe("detached persistent subagents", () => {
   it.each(["timeout", "cancel"])("reports unresolved %s once, retains the lock/question, and keeps an unknown-continuity fence after late settlement", async (mode) => {
     const f = await fixture(); const gate = deferred<any>();
     const { agent, send, options } = tools(f, async (request) => { await f.instances.markAwaiting(request.instance.id, { question: "Scope?" }); return gate.promise; },
-      { timeoutMs: mode === "timeout" ? 30 : 60_000 });
+      { timeoutMs: mode === "timeout" ? 1_500 : 60_000 });
     const receipt = await agent.execute("a", { persist: true, background: true, id: "helper", prompt: "work" });
     if (mode === "cancel") await f.service.cancel(receipt.details.jobId);
     await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: 8000 });
@@ -1402,6 +1402,50 @@ it.each(["missing", "run", "revision", "session", "model", "tip", "false", "thro
   expect(runtime.run.mock.calls[0]?.[1]).toMatchObject({ sessionRecovery: { runId: turnToken, revision: 0 } });
   expect(recoverSession).toHaveBeenCalledTimes(["false", "throw"].includes(fault) ? 1 : 0);
 });
+
+it("certified detached child timeout resumes a real Pi transcript without ack, including another detached turn", async () => {
+  const owner = createMonoRuntime();
+  const f = await managedFixture(async (id, root) => owner.retireDurableSession!(id, root));
+  try {
+    const config = resolveJsonMonoAgentConfig({ cwd: f.root, json: {
+      runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: resolve(f.root, "IDENTITY.md") },
+      tools: { allowedTools: ["Agent", "AgentManage"] },
+      subagents: { enabled: true, timeoutMs: 1_500, instances: { root: resolve(f.root, "children") } },
+    } });
+    const piPath = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
+    const { createModels, fauxProvider, fauxAssistantMessage, fauxText } = await import(piPath);
+    const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
+    const models = createModels(); models.setProvider(faux.provider);
+    const calls: any[] = [];
+    const runtime = { recoverSession: owner.recoverSession!.bind(owner), run: async (prompt: string, options: any) => {
+      calls.push(options);
+      return generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models,
+        resolvePiApiKey: async () => "faux-key" });
+    } };
+    const subagents: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
+      { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
+    subagents.backgroundSubagentController = f.service.internalController(origin, 0);
+    const access = { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) };
+    const agent = createAgentTool(subagents, { model: config.runtime.model, recoveryAccess: access });
+    const send = createAgentManageTool(subagents, { model: config.runtime.model, recoveryAccess: access });
+    faux.setResponses([async (_context: any, options: any) => {
+      await new Promise<void>((resolve) => options.signal.addEventListener("abort", () => resolve(), { once: true }));
+      return fauxAssistantMessage([fauxText("unfinished native work")], { stopReason: "aborted" });
+    }]);
+    const first = await agent.execute("timeout", { id: "helper", persist: true, background: true, prompt: "original transcript marker" });
+    await done(f.service, first.details.jobId);
+    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.recovery).toMatchObject({ reason: "timeout", continuity: "retained", certifiedTimeout: true }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    expect((await send.execute("inspect", { id: "helper", inspect: true })).details.recovery).toMatchObject({ status: "ready", resumable: true, recovery: { certifiedTimeout: true } });
+    let resumed: any;
+    faux.setResponses([(context: any) => { resumed = context; return fauxAssistantMessage([fauxText("done")]); }]);
+    const second = await send.execute("resume", { id: "helper", background: true, message: "finish task" });
+    expect((await done(f.service, second.details.jobId)).state).toBe("succeeded");
+    expect(calls[1].sessionId).toBe(calls[0].sessionId);
+    expect(JSON.stringify(resumed.messages)).toContain("original transcript marker");
+    expect(JSON.stringify(resumed.messages)).toContain("finish task");
+    expect(JSON.stringify(resumed.messages)).toContain("previous turn stopped at its timeout");
+  } finally { await owner.disposeAllSessions?.(); }
+}, 30_000);
 
 it("stop seals first and resumed tool-bearing turns on the same native session", async () => {
   const owner = createMonoRuntime();
@@ -1778,7 +1822,7 @@ it("normalizes oversized and duplicate AskParent options before strict projectio
 });
 
 it.each(["timeout", "cancel"])("records cooperative process-job %s in both job and instance", async (mode) => {
-  const f = await fixture({ maxRuntimeMs: mode === "timeout" ? 50 : 60_000 });
+  const f = await fixture({ maxRuntimeMs: mode === "timeout" ? 1_500 : 60_000 });
   const { agent } = tools(f, (r) => new Promise((resolve) => {
     const settle = () => resolve({ text: "partial", usage: { input_tokens: 2 } });
     if (r.abortSignal.aborted) settle(); else r.abortSignal.addEventListener("abort", settle, { once: true });

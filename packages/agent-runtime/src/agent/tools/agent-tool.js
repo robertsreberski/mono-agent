@@ -487,8 +487,12 @@ export function createAgentTool(subagents, context = {}, continuation) {
           throw new Error("tool execution aborted");
         }
         const configuredTimeoutMs = positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS));
-        const remainingChildBudget = execution ? Math.floor(execution.deadlineAt - Date.now() - JOB_SETTLEMENT_MARGIN_MS) : configuredTimeoutMs;
-        if (execution && remainingChildBudget < 1_000) {
+        const jobRemainingMs = execution ? Math.floor(execution.deadlineAt - Date.now()) : undefined;
+        // Small test/operational jobs reserve ten percent; long jobs reserve up to 15s.
+        // This never moves the hard job deadline or admits a child with no time left.
+        const settlementMarginMs = jobRemainingMs === undefined ? 0 : Math.min(JOB_SETTLEMENT_MARGIN_MS, Math.max(1, Math.floor(jobRemainingMs / 10)));
+        const remainingChildBudget = jobRemainingMs === undefined ? configuredTimeoutMs : jobRemainingMs - settlementMarginMs;
+        if (execution && remainingChildBudget < 1) {
           releaseSlot();
           throw new Error("Subagent provider admission refused: insufficient job runtime remains for child settlement.");
         }

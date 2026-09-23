@@ -18,7 +18,7 @@ const piPath: string = fileURLToPath(new URL("../../../agent-runtime/node_module
 const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall, getCurrentTools } = await import(piPath);
 
 describe("app persistent subagent durable sessions", () => {
-  it.each(["loss", "late-timeout"])("G07: configured foreground Pi %s stays registry-only and requires explicit replacement", async (mode) => {
+  it.each(["loss", "late-timeout"])("G07: configured foreground Pi %s requires native continuity before ordinary resume", async (mode) => {
     const root = await mkdtemp(resolve(process.cwd(), "node_modules/.foreground-recovery-")); const owner = createMonoRuntime();
     let deliver!: () => void; const delivery = new Promise<void>((done) => { deliver = done; });
     let nativeReturned = false;
@@ -33,7 +33,7 @@ describe("app persistent subagent durable sessions", () => {
       const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
       const models = createModels(); models.setProvider(faux.provider);
       const calls: Record<string, unknown>[] = [];
-      const runtime = { run: async (prompt: string, options: Record<string, unknown>) => {
+      const runtime = { recoverSession: owner.recoverSession!.bind(owner), run: async (prompt: string, options: Record<string, unknown>) => {
         calls.push(options);
         const first = calls.length === 1;
         // Fault at the real native handoff: execute outside the requested epoch,
@@ -71,24 +71,38 @@ describe("app persistent subagent durable sessions", () => {
         deliver(); await vi.waitFor(async () => expect((await handle.get("critic"))?.status).toBe("idle"), { timeout: 3000 });
       }
       const inspected = await send.execute("inspect-settled", { id: "critic", inspect: true });
-      expect(inspected.details).toMatchObject({ executed: false, recovery: { status: "structured_job_recovery_unavailable",
-        recovery: { reason: mode === "loss" ? "session_continuity_lost" : "timeout", continuity: mode === "loss" ? "lost" : "unknown" } } });
-      expect(inspected.details.recovery.ack).toBeUndefined(); expect(inspected.details.recovery.jobId).toBeUndefined();
-      expect(inspected.details.recovery.facts).toBeUndefined();
       const persisted = JSON.parse(await readFile(resolve(subagentConversationRoot(resolve(root, "children"), "foreground-recovery"), "instances.json"), "utf8"))[0];
       expect(persisted.ownerLink).toBeUndefined(); expect(persisted.ownerReceipt).toBeUndefined();
       expect(calls[0]?.ownedForegroundProcesses).toBeUndefined(); expect(calls[0]?.toolLimits).toBeUndefined();
-      await expect(send.execute("replay-settled", { id: "critic", message: "must not infer retained context" })).rejects.toThrow("subagent_recovery_required");
-      expect(calls).toHaveLength(1);
-      await send.execute("close", { id: "critic", close: true });
-      let replacementContext: unknown;
-      faux.setResponses([(input: unknown) => { replacementContext = input; return fauxAssistantMessage([fauxText("explicit replacement succeeded")]); }]);
-      const replacement = await agent.execute("replacement", { id: "critic", persist: true, prompt: "explicitly supplied fresh context" });
-      expect(replacement.details.subagent.status).toBe("ok"); expect(calls).toHaveLength(2);
-      expect(JSON.stringify(replacementContext)).toContain("explicitly supplied fresh context");
-      expect(JSON.stringify(replacementContext)).not.toContain("first foreground task");
-      expect((await handle.get("critic"))!.incarnation).not.toBe(original.incarnation);
-      await send.execute("close-replacement", { id: "critic", close: true });
+      if (mode === "late-timeout") {
+        expect(inspected.details.recovery).toMatchObject({ status: "ready", resumable: true,
+          recovery: { reason: "timeout", continuity: "retained", certifiedTimeout: true } });
+        expect(inspected.details.recovery.ack).toBeUndefined();
+        let context: { messages: { role: string; content: unknown }[] } | undefined;
+        faux.setResponses([(input: typeof context) => { context = input; return fauxAssistantMessage([fauxText("continued same child")]); }]);
+        const resumed = await send.execute("resume", { id: "critic", message: "check unfinished work" });
+        expect(resumed.details.subagent.status).toBe("ok");
+        expect(calls[1]?.sessionId).toBe(calls[0]?.sessionId);
+        expect(JSON.stringify(context?.messages)).toContain("first foreground task");
+        expect(JSON.stringify(context?.messages)).toContain("check unfinished work");
+        expect(JSON.stringify(context?.messages)).toContain("previous turn stopped at its timeout");
+        await send.execute("close-resumed", { id: "critic", close: true });
+      } else {
+        expect(inspected.details).toMatchObject({ executed: false, recovery: { status: "structured_job_recovery_unavailable",
+          recovery: { reason: "session_continuity_lost", continuity: "lost" } } });
+        expect(inspected.details.recovery.ack).toBeUndefined(); expect(inspected.details.recovery.jobId).toBeUndefined();
+        await expect(send.execute("replay-settled", { id: "critic", message: "must not infer retained context" })).rejects.toThrow("subagent_recovery_required");
+        expect(calls).toHaveLength(1);
+        await send.execute("close", { id: "critic", close: true });
+        let replacementContext: unknown;
+        faux.setResponses([(input: unknown) => { replacementContext = input; return fauxAssistantMessage([fauxText("explicit replacement succeeded")]); }]);
+        const replacement = await agent.execute("replacement", { id: "critic", persist: true, prompt: "explicitly supplied fresh context" });
+        expect(replacement.details.subagent.status).toBe("ok"); expect(calls).toHaveLength(2);
+        expect(JSON.stringify(replacementContext)).toContain("explicitly supplied fresh context");
+        expect(JSON.stringify(replacementContext)).not.toContain("first foreground task");
+        expect((await handle.get("critic"))!.incarnation).not.toBe(original.incarnation);
+        await send.execute("close-replacement", { id: "critic", close: true });
+      }
     } finally { deliver(); await owner.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
   }, 15_000);
 
