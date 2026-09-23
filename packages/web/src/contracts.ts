@@ -618,9 +618,19 @@ export interface WebToolCall {
   readonly argsDigest?: string;
 }
 
+export type WebRestartProposalAvailability =
+  | "available" | "stale" | "offline" | "unsupported" | "in_progress" | "used";
+
 export type WebMessagePart =
   | WebConversationMarkerPart
   | { readonly type: "text"; readonly text: string }
+  | {
+      readonly type: "restart_proposal";
+      readonly id: string;
+      readonly reason?: string;
+      /** Computed by the web service, not persisted or supplied by the agent. */
+      readonly restartable?: { readonly state: WebRestartProposalAvailability; readonly reason?: string };
+    }
   | { readonly type: "reasoning"; readonly text: string }
   | WebCronReplyContextPart
   | ({ readonly type: "tool-call" } & WebToolCall)

@@ -11,6 +11,47 @@ const deadline = "2026-09-23T10:02:00.000Z";
 const input = { sourceId: "one", generation: "generation-1", requestedAt, deadline, approximateRunningTurns: 2 };
 
 describe("durable restart operations", () => {
+  it("atomically binds one sanitized reply part to its persisted thread source and originating process across reopen", async () => {
+    const root = await temporaryRoot(); roots.push(root);
+    const stateDir = join(root, "state");
+    const store = await WebStore.open({ stateDir });
+    const agent = (sourceId: string) => ({
+      sourceId, generation: "generation-1", label: sourceId, status: "online" as const,
+      supportsAttachments: false, updatedAt: requestedAt,
+      runSettings: { config: {}, override: null, effective: { modelSource: "config" as const, effortSource: "config" as const } },
+    });
+    store.replaceAgents([agent("one"), agent("other")]);
+    const thread = store.createThread("one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "question", attachmentIds: [] });
+    store.completeTurn(turn.turnId, "reply", {}, [{ type: "restart_proposal", id: "proposal-one", reason: "Short\nreason" },
+      { type: "restart_proposal", id: "second", reason: "Another" }] as never,
+    { replyProcessGeneration: "generation-1" });
+    const part = store.getMessage(turn.assistantMessageId)?.parts.find((p) => p.type === "restart_proposal");
+    expect(part).toEqual({ type: "restart_proposal", id: "proposal-one", reason: "Short reason" });
+    expect(store.getMessage(turn.assistantMessageId)?.parts.filter((p) => p.type === "restart_proposal")).toHaveLength(1);
+    expect(store.restartProposalBinding(turn.assistantMessageId, "proposal-one")).toMatchObject({
+      sourceId: "one", threadId: thread.id, generation: "generation-1",
+    });
+    const forged = store.beginTurn({ threadId: thread.id, text: "next", attachmentIds: [] });
+    store.completeTurn(forged.turnId, "reply", {}, [{ type: "restart_proposal", id: "forged",
+      sourceId: "other", generation: "generation-other", url: "http://elsewhere" }] as never,
+    { replyProcessGeneration: "generation-1" });
+    expect(store.getMessage(forged.assistantMessageId)?.parts.some((p) => p.type === "restart_proposal")).toBe(false);
+    expect(store.restartProposalBinding(forged.assistantMessageId, "forged")).toBeUndefined();
+    const operation = store.createRestartOperation({ ...input, sourceId: "one" }).operation;
+    expect(store.claimRestartProposalOperation(turn.assistantMessageId, "proposal-one", "other", "generation-1", operation.id)).toBe(false);
+    expect(store.claimRestartProposalOperation(turn.assistantMessageId, "proposal-one", "one", "generation-1", operation.id)).toBe(true);
+    expect(store.claimRestartProposalOperation(turn.assistantMessageId, "proposal-one", "one", "generation-1", operation.id)).toBe(false);
+    store.close();
+    const reopened = await WebStore.open({ stateDir });
+    try {
+      expect(reopened.restartProposalBinding(turn.assistantMessageId, "proposal-one"))
+        .toMatchObject({ sourceId: "one", operationId: operation.id });
+      expect(reopened.getMessage(turn.assistantMessageId)?.parts).toContainEqual(part);
+      expect(reopened.restartProposalBinding(turn.assistantMessageId, "second")).toBeUndefined();
+    } finally { reopened.close(); }
+  });
+
   it("writes before dispatch, deduplicates active requests and retains accepted state across reopen", async () => {
     const root = await temporaryRoot(); roots.push(root);
     const stateDir = join(root, "state");

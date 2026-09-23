@@ -93,6 +93,7 @@ export type {
   WebAgentRestartStage,
   WebAgentRestartOutcome,
   WebAgentRestartOperation,
+  WebRestartProposalAvailability,
   WebAttachment,
   WebBootstrap,
   WebBootstrapScope,

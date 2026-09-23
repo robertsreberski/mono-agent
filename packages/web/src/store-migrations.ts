@@ -258,6 +258,10 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
       throw new Error("Invalid active-restart uniqueness fence.");
     }
   } },
+  { version: 36, name: "restart-proposal-bindings", up: ({ database }) => {
+    assertColumns(database, "restart_proposal_bindings", ["message_id", "part_id", "thread_id", "source_id", "generation", "operation_id"]);
+    assertIndex(database, "restart_proposal_bindings_by_source", ["source_id", "generation"]);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -316,6 +320,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       notification_deliveries: ["message_id", "job_id", "run_id"],
       agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
       restart_operations: ["id", "source_id", "generation", "operation_id", "requested_at", "deadline", "stage", "outcome", "reason", "uncertain", "approximate_running_turns"],
+      restart_proposal_bindings: ["message_id", "part_id", "thread_id", "source_id", "generation", "operation_id"],
       messages: ["seq", "cron_suppressed"],
       message_search_writes: ["message_id"],
       process_job_cards: ["state", "completed_at"],
@@ -390,6 +395,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ["cron_reply_operations_one_pending_run", ["source_id", "job_id", "run_id"]],
       ["thread_tags_by_tag", ["tag_id", "thread_id"]],
       ["restart_operations_one_active_source", ["source_id"]],
+      ["restart_proposal_bindings_by_source", ["source_id", "generation"]],
       ["projects_by_source", ["source_id", "archived_at", "updated_at", "id"]],
       ["threads_by_project", ["project_id", "archived_at", "updated_at", "id"]],
     ] as const) assertIndex(database, index, expected);
@@ -412,6 +418,9 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ["monitor_wake_deliveries", "turn_id", "turns", "SET NULL"],
       ["cron_run_messages", "message_id", "messages", "CASCADE"],
       ["web_submissions", "thread_id", "threads", "CASCADE"],
+      ["restart_proposal_bindings", "message_id", "messages", "CASCADE"],
+      ["restart_proposal_bindings", "thread_id", "threads", "CASCADE"],
+      ["restart_proposal_bindings", "source_id", "agents", "CASCADE"],
     ] as const) {
       const keys = database.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{
         from: string; table: string; to: string; on_delete: string;

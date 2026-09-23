@@ -13,6 +13,7 @@ import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   AGENT_LIVE_INPUT_MAX_MESSAGES,
   MAX_AGENT_REPLY_PARTS,
+  sanitizeRestartProposalReason,
   classifyNotifySuppression,
   NOTHING_TO_REPORT_SENTINEL,
   type AgentReplyPart,
@@ -847,6 +848,15 @@ export interface UpsertWebProcessJobCardInput {
   readonly replyParts?: readonly AgentReplyPart[];
 }
 
+export interface StoredRestartProposalBinding {
+  readonly messageId: string;
+  readonly partId: string;
+  readonly threadId: string;
+  readonly sourceId: string;
+  readonly generation: string;
+  readonly operationId?: string;
+}
+
 export interface StoredRestartOperation extends WebAgentRestartOperation {
   readonly generation: string;
   readonly operationId?: string;
@@ -877,6 +887,27 @@ function storedRestartOperation(row: RestartOperationRow): StoredRestartOperatio
 const STREAM_SEQUENCE_CONFLICT = Symbol("stream sequence conflict");
 
 export class WebStore {
+  restartProposalBinding(messageId: string, partId: string): StoredRestartProposalBinding | undefined {
+    const row = this.database.prepare(`SELECT message_id, part_id, thread_id, source_id, generation, operation_id
+      FROM restart_proposal_bindings WHERE message_id = ? AND part_id = ?`).get(messageId, partId) as unknown as {
+        message_id: string; part_id: string; thread_id: string; source_id: string;
+        generation: string; operation_id: string | null;
+      } | undefined;
+    return row === undefined ? undefined : {
+      messageId: row.message_id, partId: row.part_id, threadId: row.thread_id,
+      sourceId: row.source_id, generation: row.generation,
+      ...(row.operation_id === null ? {} : { operationId: row.operation_id }),
+    };
+  }
+
+  /** CAS link: the part and web operation must still belong to the same agent. */
+  claimRestartProposalOperation(messageId: string, partId: string, sourceId: string, generation: string, operationId: string): boolean {
+    return this.database.prepare(`UPDATE restart_proposal_bindings SET operation_id = ?
+      WHERE message_id = ? AND part_id = ? AND source_id = ? AND generation = ? AND operation_id IS NULL
+        AND EXISTS (SELECT 1 FROM restart_operations WHERE id = ? AND source_id = ? AND generation = ?)`)
+      .run(operationId, messageId, partId, sourceId, generation, operationId, sourceId, generation).changes === 1;
+  }
+
   /** Durable before dispatch: an unacknowledged crash must never recover as a success. */
   createRestartOperation(input: {
     readonly sourceId: string; readonly generation: string;
@@ -4631,7 +4662,7 @@ export class WebStore {
     finalText?: string,
     metadata?: Readonly<Record<string, unknown>>,
     replyParts?: readonly AgentReplyPart[],
-    options: { readonly suppressResponsePush?: boolean; readonly hostWakeDeliveryKey?: string } = {},
+    options: { readonly suppressResponsePush?: boolean; readonly hostWakeDeliveryKey?: string; readonly replyProcessGeneration?: string } = {},
   ): StoredTurnFinish {
     const runtime = runtimeMetadata(metadata);
     return this.finishTurn(
@@ -4644,6 +4675,7 @@ export class WebStore {
       replyParts,
       options.suppressResponsePush === true,
       options.hostWakeDeliveryKey,
+      options.replyProcessGeneration,
     );
   }
 
@@ -5228,6 +5260,17 @@ export class WebStore {
       );
       CREATE INDEX IF NOT EXISTS messages_by_thread ON messages(thread_id, created_at);
       CREATE INDEX IF NOT EXISTS messages_by_turn ON messages(turn_id);
+      CREATE TABLE IF NOT EXISTS restart_proposal_bindings (
+        message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        part_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        generation TEXT NOT NULL CHECK (length(generation) > 0),
+        operation_id TEXT UNIQUE REFERENCES restart_operations(id),
+        PRIMARY KEY (message_id, part_id)
+      );
+      CREATE INDEX IF NOT EXISTS restart_proposal_bindings_by_source
+        ON restart_proposal_bindings(source_id, generation);
       CREATE TABLE IF NOT EXISTS live_inputs (
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -5892,6 +5935,7 @@ export class WebStore {
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
     hostWakeDeliveryKey?: string,
+    replyProcessGeneration?: string,
   ): StoredTurnFinish {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") {
@@ -5907,6 +5951,7 @@ export class WebStore {
       replyParts,
       suppressResponsePush,
       hostWakeDeliveryKey,
+      replyProcessGeneration,
     ));
     return {
       ...this.requireThreadDetail(turn.thread_id),
@@ -5924,6 +5969,7 @@ export class WebStore {
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
     hostWakeDeliveryKey?: string,
+    replyProcessGeneration?: string,
   ): StoredMessageWrite | undefined {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") return undefined;
@@ -5963,6 +6009,20 @@ export class WebStore {
         turnId,
       );
     const delta = this.writeMessageDelta(existing, parts, now, { status });
+    if (status === "complete" && thread.trigger === undefined && replyProcessGeneration !== undefined
+      && replyProcessGeneration.length > 0) {
+      // The source comes from this message's persisted thread. The generation
+      // comes from the operator client that actually ran the turn, NOT model
+      // metadata or a later discovery pass. Persist the binding in the same
+      // transaction as the reply part; raw transcript reads expose neither.
+      const proposal = parts.find((part) => part.type === "restart_proposal");
+      if (proposal?.type === "restart_proposal") {
+        this.database.prepare(`INSERT INTO restart_proposal_bindings
+          (message_id, part_id, thread_id, source_id, generation) VALUES (?, ?, ?, ?, ?)`).run(
+          existing.id, proposal.id, thread.id, thread.sourceId, replyProcessGeneration,
+        );
+      }
+    }
     this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
       .run(now, turn.thread_id);
     this.applyPendingProjectMembership(turn.thread_id, now, turnId);
@@ -8166,7 +8226,7 @@ const REPLY_FAILURE_CODES = new Set([
 
 const REPLY_PARTS_TRUNCATED_ID = "web-reply-parts-truncated";
 const INVALID_REPLY_PART_ID = "invalid-rich-part";
-type DurableWebReplyPart = Extract<WebMessagePart, { type: "attachment" | "mcp_app" | "failure" }>;
+type DurableWebReplyPart = Extract<WebMessagePart, { type: "attachment" | "mcp_app" | "restart_proposal" | "failure" }>;
 
 /**
  * The SQLite boundary does not trust the operator wire parser. A truncated
@@ -8204,7 +8264,7 @@ function replyPartIdCounts(values: readonly unknown[]): Map<string, number> {
 }
 
 function isDurableWebReplyPart(part: WebMessagePart): part is DurableWebReplyPart {
-  return part.type === "attachment" || part.type === "mcp_app" || part.type === "failure";
+  return part.type === "attachment" || part.type === "mcp_app" || part.type === "restart_proposal" || part.type === "failure";
 }
 
 function boundedWebReplyParts(
@@ -8252,6 +8312,7 @@ function boundedWebReplyParts(
     inputParts.length,
     Math.max(0, MAX_AGENT_REPLY_PARTS - retainedExistingCount - (needsDiagnostic ? 1 : 0)),
   );
+  let proposalSeen = retainedExistingParts.some((part) => part.type === "restart_proposal");
   const retained = Array.from(
     { length: retainedCount },
     (_, index): DurableWebReplyPart => {
@@ -8263,8 +8324,15 @@ function boundedWebReplyParts(
           ? inputId
           : nextSyntheticReplyPartId(INVALID_REPLY_PART_ID, ids);
       });
+      if (converted.type === "restart_proposal" && proposalSeen) {
+        const duplicate: DurableWebReplyPart = { type: "failure", id: nextSyntheticReplyPartId(INVALID_REPLY_PART_ID, ids),
+          code: "unsupported_destination", message: "Only one restart proposal can be displayed with a reply." };
+        claimedIds.add(duplicate.id);
+        return duplicate;
+      }
       if (!claimedIds.has(converted.id)) {
         claimedIds.add(converted.id);
+        if (converted.type === "restart_proposal") proposalSeen = true;
         return converted;
       }
       const collision: DurableWebReplyPart = {
@@ -8370,6 +8438,15 @@ function toWebReplyPart(input: unknown, syntheticId: () => string): DurableWebRe
       ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt as string }),
     };
   }
+  if (part?.type === "restart_proposal") {
+    if (!hasOnlyKeys(part, DURABLE_RESTART_PROPOSAL_KEYS) || !validRichId(part.id)
+      || (part.reason !== undefined && (typeof part.reason !== "string" || part.reason.length > 1_024))) {
+      return { type: "failure", id: syntheticId(), code: "unsupported_destination",
+        message: "Invalid restart proposal metadata could not be displayed." };
+    }
+    const reason = sanitizeRestartProposalReason(part.reason);
+    return { type: "restart_proposal", id: part.id, ...(reason === undefined ? {} : { reason }) };
+  }
   if (
     part?.type === "failure"
     && validRichId(part.id)
@@ -8424,6 +8501,9 @@ function durableMessagePart(part: WebMessagePart): WebMessagePart {
       ...(part.description === undefined ? {} : { description: part.description }),
       ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt }),
     };
+  }
+  if (part.type === "restart_proposal") {
+    return { type: "restart_proposal", id: part.id, ...(part.reason === undefined ? {} : { reason: part.reason }) };
   }
   if (part.type === "failure") {
     return {
@@ -8776,6 +8856,7 @@ const DURABLE_MCP_APP_KEYS = new Set([
 const DURABLE_REPLY_FAILURE_KEYS = new Set([
   "type", "id", "code", "message", "relatedPartId",
 ]);
+const DURABLE_RESTART_PROPOSAL_KEYS = new Set(["type", "id", "reason"]);
 
 function hasOnlyKeys(value: Readonly<Record<string, unknown>>, allowed: ReadonlySet<string>): boolean {
   return Object.keys(value).every((key) => allowed.has(key));
@@ -8882,6 +8963,13 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && validOptionalBoundedText(part.title, 240)
       && validOptionalBoundedText(part.description, 1_000)
       && validOptionalDate(part.expiresAt);
+  }
+  if (part.type === "restart_proposal") {
+    return hasOnlyKeys(part, DURABLE_RESTART_PROPOSAL_KEYS)
+      && validRichId(part.id)
+      && (part.reason === undefined
+        || (typeof part.reason === "string" && part.reason.length > 0
+          && part.reason.length <= 280 && sanitizeRestartProposalReason(part.reason) === part.reason));
   }
   if (part.type === "failure") {
     return hasOnlyKeys(part, DURABLE_REPLY_FAILURE_KEYS)
