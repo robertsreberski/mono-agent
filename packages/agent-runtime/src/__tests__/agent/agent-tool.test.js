@@ -260,6 +260,7 @@ describe("detached child deadline admission", () => {
         request.abortSignal.addEventListener("abort", () => { abortedAt = Date.now(); resolve({ cancelled: true, subagentContinuity: { turnToken: "turn", state: "retained" } }); }, { once: true });
       }));
       const background = { startInternal: async (options) => {
+        expect(options.timeoutMs).toBe(75_000); // Host may clamp this to its configured 60s job limit.
         await options.run(new AbortController().signal, () => {}, () => {}, { deadlineAt });
         return { jobId: "job", state: "timed_out", startedAt: new Date().toISOString() };
       } };

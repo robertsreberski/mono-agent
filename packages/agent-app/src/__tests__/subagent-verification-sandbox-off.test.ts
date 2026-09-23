@@ -42,7 +42,7 @@ async function fixture(options: { engine?: "absent" | "unavailable"; service?: b
   const rewrite = async (mutate: (records: any[]) => void) => {
     const records = await disk(); mutate(records); await writeFile(file, JSON.stringify(records));
   };
-  return { root, parent, workdir, access, runProbe, ports, retireSession, registry, handle, file, disk, rewrite,
+  return { root, parent, workdir, access, runProbe, ports, service, retireSession, registry, handle, file, disk, rewrite,
     noteVerification: (target: unknown) => { verification = target; } };
 }
 
@@ -86,6 +86,27 @@ it("inspects honestly when observation is unavailable: no verification contract,
   expect(inspection.facts).toMatchObject({ status: "observation_unavailable" });
   expect(inspection.facts).not.toHaveProperty("observation");
   expect(JSON.stringify(inspection)).not.toContain(f.workdir);
+  expect(f.runProbe).not.toHaveBeenCalled();
+});
+
+it("reports a certified timeout resumable despite an observation gap, without bypassing policy", async () => {
+  const f = await fixture({ service: true });
+  const created = await f.handle.create({ ...spec, verification: { workdir: f.workdir } }, f.access);
+  const turnToken = randomUUID(); const jobId = randomUUID();
+  f.noteVerification((await f.disk())[0].verificationTarget);
+  await f.rewrite((records) => {
+    records[0].recovery = { turnToken, sequence: 1, reason: "timeout", continuity: "retained", certifiedTimeout: true };
+    records[0].ownerReceipt = { jobId, storeRoot: f.root, turnToken, sequence: 1, finalized: true, acknowledged: true };
+  });
+  expect(await f.handle.inspect(created.id, f.access)).toMatchObject({ status: "ready", resumable: true,
+    parentVerificationRequired: false, facts: { status: "observation_unavailable" } });
+  const denied = await createSubagentInstanceRegistry({ root: f.root, retireSession: async () => {},
+    ...createSubagentRecoveryAccess({ service: f.service, privateRoots: async () => [f.workdir], hostAccess: () => f.access }) }).open("conversation");
+  await expect(denied.begin(created.id, undefined, undefined, f.access)).rejects.toMatchObject({ code: "subagent_recovery_policy_denied" });
+  expect((await f.handle.get(created.id))?.recovery).toMatchObject({ certifiedTimeout: true });
+  const resumed = await f.handle.begin(created.id, undefined, undefined, f.access);
+  expect(resumed.recovery).toBeUndefined();
+  await f.handle.finish(created.id, { status: "ok" });
   expect(f.runProbe).not.toHaveBeenCalled();
 });
 

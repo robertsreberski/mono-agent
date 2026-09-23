@@ -443,7 +443,9 @@ export function createAgentTool(subagents, context = {}, continuation) {
             ...(background.managed ? { managed: { instanceIncarnation: instance.incarnation ?? "", turnToken: instance.activeTurn?.token ?? "" } } : {}),
             // `description` is the model-authored activity label (never the prompt); it names the job card.
             ...(typeof params.description === "string" && params.description.trim() ? { description: params.description } : {}),
-            timeoutMs: positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS)),
+            // Request headroom for the child timer and settlement. The host still
+            // clamps this job to processJobs.maxRuntimeMs at admission.
+            timeoutMs: positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS)) + JOB_SETTLEMENT_MARGIN_MS,
             // The identity is host-validated; raw prompts and tool parameters never enter job metadata.
             cleanup: () => instances.releaseReservation(retained.id, reservation),
             run: async (childSignal, _writeOutput, reportProgress, execution) => {
@@ -682,7 +684,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           const running = execution?.managed ? Promise.resolve(underlying).then(async (value) => {
             const actual = classifyOutcome({ result: value, thrown: undefined, timedOut });
             await execution.managed.settled({ status: timedOut ? "timeout" : signal?.aborted ? "cancelled" : actual.status,
-              ...(childTimeoutFired && !signal?.aborted && value?.subagentContinuity?.state === "retained" && value.subagentContinuity.turnToken === instance?.activeTurn?.token ? { certifiedTimeout: true } : {}),
+              ...(childTimeoutFired && (!signal?.aborted || signal?.reason?.name === "TimeoutError") && value?.subagentContinuity?.state === "retained" && value.subagentContinuity.turnToken === instance?.activeTurn?.token ? { certifiedTimeout: true } : {}),
               ...(value?.subagentContinuity ? { continuity: value.subagentContinuity } : {}),
               ...(value?.failureKind === "session_continuity_lost" ? { failureKind: value.failureKind } : {}),
               ...(actual.question ? { question: actual.question } : {}), usage: detachedUsage(value, collector.usage()) });
@@ -698,7 +700,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
             const pendingId = instance.id;
             // Keep the instance busy until the actual runner settles, even after the tool deadline.
             void Promise.resolve(running).then(
-              (late) => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled", ...(childTimeoutFired && !signal?.aborted && late?.subagentContinuity?.state === "retained" && late.subagentContinuity.turnToken === instance?.activeTurn?.token ? { certifiedTimeout: true, continuity: late.subagentContinuity } : {}), ...(late?.failureKind === "session_continuity_lost" ? { failureKind: "session_continuity_lost" } : {}), answerHead: late?.text ?? "", ...(detached ? { usage: detachedUsage(late, collector.usage()) } : {}) }),
+              (late) => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled", ...(childTimeoutFired && (!signal?.aborted || signal?.reason?.name === "TimeoutError") && late?.subagentContinuity?.state === "retained" && late.subagentContinuity.turnToken === instance?.activeTurn?.token ? { certifiedTimeout: true, continuity: late.subagentContinuity } : {}), ...(late?.failureKind === "session_continuity_lost" ? { failureKind: "session_continuity_lost" } : {}), answerHead: late?.text ?? "", ...(detached ? { usage: detachedUsage(late, collector.usage()) } : {}) }),
               () => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled", ...(detached ? { usage: detachedUsage(undefined, collector.usage()) } : {}) }),
             ).catch(() => undefined);
           }
@@ -733,7 +735,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           // wrap-up, so this stays scoped to this path.)
           const usage = sumRunUsage(result?.usage, result?.wrapUp?.wrapUsage ?? null);
           const instanceOutcome = { ...(result?.subagentContinuity ? { continuity: result.subagentContinuity } : {}),
-            ...(childTimeoutFired && !signal?.aborted && result?.subagentContinuity?.state === "retained" && result.subagentContinuity.turnToken === instance.activeTurn?.token ? { certifiedTimeout: true } : {}), ...(execution?.managed && continuation?.close && state.status === "ok" && !signal?.aborted ? { closeAfterSuccess: true } : {}), status: timedOut ? "timeout" : signal?.aborted ? "cancelled" : state.status,
+            ...(childTimeoutFired && (!signal?.aborted || signal?.reason?.name === "TimeoutError") && result?.subagentContinuity?.state === "retained" && result.subagentContinuity.turnToken === instance.activeTurn?.token ? { certifiedTimeout: true } : {}), ...(execution?.managed && continuation?.close && state.status === "ok" && !signal?.aborted ? { closeAfterSuccess: true } : {}), status: timedOut ? "timeout" : signal?.aborted ? "cancelled" : state.status,
             ...(result?.failureKind === "session_continuity_lost" ? { failureKind: "session_continuity_lost" } : {}),
             answerHead: state.answer, ...(state.question ? { question: state.question } : {}), usage: detached ? detachedUsage(result, collector.usage()) : { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
               cacheRead: numberOrZero(usage.cache_read_tokens ?? usage.cacheRead ?? usage.cacheReadTokens), cacheWrite: numberOrZero(usage.cache_write_tokens ?? usage.cache_creation_tokens ?? usage.cacheWrite ?? usage.cacheWriteTokens),

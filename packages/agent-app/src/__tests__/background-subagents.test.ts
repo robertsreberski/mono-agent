@@ -1403,7 +1403,8 @@ it.each(["missing", "run", "revision", "session", "model", "tip", "false", "thro
   expect(recoverSession).toHaveBeenCalledTimes(["false", "throw"].includes(fault) ? 1 : 0);
 });
 
-it("certified detached child timeout resumes a real Pi transcript without ack, including another detached turn", async () => {
+it.each(["cooperative", "late"])("certified %s detached child timeout resumes real Pi transcript without ack", async (mode) => {
+  const releaseLate = deferred<void>();
   const owner = createMonoRuntime();
   const f = await managedFixture(async (id, root) => owner.retireDurableSession!(id, root));
   try {
@@ -1416,11 +1417,13 @@ it("certified detached child timeout resumes a real Pi transcript without ack, i
     const { createModels, fauxProvider, fauxAssistantMessage, fauxText } = await import(piPath);
     const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
     const models = createModels(); models.setProvider(faux.provider);
-    const calls: any[] = [];
+    const calls: any[] = []; const lateNative = deferred<void>();
     const runtime = { recoverSession: owner.recoverSession!.bind(owner), run: async (prompt: string, options: any) => {
       calls.push(options);
-      return generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models,
+      const result = await generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models,
         resolvePiApiKey: async () => "faux-key" });
+      if (mode === "late" && calls.length === 1) { lateNative.resolve(); await releaseLate.promise; }
+      return result;
     } };
     const subagents: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
       { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
@@ -1433,9 +1436,19 @@ it("certified detached child timeout resumes a real Pi transcript without ack, i
       return fauxAssistantMessage([fauxText("unfinished native work")], { stopReason: "aborted" });
     }]);
     const first = await agent.execute("timeout", { id: "helper", persist: true, background: true, prompt: "original transcript marker" });
-    await done(f.service, first.details.jobId);
+    if (mode === "late") {
+      await lateNative.promise;
+      expect((await send.execute("inspect-held", { id: "helper", inspect: true })).details.recovery.status).toBe("held");
+    }
+    const terminal = await done(f.service, first.details.jobId);
+    if (mode === "late") {
+      expect(terminal).toMatchObject({ state: "timed_out", childStillBusy: true });
+      expect((await send.execute("inspect-unsettled", { id: "helper", inspect: true })).details.recovery.status).toBe("held");
+      releaseLate.resolve();
+    }
     await vi.waitFor(async () => expect((await f.instances.get("helper"))?.recovery).toMatchObject({ reason: "timeout", continuity: "retained", certifiedTimeout: true }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
-    expect((await send.execute("inspect", { id: "helper", inspect: true })).details.recovery).toMatchObject({ status: "ready", resumable: true, recovery: { certifiedTimeout: true } });
+    await vi.waitFor(async () => expect((await send.execute("inspect", { id: "helper", inspect: true })).details.recovery).toMatchObject({ status: "ready", resumable: true, recovery: { certifiedTimeout: true } }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    expect(f.wake).toHaveBeenCalledOnce();
     let resumed: any;
     faux.setResponses([(context: any) => { resumed = context; return fauxAssistantMessage([fauxText("done")]); }]);
     const second = await send.execute("resume", { id: "helper", background: true, message: "finish task" });
@@ -1444,7 +1457,7 @@ it("certified detached child timeout resumes a real Pi transcript without ack, i
     expect(JSON.stringify(resumed.messages)).toContain("original transcript marker");
     expect(JSON.stringify(resumed.messages)).toContain("finish task");
     expect(JSON.stringify(resumed.messages)).toContain("previous turn stopped at its timeout");
-  } finally { await owner.disposeAllSessions?.(); }
+  } finally { releaseLate.resolve(); await owner.disposeAllSessions?.(); }
 }, 30_000);
 
 it("stop seals first and resumed tool-bearing turns on the same native session", async () => {
