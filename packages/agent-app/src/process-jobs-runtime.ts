@@ -84,14 +84,14 @@ export function createProcessJobsRuntimeExtension(
       const peerOwnerRoot = artifactDir === undefined ? undefined : dirname(artifactDir);
       const handoffRoot = peerOwnerRoot === undefined ? undefined : join(peerOwnerRoot, "acp-peer-handoff");
       const threadsRoot = peerOwnerRoot === undefined ? undefined : join(peerOwnerRoot, "peer-threads");
-      // Only owner configuration can change ordinary-turn sandbox posture.
-      // Incoming verified peer turns may protect their own proof; third-party
-      // handoffs cannot enable sandboxing on an otherwise ordinary turn.
+      // Peer state never creates a synthetic sandbox or makes an unsandboxed
+      // turn fail. Only extend an already-active process-job protection posture.
+      const existingRoots = processJobsProtectionPolicyRoots(attested);
       const hasPeers = Object.keys(options.coreConfig.peers ?? {}).length > 0;
       const protectedRoots = [
-        ...processJobsProtectionPolicyRoots(attested),
-        ...(threadsRoot !== undefined && hasPeers ? [threadsRoot] : []),
-        ...(handoffRoot !== undefined && (hasPeers || verifiedPeer !== undefined) ? [handoffRoot] : []),
+        ...existingRoots,
+        ...(existingRoots.length > 0 && threadsRoot !== undefined && hasPeers ? [threadsRoot] : []),
+        ...(existingRoots.length > 0 && handoffRoot !== undefined && (hasPeers || verifiedPeer !== undefined) ? [handoffRoot] : []),
       ];
       const retainedRoots = attested.kind === "ready";
       if (retainedRoots

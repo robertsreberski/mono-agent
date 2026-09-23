@@ -9,7 +9,7 @@
 - Add config-declared local `PeerAgent` calls with named ACP threads, foreground
   replies, and optional durable background wakes on wake-capable turns. Reject
   replayed handoffs and peer cycles; reset lost sessions only on a new explicit
-  send, without changing ordinary clients' sandbox posture. Peer AskUser
+  send, without imposing a sandbox on ordinary or peer turns. Peer AskUser
   interaction relay is not supported yet; requests fail explicitly.
 
 ## 0.24.0 — JSON-only core configuration (2026-09-23)

@@ -134,12 +134,14 @@ verifies before rendering an explicit Session notice that this is a request
 from another agent, not the owner's approval, and before using depth.
 Ordinary clients, including `acpx`, need no handoff and retain their existing
 behavior. Metadata and peer prompt text do not grant authority or owner
-approval. Verifying an invalid handoff never creates a secret or changes the
-sandbox posture. An agent whose owner configures `peers` opts into protection
-for its private peer thread and handoff roots; without that config, ordinary
-turns retain their previous posture even after a verified incoming peer call.
-A malicious same-UID process that can read local owner secrets is outside this
-provenance boundary.
+approval. Verifying an invalid handoff never creates a secret. Peer state
+never starts a synthetic sandbox: private peer roots are added only when
+process-job protection is **already active** on that turn. Otherwise owner-only
+file permissions protect the state, without changing ordinary turns or blocking
+an unsandboxed target. An unsandboxed agent whose tools can read its own or the
+peer's handoff secret falls outside this provenance boundary, as does a
+malicious same-UID process with local secret access. Attribution remains
+advisory, never authority.
 
 ## Use through acpx
 

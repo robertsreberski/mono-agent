@@ -26,17 +26,24 @@ describe("verified peer context and lineage", () => {
       context: { identityPath: "IDENTITY.md" }, artifacts: { dir: join(target, "artifacts") },
     } });
     const generation = { id: "11111111-1111-4111-8111-111111111111", rootKeys: [] };
-    const extension = createProcessJobsRuntimeExtension({ coreConfig: config, baseModel: config.runtime.model,
+    const options = { coreConfig: config, baseModel: config.runtime.model,
       service: undefined, channelId: undefined, sandboxEngine: undefined,
       registry: { kind: "empty", generation } as never,
       ownership: { coordinator: { acquireRequestLease: () => ({ generation, releaseAfterSettlement: vi.fn() }) } } as never,
       attestRegistry: (async (snapshot: unknown) => snapshot) as never,
-    });
+    };
+    const extension = createProcessJobsRuntimeExtension(options);
     const request = (peerHandoff?: unknown) => ({ runId: "run", request: {
       conversationId: proof.session, userMessage: "text", metadata: { source: "acp",
         ...(peerHandoff === undefined ? {} : { peerHandoff }) },
     }, context: {} }) as never;
     const baseline = await extension(request());
+    const configured = await createProcessJobsRuntimeExtension({ ...options,
+      coreConfig: { ...config, peers: { finance: { sourceId: "finance-ai" } } },
+    })(request());
+    expect(configured.runtimeOptions).toEqual(baseline.runtimeOptions);
+    expect(configured.runtimeOptions?.sandboxPolicy).toBeUndefined();
+    await configured.settleCleanup?.();
     expect(await verifyPeerHandoff(join(target, "artifacts"), proof, proof.session, "text", proof.sourceId)).toBeUndefined();
     const forged = await extension(request(proof));
     const ordinary = await extension(request());
@@ -62,7 +69,7 @@ describe("verified peer context and lineage", () => {
     expect(await verifyPeerHandoff(artifactDir, wrongSignature, proof.session, "text", "agent-B")).toBeUndefined();
     const operatorProof = await stampPeerOperatorHandoff(artifactDir, proof);
     const generation = { id: "11111111-1111-4111-8111-111111111111", rootKeys: [] };
-    const extension = createProcessJobsRuntimeExtension({
+    const options = {
       coreConfig: config,
       baseModel: config.runtime.model,
       channelId: undefined,
@@ -70,12 +77,14 @@ describe("verified peer context and lineage", () => {
       ownership: { coordinator: { acquireRequestLease: () => ({ generation, releaseAfterSettlement: vi.fn() }) } } as never,
       attestRegistry: (async (snapshot: unknown) => snapshot) as never,
       service: { settings: { maxChainDepth: 4 }, controller: vi.fn() } as never,
-      sandboxEngine: { id: "test", isAvailable: async () => true } as never,
-    });
+      sandboxEngine: undefined,
+    };
+    const extension = createProcessJobsRuntimeExtension(options);
     const request = (metadata: Record<string, unknown>, userMessage = "text", conversationId = "acp:agent-B:uuid") => ({
       runId: "run", request: { conversationId, userMessage, metadata }, context: {},
     }) as never;
     const signed = await extension(request({ source: "acp", peerHandoff: operatorProof }));
+    expect(signed.runtimeOptions?.sandboxPolicy).toBeUndefined();
     expect(signed.runtimeOptions).toMatchObject({
       processJobsAvailability: { chainDepth: 3, remainingStarts: 0, unavailableReason: "origin_unavailable" },
       hostCapabilities: { "PeerAgent.request": {
@@ -87,6 +96,16 @@ describe("verified peer context and lineage", () => {
     expect(rendered).toContain('"caller":"agent-A"');
     expect(rendered).not.toContain('"proof"');
     await signed.settleCleanup?.();
+    const protectedExtension = createProcessJobsRuntimeExtension({ ...options,
+      coreConfig: { ...config, peers: { finance: { sourceId: "finance-ai" } } },
+      registry: { kind: "ready", generation, protectedRoots: [join(root, "process-jobs")] } as never,
+      sandboxEngine: { id: "test", isAvailable: async () => true } as never,
+    });
+    const protectedTurn = await protectedExtension(request({ source: "acp", peerHandoff: operatorProof }));
+    expect(protectedTurn.runtimeOptions?.sandboxPolicy).toMatchObject({ protectedRoots: expect.arrayContaining([
+      join(root, "process-jobs"), join(root, "peer-threads"), join(root, "acp-peer-handoff"),
+    ]) });
+    await protectedTurn.settleCleanup?.();
     const daily = await extension(request({ source: "acp", peerHandoff: operatorProof }, "text", "acp:agent-B:uuid#2026-09-23"));
     expect(daily.runtimeOptions?.processJobsAvailability).toMatchObject({ chainDepth: 3 });
     await daily.settleCleanup?.();
