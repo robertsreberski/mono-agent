@@ -17,7 +17,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
-async function fixture(answer = "ok", askUser = false) {
+async function fixture(answer = "ok", askUser = false, incomplete = false, pending = false) {
   const temporary = await mkdtemp(join(tmpdir(), "mono-agent-peer-client-"));
   roots.push(temporary);
   const root = await realpath(temporary);
@@ -26,6 +26,8 @@ async function fixture(answer = "ok", askUser = false) {
   await mkdir(registry);
   await mkdir(artifactDir);
   const turns: Array<{ conversationId: string; metadata: Record<string, unknown>; text: string }> = [];
+  let turnStarted!: () => void;
+  const started = new Promise<void>((resolve) => { turnStarted = resolve; });
   const server = createServer(async (req, res) => {
     if (req.url === "/gui/v1/info") {
       res.setHeader("content-type", "application/json");
@@ -34,14 +36,20 @@ async function fixture(answer = "ok", askUser = false) {
       let body = "";
       for await (const chunk of req) body += String(chunk);
       turns.push(JSON.parse(body) as (typeof turns)[number]);
+      turnStarted();
       res.setHeader("content-type", "application/x-ndjson");
-      if (askUser) {
+      if (pending) {
+        res.flushHeaders();
+        // Hold the turn until the ACP cancellation closes its operator stream.
+        await new Promise<void>((resolve) => res.once("close", resolve));
+      } else if (askUser) {
         res.write(`${JSON.stringify({ kind: "event", event: {
           type: "tool_call_started", id: "ask-peer-1", name: "AskUser",
         } })}\n`);
         res.end();
       } else {
-        res.end(`${JSON.stringify({ kind: "append", delta: answer })}\n${JSON.stringify({ kind: "finish", finalText: answer })}\n`);
+        res.end(incomplete ? `${JSON.stringify({ kind: "append", delta: answer })}\n`
+          : `${JSON.stringify({ kind: "append", delta: answer })}\n${JSON.stringify({ kind: "finish", finalText: answer })}\n`);
       }
     } else if (askUser && req.url?.endsWith("/ask") && req.method === "GET") {
       res.setHeader("content-type", "application/json");
@@ -66,12 +74,12 @@ async function fixture(answer = "ok", askUser = false) {
       acpBridge: { schema: "mono-agent.acp-source.v1", bridgeVersion: 1, protocolVersion: 1,
         installedVersion: "0.24.0", workspacePath: root } } } },
   }));
-  return { root, artifactDir, turns,
-    turn: (sessionId?: string) => runPeerAcpTurn({
+  return { root, artifactDir, turns, started,
+    turn: (sessionId?: string, signal = new AbortController().signal) => runPeerAcpTurn({
       sourceId: "peer-test", cliPath, env: { ...process.env, MONO_AGENT_TRACE_REGISTRY_DIR: registry },
       workspace: root, artifactDir, caller: "agent-test", conversation: "web:caller",
       depth: 1, text: "request text", ...(sessionId ? { sessionId } : {}),
-      signal: new AbortController().signal, onSession: async () => {},
+      signal, onSession: async () => {},
     }),
   };
 }
@@ -97,6 +105,26 @@ describe("peer ACP client over a real spawned bridge", () => {
   it("rejects oversize peer output instead of returning a truncated success", async () => {
     const f = await fixture("x".repeat(35_000));
     await expect(f.turn()).rejects.toThrow(/exceeds 32 KiB/u);
+  }, 30_000);
+
+  it("rejects an oversized ACP frame", async () => {
+    const f = await fixture("x".repeat(300_000));
+    await expect(f.turn()).rejects.toThrow(/frame exceeds 256 KiB|transport failed/u);
+  }, 30_000);
+
+  it("cancels an active ACP turn without returning a fabricated answer", async () => {
+    const f = await fixture("ok", false, false, true);
+    const controller = new AbortController();
+    const turn = f.turn(undefined, controller.signal);
+    await f.started;
+    controller.abort();
+    await expect(turn).rejects.toThrow(/interrupted|cancelled|transport failed/u);
+    expect(f.turns).toHaveLength(1);
+  }, 30_000);
+
+  it("rejects an operator stream EOF without a completed turn", async () => {
+    const f = await fixture("partial", false, true);
+    await expect(f.turn()).rejects.toThrow(/failed|interrupted/u);
   }, 30_000);
 
   it("returns an explicit unsupported-interaction error for a peer AskUser", async () => {

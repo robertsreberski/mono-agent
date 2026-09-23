@@ -209,7 +209,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
               throw error;
             }
           } catch (error) {
-            return reply(`PeerAgent failed: ${error instanceof Error ? error.message : String(error)}`, true);
+            return reply(`PeerAgent failed: ${error instanceof Error ? error.message.slice(0, 400) : "Unknown error"}`, true);
           }
         });
         return server;

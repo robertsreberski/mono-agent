@@ -1,5 +1,6 @@
 import { persistentSubagentsEnabled } from "./subagent-instances.js";
 import { verifyPeerHandoff } from "./peer-provenance.js";
+import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
@@ -81,10 +82,16 @@ export function createProcessJobsRuntimeExtension(
       const verifiedPeer = artifactDir === undefined || input.request.metadata?.peerHandoff === undefined ? undefined
         : await verifyPeerHandoff(artifactDir, input.request.metadata.peerHandoff, input.request.conversationId, input.request.userMessage);
       const peerOwnerRoot = artifactDir === undefined ? undefined : dirname(artifactDir);
+      const handoffRoot = peerOwnerRoot === undefined ? undefined : join(peerOwnerRoot, "acp-peer-handoff");
+      const threadsRoot = peerOwnerRoot === undefined ? undefined : join(peerOwnerRoot, "peer-threads");
+      // Existing handoff secrets remain private even for ordinary ACP clients;
+      // agents that never configured or received peers keep their old sandbox posture.
       const protectedRoots = [
         ...processJobsProtectionPolicyRoots(attested),
-        ...(peerOwnerRoot === undefined || Object.keys(options.coreConfig.peers ?? {}).length === 0 ? [] : [join(peerOwnerRoot, "peer-threads")]),
-        ...(peerOwnerRoot === undefined || verifiedPeer === undefined ? [] : [join(peerOwnerRoot, "acp-peer-handoff")]),
+        ...(threadsRoot === undefined || (Object.keys(options.coreConfig.peers ?? {}).length === 0 && !existsSync(threadsRoot))
+          ? [] : [threadsRoot]),
+        ...(handoffRoot === undefined || (verifiedPeer === undefined && !existsSync(handoffRoot))
+          ? [] : [handoffRoot]),
       ];
       const retainedRoots = attested.kind === "ready";
       if (retainedRoots
