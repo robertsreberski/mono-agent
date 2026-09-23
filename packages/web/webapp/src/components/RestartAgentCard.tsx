@@ -89,7 +89,19 @@ export function RestartAgentCard({
     setConfirming(false);
     setRequestFailure(null);
     setRequestUnknown(null);
-    const sentAt = Date.now();
+    // Settings recovery baseline: the latest operation id BEFORE this click.
+    // Comparing browser time with the server's requestedAt is unsafe (the
+    // console may be opened from another machine with a skewed clock), so a
+    // lost POST only adopts an operation whose id differs from this baseline.
+    // `undefined` means the baseline is unknown, and nothing is adopted.
+    let baselineId: string | null | undefined;
+    if (proposal === undefined) {
+      try {
+        baselineId = (await api.latestAgentRestart(sourceId))?.id ?? null;
+      } catch {
+        baselineId = undefined;
+      }
+    }
     try {
       const result = proposal === undefined
         ? await api.requestAgentRestart(sourceId)
@@ -106,7 +118,7 @@ export function RestartAgentCard({
         try {
           const latest = await api.latestAgentRestart(sourceId);
           if (latest !== null && (proposal === undefined
-            ? Date.parse(latest.requestedAt) >= sentAt
+            ? baselineId !== undefined && latest.id !== baselineId
             : (await api.message(proposal.threadId, proposal.messageId)).parts.some((part) =>
                 part.type === "restart_proposal" && part.id === proposal.partId
                 && part.restartable?.state === "used" && part.restartable.operationId === latest.id))) {

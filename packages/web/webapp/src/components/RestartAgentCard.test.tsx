@@ -94,17 +94,33 @@ describe("RestartAgentCard", () => {
 
   it("recovers a lost settings POST from the server's freshly recorded operation", async () => {
     vi.spyOn(api, "requestAgentRestart").mockRejectedValue(new TypeError("Lost response"));
-    const fresh = { ...operation("restarting"), requestedAt: new Date(Date.now() + 1_000).toISOString() };
-    vi.spyOn(api, "latestAgentRestart").mockResolvedValue(fresh);
+    // Baseline before the click: no operation. After the lost POST: a new one.
+    vi.spyOn(api, "latestAgentRestart").mockResolvedValueOnce(null).mockResolvedValue(operation("restarting"));
     const status = vi.spyOn(api, "restartStatus").mockResolvedValue(operation("back_online", "success"));
     render(<RestartAgentCard {...base} />);
     fireEvent.click(screen.getByRole("button", { name: "Restart Agent One" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
-    await act(async () => { await Promise.resolve(); });
-    await act(async () => { await Promise.resolve(); });
+    for (let i = 0; i < 4; i += 1) await act(async () => { await Promise.resolve(); });
     expect(api.latestAgentRestart).toHaveBeenCalledWith("agent-one");
     expect(status).toHaveBeenCalledWith("agent-one", "web-op", expect.any(AbortSignal));
     expect(screen.getByText("Restarted — agent is back online.")).toBeVisible();
+  });
+
+  it("never adopts the pre-click operation after a lost settings POST, whatever its timestamp says", async () => {
+    vi.spyOn(api, "requestAgentRestart").mockRejectedValue(new TypeError("Lost response"));
+    // An earlier, already finished restart whose server timestamp is AHEAD of
+    // the browser clock (skewed client). A clock comparison would adopt it.
+    const earlier = { ...operation("back_online", "success"), id: "earlier-op",
+      requestedAt: new Date(Date.now() + 60_000).toISOString() };
+    vi.spyOn(api, "latestAgentRestart").mockResolvedValue(earlier);
+    const status = vi.spyOn(api, "restartStatus");
+    render(<RestartAgentCard {...base} />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart Agent One" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
+    for (let i = 0; i < 4; i += 1) await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText("Couldn't confirm the request was received — check the agent. You can retry.")).toBeVisible();
+    expect(screen.queryByText("Restarted — agent is back online.")).toBeNull();
+    expect(status).not.toHaveBeenCalled();
   });
 
   it("recovers a proposal only when its persisted part links the same web operation", async () => {
