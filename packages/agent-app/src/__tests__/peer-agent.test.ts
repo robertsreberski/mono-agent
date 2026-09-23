@@ -151,6 +151,51 @@ describe("PeerAgent request lifecycle", () => {
     } finally { await f.close(); }
   });
 
+  it("skips one corrupt peer record while reconciling a healthy parked thread", async () => {
+    const f = await setup();
+    const root = join(dirname(f.config.artifacts.dir), "peer-threads");
+    const invalid = join(root, "a".repeat(64));
+    const healthy = join(root, "b".repeat(64));
+    await mkdir(invalid, { recursive: true, mode: 0o700 });
+    await mkdir(healthy, { recursive: true, mode: 0o700 });
+    await writeFile(join(invalid, "thread.json"), "{corrupt", { mode: 0o600 });
+    await writeFile(join(healthy, "thread.json"), JSON.stringify({ schema: 1, conversation: "web:origin",
+      peer: "finance", thread: "portfolio", sourceId: "finance-ai", generation: "11111111-1111-4111-8111-111111111111",
+      status: "awaiting_answer", question: { questionId: "22222222-2222-4222-8222-222222222222",
+        message: "Proceed?", peer: "finance", thread: "portfolio", requestedSchema: { type: "object" },
+        expiresAt: new Date(Date.now() + 60_000).toISOString() },
+    }), { mode: 0o600 });
+    const fresh = await createPeerAgentRuntimeExtension({ config: f.config })!({
+      runId: "after-restart", request: f.request, context: {} as never,
+    });
+    try {
+      expect(fresh.runtimeOptions?.mcpServers).toHaveProperty("mono-agent-peer-agent");
+      expect(JSON.parse(await readFile(join(healthy, "thread.json"), "utf8"))).toMatchObject({ status: "interrupted" });
+    } finally { await fresh.cleanup?.(); await f.close(); }
+  });
+
+  it("streams more than 8192 owner entries without blocking ordinary turns", async () => {
+    const f = await setup();
+    const root = join(dirname(f.config.artifacts.dir), "peer-threads");
+    await mkdir(root, { recursive: true });
+    for (let offset = 0; offset < 8_193; offset += 256) {
+      await Promise.all(Array.from({ length: Math.min(256, 8_193 - offset) }, (_, index) =>
+        mkdir(join(root, `junk-${String(offset + index)}`))));
+    }
+    const healthy = join(root, "c".repeat(64));
+    await mkdir(healthy, { mode: 0o700 });
+    await writeFile(join(healthy, "thread.json"), JSON.stringify({ schema: 1, conversation: "web:origin",
+      peer: "finance", thread: "portfolio", sourceId: "finance-ai", generation: "11111111-1111-4111-8111-111111111111",
+      status: "busy" }), { mode: 0o600 });
+    const fresh = await createPeerAgentRuntimeExtension({ config: f.config })!({
+      runId: "after-large-restart", request: f.request, context: {} as never,
+    });
+    try {
+      expect(fresh.runtimeOptions?.mcpServers).toHaveProperty("mono-agent-peer-agent");
+      expect(JSON.parse(await readFile(join(healthy, "thread.json"), "utf8"))).toMatchObject({ status: "interrupted" });
+    } finally { await fresh.cleanup?.(); await f.close(); }
+  }, 30_000);
+
   it("marks a persisted but ownerless question interrupted after caller restart", async () => {
     const f = await setup();
     const key = join(dirname(f.config.artifacts.dir), "peer-threads",

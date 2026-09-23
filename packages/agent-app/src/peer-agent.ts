@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readdir } from "node:fs/promises";
+import { opendir } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -108,28 +108,33 @@ async function saveThread(path: string, value: ThreadRecord): Promise<void> {
 
 async function reconcileInterruptedPeerThreads(config: MonoAgentConfig): Promise<void> {
   const root = join(dirname(config.artifacts.dir), "peer-threads");
-  let entries: string[];
-  try { entries = await readdir(root); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
-  if (entries.length > 8_192) throw new Error("Peer thread recovery exceeds bounded directory limit.");
-  for (const name of entries) {
-    if (!/^[a-f0-9]{64}$/u.test(name)) continue;
-    const path = join(root, name);
-    let lease: Awaited<ReturnType<typeof acquireContinuationStoreLock>>;
-    try { lease = await acquireContinuationStoreLock(path); }
-    catch (error) {
-      if (error instanceof Error && error.message.startsWith("Continuation state is already owned")) continue;
-      throw error;
-    }
-    try {
-      const record = await readThread(path);
-      if (record?.status === "busy" || record?.status === "awaiting_answer") {
-        record.status = "interrupted";
-        delete record.question;
-        await saveThread(path, record);
+  let skipped = 0;
+  try {
+    // Stream directory entries instead of loading the whole (unbounded) owner
+    // inventory into memory. A damaged peer record cannot break ordinary turns.
+    const directory = await opendir(root, { bufferSize: 128 });
+    for await (const entry of directory) {
+      if (!entry.isDirectory() || !/^[a-f0-9]{64}$/u.test(entry.name)) continue;
+      const path = join(root, entry.name);
+      let lease: Awaited<ReturnType<typeof acquireContinuationStoreLock>> | undefined;
+      try {
+        lease = await acquireContinuationStoreLock(path);
+        const record = await readThread(path);
+        if (record?.status === "busy" || record?.status === "awaiting_answer") {
+          record.status = "interrupted";
+          delete record.question;
+          await saveThread(path, record);
+        }
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.startsWith("Continuation state is already owned")) skipped++;
+      } finally {
+        try { await lease?.release(); } catch { skipped++; }
       }
-    } finally { await lease.release(); }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") skipped++;
   }
+  if (skipped > 0) process.emitWarning(`Skipped ${String(skipped)} unsafe peer thread recovery entries.`, "PeerRecoveryWarning");
 }
 
 export interface PeerAgentExtensionOptions {
