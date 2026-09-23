@@ -44,7 +44,10 @@ async function setup(depth?: number | "forged", surface: "web" | "acp" = "web", 
   } });
   mocks.discover.mockResolvedValue({ sources: [{ sourceId: "finance-ai", health: "running", compatible: true,
     workspace: { path: root } }] });
-  mocks.operators.mockResolvedValue([{ source: { sourceId: "finance-ai", health: "running", artifactDir } }]);
+  mocks.operators.mockResolvedValue([
+    { source: { sourceId: "agent-A", health: "running", artifactDir } },
+    { source: { sourceId: "finance-ai", health: "running", artifactDir: join(root, "peer-artifacts") } },
+  ]);
   mocks.run.mockImplementation(async (options: { onSession(id: string): Promise<void>; text: string; depth: number }) => {
     mocks.turns.push(options.text);
     await options.onSession("acp:finance-ai:cebc81c1-e853-468f-a5d2-b88a97a9aa01");
@@ -105,6 +108,44 @@ describe("PeerAgent request lifecycle", () => {
       const result = await request.run(new AbortController().signal, () => {}, () => {});
       expect(result).toMatchObject({ status: "ok", answer: expect.stringContaining("Untrusted") });
       expect(mocks.turns).toEqual(["do work"]);
+      expect(mocks.run).toHaveBeenCalledWith(expect.objectContaining({ caller: "agent-A" }));
+    } finally { await f.close(); }
+  });
+
+  it("describes only callable peers and rechecks live discovery at send time", async () => {
+    const f = await setup();
+    try {
+      const listed = await f.client.listTools();
+      expect(listed.tools.find((tool) => tool.name === "PeerAgent")?.description).toContain("Callable peers: finance");
+      mocks.discover.mockResolvedValue({ sources: [] });
+      const denied = await f.send();
+      expect(denied.isError).toBe(true);
+      expect(mocks.run).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+
+  it("hides the tool when the caller has no unique registered source", async () => {
+    const f = await setup();
+    try {
+      mocks.operators.mockResolvedValue([]);
+      const hidden = await createPeerAgentRuntimeExtension({ config: f.config })!({
+        runId: "run-2", request: f.request, context: {} as never,
+      });
+      expect(hidden.runtimeOptions?.mcpServers).toBeUndefined();
+      await hidden.cleanup?.();
+    } finally { await f.close(); }
+  });
+
+  it("refuses to invent caller identity when no running local source matches", async () => {
+    const f = await setup();
+    try {
+      mocks.operators.mockResolvedValue([{ source: {
+        sourceId: "finance-ai", health: "running", artifactDir: join(f.config.runtime.workspace, "peer-artifacts"),
+      } }]);
+      const denied = await f.send();
+      expect(denied.isError).toBe(true);
+      expect(denied.content).toEqual([{ type: "text", text: expect.stringContaining("provenance cannot be attested") }]);
+      expect(mocks.run).not.toHaveBeenCalled();
     } finally { await f.close(); }
   });
 

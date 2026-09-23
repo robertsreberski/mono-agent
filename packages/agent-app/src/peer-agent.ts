@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -41,6 +41,13 @@ interface ThreadRecord {
 
 function reply(text: string, isError = false) {
   return { content: [{ type: "text" as const, text }], ...(isError ? { isError: true } : {}) };
+}
+
+function registeredCaller(config: MonoAgentConfig, sources: Awaited<ReturnType<typeof discoverOperatorAgents>>): string | undefined {
+  const matching = sources.filter((source) => source.source.health === "running"
+    && resolve(source.source.artifactDir) === resolve(config.artifacts.dir)
+    && (config.traceability.sourceId === undefined || source.source.sourceId === config.traceability.sourceId));
+  return matching.length === 1 ? matching[0]!.source.sourceId : undefined;
 }
 
 function toolAllowed(config: MonoAgentConfig): boolean {
@@ -89,6 +96,8 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
   if (!toolAllowed(config) || Object.keys(config.peers ?? {}).length === 0) return undefined;
   const active = new Map<string, () => Promise<void>>();
   return async (input) => {
+    const sources = await discoverOperatorAgents();
+    if (registeredCaller(config, sources) === undefined) return { runtimeOptions: {}, cleanup: async () => {} };
     const discovery = await discoverAcpBridgeAgents();
     const callable = Object.entries(config.peers ?? {})
       .filter(([, entry]) => discovery.sources.some((source) => source.sourceId === entry.sourceId
@@ -102,7 +111,6 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
     const depth = peer?.depth ?? (wake.kind === "resolved" ? wake.context.chainDepth : 0);
     const ceiling = service?.settings.maxChainDepth ?? 4;
     const background = service !== undefined && origin !== undefined && wake.kind !== "missed" && depth < ceiling;
-    const caller = config.traceability.sourceId ?? `agent-${createHash("sha256").update(config.runtime.workspace).digest("hex").slice(0, 16)}`;
     const extension = createRequestScopedMcpRuntimeExtension({
       serverName: SERVER,
       startingMessage: "PeerAgent is starting",
@@ -135,6 +143,8 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
             const sources = await discoverOperatorAgents();
             const target = sources.find((source) => source.source.sourceId === sourceId && source.source.health === "running");
             if (!target) throw new Error("Peer operator target is no longer running.");
+            const caller = registeredCaller(config, sources);
+            if (caller === undefined) throw new Error("Caller source is not uniquely registered as a running local mono-agent; peer provenance cannot be attested.");
             // The exclusive owner lock is held through completion, also across concurrent caller turns.
             const lease = await acquireContinuationStoreLock(key);
             let held = true;

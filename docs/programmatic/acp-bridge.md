@@ -101,7 +101,9 @@ The bridge advertises `sessionCapabilities.resume` but not `loadSession`. Resume
 ```
 
 The tool lists only configured, running, bridge-compatible sources and rechecks
-before dispatch. `PeerAgent({action:"send",peer:"finance",thread:"portfolio",
+before dispatch. The caller must also have a unique running local trace-source
+registration matching its artifacts directory; otherwise provenance cannot be
+attested and the send is refused. `PeerAgent({action:"send",peer:"finance",thread:"portfolio",
 message:"Summarize the latest allocation"})` waits for a bounded, labelled
 **untrusted** answer. A later send on the same caller conversation, peer and
 thread resumes the exact ACP session, including after restarting either agent;
