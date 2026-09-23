@@ -7,6 +7,8 @@
   silently ignore stale `MONO_AGENT_*` core variables. Environment values remain
   available for adapter settings, secret references, and process plumbing.
 
+## 0.23.1 — Pi 0.87.1 models and console fixes (2026-09-23)
+
 - Show commands first in background agent job progress and inline subagent
   activity: the working directory appears once in the job metadata line instead
   of a `cd` prefix, and expanded job calls wrap rather than hiding their
@@ -177,6 +179,15 @@
   parameters keep travelling as query-text operators, which Parallel honours
   server-side; coverage now reports the per-provider mechanism in
   `filterSupport.domains` with the effective lists in `requestedFilters`.
+
+- Raise the configurable ceiling for `subagents.maxTurns` and
+  `subagents.definitions[].maxTurns` from 200 to 400. Long single-run
+  implementation work could exhaust its turn budget while an operator was
+  already configured at the previous maximum, leaving no configuration
+  response available. Wall-clock runaway remains bounded by
+  `subagents.timeoutMs`, and turns per persistent instance remain bounded by
+  `subagents.instances.maxTurns`. No default changes, so existing deployments
+  behave identically.
 
 - **Breaking: remove the first-party terminal renderer.** Remove `mono-agent tui`,
   the `mono-agent-tui` binary, and `@mono-agent/tui`; use `mono-agent web run --loopback` for
