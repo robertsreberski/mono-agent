@@ -691,6 +691,22 @@ it("keeps the Anthropic retention schema default aligned with config normalizati
   expect(node.enum).toEqual(["short", "long"]);
 });
 
+it("accepts four-hour subagent timeouts and rejects one millisecond more", () => {
+  const root = repoRoot();
+  const schema = JSON.parse(readFileSync(join(root, "packages/agent-app/schema/mono-agent.config.schema.json"), "utf8")) as SchemaNode;
+  const subagents = schemaNode(schema, "subagents");
+  expect(subagents.properties?.timeoutMs?.maximum).toBe(14_400_000);
+  expect(subagents.properties?.definitions?.items?.properties?.timeoutMs?.maximum).toBe(14_400_000);
+  const load = (payload: unknown) => resolveJsonMonoAgentConfig({ cwd: process.cwd(), json: {
+    runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" }, subagents: payload as never,
+  } });
+  const definition = (timeoutMs: number) => ({ name: "helper", description: "Help", prompt: "Help", timeoutMs });
+  expect(load({ timeoutMs: 14_400_000 }).subagents?.timeoutMs).toBe(14_400_000);
+  expect(() => load({ timeoutMs: 14_400_001 })).toThrow(/timeoutMs must be an integer between 1000 and 14400000/u);
+  expect(load({ definitions: [definition(14_400_000)] }).subagents?.definitions?.[0]?.timeoutMs).toBe(14_400_000);
+  expect(() => load({ definitions: [definition(14_400_001)] })).toThrow(/timeoutMs must be an integer between 1000 and 14400000/u);
+});
+
 it("keeps the subagent maxTurns loader ceilings aligned with the generated schema", () => {
   const root = repoRoot();
   const schema = JSON.parse(

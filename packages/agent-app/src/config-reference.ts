@@ -1095,7 +1095,7 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
           } },
           maxConcurrent: { type: "integer", minimum: 1, maximum: 10 },
           maxPerTurn: { type: "integer", minimum: 1, maximum: 200 },
-          timeoutMs: { type: "integer", minimum: 1_000, maximum: 3_600_000 },
+          timeoutMs: { type: "integer", minimum: 1_000, maximum: 14_400_000 },
           maxTurns: { type: "integer", minimum: 1, maximum: 400 },
           models: {
             type: "array",
@@ -1124,7 +1124,7 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
                 disallowedTools: { type: "array", items: { type: "string", minLength: 1 } },
                 mcpServers: { type: "array", items: { type: "string", minLength: 1 } },
                 maxTurns: { type: "integer", minimum: 1, maximum: 400 },
-                timeoutMs: { type: "integer", minimum: 1_000, maximum: 3_600_000 },
+                timeoutMs: { type: "integer", minimum: 1_000, maximum: 14_400_000 },
               },
             },
           },

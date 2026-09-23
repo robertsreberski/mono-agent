@@ -906,7 +906,7 @@ function readSubagentsConfig(
     ...(record.enabled === undefined ? {} : { enabled: readSubagentBoolean(record.enabled, "enabled") }),
     ...(record.maxConcurrent === undefined ? {} : { maxConcurrent: readSubagentInteger(record.maxConcurrent, "maxConcurrent", 1, 10) }),
     ...(record.maxPerTurn === undefined ? {} : { maxPerTurn: readSubagentInteger(record.maxPerTurn, "maxPerTurn", 1, 200) }),
-    ...(record.timeoutMs === undefined ? {} : { timeoutMs: readSubagentInteger(record.timeoutMs, "timeoutMs", 1_000, 3_600_000) }),
+    ...(record.timeoutMs === undefined ? {} : { timeoutMs: readSubagentInteger(record.timeoutMs, "timeoutMs", 1_000, 14_400_000) }),
     ...(record.commandTimeoutMs === undefined ? {} : { commandTimeoutMs: readSubagentInteger(record.commandTimeoutMs, "commandTimeoutMs", 1, Number.MAX_SAFE_INTEGER) }),
     ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, "maxTurns", 1, 400) }),
     ...(definitions === undefined ? {} : { definitions }),
@@ -1062,7 +1062,7 @@ function readSubagentDefinitions(
       ...(disallowedTools === undefined ? {} : { disallowedTools }),
       ...(mcpServers === undefined ? {} : { mcpServers }),
       ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, `definition "${name}" maxTurns`, 1, 400) }),
-      ...(record.timeoutMs === undefined ? {} : { timeoutMs: readSubagentInteger(record.timeoutMs, `definition "${name}" timeoutMs`, 1_000, 3_600_000) }),
+      ...(record.timeoutMs === undefined ? {} : { timeoutMs: readSubagentInteger(record.timeoutMs, `definition "${name}" timeoutMs`, 1_000, 14_400_000) }),
     } satisfies MonoAgentSubagentConfig;
   });
 }

@@ -366,7 +366,7 @@
         "timeoutMs": {
           "type": "integer",
           "minimum": 1000,
-          "maximum": 3600000
+          "maximum": 14400000
         },
         "maxTurns": {
           "type": "integer",
@@ -473,7 +473,7 @@
               "timeoutMs": {
                 "type": "integer",
                 "minimum": 1000,
-                "maximum": 3600000
+                "maximum": 14400000
               }
             }
           }
