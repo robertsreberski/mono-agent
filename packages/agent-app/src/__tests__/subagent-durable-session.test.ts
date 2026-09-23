@@ -115,10 +115,17 @@ describe("app persistent subagent durable sessions", () => {
         tools: { allowedTools: ["Agent", "AgentManage"] },
         subagents: { enabled: true, instances: { root: resolve(root, "children") } },
       } });
+      const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
+      const models = createModels(); models.setProvider(faux.provider);
+      faux.setResponses([fauxAssistantMessage([fauxText("Pi answered before capture failed")])]);
       let answered = false;
-      const runtime = { recoverSession: owner.recoverSession!.bind(owner), run: async (_prompt: string, options: Record<string, unknown>) => {
+      const runtime = { recoverSession: owner.recoverSession!.bind(owner), run: async (prompt: string, options: Record<string, unknown>) => {
         expect(options.sessionRecovery).toBeDefined();
-        answered = true; // Equivalent to Pi producing an answer before receipt capture fails.
+        const result = await generatePiNativeResponse(prompt, { ...options, allowedTools: [],
+          piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+        expect(result.text).toContain("Pi answered before capture failed");
+        answered = true;
+        // Simulate the established Pi capture/close throw path after a genuine answer.
         throw new Error("native receipt capture failed");
       } };
       const registry = createSubagentInstanceRegistry({ root: resolve(root, "children"), retireSession: async (id, sessionsRoot) => owner.retireDurableSession!(id, sessionsRoot) });
