@@ -95,11 +95,13 @@ describe("peer ACP client over a real spawned bridge", () => {
     for (const turn of f.turns) {
       expect(turn.conversationId).toBe(first.sessionId);
       expect(turn.metadata).toHaveProperty("peerHandoff");
-      expect(await verifyPeerHandoff(f.artifactDir, turn.metadata.peerHandoff, first.sessionId, turn.text))
-        .toMatchObject({ caller: "agent-test", conversation: "web:caller", depth: 1 });
+      expect(await verifyPeerHandoff(f.artifactDir, turn.metadata.peerHandoff, first.sessionId, turn.text, "peer-test"))
+        .toMatchObject({ caller: "agent-test", conversation: "web:caller", sourceId: "peer-test", depth: 1 });
     }
     expect(await verifyPeerHandoff(f.artifactDir,
       { ...f.turns[0]!.metadata.peerHandoff as object, depth: 0 }, first.sessionId)).toBeUndefined();
+    expect(await verifyPeerHandoff(f.artifactDir, f.turns[0]!.metadata.peerHandoff,
+      first.sessionId, "request text", "wrong-target")).toBeUndefined();
   }, 30_000);
 
   it("rejects oversize peer output instead of returning a truncated success", async () => {

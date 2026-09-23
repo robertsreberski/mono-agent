@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Readable, Transform, Writable } from "node:stream";
 
@@ -19,6 +20,7 @@ export interface PeerAcpTurn {
   readonly artifactDir: string;
   readonly caller: string;
   readonly conversation: string;
+  readonly generation?: string;
   readonly depth: number;
   readonly text: string;
   readonly sessionId?: string;
@@ -102,6 +104,7 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
     if (options.signal.aborted || timeout.aborted) throw new Error("Peer turn was cancelled before dispatch.");
     const handoff = await makePeerHandoff(options.artifactDir, {
       caller: options.caller, conversation: options.conversation, session: sessionId,
+      sourceId: options.sourceId, generation: options.generation ?? randomUUID(),
       depth: options.depth, text: options.text,
     });
     options.onActive?.(cancel);

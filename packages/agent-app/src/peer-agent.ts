@@ -98,7 +98,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
     const origin = processJobOriginForRequest(input, options.channelId, options.conversationScheme);
     const wake = processJobWakeContextForRequest(input.request);
     const peer = input.request.metadata?.peerHandoff === undefined ? undefined
-      : await verifyPeerHandoff(config.artifacts.dir, input.request.metadata.peerHandoff, input.request.conversationId, input.request.userMessage);
+      : await verifyPeerHandoff(config.artifacts.dir, input.request.metadata.peerHandoff, input.request.conversationId, input.request.userMessage, config.traceability.sourceId);
     const depth = peer?.depth ?? (wake.kind === "resolved" ? wake.context.chainDepth : 0);
     const ceiling = service?.settings.maxChainDepth ?? 4;
     const background = service !== undefined && origin !== undefined && wake.kind !== "missed" && depth < ceiling;
@@ -172,7 +172,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                   if (turnSignal.aborted) throw new Error("Peer turn interrupted before dispatch; prompt was not replayed.");
                   const outcome = await runPeerAcpTurn({
                     sourceId, workspace: descriptor.workspace.path, artifactDir: target.source.artifactDir,
-                    caller, conversation: input.request.conversationId, depth: depth + 1,
+                    caller, conversation: input.request.conversationId, generation: record.generation, depth: depth + 1,
                     text: args.message!, ...(record.sessionId ? { sessionId: record.sessionId } : {}), signal: turnSignal,
                     onSession: async (sessionId) => { record.sessionId = sessionId; await saveThread(key, record); },
                     onActive: (cancel) => { cancelAcp = cancel; if (stop.signal.aborted) void cancel(); },

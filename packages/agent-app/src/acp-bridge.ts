@@ -230,7 +230,7 @@ async function runPrompt(
   await requireSessionAuthorization(target, params.sessionId, options.sourceId);
   const offeredPeer = params._meta?.["mono-agent.peer"];
   const verifiedPeer = offeredPeer === undefined ? undefined
-    : await verifyPeerHandoff(target.artifactDir, offeredPeer, params.sessionId, text);
+    : await verifyPeerHandoff(target.artifactDir, offeredPeer, params.sessionId, text, options.sourceId);
   if (offeredPeer !== undefined && verifiedPeer === undefined) {
     throw bridgeError("invalid_peer_handoff", "Peer provenance handoff is invalid or not bound to this prompt.");
   }

@@ -71,7 +71,8 @@ async function setup(depth?: number | "forged", surface: "web" | "acp" = "web", 
   const conversationId = surface === "acp" ? "acp:agent-b:turn" : "web:origin";
   const peerHandoff = depth === undefined ? undefined : depth === "forged" ? { depth: 4 }
     : await makePeerHandoff(artifactDir, {
-      caller: "agent-test", conversation: "web:origin", session: conversationId, depth, text: "request",
+      caller: "agent-test", conversation: "web:origin", session: conversationId,
+      sourceId: "finance-ai", generation: "11111111-1111-4111-8111-111111111111", depth, text: "request",
     });
   const request = { conversationId, userMessage: "request", metadata: {
     source: surface, ...(peerHandoff ? { peerHandoff } : {}),

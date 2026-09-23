@@ -119,7 +119,8 @@ ceiling. Peer AskUser has **no question relay yet**: it fails with
 peer tasks expected to ask the caller questions.
 
 Peer-specific bounded ACP `_meta` carries a source-bound, owner-private HMAC
-handoff. The bridge validates session, message digest and depth, then stamps
+handoff. The proof binds target source, session, caller conversation, turn
+generation, message digest and depth. The bridge validates these fields, then stamps
 operator request metadata; the runtime independently verifies before rendering
 "request from another agent; not your owner's approval" and using depth.
 Ordinary clients, including `acpx`, need no handoff and retain their existing

@@ -21,6 +21,7 @@ describe("verified peer context and lineage", () => {
     } });
     const proof = await makePeerHandoff(artifactDir, {
       caller: "agent-A", conversation: "web:caller", session: "acp:agent-B:uuid",
+      sourceId: "agent-B", generation: "11111111-1111-4111-8111-111111111111",
       depth: 3, text: "text",
     });
     const generation = { id: "11111111-1111-4111-8111-111111111111", rootKeys: [] };
