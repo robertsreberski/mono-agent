@@ -315,6 +315,11 @@ interface ConsoleStoreValue {
   readonly setConversationVisible: (visible: boolean) => void;
   readonly selectAgent: (sourceId: string) => void;
   readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
+  /** Shared web-owned restart flow for the transcript and (later) settings. */
+  readonly requestAgentRestart: typeof api.requestAgentRestart;
+  readonly restartFromProposal: typeof api.restartFromProposal;
+  readonly restartStatus: typeof api.restartStatus;
+  readonly latestAgentRestart: typeof api.latestAgentRestart;
   readonly setAgentRunDefaults: (model: string | null, effort: string | null) => Promise<void>;
   readonly clearAgentRunDefaults: () => Promise<void>;
   readonly selectThread: (threadId: string) => void;
@@ -7254,6 +7259,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loadMoreProjectMembers,
       selectAgent,
       setAgentPinned,
+      requestAgentRestart: api.requestAgentRestart,
+      restartFromProposal: api.restartFromProposal,
+      restartStatus: api.restartStatus,
+      latestAgentRestart: api.latestAgentRestart,
       setAgentRunDefaults,
       clearAgentRunDefaults,
       selectThread,

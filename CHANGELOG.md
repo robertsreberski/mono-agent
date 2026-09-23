@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Let operators restart one supervised, keyed agent from its web-console settings
+  or a `ProposeRestart` reply card. Show interruption confirmation and durable
+  progress, then report success only for a new ready process; refusals and
+  unconfirmed requests stay distinct. Other channels do not receive the tool.
+
 ## 0.24.0 — JSON-only core configuration (2026-09-23)
 
 - **Breaking: remove core environment configuration overrides.** Resolve core

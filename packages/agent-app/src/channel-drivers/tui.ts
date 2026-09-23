@@ -10,6 +10,7 @@ import type {
   TuiAdapterConfig,
   TuiAdapterInfo,
   TuiAdapterOptions,
+  TuiRestartAuthority,
   TuiAdapterStartResult,
   TuiModelCatalogProvider,
   TuiModelOption,
@@ -286,6 +287,7 @@ interface AppOwnedTuiChannelDriver extends ChannelDriver<TuiAdapterConfig> {
     processJobs: ProcessJobOperator | undefined,
     providerAuth: ProviderAuthOperator | undefined,
     providerUsage?: ProviderUsageOperator,
+    restart?: TuiRestartAuthority,
   ): Promise<RunningChannel>;
 }
 
@@ -302,6 +304,7 @@ export function startAppOwnedTuiChannel(
   processJobs: ProcessJobOperator | undefined,
   providerAuth: ProviderAuthOperator | undefined,
   providerUsage?: ProviderUsageOperator,
+  restart?: TuiRestartAuthority,
 ): Promise<RunningChannel> | undefined {
   if (!appOwnedTuiDrivers.has(driver)) return undefined;
   return (driver as AppOwnedTuiChannelDriver)[APP_OWNED_TUI_START](
@@ -309,6 +312,7 @@ export function startAppOwnedTuiChannel(
     processJobs,
     providerAuth,
     providerUsage,
+    restart,
   );
 }
 
@@ -342,7 +346,7 @@ export function createTuiChannelDriver(
     async start(input) {
       return await this[APP_OWNED_TUI_START](input, undefined, undefined, undefined);
     },
-    async [APP_OWNED_TUI_START](input, processJobs, providerAuth, providerUsage) {
+    async [APP_OWNED_TUI_START](input, processJobs, providerAuth, providerUsage, restart) {
       const adapterModule = await loadTuiModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
       const deliverNotification = overrides.deliverNotification ?? deliverWebNotification;
@@ -550,6 +554,7 @@ export function createTuiChannelDriver(
           : { processJobs, processJobsBearer: processJobs.operatorToken }),
         ...(providerAuth === undefined ? {} : { providerAuth }),
         ...(providerUsage === undefined ? {} : { providerUsage }),
+        ...(restart === undefined || input.config.apiKey === undefined ? {} : { restart }),
         ...(input.interaction === undefined ? {} : { interaction: input.interaction }),
         ...(cronOperator?.configured === true ? { cron: cronOperator } : {}),
         info: buildInfo,

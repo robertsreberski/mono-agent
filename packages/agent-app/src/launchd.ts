@@ -130,6 +130,8 @@ export interface LaunchdManagedWorkerDefinition {
 export interface LaunchdManagedWorkerInfo extends LaunchdServiceInfo {
   /** Present only when launchctl exposes the exact current producer shape. */
   readonly definition?: LaunchdManagedWorkerDefinition;
+  /** Fail closed unless the loaded policy explicitly relaunches nonzero exits. */
+  readonly relaunchOnFailure: boolean;
 }
 
 export interface LaunchdWebMaintenanceDefinition {
@@ -618,10 +620,12 @@ export function serviceTarget(label: string, uid: number): string {
   return `gui/${uid}/${label}`;
 }
 
-export function makeLaunchctlRunner(): LaunchctlRunner {
+export function makeLaunchctlRunner(timeoutMs = 90_000): LaunchctlRunner {
   return (args) =>
     new Promise<LaunchctlResult>((resolvePromise) => {
-      const child = spawn("/bin/launchctl", [...args], { stdio: ["ignore", "pipe", "pipe"] });
+      // A stuck `launchctl print` must not hold agent info/turn admission or
+      // leave an inspection child alive after a restart check times out.
+      const child = spawn("/bin/launchctl", [...args], { stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs });
       let stdout = "";
       let stderr = "";
       child.stdout?.on("data", (chunk: Buffer) => {
@@ -633,8 +637,8 @@ export function makeLaunchctlRunner(): LaunchctlRunner {
       child.on("error", (error: Error) => {
         resolvePromise({ code: 127, stdout, stderr: `${stderr}${error.message}` });
       });
-      child.on("close", (code) => {
-        resolvePromise({ code: code ?? 0, stdout, stderr });
+      child.on("close", (code, signal) => {
+        resolvePromise({ code: code ?? (signal === null ? 1 : 124), stdout, stderr });
       });
     });
 }
@@ -668,11 +672,18 @@ export async function launchdManagedWorkerInfo(
   uid: number,
 ): Promise<LaunchdManagedWorkerInfo> {
   const result = await runner(["print", serviceTarget(label, uid)]);
-  if (result.code !== 0) return { loaded: false };
+  if (result.code !== 0) return { loaded: false, relaunchOnFailure: false };
   const pid = parseLaunchdServicePid(result.stdout);
   const definition = parseLaunchdManagedWorkerDefinition(result.stdout);
+  // launchctl print encodes KeepAlive.SuccessfulExit=false as a semaphore,
+  // not as plist syntax: `semaphores = { successful exit => 0 }`. Restrict
+  // the match to that block and refuse absent, duplicated or changed flags.
+  const semaphoreBlock = /\bsemaphores\s*=\s*\{([^{}]*)\}/u.exec(result.stdout)?.[1];
+  const successfulExitFlags = semaphoreBlock?.split("\n").map((line) => line.trim())
+    .filter((line) => line.startsWith("successful exit")) ?? [];
   return {
     loaded: true,
+    relaunchOnFailure: successfulExitFlags.length === 1 && successfulExitFlags[0] === "successful exit => 0",
     ...(pid === undefined ? {} : { pid }),
     ...(definition === undefined ? {} : { definition }),
   };

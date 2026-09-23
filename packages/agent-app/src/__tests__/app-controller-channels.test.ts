@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 describe("app channel capability composition", () => {
-  it("injects provider auth into the zero-config TUI without inventing an operator API key", async () => {
+  it.each([false, true])("injects restart only into the genuinely keyed app-owned TUI (keyed=%s)", async (keyed) => {
     const cwd = await mkdtemp(join(tmpdir(), "mono-channel-provider-auth-"));
     fixtures.push(cwd);
     const configReadPath = join(cwd, "mono-agent.config.json");
@@ -51,7 +51,7 @@ describe("app channel capability composition", () => {
     const statuses = new Map<string, ChannelStatus>();
     const responder: AgentResponder = { respond: async () => ({}) };
     const controller: ChannelsControllerPort = {
-      env: {},
+      env: keyed ? { MONO_AGENT_TUI_API_KEY: "fixture-owner" } : {},
       cwd,
       configReadPath,
       logger: undefined,
@@ -65,6 +65,13 @@ describe("app channel capability composition", () => {
       traceabilityStatusValue: {} as never,
       processJobsService: undefined,
       processJobsDegradation: undefined,
+      restartToolKeyed: false,
+      restartAuthority: {
+        verify: async () => ({ supported: true }),
+        accept: () => ({ kind: "accepted", operationId: "fixture" }),
+        processIdentity: () => ({ pid: 17, startedAt: "boot" }),
+        beginStop: () => undefined,
+      },
       setStatus(channelId, channelStatus) {
         statuses.set(channelId, channelStatus);
         return channelStatus;
@@ -84,7 +91,14 @@ describe("app channel capability composition", () => {
       await expect(startChannel(controller, driver, "test"))
         .resolves.toMatchObject({ kind: "running" });
       expect(captured?.providerAuth).toBeDefined();
-      expect(captured).not.toHaveProperty("apiKey");
+      if (keyed) {
+        expect(captured?.apiKey).toBe("fixture-owner");
+        expect(captured?.restart).toBe(controller.restartAuthority);
+      } else {
+        expect(captured).not.toHaveProperty("apiKey");
+        expect(captured).not.toHaveProperty("restart");
+      }
+      expect(controller.restartToolKeyed).toBe(keyed);
     } finally {
       await controller.running.get("tui")?.stop();
     }

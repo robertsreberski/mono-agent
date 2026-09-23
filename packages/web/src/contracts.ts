@@ -145,6 +145,26 @@ export interface WebAgentRunSettings {
   };
 }
 
+export interface WebAgentRestartSupport {
+  readonly supported: boolean;
+  readonly reason?: string;
+}
+
+export type WebAgentRestartStage = "requesting" | "restarting" | "back_online";
+export type WebAgentRestartOutcome = "success" | "failure" | "not_confirmed";
+/** Secret-free, reload-safe operation status; 202 acceptance is not success. */
+export interface WebAgentRestartOperation {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly stage: WebAgentRestartStage;
+  readonly outcome?: WebAgentRestartOutcome;
+  readonly reason?: string;
+  readonly requestedAt: string;
+  readonly deadline: string;
+  /** Count from web-owned in-flight turns only; never an admission fence. */
+  readonly approximateRunningTurns?: number;
+}
+
 export interface WebAgentSummary {
   readonly sourceId: string;
   /**
@@ -175,6 +195,8 @@ export interface WebAgentSummary {
    * Usability is projected from the live connection's `/v1/info`; a stored bit
    * is presentation state, never authorization to call the agent.
    */
+  /** Current live capability; old/malformed and offline producers fail closed. */
+  readonly restart?: WebAgentRestartSupport;
   readonly supportsProviderAuth?: true;
   readonly supportsManualCompaction?: true;
   readonly supportsProviderUsage?: true;
@@ -596,9 +618,24 @@ export interface WebToolCall {
   readonly argsDigest?: string;
 }
 
+export type WebRestartProposalAvailability =
+  | "available" | "stale" | "offline" | "unsupported" | "in_progress" | "used";
+
 export type WebMessagePart =
   | WebConversationMarkerPart
   | { readonly type: "text"; readonly text: string }
+  | {
+      readonly type: "restart_proposal";
+      readonly id: string;
+      readonly reason?: string;
+      /** Computed by the web service, not persisted or supplied by the agent. */
+      readonly restartable?: {
+        readonly state: WebRestartProposalAvailability;
+        readonly reason?: string;
+        /** Web-owned poll id for a used proposal; never the adapter operation id. */
+        readonly operationId?: string;
+      };
+    }
   | { readonly type: "reasoning"; readonly text: string }
   | WebCronReplyContextPart
   | ({ readonly type: "tool-call" } & WebToolCall)

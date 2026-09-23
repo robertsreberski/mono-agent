@@ -806,6 +806,29 @@ select direct OpenCode suppress the tool because that bridge has no compatible
 host MCP seam. When the tool is absent or unused, the existing first-user-message
 title remains the fallback.
 
+### Web-console restart proposals
+
+An interactive web turn on a keyed, verified supervised worker may expose the
+request-scoped `ProposeRestart` tool. It accepts an optional short reason and
+adds at most one bounded `restart_proposal` part directly below that assistant
+reply in the web console. The tool **only proposes**; the human must confirm
+separately. It neither touches the host restart latch nor chooses a target, URL
+or command. Telegram, Slack, webhook, ACP, TUI and cron turns do not receive
+the tool. The ordinary app-owned tool policy applies: allow-all permits it,
+a restrictive `tools.allowedTools` list must explicitly include
+`ProposeRestart`, and `tools.disallowedTools` wins. If a part reaches a non-web
+destination anyway, only a safe unsupported-part warning/outcome is delivered.
+
+A console restart does not run the existing `mono-agent restart` CLI command.
+On a verified launchd/systemd worker, one synchronous acceptance latches the
+operation id and exit code `42` before the operator route may return `202`;
+`app.stop()` and process-lifetime lease release still run gracefully. The
+nonzero exit is necessary for the supervisor's on-failure relaunch; a signal
+before acceptance prevents it and a later signal cannot change it to exit 0.
+Foreground or keyless workers cannot advertise restart. See
+[web-console restart](../../docs/observability/web-console.md#restart-one-agent)
+for operator-facing confirmation and outcomes.
+
 ### Channel interactions and conversation history
 
 The configured agent preserves the harness's positive `importContext`

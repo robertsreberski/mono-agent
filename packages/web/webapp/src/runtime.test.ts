@@ -1334,3 +1334,18 @@ describe("runtime capability gates", () => {
     ).toBe(false);
   });
 });
+
+
+describe("restart proposal placement", () => {
+  it("places the card directly after the settled answer, before other rich parts and outside activity", () => {
+    const converted = convertWebMessage(message({ role: "assistant", parts: [
+      { type: "tool-call", toolCallId: "read", toolName: "Read", status: "complete" },
+      { type: "text", text: "The answer." },
+      { type: "failure", id: "old", code: "unsupported_destination", message: "Other rich part." },
+      { type: "restart_proposal", id: "proposal-1", reason: "Restart now", restartable: { state: "available" } },
+    ] }));
+    expect((converted.content as readonly { type: string }[]).map((part) => part.type)).toEqual([
+      "tool-call", "text", "data-restart-proposal", "data-reply-failure",
+    ]);
+  });
+});

@@ -442,6 +442,20 @@ describe("readMessageDelta", () => {
     expect(setOp(null)).toBeUndefined();
   });
 
+  it("replays a bounded restart proposal set-op without a full thread re-fetch", () => {
+    const proposal = { type: "restart_proposal", id: "proposal-1", reason: "Refresh the agent",
+      restartable: { state: "used", operationId: "web-operation-1", reason: "Already used." } } as const;
+    const incoming = { ...wire, ops: [{ op: "set", index: 0, part: proposal }] };
+    const parsed = readMessageDelta(incoming);
+    expect(parsed).toBeDefined();
+    expect(applyMessageDelta(message("m1"), parsed!).parts).toEqual([proposal]);
+    expect(readMessageDelta({ ...wire, ops: [{ op: "set", index: 0, part: { ...proposal, target: "agent-other" } }] }))
+      .toBeUndefined();
+    expect(readMessageDelta({ ...wire, ops: [{ op: "set", index: 0, part: {
+      ...proposal, reason: "x".repeat(281),
+    } }] })).toBeUndefined();
+  });
+
   it("reads an inline-steer marker and refuses one without operator text", () => {
     const setOp = (part: unknown) => readMessageDelta({ ...wire, ops: [{ op: "set", index: 0, part }] });
 

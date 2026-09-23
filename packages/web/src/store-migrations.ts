@@ -246,6 +246,22 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
     database.exec("DROP TRIGGER IF EXISTS message_search_update; DROP TRIGGER IF EXISTS message_search_settle;");
     refreshMessageSearch();
   } },
+  { version: 35, name: "restart-operations", up: ({ database }) => {
+    assertColumns(database, "restart_operations", [
+      "id", "source_id", "generation", "operation_id", "requested_at", "deadline", "stage", "outcome",
+      "reason", "uncertain", "approximate_running_turns",
+    ]);
+    assertIndex(database, "restart_operations_one_active_source", ["source_id"]);
+    const index = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'restart_operations_one_active_source'")
+      .get() as { sql: string } | undefined;
+    if (!/\bUNIQUE\s+INDEX\b/iu.test(index?.sql ?? "") || !/\bWHERE\s+outcome\s+IS\s+NULL\b/iu.test(index?.sql ?? "")) {
+      throw new Error("Invalid active-restart uniqueness fence.");
+    }
+  } },
+  { version: 36, name: "restart-proposal-bindings", up: ({ database }) => {
+    assertColumns(database, "restart_proposal_bindings", ["message_id", "part_id", "thread_id", "source_id", "generation", "operation_id"]);
+    assertIndex(database, "restart_proposal_bindings_by_source", ["source_id", "generation"]);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -303,6 +319,8 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       monitor_wake_deliveries: ["projection_json", "thread_id", "payload_sha256"],
       notification_deliveries: ["message_id", "job_id", "run_id"],
       agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
+      restart_operations: ["id", "source_id", "generation", "operation_id", "requested_at", "deadline", "stage", "outcome", "reason", "uncertain", "approximate_running_turns"],
+      restart_proposal_bindings: ["message_id", "part_id", "thread_id", "source_id", "generation", "operation_id"],
       messages: ["seq", "cron_suppressed"],
       message_search_writes: ["message_id"],
       process_job_cards: ["state", "completed_at"],
@@ -376,9 +394,17 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ...THREAD_READ_INDEXES,
       ["cron_reply_operations_one_pending_run", ["source_id", "job_id", "run_id"]],
       ["thread_tags_by_tag", ["tag_id", "thread_id"]],
+      ["restart_operations_one_active_source", ["source_id"]],
+      ["restart_proposal_bindings_by_source", ["source_id", "generation"]],
       ["projects_by_source", ["source_id", "archived_at", "updated_at", "id"]],
       ["threads_by_project", ["project_id", "archived_at", "updated_at", "id"]],
     ] as const) assertIndex(database, index, expected);
+    const restartIndex = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'restart_operations_one_active_source'")
+      .get() as { sql: string } | undefined;
+    if (!/\bUNIQUE\s+INDEX\b/iu.test(restartIndex?.sql ?? "")
+      || !/\bWHERE\s+outcome\s+IS\s+NULL\b/iu.test(restartIndex?.sql ?? "")) {
+      throw new Error("Invalid active-restart uniqueness fence.");
+    }
     for (const [table, from, target, onDelete] of [
       ["agent_run_overrides", "source_id", "agents", "CASCADE"],
       ["tags", "source_id", "agents", "CASCADE"],
@@ -392,6 +418,9 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ["monitor_wake_deliveries", "turn_id", "turns", "SET NULL"],
       ["cron_run_messages", "message_id", "messages", "CASCADE"],
       ["web_submissions", "thread_id", "threads", "CASCADE"],
+      ["restart_proposal_bindings", "message_id", "messages", "CASCADE"],
+      ["restart_proposal_bindings", "thread_id", "threads", "CASCADE"],
+      ["restart_proposal_bindings", "source_id", "agents", "CASCADE"],
     ] as const) {
       const keys = database.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{
         from: string; table: string; to: string; on_delete: string;

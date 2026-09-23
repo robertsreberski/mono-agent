@@ -648,6 +648,21 @@ export interface AgentReplyMcpAppPart {
   readonly expiresAt?: string;
 }
 
+/** A display-only restart suggestion. Target and authority are NEVER model-supplied. */
+export interface AgentReplyRestartProposalPart {
+  readonly type: "restart_proposal";
+  /** Stable identifier within the assistant reply; not a restart operation id. */
+  readonly id: string;
+  readonly reason?: string;
+}
+
+/** Keep proposed reasons display-only, short, single-line and free of control characters. */
+export function sanitizeRestartProposalReason(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.replace(/[\x00-\x1f\x7f-\x9f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 280);
+  return normalized.length === 0 ? undefined : normalized;
+}
+
 /** One rich reply part failed while other text/parts remained deliverable. */
 export interface AgentReplyPartFailure {
   readonly type: "failure";
@@ -674,6 +689,7 @@ export interface AgentReplyPartFailure {
 export type AgentReplyPart =
   | AgentReplyAttachmentPart
   | AgentReplyMcpAppPart
+  | AgentReplyRestartProposalPart
   | AgentReplyPartFailure;
 
 export interface AgentMessageFinishOptions {

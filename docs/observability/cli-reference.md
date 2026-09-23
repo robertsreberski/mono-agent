@@ -28,6 +28,45 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 
 `--json` is rejected with a usage error (`2`) on the lifecycle/interactive commands (`init`, `auth`, `start`, `stop`, `restart`, `logs`, `tui`, `web`) and on `sandbox setup`/`sandbox check` and `install-skill` without `--project --check`, rather than being silently ignored.
 
+## Console-initiated supervised agent restart
+
+The browser's selected-agent Restart action and an agent's web-only
+`ProposeRestart` card are **not** `mono-agent restart` and do not run a shell
+command. They request one supervised worker through its keyed operator HTTP
+endpoint; the proposal tool only suggests, and a human confirms the web
+request. `GET {basePath}/v1/info` advertises `capabilities.restart` with a
+supported flag and short refusal reason; an older/malformed capability is
+unsupported. `POST {basePath}/v1/restart` requires a configured operator API
+key and matching bearer even though other operator routes can be keyless.
+The adapter returns `202` only after the supervised CLI host synchronously
+commits a single operation id and its nonzero exit disposition; overlapping
+requests return `409` with that same id. A `202` is acceptance, not proof that
+another process became ready. See [web-console restart](./web-console.md#restart-one-agent)
+for the operator-facing stages and two-minute confirmation bound.
+
+**Internal worker exit code `42`** marks an accepted supervised restart. This
+is deliberately outside ordinary CLI command result codes `0`/`1`/`2` above:
+the worker stops gracefully and releases its lease, then exits nonzero so its
+supervisor relaunches it. Exit `0` would retire the worker under launchd's
+`KeepAlive.SuccessfulExit=false` and systemd's `Restart=on-failure`.
+Verification reads the **loaded** supervisor's ownership of this PID, worker
+identity and relaunch policy again when requested. On launchd, `launchctl print`
+represents that policy in `semaphores = { successful exit => 0 }`; absence or
+`=> 1` is not support. systemd requires an active loaded matching unit with a
+nonzero-exit relaunch policy (`Restart=on-failure` or `always`); `Restart=no`
+is unsupported. `RestartPreventExitStatus` or `SuccessExitStatus` naming exit
+`42` also refuses support: either setting defeats nonzero relaunch. The installed
+systemd unit limits restarts with `StartLimitIntervalSec=60` and
+`StartLimitBurst=5`; roughly a sixth rapid start within 60 seconds leaves the
+unit failed until it is explicitly recovered. A signal before acceptance
+prevents it; a signal after acceptance cannot change the committed nonzero
+exit to exit 0. A **second external** `SIGTERM` after the shutdown listener is
+removed takes the OS default action instead of making an orderly restart
+promise. Once accepted teardown has completed, a bounded 10-second fallback
+forces exit 42 if an unrelated referenced handle prevents the process from
+draining on its own. None of this changes the explicit CLI `restart` lifecycle
+command.
+
 ## Command summary
 
 | Command | Purpose | Key flags |

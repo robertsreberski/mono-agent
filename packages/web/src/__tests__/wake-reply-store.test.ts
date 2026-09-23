@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { AgentStreamWireFrame } from "@mono-agent/agent-contracts";
 import type { WebMessagePart } from "../contracts.js";
 import { WebStore } from "../store.js";
-import { normalizeWakeTerminalReply } from "../wake-reply.js";
+import { hasWakeReplyContent, normalizeWakeTerminalReply } from "../wake-reply.js";
 import { fakeProcessJob, temporaryRoot } from "./helpers.js";
 
 const roots: string[] = [];
@@ -133,6 +133,13 @@ describe("host wake terminal reply persistence", () => {
       expect(s.parts().some((p) => p.type === "mcp_app")).toBe(true);
       s.advance(); expect(s.store.claimDueWebPushDeliveries(10)).toHaveLength(1);
     } finally { s.store.close(); }
+  });
+
+  it("retains a restart card with sentinel text as meaningful wake content", () => {
+    const proposal = { type: "restart_proposal", id: "proposal-1", reason: "Operator review" } as const;
+    const parts: WebMessagePart[] = [{ type: "text", text: "NOTHING_TO_REPORT" }, proposal];
+    expect(hasWakeReplyContent(parts)).toBe(true);
+    expect(normalizeWakeTerminalReply(parts, true)).toEqual({ parts, changed: false });
   });
 
   it.each(["", "\n\n"])("honors legacy context_usage boundaries regardless of preceding whitespace %j", (space) => {

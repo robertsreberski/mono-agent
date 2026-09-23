@@ -33,6 +33,7 @@ import type {
   CronReplyContextPart as CronReplyContextValue,
   ToolCallArtifact,
   RunAttribution as RunAttributionValue,
+  RestartProposalPart as RestartProposalValue,
 } from "../types";
 import { UserMessageAttachments } from "./Attachments";
 import {
@@ -63,6 +64,7 @@ import { cronRunAnchor } from "./CronChannelHeader";
 import { McpAppPart, ReplyAttachmentPart, ReplyFailurePart } from "./ReplyParts";
 import { RunAttribution } from "./RunAttribution";
 import { ProcessJobActivityEventPart } from "./ProcessJob";
+import { RestartAgentCard } from "./RestartAgentCard";
 
 export const copyTextWithFallback = async (text: string): Promise<void> => {
   if (navigator.clipboard?.writeText) {
@@ -1271,6 +1273,33 @@ function ErrorPart({ data }: DataMessagePartProps) {
   );
 }
 
+function RestartProposalPart({ data }: DataMessagePartProps) {
+  const payload = asRecord(data);
+  const state = asRecord(payload.restartable);
+  const messageId = useAuiState((value) => value.message.id);
+  const boundThreadId = useAuiState((value) => value.message.metadata.custom?.threadId);
+  const { selectedThread, selectedAgent, activeThreads } = useConsoleStore();
+  const threadId = typeof boundThreadId === "string" ? boundThreadId : selectedThread?.id ?? "";
+  const sourceId = selectedThread?.id === threadId ? selectedThread.sourceId : "";
+  const partId = typeof payload.id === "string" ? payload.id : "";
+  const reason = typeof payload.reason === "string" ? payload.reason : undefined;
+  const allowed = ["available", "stale", "offline", "unsupported", "in_progress", "used"];
+  const restartable: NonNullable<RestartProposalValue["restartable"]> = {
+    state: typeof state.state === "string" && allowed.includes(state.state)
+      && sourceId.length > 0 && partId.length > 0 ? state.state as NonNullable<RestartProposalValue["restartable"]>["state"]
+      : "unsupported",
+    ...(typeof state.reason === "string" ? { reason: state.reason } : {}),
+    ...(typeof state.operationId === "string" ? { operationId: state.operationId } : {}),
+  };
+  return <RestartAgentCard
+    sourceId={sourceId}
+    agentLabel={selectedAgent?.sourceId === sourceId ? selectedAgent.label : "agent"}
+    {...(reason === undefined ? {} : { reason })}
+    proposal={{ threadId, messageId, partId, restartable }}
+    approximateRunningCount={activeThreads?.runningCounts[sourceId] ?? 0}
+  />;
+}
+
 const parts = {
   Text: MarkdownText,
   Quote: QuoteBlock,
@@ -1288,6 +1317,7 @@ const parts = {
       error: ErrorPart,
       "reply-attachment": ReplyAttachmentPart,
       "mcp-app": McpAppPart,
+      "restart-proposal": RestartProposalPart,
       "reply-failure": ReplyFailurePart,
       "process-job-event": ProcessJobActivityEventPart,
     },
@@ -1413,6 +1443,7 @@ function AssistantParts() {
             if (part.name === "error") return <ErrorPart {...part} />;
             if (part.name === "reply-attachment") return <ReplyAttachmentPart {...part} />;
             if (part.name === "mcp-app") return <McpAppPart {...part} />;
+            if (part.name === "restart-proposal") return <RestartProposalPart {...part} />;
             if (part.name === "reply-failure") return <ReplyFailurePart {...part} />;
             if (part.name === "process-job-event") return <ProcessJobActivityEventPart {...part} />;
             return part.dataRendererUI;

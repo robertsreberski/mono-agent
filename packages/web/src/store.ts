@@ -13,6 +13,7 @@ import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   AGENT_LIVE_INPUT_MAX_MESSAGES,
   MAX_AGENT_REPLY_PARTS,
+  sanitizeRestartProposalReason,
   classifyNotifySuppression,
   NOTHING_TO_REPORT_SENTINEL,
   type AgentReplyPart,
@@ -32,6 +33,9 @@ import {
   type WebAgentProvider,
   type WebAgentRunSettings,
   type WebAgentSummary,
+  type WebAgentRestartOperation,
+  type WebAgentRestartStage,
+  type WebAgentRestartOutcome,
   type WebAttachment,
   type WebMessage,
   type WebMessageDelta,
@@ -844,9 +848,128 @@ export interface UpsertWebProcessJobCardInput {
   readonly replyParts?: readonly AgentReplyPart[];
 }
 
+export interface StoredRestartProposalBinding {
+  readonly messageId: string;
+  readonly partId: string;
+  readonly threadId: string;
+  readonly sourceId: string;
+  readonly generation: string;
+  readonly operationId?: string;
+}
+
+export interface StoredRestartOperation extends WebAgentRestartOperation {
+  readonly generation: string;
+  readonly operationId?: string;
+  /** Transport loss or response parse failure after dispatch is not a refusal. */
+  readonly uncertain: boolean;
+}
+
+interface RestartOperationRow {
+  id: string; source_id: string; generation: string; operation_id: string | null;
+  requested_at: string; deadline: string; stage: WebAgentRestartStage;
+  outcome: WebAgentRestartOutcome | null; reason: string | null;
+  uncertain: number; approximate_running_turns: number;
+}
+
+function storedRestartOperation(row: RestartOperationRow): StoredRestartOperation {
+  return {
+    id: row.id, sourceId: row.source_id, generation: row.generation,
+    ...(row.operation_id === null ? {} : { operationId: row.operation_id }),
+    requestedAt: row.requested_at, deadline: row.deadline,
+    stage: row.stage,
+    ...(row.outcome === null ? {} : { outcome: row.outcome }),
+    ...(row.reason === null ? {} : { reason: row.reason }),
+    uncertain: row.uncertain === 1,
+    approximateRunningTurns: row.approximate_running_turns,
+  };
+}
+
 const STREAM_SEQUENCE_CONFLICT = Symbol("stream sequence conflict");
 
 export class WebStore {
+  restartProposalBinding(messageId: string, partId: string): StoredRestartProposalBinding | undefined {
+    const row = this.database.prepare(`SELECT message_id, part_id, thread_id, source_id, generation, operation_id
+      FROM restart_proposal_bindings WHERE message_id = ? AND part_id = ?`).get(messageId, partId) as unknown as {
+        message_id: string; part_id: string; thread_id: string; source_id: string;
+        generation: string; operation_id: string | null;
+      } | undefined;
+    return row === undefined ? undefined : {
+      messageId: row.message_id, partId: row.part_id, threadId: row.thread_id,
+      sourceId: row.source_id, generation: row.generation,
+      ...(row.operation_id === null ? {} : { operationId: row.operation_id }),
+    };
+  }
+
+  /** CAS link: the part and web operation must still belong to the same agent. */
+  claimRestartProposalOperation(messageId: string, partId: string, sourceId: string, generation: string, operationId: string): boolean {
+    return this.database.prepare(`UPDATE restart_proposal_bindings SET operation_id = ?
+      WHERE message_id = ? AND part_id = ? AND source_id = ? AND generation = ? AND operation_id IS NULL
+        AND EXISTS (SELECT 1 FROM restart_operations WHERE id = ? AND source_id = ? AND generation = ?)`)
+      .run(operationId, messageId, partId, sourceId, generation, operationId, sourceId, generation).changes === 1;
+  }
+
+  /** Durable before dispatch: an unacknowledged crash must never recover as a success. */
+  createRestartOperation(input: {
+    readonly sourceId: string; readonly generation: string;
+    readonly requestedAt: string; readonly deadline: string;
+    readonly approximateRunningTurns: number;
+  }): { readonly operation: StoredRestartOperation; readonly created: boolean } {
+    const existing = this.activeRestartOperation(input.sourceId);
+    if (existing !== undefined) return { operation: existing, created: false };
+    const id = randomUUID();
+    const changed = this.database.prepare(`INSERT OR IGNORE INTO restart_operations
+      (id, source_id, generation, requested_at, deadline, stage, approximate_running_turns)
+      VALUES (?, ?, ?, ?, ?, 'requesting', ?)`).run(
+      id, input.sourceId, input.generation, input.requestedAt, input.deadline, input.approximateRunningTurns,
+    ).changes;
+    const operation = this.restartOperation(changed === 1 ? id : this.activeRestartOperation(input.sourceId)?.id ?? id);
+    if (operation === undefined) throw new WebConsoleError("restart_unavailable", "Could not retain the restart request.", 500);
+    return { operation, created: changed === 1 };
+  }
+
+  restartOperation(id: string): StoredRestartOperation | undefined {
+    const row = this.database.prepare("SELECT * FROM restart_operations WHERE id = ?").get(id) as unknown as RestartOperationRow | undefined;
+    return row === undefined ? undefined : storedRestartOperation(row);
+  }
+
+  latestRestartOperation(sourceId: string): StoredRestartOperation | undefined {
+    const row = this.database.prepare(`SELECT * FROM restart_operations WHERE source_id = ?
+      ORDER BY requested_at DESC, rowid DESC LIMIT 1`).get(sourceId) as unknown as RestartOperationRow | undefined;
+    return row === undefined ? undefined : storedRestartOperation(row);
+  }
+
+  activeRestartOperation(sourceId: string): StoredRestartOperation | undefined {
+    const row = this.database.prepare("SELECT * FROM restart_operations WHERE source_id = ? AND outcome IS NULL LIMIT 1")
+      .get(sourceId) as unknown as RestartOperationRow | undefined;
+    return row === undefined ? undefined : storedRestartOperation(row);
+  }
+
+  pendingRestartOperations(): readonly StoredRestartOperation[] {
+    return (this.database.prepare("SELECT * FROM restart_operations WHERE outcome IS NULL").all() as unknown as RestartOperationRow[])
+      .map(storedRestartOperation);
+  }
+
+  updateRestartOperation(id: string, next: {
+    readonly stage?: WebAgentRestartStage; readonly outcome?: WebAgentRestartOutcome;
+    readonly reason?: string; readonly operationId?: string; readonly uncertain?: boolean;
+  }): StoredRestartOperation {
+    const current = this.restartOperation(id);
+    if (current === undefined) throw new WebConsoleError("restart_not_found", "Restart request not found.", 404);
+    if (current.outcome !== undefined) return current;
+    this.database.prepare(`UPDATE restart_operations SET stage = ?, outcome = ?, reason = ?,
+      operation_id = ?, uncertain = ? WHERE id = ? AND outcome IS NULL`).run(
+      next.stage ?? current.stage, next.outcome ?? null, next.reason ?? current.reason ?? null,
+      next.operationId ?? current.operationId ?? null, next.uncertain === undefined ? Number(current.uncertain) : Number(next.uncertain), id,
+    );
+    return this.restartOperation(id)!;
+  }
+
+  /** A real user cancellation always takes precedence over restart interruption. */
+  turnCancelOrigin(turnId: string): WebCancelOrigin | undefined {
+    const row = this.database.prepare("SELECT cancel_origin FROM turns WHERE id = ?").get(turnId) as unknown as { cancel_origin: WebCancelOrigin | null } | undefined;
+    return row?.cancel_origin ?? undefined;
+  }
+
   /** Persist a promptless compaction notice on this thread's last settled answer. */
   recordManualCompaction(threadId: string, result: import("@mono-agent/agent-contracts").AgentManualCompactionResult): string | undefined {
     this.requireThread(threadId);
@@ -914,6 +1037,11 @@ export class WebStore {
         chmod(`${paths.database}-wal`, 0o600).catch(ignoreMissing),
         chmod(`${paths.database}-shm`, 0o600).catch(ignoreMissing),
       ]);
+      // A requesting operation crossed the durable marker but its adapter
+      // acceptance never reached durable web state. Never infer acceptance.
+      store.database.prepare(`UPDATE restart_operations SET outcome = 'not_confirmed',
+        reason = 'The web console restarted before the request was confirmed.', uncertain = 1
+        WHERE stage = 'requesting' AND outcome IS NULL`).run();
       store.recoverInterruptedTurns();
       store.recoverLiveInputs();
       store.recoverWebPushDeliveries();
@@ -4540,7 +4668,7 @@ export class WebStore {
     finalText?: string,
     metadata?: Readonly<Record<string, unknown>>,
     replyParts?: readonly AgentReplyPart[],
-    options: { readonly suppressResponsePush?: boolean; readonly hostWakeDeliveryKey?: string } = {},
+    options: { readonly suppressResponsePush?: boolean; readonly hostWakeDeliveryKey?: string; readonly replyProcessGeneration?: string } = {},
   ): StoredTurnFinish {
     const runtime = runtimeMetadata(metadata);
     return this.finishTurn(
@@ -4553,6 +4681,7 @@ export class WebStore {
       replyParts,
       options.suppressResponsePush === true,
       options.hostWakeDeliveryKey,
+      options.replyProcessGeneration,
     );
   }
 
@@ -4570,6 +4699,11 @@ export class WebStore {
 
   interruptTurn(turnId: string, message = "The web service stopped before this turn completed."): StoredTurnFinish {
     return this.finishTurn(turnId, "interrupted", undefined, "interrupted", message, undefined);
+  }
+
+  interruptTurnForRestart(turnId: string): StoredTurnFinish {
+    return this.finishTurn(turnId, "interrupted", undefined, "agent_restart_interrupted",
+      "The agent stopped during a requested restart.", undefined);
   }
 
   recordCancelOrigin(turnId: string, origin: WebCancelOrigin): void {
@@ -5032,6 +5166,21 @@ export class WebStore {
         ask_by_id INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS restart_operations (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        generation TEXT NOT NULL,
+        operation_id TEXT,
+        requested_at TEXT NOT NULL,
+        deadline TEXT NOT NULL,
+        stage TEXT NOT NULL CHECK (stage IN ('requesting', 'restarting', 'back_online')),
+        outcome TEXT CHECK (outcome IN ('success', 'failure', 'not_confirmed')),
+        reason TEXT,
+        uncertain INTEGER NOT NULL DEFAULT 0 CHECK (uncertain IN (0, 1)),
+        approximate_running_turns INTEGER NOT NULL DEFAULT 0 CHECK (approximate_running_turns >= 0)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS restart_operations_one_active_source
+        ON restart_operations(source_id) WHERE outcome IS NULL;
       CREATE TABLE IF NOT EXISTS agent_run_overrides (
         source_id TEXT PRIMARY KEY REFERENCES agents(source_id) ON DELETE CASCADE,
         model TEXT,
@@ -5117,6 +5266,17 @@ export class WebStore {
       );
       CREATE INDEX IF NOT EXISTS messages_by_thread ON messages(thread_id, created_at);
       CREATE INDEX IF NOT EXISTS messages_by_turn ON messages(turn_id);
+      CREATE TABLE IF NOT EXISTS restart_proposal_bindings (
+        message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        part_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        generation TEXT NOT NULL CHECK (length(generation) > 0),
+        operation_id TEXT UNIQUE REFERENCES restart_operations(id),
+        PRIMARY KEY (message_id, part_id)
+      );
+      CREATE INDEX IF NOT EXISTS restart_proposal_bindings_by_source
+        ON restart_proposal_bindings(source_id, generation);
       CREATE TABLE IF NOT EXISTS live_inputs (
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -5781,6 +5941,7 @@ export class WebStore {
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
     hostWakeDeliveryKey?: string,
+    replyProcessGeneration?: string,
   ): StoredTurnFinish {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") {
@@ -5796,6 +5957,7 @@ export class WebStore {
       replyParts,
       suppressResponsePush,
       hostWakeDeliveryKey,
+      replyProcessGeneration,
     ));
     return {
       ...this.requireThreadDetail(turn.thread_id),
@@ -5813,6 +5975,7 @@ export class WebStore {
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
     hostWakeDeliveryKey?: string,
+    replyProcessGeneration?: string,
   ): StoredMessageWrite | undefined {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") return undefined;
@@ -5852,6 +6015,20 @@ export class WebStore {
         turnId,
       );
     const delta = this.writeMessageDelta(existing, parts, now, { status });
+    if (status === "complete" && thread.trigger === undefined && replyProcessGeneration !== undefined
+      && replyProcessGeneration.length > 0) {
+      // The source comes from this message's persisted thread. The generation
+      // comes from the operator client that actually ran the turn, NOT model
+      // metadata or a later discovery pass. Persist the binding in the same
+      // transaction as the reply part; raw transcript reads expose neither.
+      const proposal = parts.find((part) => part.type === "restart_proposal");
+      if (proposal?.type === "restart_proposal") {
+        this.database.prepare(`INSERT INTO restart_proposal_bindings
+          (message_id, part_id, thread_id, source_id, generation) VALUES (?, ?, ?, ?, ?)`).run(
+          existing.id, proposal.id, thread.id, thread.sourceId, replyProcessGeneration,
+        );
+      }
+    }
     this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
       .run(now, turn.thread_id);
     this.applyPendingProjectMembership(turn.thread_id, now, turnId);
@@ -5879,7 +6056,9 @@ export class WebStore {
         : status === "cancelled"
           ? "The run was cancelled."
           : status === "interrupted"
-            ? "The run was interrupted when the web service stopped."
+            ? errorCode === "agent_restart_interrupted"
+              ? "The run was interrupted when the agent restarted."
+              : "The run was interrupted when the web service stopped."
             : errorMessage ?? "The run failed.";
       this.enqueueWebPushEventInTransaction({
         logicalKey: `turn:${turnId}:terminal`,
@@ -8053,7 +8232,7 @@ const REPLY_FAILURE_CODES = new Set([
 
 const REPLY_PARTS_TRUNCATED_ID = "web-reply-parts-truncated";
 const INVALID_REPLY_PART_ID = "invalid-rich-part";
-type DurableWebReplyPart = Extract<WebMessagePart, { type: "attachment" | "mcp_app" | "failure" }>;
+type DurableWebReplyPart = Extract<WebMessagePart, { type: "attachment" | "mcp_app" | "restart_proposal" | "failure" }>;
 
 /**
  * The SQLite boundary does not trust the operator wire parser. A truncated
@@ -8091,7 +8270,7 @@ function replyPartIdCounts(values: readonly unknown[]): Map<string, number> {
 }
 
 function isDurableWebReplyPart(part: WebMessagePart): part is DurableWebReplyPart {
-  return part.type === "attachment" || part.type === "mcp_app" || part.type === "failure";
+  return part.type === "attachment" || part.type === "mcp_app" || part.type === "restart_proposal" || part.type === "failure";
 }
 
 function boundedWebReplyParts(
@@ -8139,6 +8318,7 @@ function boundedWebReplyParts(
     inputParts.length,
     Math.max(0, MAX_AGENT_REPLY_PARTS - retainedExistingCount - (needsDiagnostic ? 1 : 0)),
   );
+  let proposalSeen = retainedExistingParts.some((part) => part.type === "restart_proposal");
   const retained = Array.from(
     { length: retainedCount },
     (_, index): DurableWebReplyPart => {
@@ -8150,8 +8330,15 @@ function boundedWebReplyParts(
           ? inputId
           : nextSyntheticReplyPartId(INVALID_REPLY_PART_ID, ids);
       });
+      if (converted.type === "restart_proposal" && proposalSeen) {
+        const duplicate: DurableWebReplyPart = { type: "failure", id: nextSyntheticReplyPartId(INVALID_REPLY_PART_ID, ids),
+          code: "unsupported_destination", message: "Only one restart proposal can be displayed with a reply." };
+        claimedIds.add(duplicate.id);
+        return duplicate;
+      }
       if (!claimedIds.has(converted.id)) {
         claimedIds.add(converted.id);
+        if (converted.type === "restart_proposal") proposalSeen = true;
         return converted;
       }
       const collision: DurableWebReplyPart = {
@@ -8257,6 +8444,15 @@ function toWebReplyPart(input: unknown, syntheticId: () => string): DurableWebRe
       ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt as string }),
     };
   }
+  if (part?.type === "restart_proposal") {
+    if (!hasOnlyKeys(part, DURABLE_RESTART_PROPOSAL_KEYS) || !validRichId(part.id)
+      || (part.reason !== undefined && (typeof part.reason !== "string" || part.reason.length > 1_024))) {
+      return { type: "failure", id: syntheticId(), code: "unsupported_destination",
+        message: "Invalid restart proposal metadata could not be displayed." };
+    }
+    const reason = sanitizeRestartProposalReason(part.reason);
+    return { type: "restart_proposal", id: part.id, ...(reason === undefined ? {} : { reason }) };
+  }
   if (
     part?.type === "failure"
     && validRichId(part.id)
@@ -8311,6 +8507,9 @@ function durableMessagePart(part: WebMessagePart): WebMessagePart {
       ...(part.description === undefined ? {} : { description: part.description }),
       ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt }),
     };
+  }
+  if (part.type === "restart_proposal") {
+    return { type: "restart_proposal", id: part.id, ...(part.reason === undefined ? {} : { reason: part.reason }) };
   }
   if (part.type === "failure") {
     return {
@@ -8663,6 +8862,7 @@ const DURABLE_MCP_APP_KEYS = new Set([
 const DURABLE_REPLY_FAILURE_KEYS = new Set([
   "type", "id", "code", "message", "relatedPartId",
 ]);
+const DURABLE_RESTART_PROPOSAL_KEYS = new Set(["type", "id", "reason"]);
 
 function hasOnlyKeys(value: Readonly<Record<string, unknown>>, allowed: ReadonlySet<string>): boolean {
   return Object.keys(value).every((key) => allowed.has(key));
@@ -8769,6 +8969,13 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && validOptionalBoundedText(part.title, 240)
       && validOptionalBoundedText(part.description, 1_000)
       && validOptionalDate(part.expiresAt);
+  }
+  if (part.type === "restart_proposal") {
+    return hasOnlyKeys(part, DURABLE_RESTART_PROPOSAL_KEYS)
+      && validRichId(part.id)
+      && (part.reason === undefined
+        || (typeof part.reason === "string" && part.reason.length > 0
+          && part.reason.length <= 280 && sanitizeRestartProposalReason(part.reason) === part.reason));
   }
   if (part.type === "failure") {
     return hasOnlyKeys(part, DURABLE_REPLY_FAILURE_KEYS)

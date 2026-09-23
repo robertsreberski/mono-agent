@@ -4,6 +4,9 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { listRecordedRuns } from "@mono-agent/observability";
+import type { TuiRestartAuthority } from "@mono-agent/operator-adapter";
+import { createSupervisedRestartLatch, type SupervisedRestartLatch } from "./supervised-restart-latch.js";
+import { createSupervisedRestartAuthority } from "./supervised-restart-authority.js";
 import {
   sandboxEffectiveStateWarning,
 } from "@mono-agent/runtime-adapter";
@@ -61,7 +64,7 @@ import type {
 import { readCliConfigSnapshot } from "./first-run-readiness.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { purgeConversationState, type PurgeConversationStateResult } from "./sessions.js";
-import { deriveLaunchdLabel, launchdPathsFor } from "./launchd.js";
+import { deriveLaunchdLabel, launchdPathsFor, makeLaunchctlRunner } from "./launchd.js";
 import { waitForManagedRuntimePublication } from "./managed-runtime-publication.js";
 import * as ui from "./ui.js";
 
@@ -273,6 +276,15 @@ async function runForeground(
   let runtimeInputs: Awaited<ReturnType<typeof materializeBackgroundRuntimeInputs>> | undefined;
   let app: MonoAgentApp | undefined;
   let logMonitor: ReturnType<typeof startManagedLaunchdLogMonitor> | undefined;
+  let shutdownWaitStarted = false;
+  const restartLatch = managedBackgroundWorker || systemdBackgroundWorker ? createSupervisedRestartLatch() : undefined;
+  const restartAuthority: TuiRestartAuthority | undefined = restartLatch === undefined ? undefined
+    : createSupervisedRestartAuthority({
+        configPath,
+        startedAt: new Date().toISOString(),
+        ...(managedBackgroundWorker ? { launchdRunner: makeLaunchctlRunner(2_000) } : {}),
+        logger: consoleLogger(),
+      }, restartLatch);
   try {
     let backgroundSnapshot = systemdBackgroundSnapshot;
     if (managedBackgroundWorker) {
@@ -330,6 +342,7 @@ async function runForeground(
       env: runtimeInputs?.environment ?? startupEnvironment,
       logger: consoleLogger(),
       ...(backgroundSnapshot === undefined ? {} : { backgroundSnapshot }),
+      ...(restartAuthority === undefined ? {} : { restartAuthority }),
     };
     app = managedRuntime === undefined
       ? await startMonoAgentApp(appOptions)
@@ -346,11 +359,14 @@ async function runForeground(
     const shutdown = waitForShutdownSignal(app, () => {
       logMonitor?.stop();
       logMonitor = undefined;
-    });
+    }, restartLatch);
+    shutdownWaitStarted = true;
     return await shutdown;
   } finally {
     logMonitor?.stop();
-    await app?.stop().catch(() => undefined);
+    // The shutdown waiter already called stop exactly once; even if it failed,
+    // do not issue a second process shutdown for one accepted operation.
+    if (!shutdownWaitStarted) await app?.stop().catch(() => undefined);
     await runtimeInputs?.dispose().catch(() => undefined);
     await lease.release().catch((error) => {
       process.stderr.write(ui.style.yellow(
@@ -818,11 +834,12 @@ export function describeChannelStatus(status: ChannelStatus): string {
 export function waitForShutdownSignal(
   app: Pick<MonoAgentApp, "stop">,
   beforeAppStop?: () => void,
+  restartLatch?: SupervisedRestartLatch,
 ): Promise<number> {
   return new Promise<number>((resolve) => {
     const keepAlive = setInterval(() => {}, KEEP_ALIVE_INTERVAL_MS);
     let stopping = false;
-    const onSignal = (signal: NodeJS.Signals): void => {
+    const beginShutdown = (signal?: NodeJS.Signals): void => {
       if (stopping) {
         return;
       }
@@ -851,7 +868,7 @@ export function waitForShutdownSignal(
         }
         try {
           await app.stop();
-          resolve(latchFailed ? 1 : 0);
+          resolve(restartLatch?.exitCode || (latchFailed ? 1 : 0));
         } catch (error) {
           try {
             process.stderr.write(ui.errorLine(
@@ -862,12 +879,17 @@ export function waitForShutdownSignal(
           }
           // Resolve so runForeground's finally block can retry idempotent app
           // cleanup and release the process-lifetime singleton lease.
-          resolve(1);
+          resolve(restartLatch?.exitCode || 1);
         }
       })();
     };
+    const onSignal = (signal: NodeJS.Signals): void => {
+      restartLatch?.signal();
+      beginShutdown(signal);
+    };
     process.on("SIGINT", onSignal);
     process.on("SIGTERM", onSignal);
+    restartLatch?.onStop(() => beginShutdown());
   });
 }
 

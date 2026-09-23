@@ -186,6 +186,8 @@ const convertPart = (
       return { type: "data-reply-attachment", data: jsonObject(part) };
     case "mcp_app":
       return { type: "data-mcp-app", data: jsonObject(part) };
+    case "restart_proposal":
+      return { type: "data-restart-proposal", data: jsonObject(part) };
     case "failure":
       return { type: "data-reply-failure", data: jsonObject(part) };
   }
@@ -314,7 +316,11 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
     (ACTIVITY_PART_TYPES.has(part.type) ? activity : afterAnswer).push(part);
   });
   flush();
-  return [...folded, visible[answerIndex]!, ...afterAnswer];
+  // The proposal belongs to the answer, not the activity/tool band or a
+  // later attachment row. Move it immediately after the settled answer text.
+  const proposals = afterAnswer.filter((part) => part.type === "data-restart-proposal");
+  return [...folded, visible[answerIndex]!, ...proposals,
+    ...afterAnswer.filter((part) => part.type !== "data-restart-proposal")];
 };
 
 interface ConvertWebMessageOptions {
@@ -440,6 +446,7 @@ export const convertWebMessage = (
         ...(message.role === "system" && content[0]?.type === "data-conversation-marker"
           ? { conversationMarker: content[0] } : {}),
         turnId: message.turnId,
+        threadId: message.threadId,
         updatedAt: message.updatedAt,
         ...(message.finishedAt === undefined ? {} : { finishedAt: message.finishedAt }),
         ...(message.liveInputStatus === undefined ? {} : { liveInputStatus: message.liveInputStatus }),

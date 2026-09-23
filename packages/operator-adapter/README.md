@@ -74,6 +74,21 @@ Keep bearer values out of source config when possible. Set
   expose a bounded `skills` snapshot with ready/error state and per-item
   inlined/on-demand/unavailable status. `info` may be a function so local-model
   choices and skills can refresh without restarting the endpoint.
+  `capabilities.restart` is always `{ supported, reason? }` on new agents:
+  only a keyed, supervised, verified worker advertises `supported: true`.
+  Older or malformed capability records are unsupported to clients.
+- `POST {basePath}/v1/restart` accepts exactly `{}` and a **configured,
+  matching** operator bearer. Generic keyless operator authorization does not
+  apply: keyless returns `403` and a missing/wrong bearer `401`. The CLI host
+  rechecks supervisor ownership, this PID, loaded worker identity and on-failure
+  relaunch policy; unverifiable workers refuse with `409` and a short reason.
+  `202 { operation: { id }, process: { pid, startedAt } }` follows synchronous
+  host commitment of the id and nonzero exit disposition; it is acceptance,
+  not proof that a replacement is online. A concurrent request returns `409`
+  `restart_in_progress` with the same operation id, never a second shutdown.
+  The host stops gracefully after response finish or a short bounded fallback
+  even if a client disconnects. There is no hard busy inventory/confirm
+  handshake: the web console warns about possible interruptions beforehand.
 - `POST {basePath}/v1/conversations/:id/compact` accepts `{}` or
   `{ "model": "<provider:model>" }` (the model selection a turn on that
   conversation would declare) and requests guarded, promptless compaction of
@@ -281,6 +296,9 @@ TuiModelCatalogProvider
 TuiModelCatalogRequest
 TuiModelOption
 TuiProviderInfo
+TuiRestartAcceptance
+TuiRestartAuthority
+TuiRestartSupport
 TuiSkillAvailability
 TuiSkillInfo
 TuiSkillRegistry

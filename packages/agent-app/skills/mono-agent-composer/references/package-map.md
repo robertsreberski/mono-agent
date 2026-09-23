@@ -99,7 +99,11 @@ the web console, and because every route is Pi-native the whole fallback chain
 carries that bridge. Adapters consume the shared reply-part contract: Slack and
 Telegram confirm native uploads, the web serves authorized downloads and
 sandboxed Apps, and machine/verbatim adapters preserve answer text when they
-cannot represent a part.
+cannot represent a part. `ProposeRestart` is another app-owned request-scoped
+tool, installed only on interactive web turns when the supervised agent's
+keyed restart support verifies successfully and tool policy allows it.
+Restrictive `tools.allowedTools` must name `ProposeRestart`; its reply part is
+only a proposal and requires the operator to confirm in the web console.
 
 ```ts
 import { createToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/agent-harness";
