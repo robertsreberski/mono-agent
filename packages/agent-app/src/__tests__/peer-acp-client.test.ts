@@ -310,6 +310,15 @@ describe("peer ACP client over a real spawned bridge", () => {
     expect(f.turns).toHaveLength(1);
   }, 30_000);
 
+  it("submits a valid paired Other response through the bridge validator", async () => {
+    const f = await fixture("custom continued", true);
+    const result = await f.turn(undefined, new AbortController().signal, async () => ({ action: "accept", content: {
+      question_1: "__mono_agent_custom__", question_1_other: "Different approach",
+    } }));
+    expect(result.answer).toContain("custom continued");
+    expect(f.submission()).toMatchObject({ answers: [{ questionId: "q1", customReply: "Different approach" }] });
+  }, 30_000);
+
   it("does not submit a declined peer question", async () => {
     const f = await fixture("never", true);
     await expect(f.turn(undefined, new AbortController().signal,
