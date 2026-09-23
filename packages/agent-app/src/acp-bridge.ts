@@ -36,7 +36,7 @@ import {
 } from "@mono-agent/web";
 
 import { agentAppPackageVersion } from "./package-version.js";
-import { verifyPeerHandoff } from "./peer-provenance.js";
+import { consumePeerGeneration, stampPeerOperatorHandoff, verifyPeerHandoff } from "./peer-provenance.js";
 import {
   createAcpSessionAuthorization,
   loadAcpSessionAuthorization,
@@ -234,6 +234,18 @@ async function runPrompt(
   if (offeredPeer !== undefined && verifiedPeer === undefined) {
     throw bridgeError("invalid_peer_handoff", "Peer provenance handoff is invalid or not bound to this prompt.");
   }
+  let operatorPeer: Awaited<ReturnType<typeof stampPeerOperatorHandoff>> | undefined;
+  if (verifiedPeer !== undefined) {
+    try {
+      if (!await consumePeerGeneration(target.artifactDir, verifiedPeer)) {
+        throw bridgeError("peer_handoff_replayed", "This peer turn generation was already consumed.");
+      }
+      operatorPeer = await stampPeerOperatorHandoff(target.artifactDir, verifiedPeer);
+    } catch (error) {
+      if (error instanceof RequestError) throw error;
+      throw bridgeError("peer_handoff_persistence_failed", "Peer turn generation could not be persisted before dispatch.");
+    }
+  }
   const controller = new AbortController();
   const signal = controller.signal;
   const active: ActiveTurn = { controller, client: target.client };
@@ -285,7 +297,7 @@ async function runPrompt(
       conversationId: params.sessionId,
       text,
       attachments: [],
-      metadata: verifiedPeer === undefined ? {} : { peerHandoff: verifiedPeer },
+      metadata: operatorPeer === undefined ? {} : { peerHandoff: operatorPeer },
       client: "acp",
       ...(target.info.supportsToolEnvironment === true
         ? { toolEnvironment: requestToolEnvironment(options.env) }

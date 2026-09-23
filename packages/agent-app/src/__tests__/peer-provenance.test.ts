@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { formatHostCapabilities } from "@mono-agent/agent-harness";
 
-import { makePeerHandoff, verifyPeerHandoff } from "../peer-provenance.js";
+import { consumePeerGeneration, makePeerHandoff, stampPeerOperatorHandoff, verifyPeerHandoff } from "../peer-provenance.js";
 import { createProcessJobsRuntimeExtension } from "../process-jobs-runtime.js";
 
 const roots: string[] = [];
@@ -37,6 +37,7 @@ describe("verified peer context and lineage", () => {
       sourceId: "agent-B", generation: "11111111-1111-4111-8111-111111111111",
       depth: 3, text: "text",
     });
+    const operatorProof = await stampPeerOperatorHandoff(artifactDir, proof);
     const generation = { id: "11111111-1111-4111-8111-111111111111", rootKeys: [] };
     const extension = createProcessJobsRuntimeExtension({
       coreConfig: config,
@@ -51,7 +52,7 @@ describe("verified peer context and lineage", () => {
     const request = (metadata: Record<string, unknown>, userMessage = "text") => ({
       runId: "run", request: { conversationId: "acp:agent-B:uuid", userMessage, metadata }, context: {},
     }) as never;
-    const signed = await extension(request({ source: "acp", peerHandoff: proof }));
+    const signed = await extension(request({ source: "acp", peerHandoff: operatorProof }));
     expect(signed.runtimeOptions).toMatchObject({
       processJobsAvailability: { chainDepth: 3, remainingStarts: 0, unavailableReason: "origin_unavailable" },
       hostCapabilities: { "PeerAgent.request": {
@@ -63,11 +64,11 @@ describe("verified peer context and lineage", () => {
     expect(rendered).toContain('"caller":"agent-A"');
     expect(rendered).not.toContain('"proof"');
     await signed.settleCleanup?.();
-    const forged = await extension(request({ source: "acp", peerHandoff: { ...proof, depth: 0 } }));
+    const forged = await extension(request({ source: "acp", peerHandoff: { ...operatorProof, depth: 0 } }));
     expect(forged.runtimeOptions?.processJobsAvailability).toMatchObject({ chainDepth: 0 });
     expect(forged.runtimeOptions?.hostCapabilities).not.toHaveProperty("PeerAgent.request");
     await forged.settleCleanup?.();
-    const altered = await extension(request({ source: "acp", peerHandoff: proof }, "different prompt"));
+    const altered = await extension(request({ source: "acp", peerHandoff: operatorProof }, "different prompt"));
     expect(altered.runtimeOptions?.processJobsAvailability).toMatchObject({ chainDepth: 0 });
     expect(altered.runtimeOptions?.hostCapabilities).not.toHaveProperty("PeerAgent.request");
     await altered.settleCleanup?.();

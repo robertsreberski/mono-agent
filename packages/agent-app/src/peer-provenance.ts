@@ -1,7 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 
-import { ensureOwnerOnlyDirectory, loadOrCreateContinuationSecret, readBoundedOwnerOnlyFile } from "./continuation-store-fs.js";
+import { acquireContinuationStoreLock, ensureOwnerOnlyDirectory, loadOrCreateContinuationSecret, readBoundedOwnerOnlyFile, writeJsonAtomic } from "./continuation-store-fs.js";
 
 /** Private, source-bound peer handoff. Attribution is never owner approval or tool authority. */
 export interface PeerHandoff {
@@ -52,13 +52,75 @@ export async function verifyPeerHandoff(artifactDir: string, value: unknown, ses
     || typeof p.digest !== "string" || !/^[a-f0-9]{64}$/u.test(p.digest)
     || typeof p.proof !== "string" || !/^[a-zA-Z0-9_-]{43}$/u.test(p.proof)) return undefined;
   if (text !== undefined && createHash("sha256").update(text).digest("hex") !== p.digest) return undefined;
-  // Verification must never provision an owner secret on behalf of an ACP client.
+  const secret = await readPeerSecret(artifactDir);
+  if (secret === undefined) return undefined;
+  const expected = createHmac("sha256", secret).update(payload(p as PeerHandoff)).digest();
+  const received = Buffer.from(p.proof, "base64url");
+  return received.length === expected.length && timingSafeEqual(received, expected) ? p as PeerHandoff : undefined;
+}
+
+async function readPeerSecret(artifactDir: string): Promise<Buffer | undefined> {
+  // Neither malformed nor well-formed forged metadata may create owner state.
   let encoded: string;
   try { encoded = await readBoundedOwnerOnlyFile(join(peerSecretDir(artifactDir), "continuation-secret"), 128, "Peer handoff secret"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
   const secret = Buffer.from(encoded.trim(), "base64url");
-  if (secret.length !== 32) return undefined;
-  const expected = createHmac("sha256", secret).update(payload(p as PeerHandoff)).digest();
-  const received = Buffer.from(p.proof, "base64url");
-  return received.length === expected.length && timingSafeEqual(received, expected) ? p as PeerHandoff : undefined;
+  return secret.length === 32 ? secret : undefined;
+}
+
+/** The bridge consumes each signed turn generation at most once, before dispatch.
+ * Exhaustion fails closed rather than evicting old generations and enabling replay. */
+export async function consumePeerGeneration(artifactDir: string, proof: PeerHandoff): Promise<boolean> {
+  const sessionKey = createHash("sha256").update(proof.session).digest("hex");
+  const directory = join(peerSecretDir(artifactDir), "consumed", sessionKey);
+  const lease = await acquireContinuationStoreLock(directory);
+  try {
+    const path = join(directory, "generations.json");
+    let encoded: string;
+    try { encoded = await readBoundedOwnerOnlyFile(path, 64 * 1024, "Consumed peer generations"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") encoded = "[]"; else throw error; }
+    const entries: unknown = JSON.parse(encoded);
+    if (!Array.isArray(entries) || entries.length > 1024 || entries.some((entry) => typeof entry !== "string"
+      || !/^[a-f0-9-]{36}$/u.test(entry)) || new Set(entries).size !== entries.length) {
+      throw new Error("Consumed peer generation state is invalid.");
+    }
+    if (entries.includes(proof.generation)) return false;
+    if (entries.length === 1024) throw new Error("Peer session generation limit reached; start a new thread.");
+    await writeJsonAtomic(path, [...entries, proof.generation], true, 64 * 1024);
+    return true;
+  } finally { await lease.release(); }
+}
+
+/** Only this bridge-produced, domain-separated MAC is forwarded to the operator. */
+export interface PeerOperatorHandoff extends Omit<PeerHandoff, "proof"> {
+  readonly attestation: string;
+}
+
+function operatorAttestation(secret: Buffer, body: Omit<PeerHandoff, "proof">): Buffer {
+  return createHmac("sha256", secret).update("mono-agent.peer-operator.v1\0").update(payload(body)).digest();
+}
+
+export async function stampPeerOperatorHandoff(artifactDir: string, proof: PeerHandoff): Promise<PeerOperatorHandoff> {
+  const secret = await readPeerSecret(artifactDir);
+  if (secret === undefined) throw new Error("Verified peer secret disappeared before operator handoff.");
+  const { proof: _proof, ...body } = proof;
+  return { ...body, attestation: operatorAttestation(secret, body).toString("base64url") };
+}
+
+export async function verifyPeerOperatorHandoff(artifactDir: string, value: unknown, session: string, text: string, sourceId?: string): Promise<PeerOperatorHandoff | undefined> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const input = value as Partial<PeerOperatorHandoff>;
+  if (Object.keys(input).sort().join(",") !== "attestation,caller,conversation,depth,digest,generation,session,sourceId,version"
+    || typeof input.attestation !== "string" || !/^[a-zA-Z0-9_-]{43}$/u.test(input.attestation)) return undefined;
+  // Reuse all structural/digest checks without allowing a client proof on this path.
+  const secret = await readPeerSecret(artifactDir);
+  if (secret === undefined) return undefined;
+  const body = { version: input.version, caller: input.caller, conversation: input.conversation,
+    session: input.session, sourceId: input.sourceId, generation: input.generation,
+    depth: input.depth, digest: input.digest };
+  const expected = operatorAttestation(secret, body as Omit<PeerHandoff, "proof">);
+  const received = Buffer.from(input.attestation, "base64url");
+  if (received.length !== expected.length || !timingSafeEqual(received, expected)) return undefined;
+  const reconstructed = { ...body, proof: createHmac("sha256", secret).update(payload(body as Omit<PeerHandoff, "proof">)).digest("base64url") };
+  return await verifyPeerHandoff(artifactDir, reconstructed, session, text, sourceId) === undefined ? undefined : input as PeerOperatorHandoff;
 }

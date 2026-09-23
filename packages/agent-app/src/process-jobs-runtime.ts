@@ -1,5 +1,5 @@
 import { persistentSubagentsEnabled } from "./subagent-instances.js";
-import { verifyPeerHandoff } from "./peer-provenance.js";
+import { verifyPeerOperatorHandoff } from "./peer-provenance.js";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
@@ -79,7 +79,7 @@ export function createProcessJobsRuntimeExtension(
       );
       const artifactDir = options.coreConfig.artifacts?.dir;
       const verifiedPeer = artifactDir === undefined || input.request.metadata?.peerHandoff === undefined ? undefined
-        : await verifyPeerHandoff(artifactDir, input.request.metadata.peerHandoff, input.request.conversationId, input.request.userMessage, options.coreConfig.traceability.sourceId);
+        : await verifyPeerOperatorHandoff(artifactDir, input.request.metadata.peerHandoff, input.request.conversationId, input.request.userMessage, options.coreConfig.traceability.sourceId);
       const peerOwnerRoot = artifactDir === undefined ? undefined : dirname(artifactDir);
       const handoffRoot = peerOwnerRoot === undefined ? undefined : join(peerOwnerRoot, "acp-peer-handoff");
       const threadsRoot = peerOwnerRoot === undefined ? undefined : join(peerOwnerRoot, "peer-threads");

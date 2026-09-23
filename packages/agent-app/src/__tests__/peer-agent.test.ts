@@ -20,7 +20,7 @@ vi.mock("@mono-agent/web", async (importOriginal) => ({
 vi.mock("../peer-acp-client.js", () => ({ runPeerAcpTurn: mocks.run }));
 
 import { createPeerAgentRuntimeExtension } from "../peer-agent.js";
-import { makePeerHandoff } from "../peer-provenance.js";
+import { makePeerHandoff, stampPeerOperatorHandoff } from "../peer-provenance.js";
 import type { InternalProcessJobRequest } from "../process-jobs-internal.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
 
@@ -73,10 +73,10 @@ async function setup(depth?: number | "forged", surface: "web" | "acp" = "web", 
   } as unknown as ProcessJobsServiceHandle;
   const conversationId = surface === "acp" ? "acp:agent-b:turn" : "web:origin";
   const peerHandoff = depth === undefined ? undefined : depth === "forged" ? { depth: 4 }
-    : await makePeerHandoff(artifactDir, {
+    : await stampPeerOperatorHandoff(artifactDir, await makePeerHandoff(artifactDir, {
       caller: "agent-test", conversation: "web:origin", session: conversationId,
       sourceId: "finance-ai", generation: "11111111-1111-4111-8111-111111111111", depth, text: "request",
-    });
+    }));
   const request = { conversationId, userMessage: "request", metadata: {
     source: surface, ...(peerHandoff ? { peerHandoff } : {}),
   }, abortSignal: new AbortController().signal };

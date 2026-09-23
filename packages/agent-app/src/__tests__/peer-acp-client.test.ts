@@ -8,7 +8,7 @@ const cliPath = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
 import { afterEach, describe, expect, it } from "vitest";
 
 import { runPeerAcpTurn } from "../peer-acp-client.js";
-import { verifyPeerHandoff } from "../peer-provenance.js";
+import { verifyPeerOperatorHandoff } from "../peer-provenance.js";
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -95,12 +95,13 @@ describe("peer ACP client over a real spawned bridge", () => {
     for (const turn of f.turns) {
       expect(turn.conversationId).toBe(first.sessionId);
       expect(turn.metadata).toHaveProperty("peerHandoff");
-      expect(await verifyPeerHandoff(f.artifactDir, turn.metadata.peerHandoff, first.sessionId, turn.text, "peer-test"))
+      expect(turn.metadata.peerHandoff).not.toHaveProperty("proof");
+      expect(await verifyPeerOperatorHandoff(f.artifactDir, turn.metadata.peerHandoff, first.sessionId, turn.text, "peer-test"))
         .toMatchObject({ caller: "agent-test", conversation: "web:caller", sourceId: "peer-test", depth: 1 });
     }
-    expect(await verifyPeerHandoff(f.artifactDir,
-      { ...f.turns[0]!.metadata.peerHandoff as object, depth: 0 }, first.sessionId)).toBeUndefined();
-    expect(await verifyPeerHandoff(f.artifactDir, f.turns[0]!.metadata.peerHandoff,
+    expect(await verifyPeerOperatorHandoff(f.artifactDir,
+      { ...f.turns[0]!.metadata.peerHandoff as object, depth: 0 }, first.sessionId, "request text")).toBeUndefined();
+    expect(await verifyPeerOperatorHandoff(f.artifactDir, f.turns[0]!.metadata.peerHandoff,
       first.sessionId, "request text", "wrong-target")).toBeUndefined();
   }, 30_000);
 

@@ -8,7 +8,7 @@ import * as z from "zod/v4";
 
 import { acquireContinuationStoreLock, ensureOwnerOnlyDirectory, readBoundedOwnerOnlyFile, writeJsonAtomic } from "./continuation-store-fs.js";
 import { runPeerAcpTurn } from "./peer-acp-client.js";
-import { verifyPeerHandoff } from "./peer-provenance.js";
+import { verifyPeerOperatorHandoff } from "./peer-provenance.js";
 import { processJobWakeContextForRequest } from "./process-jobs-context.js";
 import { processJobOriginForRequest } from "./process-jobs-runtime.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
@@ -107,7 +107,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
     const origin = processJobOriginForRequest(input, options.channelId, options.conversationScheme);
     const wake = processJobWakeContextForRequest(input.request);
     const peer = input.request.metadata?.peerHandoff === undefined ? undefined
-      : await verifyPeerHandoff(config.artifacts.dir, input.request.metadata.peerHandoff, input.request.conversationId, input.request.userMessage, config.traceability.sourceId);
+      : await verifyPeerOperatorHandoff(config.artifacts.dir, input.request.metadata.peerHandoff, input.request.conversationId, input.request.userMessage, config.traceability.sourceId);
     const depth = peer?.depth ?? (wake.kind === "resolved" ? wake.context.chainDepth : 0);
     const ceiling = service?.settings.maxChainDepth ?? 4;
     const background = service !== undefined && origin !== undefined && wake.kind !== "missed" && depth < ceiling;
