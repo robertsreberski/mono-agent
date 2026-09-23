@@ -38,6 +38,44 @@ const bujoMemoryPrerequisites = {
 };
 
 describe("resolveJsonMonoAgentConfig", () => {
+  it.each(["embeddings", "llm", "recallTool", "rememberTool", "consolidation", "embeddings.circuitBreaker"])(
+    "rejects malformed memory.%s blocks, including without memory.path", (path) => {
+      const parts = path.split(".");
+      const block = parts.length === 1 ? { [path]: [] } : { embeddings: { circuitBreaker: [] } };
+      for (const memoryPath of [undefined, "memory.md"]) {
+        const json = { ...baseJson, memory: { ...(memoryPath ? { path: memoryPath } : {}), mode: "bujo", ...block } };
+        try { resolveJsonMonoAgentConfig({ cwd: "/repo", json: json as MonoAgentConfigJson }); }
+        catch (error) { expect(error).toMatchObject({ code: "invalid_json", details: { path: `memory.${path}` } }); continue; }
+        throw new Error(`memory.${path} accepted a malformed block`);
+      }
+    },
+  );
+
+  it.each([
+    ["model", 42, "memory.embeddings.model", "embeddings"],
+    ["apiKeyEnv", false, "memory.embeddings.apiKeyEnv", "embeddings"],
+    ["dim", "512", "memory.embeddings.dim", "embeddings"],
+    ["timeoutMs", "500", "memory.llm.timeoutMs", "llm"],
+    ["trace", "true", "memory.llm.trace", "llm"],
+    ["enabled", "true", "memory.recallTool.enabled", "recallTool"],
+    ["cron", 42, "memory.consolidation.cron", "consolidation"],
+    ["cooldownMs", "500", "memory.embeddings.circuitBreaker.cooldownMs", "circuitBreaker"],
+  ])("rejects non-JSON scalar type for %s at %s", (key, value, expectedPath, block) => {
+    const child = block === "circuitBreaker" ? { embeddings: { circuitBreaker: { [key]: value } } } : { [block]: { [key]: value } };
+    const json = { ...baseJson, memory: { path: "memory.md", mode: "bujo", ...child } };
+    try { resolveJsonMonoAgentConfig({ cwd: "/repo", json: json as MonoAgentConfigJson }); }
+    catch (error) { expect(error).toMatchObject({ code: "invalid_json", details: { path: expectedPath } }); return; }
+    throw new Error(`${expectedPath} accepted an invalid JSON scalar type`);
+  });
+
+  it("attributes a lite-incompatible LLM to memory.llm", () => {
+    expect(() => resolveJsonMonoAgentConfig({ cwd: "/repo", json: {
+      ...baseJson, memory: { path: "memory.md", mode: "lite", llm: { model: "qwen" } },
+    } })).toThrowError(MonoAgentConfigError);
+    try { resolveJsonMonoAgentConfig({ cwd: "/repo", json: { ...baseJson, memory: { path: "memory.md", mode: "lite", llm: { model: "qwen" } } } }); }
+    catch (error) { expect(error).toMatchObject({ details: { path: "memory.llm" } }); return; }
+    throw new Error("missing lite incompatibility error");
+  });
   it("exposes only BuJo as the active memory backend type", () => {
     const supportedBackend: MemoryBackend = "bujo";
     // @ts-expect-error Supermemory is a retired input tombstone, not an active backend.
@@ -2931,7 +2969,7 @@ describe("resolveJsonMonoAgentConfig", () => {
         },
       })).toThrowError(expect.objectContaining({
         code: "invalid_json",
-        details: expect.objectContaining({ path: "memory.mode" }),
+        details: expect.objectContaining({ path: "memory.llm" }),
       }));
     },
   );

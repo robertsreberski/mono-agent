@@ -1580,11 +1580,37 @@ function hasMemoryJsonField(value: unknown): boolean {
   return value !== undefined;
 }
 
+function assertJsonScalarFields(record: Record<string, unknown>, path: string, fields: Readonly<Record<string, "string" | "number" | "boolean">>): void {
+  for (const [field, kind] of Object.entries(fields)) {
+    if (record[field] !== undefined && typeof record[field] !== kind) {
+      const fieldPath = `${path}.${field}`;
+      throw new MonoAgentConfigError("invalid_json", `${fieldPath} must be a ${kind}.`, { path: fieldPath });
+    }
+  }
+}
+
 function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"] | undefined {
   const memory = jsonRecord(value, "memory");
-  if (memory === undefined) {
-    return undefined;
+  if (memory === undefined) return undefined;
+  // Validate raw JSON before defaults or the no-path exit can hide malformed
+  // child blocks and scalar types. These were formerly checked by the layerer.
+  assertJsonScalarFields(memory, "memory", { backend: "string", mode: "string", path: "string", maxBytes: "number", writeMode: "string" });
+  const embeddingsJson = jsonRecord(memory.embeddings, "memory.embeddings");
+  const llmJson = jsonRecord(memory.llm, "memory.llm");
+  const recallToolJson = jsonRecord(memory.recallTool, "memory.recallTool");
+  const rememberToolJson = jsonRecord(memory.rememberTool, "memory.rememberTool");
+  const consolidationJson = jsonRecord(memory.consolidation, "memory.consolidation");
+  if (embeddingsJson !== undefined) {
+    assertJsonScalarFields(embeddingsJson, "memory.embeddings", {
+      provider: "string", model: "string", endpoint: "string", apiKey: "string", apiKeyEnv: "string", dim: "number", timeoutMs: "number",
+    });
+    const breaker = jsonRecord(embeddingsJson.circuitBreaker, "memory.embeddings.circuitBreaker");
+    if (breaker !== undefined) assertJsonScalarFields(breaker, "memory.embeddings.circuitBreaker", { failureThreshold: "number", cooldownMs: "number" });
   }
+  if (llmJson !== undefined) assertJsonScalarFields(llmJson, "memory.llm", { provider: "string", model: "string", endpoint: "string", trace: "boolean", timeoutMs: "number" });
+  if (recallToolJson !== undefined) assertJsonScalarFields(recallToolJson, "memory.recallTool", { enabled: "boolean" });
+  if (rememberToolJson !== undefined) assertJsonScalarFields(rememberToolJson, "memory.rememberTool", { enabled: "boolean" });
+  if (consolidationJson !== undefined) assertJsonScalarFields(consolidationJson, "memory.consolidation", { enabled: "boolean", cron: "string" });
   const backend = jsonChoice<MemoryBackend>(
     memory.backend,
     "memory.backend",
@@ -1592,11 +1618,6 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
     "bujo",
   );
   const rawPath = normalizeOptionalString(jsonString(memory.path, "memory.path"));
-  const embeddingsJson = jsonContainer(memory.embeddings);
-  const llmJson = jsonContainer(memory.llm);
-  const recallToolJson = jsonContainer(memory.recallTool);
-  const rememberToolJson = jsonContainer(memory.rememberTool);
-  const consolidationJson = jsonContainer(memory.consolidation);
 
   // Every configured local memory setting requires a durable path.
   if (rawPath === undefined) {
@@ -1662,7 +1683,7 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
     const message = mode === "lite"
       ? 'memory.mode "lite" is lexical-only and cannot configure memory.llm. Remove it or select journal/bujo.'
       : 'memory.mode "journal" is semantic-only and cannot configure a capture LLM or BuJo consolidation.';
-    throw new MonoAgentConfigError("invalid_json", message, { path: "memory.mode" });
+    throw new MonoAgentConfigError("invalid_json", message, { path: "memory.llm" });
   }
   const embeddings = readMemoryEmbeddingsConfig(memory.embeddings);
   const llm = readMemoryLlmConfig(memory.llm, mode);
