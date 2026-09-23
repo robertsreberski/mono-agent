@@ -11,9 +11,14 @@
   compaction thresholds unchanged.
 
 - Let Pi 0.87.1 provide Claude Opus 5.5 and GPT-6 Sol/Luna directly in model
-  discovery, runtime routing and pricing (Sol/Luna on both OpenAI and Codex),
-  including native limits and reasoning levels. Anthropic OAuth now uses Pi's
-  Claude Code identity.
+  discovery, runtime routing and pricing (Sol/Luna on both OpenAI and Codex).
+  Sol/Luna now have Pi's 272,000-token context window instead of the temporary
+  1,050,000-token backfill, so compaction uses the smaller limit. Anthropic
+  OAuth now uses Pi's Claude Code identity.
+
+- Use Pi 0.87.1's lower GPT-5.6 Sol catalog rates: input/output $4/$20 per
+  million tokens, down from $5/$30; requests above 272,000 input tokens use
+  $8/$30 instead of $10/$45. Cache read/write rates also decrease.
 
 ## 0.23.0 — Framework simplification and AgentManage (2026-09-22)
 

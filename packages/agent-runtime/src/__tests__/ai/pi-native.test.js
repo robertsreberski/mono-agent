@@ -717,26 +717,30 @@ describe("pi-native AgentHarness bridge", () => {
   });
 
   it.each([
-    ["anthropic", "claude-opus-5-5", "medium", "ANTHROPIC_API_KEY"],
-    ["openai-codex", "gpt-6-sol", "none", "OPENAI_API_KEY"],
-    ["openai-codex", "gpt-6-luna", "none", "OPENAI_API_KEY"],
-  ])("resolves native %s:%s through the real run collection before auth", async (provider, model, effort, envKey) => {
+    ["anthropic", "claude-opus-5-5", "medium"],
+    ["openai-codex", "gpt-6-sol", "none"],
+    ["openai-codex", "gpt-6-luna", "none"],
+  ])("resolves native %s:%s through the real run collection before auth", async (provider, model, effort) => {
     // No injected model or collection: only Pi's built-in run collection can
-    // resolve this id. An empty ambient key prevents accidental live traffic.
-    vi.stubEnv(envKey, "");
-    try {
-      const result = await generatePiNativeResponse("system", {
-        model: { provider, model, reference: `${provider}:${model}` },
-        messages: [{ role: "user", content: "hello" }],
-        effort,
-        allowedTools: [],
-        resolvePiApiKey: async () => null,
-        piSessionsRoot: sessionsRoot,
-      });
-      expect(result.error).toBe(`Provider is not configured: ${provider}`);
-      expect(result.failureKind).toBe("provider_auth");
-    } finally {
-      vi.unstubAllEnvs();
+    // resolve this id. Isolate Pi's entire ambient auth context, including
+    // ANTHROPIC_AUTH_TOKEN and ANTHROPIC_OAUTH_TOKEN, not just the API key.
+    // Stored credentials are also disabled by the null resolver below.
+    const authContext = { env: vi.fn(async () => undefined), fileExists: vi.fn(async () => false) };
+    const result = await generatePiNativeResponse("system", {
+      model: { provider, model, reference: `${provider}:${model}` },
+      messages: [{ role: "user", content: "hello" }],
+      effort,
+      allowedTools: [],
+      resolvePiApiKey: async () => null,
+      providerCheckAuthContext: authContext,
+      piSessionsRoot: sessionsRoot,
+    });
+    expect(result.error).toBe(`Provider is not configured: ${provider}`);
+    expect(result.failureKind).toBe("provider_auth");
+    if (provider === "anthropic") {
+      expect(authContext.env.mock.calls.map(([name]) => name)).toEqual([
+        "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY",
+      ]);
     }
   });
 

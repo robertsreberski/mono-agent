@@ -4139,6 +4139,24 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(sectionById(report, "credentials").status).toBe("ok");
   });
 
+  it.each([
+    ["anthropic:claude-opus-5-5", "anthropic", { type: "api_key", key: "sk-ant-test" }],
+    ["openai-codex:gpt-6-sol", "openai-codex", { type: "oauth", expires: FUTURE, refresh: "r" }],
+    ["openai-codex:gpt-6-luna", "openai-codex", { type: "oauth", expires: FUTURE, refresh: "r" }],
+    ["openai:gpt-6-sol", "openai", { type: "api_key", key: "sk-test" }],
+  ])("accepts Pi 0.87.1 native model %s", async (model, provider, credential) => {
+    const authPath = await writeAuthStore({ [provider]: credential });
+    const configPath = await writeCredConfig({
+      runtime: { model },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "runtime").status).toBe("ok");
+    expect(sectionById(report, "credentials").status).toBe("ok");
+  });
+
   it("rejects an unknown exact Pi fallback before execution", async () => {
     const authPath = await writeAuthStore({
       "openai-codex": { type: "oauth", expires: FUTURE, refresh: "r" },
