@@ -1040,7 +1040,7 @@ describe("managed detached production execution", () => {
   }, 30_000);
 
   it.each([false, true])("inspects retained failure and consumes acknowledgement exactly once (admissionRejected=%s)", async (admissionRejected) => {
-    const f = await managedFixture(); const release = deferred<void>(); let delayed = false;
+    const f = await managedFixture(undefined, { maxRuntimeMs: 3_000 }); const release = deferred<void>(); let delayed = false;
     const sessions: string[] = [];
     const run = vi.fn(async (request: any) => { sessions.push(request.instance.sessionId); return { text: "clean durable result" }; });
     f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
@@ -1521,7 +1521,7 @@ it("stop seals first and resumed tool-bearing turns on the same native session",
 
 it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-session disposal", async () => {
   const owner = createMonoRuntime(); const releaseConfirmation = deferred<void>(); let delayed = false;
-  const f = await managedFixture(async (id, root) => owner.retireDurableSession!(id, root));
+  const f = await managedFixture(async (id, root) => owner.retireDurableSession!(id, root), { maxRuntimeMs: 3_000 });
   try {
     const config = resolveJsonMonoAgentConfig({ cwd: f.root, json: {
       runtime: { model: "openai-codex:gpt-5.5" },
@@ -1712,10 +1712,10 @@ it("G10: failed close after retained acknowledgement preserves the pending quest
       disposition: { status: "ok", continuity: "retained" },
     });
 
-    // Phase 2 — fire the genuine production deadlines (1500ms job timer, then
-    // the 5100ms launch grace) while the ok confirm is still held. Both are
-    // real product timers; nothing here shortens or extends them.
-    await vi.advanceTimersByTimeAsync(1_500);
+    // Phase 2 — fire the genuine production deadlines (the 1500ms child
+    // timeout plus 15s job settlement headroom, then 5100ms launch grace)
+    // while the ok confirm is still held. Nothing shortens these timers.
+    await vi.advanceTimersByTimeAsync(16_500);
     await vi.advanceTimersByTimeAsync(5_100);
     // Both production timers have now fired, so restoring the real clock can no
     // longer expire anything early. Doing it before the release keeps a single
