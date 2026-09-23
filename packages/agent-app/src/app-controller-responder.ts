@@ -91,6 +91,7 @@ export interface ResponderControllerPort {
   readonly cwd: string;
   readonly configPath: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly env: Record<string, string | undefined>;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly runtime: MonoRuntimeLike | undefined;
@@ -498,7 +499,8 @@ export async function adapterSendToolsRuntimeOptions(controller: ResponderContro
   ) => RuntimeOptionsExtension;
   readonly blockingToolNames: readonly string[];
 }> {
-  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+    ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
   const bridgeEnv = controller.interactionBridge?.env();
   const appOwnedInteraction = controller.interactionBridge === undefined || bridgeEnv === undefined
     ? undefined

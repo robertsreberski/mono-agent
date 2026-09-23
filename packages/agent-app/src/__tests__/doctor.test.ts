@@ -1878,7 +1878,7 @@ describe("validateMonoAgentFolder", () => {
     expect(report.ok).toBe(false);
     const core = sectionById(report, "core");
     expect(core.status).toBe("error");
-    expect(core.details.join("\n")).toContain("MONO_AGENT_MODEL");
+    expect(core.details.join("\n")).toContain("runtime.model");
   });
 
   it("warns non-fatally when a secret is sourced from JSON", async () => {
@@ -1908,7 +1908,7 @@ describe("validateMonoAgentFolder", () => {
     const placement = sectionById(report, "secret-placement");
     expect(placement.status).toBe("waiting");
     expect(placement.details).toEqual([
-      "[WARN] memory.embeddings.apiKey is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY).",
+      "[WARN] memory.embeddings.apiKey is a secret read from mono-agent.config.json — put it in an environment variable of your choice and set memory.embeddings.apiKeyEnv in JSON to that variable's name.",
     ]);
   });
 
@@ -1928,6 +1928,7 @@ describe("validateMonoAgentFolder", () => {
         embeddings: {
           provider: "openai",
           model: "text-embedding-3-small",
+          apiKeyEnv: "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
         },
       },
     });
@@ -1975,7 +1976,7 @@ describe("validateMonoAgentFolder", () => {
     expect(placement.details.join("\n")).not.toContain("ignored-secret-cron");
   });
 
-  it("warns non-fatally for removed memory env keys without requiring a memory path", async () => {
+  it("silently ignores stale core memory env keys without requiring a memory path", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
       runtime: { model: "openai-codex:gpt-5.5" },
@@ -1996,13 +1997,7 @@ describe("validateMonoAgentFolder", () => {
 
       expect(report.ok).toBe(true);
       expect(sectionById(report, "memory").status).toBe("disabled");
-      const placement = sectionById(report, "secret-placement");
-      expect(placement.status).toBe("waiting");
-      expect(placement.details).toEqual([
-        "[WARN] MONO_AGENT_MEMORY_REFLECTION_ENABLED is removed and ignored; use MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED or MONO_AGENT_MEMORY_CONSOLIDATION_CRON instead.",
-        "[WARN] MONO_AGENT_MEMORY_MIGRATION_CRON is removed and ignored; use MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED or MONO_AGENT_MEMORY_CONSOLIDATION_CRON instead.",
-      ]);
-      expect(placement.details.join("\n")).not.toContain("ignored-secret-cron");
+      expect(report.sections.find((section) => section.id === "secret-placement")).toBeUndefined();
     } finally {
       warn.mockRestore();
     }
@@ -3869,8 +3864,36 @@ describe("validateMonoAgentFolder — web tools", () => {
     expect(fetchSpy.mock.calls.every(([, init]) => !("Authorization" in ((init as RequestInit).headers as Record<string, string>)))).toBe(true);
   });
 
-  it("stops an Ollama Web Search probe response that exceeds its streamed byte limit", async () => {
-    const oversized = new Uint8Array((2 * 1024 * 1024) + 1);
+  it("sends the resolved apiKeyEnv bearer on the hosted Ollama probe", async () => {
+    // Without resolve-at-use the probe sends "Bearer undefined" even with the
+    // variable set, misdiagnosing a correct configuration as an auth failure.
+    const fetchSpy = vi.fn(async (_url: unknown, _init?: RequestInit) =>
+      new Response(JSON.stringify({ results: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({
+      search: {
+        backend: "ollama",
+        ollama: { baseUrl: "https://ollama.com", apiKeyEnv: "DOCTOR_TEST_OLLAMA_KEY" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: { DOCTOR_TEST_OLLAMA_KEY: "env-resolved-key" },
+      cwd: dir,
+      configPath,
+      liveness: true,
+    });
+    expect(sectionById(report, "web-tools").details).toContain(
+      "Ollama Web Search JSON probe succeeded.",
+    );
+    const headers = fetchSpy.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(headers?.["Authorization"]).toBe("Bearer env-resolved-key");
+  });
+
+  it("stops an Ollama Web Search probe response that exceeds its streamed byte limit", async () => {    const oversized = new Uint8Array((2 * 1024 * 1024) + 1);
     const fetchSpy = vi.fn().mockResolvedValue(new Response(new ReadableStream({
       start(controller) {
         controller.enqueue(oversized);
@@ -4549,14 +4572,18 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
       provider: { apiKeyEnv: "LOCAL_PROVIDER_API_KEY" },
       env: { LOCAL_PROVIDER_API_KEY: "env-secret-sentinel" },
       secret: "env-secret-sentinel",
+      // JSON-only configs carry the reference while the value stays in env, so
+      // doctor names the resolving variable (never the value).
+      expected: "with LOCAL_PROVIDER_API_KEY present in the resolved environment",
     },
     {
       name: "an inline fallback when apiKeyEnv is absent",
       provider: { apiKeyEnv: "LOCAL_PROVIDER_API_KEY", apiKey: "inline-secret-sentinel" },
       env: {},
       secret: "inline-secret-sentinel",
+      expected: "(API key configured)",
     },
-  ])("reports $name generically without exposing the key", async ({ provider, env, secret }) => {
+  ])("reports $name generically without exposing the key", async ({ provider, env, secret, expected }) => {
     const configPath = await writeCredConfig({
       runtime: { model: "local-secure:private-model" },
       providers: {
@@ -4574,7 +4601,8 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const creds = sectionById(report, "credentials");
     expect(creds.status).toBe("ok");
     const text = creds.details.join("\n");
-    expect(text).toContain("provider `local-secure` configured via config providers.local (API key configured)");
+    expect(text).toContain("provider `local-secure` configured via config providers.local");
+    expect(text).toContain(expected);
     expect(text).not.toContain(secret);
     expect(text).not.toContain("keyless local provider");
     expect(report.ok).toBe(true);

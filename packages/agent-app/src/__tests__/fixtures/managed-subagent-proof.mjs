@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
-import { loadMonoAgentConfig } from "@mono-agent/config";
+import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime } from "@mono-agent/runtime-adapter";
 import { acquireAgentRootOwnership } from "../../../dist/agent-root-coordinator.js";
 import { registerProcessJobsRoot } from "../../../dist/process-jobs-root-registry.js";
@@ -53,10 +53,13 @@ try {
   });
   await service.activateWakes();
   const instances = await registry.open(origin.conversationId);
-  const config = loadMonoAgentConfig({ cwd: root, env: {
-    MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
-    MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage,Exec", MONO_AGENT_SANDBOX_MODE: "off",
-    MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, timeoutMs: 300_000, commandTimeoutMs: 300_000, instances: { root: registryRoot }, definitions: [{ name: "verifier", description: "Bounded verification", prompt: "Run the supplied verification once.", allowedTools: ["Exec"] }] }),
+  const config = resolveJsonMonoAgentConfig({ cwd: root, json: {
+    runtime: { model: "openai-codex:gpt-5.5" },
+    context: { identityPath: resolve(root, "IDENTITY.md") },
+    tools: { allowedTools: ["Agent", "AgentManage", "Exec"] },
+    sandbox: { mode: "off" },
+    subagents: { enabled: true, timeoutMs: 300_000, commandTimeoutMs: 300_000, instances: { root: registryRoot },
+      definitions: [{ name: "verifier", description: "Bounded verification", prompt: "Run the supplied verification once.", allowedTools: ["Exec"] }] },
   } });
   const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider);

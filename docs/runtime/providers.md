@@ -13,7 +13,7 @@ The `providers` config map declares which model providers the agent supports, an
 
 Declaring a provider widens selection to that provider's **whole advertised catalog** (up to `maxAdvertisedModels`, default 100), not just the models you route to. A Pi built-in that nobody declared and no route uses is not offered at all: advertising all 41 would let an operator pick a provider the agent holds no credential for, and the failure would surface only when the turn ran.
 
-Coverage: **config**. Configure the map in `mono-agent.config.json` under `providers`, or via `MONO_AGENT_PROVIDERS_JSON` as a JSON object with the same shape.
+Coverage: **config**. Configure the map in `mono-agent.config.json` under `providers`.
 
 ## Reserved keys
 
@@ -21,7 +21,7 @@ Three keys inside `providers` are reserved for Pi runtime configuration; every o
 
 | Key | Purpose |
 | --- | --- |
-| `piAuthPath` | Path to the Pi auth store (default `~/.pi/agent/auth.json`; env `MONO_AGENT_PI_AUTH_PATH`). OAuth/account credentials and API keys live here. |
+| `piAuthPath` | Path to the Pi auth store (default `~/.pi/agent/auth.json`). OAuth/account credentials and API keys live here. |
 | `piNative` | Pi transport and retry tuning: `transport` (`auto`/`sse`/`websocket`/`websocket-cached`), `piMaxRetries` (0–8, default 2), `maxRetryDelayMs` (default 60000), `piSessionsRoot` (durable JSONL session storage). |
 | `local` | Legacy compatibility projection for `providers.local[]`. New configs prefer the provider-map shape below. |
 
@@ -48,7 +48,7 @@ Each non-reserved key is a provider id, and its value is a provider definition:
 
 Each definition accepts: `enabled`, `type` (`ollama`/`lmstudio`/`openai_compat` for a self-hosted endpoint — a `baseUrl` requires one of these unless the id is `ollama` or `lmstudio`), `baseUrl`, `trustPublicUrl`, `apiKey` / `apiKeyEnv` (give the secret's variable name in `.env`, never an inline value), `models[]` (with `name`, optional `alias`/`displayName`, `enabled`, `capabilities` like `context_window`, and `pricing`), and `maxAdvertisedModels`.
 
-In JSON config, providers are always the map above (or the legacy `providers.local[]`). `providers.entries[]` is the **resolved** shape — what `resolveConfiguredProviders()` returns and what a programmatic embedder constructing a `MonoAgentConfig` in code may set directly. It is not accepted from `mono-agent.config.json` or `MONO_AGENT_PROVIDERS_JSON`: `entries` is not a reserved key there, so it would be read as a provider whose id is `entries`. Duplicate provider ids are rejected.
+In JSON config, providers are always the map above (or the legacy `providers.local[]`). `providers.entries[]` is the **resolved** shape — what `resolveConfiguredProviders()` returns and what a programmatic embedder constructing a `MonoAgentConfig` in code may set directly. It is not accepted from `mono-agent.config.json`: `entries` is not a reserved key there, so it would be read as a provider whose id is `entries`. Duplicate provider ids are rejected.
 
 ## Zero-config local autodiscovery
 
@@ -174,34 +174,22 @@ capture header presence before the expected authentication failure; testing
 two successful turns requires an explicitly authorized real provider call. This
 manual check is not performed in CI and must never use a live agent directory.
 
-## Env form
-
-`MONO_AGENT_PROVIDERS_JSON` is a JSON object of the same shape — provider ids plus the reserved `local`/`piAuthPath`/`piNative` keys. Prefer the config file, but the env override is the escape hatch for secrets-free ephemeral setups:
-
-```bash
-export MONO_AGENT_PROVIDERS_JSON='{"ollama": {"type": "ollama"}, "piAuthPath": "~/.pi/agent/auth.json"}'
-```
-
-`MONO_AGENT_LOCAL_PROVIDERS_JSON` is deprecated in favor of this map shape.
-
 ## Related
 
 - [Pi runtime & model references](/runtime/backends/) — the `<provider>:<model>` grammar and rejected legacy spellings.
-- [Local providers](/runtime/local-providers/) — the full local-provider and env reference for self-hosted endpoints.
+- [Local providers](/runtime/local-providers/) — self-hosted endpoint configuration.
 - [Fallback & failover](/runtime/fallback/) — ordered backup routes using the same providers.
-- [Environment variables](/config/env-vars/) — `MONO_AGENT_PROVIDERS_JSON` and friends.
+- [Operational environment variables](/config/env-vars/) — secret references and process plumbing.
 
 ## Prompt-cache diagnostics
 
-`providers.piNative.promptCacheDiagnostics` (default `false`; env `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`) enables metadata-only request fingerprints in existing run artifacts. It never emits prompt text, tool arguments, raw cache keys, endpoints or credentials. See [Prompt-cache measurement](/runtime/prompt-cache-measurement/) for the artifact reader.
+`providers.piNative.promptCacheDiagnostics` (default `false`) enables metadata-only request fingerprints in existing run artifacts. It never emits prompt text, tool arguments, raw cache keys, endpoints or credentials. See [Prompt-cache measurement](/runtime/prompt-cache-measurement/) for the artifact reader.
 
 ### Anthropic cache retention
 
 `providers.piNative.cacheRetention` defaults to `"long"` (one hour); set `"short"`
-(five minutes) to opt out. Nonempty `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON,
-then the `"long"` default. Both the default and explicit values override Pi's
-separate ambient `PI_CACHE_RETENTION`, including explicit `"short"` when Pi's
-environment requests long retention.
+(five minutes) to opt out. JSON wins over the `"long"` default, and the
+resolved value overrides Pi's ambient `PI_CACHE_RETENTION`.
 The runtime forwards retention only to Anthropic Messages, including child
 routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
 unsupported models receive no one-hour TTL.

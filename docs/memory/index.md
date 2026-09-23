@@ -168,7 +168,7 @@ re-proving the surrounding durability and writer-lease protocol.
     },
     "llm": {                             // required for bujo LLM pipelines
       "provider": "ollama",
-      "model": "qwen3.6:latest",         // any local chat model; set MONO_AGENT_MEMORY_LLM_MODEL for CLI
+      "model": "qwen3.6:latest",         // any local chat model
       "endpoint": "http://localhost:11434"
     },
     // Lightweight consolidation is auto-scheduled in-app for the bujo tier.
@@ -260,7 +260,7 @@ ollama pull nomic-embed-text:v1.5
 ollama pull qwen3.6:latest   # or any local chat model you prefer
 ```
 
-Set `memory.llm.model` or `MONO_AGENT_MEMORY_LLM_MODEL` to the capture model used by the
+Set `memory.llm.model` to the capture model used by the
 configured app. With `memory.llm.provider: "agent-host"`, that value may be an SDK runtime
 model reference such as `openai-codex:gpt-5.6-terra`. The old standalone `migrate` and
 `reflect` workflows are not part of the current operator surface.
@@ -288,7 +288,7 @@ app and stops cleanly on shutdown.
 
 To disable scheduled consolidation while keeping the tier, set
 `memory.consolidation.enabled: false`. Env overrides:
-`MONO_AGENT_MEMORY_CONSOLIDATION_CRON` and `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED`.
+`memory.consolidation.cron` and `memory.consolidation.enabled`.
 Retired `memory.reflection.*` / `memory.migration.*` keys and their env vars are tolerated
 but ignored; `mono-agent validate` reports a warning when it sees them.
 
@@ -349,7 +349,7 @@ every maintenance operation config-aware from the agent folder instead:
 See [Validation & CLI](/memory/validation-and-cli/#memory-bujo-cli--removed) for the full mapping
 and [Deprecations](/reference/deprecations/) for the removal record.
 
-`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call chat-LLM timeout for the **in-app** memory
+`memory.llm.timeoutMs` sets the per-call chat-LLM timeout for the **in-app** memory
 LLM (per-turn capture): it maps to `memory.llm.timeoutMs` and defaults to `60000`. A capture runs
 one extraction call and at most one reconcile call; a timeout is recorded and warned without
 failing the user's reply. The raw audit survives, and the admitted turn remains pending for

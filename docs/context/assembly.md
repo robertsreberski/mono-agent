@@ -48,7 +48,7 @@ Recalled long-term memory used to be section 3 of this prompt. It is no longer a
 }
 ```
 
-Matching env vars (env > JSON > defaults): `MONO_AGENT_IDENTITY_PATH`, `MONO_AGENT_SOUL_PATH`, `MONO_AGENT_SKILLS_ROOT`, `MONO_AGENT_SELECTED_SKILLS`, `MONO_AGENT_SKILL_MAX_BYTES`, and `MONO_AGENT_MAX_TURNS`.
+Core context settings resolve from JSON, then built-in defaults.
 
 Skills are loaded from `<skillsRoot>/<name>/SKILL.md`, one per entry in `selectedSkills` — there is no auto-selection. Each skill's instruction body is capped at `context.skillMaxBytes` (default 48000, range 256–1,000,000). See [Skills](/context/skills/).
 
@@ -166,7 +166,7 @@ loss without harness unwind remains outside canonical continuity recovery.
 
 The account is deliberately a compact continuity aid rather than the complete run record. Its typed envelope names the retained and omitted tool invocation/result ids. Cold tool-history projection excludes those exact retained pairs to avoid showing them twice; `RunHistory` and `SessionHistory` remain the deeper evidence path for omitted or detailed records.
 
-- `runtime.maxTurns` (`MONO_AGENT_MAX_TURNS`) is `0` or omitted for an **unlimited provider run**; set `1`–`100` to cap turns per run. It neither disables nor resizes the bounded 64-message history.
+- `runtime.maxTurns` is `0` or omitted for an **unlimited provider run**; set `1`–`100` to cap turns per run. It neither disables nor resizes the bounded 64-message history.
 - History is keyed per conversation. Channels reuse a stable conversation id; for cron, share one with `cron.jobs[].conversationId` so ticks accumulate the same history (see [Cron](/channels/cron/)).
 
 The configured app stores history under an owner-only `history/` directory next to the configured artifact directory (normally `.mono-agent/history`). Conversation ids are retained inside the records but never used as path components; message-history filenames are SHA-256-derived. The directory is mode `0700`, files are mode `0600`, each serialized message is capped at 64 KiB, and replacements are written atomically and fsynced. Owner-only SQLite lock files serialize same-conversation updates and root-wide retention across processes; dead owners and markerless stages are recovered immediately without an elapsed-time lease. A cold process therefore replays the same bounded history after restart even when no provider session can be resumed.

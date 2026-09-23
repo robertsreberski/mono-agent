@@ -200,9 +200,8 @@ printf '%s\n' "$OPENCODE_API_KEY" | mono-agent auth login opencode-go --api-key-
 Supported Pi login targets are `anthropic`, `github-copilot`, and `openai-codex` through their bundled OAuth flows, plus the `opencode-go` API-key flow. Other Pi runtime refs remain hand-authored configuration and are not implied interactive-login targets. Pi path precedence is:
 
 1. `--pi-auth-path`
-2. `MONO_AGENT_PI_AUTH_PATH`
-3. `providers.piAuthPath`
-4. Pi default `~/.pi/agent/auth.json`
+2. `providers.piAuthPath`
+3. Pi default `~/.pi/agent/auth.json`
 
 `~` expands to the current user's home directory. Relative values from the flag, environment, or config resolve against the agent/invocation working directory before the Pi OAuth flow is staged, so discovery, login, validation, readiness, and runtime all address the same absolute store. A missing config falls through to env/default resolution; a malformed or unreadable config is an error and never silently falls through.
 
@@ -285,7 +284,7 @@ The **Tools & MCP** section reports the tool policy: allow-all (the default) sho
 
 ### Provider credentials
 
-`validate` includes a **Provider credentials** section covering the primary `runtime.model`, every canonical `runtime.fallbacks` entry, the `agent-host` `memory.llm` model, and every enabled static webhook/cron model override (the legacy `runtime.fallbackModels` form is retired and rejected at load with the replacement named). Disabled channels/entries are ignored; a dynamic request-body override is checked when the request runs because its value does not exist at validate time. Each Pi runtime ref must resolve through an enabled `providers` entry (a provider-id key, a legacy `providers.local[]` entry, or autodiscovery) or an exact model in Pi's built-in catalog. Built-in Pi credentials resolve against the same effective Pi auth path used by `auth login` (including `MONO_AGENT_PI_AUTH_PATH`); the Pi CLI's ambient sibling `models.json` is not imported by the mono-agent runtime. It never mints tokens or makes a model request. Static validation (`liveness: false`, including start preflight) launches no process. Live validation can detect unprobed credentials from the effective Pi auth store and from declared `apiKeyEnv` variables; detection is not labelled as a verified model turn. During guided init, each exact selected route is promoted to verified only after its own live check succeeds.
+`validate` includes a **Provider credentials** section covering the primary `runtime.model`, every canonical `runtime.fallbacks` entry, the `agent-host` `memory.llm` model, and every enabled static webhook/cron model override (the legacy `runtime.fallbackModels` form is retired and rejected at load with the replacement named). Disabled channels/entries are ignored; a dynamic request-body override is checked when the request runs because its value does not exist at validate time. Each Pi runtime ref must resolve through an enabled `providers` entry (a provider-id key, a legacy `providers.local[]` entry, or autodiscovery) or an exact model in Pi's built-in catalog. Built-in Pi credentials resolve against the same effective Pi auth path used by `auth login`; the Pi CLI's ambient sibling `models.json` is not imported by the mono-agent runtime. It never mints tokens or makes a model request. Static validation (`liveness: false`, including start preflight) launches no process. Live validation can detect unprobed credentials from the effective Pi auth store and from declared `apiKeyEnv` variables; detection is not labelled as a verified model turn. During guided init, each exact selected route is promoted to verified only after its own live check succeeds.
 
 - A provider configured through a `providers` map entry needs no OAuth. If it declares `apiKeyEnv`, that variable must resolve to a non-empty key (or a schema-compatible inline fallback must resolve); source configs should still keep the secret in `.env` and store only `apiKeyEnv`. Only providers with no key declaration are reported as intentionally keyless. Disabled provider/model entries are rejected.
 - Without a providers entry, the provider/model pair must exist exactly in Pi's built-in catalog. An unknown model is an `error`, even if an ambient `models.json` happens to name its provider.
@@ -528,7 +527,7 @@ mono-agent restart
 mono-agent restart --clear-sessions   # macOS: clear provider, message/tool, and ACP continuity
 ```
 
-`piSessionsRoot` is set via `providers.piNative.piSessionsRoot` (env `MONO_AGENT_PI_SESSIONS_ROOT`), e.g. `.mono-agent/sessions`; leaving it unset keeps sessions in memory.
+`piSessionsRoot` is set via `providers.piNative.piSessionsRoot`, e.g. `.mono-agent/sessions`; leaving it unset keeps sessions in memory.
 
 :::caution
 `--clear-sessions` permanently deletes saved provider transcripts, canonical message and tool history, and ACP session authorizations for this instance. The agent's durable long-term memory, recorded run artifacts, and process-job records/output are preserved, but the current-chat context and retained `SessionHistory` evidence cannot be recovered after the reset, and previously issued ACP session ids are revoked.
@@ -702,7 +701,7 @@ Aggregates run summaries into latency, cost, and failure-rate numbers over the w
 | --- | --- |
 | `--artifacts <path>` | Read this artifact directory directly. Wins over config-based `artifacts.dir` resolution. |
 | `--config <path>` | Use a non-default config file when resolving `artifacts.dir`. |
-| `--env-file <path>` | Load env overrides before resolving `MONO_AGENT_ARTIFACT_DIR`. |
+| `--env-file <path>` | Load referenced credentials and adapter-owned settings. |
 | `--since <iso>` | Only summaries whose `startedAt` is at or after this ISO instant. |
 | `--until <iso>` | Only summaries whose `startedAt` is at or before this ISO instant. |
 | `--by model\|channel\|failureKind` | Add grouped buckets after the overall totals. |

@@ -427,13 +427,12 @@ async function assembleResolvedConfigView(
   const sections = buildMonoAgentConfigView({
     redacted: redactMonoAgentConfig(config),
     json: jsonResult.json,
-    env,
   });
   const drivers = await resolveChannelDrivers({ env, cwd, configPath });
   const channels = await collectChannelConfigViews(drivers, { env, cwd, configPath });
   const warnings = [
     ...findJsonSecretConfigWarnings([...sections, ...channels]),
-    ...findRemovedConfigWarnings({ json: jsonResult.json, env }),
+    ...findRemovedConfigWarnings({ json: jsonResult.json }),
   ];
   const report = await validateMonoAgentFolder({ env, cwd, configPath, liveness: false, drivers });
   const channelStatus = report.sections.filter((section) => section.id.startsWith("channel:"));

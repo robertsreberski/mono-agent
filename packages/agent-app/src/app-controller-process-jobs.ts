@@ -42,6 +42,7 @@ import {
 export interface ProcessJobsControllerPort {
   readonly cwd: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly env: Record<string, string | undefined>;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly drivers: readonly ChannelDriver[];
@@ -198,6 +199,7 @@ export async function prepareProcessJobsProtection(
       env: controller.env,
       cwd: controller.cwd,
       configPath: controller.configReadPath,
+      ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }),
     });
   } catch (error) {
     if (isAppCoreConfigError(error)) {

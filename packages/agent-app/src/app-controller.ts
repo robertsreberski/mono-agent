@@ -17,7 +17,7 @@ import type {
 import { createSrtSandboxEngine } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
-import type { AppTraceDefaults } from "./app-config.js";
+import type { AppTraceDefaults, PrivateBackgroundRuntimePaths } from "./app-config.js";
 import type { createConfiguredMemory } from "./configured-agent.js";
 import type { ConfiguredAgentSessionEvent } from "./configured-agent.js";
 import { resolveChannelDrivers } from "./channels.js";
@@ -103,6 +103,8 @@ export interface MonoAgentAppOptions {
    * config loader reads this path instead.
    */
   readonly configReadPath?: string;
+  /** Internal managed-worker override for exact attested private context/tool files. */
+  readonly privateRuntimePaths?: PrivateBackgroundRuntimePaths;
   readonly logger?: MonoAgentAppLogger;
   /** Channel drivers to run. Defaults to every built-in channel. */
   readonly drivers?: readonly ChannelDriver[];
@@ -196,6 +198,7 @@ async function startMonoAgentAppInternal(
       agentRootOwnership,
       configPath,
       configReadPath,
+      ...(options.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: options.privateRuntimePaths }),
       env,
       drivers,
       ...(options.logger === undefined ? {} : { logger: options.logger }),
@@ -265,6 +268,7 @@ interface MonoAgentAppControllerInput {
   readonly agentRootOwnership: AgentRootOwnership;
   readonly configPath: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: PrivateBackgroundRuntimePaths;
   readonly env: Record<string, string | undefined>;
   readonly drivers: readonly ChannelDriver[];
   readonly logger?: MonoAgentAppLogger;
@@ -295,6 +299,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   readonly configPath: string;
   readonly cwd: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: PrivateBackgroundRuntimePaths | undefined;
   readonly env: Record<string, string | undefined>;
   readonly drivers: readonly ChannelDriver[];
   readonly driversById: ReadonlyMap<ChannelId, ChannelDriver>;
@@ -414,6 +419,7 @@ export class MonoAgentAppController implements MonoAgentApp {
     this.agentRootOwnership = input.agentRootOwnership;
     this.configPath = input.configPath;
     this.configReadPath = input.configReadPath;
+    this.privateRuntimePaths = input.privateRuntimePaths;
     this.env = input.env;
     this.drivers = input.drivers;
     this.driversById = new Map(input.drivers.map((driver) => [driver.id, driver]));

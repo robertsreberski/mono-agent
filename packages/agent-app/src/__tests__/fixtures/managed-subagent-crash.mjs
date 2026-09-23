@@ -94,12 +94,17 @@ async function owner(root, scenario) {
   }
   const shortCommand = scenario === "terminal" || certificateScenario;
   const timeoutMs = shortCommand ? 6000 : 300_000;
-  const config = loadMonoAgentConfig({ cwd: root, env: {
-    MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
-    MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage,Exec", MONO_AGENT_SANDBOX_MODE: "off",
-    MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, timeoutMs, commandTimeoutMs: 300_000, instances: { root: resolve(root, "children") },
-      definitions: [{ name: "verifier", description: "Bounded verification", prompt: "Run the supplied verification once.", allowedTools: ["Exec"] }] }),
-  } });
+  // The child uses the same JSON-only loader as production hosts.
+  const configPath = resolve(root, "mono-agent.config.json");
+  await writeFile(configPath, JSON.stringify({
+    runtime: { model: "openai-codex:gpt-5.5" },
+    context: { identityPath: "./IDENTITY.md" },
+    tools: { allowedTools: ["Agent", "AgentManage", "Exec"] },
+    sandbox: { mode: "off" },
+    subagents: { enabled: true, timeoutMs, commandTimeoutMs: 300_000, instances: { root: resolve(root, "children") },
+      definitions: [{ name: "verifier", description: "Bounded verification", prompt: "Run the supplied verification once.", allowedTools: ["Exec"] }] },
+  }));
+  const config = await loadMonoAgentConfig({ cwd: root, jsonPath: configPath });
   const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider);
   // The driver owns one explicit tool context for this fixture run: the retired

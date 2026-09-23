@@ -7,7 +7,7 @@ sidebar:
 
 mono-agent runs only the Pi runtime. Every turn — across Telegram, Slack, webhook, cron, web, or the programmatic API — executes through the Pi SDK provider gateway. There are no alternate runtime bridges, no `sdk`/`cli` execution-mode switch, and no backend dispatch table. You pick a model by setting one config key — `runtime.model` — to a `<provider>:<model>` reference; the Pi runtime resolves the reference to a concrete provider.
 
-Coverage: **config**. Set the model reference in `runtime.model` (env `MONO_AGENT_MODEL`).
+Coverage: **config**. Set the model reference in `runtime.model`.
 
 ## Model reference grammar
 
@@ -49,7 +49,7 @@ The message names the source you actually edit. A value from
 supplied through the environment is attributed to the variable instead:
 
 ```text
-MONO_AGENT_MODEL `codex:gpt-5.6-terra` is not a valid runtime model reference:
+runtime.model `codex:gpt-5.6-terra` is not a valid runtime model reference:
 codex is no longer a runtime backend; use openai-codex:gpt-5.6-terra
 ```
 
@@ -133,4 +133,4 @@ Env: `MONO_AGENT_FALLBACKS_JSON`. CLI: repeat `--fallback <ref>` and optionally 
 - [Execution, effort & permissions](/runtime/execution-effort-permissions/) — explicit effort, tool approvals, and sandbox controls.
 - [Fallback & failover](/runtime/fallback/) — ordered backup models.
 - [Sessions & concurrency](/runtime/sessions-concurrency/) — continuous vs per-message sessions and resume.
-- [Environment variables](/config/env-vars/) — `MONO_AGENT_MODEL` and friends.
+- [Operational environment variables](/config/env-vars/) — secret references and process plumbing.

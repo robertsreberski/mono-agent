@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Breaking: remove core environment configuration overrides.** Resolve core
+  settings only from `mono-agent.config.json`, then built-in defaults, and
+  silently ignore stale `MONO_AGENT_*` core variables. Environment values remain
+  available for adapter settings, secret references, and process plumbing.
+
 ## 0.23.1 — Pi 0.87.1 models and console fixes (2026-09-23)
 
 - Show commands first in background agent job progress and inline subagent

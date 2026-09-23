@@ -72,10 +72,10 @@ describe("resolveAppSessionsRoot", () => {
     expect(await resolveAppSessionsRoot(inputFor(configPath))).toBe(join(dir, ".mono-agent", "sessions"));
   });
 
-  it("prefers the MONO_AGENT_PI_SESSIONS_ROOT env override over the config file", async () => {
+  it("ignores a stale MONO_AGENT_PI_SESSIONS_ROOT env override in favor of the config file", async () => {
     const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: "./from-config" } } });
     const root = await resolveAppSessionsRoot(inputFor(configPath, { MONO_AGENT_PI_SESSIONS_ROOT: "./from-env" }));
-    expect(root).toBe(join(dir, "from-env"));
+    expect(root).toBe(join(dir, "from-config"));
   });
 
   it("returns undefined (does not throw) when the config file is malformed", async () => {
@@ -120,9 +120,8 @@ describe("purgeConversationState session accounting", () => {
 });
 
 describe("purgeConversationState history accounting", () => {
-  it("removes only the history root beside the env-selected artifact directory", async () => {
-    const configPath = await writeConfig({ artifacts: { dir: "./ignored-artifacts" } });
-    const artifactDir = join(dir, "env-artifacts");
+  it("removes only the history root beside the JSON-configured artifact directory", async () => {
+    const configPath = await writeConfig({ artifacts: { dir: "./env-artifacts" } });
     const root = join(dir, "history");
     const memoryRoot = join(dir, "memory");
     await mkdir(join(root, ".locks"), { recursive: true });
@@ -133,7 +132,7 @@ describe("purgeConversationState history accounting", () => {
     await writeFile(join(memoryRoot, "memory.md"), "durable fact\n");
 
     const { history: result } = await purgeConversationState(inputFor(configPath, {
-      MONO_AGENT_ARTIFACT_DIR: artifactDir,
+      MONO_AGENT_ARTIFACT_DIR: join(dir, "stale-env-artifacts"),
     }));
 
     expect(result).toEqual({

@@ -75,7 +75,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "Run a supported bundled Pi provider login.",
       "Pi credentials are promoted with owner-only no-clobber checks.",
       "API-key providers prompt securely on a TTY; --api-key-stdin explicitly reads a redirected secret.",
-      "Path precedence: --pi-auth-path, MONO_AGENT_PI_AUTH_PATH, providers.piAuthPath, then Pi's default.",
+      "Path precedence: --pi-auth-path, providers.piAuthPath, then Pi's default.",
       "Supported Pi targets: anthropic, github-copilot, openai-codex, and opencode-go.",
     ],
   },

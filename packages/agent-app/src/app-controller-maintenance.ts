@@ -42,6 +42,7 @@ interface DestinationsControllerPort {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly running: Map<ChannelId, RunningChannel>;
   readonly seenNotifyDestinations: SeenNotifyDestinationCache;
@@ -68,7 +69,8 @@ export async function startMemoryRitualsIfConfigured(controller: MaintenanceCont
   }
   let coreConfig: MonoAgentConfig;
   try {
-    const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+    const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+        ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
     coreConfig = await loadAppCoreConfig(input);
     controller.rememberSelectedSkills(coreConfig);
   } catch {
@@ -158,7 +160,8 @@ export function restartArtifactRetentionScheduler(controller: MaintenanceControl
   void (async () => {
     let coreConfig: MonoAgentConfig;
     try {
-      const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+      const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+        ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
       coreConfig = await loadAppCoreConfig(input);
       controller.rememberSelectedSkills(coreConfig);
     } catch (error) {
@@ -346,7 +349,8 @@ function escapeRegExp(value: string): string {
 }
 
 export async function listNotifyDestinations(controller: DestinationsControllerPort): Promise<readonly NotifyDestination[]> {
-  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+        ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
   const artifactDir = await resolveAppArtifactDir(input);
   const seenDestinations = await controller.seenNotifyDestinations.list(artifactDir);
   return await resolveNotifyDestinations({

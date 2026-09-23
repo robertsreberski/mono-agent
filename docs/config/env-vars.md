@@ -1,252 +1,89 @@
 ---
-title: "Environment variables"
-description: "Find every supported mono-agent environment variable and understand dotenv loading, precedence, and JSON-only settings."
-sidebar:
-  order: 2
+title: Operational environment variables
+description: "Environment variables reserved for secrets, process plumbing, managed workers, and adapter compatibility."
 ---
 
-This page lists the environment variables mono-agent reads, grouped by domain. Each table names the JSON field the variable overrides; variables that configure only a CLI or runtime child process are marked separately.
+Core agent configuration comes only from `mono-agent.config.json`, followed by
+built-in defaults. `MONO_AGENT_*` variables that previously mapped to core
+fields are silently ignored, including retired names. Move those values into
+the corresponding JSON fields before upgrading.
 
-Config fields may be JSON-only: only fields with a documented `MONO_AGENT_*` mapping accept one. In the [generated config reference](/config/reference/), `--` means none, as for `channels.plugins`. Use the [annotated blueprint](/config/blueprint/) to see structured JSON-only fields in context.
+Environment variables remain appropriate for values that are not core
+configuration: credentials named by JSON, managed-process markers, and
+parent-to-child runtime protocols. Adapter packages still document their own
+environment inputs separately.
 
-## Precedence and `.env` loading
+## Secret references
 
-For fields with a mapping, resolution is **passed environment > JSON > built-in default**.
-
-The CLI builds that environment before config loading:
-
-1. Variables already exported in the shell remain in place.
-2. `./.env` fills variables that are still unset. Pass `--env-file <path>` to select another file.
-3. The config loader receives the resulting environment and applies it over JSON and defaults.
-
-The machine-wide `mono-agent web` console is the exception: it does not load an agent config or the invoking folder's `.env`. For `mono-agent validate --consumer <path>`, the default `.env` and relative `--env-file` paths resolve inside the consumer folder.
-
-`loadMonoAgentConfigWithSources` is lower-level than the CLI. It does not read a dotenv file; a programmatic host must load one itself if desired and pass the prepared `env` record.
-
-:::caution
-Keep secrets in an untracked, owner-only `.env` or an exported environment—not in committed JSON. For local providers, store the variable name in `apiKeyEnv` instead of storing the key itself. In this source checkout, `pnpm run check:secrets` also scans ignored and untracked files, so keep real credentials outside the repository and pass an absolute `--env-file` path.
-
-Guided `mono-agent init` handles selected secrets through masked input and preserves existing non-empty dotenv assignments and comments. Its managed background worker cannot rely on launching-shell secrets, so readiness is proved from durable dotenv and provider-auth state. Automatic persistence is fail-closed on unsafe POSIX paths and is not attempted on Windows. See [CLI reference → Secret persistence](/observability/cli-reference/#secret-persistence) for the complete filesystem and race-safety contract.
-
-`mono-agent config` and `mono-agent validate` issue a non-fatal warning when a secret-marked field came from JSON and name the environment variable to use. The aggregate `providers.local[]` view cannot lint an inline `apiKey` field-by-field, so follow the `apiKeyEnv` convention explicitly.
-:::
-
-:::note
-Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-native** variables, not `MONO_AGENT_*` ones. Reference them from config via `apiKeyEnv` (for local providers) rather than inlining a key. See [local provider configuration](/runtime/local-providers/) and [runtime backend authentication](/runtime/backends/).
-:::
-
-## Agent and runtime
-
-| Env var | JSON key it overrides | Notes |
-| --- | --- | --- |
-| `MONO_AGENT_NAME` | `agent.name` | Public display name. It may seed human-facing trace/A2A labels but never paths, service ids, sessions, or provider identity. |
-| `MONO_AGENT_MODEL` | `runtime.model` | `<provider>:<model>` runtime reference, e.g. `openai-codex:gpt-5.6-terra`, `anthropic:claude-sonnet-4-6`, `ollama:qwen3:8b`. Required. |
-| `MONO_AGENT_EXECUTION_MODE` | `runtime.executionMode` | **Retired.** Setting it fails config load with `` `MONO_AGENT_EXECUTION_MODE` was removed; mono-agent runs only the Pi runtime (SDK). Remove the variable from your environment and `.env`. `` (the JSON key reports the equivalent repair for `runtime.executionMode`). An empty assignment (`KEY=`) is treated as unset. |
-| `MONO_AGENT_FALLBACKS_JSON` | `runtime.fallbacks` | Canonical JSON array of `{ "model": "...", "effort"?: "...", "attempts"?: 1-10 }`; ordered and uncapped. Omitted effort means that route's provider default. |
-| `MONO_AGENT_FALLBACK_MODELS` | `runtime.fallbackModels` | **Retired.** Setting it fails config load naming the environment repair: remove the variable and re-express the chain as `MONO_AGENT_FALLBACKS_JSON` above, or as `runtime.fallbacks` in the config file. An empty assignment (`KEY=`) is treated as unset. |
-| `MONO_AGENT_RETRY_PRIMARY_ATTEMPTS` | `runtime.retry.primaryAttempts` | Total attempts on `runtime.model` including the first, 1-10. Default `2`. Set `1` to disable same-model retries. See [runtime fallback configuration](/runtime/fallback/). |
-| `MONO_AGENT_RETRY_BACKOFF_MS` | `runtime.retry.backoffMs` | Delay before the first same-model retry, doubling on each further retry. Default `1000`. |
-| `MONO_AGENT_RETRY_MAX_BACKOFF_MS` | `runtime.retry.maxBackoffMs` | Ceiling for the doubling retry delay. Default `15000`. |
-| `MONO_AGENT_ROUTE_SAFETY` | `runtime.routeSafety` | **Retired.** Every route is Pi-native, so `per-route-native` has no meaning; setting the variable fails config load, naming the variable to remove. An empty assignment (`KEY=`) is treated as unset. |
-| `MONO_AGENT_EFFORT` | `runtime.effort` | `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`; the selected model may support only a subset. Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. `max` degrades to `xhigh` unless the resolved model advertises it. `mono-agent doctor` validates effort against the model's advertised levels and warns, naming the nearest supported level, when a configured value is outside that set. Ranking above `max` only prevents keyword downgrade. See [execution, effort, and permissions](/runtime/execution-effort-permissions/). |
-| `MONO_AGENT_MAX_TURNS` | `runtime.maxTurns` | Turn cap per run; omitted or `0` means unlimited. |
-| `MONO_AGENT_COMPACTION_ENABLED` | `runtime.compaction.enabled` | Enables adaptive proactive compaction and one-shot reactive overflow recovery; default `true`. |
-| `MONO_AGENT_COMPACTION_TRIGGER_RATIO` | `runtime.compaction.triggerRatio` | Proactive window ratio, `0.2`-`0.95`; default `0.90`, additionally capped by adaptive safety headroom (`10%` of the window, `16,000`-`48,000` tokens). |
-| `MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS` | `runtime.compaction.keepRecentTokens` | Explicit retained-context override (`4000`-`200000`); omitted derives 10% of the effective window, clamped to `4000`-`20000`. |
-| `MONO_AGENT_COMPACTION_SUMMARY_MAX_TOKENS` | `runtime.compaction.summaryMaxTokens` | Explicit combined summary-output budget (`1000`-`64000`); omitted derives 4% of the effective window, clamped to `2000`-`12000`. |
-| `MONO_AGENT_COMPACTION_MIN_SAVINGS_TOKENS` | `runtime.compaction.minSavingsTokens` | Explicit minimum proactive savings (`0`-`500000`); omitted derives 10% of the effective window, clamped to `4000`-`20000`. Reactive recovery accepts any positive reduction. |
-| `MONO_AGENT_COMPACTION_FIXED_OVERHEAD_ENABLED` | `runtime.compaction.fixedOverheadEnabled` | Includes the system prompt, tool schemas, and current user turn in request estimates; default `true`. |
-| `MONO_AGENT_COMPACTION_CONTEXT_WINDOW_OVERRIDE` | `runtime.compaction.contextWindowOverride` | Persistent context-window correction (`32000`-`10000000`) for inaccurate provider metadata; learned overflow evidence may lower it process-locally. |
-| `MONO_AGENT_WORKSPACE` | `runtime.workspace` | Working directory for runtime tools. |
-| `MONO_AGENT_SESSION_MODE` | `runtime.session.mode` | `continuous` (default) reuses a warm provider session and queues turns per conversation; `per-message` starts each provider turn cold. Durable history remains a separate replay layer in both modes. |
-| `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS` | `runtime.session.idleTimeoutMs` | Idle eviction window for warm continuous sessions; default 30 minutes. It does not delete durable history. See [Sessions and concurrency](/runtime/sessions-concurrency/). |
-| `MONO_AGENT_SESSION_ISOLATE_PROACTIVE` | `runtime.session.isolateProactive` | When `true`, scheduled requests carrying cron metadata run one-shot instead of acquiring or saving the conversation's warm session. Interactive turns are unchanged. |
-| `MONO_AGENT_SESSION_ROLLOVER` | `runtime.session.rollover` | `none` or `daily`; daily adds a date bucket to each conversation id, except operator-console threads, which own their own session boundary. |
-| `MONO_AGENT_SESSION_ROLLOVER_TIMEZONE` | `runtime.session.rolloverTimezone` | IANA timezone for daily bucket boundaries; defaults to the system timezone. |
-| `MONO_AGENT_SESSION_ROLLOVER_NOTICE` | `runtime.session.rolloverNotice` | When `true`, the first turn in a new daily bucket receives a one-line adapter-visible notice. Default off; it does not enable rollover by itself. |
-| `MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS` | `concurrency.maxConcurrentRuns` | Runs executing against the provider at once (**per-channel**). |
-| `MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS` | `concurrency.maxPendingRuns` | Runs admitted before the provider step (**per-channel**). |
+A JSON `apiKeyEnv`, `tokenEnv`, or similar field stores the **name** of an
+environment variable, not its value. The process reads the named variable only
+when it needs the credential. For example:
 
 ```json
 {
-  "agent": { "name": "Research Companion" },
-  "runtime": {
-    "model": "openai-codex:gpt-5.6-terra",
-    "effort": "high",
-    "fallbacks": [{ "model": "opencode-go:kimi-k2.6", "effort": "medium" }],
-    "session": { "mode": "continuous", "idleTimeoutMs": 600000, "rollover": "daily", "rolloverTimezone": "UTC", "rolloverNotice": false }
-  },
-  "concurrency": { "maxConcurrentRuns": 4, "maxPendingRuns": 8 }
+  "providers": {
+    "ollama": {
+      "type": "ollama",
+      "baseUrl": "https://ollama.com",
+      "apiKeyEnv": "OLLAMA_API_KEY"
+    }
+  }
 }
 ```
 
 ```bash
-MONO_AGENT_MODEL=openai-codex:gpt-5.6-terra
-MONO_AGENT_EFFORT=high
-MONO_AGENT_FALLBACKS_JSON='[{"model":"opencode-go:kimi-k2.6","effort":"medium"}]'
-MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS=4
+export OLLAMA_API_KEY="..."
 ```
 
-## Providers
+Keep secret values outside committed JSON. The CLI may load an owner-private
+`.env` file so these referenced credentials and adapter secrets reach the
+process; dotenv values do not override core JSON configuration.
 
-| Env var | JSON key it overrides | Notes |
-| --- | --- | --- |
-| `MONO_AGENT_PROVIDERS_JSON` | `providers` | Canonical provider map. An object of provider-id keys, optionally with a legacy `local` array beside them; may also set the reserved `piNative` and `piAuthPath` keys. Any other key is read as a provider id, so there is no `entries[]` array form here. See [Provider configuration](/runtime/providers/). |
-| `MONO_AGENT_LOCAL_PROVIDERS_JSON` | `providers` | **Deprecated**, replaced by `MONO_AGENT_PROVIDERS_JSON` with the provider-map shape; still accepted with a warning for backward compatibility. |
-| `MONO_AGENT_LOCAL_PROVIDER_*` | `providers` | Legacy single-provider field overrides; still loaded. Prefer the provider map. |
-| `MONO_AGENT_PI_AUTH_PATH` | `providers.piAuthPath` | Pi credential file; a non-empty value wins over JSON and loses only to `auth login --pi-auth-path`. Default `~/.pi/agent/auth.json`; `~` expands to home and relative paths resolve from the agent/invocation working directory. |
-| `MONO_AGENT_PI_TRANSPORT` | `providers.piNative.transport` | Preferred Pi transport: `auto` (default), `sse`, `websocket`, or `websocket-cached`; unsupported providers ignore it. |
-| `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS` | `providers.piNative.promptCacheDiagnostics` | Metadata-only prompt-cache request fingerprints in run artifacts; default false. Never prompt text, tool arguments, cache keys, endpoints or credentials. |
-| `MONO_AGENT_PI_CACHE_RETENTION` | `providers.piNative.cacheRetention` | Short/long Anthropic retention (default long); env wins over JSON, then long. Short opts out; both default and explicit values override ambient PI_CACHE_RETENTION. Model support required; long writes 2× input, reads 0.1×; short writes 1.25×. No guaranteed hit. |
-| `MONO_AGENT_PI_MAX_RETRIES` | `providers.piNative.piMaxRetries` | Pi-native transport retries, 0-8, default 2. |
-| `MONO_AGENT_MAX_RETRY_DELAY_MS` | `providers.piNative.maxRetryDelayMs` | Default 60000. |
-| `MONO_AGENT_PI_SESSIONS_ROOT` | `providers.piNative.piSessionsRoot` | Durable JSONL session storage (e.g. `.mono-agent/sessions`); unset = in-memory. |
+## Internal process protocols
 
-See [local provider configuration](/runtime/local-providers/) for the local provider shape and [providers](/runtime/providers/) for the map env form and Pi auth.
+The host injects reserved variables when it starts child tools or probes. They
+are runtime protocol values, not operator configuration:
 
-## Context
+- `MONO_AGENT_INTERACTION_BRIDGE_URL`
+- `MONO_AGENT_INTERACTION_BRIDGE_TOKEN`
+- `MONO_AGENT_ASK_USER_TIMEOUT_MS`
+- `MONO_AGENT_ADAPTER_TOOLS_*`
+- `MONO_AGENT_CONTINUATION_*`
+- `MONO_AGENT_CRON_*` firing identity (`JOB_ID`, `RUN_ID`, `SCHEDULED_AT`,
+  `TRIGGER`)
+- `MONO_AGENT_MCP_*`
+- The Pi auth path when injected into a readiness-probe child
 
-| Env var | JSON key it overrides | Notes |
-| --- | --- | --- |
-| `MONO_AGENT_IDENTITY_PATH` | `context.identityPath` | Identity markdown loaded into every prompt. Required. See [identity and soul configuration](/context/identity-and-soul/). |
-| `MONO_AGENT_SOUL_PATH` | `context.soulPath` | Optional secondary voice/guardrail doc. |
-| `MONO_AGENT_SKILLS_ROOT` | `context.skillsRoot` | Root folder for `<name>/SKILL.md` skills. See [skill selection and loading](/context/skills/). |
-| `MONO_AGENT_SELECTED_SKILLS` | `context.selectedSkills` | Explicitly selected skill names. |
-| `MONO_AGENT_SKILL_MAX_BYTES` | `context.skillMaxBytes` | Per-skill instruction byte cap; default 48000. |
-| `MONO_AGENT_SKILL_DISCLOSURE` | `context.skillDisclosure` | `index` (names only) or `full` (full bodies); default `full`. |
+Values supplied by an operator under formerly supported core names are ignored
+by core config resolution. Child readers consume only the explicit protocol
+contract constructed by their parent.
 
-## Memory
+## Managed-worker and operational controls
 
-| Env var | JSON key it overrides | Notes |
-| --- | --- | --- |
-| `MONO_AGENT_MEMORY_BACKEND` | `memory.backend` | Memory engine: `bujo` (default and only supported config value). |
-| `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo`. |
-| `MONO_AGENT_MEMORY_PATH` | `memory.path` | Local storage root; relative paths resolve from the agent folder. Required when memory is configured. |
-| `MONO_AGENT_MEMORY_MAX_BYTES` | `memory.maxBytes` | Maximum bytes returned in an automatic recalled-memory block; default `64000`. |
-| `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture`; `capture` requires `mode: bujo`. See [memory capture and recall](/memory/capture-and-recall/). |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama`, `lmstudio`, or `openai`. The configured provider is exclusive; there is no cross-provider fallback. See [memory embeddings](/memory/embeddings/). |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Embedding model string. |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Embedding dimension. |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT` | `memory.embeddings.endpoint` | Service root: defaults to `http://localhost:11434` for Ollama, `http://localhost:1234` for LM Studio, or `https://api.openai.com/v1` for OpenAI. |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV` | `memory.embeddings.apiKeyEnv` | Name of the variable holding the key. LM Studio is keyless when omitted; when declared, a missing/empty named variable reports `waiting` rather than silently retrying keyless. |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY` | `memory.embeddings.apiKey` | Direct key override. Prefer `_API_KEY_ENV` so config stores only a variable name. |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS` | `memory.embeddings.timeoutMs` | Per-request embedding timeout (`1`–`600000`); default `10000`. |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | `memory.embeddings.circuitBreaker.failureThreshold` | Consecutive embedding failures before the circuit opens (`1`–`100`); default `3`. |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS` | `memory.embeddings.circuitBreaker.cooldownMs` | Cooldown before an open embedding circuit permits a trial request (`1`–`3600000`); default `30000`. |
-| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Explicit memory-read tools; default on. Enables targeted `MemoryRecall` and chronological `MemoryJournal` for every local tier; explicit false opts out of both without disabling automatic recall. |
-| `MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED` | `memory.rememberTool.enabled` | Agent-callable `Remember` durable write tool; default on for local memory, explicit false opts out. Also requires `Remember` under a restrictive `tools.allowedTools`. |
-| `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED` | `memory.consolidation.enabled` | Scheduled BuJo consolidation; default on. |
-| `MONO_AGENT_MEMORY_CONSOLIDATION_CRON` | `memory.consolidation.cron` | Default `0 */2 * * *`. See [memory rituals and scheduling](/memory/rituals/). |
-| `MONO_AGENT_MEMORY_LLM_PROVIDER` | `memory.llm.provider` | `ollama` or `agent-host`. Strictly required for BuJo capture and tier selection; projection-only consolidation itself makes no model call. Missing prerequisites fail instead of downshifting tiers. |
-| `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline. |
-| `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` | `memory.llm.executionMode` | **Retired** for the same reason as `MONO_AGENT_EXECUTION_MODE`; setting it fails config load, naming the variable to remove. An empty assignment (`KEY=`) is treated as unset. |
-| `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama-only endpoint override. |
-| `MONO_AGENT_MEMORY_LLM_TRACE` | `memory.llm.trace` | Enables trace recording for an `agent-host` memory LLM; default `true`. |
-| `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | In-app per-call memory-LLM timeout (`1000`–`600000`, **default `60000`**); see [the memory-LLM timeout](/memory/validation-and-cli/#the-memory-llm-timeout). |
+These variables control process supervision or machine-local discovery rather
+than the resolved agent configuration:
 
-:::caution[Retired Supermemory variables]
-`MONO_AGENT_MEMORY_BACKEND=supermemory` and every nonblank
-`MONO_AGENT_MEMORY_SUPERMEMORY_*` assignment are retired and fail closed with
-secret-safe migration guidance. Remove them before upgrading. Blank assignments are
-tolerated only as inert tombstones and enable nothing. See the
-[retirement checklist](/reference/framework-simplification-migration/#retired-first-party-supermemory-support).
-:::
+- `MONO_AGENT_MANAGED_*` and `MONO_AGENT_SYSTEMD_*` worker markers
+- `MONO_AGENT_WEB_ALLOWED_HOSTS` and `MONO_AGENT_WEB_PUSH_SUBJECT`
+- `MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR` and `MONO_AGENT_TRACE_*` discovery roots
 
-:::note
-The standalone `memory-bujo` maintenance CLI that read these `MONO_AGENT_MEMORY_*` variables directly against a memory root has been removed. All memory maintenance now runs config-aware through `mono-agent memory` from the agent folder, which reads these values from `mono-agent.config.json`. See [the removed standalone memory CLI](/memory/validation-and-cli/#memory-bujo-cli--removed).
-:::
+Managed launchers own these values. Do not copy them into
+`mono-agent.config.json`.
 
-:::note
-`MONO_AGENT_MEMORY_REFLECTION_ENABLED`, `MONO_AGENT_MEMORY_REFLECTION_CRON`,
-`MONO_AGENT_MEMORY_MIGRATION_ENABLED`, and `MONO_AGENT_MEMORY_MIGRATION_CRON` are retired.
-They are tolerated so stale environments do not break startup, but they are ignored and
-`mono-agent validate` reports a warning.
-:::
-
-## Tools
-
-| Env var | JSON key it overrides | Notes |
-| --- | --- | --- |
-| `MONO_AGENT_ALLOWED_TOOLS` | `tools.allowedTools` | Allowlist. **Unset** keeps the allow-all default; `*` is allow-all; an empty value (`""`) is the explicit chat-only `[]`. See [tool policy](/tools/policy/). |
-| `MONO_AGENT_DISALLOWED_TOOLS` | `tools.disallowedTools` | Denylist (deny wins; overlap rejected). |
-| `MONO_AGENT_FILE_TOOL_READABLE_ROOTS` | `tools.filesystem.readableRoots` | Comma-separated extra roots for managed Read, Glob, and Grep while the process sandbox is off. Lexical and realpath containment prevent symlink escapes. |
-| `MONO_AGENT_FILE_TOOL_WRITABLE_ROOTS` | `tools.filesystem.writableRoots` | Comma-separated extra roots for managed Write and Edit while the process sandbox is off; writable roots are also readable. |
-| `MONO_AGENT_MCP_CONFIG_PATH` | `tools.mcpConfigPath` | Path to `mcp.json`. See [MCP configuration](/tools/mcp/). |
-| `MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS` | `tools.mcpRequestContextServers` | Comma-separated stdio MCP server names that receive trusted request-scoped context and progress capabilities. |
-| `MONO_AGENT_CONTINUATION_SERVERS` | `tools.continuationServers` | Comma-separated stdio or loopback-HTTP MCP server names that receive trusted request-bound continuation claim capabilities. See [durable continuations](/tools/durable-continuations/). |
-| `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | `tools.mcpCallTimeoutMs` | Inactivity timeout per MCP tool call; tool progress notifications reset it. Default 120000. |
-| `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | `tools.mcpCallMaxTotalTimeoutMs` | Hard wall clock per MCP tool call that progress cannot extend. Default 2700000 (45 min). An AskUser configured with no automatic expiry is narrowly exempt. |
-| `MONO_AGENT_WEB_SEARCH_BACKEND` | `tools.web.search.backend` | One strict provider or comma-separated ordered chain. Default `parallel,ollama` (Parallel then local Ollama); names: `parallel`, `ollama`, `searxng`, `codex`, `keyless`, `duckduckgo`, `startpage`, `local`. Keyless and local search are opt-in. `auto` is rejected with the previous explicit order, and `hound` is rejected with a rename-to-`local` migration error. |
-| `MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN` | `tools.web.search.maxRequestsPerRun` | Hard limit on answered provider searches (including empty answers) in one logical run; integer 1–20, default 4. Failed attempts are refunded; cache hits, coalesced followers, cooldown skips, and quota skips consume no request. Network dispatches have a separate ceiling of four times this limit. |
-| `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` | `tools.web.search.searxng.endpoint` | Canonical unauthenticated loopback HTTP SearXNG base URL; required whenever a selection includes `searxng`. |
-| `MONO_AGENT_WEB_SEARCH_ENDPOINT` | `tools.web.search.endpoint` | Compatibility alias for the canonical SearXNG endpoint variable. Existing config remains valid; prefer the provider-specific name. |
-| `MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL` | `tools.web.search.ollama.baseUrl` | Ollama origin; Ollama, including in a chain, defaults to `http://127.0.0.1:11434`. Hosted search accepts exact `https://ollama.com`; custom public origins require HTTPS plus explicit trust. |
-| `MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV` | `tools.web.search.ollama.apiKeyEnv` | Explicit environment-variable name for hosted Ollama auth. Required only for exact `https://ollama.com`; rejected for every other origin. |
-| `MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL` | `tools.web.search.ollama.trustPublicUrl` | Explicit `true` acknowledgement for an unauthenticated custom public HTTPS Ollama origin. Never authorizes hosted credentials there. |
-| `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | `tools.web.search.codex.model` | Codex app-server subscription-search model; default `gpt-5.6-luna`. |
-| `MONO_AGENT_WEB_SEARCH_PARALLEL_API_KEY_ENV` | `tools.web.search.parallel.apiKeyEnv` | Optional credential variable name; omitted means anonymous, missing named value is an error. Read at call time. |
-| `MONO_AGENT_WEB_FETCH_PROVIDER` | `tools.web.fetch.provider` | Strict `local` (default), `parallel`, or comma-separated ordered chain such as `local,parallel`. `hound` is rejected with a migration error: `local` is not equivalent (standard retries, no robots preflight, configured render mode honored). |
-| `MONO_AGENT_WEB_FETCH_PARALLEL_API_KEY_ENV` | `tools.web.fetch.parallel.apiKeyEnv` | Optional credential variable name for Parallel extraction; omitted means anonymous. |
-| `MONO_AGENT_WEB_FETCH_RENDER` | `tools.web.fetch.render` | `never` (default and capability disabled) or `auto` (static-first isolated browser fallback). |
-| `MONO_AGENT_WEB_BROWSER_COMMAND` | `tools.web.fetch.browserCommand` | Direct `agent-browser` executable name/path. Default `agent-browser`; shell fragments are not evaluated. |
-
-The local web provider is built in and requires no endpoint. Remove the retired
-`MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT` and `MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT`
-variables (including empty values); their presence is a migration error, even
-when local is unselected. See [native local provider](../tools/web-research.md#native-local-provider-opt-in).
-
-
-### Durable continuations
-
-The host service itself is configured through the `continuations` JSON block. `continuations.detachedServices[].tokenEnv` names an operator-chosen environment variable containing that service's bearer; there is deliberately no fixed environment variable that accepts a raw detached token. Selected MCP servers receive reserved run-scoped `MONO_AGENT_CONTINUATION_CLAIM_*` variables or `x-mono-agent-continuation-claim-*` headers from the host. Those values are runtime capabilities, not operator overrides, and configured spoof values are replaced.
-
-See [Durable continuations](/tools/durable-continuations/) for the complete configuration and protocol.
 
 ## Interaction (AskUser + tool progress)
 
-The interaction bridge starts automatically when `AskUser` is allowed (under the allow-all default, or listed in a specific `tools.allowedTools`), when the `interaction` block or any interaction env override is configured, or when `interaction.progress.enabled` resolves true and `tools.mcpRequestContextServers` names at least one opted project MCP server. `MONO_AGENT_INTERACTION_BRIDGE_URL` / `MONO_AGENT_INTERACTION_BRIDGE_TOKEN` are an app-owned master capability forwarded only to the trusted adapter-tool child; do not set or pass them to project tools. Only opted project stdio MCP children receive a separate run-scoped `MONO_AGENT_INTERACTION_PROGRESS_URL` / `MONO_AGENT_INTERACTION_PROGRESS_TOKEN` pair, and their master-capability env keys are overwritten with empty strings.
+The interaction bridge starts automatically when `AskUser` is allowed (under the allow-all default, or listed in a specific `tools.allowedTools`), when the `interaction` block is configured, or when `interaction.progress.enabled` resolves true and `tools.mcpRequestContextServers` names at least one opted project MCP server. `MONO_AGENT_INTERACTION_BRIDGE_URL` / `MONO_AGENT_INTERACTION_BRIDGE_TOKEN` are an app-owned master capability forwarded only to the trusted adapter-tool child; do not set or pass them to project tools. Only opted project stdio MCP children receive a separate run-scoped `MONO_AGENT_INTERACTION_PROGRESS_URL` / `MONO_AGENT_INTERACTION_PROGRESS_TOKEN` pair, and their master-capability env keys are overwritten with empty strings.
 
 Opted project stdio MCPs also receive host-owned filesystem context after all MCP option layers are merged: `MONO_AGENT_MCP_RUN_OUTPUT_DIR`, `MONO_AGENT_MCP_ATTACHMENTS_ROOT`, `MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS`, and `MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES`. The path value is a JSON array containing only lexical paths saved successfully for the current request; the identity value contains matching `{ "path", "dev", "ino" }` objects captured from the writer descriptors. Empty arrays are authoritative and configured values cannot override them. These are runtime-injected context keys, not operator configuration variables.
 
-| Env var | JSON key it overrides | Notes |
-| --- | --- | --- |
-| `MONO_AGENT_INTERACTION_BRIDGE_HOST` | `interaction.bridge.host` | Bind host. Default `127.0.0.1`; keep it loopback because non-loopback values are not rejected. |
-| `MONO_AGENT_INTERACTION_BRIDGE_PORT` | `interaction.bridge.port` | Bridge port. Default `0` (ephemeral — consumers get the URL via env). |
-| `MONO_AGENT_ASK_USER_TIMEOUT_MS` | `interaction.askUser.timeoutMs` | Max wait for one `AskUser` interaction (one to five questions). Default 600000 (10 min); set `none` to disable automatic expiry, equivalent to JSON `null`. |
-| `MONO_AGENT_PROGRESS_ENABLED` | `interaction.progress.enabled` | Route tool progress posts to channel status messages. Default true. |
+The bridge bind host and port, the `AskUser` timeout, and the tool-progress
+toggle are JSON fields (`interaction.bridge.host`, `interaction.bridge.port`,
+`interaction.askUser.timeoutMs`, `interaction.progress.enabled`) resolved from
+`mono-agent.config.json`. They have no `MONO_AGENT_*` operator form; the
+`MONO_AGENT_INTERACTION_BRIDGE_URL` / `MONO_AGENT_INTERACTION_BRIDGE_TOKEN`
+pair above is the runtime-injected capability, not configuration.
 
-## Sandbox
-
-| Env var | JSON key it overrides | Notes |
-| --- | --- | --- |
-| `MONO_AGENT_SANDBOX_MODE` | `sandbox.mode` | `native` (srt-wrapped) vs `off`. See [sandbox configuration](/tools/sandbox/). |
-| `MONO_AGENT_SANDBOX_NETWORK` | `sandbox.network.mode` | `none` / `localhost` / `allowlist` / `all`. `all` keeps filesystem enforcement while leaving egress open (SRT library-entry launch; managed or explicit node+cli only). |
-| `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` | `sandbox.network.allowlist` | Domain allowlist. |
-| `MONO_AGENT_SANDBOX_READABLE_ROOTS` | `sandbox.readableRoots` | Readable filesystem roots. |
-| `MONO_AGENT_SANDBOX_WRITABLE_ROOTS` | `sandbox.writableRoots` | Writable filesystem roots. |
-| `MONO_AGENT_SANDBOX_DENY_WRITE` | `sandbox.denyWrite` | Deny-write globs (`.env*`, `.git/config`, `.git/hooks/**` denied by default). |
-| `MONO_AGENT_SANDBOX_FALLBACK` | `sandbox.fallback` | fail-closed vs unsafe-host-process when srt is unavailable. |
-| `MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS` | `sandbox.unsafeAllowHostProcess` | Runs commands on the host without srt. |
-
-## Observability and traceability
-
-| Env var | JSON key it overrides | Notes |
-| --- | --- | --- |
-| `MONO_AGENT_ARTIFACT_DIR` | `artifacts.dir` | Run event JSONL + summaries, independently replaced at recorder boundaries rather than appended in flight. See [artifacts and traces](/observability/artifacts-and-traces/). |
-| `MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS` | `artifacts.retention.maxAgeDays` | Delete terminal run artifacts older than this many days (default `365`; bounds `1..3650`). |
-| `MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT` | `artifacts.retention.maxCount` | Keep at most this many newest terminal run artifacts (default `50000`; bounds `1..1000000`). |
-| `MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN` | `artifacts.retention.dryRun` | Log what retention would delete without unlinking files. |
-| `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_AGE_DAYS` | `artifacts.memoryRetention.maxAgeDays` | Delete terminal memory-run artifacts older than this many days (default `7`; bounds `1..3650`). |
-| `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_COUNT` | `artifacts.memoryRetention.maxCount` | Keep at most this many newest terminal memory runs (default `5000`; bounds `1..1000000`). |
-| `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_DRY_RUN` | `artifacts.memoryRetention.dryRun` | Log what memory retention would delete without unlinking files. Defaults to `artifacts.retention.dryRun` when unset. |
-| `MONO_AGENT_TRACE_REGISTRY_DIR` | `traceability.registryDir` | Heartbeat-manifest registry for dashboard discovery; default `~/.mono-agent/trace-sources`. |
-| `MONO_AGENT_TRACE_SOURCE_ID` | `traceability.sourceId` | Optional stable source identifier published in the heartbeat manifest. |
-| `MONO_AGENT_TRACE_SOURCE_LABEL` | `traceability.sourceLabel` | Human-facing source label; defaults to `agent.name` when unset. |
-| `MONO_AGENT_TRACE_HEARTBEAT_MS` | `traceability.heartbeatMs` | Heartbeat publication interval (`250`–`86400000`); default `10000`. |
-| `MONO_AGENT_TRACE_STALE_AFTER_MS` | `traceability.staleAfterMs` | Age at which a heartbeat is treated as stale (`1000`–`604800000`); default `30000`. |
-| `MONO_AGENT_TRACE_GLOBAL_DISCOVERY` | `traceability.globalDiscovery` | Publish to the shared discovery registry; default `true`. |
-
-`MONO_AGENT_OBSERVABILITY_EXPORTERS` is retired. Blank values and the inert JSON array `[]` are accepted only for upgrade compatibility; any active or malformed value fails with secret-safe removal guidance.
 
 ## Channels
 

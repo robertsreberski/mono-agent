@@ -61,11 +61,7 @@ Enable the destination adapter and add the cron job. `conversationId` is the cro
 
 Equivalent environment variables for the secrets and model:
 
-```bash
-export MONO_AGENT_MODEL="anthropic:claude-sonnet-4-6"
-export MONO_AGENT_SLACK_BOT_TOKEN="xoxb-..."
-export MONO_AGENT_SLACK_APP_TOKEN="xapp-..."
-```
+Set `runtime.model` in `mono-agent.config.json`.
 
 The same job can instead live in `cron/morning-digest.md`:
 

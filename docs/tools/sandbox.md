@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-For Pi-native agents, the sandbox confines mono-agent-owned commands by wrapping them with `srt` (the native sandbox runtime) and a generated settings file: a filesystem scope (readable/writable roots, deny-write globs), a network policy, and a fallback for when the sandbox engine is unavailable. This includes both `Bash` commands and the child process behind `NodeRepl`. This page covers the `sandbox` config block, the matching `MONO_AGENT_SANDBOX_*` env vars, and the monotonic merge that lets request-scoped policies tighten — but never widen — the configured baseline.
+For Pi-native agents, the sandbox confines mono-agent-owned commands by wrapping them with `srt` (the native sandbox runtime) and a generated settings file: a filesystem scope (readable/writable roots, deny-write globs), a network policy, and a fallback for when the sandbox engine is unavailable. This includes both `Bash` commands and the child process behind `NodeRepl`. This page covers the `sandbox` config block and the monotonic merge that lets request-scoped policies tighten — but never widen — the configured baseline.
 
 The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`.
 
@@ -27,14 +27,14 @@ The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`.
 
 | Key | Type / values | Default | Env var |
 | --- | --- | --- | --- |
-| `sandbox.mode` | `native` (srt-wrapped) \| `off` | `native` | `MONO_AGENT_SANDBOX_MODE` |
-| `sandbox.network.mode` | `none` \| `localhost` \| `allowlist` \| `all` | `none` | `MONO_AGENT_SANDBOX_NETWORK` |
-| `sandbox.network.allowlist` | string[] of host suffixes (`*.suffix` wildcards) | `[]` | `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` |
-| `sandbox.readableRoots` | string[] of paths | `["."]` (workspace) | `MONO_AGENT_SANDBOX_READABLE_ROOTS` |
-| `sandbox.writableRoots` | string[] of paths | `["."]` (workspace) | `MONO_AGENT_SANDBOX_WRITABLE_ROOTS` |
-| `sandbox.denyWrite` | string[] of globs | see defaults below | `MONO_AGENT_SANDBOX_DENY_WRITE` |
-| `sandbox.fallback` | `fail-closed` \| `unsafe-host-process` | `fail-closed` | `MONO_AGENT_SANDBOX_FALLBACK` |
-| `sandbox.unsafeAllowHostProcess` | boolean | `false` | `MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS` |
+| `sandbox.mode` | `native` (srt-wrapped) \| `off` | `native` | — |
+| `sandbox.network.mode` | `none` \| `localhost` \| `allowlist` \| `all` | `none` | — |
+| `sandbox.network.allowlist` | string[] of host suffixes (`*.suffix` wildcards) | `[]` | — |
+| `sandbox.readableRoots` | string[] of paths | `["."]` (workspace) | — |
+| `sandbox.writableRoots` | string[] of paths | `["."]` (workspace) | — |
+| `sandbox.denyWrite` | string[] of globs | see defaults below | — |
+| `sandbox.fallback` | `fail-closed` \| `unsafe-host-process` | `fail-closed` | — |
+| `sandbox.unsafeAllowHostProcess` | boolean | `false` | — |
 
 The engine id is `srt` (the only built-in engine). On macOS, mono-agent can install and own the pinned runtime itself; a global `srt` is not required.
 
@@ -130,9 +130,8 @@ Loopback is never implicit in `allowlist` mode. Enabled app-owned ask tools need
 }
 ```
 
-```bash
-MONO_AGENT_SANDBOX_NETWORK=allowlist
-MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST=*.githubusercontent.com,registry.npmjs.org
+```json
+{ "sandbox": { "network": { "mode": "allowlist", "allowlist": ["*.githubusercontent.com", "registry.npmjs.org"] } } }
 ```
 
 ## Filesystem scopes

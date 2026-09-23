@@ -305,6 +305,7 @@ export function resolveModelEffortLevels(
 export function runtimeOptionsForLocalProvider(
   model: RuntimeModelReference,
   providers: readonly LocalProviderDefinition[] | undefined,
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): LocalProviderRuntimeOptions {
   if (providers === undefined || providers.length === 0) {
     return {};
@@ -317,6 +318,13 @@ export function runtimeOptionsForLocalProvider(
 
   const normalized = validateLocalProviderDefinition(provider);
   const customModel = customModelForProvider(normalized, model.model);
+  // The loader carries only the credential name; the value is resolved here at
+  // use, mirroring the provider-auth check overlay below. A set variable wins;
+  // otherwise the inline literal stands in (the loader's former `??` order).
+  const envApiKey = normalized.apiKeyEnv === undefined
+    ? undefined
+    : normalizeOptionalString(env[normalized.apiKeyEnv]);
+  const apiKey = envApiKey ?? normalized.apiKey;
   return {
     customProvider: {
       id: normalized.id,
@@ -324,7 +332,7 @@ export function runtimeOptionsForLocalProvider(
       base_url: normalized.baseUrl as string,
       enabled: normalized.enabled ?? true,
       trust_public_url: normalized.trustPublicUrl === true,
-      ...(normalized.apiKey === undefined ? {} : { api_key: normalized.apiKey }),
+      ...(apiKey === undefined ? {} : { api_key: apiKey }),
     },
     customModel,
     modelCapabilities: customModel.capabilities,

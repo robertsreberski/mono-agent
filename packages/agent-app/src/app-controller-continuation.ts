@@ -31,6 +31,7 @@ import type { NotifyDeliveryResult } from "./proactive-notify.js";
 export interface ContinuationControllerPort {
   readonly cwd: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly env: Record<string, string | undefined>;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly running: Map<ChannelId, RunningChannel>;
@@ -167,7 +168,8 @@ export async function startContinuationServiceIfConfigured(controller: Continuat
   if (controller.stopped) return;
   let coreConfig: MonoAgentConfig;
   try {
-    coreConfig = await loadAppCoreConfig({ env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath });
+    coreConfig = await loadAppCoreConfig({ env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+      ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) });
   } catch (error) {
     if (isAppCoreConfigError(error)) {
       controller.logger?.debug?.("Continuation service is waiting for valid core configuration.", { reason });

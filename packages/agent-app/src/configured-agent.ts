@@ -32,7 +32,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
 
-import { setToolActivityPathRoots } from "@mono-agent/agent-contracts";
+import { normalizeOptionalString, setToolActivityPathRoots } from "@mono-agent/agent-contracts";
 import type { AgentResponder, MemoryStore } from "@mono-agent/agent-contracts";
 import { assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -1953,7 +1953,13 @@ async function createConfiguredMemoryInternal(
   // a sustained outage stops blocking recall entirely. The harness degrades
   // recall to empty (with a memory_degraded warning) when this errors.
   const search = await loadMemorySearchModule();
-  if (embeddingsConfig?.apiKeyEnv !== undefined && embeddingsConfig.apiKey === undefined) {
+  // The loader carries only the credential name; the value is resolved here at
+  // use. A declared name stays authoritative (an inline literal never stands in
+  // for it), matching the loader's former behavior.
+  const embeddingsApiKey = embeddingsConfig?.apiKeyEnv !== undefined
+    ? normalizeOptionalString(process.env[embeddingsConfig.apiKeyEnv])
+    : embeddingsConfig?.apiKey;
+  if (embeddingsConfig?.apiKeyEnv !== undefined && embeddingsApiKey === undefined) {
     throw new Error(
       `memory.embeddings.apiKeyEnv ${embeddingsConfig.apiKeyEnv} is declared but has no resolved value; ` +
       `set ${embeddingsConfig.apiKeyEnv} before starting managed memory.`,
@@ -1965,7 +1971,7 @@ async function createConfiguredMemoryInternal(
         provider: embeddingsConfig?.provider ?? "ollama",
         model: embeddingsConfig?.model ?? "nomic-embed-text:v1.5",
         ...(embeddingsConfig?.endpoint !== undefined && { endpoint: embeddingsConfig.endpoint }),
-        ...(embeddingsConfig?.apiKey !== undefined && { apiKey: embeddingsConfig.apiKey }),
+        ...(embeddingsApiKey !== undefined && { apiKey: embeddingsApiKey }),
         timeoutMs: embeddingsConfig?.timeoutMs ?? DEFAULT_EMBEDDINGS_TIMEOUT_MS,
       }),
       {

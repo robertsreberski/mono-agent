@@ -40,15 +40,15 @@ Identity is the only required piece of `context` — `context.identityPath` is t
 }
 ```
 
-Every field has a matching `MONO_AGENT_*` env var that overrides the JSON (env > JSON > defaults):
+Every field has a matching `MONO_AGENT_*` env var that overrides the JSON (JSON → defaults):
 
 | Field | Env var | Default |
 |-------|---------|---------|
-| `context.identityPath` | `MONO_AGENT_IDENTITY_PATH` | `./IDENTITY.md` |
-| `context.soulPath` | `MONO_AGENT_SOUL_PATH` | unset (no soul) |
-| `context.skillsRoot` | `MONO_AGENT_SKILLS_ROOT` | `./skills` |
-| `context.selectedSkills` | `MONO_AGENT_SELECTED_SKILLS` | none selected |
-| `context.skillMaxBytes` | `MONO_AGENT_SKILL_MAX_BYTES` | `48000` |
+| `context.identityPath` | — | `./IDENTITY.md` |
+| `context.soulPath` | — | unset (no soul) |
+| `context.skillsRoot` | — | `./skills` |
+| `context.selectedSkills` | — | none selected |
+| `context.skillMaxBytes` | — | `48000` |
 | `context.skillDisclosure` | `MONO_AGENT_SKILL_DISCLOSURE` | `full` |
 
 Paths are resolved relative to the agent folder. `mono-agent init` scaffolds an `IDENTITY.md` for you; see [Folder Layout](/config/folder-layout/).

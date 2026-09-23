@@ -34,6 +34,7 @@ import {
   selectSystemdBackgroundOperationalEnvironment,
 } from "../background-environment.js";
 import { managedBackgroundEnvironment, resolveInstanceTarget } from "../background.js";
+import { loadAppCoreConfig } from "../app-config.js";
 import { effectiveFirstRunEnvironment, resolveEffectivePiAuthPath } from "../first-run-readiness.js";
 import { composeWizardPlan, defaultAnswers } from "../wizard/answers.js";
 
@@ -276,8 +277,8 @@ describe("background worker snapshots", () => {
       env: environment,
       runtimeRoot: join(dir, "runtime-inputs"),
     });
-    const privateIdentityPath = runtimeInputs.environment.MONO_AGENT_IDENTITY_PATH;
-    const privateSoulPath = runtimeInputs.environment.MONO_AGENT_SOUL_PATH;
+    const privateIdentityPath = runtimeInputs.privateRuntimePaths.identityPath;
+    const privateSoulPath = runtimeInputs.privateRuntimePaths.soulPath;
     expect(privateIdentityPath).toBeTypeOf("string");
     expect(privateSoulPath).toBeTypeOf("string");
 
@@ -329,7 +330,7 @@ describe("background worker snapshots", () => {
       env: environment,
       runtimeRoot: join(dir, "runtime-inputs"),
     });
-    const privateMcpPath = runtimeInputs.environment.MONO_AGENT_MCP_CONFIG_PATH;
+    const privateMcpPath = runtimeInputs.privateRuntimePaths.mcpConfigPath;
     expect(privateMcpPath).toBeTypeOf("string");
     expect(privateMcpPath).not.toBe(mcpConfigPath);
     expect(await readFile(privateMcpPath!, "utf8")).toBe(approvedMcp);
@@ -343,6 +344,38 @@ describe("background worker snapshots", () => {
     } finally {
       await runtimeInputs.dispose();
     }
+  });
+
+  it("loads only materialized identity, soul and MCP authority after originals change", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    const soulPath = join(dir, "SOUL.md");
+    const mcpPath = join(dir, "mcp.json");
+    await writeFile(soulPath, "Approved soul", "utf8");
+    await writeFile(mcpPath, JSON.stringify({ mcpServers: { safe: { command: "/usr/bin/true" } } }), "utf8");
+    await writeFile(configPath, JSON.stringify({
+      runtime: { model: "ollama:qwen3:8b" },
+      context: { identityPath: "IDENTITY.md", soulPath: "SOUL.md" },
+      tools: { mcpConfigPath: "mcp.json" },
+    }));
+    const env = { HOME: dir, PATH: "/safe/bin", MODEL_API_KEY: "top-secret" };
+    const snapshot = await captureBackgroundSnapshot({ cwd: dir, configPath, envFile: ".env", env });
+    const runtimeInputs = await materializeBackgroundRuntimeInputs({ snapshot, cwd: dir, env, runtimeRoot: join(dir, "runtime-inputs") });
+    try {
+      await writeFile(join(dir, "IDENTITY.md"), "Unapproved identity");
+      await writeFile(soulPath, "Unapproved soul");
+      await writeFile(mcpPath, JSON.stringify({ mcpServers: { unsafe: { command: "/usr/bin/false" } } }));
+      const loaded = await loadAppCoreConfig({ cwd: dir, configPath: runtimeInputs.configPath, env: runtimeInputs.environment,
+        privateRuntimePaths: runtimeInputs.privateRuntimePaths });
+      expect(loaded.context.identityPath).toBe(runtimeInputs.privateRuntimePaths.identityPath);
+      expect(loaded.context.soulPath).toBe(runtimeInputs.privateRuntimePaths.soulPath);
+      expect(loaded.tools.mcpConfigPath).toBe(runtimeInputs.privateRuntimePaths.mcpConfigPath);
+      expect(await readFile(loaded.context.identityPath, "utf8")).toContain("Be precise.");
+      expect(await readFile(loaded.context.soulPath!, "utf8")).toBe("Approved soul");
+      expect(await readFile(loaded.tools.mcpConfigPath!, "utf8")).toContain("safe");
+      expect(runtimeInputs.environment).not.toHaveProperty("MONO_AGENT_IDENTITY_PATH");
+      expect(runtimeInputs.environment).not.toHaveProperty("MONO_AGENT_SOUL_PATH");
+      expect(runtimeInputs.environment).not.toHaveProperty("MONO_AGENT_MCP_CONFIG_PATH");
+    } finally { await runtimeInputs.dispose(); }
   });
 
   it("rejects MCP authority drift before any private worker inputs survive", async () => {

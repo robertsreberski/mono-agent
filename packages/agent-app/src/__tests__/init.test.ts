@@ -211,25 +211,25 @@ describe("initMonoAgentFolder", () => {
     }
   });
 
-  it("rejects a managed-memory identity override before any scaffold write", async () => {
-    await expect(initMonoAgentFolder({
+  it("ignores stale core memory identity environment during managed init", async () => {
+    const result = await initMonoAgentFolder({
       dir,
       answers: presetAnswers(findPreset("local-private")!),
-      env: { MONO_AGENT_MEMORY_PATH: "./external-memory" },
-    })).rejects.toThrow(/refuses MONO_AGENT_MEMORY_PATH/u);
-
-    await expect(access(join(dir, "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(access(join(dir, "IDENTITY.md"))).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(access(join(dir, ".mono-agent"))).rejects.toMatchObject({ code: "ENOENT" });
+      env: { MONO_AGENT_MEMORY_PATH: "./external-memory", MONO_AGENT_MEMORY_MODE: "lite" },
+    });
+    expect(result.plan.configJson.memory?.mode).toBe("journal");
+    expect(result.plan.configJson.memory?.path).not.toBe("./external-memory");
+    expect(JSON.parse(await readFile(result.configPath, "utf8")).memory).toMatchObject(result.plan.configJson.memory!);
   });
 
-  it("rejects an env tier that would turn a fresh Lite scaffold into managed Journal", async () => {
-    await expect(initMonoAgentFolder({
+  it("keeps a JSON Lite scaffold Lite despite a stale Journal environment", async () => {
+    const result = await initMonoAgentFolder({
       dir,
       answers: defaultAnswers({ memory: "memory:lite" }),
       env: { MONO_AGENT_MEMORY_MODE: "journal" },
-    })).rejects.toThrow(/refuses MONO_AGENT_MEMORY_MODE/u);
-    await expect(access(join(dir, "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+    expect(result.plan.configJson.memory?.mode).toBe("lite");
+    expect(JSON.parse(await readFile(result.configPath, "utf8")).memory.mode).toBe("lite");
   });
 
   it("removes only its unchanged config when first-run memory publication fails", async () => {

@@ -52,7 +52,7 @@ An agent that can read repos and run shell commands or run-scoped JavaScript ins
 }
 ```
 
-The `denyWrite` globs above are the built-in defaults — listed explicitly here to make the secret-protection contract obvious. Relative `readableRoots`/`writableRoots` entries resolve against the workspace. The matching env vars are `MONO_AGENT_SANDBOX_MODE`, `MONO_AGENT_SANDBOX_NETWORK`, `MONO_AGENT_SANDBOX_READABLE_ROOTS`, `MONO_AGENT_SANDBOX_WRITABLE_ROOTS`, `MONO_AGENT_SANDBOX_DENY_WRITE`, and `MONO_AGENT_SANDBOX_FALLBACK`.
+The `denyWrite` globs above are the built-in defaults — listed explicitly here to make the secret-protection contract obvious. Relative `readableRoots`/`writableRoots` entries resolve against the workspace. Configure these values in the JSON `sandbox` block; former core environment variables are ignored.
 
 :::caution
 Keep `fallback` at `fail-closed`. Setting `fallback: "unsafe-host-process"` plus `unsafeAllowHostProcess: true` lets commands run unsandboxed on the host when `srt` is unavailable. When that fallback is active, mono-agent reports `WARNING: Unsafe sandbox fallback is active: all sandbox roots/denyWrite entries are inert; commands run unsandboxed.` Never use that fallback for a security-sensitive deployment.

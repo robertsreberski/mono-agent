@@ -220,15 +220,30 @@ function safeSearchCacheIdentity(searchConfig) {
   if (!searchConfig || typeof searchConfig !== "object") return searchConfig;
   const { maxRequestsPerRun: _budget, ...identity } = searchConfig;
   if (searchConfig.parallel) identity.parallel = parallelCacheIdentity(searchConfig.parallel);
+  if (searchConfig.ollama) identity.ollama = ollamaCacheIdentity(searchConfig.ollama);
   if (typeof searchConfig?.ollama?.apiKey !== "string") return identity;
   return {
     ...identity,
     ollama: {
-      ...searchConfig.ollama,
+      ...identity.ollama,
       apiKey: `sha256:${createHash("sha256").update(searchConfig.ollama.apiKey).digest("hex")}`,
     },
   };
 }
+
+/** Only a digest of the current credential may influence a shared cache key. */
+function ollamaCacheIdentity(config) {
+  if (config?.apiKeyEnv === undefined) return config;
+  const value = process.env[config.apiKeyEnv];
+  return {
+    ...config,
+    apiKeyEnv: config.apiKeyEnv,
+    credentialDigest: value ? createHash("sha256").update(value.trim()).digest("hex") : "missing",
+  };
+}
+
+// Test seam: assert rotation invalidates without ever exposing the value.
+export const __ollamaCacheIdentityForTests = ollamaCacheIdentity;
 
 function readSharedSearch(key) {
   const entry = sharedSearchCache.get(key);

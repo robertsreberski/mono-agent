@@ -104,7 +104,8 @@ describe("runCli config", () => {
 
       const out = chunks.join("");
       expect(out).toContain("[WARN] memory.embeddings.apiKey is a secret read from mono-agent.config.json");
-      expect(out).toContain("MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY");
+      expect(out).toContain("memory.embeddings.apiKeyEnv");
+      expect(out).not.toContain("MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY");
       expect(out).not.toContain("sk-json-secret");
     } finally {
       stdoutSpy.mockRestore();

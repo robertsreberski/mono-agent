@@ -37,6 +37,7 @@ export interface ChannelsControllerPort {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly drivers: readonly ChannelDriver[];
   readonly driversById: ReadonlyMap<ChannelId, ChannelDriver>;
@@ -83,7 +84,8 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
     kind: "waiting_for_config",
     reason: `${driver.label} start was superseded.`,
   };
-  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+    ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
 
   let config: unknown;
   try {

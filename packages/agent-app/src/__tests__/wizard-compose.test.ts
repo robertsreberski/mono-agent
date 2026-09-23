@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
+import { loadMonoAgentConfig } from "@mono-agent/config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
@@ -37,7 +37,7 @@ async function loadComposed(answers: WizardAnswers, ctx: ComposeContext = CTX) {
   const plan = composeWizardPlan(answers, ctx);
   const configPath = join(dir, "mono-agent.config.json");
   await writeFile(configPath, JSON.stringify(plan.configJson, null, 2), "utf8");
-  return loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: configPath });
+  return loadMonoAgentConfig({ cwd: dir, jsonPath: configPath });
 }
 
 /** Answers that enable exactly one module, for the per-module round-trip guard. */

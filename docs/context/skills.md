@@ -27,12 +27,12 @@ For each entry `name` in `selectedSkills`, mono-agent reads `<skillsRoot>/<name>
 
 | Key | Purpose | Default | Env var |
 | --- | --- | --- | --- |
-| `context.skillsRoot` | Directory that contains one subdirectory per skill | — | `MONO_AGENT_SKILLS_ROOT` |
-| `context.selectedSkills` | Exact skill names to load (each `<root>/<name>/SKILL.md`) | `[]` at loader level; init selects the two project skills | `MONO_AGENT_SELECTED_SKILLS` |
-| `context.skillMaxBytes` | Per-skill instruction byte cap | `48000` | `MONO_AGENT_SKILL_MAX_BYTES` |
+| `context.skillsRoot` | Directory that contains one subdirectory per skill | — | — |
+| `context.selectedSkills` | Exact skill names to load (each `<root>/<name>/SKILL.md`) | `[]` at loader level; init selects the two project skills | — |
+| `context.skillMaxBytes` | Per-skill instruction byte cap | `48000` | — |
 | `context.skillDisclosure` | `index` exposes names plus `ReadSkill`; `full` inlines every selected body | `full`; generated agents use `index` | `MONO_AGENT_SKILL_DISCLOSURE` |
 
-`MONO_AGENT_SELECTED_SKILLS` is a comma-separated list, e.g. `MONO_AGENT_SELECTED_SKILLS=research,incident-response`.
+Set `context.selectedSkills` to a JSON array of exact skill names, for example `["research", "incident-response"]`.
 
 The folder convention is part of the standard [agent folder layout](/config/folder-layout/): an optional `skills/` directory holding `<skill-name>/SKILL.md` per selected skill.
 

@@ -376,7 +376,7 @@ The validator's behavior depends on `memory.llm.provider`. There are two provide
 | `endpoint` | Ollama URL (default `http://localhost:11434`) | **rejected** — Ollama-only |
 | `validate` chat-model check | yes (probes `/api/tags`) | no |
 
-Env overrides: `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_ENDPOINT`.
+Configure these fields in the JSON `memory.llm` block.
 
 ### Ollama-backed memory LLM
 
@@ -435,7 +435,7 @@ The memory LLM always executes on `memory.llm.model`, and that model is its **so
 
 ## The memory-LLM timeout
 
-`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` / `memory.llm.timeoutMs` sets the per-call timeout for the **in-app** memory LLM — each per-turn [capture](/memory/capture-and-recall/#capture--per-turn-intelligent-capture-bujo) call (one extraction + at most one reconcile). Its default is **`60000`** and the value is bounded `1000`–`600000` ms. Raise it when a slow local memory model trips the cap on extraction or reconcile.
+`memory.llm.timeoutMs` sets the per-call timeout for the **in-app** memory LLM — each per-turn [capture](/memory/capture-and-recall/#capture--per-turn-intelligent-capture-bujo) call (one extraction + at most one reconcile). Its default is **`60000`** and the value is bounded `1000`–`600000` ms. Raise it when a slow local memory model trips the cap on extraction or reconcile.
 
 There used to be a second default: the removed standalone `memory-bujo` binary read the same env var but defaulted to `120000`. That binary and its `migrate` path are [gone](#memory-bujo-cli--removed), so only the in-app `60000` default remains.
 
@@ -641,5 +641,5 @@ The config-aware `mono-agent memory rebuild` / `rollback` read the tier, embeddi
 - [Capture & recall](/memory/capture-and-recall/) — `writeMode` and the `MemoryRecall` tool.
 - [Consolidation](/memory/rituals/) — in-app consolidation auto-scheduler.
 - [Config blueprint](/config/blueprint/) — the full annotated `memory` block.
-- [Environment variables](/config/env-vars/) — every `MONO_AGENT_MEMORY_*` override.
+- [Operational environment variables](/config/env-vars/) — secret references and process plumbing.
 - [CLI reference](/observability/cli-reference/) — the broader `mono-agent` command surface.

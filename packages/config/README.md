@@ -28,13 +28,9 @@ npm install @mono-agent/config
 ```
 
 ```ts
-import {
-  buildMonoAgentConfigView,
-  loadMonoAgentConfigWithSources,
-} from "@mono-agent/config";
+import { buildMonoAgentConfigView, loadMonoAgentConfig } from "@mono-agent/config";
 
-const config = await loadMonoAgentConfigWithSources({
-  env: process.env,
+const config = await loadMonoAgentConfig({
   cwd: process.cwd(),
   jsonPath: "./mono-agent.config.json",
 });
@@ -42,22 +38,19 @@ const config = await loadMonoAgentConfigWithSources({
 console.log(config.runtime.model);
 ```
 
-A non-empty environment value overrides its mapped JSON field. Blank values are
-normally ignored; the legacy `MONO_AGENT_FALLBACK_MODELS=""` clear operation is
-the deliberate exception. Not every nested JSON field has an environment
-counterpart, so use the [environment variable
-map](https://docs.mono-agent.dev/config/env-vars/) rather than assuming a
-blanket override. A missing or empty JSON file contributes an empty layer.
+Core settings resolve from `mono-agent.config.json`, then built-in defaults.
+`MONO_AGENT_*` core configuration variables are ignored. A missing or empty JSON
+file contributes an empty JSON source.
 
 ### Agent identity and runtime routes
 
 `agent.name` is public display metadata. It can seed human-facing trace and A2A
 labels, but it never changes paths, service ids, session keys, or provider
-identity. `MONO_AGENT_NAME` overrides the JSON value.
+identity.
 
 Use `runtime.fallbacks` for fallback chains. It is an ordered, uncapped array of
 `{ model, effort? }` entries; omitted route effort means the provider default.
-The legacy `runtime.fallbackModels` / `MONO_AGENT_FALLBACK_MODELS` surfaces were
+The legacy `runtime.fallbackModels` surface was
 retired in 0.21.0 and now fail at load with the replacement named; convert them
 by hand.
 
@@ -82,15 +75,14 @@ accepted at turn time.
 
 Reasoning effort comes from explicit runtime configuration or per-request metadata.
 Message text never changes effort. The Pi runtime applies the selected model's
-supported effort limits. `runtime.permissionMode` and its environment override
-were removed because they were never enforced; configure `sandbox` for tool
+supported effort limits. `runtime.permissionMode` was removed because they were never enforced; configure `sandbox` for tool
 isolation.
 
 ### Pi credentials
 
 Built-in Pi OAuth and API-key providers read credentials through the configured
 Pi auth file. The default path is
-`~/.pi/agent/auth.json`; override it with JSON or env:
+`~/.pi/agent/auth.json`; override it in JSON:
 
 ```json
 {
@@ -100,15 +92,12 @@ Pi auth file. The default path is
 }
 ```
 
-```bash
-MONO_AGENT_PI_AUTH_PATH=/Users/example/.pi/agent/auth.json
-```
 
 Only the path is stored in config. Token contents stay in the auth JSON file and
 are never included in `redactMonoAgentConfig()`.
 
 Pi-native transport selection is optional and defaults to `auto`. Configure
-`providers.piNative.transport` or `MONO_AGENT_PI_TRANSPORT` with `auto`, `sse`,
+`providers.piNative.transport` with `auto`, `sse`,
 `websocket`, or `websocket-cached`; unsupported providers ignore the choice.
 
 ### Local providers
@@ -139,17 +128,9 @@ Core config can also define local Pi providers under `providers.local`. The prim
 
 `runtime.maxTurns` is optional. Omit it or set `0` for unlimited runs; set `1`-`100` to keep a hard cap.
 
-Environment overrides for the common one-provider case:
-
-```bash
-MONO_AGENT_LOCAL_PROVIDER_ID=ollama
-MONO_AGENT_LOCAL_PROVIDER_TYPE=ollama
-MONO_AGENT_LOCAL_PROVIDER_BASE_URL=http://localhost:11434
-MONO_AGENT_LOCAL_PROVIDER_ENABLED=true
-MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL=false
-```
-
-`MONO_AGENT_LOCAL_PROVIDERS_JSON` can hold the full local-provider array. Env values win over JSON; empty env values are ignored. `MONO_AGENT_LOCAL_PROVIDER_API_KEY` and provider `apiKeyEnv` are passed only to the runtime path and are redacted from `redactMonoAgentConfig()`.
+Provider `apiKeyEnv` values name environment variables that contain credentials;
+the credential values are passed only to the runtime path and are redacted from
+`redactMonoAgentConfig()`.
 
 ### Additional file-tool roots
 
@@ -204,8 +185,8 @@ Search selects one strict provider or a non-empty ordered array. The default is
 configurations fail with their previous explicit order, and the removed `hound`
 value fails with a rename-to-`local` migration error. SearXNG
 endpoints are deliberately limited to unauthenticated loopback HTTP URLs. Local search runs locally in Node without a service endpoint. Remove retired
-`search.hound.endpoint` and `fetch.hound.endpoint` settings and their environment
-variables; their presence is a migration error. The
+`search.hound.endpoint` and `fetch.hound.endpoint` settings; their presence is a
+migration error. Former core environment names are silently ignored. The
 legacy `search.endpoint` spelling remains a compatibility alias for
 `search.searxng.endpoint`. Ollama defaults to the loopback host; the exact
 official `https://ollama.com` origin requires an API key named by `apiKeyEnv`,
@@ -224,20 +205,6 @@ Fetch rendering config is `never` by default (browser capability disabled) or
 individual WebFetch call may use `render: "always"` for a strict browser-first
 request.
 
-Environment overrides are
-`MONO_AGENT_WEB_SEARCH_BACKEND`,
-`MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN`,
-`MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` (with
-`MONO_AGENT_WEB_SEARCH_ENDPOINT` retained as an alias),
-`MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL`,
-`MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV`,
-`MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL`,
-`MONO_AGENT_WEB_SEARCH_CODEX_MODEL`,
-`MONO_AGENT_WEB_SEARCH_HOUND_ENDPOINT`,
-`MONO_AGENT_WEB_FETCH_PROVIDER`,
-`MONO_AGENT_WEB_FETCH_HOUND_ENDPOINT`,
-`MONO_AGENT_WEB_FETCH_RENDER`, and
-`MONO_AGENT_WEB_BROWSER_COMMAND`.
 
 ### Managed memory embeddings
 
@@ -273,13 +240,6 @@ dimension on an existing Journal/BuJo root requires the config-aware stopped
 
 Continuous provider sessions are configured under `runtime.session` (JSON: `{ "runtime": { "session": { "mode": "continuous", "idleTimeoutMs": 1800000 } } }`):
 
-```bash
-MONO_AGENT_SESSION_MODE=continuous           # or per-message (fresh turn with history replay)
-MONO_AGENT_SESSION_IDLE_TIMEOUT_MS=1800000   # 30 min default; min 1s, max 24h
-MONO_AGENT_SESSION_ROLLOVER=daily            # none (default) or daily
-MONO_AGENT_SESSION_ROLLOVER_TIMEZONE=UTC     # optional IANA timezone for daily rollover
-MONO_AGENT_SESSION_ROLLOVER_NOTICE=true      # opt in to adapter-visible new-bucket notices
-```
 
 In `continuous` mode (the default), consecutive messages in a conversation can
 reuse one provider session (a Codex app-server thread, Claude resume token, or
@@ -292,23 +252,15 @@ relies on that canonical history for context.
 
 ### Sandbox policy
 
-Sandbox config is optional. When any `MONO_AGENT_SANDBOX_*` variable is present, config builds a fail-closed `@mono-agent/runtime-adapter` policy rooted at `runtime.workspace`:
+Sandbox config is optional. A configured `sandbox` JSON block builds a fail-closed `@mono-agent/runtime-adapter` policy rooted at `runtime.workspace`.
 
-```bash
-MONO_AGENT_SANDBOX_MODE=native
-MONO_AGENT_SANDBOX_NETWORK=none
-MONO_AGENT_SANDBOX_FALLBACK=fail-closed
-```
-
-Enforced network modes are `none`, `localhost`, and `allowlist`. `allowlist` reads comma-separated domains from `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST`. `all`, bare `*`, and IPv6 literals are rejected because pinned SRT 0.0.64 cannot enforce them exactly. Migrate an existing native `network.mode: "all"` config to `none`, `localhost`, or an explicit allowlist; if unrestricted shell networking is intentional, set `sandbox.mode: "off"` and remove the network policy. Unsafe host-process fallback requires both `MONO_AGENT_SANDBOX_FALLBACK=unsafe-host-process` and `MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS=true`.
+Enforced network modes are `none`, `localhost`, and `allowlist`. `allowlist` reads domains from `sandbox.network.allowlist`. `all`, bare `*`, and IPv6 literals are rejected because pinned SRT 0.0.64 cannot enforce them exactly. Migrate an existing native `network.mode: "all"` config to `none`, `localhost`, or an explicit allowlist; if unrestricted shell networking is intentional, set `sandbox.mode: "off"` and remove the network policy. Unsafe host-process fallback requires both `sandbox.fallback: "unsafe-host-process"` and `sandbox.unsafeAllowHostProcess: true`.
 
 ### Anthropic cache retention
 
 `providers.piNative.cacheRetention` defaults to `"long"` (one hour); set `"short"`
-(five minutes) to opt out. Nonempty `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON,
-then the `"long"` default. Both the default and explicit values override Pi's
-separate ambient `PI_CACHE_RETENTION`, including explicit `"short"` when Pi's
-environment requests long retention.
+(five minutes) to opt out. JSON takes precedence over the `"long"` default.
+The resolved setting overrides Pi's separate ambient `PI_CACHE_RETENTION`.
 The runtime forwards retention only to Anthropic Messages, including child
 routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
 unsupported models receive no one-hour TTL.
@@ -335,12 +287,9 @@ Configuration follows one deterministic pipeline:
 
 1. `readMonoAgentConfigJson()` reads the optional file and treats a missing or
    empty file as an empty object.
-2. `loadMonoAgentConfigWithSources()` validates JSON-only structures, then
-   `layerJsonOntoEnv()` maps supported JSON leaves onto the loader's env-shaped
-   input without replacing non-empty environment values.
-3. `loadMonoAgentConfig()` applies defaults, coercion, range checks, model
-   parsing, execution-mode compatibility, and fail-closed sandbox policy.
-4. Consumers use `buildMonoAgentConfigView()` for source-aware display and
+2. `loadMonoAgentConfig()` validates JSON paths, applies defaults, performs
+   range and model checks, and builds fail-closed sandbox policy.
+3. Consumers use `buildMonoAgentConfigView()` for source-aware display and
    `redactMonoAgentConfig()` before logging or exposing the resolved result.
 
 ### Package structure
@@ -348,7 +297,7 @@ Configuration follows one deterministic pipeline:
 | Module | Purpose |
 | --- | --- |
 | `json-source.ts` | Typed JSON file shape plus safe read/write operations. |
-| `layered-loader.ts` | JSON-to-env mapping, precedence, and JSON-source diagnostics. |
+| `layered-loader.ts` | JSON file loading and JSON-path diagnostics. |
 | `config.ts` | Authoritative parsing, defaults, validation, and redaction. |
 | `types.ts`, `enums.ts` | Resolved config contracts and closed value sets. |
 | `config-view.ts` | Source-annotated, secret-safe settings UI model. |
@@ -359,8 +308,7 @@ Configuration follows one deterministic pipeline:
 
 | Need | Primary API |
 | --- | --- |
-| Load JSON plus environment settings | `loadMonoAgentConfigWithSources` |
-| Load an already prepared environment map | `loadMonoAgentConfig` |
+| Load JSON plus built-in defaults | `loadMonoAgentConfig` |
 | Read or write the JSON source | `readMonoAgentConfigJson`, `writeMonoAgentConfigJson` |
 | Display config provenance safely | `buildMonoAgentConfigView` |
 | Remove secret values before output | `redactMonoAgentConfig` |
@@ -377,7 +325,7 @@ Every symbol exported by each public code entrypoint is listed below.
 ALLOW_ALL_TOOLS
 ArtifactRetentionConfig
 BuildMonoAgentConfigViewInput
-CONFIG_ENV_KEYS
+CORE_CONFIG_FIELD_IDS
 ConfigViewField
 ConfigViewFieldId
 ConfigViewFieldSource
@@ -386,10 +334,10 @@ ConfigViewSectionStatus
 EFFORT_LEVELS
 EffortLevel
 LoadMonoAgentConfigInput
-LoadMonoAgentConfigWithSourcesInput
 MAX_AGENT_NAME_LENGTH
 MEMORY_BACKENDS
 MEMORY_EMBEDDINGS_PROVIDERS
+MEMORY_LLM_JSON_PATHS
 MEMORY_LLM_PROVIDERS
 MEMORY_MODES
 MEMORY_WRITE_MODES
@@ -431,6 +379,7 @@ RedactedMemoryEmbeddingsConfig
 RedactedMonoAgentConfig
 RedactedProviderDefinition
 RemovedConfigWarningsInput
+ResolveJsonMonoAgentConfigInput
 ResolvedProviders
 RuntimeFallbackConfig
 SessionMode
@@ -440,12 +389,12 @@ buildMonoAgentConfigView
 findJsonSecretConfigWarnings
 findRemovedConfigWarnings
 loadMonoAgentConfig
-loadMonoAgentConfigWithSources
 readMonoAgentConfigJson
 redactMonoAgentConfig
 renamedToolMessage
 renamedToolName
 resolveConfiguredProviders
+resolveJsonMonoAgentConfig
 writeMonoAgentConfigJson
 ```
 
@@ -460,15 +409,14 @@ writeMonoAgentConfigJson
 It does not load Telegram, WhatsApp, Slack, or other adapter-specific credentials or allowlists. Adapter packages own those settings and their safety rules.
 
 Opt in to metadata-only prompt-cache request fingerprints with
-`providers.piNative.promptCacheDiagnostics` (default `false`) or
-`MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`. The offline reader is documented in
+`providers.piNative.promptCacheDiagnostics` (default `false`). The offline reader is documented in
 [Prompt-cache measurement](https://docs.mono-agent.dev/runtime/prompt-cache-measurement/).
 
 ## Related Documentation
 
 - [Configuration overview](https://docs.mono-agent.dev/config/)
 - [Complete configuration blueprint](https://docs.mono-agent.dev/config/blueprint/)
-- [Environment variable map](https://docs.mono-agent.dev/config/env-vars/)
+- [Operational environment variables](https://docs.mono-agent.dev/config/env-vars/)
 - [Generated field reference](https://docs.mono-agent.dev/config/reference/)
 - [Local-first web research](https://docs.mono-agent.dev/tools/web-research/)
 - [Runtime and provider configuration](https://docs.mono-agent.dev/runtime/)

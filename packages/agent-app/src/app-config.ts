@@ -4,7 +4,7 @@ import { resolve, sep } from "node:path";
 
 import type { ChannelConfigInput } from "@mono-agent/agent-contracts";
 import {
-  loadMonoAgentConfigWithSources,
+  loadMonoAgentConfig,
   MonoAgentConfigError,
   readMonoAgentConfigJson,
 } from "@mono-agent/config";
@@ -16,7 +16,16 @@ import { assertKnownAppConfigKeys } from "./config-reference.js";
 // The structural shape moved to @mono-agent/agent-contracts (ChannelConfigInput)
 // so channel drivers can be authored against the neutral contract; this alias
 // preserves the historical app-side name.
-export type MonoAgentAppConfigInput = ChannelConfigInput;
+export interface PrivateBackgroundRuntimePaths {
+  readonly identityPath: string;
+  readonly soulPath?: string;
+  readonly mcpConfigPath?: string;
+}
+
+export type MonoAgentAppConfigInput = ChannelConfigInput & {
+  /** Internal managed-worker paths to exact, attested private copies; never read from env. */
+  readonly privateRuntimePaths?: PrivateBackgroundRuntimePaths;
+};
 
 export async function loadAppCoreConfig(
   input: MonoAgentAppConfigInput,
@@ -24,12 +33,25 @@ export async function loadAppCoreConfig(
 ): Promise<MonoAgentConfig> {
   const { json } = await readMonoAgentConfigJson(input.configPath);
   assertKnownAppConfigKeys(json);
-  return await loadMonoAgentConfigWithSources({
-    env: input.env,
+  const config = await loadMonoAgentConfig({
     cwd: input.cwd,
     jsonPath: input.configPath,
     ...options,
   });
+  const paths = input.privateRuntimePaths;
+  if (paths === undefined) return config;
+  return {
+    ...config,
+    context: {
+      ...config.context,
+      identityPath: paths.identityPath,
+      ...(paths.soulPath === undefined ? {} : { soulPath: paths.soulPath }),
+    },
+    tools: {
+      ...config.tools,
+      ...(paths.mcpConfigPath === undefined ? {} : { mcpConfigPath: paths.mcpConfigPath }),
+    },
+  };
 }
 
 export function isAppCoreConfigError(error: unknown): error is MonoAgentConfigError {
@@ -57,11 +79,6 @@ export interface AppTraceDefaults {
  * unreadable JSON.
  */
 export async function resolveAppArtifactDir(input: MonoAgentAppConfigInput): Promise<string> {
-  const envDir = input.env.MONO_AGENT_ARTIFACT_DIR?.trim();
-  if (envDir !== undefined && envDir.length > 0) {
-    return resolve(input.cwd, envDir);
-  }
-
   try {
     const { json } = await readMonoAgentConfigJson(input.configPath);
     const configDir = typeof json.artifacts?.dir === "string" ? json.artifacts.dir.trim() : "";
@@ -77,17 +94,11 @@ export async function resolveAppArtifactDir(input: MonoAgentAppConfigInput): Pro
 
 /**
  * Resolve the durable pi-session store the runtime resumes from, the same way the
- * runtime does: the `MONO_AGENT_PI_SESSIONS_ROOT` env override first, then
- * `providers.piNative.piSessionsRoot` from the config file. Returns undefined when
+ * runtime does: from `providers.piNative.piSessionsRoot` in the config file. Returns undefined when
  * neither is set — that means sessions are kept in-memory only, so there is nothing
  * on disk to purge. Tolerates an unreadable config like the resolvers above.
  */
 export async function resolveAppSessionsRoot(input: MonoAgentAppConfigInput): Promise<string | undefined> {
-  const envDir = input.env.MONO_AGENT_PI_SESSIONS_ROOT?.trim();
-  if (envDir !== undefined && envDir.length > 0) {
-    return resolve(input.cwd, envDir);
-  }
-
   try {
     const { json } = await readMonoAgentConfigJson(input.configPath);
     const configDir =
@@ -105,11 +116,6 @@ export async function resolveAppSessionsRoot(input: MonoAgentAppConfigInput): Pr
 }
 
 export async function resolveAppTraceRegistryDir(input: MonoAgentAppConfigInput): Promise<string> {
-  const envDir = input.env.MONO_AGENT_TRACE_REGISTRY_DIR?.trim();
-  if (envDir !== undefined && envDir.length > 0) {
-    return resolve(input.cwd, envDir);
-  }
-
   try {
     const { json } = await readMonoAgentConfigJson(input.configPath);
     const registryDir = typeof json.traceability?.registryDir === "string" ? json.traceability.registryDir.trim() : "";
@@ -129,11 +135,6 @@ export async function resolveAppTraceSourceId(
   /** Canonical public identity path when `input.configPath` is an immutable private read copy. */
   fallbackConfigPath: string = input.configPath,
 ): Promise<string> {
-  const envSourceId = input.env.MONO_AGENT_TRACE_SOURCE_ID?.trim();
-  if (envSourceId !== undefined && envSourceId.length > 0) {
-    return envSourceId;
-  }
-
   try {
     const { json } = await readMonoAgentConfigJson(input.configPath);
     const sourceId = typeof json.traceability?.sourceId === "string" ? json.traceability.sourceId.trim() : "";
@@ -157,11 +158,6 @@ export async function resolveAppTraceSourceLabel(
   input: MonoAgentAppConfigInput,
   defaults?: AppTraceDefaults,
 ): Promise<string> {
-  const envLabel = input.env.MONO_AGENT_TRACE_SOURCE_LABEL?.trim();
-  if (envLabel !== undefined && envLabel.length > 0) {
-    return envLabel;
-  }
-
   let jsonAgentName = "";
   try {
     const { json } = await readMonoAgentConfigJson(input.configPath);
@@ -174,10 +170,6 @@ export async function resolveAppTraceSourceLabel(
     // Keep the default label below.
   }
 
-  const envAgentName = input.env.MONO_AGENT_NAME?.trim();
-  if (envAgentName !== undefined && envAgentName.length > 0) {
-    return envAgentName;
-  }
   if (jsonAgentName.length > 0) return jsonAgentName;
 
   return defaults?.sourceLabel ?? DEFAULT_TRACE_SOURCE_LABEL;
@@ -186,7 +178,6 @@ export async function resolveAppTraceSourceLabel(
 export async function resolveAppTraceHeartbeatMs(input: MonoAgentAppConfigInput): Promise<number> {
   return await resolveTraceInteger({
     input,
-    envName: "MONO_AGENT_TRACE_HEARTBEAT_MS",
     jsonKey: "heartbeatMs",
     defaultValue: DEFAULT_TRACE_HEARTBEAT_MS,
     min: 250,
@@ -197,7 +188,6 @@ export async function resolveAppTraceHeartbeatMs(input: MonoAgentAppConfigInput)
 export async function resolveAppTraceStaleAfterMs(input: MonoAgentAppConfigInput): Promise<number> {
   return await resolveTraceInteger({
     input,
-    envName: "MONO_AGENT_TRACE_STALE_AFTER_MS",
     jsonKey: "staleAfterMs",
     defaultValue: DEFAULT_TRACE_STALE_AFTER_MS,
     min: 1_000,
@@ -224,11 +214,6 @@ export function resolveGlobalTraceRegistryDir(env: Record<string, string | undef
 }
 
 export async function resolveAppTraceGlobalDiscovery(input: MonoAgentAppConfigInput): Promise<boolean> {
-  const envValue = input.env.MONO_AGENT_TRACE_GLOBAL_DISCOVERY?.trim();
-  if (envValue !== undefined && envValue.length > 0) {
-    return parseTraceBoolean(envValue, "MONO_AGENT_TRACE_GLOBAL_DISCOVERY");
-  }
-
   try {
     const { json } = await readMonoAgentConfigJson(input.configPath);
     const value = json.traceability?.globalDiscovery;
@@ -240,17 +225,6 @@ export async function resolveAppTraceGlobalDiscovery(input: MonoAgentAppConfigIn
   }
 
   return true;
-}
-
-function parseTraceBoolean(value: string, name: string): boolean {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "true") {
-    return true;
-  }
-  if (normalized === "false") {
-    return false;
-  }
-  throw new MonoAgentConfigError("invalid_env", `${name} must be true or false.`, { env: name });
 }
 
 /**
@@ -310,17 +284,11 @@ export function shouldMirrorTraceSourceGlobally(input: ShouldMirrorTraceSourceGl
 
 async function resolveTraceInteger(options: {
   readonly input: MonoAgentAppConfigInput;
-  readonly envName: string;
   readonly jsonKey: "heartbeatMs" | "staleAfterMs";
   readonly defaultValue: number;
   readonly min: number;
   readonly max: number;
 }): Promise<number> {
-  const envValue = options.input.env[options.envName]?.trim();
-  if (envValue !== undefined && envValue.length > 0) {
-    return parseTraceInteger(envValue, options.envName, options.min, options.max);
-  }
-
   try {
     const { json } = await readMonoAgentConfigJson(options.input.configPath);
     const value = json.traceability?.[options.jsonKey];

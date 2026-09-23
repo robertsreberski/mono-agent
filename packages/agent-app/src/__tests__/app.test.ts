@@ -243,6 +243,33 @@ describe("startMonoAgentApp", () => {
     }
   });
 
+  it("passes internal private runtime paths through startup to channel core config", async () => {
+    const configPath = await writeConfig(baseConfig());
+    const privateRuntimePaths = {
+      identityPath: join(dir, "private-identity.md"),
+      soulPath: join(dir, "private-soul.md"),
+      mcpConfigPath: join(dir, "private-mcp.json"),
+    };
+    await writeFile(privateRuntimePaths.identityPath, "Private identity");
+    await writeFile(privateRuntimePaths.soulPath, "Private soul");
+    await writeFile(privateRuntimePaths.mcpConfigPath, JSON.stringify({ mcpServers: {} }));
+    const observed: { identityPath: string; soulPath?: string; mcpConfigPath?: string }[] = [];
+    const driver: ChannelDriver = {
+      id: "private-proof" as never, label: "Private proof",
+      loadConfig: async () => ({ enabled: true }),
+      isConfigError: () => false,
+      start: async ({ coreConfig }) => {
+        observed.push({ identityPath: coreConfig.context.identityPath,
+          ...(coreConfig.context.soulPath === undefined ? {} : { soulPath: coreConfig.context.soulPath }),
+          ...(coreConfig.tools.mcpConfigPath === undefined ? {} : { mcpConfigPath: coreConfig.tools.mcpConfigPath }) });
+        return { summary: {}, stop: async () => {} };
+      },
+    };
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, configPath, drivers: [driver], privateRuntimePaths });
+    try { expect(observed).toEqual([privateRuntimePaths]); }
+    finally { await app.stop(); }
+  });
+
   it("publishes only the supplied secret-free background snapshot in trace metadata", async () => {
     await writeConfig(baseConfig());
     const backgroundSnapshot: BackgroundSnapshot = {
@@ -1483,7 +1510,7 @@ describe("startMonoAgentApp", () => {
     const webhookStatus = app.channelStatus("webhook");
     expect(webhookStatus.kind).toBe("waiting_for_config");
     if (webhookStatus.kind === "waiting_for_config") {
-      expect(webhookStatus.reason).toContain("MONO_AGENT_MODEL");
+      expect(webhookStatus.reason).toContain("runtime.model");
     }
     await app.stop();
   });

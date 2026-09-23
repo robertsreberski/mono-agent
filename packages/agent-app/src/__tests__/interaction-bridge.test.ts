@@ -89,7 +89,7 @@ async function pollAsk(handle: InteractionBridgeHandle, interactionId: string): 
 }
 
 describe("structured AskUser interaction bridge", () => {
-  it("loads null or the none env sentinel as an explicit no-expiry setting", async () => {
+  it("loads a JSON no-expiry setting and ignores the stale env sentinel", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mono-agent-interaction-settings-"));
     try {
       const configPath = join(dir, "mono-agent.config.json");

@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -107,6 +107,21 @@ describe("standalone Pi API-key login", () => {
     const output = capturedOutput(stdout) + capturedOutput(stderr);
     expect(output).not.toContain(enteredKey);
     expect(output).not.toContain("ambient-secret-must-not-be-copied");
+  });
+
+  it("uses JSON Pi auth path for login despite a stale core environment override", async () => {
+    const previous = process.env.MONO_AGENT_PI_AUTH_PATH;
+    process.env.MONO_AGENT_PI_AUTH_PATH = "stale/auth.json";
+    mocks.password.mockResolvedValue("test-secret-sentinel");
+    await writeFile(join(process.cwd(), "mono-agent.config.json"), JSON.stringify({ providers: { piAuthPath: "configured/auth.json" } }));
+    try {
+      await expect(runCli(["auth", "login", "opencode-go"])).resolves.toBe(0);
+      const plan = mocks.executeProviderSetupPlan.mock.calls[0]?.[0] as { actions: { piAuthPath: string }[] };
+      expect(plan.actions[0]?.piAuthPath).toBe(join(process.cwd(), "configured/auth.json"));
+    } finally {
+      if (previous === undefined) delete process.env.MONO_AGENT_PI_AUTH_PATH;
+      else process.env.MONO_AGENT_PI_AUTH_PATH = previous;
+    }
   });
 
   it("fails closed when masked input is cancelled", async () => {

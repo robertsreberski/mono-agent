@@ -661,6 +661,17 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
       delete piNative.piSessionsRoot;
       config.providers = { ...providers, piNative };
     }
+    // Core config no longer reads MONO_AGENT_PI_AUTH_PATH. Put the already
+    // resolved path in the disposable JSON copy while retaining the env value
+    // below as an explicit readiness-child protocol for lower-level readers.
+    if (options.resolvedPiAuthPath !== undefined) {
+      config.providers = {
+        ...(typeof config.providers === "object" && config.providers !== null
+          ? config.providers as Record<string, unknown>
+          : {}),
+        piAuthPath: options.resolvedPiAuthPath,
+      };
+    }
     delete config.webhook;
     delete config.telegram;
     delete config.slack;

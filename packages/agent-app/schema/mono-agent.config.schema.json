@@ -1198,7 +1198,7 @@
                   "maximum": 20
                 },
                 "endpoint": {
-                  "description": "Compatibility alias for tools.web.search.searxng.endpoint and MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT. Existing configurations remain valid; new configurations should use the provider-specific block.",
+                  "description": "Compatibility alias for tools.web.search.searxng.endpoint. Existing configurations remain valid; new configurations should use the provider-specific block.",
                   "examples": [
                     "example"
                   ],
@@ -1686,7 +1686,7 @@
               "default": false
             },
             "cacheRetention": {
-              "description": "Anthropic Messages cache retention (short or long; default long). Short opts out. MONO_AGENT env > JSON > long; resolved values override ambient PI_CACHE_RETENTION. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.",
+              "description": "Anthropic Messages cache retention (short or long; default long). Short opts out. JSON > long; the resolved value overrides ambient PI_CACHE_RETENTION. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.",
               "examples": [
                 "long"
               ],

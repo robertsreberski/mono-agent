@@ -26,7 +26,7 @@ A representative runtime block:
 
 | Key | Values | Default | Env var |
 |-----|--------|---------|---------|
-| `runtime.effort` | `none` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `max` \| `ultra` | provider/model default when omitted | `MONO_AGENT_EFFORT` |
+| `runtime.effort` | `none` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `max` \| `ultra` | provider/model default when omitted | — |
 
 The Pi runtime maps the configured value onto the resolved model's capabilities:
 
@@ -71,7 +71,7 @@ The enforced tool posture comes from the [sandbox](/tools/sandbox/), [tool polic
 
 | Key | Values | Default | Env var |
 |-----|--------|---------|---------|
-| `runtime.maxTurns` | `0` (unlimited) \| `1`–`100` | `0` | `MONO_AGENT_MAX_TURNS` |
+| `runtime.maxTurns` | `0` (unlimited) \| `1`–`100` | `0` | — |
 
 This value does not size conversation history. The configured app uses an owner-only, disk-backed 64-message history window for each exact conversation id regardless of whether `maxTurns` is positive, `0`, or omitted (`auto` coverage). Aggregate defaults are 256 MiB, 10,000 conversations, and 365 days of inactivity; publication is atomic and retention runs only after commit. A custom history store is available via code (`createConfiguredAgentResponder({ historyStore })`). See [Sessions & concurrency](/runtime/sessions-concurrency/).
 
@@ -94,8 +94,8 @@ The workspace is also the default root for sandbox filesystem scopes — `sandbo
 
 | Key | Env var | Default | Coverage |
 |-----|---------|---------|----------|
-| `runtime.effort` | `MONO_AGENT_EFFORT` | unset (provider/model default) | config |
-| `runtime.maxTurns` | `MONO_AGENT_MAX_TURNS` | `0` (unlimited) | config |
+| `runtime.effort` | — | unset (provider/model default) | config |
+| `runtime.maxTurns` | — | `0` (unlimited) | config |
 | `runtime.workspace` | `MONO_AGENT_WORKSPACE` | `"."` | config |
 
 See also: [Pi runtime & model references](/runtime/backends/) · [Providers](/runtime/providers/) · [Fallback chain](/runtime/fallback/) · [Sessions & concurrency](/runtime/sessions-concurrency/) · [Config blueprint](/config/blueprint/) · [Environment variables](/config/env-vars/).

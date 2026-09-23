@@ -22,7 +22,11 @@ async function searchOllama(query, options) {
   if (!config) {
     return { ok: false, backend: "ollama", message: "Ollama Web Search is not configured.", retryable: false };
   }
+  const apiKey = resolveOllamaApiKey(config);
   const official = config.baseUrl === "https://ollama.com";
+  if (official && (typeof apiKey !== "string" || apiKey.length === 0)) {
+    return { ok: false, backend: "ollama", message: "Hosted Ollama Web Search requires a resolved API key.", code: "auth_missing", retryable: false };
+  }
   const paths = official ? ["/api/web_search"] : ["/api/experimental/web_search", "/api/web_search"];
   for (let index = 0; index < paths.length; index += 1) {
     const url = `${config.baseUrl}${paths[index]}`;
@@ -38,7 +42,7 @@ async function searchOllama(query, options) {
           Accept: "application/json",
           "Content-Type": "application/json",
           "User-Agent": "mono-agent-web/1",
-          ...(official ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+          ...(official ? { Authorization: `Bearer ${apiKey}` } : {}),
         },
         body: JSON.stringify({ query, max_results: options.maxResults }),
         signal: requestSignal(options.signal),
@@ -104,15 +108,33 @@ function normalizeOllamaSearchConfig(input, backend) {
   if (!official && (input?.apiKey !== undefined || input?.apiKeyEnv !== undefined)) {
     return { error: "Ollama Web Search credentials are allowed only for the exact https://ollama.com origin." };
   }
-  if (official && (typeof input?.apiKey !== "string" || input.apiKey.trim().length === 0)) {
+  const hasResolvedKey = typeof input?.apiKey === "string" && input.apiKey.trim().length > 0;
+  const hasKeyRef = typeof input?.apiKeyEnv === "string" && input.apiKeyEnv.length > 0;
+  if (official && !hasResolvedKey && !hasKeyRef) {
     return { error: "Hosted Ollama Web Search requires a resolved API key.", code: "auth_missing" };
   }
   return { value: {
     baseUrl,
     trustPublicUrl: input?.trustPublicUrl === true,
-    ...(official ? { apiKey: input.apiKey } : {}),
-    ...(typeof input?.apiKeyEnv === "string" ? { apiKeyEnv: input.apiKeyEnv } : {}),
+    ...(hasResolvedKey ? { apiKey: input.apiKey.trim() } : {}),
+    ...(hasKeyRef ? { apiKeyEnv: input.apiKeyEnv } : {}),
   } };
+}
+
+function resolveOllamaApiKey(config) {
+  // Declared-name-authoritative like the other resolve-at-use sites: a declared
+  // apiKeyEnv wins when set and yields nothing when unset (never the inline
+  // literal, which may be stale); without a declared name the inline key stands.
+  const name = config?.apiKeyEnv;
+  if (typeof name === "string" && name.length > 0) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) return undefined;
+    const value = process.env[name]?.trim();
+    return value && value.length > 0 ? value : undefined;
+  }
+  if (typeof config?.apiKey === "string" && config.apiKey.trim().length > 0) {
+    return config.apiKey.trim();
+  }
+  return undefined;
 }
 
 function isPrivateOllamaOrigin(url) {
