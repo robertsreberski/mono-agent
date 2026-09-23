@@ -17,9 +17,12 @@ vi.mock("@mono-agent/web", async (importOriginal) => ({
   discoverAcpBridgeAgents: mocks.discover,
   discoverOperatorAgents: mocks.operators,
 }));
-vi.mock("../peer-acp-client.js", () => ({ runPeerAcpTurn: mocks.run }));
+vi.mock("../peer-acp-client.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../peer-acp-client.js")>(), runPeerAcpTurn: mocks.run,
+}));
 
 import { createPeerAgentRuntimeExtension } from "../peer-agent.js";
+import { PeerSessionGoneError } from "../peer-acp-client.js";
 import { makePeerHandoff, stampPeerOperatorHandoff } from "../peer-provenance.js";
 import type { InternalProcessJobRequest } from "../process-jobs-internal.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
@@ -186,6 +189,20 @@ describe("PeerAgent request lifecycle", () => {
       const next = await f.send();
       expect(next.isError).not.toBe(true);
       expect(mocks.turns).toEqual(["do work"]);
+    } finally { await f.close(); }
+  });
+
+  it("clears a dead session and creates a new session only on the next explicit send", async () => {
+    const f = await setup();
+    try {
+      expect((await f.send()).isError).not.toBe(true);
+      mocks.run.mockRejectedValueOnce(new PeerSessionGoneError());
+      const interrupted = await f.send();
+      expect(interrupted.isError).toBe(true);
+      expect(interrupted.content).toEqual([{ type: "text", text: expect.stringContaining("next explicit send") }]);
+      expect(mocks.run).toHaveBeenCalledTimes(2);
+      expect((await f.send()).isError).not.toBe(true);
+      expect(mocks.run.mock.lastCall?.[0]).not.toHaveProperty("sessionId");
     } finally { await f.close(); }
   });
 

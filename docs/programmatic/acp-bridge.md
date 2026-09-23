@@ -107,8 +107,10 @@ attested and the send is refused. `PeerAgent({action:"send",peer:"finance",threa
 message:"Summarize the latest allocation"})` waits for a bounded, labelled
 **untrusted** answer. A later send on the same caller conversation, peer and
 thread resumes the exact ACP session, including after restarting either agent;
-it never automatically replays a prompt interrupted by a restart. A concurrent
-send to one thread is rejected. `PeerAgent({action:"stop",peer:"finance",
+it never automatically replays a prompt interrupted by a restart. If the peer
+cleared its ACP session, the current send fails explicitly without dispatch;
+the old session mapping is removed and only the next explicitly requested send
+starts a fresh session. A concurrent send to one thread is rejected. `PeerAgent({action:"stop",peer:"finance",
 thread:"portfolio"})` requests ACP `session/cancel` for the active turn.
 
 With a wake-capable caller origin and enabled process jobs, `background:true`

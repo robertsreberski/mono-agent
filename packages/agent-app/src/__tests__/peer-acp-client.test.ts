@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const cliPath = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
 import { afterEach, describe, expect, it } from "vitest";
 
-import { runPeerAcpTurn } from "../peer-acp-client.js";
+import { PeerSessionGoneError, runPeerAcpTurn } from "../peer-acp-client.js";
 import { verifyPeerOperatorHandoff } from "../peer-provenance.js";
 
 const roots: string[] = [];
@@ -103,6 +104,17 @@ describe("peer ACP client over a real spawned bridge", () => {
       { ...f.turns[0]!.metadata.peerHandoff as object, depth: 0 }, first.sessionId, "request text")).toBeUndefined();
     expect(await verifyPeerOperatorHandoff(f.artifactDir, f.turns[0]!.metadata.peerHandoff,
       first.sessionId, "request text", "wrong-target")).toBeUndefined();
+  }, 30_000);
+
+  it("reports a reset session without replay and permits an explicit new session", async () => {
+    const f = await fixture();
+    const first = await f.turn();
+    await rm(join(f.root, "acp-sessions", `${createHash("sha256").update(first.sessionId).digest("hex")}.json`));
+    await expect(f.turn(first.sessionId)).rejects.toBeInstanceOf(PeerSessionGoneError);
+    expect(f.turns).toHaveLength(1);
+    const fresh = await f.turn();
+    expect(fresh.sessionId).not.toBe(first.sessionId);
+    expect(f.turns).toHaveLength(2);
   }, 30_000);
 
   it("rejects oversize peer output instead of returning a truncated success", async () => {

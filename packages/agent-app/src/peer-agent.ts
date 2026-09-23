@@ -7,7 +7,7 @@ import { discoverAcpBridgeAgents, discoverOperatorAgents } from "@mono-agent/web
 import * as z from "zod/v4";
 
 import { acquireContinuationStoreLock, ensureOwnerOnlyDirectory, readBoundedOwnerOnlyFile, writeJsonAtomic } from "./continuation-store-fs.js";
-import { runPeerAcpTurn } from "./peer-acp-client.js";
+import { PeerSessionGoneError, runPeerAcpTurn } from "./peer-acp-client.js";
 import { verifyPeerOperatorHandoff } from "./peer-provenance.js";
 import { processJobWakeContextForRequest } from "./process-jobs-context.js";
 import { processJobOriginForRequest } from "./process-jobs-runtime.js";
@@ -191,6 +191,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                   await saveThread(key, record);
                   return outcome.answer;
                 } catch (error) {
+                  if (error instanceof PeerSessionGoneError) delete record.sessionId;
                   record.status = "interrupted";
                   await saveThread(key, record);
                   throw error;
