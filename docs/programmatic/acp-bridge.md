@@ -145,8 +145,9 @@ original wake origin. That job wakes again with the final answer, failure, or
 next question. The first job's `peerQuestion.state` is durably updated to
 `answered`, `expired`, or `interrupted` as the parked question settles; no
 additional expiry wake is emitted. Neither the parked ACP prompt nor an answer
-is replayed after restart; the owner-private thread record recovers as
-interrupted on its next request. A damaged owner-only peer thread is skipped
+is replayed after restart; the owner-private thread record and its original
+question job card recover as interrupted on the next request (where the job
+still exists). A damaged owner-only peer thread is skipped
 with a generic warning, never allowed to break unrelated agent turns. Process
 exit closes the ACP child transport; an embedded host that disposes its harness
 without exiting has no factory-level peer-disposal hook yet, so a parked relay

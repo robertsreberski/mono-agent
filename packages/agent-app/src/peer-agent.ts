@@ -42,6 +42,7 @@ interface ThreadRecord {
   generation: string;
   status: "busy" | "idle" | "awaiting_answer" | "interrupted";
   question?: PeerQuestion;
+  questionJobId?: string;
 }
 
 function reply(text: string, isError = false) {
@@ -92,6 +93,7 @@ async function readThread(path: string): Promise<ThreadRecord | undefined> {
     || typeof value.thread !== "string" || typeof value.sourceId !== "string"
     || typeof value.generation !== "string" || !["busy", "idle", "awaiting_answer", "interrupted"].includes(value.status)
     || (value.sessionId !== undefined && typeof value.sessionId !== "string")
+    || (value.questionJobId !== undefined && !/^[a-f0-9-]{36}$/u.test(value.questionJobId))
     || (value.status === "awaiting_answer" && (!value.question || typeof value.question.questionId !== "string"
       || typeof value.question.expiresAt !== "string" || typeof value.question.message !== "string"
       || value.question.message.length > 2_000 || !value.question.requestedSchema
@@ -106,7 +108,7 @@ async function saveThread(path: string, value: ThreadRecord): Promise<void> {
   await writeJsonAtomic(join(path, "thread.json"), value, true, 16_384);
 }
 
-async function reconcileInterruptedPeerThreads(config: MonoAgentConfig): Promise<void> {
+async function reconcileInterruptedPeerThreads(config: MonoAgentConfig, service?: ProcessJobsServiceHandle): Promise<void> {
   const root = join(dirname(config.artifacts.dir), "peer-threads");
   let skipped = 0;
   try {
@@ -121,9 +123,13 @@ async function reconcileInterruptedPeerThreads(config: MonoAgentConfig): Promise
         lease = await acquireContinuationStoreLock(path);
         const record = await readThread(path);
         if (record?.status === "busy" || record?.status === "awaiting_answer") {
+          const pending = record.question && record.questionJobId
+            ? { jobId: record.questionJobId, questionId: record.question.questionId } : undefined;
           record.status = "interrupted";
           delete record.question;
+          delete record.questionJobId;
           await saveThread(path, record);
+          if (pending) await service?.settlePeerQuestion?.(pending.jobId, pending.questionId, "interrupted");
         }
       } catch (error) {
         if (!(error instanceof Error) || !error.message.startsWith("Continuation state is already owned")) skipped++;
@@ -157,7 +163,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
     origin: ReturnType<typeof processJobOriginForRequest>; depth: number; setQuestionJobId(id: string): void }>();
   let recovery: Promise<void> | undefined;
   return async (input) => {
-    recovery ??= reconcileInterruptedPeerThreads(config);
+    recovery ??= reconcileInterruptedPeerThreads(config, service);
     await recovery;
     const sources = await discoverOperatorAgents();
     if (registeredCaller(config, sources) === undefined) return { runtimeOptions: {}, cleanup: async () => {} };
@@ -209,8 +215,12 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                 try {
                   const stale = await readThread(key);
                   if (stale?.status === "awaiting_answer") {
+                    const pending = stale.question && stale.questionJobId
+                      ? { jobId: stale.questionJobId, questionId: stale.question.questionId } : undefined;
                     delete stale.question;
+                    delete stale.questionJobId;
                     await saveThread(key, { ...stale, status: "interrupted" });
+                    if (pending) await service?.settlePeerQuestion?.(pending.jobId, pending.questionId, "interrupted");
                   }
                 } finally { await lease.release(); }
                 throw new Error("Peer question was interrupted or is no longer answerable; no prompt was replayed.");
@@ -332,6 +342,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
               if (previous?.status === "busy" || previous?.status === "awaiting_answer") {
                 const interrupted = { ...previous, status: "interrupted" as const };
                 delete interrupted.question;
+                delete interrupted.questionJobId;
                 await saveThread(key, interrupted);
               }
               const record: ThreadRecord = {
@@ -347,6 +358,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
               const relay = new PeerQuestionRelay(args.peer, args.thread,
                 async (question) => {
                   record.question = question;
+                  if (questionJobId) record.questionJobId = questionJobId;
                   record.status = "awaiting_answer";
                   await saveThread(key, record);
                 },
@@ -354,6 +366,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                   await settleQuestion(question, response.action === "accept" ? "answered" : "interrupted");
                   record.status = "busy";
                   delete record.question;
+                  delete record.questionJobId;
                   await saveThread(key, record);
                 },
                 async (question, state) => await settleQuestion(question, state));
@@ -386,6 +399,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                   });
                   record.status = "idle";
                   delete record.question;
+                  delete record.questionJobId;
                   await saveThread(key, record);
                   relay.finish(outcome.answer);
                   return outcome.answer;
@@ -393,6 +407,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                   if (error instanceof PeerSessionGoneError) delete record.sessionId;
                   record.status = "interrupted";
                   delete record.question;
+                  delete record.questionJobId;
                   try { await saveThread(key, record); }
                   finally { relay.fail(error instanceof Error ? error.message : "Unknown peer failure."); }
                   throw error;

@@ -95,7 +95,7 @@ async function setup(depth?: number | "forged", surface: "web" | "acp" = "web", 
   const spec = (extension.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-peer-agent"]!;
   const client = new Client({ name: "peer-agent-test", version: "1.0.0" });
   await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
-  return { client, config, request, factory, abort: () => requestController.abort(),
+  return { client, config, request, service, factory, abort: () => requestController.abort(),
     settledQuestions: () => settledQuestions, pending: () => pending, eagerRun: () => eagerRun, admittedOrigin: () => admittedOrigin,
     close: async () => { await client.close(); await extension.cleanup?.(); },
     send: async (background = false) => await client.callTool({ name: "PeerAgent", arguments: {
@@ -298,13 +298,16 @@ describe("PeerAgent request lifecycle", () => {
     await writeFile(join(key, "thread.json"), JSON.stringify({ schema: 1, conversation: f.request.conversationId,
       peer: "finance", thread: "portfolio", sourceId: "finance-ai", sessionId: "acp:finance-ai:prior",
       generation: "22222222-2222-4222-8222-222222222222", status: "awaiting_answer",
+      questionJobId: "33333333-3333-4333-8333-333333333333",
       question: { questionId, message: "Proceed?", peer: "finance", thread: "portfolio",
         requestedSchema: { type: "object" }, expiresAt: new Date(Date.now() + 30_000).toISOString() },
     }), { mode: 0o600 });
-    const fresh = await createPeerAgentRuntimeExtension({ config: f.config, channelId: "tui" })!({
+    const fresh = await createPeerAgentRuntimeExtension({ config: f.config, service: f.service, channelId: "tui" })!({
       runId: "after-restart", request: f.request, context: {} as never,
     });
     expect(JSON.parse(await readFile(join(key, "thread.json"), "utf8"))).toMatchObject({ status: "interrupted" });
+    expect(f.settledQuestions()).toContainEqual({ jobId: "33333333-3333-4333-8333-333333333333",
+      questionId, state: "interrupted" });
     const spec = (fresh.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-peer-agent"]!;
     const client = new Client({ name: "peer-restart-test", version: "1" });
     await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
