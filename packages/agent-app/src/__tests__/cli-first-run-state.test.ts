@@ -847,6 +847,7 @@ describe("guided init state transitions", () => {
       persistence: "environment",
     });
     expect(setupApiKeys?.["pi-api-key:opencode-go"]).toBe("environment-only-secret");
+    expect(JSON.parse(await readFile(join(process.cwd(), "mono-agent.config.json"), "utf8")).providers.piAuthPath).toBe(authPath);
     const persisted = await readFile(envPath, "utf8");
     expect(persisted).toContain("OPENCODE_API_KEY='environment-only-secret'");
     expect((await stat(envPath)).mode & 0o777).toBe(0o600);

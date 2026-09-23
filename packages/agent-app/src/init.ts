@@ -33,6 +33,8 @@ export interface InitMonoAgentFolderOptions {
   readonly requireConfigCreation?: boolean;
   /** Effective CLI environment for credential names explicitly referenced by JSON. */
   readonly env?: Readonly<Record<string, string | undefined>>;
+  /** Init-authoring only: persist the chosen Pi auth store when .env selected it. */
+  readonly authPathForConfig?: string;
   /** @internal Test-only fault/race seams for first-run managed-memory publication. */
   readonly firstRunManagedMemoryHooks?: FirstRunManagedMemoryHooks;
 }
@@ -209,7 +211,11 @@ export async function initMonoAgentFolder(
     dirBasename: basename(dir),
     skillsRootExists: await pathExists(join(dir, "skills")),
   };
-  const plan = composeWizardPlan(answers, ctx);
+  const composed = composeWizardPlan(answers, ctx);
+  const plan = options.authPathForConfig === undefined || composed.configJson.providers?.piAuthPath !== undefined
+    ? composed
+    : { ...composed, configJson: { ...composed.configJson,
+      providers: { ...composed.configJson.providers, piAuthPath: options.authPathForConfig } } };
   const configPath = join(dir, "mono-agent.config.json");
   await assertSafeScaffoldTarget(configPath, "config");
   const configAlreadyExists = await pathExists(configPath);

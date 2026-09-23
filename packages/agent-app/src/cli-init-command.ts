@@ -379,6 +379,8 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
               dir: cwd,
               answers,
               env: effectiveEnv,
+              ...(nonEmptyEnv(dotenvSnapshot.env.MONO_AGENT_PI_AUTH_PATH)
+                ? { authPathForConfig: resolvedPiAuthPath } : {}),
               secretValues: selectedSecrets,
               secureExistingDotenv,
               requireConfigCreation: true,
@@ -705,6 +707,8 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
               dir: cwd,
               answers,
               env: effectiveEnv,
+              ...(nonEmptyEnv(dotenvSnapshot.env.MONO_AGENT_PI_AUTH_PATH)
+                ? { authPathForConfig: resolvedPiAuthPath } : {}),
               secretValues: selectedSecrets,
               secureExistingDotenv,
               requireConfigCreation: true,
@@ -930,6 +934,9 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
     dir: cwd,
     answers,
     dryRun: args.dryRun,
+    ...((nonEmptyEnv(environment.shellEnv.MONO_AGENT_PI_AUTH_PATH)
+      || nonEmptyEnv(environment.dotenvEnv.MONO_AGENT_PI_AUTH_PATH))
+      ? { authPathForConfig: nonInteractivePiAuthPath } : {}),
     // Memory identity is authored in JSON; the environment is only available
     // to resolve credentials that the generated JSON names.
     env: { ...environment.shellEnv, ...environment.dotenvEnv },
