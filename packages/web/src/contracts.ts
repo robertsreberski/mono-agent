@@ -629,7 +629,12 @@ export type WebMessagePart =
       readonly id: string;
       readonly reason?: string;
       /** Computed by the web service, not persisted or supplied by the agent. */
-      readonly restartable?: { readonly state: WebRestartProposalAvailability; readonly reason?: string };
+      readonly restartable?: {
+        readonly state: WebRestartProposalAvailability;
+        readonly reason?: string;
+        /** Web-owned poll id for a used proposal; never the adapter operation id. */
+        readonly operationId?: string;
+      };
     }
   | { readonly type: "reasoning"; readonly text: string }
   | WebCronReplyContextPart

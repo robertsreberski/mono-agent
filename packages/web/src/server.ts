@@ -317,6 +317,13 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     } catch (error) { next(error); }
   });
 
+  app.get("/api/v1/agents/:id/restart", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      res.json({ operation: service.latestAgentRestart(pathParam(req.params.id)) });
+    } catch (error) { next(error); }
+  });
+
   app.get("/api/v1/agents/:id/restart/:operationId", (req, res, next) => {
     try {
       exactRequestOrigin(req);

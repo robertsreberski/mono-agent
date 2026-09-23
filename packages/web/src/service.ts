@@ -1507,6 +1507,16 @@ export class WebService {
     return this.restartStatus(id);
   }
 
+  /** Reload-safe settings discovery; never starts or retries a restart. */
+  latestAgentRestart(sourceId: string): WebAgentRestartOperation | null {
+    const latest = this.store.latestRestartOperation(sourceId);
+    if (latest === undefined) {
+      if (this.store.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+      return null;
+    }
+    return this.restartStatus(latest.id);
+  }
+
   /** Pollable minimal DTO. Success is only a new ready process on the same source id. */
   restartStatus(id: string): WebAgentRestartOperation {
     const operation = this.store.restartOperation(id);
@@ -1567,9 +1577,11 @@ export class WebService {
   }
 
   private restartProposalAvailability(binding: StoredRestartProposalBinding): {
-    readonly state: WebRestartProposalAvailability; readonly reason?: string;
+    readonly state: WebRestartProposalAvailability; readonly reason?: string; readonly operationId?: string;
   } {
-    if (binding.operationId !== undefined) return { state: "used", reason: "This proposal has already been used." };
+    if (binding.operationId !== undefined) return {
+      state: "used", reason: "This proposal has already been used.", operationId: binding.operationId,
+    };
     const agent = this.store.getAgent(binding.sourceId);
     if (agent?.generation !== undefined && agent.generation !== binding.generation) {
       return { state: "stale", reason: "The agent has restarted since this suggestion." };

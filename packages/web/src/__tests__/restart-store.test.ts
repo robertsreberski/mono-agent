@@ -66,6 +66,7 @@ describe("durable restart operations", () => {
     try {
       expect(reopened.restartProposalBinding(turn.assistantMessageId, "proposal-one"))
         .toMatchObject({ sourceId: "one", operationId: operation.id });
+      expect(reopened.latestRestartOperation("one")?.id).toBe(operation.id);
       expect(reopened.getMessage(turn.assistantMessageId)?.parts).toContainEqual(part);
       expect(reopened.restartProposalBinding(turn.assistantMessageId, "second")).toBeUndefined();
     } finally { reopened.close(); }

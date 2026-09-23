@@ -225,7 +225,7 @@ describe("web HTTP server", () => {
     expect(await json(second)).toMatchObject({ id: firstDto.id });
     expect(restarts).toBe(1);
     const message = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages/${messageId}`));
-    expect((message.message as { parts: readonly unknown[] }).parts).toContainEqual({ type: "restart_proposal", id: "proposal-1", reason: "Quick refresh", restartable: { state: "used", reason: "This proposal has already been used." } });
+    expect((message.message as { parts: readonly unknown[] }).parts).toContainEqual({ type: "restart_proposal", id: "proposal-1", reason: "Quick refresh", restartable: { state: "used", reason: "This proposal has already been used.", operationId: firstDto.id } });
   });
 
   it("requires exact origin and a discovered keyed source for restart, then serves a small source-bound status", async () => {
@@ -258,6 +258,9 @@ describe("web HTTP server", () => {
     const id = operation.id;
     expect(typeof id).toBe("string");
     const status = `${path}/${id as string}`;
+    expect((await fetch(path)).status).toBe(403);
+    expect(await json(await fetch(path, { headers: { "X-Mono-Agent-Web-Origin": baseUrl } })))
+      .toEqual({ operation });
     expect((await fetch(status)).status).toBe(403);
     expect((await fetch(status, { headers: { "X-Mono-Agent-Web-Origin": baseUrl } })).status).toBe(200);
     expect((await fetch(`${baseUrl}/api/v1/agents/other/restart/${id as string}`, { headers: { "X-Mono-Agent-Web-Origin": baseUrl } })).status).toBe(404);

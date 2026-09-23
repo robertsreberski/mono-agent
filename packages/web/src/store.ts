@@ -932,6 +932,12 @@ export class WebStore {
     return row === undefined ? undefined : storedRestartOperation(row);
   }
 
+  latestRestartOperation(sourceId: string): StoredRestartOperation | undefined {
+    const row = this.database.prepare(`SELECT * FROM restart_operations WHERE source_id = ?
+      ORDER BY requested_at DESC, rowid DESC LIMIT 1`).get(sourceId) as unknown as RestartOperationRow | undefined;
+    return row === undefined ? undefined : storedRestartOperation(row);
+  }
+
   activeRestartOperation(sourceId: string): StoredRestartOperation | undefined {
     const row = this.database.prepare("SELECT * FROM restart_operations WHERE source_id = ? AND outcome IS NULL LIMIT 1")
       .get(sourceId) as unknown as RestartOperationRow | undefined;

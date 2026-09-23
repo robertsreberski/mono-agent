@@ -97,7 +97,8 @@ describe("web-owned restart lifecycle", () => {
       release(Response.json({ operation: { id: "host-1" }, process: { pid: 123, startedAt: "2026-09-23T10:00:00.000Z" } }, { status: 202 }));
       expect(await first).toMatchObject({ id: linked, stage: "restarting" });
       expect(s.service.message(card.thread.id, card.messageId).parts.find((p) => p.type === "restart_proposal"))
-        .toMatchObject({ restartable: { state: "used" } });
+        .toMatchObject({ restartable: { state: "used", operationId: linked } });
+      expect(s.service.latestAgentRestart("agent-one")).toMatchObject({ id: linked, stage: "restarting" });
     } finally { await s.service.stop(); }
   });
 
