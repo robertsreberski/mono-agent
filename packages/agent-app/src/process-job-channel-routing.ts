@@ -41,9 +41,10 @@ export async function routeProcessJobSurfaceUpdate(
   input: ProcessJobChannelRoutingInput,
 ): Promise<NotifyDeliveryResult> {
   const resolved = resolveProcessJobChannel(input);
-  if ("delivered" in resolved) return resolved;
+  if ("delivered" in resolved) return logUndeliveredSurfaceUpdate(input, resolved);
+  let outcome: NotifyDeliveryResult;
   try {
-    return await resolved.channel.processJobs!.update({
+    outcome = await resolved.channel.processJobs!.update({
       conversationId: input.conversationId,
       deliveryKey: input.deliveryKey,
       processJob: input.projection,
@@ -51,6 +52,26 @@ export async function routeProcessJobSurfaceUpdate(
   } catch (error) {
     return routingFailure(input, resolved.driver.id, "surface update", error);
   }
+  return outcome.delivered ? outcome : logUndeliveredSurfaceUpdate(input, outcome);
+}
+
+/**
+ * The one log line for a surface update that was answered but not delivered.
+ * An absent destination is expected (a console restart) and the card is
+ * reconciled when the console reconnects, so it stays at info.
+ */
+function logUndeliveredSurfaceUpdate(
+  input: ProcessJobChannelRoutingInput,
+  outcome: NotifyDeliveryResult,
+): NotifyDeliveryResult {
+  const log = outcome.code === "destination_channel_unavailable" ? input.logger?.info : input.logger?.warn;
+  log?.call(input.logger, "Process-job surface update was not delivered.", {
+    ...(outcome.channelId === undefined ? {} : { channelId: outcome.channelId }),
+    conversationId: input.conversationId,
+    code: outcome.code,
+    reason: outcome.reason,
+  });
+  return outcome;
 }
 
 export async function routeProcessJobWake(

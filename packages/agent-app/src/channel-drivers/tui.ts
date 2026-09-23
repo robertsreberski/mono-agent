@@ -588,13 +588,29 @@ export function createTuiChannelDriver(
                 retryable: false,
               };
             }
-            await deliverNotification({
-              sourceId: input.sourceId,
-              triggerKind: "job",
-              deliveryKey,
-              threadId,
-              processJob,
-            });
+            try {
+              await deliverNotification({
+                sourceId: input.sourceId,
+                triggerKind: "job",
+                deliveryKey,
+                threadId,
+                processJob,
+              });
+            } catch (error) {
+              // No console is listening (it is restarting or stopped). Nothing
+              // is lost: a console re-reads every running card from this agent
+              // when it reconnects.
+              if (webConsoleErrorCode(error) === "notification_ingress_unavailable") {
+                return {
+                  delivered: false,
+                  code: "destination_channel_unavailable",
+                  reason: "The web console notification ingress is unavailable.",
+                  retryable: true,
+                  channelId: "tui",
+                };
+              }
+              throw error;
+            }
             return { delivered: true, code: "delivered", channelId: "tui" };
           },
           wake: async ({ conversationId, text, deliveryKey, processJob }) => {

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Log an undelivered process-job card update once, with its reason. Agents
+  previously wrote a second warning reading only "unknown lifecycle-surface
+  failure" for every such failure. An update skipped while the web console
+  restarts is now logged at info rather than as a warning, because the console
+  re-reads running job cards when it reconnects.
+
 - Fix installed iOS 27 consoles showing system blur over the top of the screen;
   the status-bar band now takes the header colour without changing layout.
 
