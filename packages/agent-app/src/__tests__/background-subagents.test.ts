@@ -1594,9 +1594,11 @@ it("failed child preserves a pending question and bounded question wakes survive
 });
 
 it("G10: failed close after retained acknowledgement preserves the pending question and instance", async () => {
-  const f = await managedFixture(undefined, { maxRuntimeMs: 5_000 });
-  const timedSpec = { ...spec, definition: { ...spec.definition, timeoutMs: 1_500 } };
-  await f.instances.create(timedSpec); await f.instances.begin("helper");
+  // The short deadline belongs to the timeout probe, not the retained profile:
+  // AgentManage reuses definition.timeoutMs on every later continuation. Leave
+  // enough room under the fixture's job cap for real-time failed publication.
+  const f = await managedFixture(undefined, { maxRuntimeMs: 60_000 });
+  await f.instances.create(spec); await f.instances.begin("helper");
   await f.instances.markAwaiting("helper", { question: "Pending scope?", options: ["Small", "Large"] });
   await f.instances.finish("helper", { status: "awaiting_reply", question: { question: "Pending scope?", options: ["Small", "Large"] } });
   expect(await f.instances.get("helper")).toMatchObject({ status: "awaiting_reply", pendingQuestion: { question: "Pending scope?" } });
@@ -1623,6 +1625,11 @@ it("G10: failed close after retained acknowledgement preserves the pending quest
     verify: async (identity) => await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
     publish: async (phase, publication) => {
       if (phase === "intent" && publication.disposition.reason === "timeout") timeoutIntent.resolve(publication.disposition);
+      // A real-clock publication delay longer than the timeout probe's 1500ms
+      // deadline: the acknowledged failed close must still settle as failed.
+      if (phase === "confirm" && !publication.released && publication.disposition.status === "failed") {
+        await new Promise<void>((resolve) => setTimeout(resolve, 1_800));
+      }
       if (delayNextSuccess && phase === "confirm" && !publication.released && publication.disposition.status === "ok") {
         delayNextSuccess = false;
         confirmHeld.resolve();
@@ -1636,7 +1643,7 @@ it("G10: failed close after retained acknowledgement preserves the pending quest
   // Date.now-only spy would leave `new Date()` running ahead of the timers.
   vi.useFakeTimers();
   try {
-    const timeoutTools = tools(f, async () => ({ text: "This answer settled before reporting timed out" }));
+    const timeoutTools = tools(f, async () => ({ text: "This answer settled before reporting timed out" }), { timeoutMs: 1_500 });
     const timedOut = await timeoutTools.send.execute("retained-timeout", { id: "helper", message: "Small", background: true });
 
     // Phase 1 — durable settlement proof, with zero clock advance. Never
