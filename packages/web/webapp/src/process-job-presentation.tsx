@@ -206,6 +206,7 @@ const partHasTranscriptPresentation = (part: MessagePart): boolean => {
     case "error":
     case "attachment":
     case "mcp_app":
+    case "restart_proposal":
     case "failure":
       return true;
   }

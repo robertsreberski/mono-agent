@@ -925,6 +925,18 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 /* Assistant reply files and MCP Apps are explicit rich parts. App markup is
    never inserted here: only the trusted outer sandbox iframe occupies the card. */
 .reply-attachment, .mcp-app { margin: 12px 0; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 11px; box-shadow: var(--shadow-sm); }
+.restart-agent-card { min-width: 0; margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 11px; background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow-sm); font-size: 13px; overflow-wrap: anywhere; }
+.restart-agent-copy, .restart-agent-confirm p, .restart-agent-outcome { margin: 0 0 8px; }
+.restart-agent-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.restart-agent-actions button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); cursor: pointer; }
+.restart-agent-actions button:hover:not(:disabled) { background: var(--surface-hover); }
+.restart-agent-actions button:disabled { opacity: .6; cursor: not-allowed; }
+.restart-agent-disabled { color: var(--text-soft); font-size: 12px; }
+.restart-agent-stages { display: flex; flex-wrap: wrap; gap: 5px 12px; list-style: none; margin: 0; padding: 0; color: var(--text-soft); }
+.restart-agent-stages li.is-current { color: var(--text); font-weight: 700; }
+.restart-agent-card.is-success { border-color: var(--success, #4b956b); }
+.restart-agent-card.is-failure { border-color: var(--danger); }
+.restart-agent-card.is-not_confirmed { border-color: var(--line-strong); }
 .reply-attachment { min-height: 52px; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 8px 10px; }
 .reply-part-icon { width: 30px; height: 30px; display: grid; place-items: center; flex: none; color: var(--accent); background: var(--accent-soft); border-radius: 8px; }
 .reply-part-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 2px; }

@@ -540,6 +540,35 @@ describe("agent favorites", () => {
   });
 });
 
+describe("reload-safe restart API", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("uses same-origin source/part routes and reads web-owned operation status", async () => {
+    const operation = { id: "web-op", sourceId: "agent/one", stage: "restarting",
+      requestedAt: "2026-09-23T10:00:00Z", deadline: "2026-09-23T10:02:00Z" };
+    const fetchMock = vi.fn().mockImplementation((url: string) => Promise.resolve(Response.json(
+      url.endsWith("/restart") && !url.includes("/parts/") && !fetchMock.mock.calls.at(-1)?.[1]?.method
+        ? { operation } : operation,
+    )));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(api.requestAgentRestart("agent/one")).resolves.toEqual(operation);
+    await expect(api.restartFromProposal("thread/one", "message#one", "part:one")).resolves.toEqual(operation);
+    await expect(api.restartStatus("agent/one", "web-op")).resolves.toEqual(operation);
+    await expect(api.latestAgentRestart("agent/one")).resolves.toEqual(operation);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/agents/agent%2Fone/restart",
+      "/api/v1/threads/thread%2Fone/messages/message%23one/parts/part%3Aone/restart",
+      "/api/v1/agents/agent%2Fone/restart/web-op",
+      "/api/v1/agents/agent%2Fone/restart",
+    ]);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init.headers).toMatchObject({ "X-Mono-Agent-Web-Origin": window.location.origin });
+    }
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe("{}");
+    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe("{}");
+  });
+});
+
 describe("short-lived reply access", () => {
   const staleResourceUrl = "/api/v1/threads/thread-one/messages/message-one/mcp-apps/app-one?expires=1000000000&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const staleBridgeUrl = "/api/v1/threads/thread-one/messages/message-one/mcp-apps/app-one/requests?expires=1000000000&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

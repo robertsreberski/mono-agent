@@ -4,6 +4,7 @@ import type {
   ActiveThreads,
   AgentSkillRegistry,
   AgentSummary,
+  RestartOperation,
   AskAnswer,
   AskSnapshot,
   AskSubmissionResult,
@@ -698,6 +699,33 @@ export const api = {
       ...(signal === undefined ? {} : { signal }),
     },
   ),
+
+  requestAgentRestart: (sourceId: string, signal?: AbortSignal) => request<RestartOperation>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/restart`,
+    { method: "POST", body: "{}", headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      ...(signal === undefined ? {} : { signal }) },
+  ),
+
+  restartFromProposal: (
+    threadId: string, messageId: string, partId: string, signal?: AbortSignal,
+  ) => request<RestartOperation>(
+    `/api/v1/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}`
+      + `/parts/${encodeURIComponent(partId)}/restart`,
+    { method: "POST", body: "{}", headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      ...(signal === undefined ? {} : { signal }) },
+  ),
+
+  restartStatus: (sourceId: string, operationId: string, signal?: AbortSignal) => request<RestartOperation>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/restart/${encodeURIComponent(operationId)}`,
+    { headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      ...(signal === undefined ? {} : { signal }) },
+  ),
+
+  latestAgentRestart: (sourceId: string, signal?: AbortSignal) => request<{ readonly operation: RestartOperation | null }>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/restart`,
+    { headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      ...(signal === undefined ? {} : { signal }) },
+  ).then((result) => result.operation),
 
   patchAgent: async (sourceId: string, pinned: boolean) => {
     const result = await request<{ agent: AgentSummary }>(

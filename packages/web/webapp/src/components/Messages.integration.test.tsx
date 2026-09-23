@@ -168,6 +168,21 @@ const userMessage: WebMessage = {
 };
 
 describe("AssistantMessage grouped parts", () => {
+  it("mounts restart proposals immediately after answer text, not inside the Activity band", () => {
+    const { container } = render(<MessageHarness message={{ ...assistantMessage("complete"), parts: [
+      { type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete" },
+      { type: "text", text: "Answer completed." },
+      { type: "failure", id: "other", code: "unsupported_destination", message: "Other part unavailable." },
+      { type: "restart_proposal", id: "proposal", reason: "Refresh context", restartable: { state: "stale", reason: "Agent already changed." } },
+    ] }} />);
+    const answer = screen.getByText("Answer completed.");
+    const card = container.querySelector(".restart-agent-card");
+    expect(card).not.toBeNull();
+    expect(card?.closest(".activity-root")).toBeNull();
+    expect((answer.compareDocumentPosition(card!) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true);
+    expect(card).toHaveTextContent("Refresh context");
+    expect(screen.getByRole("button", { name: "Restart agent" })).toBeDisabled();
+  });
 
   const upload = (id: string, name: string, kind: "image" | "document", contentType: string) => ({
     id,
