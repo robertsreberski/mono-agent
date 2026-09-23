@@ -91,6 +91,14 @@ describe("verified peer context and lineage", () => {
     expect(forged.runtimeOptions?.processJobsAvailability).toMatchObject({ chainDepth: 0 });
     expect(forged.runtimeOptions?.hostCapabilities).not.toHaveProperty("PeerAgent.request");
     await forged.settleCleanup?.();
+    const webRawProof = await extension(request({ source: "web", peerHandoff: proof }));
+    expect(webRawProof.runtimeOptions?.processJobsAvailability).toMatchObject({ chainDepth: 0 });
+    expect(webRawProof.runtimeOptions?.hostCapabilities).not.toHaveProperty("PeerAgent.request");
+    await webRawProof.settleCleanup?.();
+    const webCopiedStamp = await extension(request({ source: "web", peerHandoff: operatorProof }));
+    expect(webCopiedStamp.runtimeOptions?.processJobsAvailability).toMatchObject({ chainDepth: 0 });
+    expect(webCopiedStamp.runtimeOptions?.hostCapabilities).not.toHaveProperty("PeerAgent.request");
+    await webCopiedStamp.settleCleanup?.();
     const altered = await extension(request({ source: "acp", peerHandoff: operatorProof }, "different prompt"));
     expect(altered.runtimeOptions?.processJobsAvailability).toMatchObject({ chainDepth: 0 });
     expect(altered.runtimeOptions?.hostCapabilities).not.toHaveProperty("PeerAgent.request");

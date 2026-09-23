@@ -1407,7 +1407,7 @@ async function createConfiguredAgentHarnessInternal(
     // Same predicate the process-jobs extension uses, so the session block only
     // describes backgrounding on turns whose Exec/Bash actually offer it.
     verifiedPeerCallerFor: async ({ request }) => {
-      if (request.metadata?.peerHandoff === undefined) return undefined;
+      if (request.metadata?.source !== "acp" || request.metadata.peerHandoff === undefined) return undefined;
       const verified = await verifyPeerOperatorHandoff(config.artifacts.dir, request.metadata.peerHandoff,
         request.conversationId, request.userMessage, config.traceability.sourceId);
       return verified?.caller;

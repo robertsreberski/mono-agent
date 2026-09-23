@@ -78,7 +78,8 @@ export function createProcessJobsRuntimeExtension(
         options.coreConfig.runtime.workspace,
       );
       const artifactDir = options.coreConfig.artifacts?.dir;
-      const verifiedPeer = artifactDir === undefined || input.request.metadata?.peerHandoff === undefined ? undefined
+      const verifiedPeer = artifactDir === undefined || input.request.metadata?.source !== "acp"
+        || input.request.metadata.peerHandoff === undefined ? undefined
         : await verifyPeerOperatorHandoff(artifactDir, input.request.metadata.peerHandoff, input.request.conversationId, input.request.userMessage, options.coreConfig.traceability.sourceId);
       const peerOwnerRoot = artifactDir === undefined ? undefined : dirname(artifactDir);
       const handoffRoot = peerOwnerRoot === undefined ? undefined : join(peerOwnerRoot, "acp-peer-handoff");

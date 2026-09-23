@@ -106,7 +106,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
     if (callable.length === 0) return { runtimeOptions: {}, cleanup: async () => {} };
     const origin = processJobOriginForRequest(input, options.channelId, options.conversationScheme);
     const wake = processJobWakeContextForRequest(input.request);
-    const peer = input.request.metadata?.peerHandoff === undefined ? undefined
+    const peer = input.request.metadata?.source !== "acp" || input.request.metadata.peerHandoff === undefined ? undefined
       : await verifyPeerOperatorHandoff(config.artifacts.dir, input.request.metadata.peerHandoff, input.request.conversationId, input.request.userMessage, config.traceability.sourceId);
     const depth = peer?.depth ?? (wake.kind === "resolved" ? wake.context.chainDepth : 0);
     const ceiling = service?.settings.maxChainDepth ?? 4;

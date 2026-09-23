@@ -218,7 +218,7 @@ describe("PeerAgent request lifecycle", () => {
   });
 
   it("exhausts verified A→B→A lineage instead of resetting to zero", async () => {
-    const f = await setup(4);
+    const f = await setup(4, "acp");
     try {
       const denied = await f.send();
       expect(denied.isError).toBe(true);
