@@ -38,7 +38,8 @@ function launchctlPrint(options: {
     + "\tpath = /home/u/Library/LaunchAgents/com.mono-agent.demo.plist\n"
     + "\tprogram = /usr/bin/env\n"
     + `\targuments = {\n${options.managedDefinition === false ? "\t\t/usr/bin/other\n" : args}\n\t}\n`
-    + "\tkeepalive = { successful exit = false }\n"
+    + "\tlast exit code = (never exited)\n\n"
+    + "\tsemaphores = {\n\t\tsuccessful exit => 0\n\t}\n"
     + "\tworking directory = /work/demo\n"
     + "\tstdout path = /work/demo/stdout.log\n"
     + "\tstderr path = /work/demo/stderr.log\n"
@@ -143,12 +144,19 @@ describe("verifySupervisedRestart", () => {
     });
   });
 
-  it("refuses a loaded launchd worker without verified relaunch policy", async () => {
-    await expect(verifySupervisedRestart({
-      configPath: CONFIG_PATH, startedAt: "boot-1", platform: "darwin", pid: 4321,
-      getuid: () => 501,
-      launchdRunner: launchdRunner(launchctlPrint({ pid: 4321 }).replace("successful exit = false", "successful exit = true")),
-    })).resolves.toEqual({ supported: false, reason: "The loaded launchd service does not verify relaunch on failure." });
+  it("refuses absent, changed, and misleading out-of-block launchd semaphore policy", async () => {
+    const loaded = launchctlPrint({ pid: 4321 });
+    for (const text of [
+      loaded.replace("successful exit => 0", "successful exit => 1"),
+      loaded.replace(/\tsemaphores = \{[\s\S]*?\t\}\n/u, ""),
+      loaded.replace("successful exit => 0", "other flag => 0") + "successful exit => 0\n",
+      loaded.replace("successful exit => 0", "successful exit => 0\n\t\tsuccessful exit => 1"),
+    ]) {
+      await expect(verifySupervisedRestart({
+        configPath: CONFIG_PATH, startedAt: "boot-1", platform: "darwin", pid: 4321,
+        getuid: () => 501, launchdRunner: launchdRunner(text),
+      })).resolves.toEqual({ supported: false, reason: "The loaded launchd service does not verify relaunch on failure." });
+    }
   });
 
   it("fails closed when the launchd check throws", async () => {

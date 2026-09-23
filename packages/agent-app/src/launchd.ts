@@ -673,11 +673,15 @@ export async function launchdManagedWorkerInfo(
   if (result.code !== 0) return { loaded: false, relaunchOnFailure: false };
   const pid = parseLaunchdServicePid(result.stdout);
   const definition = parseLaunchdManagedWorkerDefinition(result.stdout);
+  // launchctl print encodes KeepAlive.SuccessfulExit=false as a semaphore,
+  // not as plist syntax: `semaphores = { successful exit => 0 }`. Restrict
+  // the match to that block and refuse absent, duplicated or changed flags.
+  const semaphoreBlock = /\bsemaphores\s*=\s*\{([^{}]*)\}/u.exec(result.stdout)?.[1];
+  const successfulExitFlags = semaphoreBlock?.split("\n").map((line) => line.trim())
+    .filter((line) => line.startsWith("successful exit")) ?? [];
   return {
     loaded: true,
-    // launchctl print must expose the cached KeepAlive policy; a missing or
-    // changed policy is not evidence that a deliberate exit 42 will relaunch.
-    relaunchOnFailure: /successful\s*exit\s*=\s*false\b/iu.test(result.stdout),
+    relaunchOnFailure: successfulExitFlags.length === 1 && successfulExitFlags[0] === "successful exit => 0",
     ...(pid === undefined ? {} : { pid }),
     ...(definition === undefined ? {} : { definition }),
   };
