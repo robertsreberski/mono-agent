@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/observability",
-  "version": "0.23.1",
+  "version": "0.24.0",
   "description": "Run event recording and artifact summaries for agent hosts.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -35,7 +35,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.23.1"
+    "@mono-agent/agent-contracts": "workspace:0.24.0"
   },
   "publishConfig": {
     "access": "public"

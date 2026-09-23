@@ -2,10 +2,20 @@
 
 ## Unreleased
 
+## 0.24.0 — JSON-only core configuration (2026-09-23)
+
 - **Breaking: remove core environment configuration overrides.** Resolve core
   settings only from `mono-agent.config.json`, then built-in defaults, and
   silently ignore stale `MONO_AGENT_*` core variables. Environment values remain
   available for adapter settings, secret references, and process plumbing.
+
+- **Breaking: `@mono-agent/config` drops its environment-layer exports.**
+  `loadMonoAgentConfigWithSources` and `CONFIG_ENV_KEYS` are removed. Load
+  config with `loadMonoAgentConfig` or `resolveJsonMonoAgentConfig`; the
+  core field-id registry is now `CORE_CONFIG_FIELD_IDS`.
+
+- Include every 0.23.1 change listed below. The 0.23.1 packages were uploaded
+  to npm but never became `latest`, so upgrade from 0.23.0 directly to 0.24.0.
 
 ## 0.23.1 — Pi 0.87.1 models and console fixes (2026-09-23)
 
