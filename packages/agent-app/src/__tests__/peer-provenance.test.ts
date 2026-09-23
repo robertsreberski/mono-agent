@@ -27,6 +27,7 @@ describe("verified peer context and lineage", () => {
     } });
     const generation = { id: "11111111-1111-4111-8111-111111111111", rootKeys: [] };
     const extension = createProcessJobsRuntimeExtension({ coreConfig: config, baseModel: config.runtime.model,
+      service: undefined, channelId: undefined, sandboxEngine: undefined,
       registry: { kind: "empty", generation } as never,
       ownership: { coordinator: { acquireRequestLease: () => ({ generation, releaseAfterSettlement: vi.fn() }) } } as never,
       attestRegistry: (async (snapshot: unknown) => snapshot) as never,
