@@ -31,7 +31,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function setup(depth?: number | "forged", surface: "web" | "acp" = "web") {
+async function setup(depth?: number | "forged", surface: "web" | "acp" = "web", eager = false) {
   const root = await mkdtemp(join(tmpdir(), "mono-agent-peer-tool-"));
   roots.push(root);
   const artifactDir = join(root, "artifacts");
@@ -51,6 +51,7 @@ async function setup(depth?: number | "forged", surface: "web" | "acp" = "web") 
     return { sessionId: "acp:finance-ai:cebc81c1-e853-468f-a5d2-b88a97a9aa01", answer: "[Untrusted peer answer] done" };
   });
   let pending: InternalProcessJobRequest | undefined;
+  let eagerRun: Promise<unknown> | undefined;
   let admittedOrigin: unknown;
   const service = {
     settings: { maxChainDepth: 4 },
@@ -58,6 +59,11 @@ async function setup(depth?: number | "forged", surface: "web" | "acp" = "web") 
       admittedOrigin = origin;
       return { startInternal: async (request: InternalProcessJobRequest) => {
         pending = request;
+        if (eager) {
+          eagerRun = request.run(new AbortController().signal, () => {}, () => {});
+          await Promise.resolve();
+          expect(mocks.turns).toEqual([]);
+        }
         return { jobId: request.jobId, state: "queued", startedAt: null };
       } };
     },
@@ -76,7 +82,7 @@ async function setup(depth?: number | "forged", surface: "web" | "acp" = "web") 
   const spec = (extension.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-peer-agent"]!;
   const client = new Client({ name: "peer-agent-test", version: "1.0.0" });
   await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
-  return { client, config, request, pending: () => pending, admittedOrigin: () => admittedOrigin,
+  return { client, config, request, pending: () => pending, eagerRun: () => eagerRun, admittedOrigin: () => admittedOrigin,
     close: async () => { await client.close(); await extension.cleanup?.(); },
     send: async (background = false) => await client.callTool({ name: "PeerAgent", arguments: {
       action: "send", peer: "finance", thread: "portfolio", message: "do work", background,
@@ -109,6 +115,17 @@ describe("PeerAgent request lifecycle", () => {
       expect(second.isError).toBe(true);
       expect(mocks.turns).toHaveLength(0);
       await f.pending()!.cleanup();
+    } finally { await f.close(); }
+  });
+
+  it("withholds eager internal execution until after the started receipt", async () => {
+    const f = await setup(undefined, "web", true);
+    try {
+      const receipt = await f.send(true);
+      expect(receipt.isError).not.toBe(true);
+      expect(receipt.content).toEqual([{ type: "text", text: expect.stringContaining('"state":"started"') }]);
+      expect(await f.eagerRun()).toMatchObject({ status: "ok" });
+      expect(mocks.turns).toEqual(["do work"]);
     } finally { await f.close(); }
   });
 

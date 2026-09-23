@@ -139,6 +139,9 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
             const lease = await acquireContinuationStoreLock(key);
             let held = true;
             const release = async () => { if (held) { held = false; await lease.release(); } };
+            const stop = new AbortController();
+            let allowDispatch!: () => void;
+            const dispatchGate = new Promise<void>((resolve) => { allowDispatch = resolve; });
             try {
               const previous = await readThread(key);
               if (previous && (previous.conversation !== input.request.conversationId
@@ -154,14 +157,17 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                 generation: randomUUID(), status: "busy",
               };
               await saveThread(key, record);
-              const stop = new AbortController();
               let cancelAcp: (() => Promise<void>) | undefined;
               active.set(key, async () => {
                 stop.abort();
                 await cancelAcp?.();
               });
+              // The job store may launch an internal closure before startInternal
+              // returns. Defer ACP dispatch until the durable started receipt has
+              // been constructed and returned from this tool handler.
               const run = async (signal: AbortSignal) => {
                 try {
+                  await dispatchGate;
                   const turnSignal = AbortSignal.any([signal, stop.signal]);
                   if (turnSignal.aborted) throw new Error("Peer turn interrupted before dispatch; prompt was not replayed.");
                   const outcome = await runPeerAcpTurn({
@@ -197,10 +203,15 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                     finally { await release(); }
                   },
                 });
-                return reply(JSON.stringify({ peer: args.peer, thread: args.thread, jobId: started.jobId, state: "started" }));
+                const receipt = reply(JSON.stringify({ peer: args.peer, thread: args.thread, jobId: started.jobId, state: "started" }));
+                setImmediate(allowDispatch);
+                return receipt;
               }
+              allowDispatch();
               return reply(await run(input.request.abortSignal));
             } catch (error) {
+              stop.abort();
+              allowDispatch();
               active.delete(key);
               try {
                 const pending = await readThread(key);
