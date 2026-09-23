@@ -1403,6 +1403,25 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 /* The quiet stand-in for a tail that has nothing in it yet: same slot as the
    output block, without the framed box a reader would take for content. */
 .process-job-empty-output { margin: 0; color: var(--text-muted); font-size: 10.5px; line-height: 1.45; }
+/* A PeerAgent question: prose first, one wrapped row per form field, raw schema
+   tucked away. Every text node wraps so the card fits a 390 px phone. */
+.peer-question { min-width: 0; display: grid; gap: 7px; padding: 9px 10px; background: color-mix(in srgb, var(--app-bg) 60%, var(--surface)); border: 1px solid var(--line); border-radius: 8px; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; user-select: text; }
+.peer-question p { margin: 0; }
+.peer-question-state { color: var(--text-muted); }
+.peer-question-state strong { color: var(--text); font-weight: 650; }
+.peer-question.is-answered .peer-question-state strong, .peer-question.is-expired .peer-question-state strong, .peer-question.is-interrupted .peer-question-state strong { color: var(--text-muted); }
+.peer-question-message { color: var(--text); white-space: pre-wrap; }
+.peer-question-fields { min-width: 0; display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.peer-question-field { min-width: 0; display: grid; gap: 3px; }
+.peer-question-label { color: var(--text-soft); font-weight: 600; }
+.peer-question-required, .peer-question-hint { color: var(--text-muted); font-weight: 400; }
+.peer-question-description { color: var(--text-muted); }
+.peer-question-options { display: flex; flex-wrap: wrap; gap: 4px; }
+.peer-question-chip { max-width: 100%; padding: 2px 8px; color: var(--text-soft); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 999px; overflow-wrap: anywhere; }
+.peer-question-trust, .peer-question-id { color: var(--text-muted); font-size: 9.5px; }
+.peer-question-id { font-family: var(--font-mono); }
+.peer-question-schema summary { color: var(--text-muted); font-size: 9.5px; cursor: pointer; }
+.peer-question-schema pre { margin-top: 4px; }
 .activity-error { min-width: 0; display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; margin: 0; padding: 7px 9px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent); border-radius: 8px; font-size: 10.5px; line-height: 1.45; user-select: text; }
 /* A payload the server sent only the head of. Quiet by default -- most rows
    are whole -- with the one control that fetches the rest sitting inline. */

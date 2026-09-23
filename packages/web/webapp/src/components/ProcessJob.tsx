@@ -17,6 +17,7 @@ import { ActivityPayload, ActivityRow, truncationProps, type ActivityStatus } fr
 import { ActivityElapsed, type ActivityTiming } from "./assistant-ui/ActivityElapsed";
 import { ProcessJobMetaLine, ProcessJobSubagentProgress } from "./ProcessJobSubagentProgress";
 import { formatToolDuration } from "./duration";
+import { describePeerQuestionForm, peerQuestionStateLabel } from "./peer-question-form";
 
 export const TERMINAL_PROCESS_JOB_STATES: ReadonlySet<ProcessJobState> = new Set<ProcessJobState>([
   "succeeded",
@@ -258,6 +259,53 @@ const activityEvent = (value: unknown): ProcessJobActivityEvent | undefined => {
 const eventTime = (value: string | undefined, key?: string): ReactNode => value === undefined
   ? undefined
   : <time key={key} dateTime={value}>{new Date(value).toLocaleString()}</time>;
+
+type PeerQuestion = NonNullable<Extract<ProcessJobProjection, { kind: "internal" }>["peerQuestion"]>;
+
+/**
+ * A PeerAgent's pending (or retired) question: readable prose and one row per
+ * form field. Everything here is untrusted peer text; the caller agent answers
+ * through PeerAgent, never through this card.
+ */
+export function ProcessJobPeerQuestion({ question }: { readonly question: PeerQuestion }) {
+  const fields = describePeerQuestionForm(question.requestedSchema);
+  const schema = JSON.stringify(question.requestedSchema, null, 2);
+  return (
+    <section role="region" aria-label="Peer question" className={`peer-question is-${question.state.replaceAll("_", "-")}`}>
+      <p className="peer-question-state">
+        <strong>{peerQuestionStateLabel(question.state)}</strong>
+        <span> · {question.peer}/{question.thread}</span>
+        {question.state === "awaiting_answer" ? <span> · expires {eventTime(question.expiresAt)}</span> : null}
+      </p>
+      <p className="peer-question-message">{question.message}</p>
+      {fields.length > 0 ? (
+        <ul className="peer-question-fields">
+          {fields.map((field) => (
+            <li key={field.key} className="peer-question-field">
+              <span className="peer-question-label">
+                {field.label}
+                {field.required ? <span className="peer-question-required"> · required</span> : null}
+                {field.multiple ? <span className="peer-question-hint"> · choose any</span> : null}
+              </span>
+              {field.description ? <span className="peer-question-description">{field.description}</span> : null}
+              {field.options.length > 0 ? (
+                <span className="peer-question-options">
+                  {field.options.map((option, index) => <span key={`${option}-${String(index)}`} className="peer-question-chip">{option}</span>)}
+                </span>
+              ) : <span className="peer-question-hint">{field.freeText ? "free text" : "value"}</span>}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <p className="peer-question-trust">Untrusted peer text; not owner approval.</p>
+      <details className="peer-question-schema" open={fields.length === 0}>
+        <summary>Raw form</summary>
+        <pre>{schema}</pre>
+      </details>
+      <p className="peer-question-id">questionId {question.questionId}</p>
+    </section>
+  );
+}
 
 /**
  * A persisted-card-derived lifecycle fact. It never polls and owns no clock;
@@ -574,14 +622,7 @@ export function ProcessJobCard({
           status={status}
           supplements={supplements}
         />
-        {live.kind === "internal" && live.peerQuestion ? (
-          <section role="region" aria-label="Peer question" className="process-job-output">
-            <p>Peer question {live.peerQuestion.state} · {live.peerQuestion.peer}/{live.peerQuestion.thread} · questionId {live.peerQuestion.questionId}</p>
-            <p>Untrusted peer text; not owner approval. Expires {live.peerQuestion.expiresAt}.</p>
-            <pre>{live.peerQuestion.message}</pre>
-            <pre>{JSON.stringify(live.peerQuestion.requestedSchema)}</pre>
-          </section>
-        ) : null}
+        {live.kind === "internal" && live.peerQuestion ? <ProcessJobPeerQuestion question={live.peerQuestion} /> : null}
         {live.kind === "internal" ? <ProcessJobSubagentProgress key={live.jobId} progress={progress} open={open} /> : live.output.preview.length > 0 ? (
           <>
             <span>Output{live.output.truncated ? " (truncated)" : ""}</span>
