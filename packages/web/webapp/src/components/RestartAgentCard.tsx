@@ -39,7 +39,8 @@ export function RestartAgentCard({
   const [confirming, setConfirming] = useState(false);
   const [operation, setOperation] = useState<RestartOperation | null>(initialOperation ?? null);
   const [requesting, setRequesting] = useState(false);
-  const [requestFailure, setRequestFailure] = useState<{ readonly outcome: "failure" | "not_confirmed"; readonly reason: string } | null>(null);
+  const [requestFailure, setRequestFailure] = useState<string | null>(null);
+  const [requestUnknown, setRequestUnknown] = useState<string | null>(null);
   const [pollWarning, setPollWarning] = useState<string | null>(null);
   const submitting = useRef(false);
   const linkedId = proposal?.restartable.state === "used"
@@ -87,6 +88,8 @@ export function RestartAgentCard({
     setRequesting(true);
     setConfirming(false);
     setRequestFailure(null);
+    setRequestUnknown(null);
+    const sentAt = Date.now();
     try {
       const result = proposal === undefined
         ? await api.requestAgentRestart(sourceId)
@@ -94,17 +97,35 @@ export function RestartAgentCard({
       setOperation(result);
     } catch (error) {
       const definitive = error instanceof ApiError && [400, 401, 403, 404, 409].includes(error.status);
-      setRequestFailure({ outcome: definitive ? "failure" : "not_confirmed",
-        reason: shortReason(error instanceof Error ? error.message : undefined)
-          ?? (definitive ? "The agent refused the request." : "The request may have reached the agent.") });
+      if (definitive) {
+        setRequestFailure(shortReason(error instanceof Error ? error.message : undefined) ?? "The agent refused the request.");
+      } else {
+        // A lost browser response does not establish an outcome. Recover the
+        // server's durable operation, but never attach an unrelated old card
+        // or settings operation merely because it belongs to the same agent.
+        try {
+          const latest = await api.latestAgentRestart(sourceId);
+          if (latest !== null && (proposal === undefined
+            ? Date.parse(latest.requestedAt) >= sentAt
+            : (await api.message(proposal.threadId, proposal.messageId)).parts.some((part) =>
+                part.type === "restart_proposal" && part.id === proposal.partId
+                && part.restartable?.state === "used" && part.restartable.operationId === latest.id))) {
+            setOperation(latest);
+          } else {
+            setRequestUnknown("Couldn't confirm the request was received — check the agent. You can retry.");
+          }
+        } catch {
+          setRequestUnknown("Couldn't confirm the request was received — check the agent. You can retry.");
+        }
+      }
     } finally {
       submitting.current = false;
       setRequesting(false);
     }
   };
 
-  const outcome = currentOperation?.outcome ?? requestFailure?.outcome;
-  const outcomeReason = shortReason(currentOperation?.reason ?? requestFailure?.reason);
+  const outcome = currentOperation?.outcome ?? (requestFailure === null ? undefined : "failure");
+  const outcomeReason = shortReason(currentOperation?.reason ?? requestFailure);
   const progressStage = currentOperation?.stage ?? "requesting";
   return (
     <section className={`restart-agent-card${outcome === undefined ? "" : ` is-${outcome}`}`} aria-label="Agent restart" aria-live="polite">
@@ -146,12 +167,14 @@ export function RestartAgentCard({
           <button type="button" disabled={disabled !== undefined} onClick={() => {
             setOperation(null);
             setRequestFailure(null);
+            setRequestUnknown(null);
             setPollWarning(null);
             setConfirming(true);
           }}>Restart {agentLabel} again</button>
           {disabled !== undefined && <span className="restart-agent-disabled">{disabled}</span>}
         </div>
       )}
+      {requestUnknown !== null && outcome === undefined && <p className="restart-agent-disabled" role="status">{requestUnknown}</p>}
       {pollWarning !== null && outcome === undefined && <p className="restart-agent-disabled">{pollWarning}</p>}
     </section>
   );

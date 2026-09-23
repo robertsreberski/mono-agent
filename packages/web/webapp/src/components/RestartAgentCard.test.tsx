@@ -92,7 +92,39 @@ describe("RestartAgentCard", () => {
     expect(screen.getByText("Restarted — agent is back online.")).toBeVisible();
   });
 
-  it("shows a definitive refusal as failure but an ambiguous request as not confirmed", async () => {
+  it("recovers a lost settings POST from the server's freshly recorded operation", async () => {
+    vi.spyOn(api, "requestAgentRestart").mockRejectedValue(new TypeError("Lost response"));
+    const fresh = { ...operation("restarting"), requestedAt: new Date(Date.now() + 1_000).toISOString() };
+    vi.spyOn(api, "latestAgentRestart").mockResolvedValue(fresh);
+    const status = vi.spyOn(api, "restartStatus").mockResolvedValue(operation("back_online", "success"));
+    render(<RestartAgentCard {...base} />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart Agent One" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(api.latestAgentRestart).toHaveBeenCalledWith("agent-one");
+    expect(status).toHaveBeenCalledWith("agent-one", "web-op", expect.any(AbortSignal));
+    expect(screen.getByText("Restarted — agent is back online.")).toBeVisible();
+  });
+
+  it("recovers a proposal only when its persisted part links the same web operation", async () => {
+    vi.spyOn(api, "restartFromProposal").mockRejectedValue(new TypeError("Lost response"));
+    vi.spyOn(api, "latestAgentRestart").mockResolvedValue(operation("restarting"));
+    vi.spyOn(api, "message").mockResolvedValue({ parts: [{ type: "restart_proposal", id: "part-one",
+      restartable: { state: "used", operationId: "web-op" } }] } as never);
+    const status = vi.spyOn(api, "restartStatus").mockResolvedValue(operation("back_online", "success"));
+    render(<RestartAgentCard {...base} proposal={proposal("available")} />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart Agent One" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(api.message).toHaveBeenCalledWith("thread-one", "message-one");
+    expect(status).toHaveBeenCalled();
+    expect(screen.getByText("Restarted — agent is back online.")).toBeVisible();
+  });
+
+  it("shows a definitive refusal as failure but leaves an unrecovered ambiguous request neutral and retryable", async () => {
+    vi.spyOn(api, "latestAgentRestart").mockResolvedValue(null);
     const post = vi.spyOn(api, "requestAgentRestart").mockRejectedValueOnce(new ApiError("Restart=no", 409, "restart_unsupported"))
       .mockRejectedValueOnce(new TypeError("Lost connection"));
     const first = render(<RestartAgentCard {...base} />);
@@ -105,7 +137,9 @@ describe("RestartAgentCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Restart Agent One" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
     await act(async () => { await Promise.resolve(); });
-    expect(screen.getByText("Restart not confirmed — check the agent. Lost connection")).toBeVisible();
+    expect(screen.getByText("Couldn't confirm the request was received — check the agent. You can retry.")).toBeVisible();
+    expect(screen.queryByText(/Restart not confirmed/u)).toBeNull();
+    expect(screen.getByRole("button", { name: "Restart Agent One" })).toBeEnabled();
     expect(post).toHaveBeenCalledTimes(2);
   });
 });
