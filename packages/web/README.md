@@ -39,6 +39,13 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   currently connected capability-advertising agent without storing credentials,
   prompt input, or session projections. The client omits authorization for an
   agent with no operator API key and sends the discovered bearer when one exists.
+- Restart one selected, keyed, supervised agent from settings or a persisted
+  `ProposeRestart` reply card. The browser confirms interruptions before POST,
+  polls one durable SQLite operation through reload, and reports success only
+  after a new process generation on the same source id answers a ready probe.
+  Definitive refusal is failure; ambiguous or two-minute-expired requests are
+  not confirmed. A model-provided part never chooses the target or grants
+  authority; origin checks and the existing operator bearer remain the boundary.
 - Let an MCP-capable agent replace the interim first-message title with a short
   semantic title and evolve it after a material topic shift, while treating any
   user rename as a permanent lock.
@@ -699,6 +706,25 @@ delta paint to one second, halves page sizes and poll rates, and retains fewer
 image blobs; polling pauses while the document is hidden. The preference keys
 `mono-agent.web.data-mode` and `mono-agent.web.data-mode-suggested` are browser
 storage, not configuration.
+### Agent restart
+
+Settings uses exact-origin `POST /api/v1/agents/:id/restart` and `GET
+/api/v1/agents/:id/restart` (latest operation, or `null`); a proposal card uses
+`POST /api/v1/threads/:threadId/messages/:messageId/parts/:partId/restart`.
+Both require the same explicit human confirmation in the browser before POST
+and call the same service operation. The click route checks the stored message,
+part, thread, source and pre-restart process generation; repeated clicks return
+the linked web operation instead of sending another adapter POST. Browser
+polling reads `GET /api/v1/agents/:id/restart/:operationId`, with source-id
+binding and exact-origin checks. These small status DTOs show
+`requesting → restarting → back_online` and one terminal `success`, `failure`
+or `not_confirmed`, with a bounded reason. No adapter bearer, adapter operation
+id or raw generation is in the browser DTO. A used proposal carries only the
+**web** operation id so progress survives a reload. Active conversation counts
+are approximate warnings and never admission gates. The console does not add
+human login: its existing trusted-network/OS boundary and browser exact-origin
+checks still apply; web sends the discovered operator bearer to the agent.
+
 ### Reply files and MCP Apps
 
 Agents that advertise reply attachments expose message-bound downloads in the
@@ -940,6 +966,10 @@ WEB_STAGED_UPLOAD_TTL_MS
 WEB_THEMES
 WEB_THREAD_SEARCH_MAX
 WEB_THREAD_SEARCH_MIN_QUERY
+WebAgentRestartOperation
+WebAgentRestartOutcome
+WebAgentRestartStage
+WebAgentRestartSupport
 WebAgentRunSettings
 WebAgentStatus
 WebAgentSummary
@@ -972,6 +1002,7 @@ WebPushBootstrap
 WebPushSubscriptionState
 WebPushSubscriptionStatus
 WebQuote
+WebRestartProposalAvailability
 WebRunAttribution
 WebRunExecution
 WebRunRetry

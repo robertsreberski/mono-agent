@@ -117,6 +117,43 @@ and operating-system admission controls remain the boundary.
 
 At startup, mono-agent inspects the existing Tailscale Serve configuration. It prefers HTTPS `:443` only when free; otherwise it chooses the first free port in `8443`–`8499`. It never resets or replaces another Serve handler. Ownership is recorded locally, and `web stop` removes only the route this console created. If the first route cannot be created, the local/LAN service stays healthy and status prints the direct URLs plus remediation. If a restart cannot migrate an existing owned route to a changed app port, mono-agent restores the prior worker and exact route and exits nonzero.
 
+## Restart one agent
+
+The selected agent's settings include **Restart agent** when the agent supports
+it. An agent may also call `ProposeRestart` on a supported web-console turn;
+that adds a card below its answer, but **never restarts the agent**. The operator
+must select Restart, read the interruption warning, and confirm. The displayed
+running-conversation count is approximate and advisory, not a guarantee that
+new work cannot begin. Cards from an older process, unsupported agents, and
+offline agents remain readable but cannot request a restart. The settings and
+reply cards use the same confirmation and progress flow.
+
+Progress reads **Requesting → Restarting → Back online**. The web service stores
+the operation before contacting the agent and keeps status across browser reloads.
+An adapter acceptance means only that shutdown was committed; **success** needs
+that same discovered source id to return as a *different process* and answer a
+ready `/v1/info` probe. A definite refusal is **failure** with a short reason.
+A dropped reply, unknown acceptance, or no confirmed ready replacement within
+two minutes is **not confirmed**; observing a new process after a lost reply is
+not proof that this request caused it. The browser cannot infer success from
+connection changes. Restarting does not purge saved conversations, memory or
+sessions; it interrupts running turns and stops process jobs and monitors, loses
+warm process-local sessions, and may delay notifications until the new worker is
+ready. Durable history and persistent subagent state remain available after
+recovery; an interrupted turn does not resume itself.
+
+Only a supervised launchd/systemd worker with a configured operator API key and
+a verifiably loaded relaunch policy advertises `capabilities.restart.supported`.
+Plain foreground/embedded, keyless, stopped, or unverifiable agents refuse.
+The agent's `POST {basePath}/v1/restart` requires its bearer; the web console
+proxies `POST /api/v1/agents/:id/restart` or a persisted reply-part click to the
+selected source, and browsers poll the web-owned operation. `ProposeRestart`
+carries **no restart authority** or target. This adds **no human login**:
+restart uses the same trusted console network/OS boundary and exact-origin
+checks as existing console mutations plus the existing operator bearer from
+web to agent. It is not an authenticated-human-only feature. Keep untrusted
+proxies and browsers off the console listener.
+
 ## Provider authentication
 
 Agent settings uses the same compact responsive sheet as project/tag settings:

@@ -7,7 +7,7 @@ sidebar:
 
 mono-agent can return more than answer text without placing file bytes, local
 paths, or app HTML in the reply stream. A response may carry an opaque file
-reference, an MCP App reference, or a visible per-part failure. These parts are
+reference, an MCP App reference, a restart proposal, or a visible per-part failure. These parts are
 additive: valid text and earlier parts remain deliverable when a later part
 fails.
 
@@ -56,6 +56,31 @@ high-entropy, closes with the request, is not logged, and does not contain the
 run id, conversation id, workspace, or artifact path. The tool is removed by
 the host's sealed tool policy and is not installed on a route that
 cannot safely receive its MCP server.
+
+## Web-only restart proposals
+
+`ProposeRestart` is an app-owned, request-scoped MCP tool only on an
+interactive web-console turn whose keyed, supervised agent advertises verified
+restart support; ordinary tool allow/deny policy still applies. A call with
+`{ "reason": "short explanation" }` records at most one additive
+`restart_proposal` part on that assistant reply. The part contains only
+`{ "type": "restart_proposal", "id": "opaque id", "reason": "optional short text" }`:
+reason is single-line and capped at 280 characters; no URL, bearer, command,
+agent target, source id or process generation is model-supplied. The tool
+reports **proposed**, never **restarted**. The web service binds the stored
+part to its real conversation, source and process generation. An operator sees
+it directly beneath the answer, reviews the interruption warning, and clicks
+Confirm to use the same restart flow as selected-agent settings. Old, used,
+offline and unsupported proposals remain readable but cannot start a second
+request. Read [restart one agent](../observability/web-console.md#restart-one-agent)
+for outcomes and the trust boundary.
+
+Telegram, Slack, webhook, terminal, ACP, cron and other non-web turns never
+receive the tool. If a producer nevertheless delivers this part to another
+human destination, its existing unsupported-part fallback says it could not
+be delivered, with **no actionable link or restart**. Machine/verbatim
+transports leave assistant text unchanged and return only sanitized terminal
+`unsupported_destination` outcomes.
 
 ## Channel delivery and fallback
 

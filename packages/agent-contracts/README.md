@@ -81,14 +81,17 @@ turn. The immediate result says whether the active run accepted ownership; the
 settlement later reports `applied`, `requeue`, or `discarded`, so the adapter can
 preserve its ordinary queue position across provider and end-of-turn races.
 
-`AgentResponse.parts` carries adapter-neutral attachment, MCP App, and per-part
-failure references. `MAX_AGENT_REPLY_PARTS` is the shared producer/wire ceiling
+`AgentResponse.parts` carries adapter-neutral attachment, MCP App, restart
+proposal, and per-part failure references. `MAX_AGENT_REPLY_PARTS` is the shared producer/wire ceiling
 of 20, and `DEFAULT_AGENT_ATTACHMENT_MAX_BYTES` is 20 MiB. Streams that cannot
 represent a part default to concise human fallback; machine and verbatim
 adapters pass `unsupportedPartFallback: "none"` so reply text is not mutated.
 Artifact/app bytes and HTML remain behind responder authorization methods rather
-than entering stream frames. See
-[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
+than entering stream frames. A `restart_proposal` contains only a per-reply id
+and optional bounded display reason, not any restart authority, endpoint or
+target; the web service binds its real source/process on ingestion. Unsupported
+channels report a safe outcome or inert human warning, never a clickable link.
+See [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 Machine destinations project unsupported parts through the shared
 `AgentReplyPartDeliveryOutcome` contract. `sanitizeReplyPartDeliveryOutcomes()`
@@ -111,7 +114,8 @@ The ordinary record shape is:
 }
 ```
 
-`partType` is `attachment`, `mcp_app`, `failure`, or `unknown`; `status` is the
+`partType` is `attachment`, `mcp_app`, `restart_proposal`, `failure`, or
+`unknown`; `status` is the
 terminal literal `failed`; and `code` is one of the closed
 `AgentReplyPartFailure.code` values. Only the final overflow record adds
 `affectedPartCount`, uses `partType: "unknown"` and
@@ -227,6 +231,7 @@ editing in place and never changes final-answer delivery.
 | Buffer or harden streamed output | `BufferedMessageStream`, `ResilientMessageStream` |
 | Format safe applied-steering activity | `formatLiveInputActivityLine` |
 | Sanitize or validate reply-part delivery outcomes | `sanitizeReplyPartDeliveryOutcomes`, `isAgentReplyPartDeliveryOutcomes` |
+| Carry a display-only restart suggestion | `AgentReplyRestartProposalPart`, `sanitizeRestartProposalReason` |
 | Carry stream events across a process boundary | `AgentStreamWireFrame`, `serializeAgentStreamFrame`, `parseAgentStreamFrame` |
 | Exchange process-job state without kernel/app coupling | `ProcessJobProjection`, `ProcessJobState`, `ProcessJobErrorCode`, `parseProcessJobProjection`, `ProcessJobOperator`, `MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES` |
 | Exchange provider-auth state without exposing credentials | `ProviderAuthStatusSnapshot`, `ProviderAuthSessionSnapshot`, `ProviderAuthCheckSessionSnapshot`, `parseProviderAuthStatusSnapshot`, `parseProviderAuthSessionSnapshot`, `parseProviderAuthCheckSessionSnapshot`, `ProviderAuthOperator` |
@@ -286,6 +291,7 @@ AgentReplyPart
 AgentReplyPartDeliveryOutcome
 AgentReplyPartDeliveryType
 AgentReplyPartFailure
+AgentReplyRestartProposalPart
 AgentReplyTarget
 AgentRequestBase
 AgentRequestMetadata
@@ -558,6 +564,7 @@ readString
 redactedSecret
 sanitizeInboundHttpHeaders
 sanitizeReplyPartDeliveryOutcomes
+sanitizeRestartProposalReason
 serializeAgentStreamFrame
 setToolActivityPathRoots
 splitSubagentToolName
