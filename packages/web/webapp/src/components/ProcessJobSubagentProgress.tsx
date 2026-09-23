@@ -5,7 +5,7 @@ import { formatToolDuration } from "./duration";
 import { resolveSubagentRoute } from "./route-label";
 import { useRouteCapabilities } from "./route-capabilities";
 import { RouteBadge } from "./RouteBadge";
-import { toolArgumentPreview } from "./Subagent";
+import { formatToolPreview } from "./tool-preview";
 
 type Call = Progress["recent"][number];
 
@@ -89,19 +89,35 @@ export function ProcessJobSubagentProgress({ progress, open }: {
             const running = calls.some((call) => call.status === "running");
             const durations = calls.flatMap((call) => call.executionMs === undefined ? [] : [call.executionMs]);
             const duration = durations.length ? formatToolDuration(durations.reduce((a, b) => a + b, 0)) : undefined;
-            const previews = calls.flatMap((call) => {
-              const preview = toolArgumentPreview(call.argsSummary);
-              return preview === undefined ? [] : [preview];
-            });
+            const formatted = calls.map((call) => formatToolPreview(call.toolName, call.argsSummary, call.workdir, 48));
+            const previews = formatted.flatMap((preview) => preview === undefined ? [] : [preview.preview]);
+            const summary = formatted[0]?.command ? formatted[0].preview : clusterSummary(previews);
+            const mobileSummary = formatted[0]?.command
+              ? formatToolPreview(first.toolName, first.argsSummary, first.workdir, 26)?.preview : summary;
+            const location = formatted[0]?.location;
+            const sameLocation = location !== undefined && formatted.every((preview) => preview?.location === location);
             return <ActivityStep key={first.id} toolName={calls.length > 1 ? `${first.toolName} ×${calls.length}` : first.toolName}
-              summary={clusterSummary(previews)} failed={failedLabel(failed, calls.length > 1)}
+              summary={summary === undefined ? undefined : <span className="process-job-command-summary">
+                <span className="process-job-command-preview" title={formatted[0]?.full}>{summary}</span>
+                {formatted[0]?.command && <span className="process-job-command-preview-mobile" title={formatted[0].full}>{mobileSummary}</span>}
+                {sameLocation && <span className="process-job-command-location" title={location} aria-label={`Directory: ${location}`}>
+                  {formatted[0]?.locationLabel}
+                </span>}
+              </span>} failed={failedLabel(failed, calls.length > 1)}
               duration={running ? "running" : duration ?? (failed ? "failed" : "complete")}>
               <div className="activity-payload">
                 <ul className="process-job-subagent-calls">
-                  {calls.map((call) => <li key={call.id} data-status={call.status}>
-                    <span className="process-job-subagent-call">{call.argsSummary ?? call.toolName}</span>
-                    <span className="process-job-subagent-status">{call.status}</span>
-                  </li>)}
+                  {calls.map((call) => {
+                    const preview = formatToolPreview(call.toolName, call.argsSummary, call.workdir);
+                    return <li key={call.id} data-status={call.status}>
+                      <span className="process-job-subagent-call">
+                        <span>{preview?.full ?? call.toolName}</span>
+                        {preview?.location && <span className="process-job-command-location" title={preview.location}
+                          aria-label={`Directory: ${preview.location}`}>{preview.locationLabel}</span>}
+                      </span>
+                      <span className="process-job-subagent-status">{call.status}</span>
+                    </li>;
+                  })}
                 </ul>
               </div>
             </ActivityStep>;

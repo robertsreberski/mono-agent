@@ -1713,7 +1713,17 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-subagent-progress .activity-payload pre { max-height: none; overflow: visible; }
 .process-job-subagent-calls { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
 .process-job-subagent-calls li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
-.process-job-subagent-call { min-width: 0; overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.process-job-subagent-call { min-width: 0; flex: 1; font-family: var(--font-mono); white-space: normal; overflow-wrap: anywhere; }
+.process-job-command-summary { min-width: 0; display: flex; align-items: baseline; gap: 6px; }
+.process-job-command-preview { min-width: 0; overflow: hidden; text-overflow: clip; white-space: nowrap; }
+.process-job-command-preview-mobile { display: none; }
+@media (max-width: 600px) {
+  .process-job-command-summary:has(.process-job-command-preview-mobile) .process-job-command-preview { display: none; }
+  .process-job-command-preview-mobile { min-width: 0; display: block; white-space: nowrap; }
+}
+.process-job-command-location { flex: none; color: var(--text-muted); opacity: .7; font-family: var(--font-mono); font-size: 9px; white-space: nowrap; }
+.process-job-subagent-call .process-job-command-location { display: inline-block; margin-left: 7px; }
+.process-job-subagent-progress .activity-step-summary:has(.process-job-command-summary) { text-overflow: clip; }
 .process-job-subagent-status { flex: none; font-family: var(--font-mono); font-size: 9px; }
 .process-job-subagent-calls li[data-status="failed"] .process-job-subagent-status { color: var(--danger); }
 .process-job-subagent-calls li[data-status="running"] .process-job-subagent-status { color: var(--accent); }

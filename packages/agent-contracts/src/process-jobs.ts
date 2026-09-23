@@ -152,6 +152,8 @@ export interface ProcessJobSubagentProgress {
     readonly id: string;
     readonly toolName: string;
     readonly argsSummary?: string;
+    /** Redacted explicit command directory; older progress records omit it. */
+    readonly workdir?: string;
     readonly status: "running" | "complete" | "failed";
     readonly executionMs?: number;
   }[];
@@ -199,10 +201,11 @@ export function isProcessJobSubagentProgress(value: unknown): value is ProcessJo
   return value.recent.every((call: unknown) => {
     if (!isRecord(call)
       || !hasExactlyKeys(call, ["id", "toolName", "status",
-        ...["argsSummary", "executionMs"].filter((key) => Object.hasOwn(call, key))])
+        ...["argsSummary", "workdir", "executionMs"].filter((key) => Object.hasOwn(call, key))])
       || !boundedNonEmptyString(call.id, 256) || ids.has(call.id)
       || !boundedNonEmptyString(call.toolName, 128)
       || (call.argsSummary !== undefined && !boundedString(call.argsSummary, 256))
+      || (call.workdir !== undefined && !boundedString(call.workdir, 256))
       || !["running", "complete", "failed"].includes(String(call.status))
       || (call.executionMs !== undefined && !nonNegativeInteger(call.executionMs))) return false;
     ids.add(call.id);
