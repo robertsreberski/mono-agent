@@ -32,6 +32,14 @@ import {
 
 const cleanups: Array<() => Promise<void>> = [];
 
+// Budget for a round trip that must succeed: the dispatch send (agent-card
+// fetch, send, durable acceptance) or an observation after the responder is
+// released. These tests assert nothing about that latency, and a loaded CI
+// runner can take well over a second, so only the observer timeouts that a
+// test is actually about stay short.
+const ROUND_TRIP_TIMEOUT_MS = 5_000;
+const LIFECYCLE_TEST_TIMEOUT_MS = 20_000;
+
 afterEach(async () => {
   await Promise.allSettled(cleanups.splice(0).map((cleanup) => cleanup()));
 });
@@ -54,14 +62,14 @@ describe("A2A durable dispatch lifecycle", () => {
     const dispatch = await consumer.dispatchMessage({
       text: "durable work",
       idempotencyKey: "dispatch-one-execution-1",
-      timeoutMs: 1_000,
+      timeoutMs: ROUND_TRIP_TIMEOUT_MS,
     });
     expect(dispatch.current.metadata.a2a.state).toBe("TASK_STATE_SUBMITTED");
     expect(responderCalls).toBe(1);
 
     const observations = [
-      dispatch.observeTerminal({ timeoutMs: 1_000 }),
-      dispatch.observeTerminal({ timeoutMs: 1_000 }),
+      dispatch.observeTerminal({ timeoutMs: ROUND_TRIP_TIMEOUT_MS }),
+      dispatch.observeTerminal({ timeoutMs: ROUND_TRIP_TIMEOUT_MS }),
     ];
     gate.resolve();
     for (const observation of observations) {
@@ -80,7 +88,7 @@ describe("A2A durable dispatch lifecycle", () => {
     }
     expect(dispatch.current.text).toBe("terminal result");
     expect(responderCalls).toBe(1);
-  });
+  }, LIFECYCLE_TEST_TIMEOUT_MS);
 
   it("keeps observer cancellation and timeout independent from remote work and permits rejoin", async () => {
     const gate = deferred<void>();
@@ -98,7 +106,7 @@ describe("A2A durable dispatch lifecycle", () => {
     const dispatch = await consumer.dispatchMessage({
       text: "long work",
       idempotencyKey: "dispatch-observer-rejoin-1",
-      timeoutMs: 500,
+      timeoutMs: ROUND_TRIP_TIMEOUT_MS,
     });
 
     await expect(dispatch.observeTerminal({ timeoutMs: 5 })).rejects.toMatchObject({
@@ -109,14 +117,14 @@ describe("A2A durable dispatch lifecycle", () => {
     observer.abort(new Error("caller stopped observing"));
     await expect(abortedObservation).rejects.toBeInstanceOf(A2AConsumerError);
 
-    const rejoined = dispatch.observeTerminal({ timeoutMs: 1_000 });
+    const rejoined = dispatch.observeTerminal({ timeoutMs: ROUND_TRIP_TIMEOUT_MS });
     gate.resolve();
     await expect(rejoined).resolves.toMatchObject({
       status: "completed",
       response: { text: "survived observer abort" },
     });
     expect(responderCalls).toBe(1);
-  });
+  }, LIFECYCLE_TEST_TIMEOUT_MS);
 
   it("persists explicit cancellation durably and replays it after restart", async () => {
     const stateDir = await temporaryStateDir();
