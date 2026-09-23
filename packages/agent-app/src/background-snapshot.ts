@@ -4,7 +4,7 @@ import { chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rm, writeFile }
 import { join, resolve } from "node:path";
 
 import { accountHomeDirectory } from "./account-home.js";
-import { loadAppCoreConfig } from "./app-config.js";
+import { loadAppCoreConfig, type PrivateBackgroundRuntimePaths } from "./app-config.js";
 import {
   loadBackgroundSnapshotKey,
   loadOrCreateBackgroundSnapshotKey,
@@ -80,8 +80,10 @@ export function decodeBackgroundSnapshot(encoded: string): BackgroundSnapshot {
 export interface MaterializedBackgroundRuntimeInputs {
   /** Owner-only immutable copy read by every app/channel config loader. */
   readonly configPath: string;
-  /** Frozen effective environment; Identity/Soul/MCP config resolve to owner-only copies. */
+  /** Frozen effective environment; only adapters/secrets/process protocols use it. */
   readonly environment: Record<string, string | undefined>;
+  /** Exact private paths passed only through the internal app config input. */
+  readonly privateRuntimePaths: PrivateBackgroundRuntimePaths;
   dispose(): Promise<void>;
 }
 
@@ -351,11 +353,11 @@ export async function materializeBackgroundRuntimeInputs(input: {
     await chmod(directory, 0o500);
     return {
       configPath,
-      environment: {
-        ...input.env,
-        MONO_AGENT_IDENTITY_PATH: identityPath,
-        ...(soulPath === undefined ? {} : { MONO_AGENT_SOUL_PATH: soulPath }),
-        ...(mcpConfigPath === undefined ? {} : { MONO_AGENT_MCP_CONFIG_PATH: mcpConfigPath }),
+      environment: { ...input.env },
+      privateRuntimePaths: {
+        identityPath,
+        ...(soulPath === undefined ? {} : { soulPath }),
+        ...(mcpConfigPath === undefined ? {} : { mcpConfigPath }),
       },
       async dispose(): Promise<void> {
         if (disposed) return;

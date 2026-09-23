@@ -15,6 +15,7 @@ export interface MemoryHealthControllerPort {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly logger: MonoAgentAppLogger | undefined;
   stopped: boolean;
   traceSource: TraceSourceHandle | undefined;
@@ -89,7 +90,8 @@ export async function computeMemoryHealth(controller: MemoryHealthControllerPort
   const generation = controller.memoryHealthGeneration;
   let config: MonoAgentConfig;
   try {
-    config = await loadAppCoreConfig({ env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath });
+    config = await loadAppCoreConfig({ env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+      ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) });
   } catch {
     return unknownNoMemoryHealth();
   }

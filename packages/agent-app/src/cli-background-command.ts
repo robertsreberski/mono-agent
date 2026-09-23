@@ -323,7 +323,10 @@ async function runForeground(
     const appOptions = {
       cwd,
       configPath,
-      ...(runtimeInputs === undefined ? {} : { configReadPath: runtimeInputs.configPath }),
+      ...(runtimeInputs === undefined ? {} : {
+        configReadPath: runtimeInputs.configPath,
+        privateRuntimePaths: runtimeInputs.privateRuntimePaths,
+      }),
       env: runtimeInputs?.environment ?? startupEnvironment,
       logger: consoleLogger(),
       ...(backgroundSnapshot === undefined ? {} : { backgroundSnapshot }),

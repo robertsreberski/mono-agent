@@ -16,7 +16,16 @@ import { assertKnownAppConfigKeys } from "./config-reference.js";
 // The structural shape moved to @mono-agent/agent-contracts (ChannelConfigInput)
 // so channel drivers can be authored against the neutral contract; this alias
 // preserves the historical app-side name.
-export type MonoAgentAppConfigInput = ChannelConfigInput;
+export interface PrivateBackgroundRuntimePaths {
+  readonly identityPath: string;
+  readonly soulPath?: string;
+  readonly mcpConfigPath?: string;
+}
+
+export type MonoAgentAppConfigInput = ChannelConfigInput & {
+  /** Internal managed-worker paths to exact, attested private copies; never read from env. */
+  readonly privateRuntimePaths?: PrivateBackgroundRuntimePaths;
+};
 
 export async function loadAppCoreConfig(
   input: MonoAgentAppConfigInput,
@@ -24,11 +33,25 @@ export async function loadAppCoreConfig(
 ): Promise<MonoAgentConfig> {
   const { json } = await readMonoAgentConfigJson(input.configPath);
   assertKnownAppConfigKeys(json);
-  return await loadMonoAgentConfig({
+  const config = await loadMonoAgentConfig({
     cwd: input.cwd,
     jsonPath: input.configPath,
     ...options,
   });
+  const paths = input.privateRuntimePaths;
+  if (paths === undefined) return config;
+  return {
+    ...config,
+    context: {
+      ...config.context,
+      identityPath: paths.identityPath,
+      ...(paths.soulPath === undefined ? {} : { soulPath: paths.soulPath }),
+    },
+    tools: {
+      ...config.tools,
+      ...(paths.mcpConfigPath === undefined ? {} : { mcpConfigPath: paths.mcpConfigPath }),
+    },
+  };
 }
 
 export function isAppCoreConfigError(error: unknown): error is MonoAgentConfigError {

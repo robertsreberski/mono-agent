@@ -47,6 +47,7 @@ export interface TraceabilityControllerPort {
   readonly cwd: string;
   readonly configPath: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly traceDefaults: AppTraceDefaults | undefined;
   readonly backgroundSnapshot: BackgroundSnapshot | undefined;
@@ -108,7 +109,8 @@ export async function startTraceability(controller: TraceabilityControllerPort, 
   }
   let artifactDirForRetention: string | undefined;
   try {
-    const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+    const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+      ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
     await controller.refreshSelectedSkillsSnapshot(reason);
     await controller.refreshMemoryHealthSnapshot(reason);
     const [registryDir, artifactDir, sourceId, label, heartbeatMs, globalDiscovery] = await Promise.all([
@@ -174,7 +176,8 @@ export async function startTraceability(controller: TraceabilityControllerPort, 
 
 export async function refreshSandboxStatus(controller: TraceabilityControllerPort, reason: string): Promise<SandboxStatus> {
   try {
-    const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+    const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+      ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
     const coreConfig = await loadAppCoreConfig(input);
     const sandboxEngine = controller.processJobsProtectionPosture?.suppressSyntheticSandbox === true
       ? undefined
@@ -305,7 +308,8 @@ export async function observabilityContext(controller: TraceabilityControllerPor
   readonly sourceLabel?: string;
   readonly configPath?: string;
 }> {
-  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+      ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
   const [sourceId, sourceLabel] = await Promise.all([
     resolveAppTraceSourceId(input, controller.traceDefaults, controller.configPath),
     resolveAppTraceSourceLabel(input, controller.traceDefaults),
@@ -365,7 +369,8 @@ export async function stopTraceSource(controller: TraceabilityControllerPort, re
 
 export async function refreshSelectedSkillsSnapshot(controller: TraceabilityControllerPort, reason: string): Promise<void> {
   try {
-    const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+    const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+      ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
     controller.rememberSelectedSkills(await loadAppCoreConfig(input));
   } catch (error) {
     controller.selectedSkillsValue = undefined;
