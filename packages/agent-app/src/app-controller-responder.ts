@@ -32,6 +32,8 @@ import {
   isSetConversationTitleToolAllowed,
 } from "./conversation-title.js";
 import { composeRuntimeOptionExtensions, type RuntimeOptionsExtension } from "./runtime-option-extensions.js";
+import { createRestartProposalService, isProposeRestartToolAllowed } from "./restart-proposal.js";
+import type { TuiRestartAuthority } from "@mono-agent/operator-adapter";
 import { isRetiredProjectSkillName } from "./project-skills.js";
 import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "./run-history.js";
 import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "./session-history.js";
@@ -105,6 +107,8 @@ export interface ResponderControllerPort {
   readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   readonly seenNotifyDestinations: SeenNotifyDestinationCache;
   readonly providerAuthObservations?: ProviderAuthObservationTracker;
+  readonly restartAuthority?: TuiRestartAuthority | undefined;
+  readonly restartToolKeyed?: boolean;
   providerUsageFor?(config: MonoAgentConfig): ProviderUsageOperator;
   sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined;
   memoryStore(coreConfig: MonoAgentConfig): Promise<ConfiguredMemory>;
@@ -217,6 +221,13 @@ export async function buildResponder(
   const adapterSendTools = await controller.adapterSendToolsRuntimeOptions(coreConfig);
   const historyToolSupport = historyToolRouteSupport(coreConfig);
   const replyPartBudget = createReplyPartBudget();
+  const restartProposals = isProposeRestartToolAllowed(coreConfig.tools)
+    ? createRestartProposalService({
+        authority: controller.restartAuthority,
+        isKeyed: () => controller.restartToolKeyed === true,
+        budget: replyPartBudget,
+      })
+    : undefined;
   const mcpAppsEnabled = runtimeRouteSupportsMcpApps(coreConfig);
   const replyArtifactStorage = replyArtifactStorageBudgetFor(
     coreConfig.artifacts.dir,
@@ -318,6 +329,7 @@ export async function buildResponder(
     runHistoryExtension,
     sessionHistoryExtension,
     conversationTitleExtension,
+    restartProposals?.extension,
     consoleProjectsExtension,
     mcpAppsExtension,
     replyArtifactsExtension,
@@ -432,8 +444,9 @@ export async function buildResponder(
     },
   });
   const replyResponder = replyArtifacts.wrapResponder(responder);
+  const proposedReplyResponder = restartProposals === undefined ? replyResponder : restartProposals.wrapResponder(replyResponder);
   const richReplyResponder = postedReplyHistory.wrapResponder(
-    mcpApps === undefined ? replyResponder : mcpApps.wrapResponder(replyResponder),
+    mcpApps === undefined ? proposedReplyResponder : mcpApps.wrapResponder(proposedReplyResponder),
   );
   return bindProcessJobWakeContextToResponder(richReplyResponder);
 }

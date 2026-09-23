@@ -60,5 +60,6 @@ function stableReplyPartIdentity(part: AgentReplyPart): string {
   if (part.type === "mcp_app") {
     return `mcp_app:${part.serverName}:${part.toolName}:${part.resourceUri}:${part.id}`;
   }
+  if (part.type === "restart_proposal") return `restart_proposal:${part.id}`;
   return `failure:${part.id}:${part.code}`;
 }

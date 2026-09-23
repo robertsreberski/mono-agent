@@ -53,6 +53,7 @@ export interface ChannelsControllerPort {
   readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   readonly providerAuthObservations?: ProviderAuthObservationTracker;
   readonly restartAuthority?: TuiRestartAuthority | undefined;
+  restartToolKeyed?: boolean;
   providerUsageFor?(config: MonoAgentConfig): ProviderUsageOperator;
   setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
   rememberSelectedSkills(coreConfig: MonoAgentConfig): void;
@@ -199,6 +200,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
         }
         controller.channelStartGenerations.delete(driver.id);
         controller.running.delete(driver.id);
+        if (driver.id === "tui") controller.restartToolKeyed = false;
         controller.setStatus(driver.id, { kind: "failed", reason: failureReason });
         controller.logger?.error?.(`${driver.label} channel stopped with an error.`, { reason: failureReason });
         // The running-channel entry (which holds the stop/reload dispose handle)
@@ -317,6 +319,12 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
               ...protectionSummary,
               processJobsDegraded: controller.processJobsDegradation,
             };
+    if (driver.id === "tui") {
+      controller.restartToolKeyed = appOwnedTuiStart !== undefined
+        && typeof (channelStartInput.config as { readonly apiKey?: unknown }).apiKey === "string"
+        && (channelStartInput.config as { readonly apiKey: string }).apiKey.length > 0
+        && controller.restartAuthority !== undefined;
+    }
     controller.running.set(driver.id, {
       ...runningChannel,
       summary,
@@ -336,6 +344,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
     );
     return status;
   } catch (error) {
+    if (driver.id === "tui") controller.restartToolKeyed = false;
     if (disposeResponder !== undefined) {
       await disposeChannelResponder(controller, driver, disposeResponder, `${reason}:start-failure`);
     }
@@ -349,6 +358,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
 export async function stopChannel(controller: ChannelsControllerPort, id: ChannelId, reason: string): Promise<void> {
   const startInFlight = controller.startsInFlight.get(id);
   controller.channelStartGenerations.delete(id);
+  if (id === "tui") controller.restartToolKeyed = false;
   const driver = controller.driversById.get(id);
   const runningChannel = controller.running.get(id);
   if (driver !== undefined && runningChannel !== undefined) {
