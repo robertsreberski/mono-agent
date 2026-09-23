@@ -110,7 +110,7 @@ function createProposalServer(propose: (reason: string | undefined) => { readonl
     return {
       ...(result.status === "unavailable" ? { isError: true } : {}),
       content: [{ type: "text" as const, text: result.status === "proposed"
-        ? "Restart proposed to the web-console user. Nothing has been restarted; the user must confirm separately."
+        ? "A restart proposal was shown to the web-console user with this reply. Nothing has been restarted; the user must confirm separately."
         : result.status === "already_proposed"
           ? "A restart was already proposed in this reply. Nothing has been restarted."
           : "A restart proposal could not be added to this reply. Nothing has been restarted." }],
