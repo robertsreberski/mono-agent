@@ -31,7 +31,7 @@ export interface InitMonoAgentFolderOptions {
   readonly secureExistingDotenv?: boolean;
   /** Guided-first-run guard: atomically create config and fail if another writer won the path. */
   readonly requireConfigCreation?: boolean;
-  /** Effective CLI environment used only to reject identity-changing memory overrides. */
+  /** Effective CLI environment for credential names explicitly referenced by JSON. */
   readonly env?: Readonly<Record<string, string | undefined>>;
   /** @internal Test-only fault/race seams for first-run managed-memory publication. */
   readonly firstRunManagedMemoryHooks?: FirstRunManagedMemoryHooks;

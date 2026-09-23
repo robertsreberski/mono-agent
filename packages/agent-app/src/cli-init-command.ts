@@ -930,9 +930,8 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
     dir: cwd,
     answers,
     dryRun: args.dryRun,
-    // Scaffold-only init has no immediate launchd-minimal worker proof. Reject
-    // both shell and persisted memory-identity overrides instead of creating a
-    // generation at a different path/tier than a follow-up validate would use.
+    // Memory identity is authored in JSON; the environment is only available
+    // to resolve credentials that the generated JSON names.
     env: { ...environment.shellEnv, ...environment.dotenvEnv },
   });
 
