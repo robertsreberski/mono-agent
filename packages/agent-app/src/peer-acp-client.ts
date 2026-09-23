@@ -16,6 +16,8 @@ export interface PeerAcpTurn {
   readonly env?: NodeJS.ProcessEnv;
   /** Test seam for a built bridge CLI when the module runs through Vitest from src/. */
   readonly cliPath?: string;
+  /** Test seam for spawn failures; production always uses process.execPath. */
+  readonly executable?: string;
   readonly workspace: string;
   readonly artifactDir: string;
   readonly caller: string;
@@ -43,13 +45,15 @@ function limitedFrames(): Transform {
 
 /** One connection per turn; no response, prompt or child is silently retried. */
 export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId: string; answer: string }> {
-  const child: ChildProcessWithoutNullStreams = spawn(process.execPath,
+  const child: ChildProcessWithoutNullStreams = spawn(options.executable ?? process.execPath,
     [options.cliPath ?? fileURLToPath(new URL("./cli.js", import.meta.url)), "bridge", "acp", "--source-id", options.sourceId],
     { stdio: ["pipe", "pipe", "pipe"], ...(options.env ? { env: options.env } : {}) });
   // Drain stderr, but never surface bridge diagnostics (which may mention paths or secrets) to the model.
   child.stderr.resume();
   const frames = limitedFrames();
   child.stdout.pipe(frames);
+  // An async spawn failure otherwise emits an uncaught ChildProcess error.
+  child.on("error", (error) => frames.destroy(error));
   const app = client({ name: "mono-agent-peer-client" });
   let answer = "";
   let oversized = false;
@@ -65,11 +69,22 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
   ));
   const timeout = AbortSignal.timeout(30 * 60_000);
   let sessionId = options.sessionId;
+  let cancelGrace: ReturnType<typeof setTimeout> | undefined;
   let forceKill: ReturnType<typeof setTimeout> | undefined;
-  const cancel = async () => {
-    if (forceKill) return;
-    forceKill = setTimeout(() => child.kill(), 2_500);
+  let exited = false;
+  let terminating = false;
+  child.once("exit", () => { exited = true; if (cancelGrace) clearTimeout(cancelGrace); if (forceKill) clearTimeout(forceKill); });
+  const terminate = () => {
+    if (exited || terminating) return;
+    terminating = true;
+    child.kill("SIGTERM");
+    forceKill = setTimeout(() => { if (!exited) child.kill("SIGKILL"); }, 2_500);
     forceKill.unref?.();
+  };
+  const cancel = async () => {
+    if (cancelGrace || exited) return;
+    cancelGrace = setTimeout(terminate, 2_500);
+    cancelGrace.unref?.();
     if (sessionId !== undefined) {
       try { await connection.agent.notify(methods.agent.session.cancel, { sessionId }); } catch { /* transport may already be gone */ }
     }
@@ -132,7 +147,7 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
     options.signal.removeEventListener("abort", abort);
     timeout.removeEventListener("abort", abort);
     connection.close();
-    if (forceKill) clearTimeout(forceKill);
-    child.kill();
+    if (cancelGrace) clearTimeout(cancelGrace);
+    terminate();
   }
 }

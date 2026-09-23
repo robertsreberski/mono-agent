@@ -149,6 +149,16 @@ describe("peer ACP client over a real spawned bridge", () => {
     expect(f.turns).toHaveLength(1);
   }, 30_000);
 
+  it("rejects a child spawn failure without an uncaught process error", async () => {
+    const f = await fixture();
+    await expect(runPeerAcpTurn({
+      sourceId: "peer-test", executable: join(f.root, "no-such-executable"), cliPath,
+      workspace: f.root, artifactDir: f.artifactDir, caller: "agent-test", conversation: "web:caller",
+      depth: 1, text: "request", signal: new AbortController().signal, onSession: async () => {},
+    })).rejects.toThrow(/Peer ACP turn failed/u);
+    expect(f.turns).toHaveLength(0);
+  }, 30_000);
+
   it("fails closed when the bridge cannot find the configured source", async () => {
     const f = await fixture();
     await expect(runPeerAcpTurn({
