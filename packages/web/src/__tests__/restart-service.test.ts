@@ -15,6 +15,7 @@ async function scenario(options: {
   let discovered = fakeDiscoveredAgent({ apiKey: "fixture-key" });
   let ready = true;
   let supported = true;
+  let infoPidOverride: number | undefined;
   let now = new Date("2026-09-23T10:00:00.000Z");
   let calls = 0;
   let restartCalls = 0;
@@ -26,7 +27,7 @@ async function scenario(options: {
       if (url.endsWith("/v1/info")) {
         calls++;
         if (!ready) throw new Error("info probe unavailable");
-        return Response.json({ schema: 1, pid: discovered.source.pid, capabilities: { restart: { supported, ...(supported ? {} : { reason: "Restart=no" }) } } });
+        return Response.json({ schema: 1, pid: infoPidOverride ?? discovered.source.pid, capabilities: { restart: { supported, ...(supported ? {} : { reason: "Restart=no" }) } } });
       }
       if (url.endsWith("/v1/restart")) {
         restartCalls++;
@@ -42,6 +43,7 @@ async function scenario(options: {
   return { service, root, get calls() { return calls; }, get restartCalls() { return restartCalls; },
     updateAgent(next: typeof discovered) { discovered = next; },
     setReady(value: boolean) { ready = value; }, setSupported(value: boolean) { supported = value; },
+    setInfoPid(value: number | undefined) { infoPidOverride = value; },
     advance(ms: number) { now = new Date(now.getTime() + ms); },
     agent: () => discovered,
   };
@@ -152,6 +154,21 @@ describe("web-owned restart lifecycle", () => {
       expect(op.stage).toBe("requesting");
       expect(op.outcome).toBeUndefined();
       expect(s.service.store.restartOperation(op.id)?.operationId).toBeUndefined();
+    } finally { await s.service.stop(); }
+  });
+
+  it("does not settle success when a new registry process is answered by a different operator PID", async () => {
+    const s = await scenario();
+    try {
+      const operation = await s.service.requestAgentRestart("agent-one");
+      const old = s.agent();
+      s.updateAgent(fakeDiscoveredAgent({ ...old, source: { ...old.source, pid: 900, startedAt: "2026-09-23T10:01:00Z" } }));
+      s.setInfoPid(901);
+      await s.service.refreshAgents();
+      expect(s.service.restartStatus(operation.id).outcome).toBeUndefined();
+      s.setInfoPid(900);
+      await s.service.refreshAgents();
+      expect(s.service.restartStatus(operation.id)).toMatchObject({ stage: "back_online", outcome: "success" });
     } finally { await s.service.stop(); }
   });
 

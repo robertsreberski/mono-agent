@@ -1546,7 +1546,8 @@ export class WebService {
     const agent = this.store.getAgent(operation.sourceId);
     const connection = this.connections.get(operation.sourceId);
     if (agent?.generation === undefined || agent.generation === operation.generation
-      || agent.status === "offline" || connection === undefined || connection.processGeneration !== agent.generation) return;
+      || agent.status === "offline" || connection === undefined || connection.processGeneration !== agent.generation
+      || connection.pid === undefined || connection.info.pid !== connection.pid) return;
     // nextConnections contains only successful /v1/info probes; an endpoint
     // move with the same PROCESS digest cannot pass this comparison.
     if (operation.operationId !== undefined) {
