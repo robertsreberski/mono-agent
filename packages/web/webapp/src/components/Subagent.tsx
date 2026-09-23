@@ -208,11 +208,11 @@ function CommandSummary({ preview, summary }: {
 }) {
   if (summary === undefined) return null;
   if (preview?.location === undefined) return <>{summary}</>;
-  return <span className="process-job-command-summary">
-    <span className="process-job-command-preview" title={preview.full}>{summary}</span>
-    <span className="process-job-command-preview-mobile" title={preview.full}>{shortenPreview(preview.full, "command", 26)}</span>
-    <span className="process-job-command-location" title={preview.location}
-      aria-label={`Directory: ${preview.location}`}>{preview.locationLabel}</span>
+  return <span className="process-job-command-summary" title={preview.location}>
+    <span className="process-job-command-preview" title={preview.location}>{summary}</span>
+    <span className="process-job-command-preview-mobile" title={preview.location}>
+      {shortenPreview(preview.full, "command", 36)}
+    </span>
   </span>;
 }
 

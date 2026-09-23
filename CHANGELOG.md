@@ -3,8 +3,9 @@
 ## Unreleased
 
 - Show commands first in background agent job progress and inline subagent
-  activity, with the command directory separate and expanded job calls wrapping
-  rather than hiding their trailing arguments.
+  activity: the working directory appears once in the job metadata line instead
+  of a `cd` prefix, and expanded job calls wrap rather than hiding their
+  trailing arguments.
 
 - Fix the Compact button not appearing for agents in the web console when
   manual compaction is available.

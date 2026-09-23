@@ -19,6 +19,16 @@ function clusters(calls: readonly Call[]): Call[][] {
   return groups;
 }
 
+/** Latest running command's directory wins; otherwise use the latest known command directory. */
+function jobDirectory(progress: Progress | undefined): ReturnType<typeof formatToolPreview> {
+  const withDirectory = progress?.recent.flatMap((call) => {
+    if (call.toolName !== "Bash" && call.toolName !== "Exec") return [];
+    const preview = formatToolPreview(call.toolName, call.argsSummary, call.workdir);
+    return preview?.location === undefined ? [] : [{ call, preview }];
+  }) ?? [];
+  return (withDirectory.filter(({ call }) => call.status === "running").at(-1) ?? withDirectory.at(-1))?.preview;
+}
+
 /** One quiet, unlabelled line for child route/calls plus exceptional host facts. */
 export function ProcessJobMetaLine({ progress, status, supplements = [] }: {
   readonly progress?: Progress;
@@ -26,6 +36,7 @@ export function ProcessJobMetaLine({ progress, status, supplements = [] }: {
   readonly supplements?: readonly ReactNode[];
 }) {
   const capabilities = useRouteCapabilities();
+  const directory = jobDirectory(progress);
   const route = progress?.route === undefined ? undefined : resolveSubagentRoute({
     requested: progress.route.requested,
     ...(progress.route.executed === undefined ? {} : { executed: progress.route.executed }),
@@ -48,6 +59,8 @@ export function ProcessJobMetaLine({ progress, status, supplements = [] }: {
     />]),
     ...(progress === undefined ? [] : [<span key="tools">{progress.toolCalls} {progress.toolCalls === 1 ? "tool" : "tools"}{progress.failedCalls > 0
       ? `, ${progress.failedCalls} failed` : ""}</span>]),
+    ...(directory?.location === undefined ? [] : [<span key="directory" className="process-job-child-directory"
+      title={directory.location} aria-label={`Directory: ${directory.location}`}>{directory.locationLabel}</span>]),
     ...supplements,
   ];
   if (items.length === 0) return null;
@@ -99,28 +112,20 @@ export function ProcessJobSubagentProgress({ progress, open }: {
             const currentPreview = formatted[currentIndex];
             const summary = currentPreview?.command ? currentPreview.preview : clusterSummary(previews);
             const mobileSummary = currentPreview?.command
-              ? formatToolPreview(current.toolName, current.argsSummary, current.workdir, 24)?.preview : summary;
-            const location = formatted[0]?.location;
-            const sameLocation = location !== undefined && formatted.every((preview) => preview?.location === location);
+              ? formatToolPreview(current.toolName, current.argsSummary, current.workdir, 34)?.preview : summary;
             return <ActivityStep key={first.id} toolName={calls.length > 1 ? `${first.toolName} ×${calls.length}` : first.toolName}
-              summary={summary === undefined ? undefined : <span className="process-job-command-summary">
-                <span className="process-job-command-preview" title={currentPreview?.full}>{summary}</span>
-                {currentPreview?.command && <span className="process-job-command-preview-mobile" title={currentPreview.full}>{mobileSummary}</span>}
-                {sameLocation && <span className="process-job-command-location" title={location} aria-label={`Directory: ${location}`}>
-                  {currentPreview?.locationLabel}
-                </span>}
+              summary={summary === undefined ? undefined : <span className="process-job-command-summary" title={currentPreview?.location}>
+                <span className="process-job-command-preview" title={currentPreview?.location ?? currentPreview?.full}>{summary}</span>
+                {currentPreview?.command && <span className="process-job-command-preview-mobile"
+                  title={currentPreview.location ?? currentPreview.full}>{mobileSummary}</span>}
               </span>} failed={failedLabel(failed, calls.length > 1)}
               duration={running ? "running" : duration ?? (failed ? "failed" : "complete")}>
               <div className="activity-payload">
                 <ul className="process-job-subagent-calls">
                   {calls.map((call) => {
                     const preview = formatToolPreview(call.toolName, call.argsSummary, call.workdir);
-                    return <li key={call.id} data-status={call.status}>
-                      <span className="process-job-subagent-call">
-                        <span>{preview?.full ?? call.toolName}</span>
-                        {preview?.location && <span className="process-job-command-location" title={preview.location}
-                          aria-label={`Directory: ${preview.location}`}>{preview.locationLabel}</span>}
-                      </span>
+                    return <li key={call.id} data-status={call.status} title={preview?.location}>
+                      <span className="process-job-subagent-call">{preview?.full ?? call.toolName}</span>
                       <span className="process-job-subagent-status">{call.status}</span>
                     </li>;
                   })}

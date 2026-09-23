@@ -1721,8 +1721,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .process-job-command-summary:has(.process-job-command-preview-mobile) .process-job-command-preview { display: none; }
   .process-job-command-preview-mobile { min-width: 0; display: block; white-space: nowrap; }
 }
-.process-job-command-location { flex: none; color: var(--text-muted); opacity: .7; font-family: var(--font-mono); font-size: 9px; white-space: nowrap; }
-.process-job-subagent-call .process-job-command-location { display: inline-block; margin-left: 7px; }
+.process-job-child-directory { color: var(--text-muted); opacity: .78; font-family: var(--font-mono); white-space: nowrap; }
 .process-job-subagent-progress .activity-step-summary:has(.process-job-command-summary) { text-overflow: clip; }
 .process-job-subagent-status { flex: none; font-family: var(--font-mono); font-size: 9px; }
 .process-job-subagent-calls li[data-status="failed"] .process-job-subagent-status { color: var(--danger); }
