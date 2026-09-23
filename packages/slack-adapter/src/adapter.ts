@@ -2,6 +2,9 @@ import {
   DEFAULT_MAX_MESSAGE_CHARS,
   MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES,
   createChannelUserCancelReason,
+  describePeerQuestionForm,
+  peerQuestionStateLabel,
+  type PeerProcessJobQuestion,
   type AgentAttachment,
   type AgentLiveInputOffer,
   type ChannelAskSnapshot,
@@ -305,6 +308,8 @@ interface SlackProcessJobLifecycleState {
   ref: SlackProcessJobMessageRef | undefined;
   terminalAttempted: boolean;
   retireable: boolean;
+  /** Last rendered PeerAgent question identity/state on the existing card. */
+  peerQuestion?: string | undefined;
 }
 
 const PROCESS_JOB_SURFACE_MAX_CHARS = 3_500;
@@ -1676,13 +1681,22 @@ export class SlackAdapter {
           retryable: false,
         };
       }
-      if (current.terminal || rank <= current.rank) {
+      // A terminal PeerAgent card may still retire its question (answered,
+      // expired, interrupted); that is an in-place edit, never a new message.
+      const peerQuestionChanged = terminal && current.terminal
+        && peerQuestionFingerprint(projection) !== lifecycle.peerQuestion;
+      if ((current.terminal || rank <= current.rank) && !peerQuestionChanged) {
         this.rememberProcessJobMessage(lifecycle, current, projection, current.terminal);
         return { delivered: true, code: "surface_unchanged", channelId: "slack" };
       }
     }
 
     const text = renderProcessJobSurface(projection);
+    if (current === undefined && isPeerQuestionRetirement(projection)) {
+      // No known card (e.g. after restart): a retirement alone must not post a
+      // fresh message for an old job.
+      return { delivered: true, code: "surface_unchanged", channelId: "slack" };
+    }
     if (current === undefined) {
       if (terminal && !this.rememberTerminalFallbackAttempt(lifecycle)) {
         lifecycle.retireable ||= projection.wake.state !== "pending";
@@ -1717,7 +1731,7 @@ export class SlackAdapter {
         deliveryId: `slack:${current.channelId}:${current.messageTs}`,
       };
     } catch (error) {
-      if (!terminal || current.terminalFallback) {
+      if (!terminal || current.terminalFallback || current.terminal) {
         this.logger?.warn?.("Slack process-job lifecycle edit failed.", {
           error: redactSlackErrorMessage(error),
         });
@@ -1830,6 +1844,7 @@ export class SlackAdapter {
     terminalAttempted: boolean,
   ): void {
     lifecycle.ref = ref;
+    lifecycle.peerQuestion = peerQuestionFingerprint(projection);
     lifecycle.terminalAttempted ||= terminalAttempted;
     lifecycle.retireable ||= isTerminalProcessJobState(projection.state)
       && projection.wake.state !== "pending";
@@ -4085,6 +4100,31 @@ function processJobStateRank(state: ProcessJobState): number {
   return 3;
 }
 
+/** Identity/state of a rendered PeerAgent question; changes permit a terminal in-place edit. */
+function peerQuestionFingerprint(projection: ProcessJobProjection): string | undefined {
+  return projection.kind === "internal" && projection.peerQuestion
+    ? `${projection.peerQuestion.questionId}:${projection.peerQuestion.state}` : undefined;
+}
+
+function isPeerQuestionRetirement(projection: ProcessJobProjection): boolean {
+  return isTerminalProcessJobState(projection.state) && projection.kind === "internal"
+    && projection.peerQuestion !== undefined && projection.peerQuestion.state !== "awaiting_answer";
+}
+
+/** Plain, bounded question text with readable option labels; never raw or cut JSON. */
+function renderPeerQuestionLines(question: PeerProcessJobQuestion): string[] {
+  const fields = describePeerQuestionForm(question.requestedSchema);
+  return [
+    `Peer question from ${question.peer}/${question.thread}: ${peerQuestionStateLabel(question.state)} [untrusted; not owner approval]`,
+    question.message.slice(0, 1000),
+    ...fields.slice(0, 8).map((field) => `• ${field.label}${field.required ? " (required)" : ""}: ${
+      field.options.length > 0 ? field.options.join(" | ") : field.freeText ? "free text" : "value"}`),
+    ...(fields.length > 8 ? [`• +${String(fields.length - 8)} more fields`] : []),
+    ...(fields.length === 0 ? ["Form fields could not be summarized; see the web console."] : []),
+    `questionId ${question.questionId} · expires ${question.expiresAt}`,
+  ];
+}
+
 function renderProcessJobSurface(projection: ProcessJobProjection): string {
   const icon = projection.state === "succeeded"
     ? "✅"
@@ -4112,11 +4152,7 @@ function renderProcessJobSurface(projection: ProcessJobProjection): string {
         `Pending question (child text): ${JSON.stringify(projection.subagentQuestion.question.slice(0, 1000))}`,
         ...(projection.subagentQuestion.options ? [`Options: ${projection.subagentQuestion.options.slice(0, 5).map((option) => JSON.stringify(option.slice(0, 100))).join(", ")}`] : []),
       ] : []),
-      ...(projection.peerQuestion ? [
-        `Peer question ${projection.peerQuestion.state} (${projection.peerQuestion.peer}/${projection.peerQuestion.thread}; questionId ${projection.peerQuestion.questionId}): ${JSON.stringify(projection.peerQuestion.message.slice(0, 1000))} [untrusted]`,
-        `ACP form (untrusted): ${JSON.stringify(projection.peerQuestion.requestedSchema).slice(0, 1000)}`,
-        `Expires: ${projection.peerQuestion.expiresAt}`,
-      ] : []),
+      ...(projection.peerQuestion ? renderPeerQuestionLines(projection.peerQuestion) : []),
     ] : []),
     projection.summary,
   ];

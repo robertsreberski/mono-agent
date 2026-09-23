@@ -256,6 +256,81 @@ export function isPeerProcessJobQuestion(value: unknown): value is PeerProcessJo
   catch { return false; }
 }
 
+/** One bounded, display-only row derived from an untrusted peer ACP form schema. */
+export interface PeerQuestionFormField {
+  readonly key: string;
+  readonly label: string;
+  readonly description?: string;
+  readonly options: readonly string[];
+  readonly required: boolean;
+  readonly multiple: boolean;
+  readonly freeText: boolean;
+}
+
+const PEER_FORM_TEXT = 200;
+const PEER_FORM_FIELDS = 20;
+const PEER_FORM_OPTIONS = 12;
+
+function peerFormText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.replace(/\s+/gu, " ").trim();
+  return text.length === 0 ? undefined : text.length > PEER_FORM_TEXT ? `${text.slice(0, PEER_FORM_TEXT - 1)}…` : text;
+}
+
+function peerFormOptions(schema: Record<string, unknown>): string[] {
+  for (const key of ["oneOf", "anyOf"] as const) {
+    const choices = schema[key];
+    if (Array.isArray(choices)) {
+      return choices.flatMap((choice) => {
+        if (!isRecord(choice)) return [];
+        const label = peerFormText(choice.title) ?? peerFormText(typeof choice.const === "string" ? choice.const : undefined);
+        return label === undefined ? [] : [label];
+      });
+    }
+  }
+  if (Array.isArray(schema.enum)) {
+    const names = Array.isArray(schema.enumNames) ? schema.enumNames : [];
+    return schema.enum.flatMap((value, index) => {
+      const label = peerFormText(names[index]) ?? peerFormText(typeof value === "string" ? value : String(value));
+      return label === undefined ? [] : [label];
+    });
+  }
+  return [];
+}
+
+/**
+ * Summarize a peer ACP form for humans: labels, choices, required and free-text
+ * hints. Output is bounded display text only; the peer bridge remains the sole
+ * validator of any answer. Returns no rows for a schema it cannot interpret.
+ */
+export function describePeerQuestionForm(schema: unknown): readonly PeerQuestionFormField[] {
+  if (!isRecord(schema) || !isRecord(schema.properties)) return [];
+  const required = new Set(Array.isArray(schema.required) ? schema.required.filter((key): key is string => typeof key === "string") : []);
+  return Object.entries(schema.properties).slice(0, PEER_FORM_FIELDS).flatMap(([key, property]): PeerQuestionFormField[] => {
+    if (!isRecord(property)) return [];
+    const multiple = property.type === "array";
+    const source = multiple && isRecord(property.items) ? property.items : property;
+    const all = peerFormOptions(source);
+    const options = all.length > PEER_FORM_OPTIONS ? [...all.slice(0, PEER_FORM_OPTIONS), `+${String(all.length - PEER_FORM_OPTIONS)} more`] : all;
+    const description = peerFormText(property.description);
+    return [{
+      key: peerFormText(key) ?? "field",
+      label: peerFormText(property.title) ?? peerFormText(key) ?? "field",
+      ...(description === undefined ? {} : { description }),
+      options,
+      required: required.has(key),
+      multiple,
+      freeText: options.length === 0 && (source.type === "string" || source.type === undefined),
+    }];
+  });
+}
+
+/** Human wording for a peer question lifecycle state. */
+export function peerQuestionStateLabel(state: PeerProcessJobQuestion["state"]): string {
+  return state === "awaiting_answer" ? "Waiting for the agent's answer"
+    : state === "answered" ? "Answered" : state === "expired" ? "Expired" : "Interrupted";
+}
+
 export type ProcessJobProjection = ProcessJobProjectionBase & (
   | { readonly tool: "Exec" | "Bash"; readonly kind?: never }
   | { readonly tool: InternalProcessJobTool; readonly kind: "internal"; readonly instanceId: string;

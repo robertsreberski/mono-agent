@@ -423,6 +423,7 @@ PROVIDER_USAGE_IDS
 PROVIDER_USAGE_LABELS
 PROVIDER_USAGE_SCHEMA
 PeerProcessJobQuestion
+PeerQuestionFormField
 ProcessJobErrorCode
 ProcessJobOperator
 ProcessJobProjection
@@ -505,6 +506,7 @@ collectExactReplyArtifactBytes
 createChannelUserCancelReason
 createLogRedactor
 decodeAgentAttachmentText
+describePeerQuestionForm
 encodeJsonEnvValue
 fieldSpecMappings
 formatLiveInputActivityLine
@@ -549,6 +551,7 @@ parseProviderAuthSessionSnapshot
 parseProviderAuthSessionStartInput
 parseProviderAuthStatusSnapshot
 parseProviderUsageSnapshot
+peerQuestionStateLabel
 processJobPublicError
 projectProviderUsage
 projectProviderUsageWindow

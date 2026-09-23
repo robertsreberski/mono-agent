@@ -21,6 +21,8 @@ export {
   isProcessJobState,
   isProcessJobSubagentProgress,
   isPeerProcessJobQuestion,
+  describePeerQuestionForm,
+  peerQuestionStateLabel,
   isProcessJobSubagentRoute,
   parseProcessJobProjection,
   parseProcessJobProjections,
@@ -29,6 +31,7 @@ export {
 export type {
   InternalProcessJobTool,
   PeerProcessJobQuestion,
+  PeerQuestionFormField,
   ProcessJobErrorCode,
   ProcessJobOperator,
   ProcessJobProjection,

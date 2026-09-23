@@ -279,9 +279,26 @@ describe("createTelegramBot notify (proactive)", () => {
     await controller.updateProcessJob(42, internal);
     const sent = calls.filter((call) => call.method === "sendMessage").at(-1)!.payload;
     expect(sent.text).toContain("questionId 11111111-1111-4111-8111-111111111111");
-    expect(sent.text).toContain("[untrusted]");
+    expect(sent.text).toContain("[untrusted; not owner approval]");
     expect(sent.text).toContain("<b>choose</b>");
+    expect(sent.text).toContain("• question_1: free text");
     expect(sent.parse_mode).toBeUndefined();
+    const answered = { ...internal, peerQuestion: { ...internal.peerQuestion!, state: "answered" as const } };
+    await expect(controller.updateProcessJob(42, answered)).resolves.toMatchObject({ code: "surface_updated" });
+    expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(1);
+    const edited = calls.filter((call) => call.method === "editMessageText").at(-1)!.payload;
+    expect(edited.text).toContain("Peer question from finance/portfolio: Answered");
+  });
+
+  it("never posts a new card for a peer-question retirement without a known message", async () => {
+    const { controller, calls } = buildNotifiableBot({ async respond() { return { text: "unused" }; } });
+    const retired: ProcessJobProjection = { ...processJobProjection("succeeded"), kind: "internal", tool: "PeerAgent",
+      instanceId: "finance", childStillBusy: false, peerQuestion: { state: "expired",
+        questionId: "11111111-1111-4111-8111-111111111111", peer: "finance", thread: "portfolio",
+        message: "Proceed?", expiresAt: "2026-09-23T20:00:00.000Z",
+        requestedSchema: { type: "object", properties: { question_1: { type: "string" } } } } };
+    await expect(controller.updateProcessJob(42, retired)).resolves.toMatchObject({ code: "surface_unchanged" });
+    expect(calls.filter((call) => call.method === "sendMessage" || call.method === "editMessageText")).toHaveLength(0);
   });
 
   it("keeps the child-busy warning off a running job whose child is still working", async () => {

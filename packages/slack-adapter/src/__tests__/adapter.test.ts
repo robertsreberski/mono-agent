@@ -965,8 +965,31 @@ describe("SlackAdapter", () => {
     await adapter.updateProcessJob("C1", "171.5", internal);
     const update = api.postMessageCalls.at(-1)!;
     expect(update.text).toContain("questionId 11111111-1111-4111-8111-111111111111");
-    expect(update.text).toContain("[untrusted]");
+    expect(update.text).toContain("[untrusted; not owner approval]");
+    expect(update.text).toContain("Waiting for the agent's answer");
+    expect(update.text).toContain("• question_1: free text");
     expect(update.text).not.toContain("<!channel>");
+    expect(update.text).not.toContain("\"properties\"");
+    const answered = { ...internal, peerQuestion: { ...internal.peerQuestion!, state: "answered" as const } };
+    await expect(adapter.updateProcessJob("C1", "171.5", answered)).resolves.toMatchObject({ code: "surface_updated" });
+    expect(api.postMessageCalls).toHaveLength(1);
+    expect(api.updateCalls.at(-1)?.text).toContain("Peer question from finance/portfolio: Answered");
+    await expect(adapter.updateProcessJob("C1", "171.5", answered)).resolves.toMatchObject({ code: "surface_unchanged" });
+    expect(api.updateCalls).toHaveLength(1);
+  });
+
+  it("never posts a new card for a peer-question retirement without a known message", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({ api, allowAllChannels: true, responder: responderFrom(async () => ({ text: "unused" })) });
+    const retired: ProcessJobProjection = { ...processJobProjection("succeeded"), kind: "internal", tool: "PeerAgent",
+      instanceId: "finance", childStillBusy: false, peerQuestion: { state: "interrupted",
+        questionId: "11111111-1111-4111-8111-111111111111", peer: "finance", thread: "portfolio",
+        message: "Proceed?", expiresAt: "2026-09-23T20:00:00.000Z",
+        requestedSchema: { type: "object", properties: { question_1: { type: "string", oneOf: [
+          { const: "yes", title: "Yes" }, { const: "no", title: "No" }] } }, required: ["question_1"] } } };
+    await expect(adapter.updateProcessJob("C1", "171.5", retired)).resolves.toMatchObject({ code: "surface_unchanged" });
+    expect(api.postMessageCalls).toHaveLength(0);
+    expect(api.updateCalls).toHaveLength(0);
   });
 
   it("keeps the child-busy warning off a running job whose child is still working", async () => {
