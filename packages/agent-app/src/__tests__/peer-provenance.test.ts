@@ -21,7 +21,27 @@ describe("verified peer context and lineage", () => {
       sourceId: "agent-B", generation: "11111111-1111-4111-8111-111111111111",
       depth: 1, text: "text",
     });
+    const config = resolveJsonMonoAgentConfig({ cwd: target, json: {
+      runtime: { model: "pi:openai-codex:gpt-5.5", workspace: target },
+      context: { identityPath: "IDENTITY.md" }, artifacts: { dir: join(target, "artifacts") },
+    } });
+    const generation = { id: "11111111-1111-4111-8111-111111111111", rootKeys: [] };
+    const extension = createProcessJobsRuntimeExtension({ coreConfig: config, baseModel: config.runtime.model,
+      registry: { kind: "empty", generation } as never,
+      ownership: { coordinator: { acquireRequestLease: () => ({ generation, releaseAfterSettlement: vi.fn() }) } } as never,
+      attestRegistry: (async (snapshot: unknown) => snapshot) as never,
+    });
+    const request = (peerHandoff?: unknown) => ({ runId: "run", request: {
+      conversationId: proof.session, userMessage: "text", metadata: { source: "acp",
+        ...(peerHandoff === undefined ? {} : { peerHandoff }) },
+    }, context: {} }) as never;
+    const baseline = await extension(request());
     expect(await verifyPeerHandoff(join(target, "artifacts"), proof, proof.session, "text", proof.sourceId)).toBeUndefined();
+    const forged = await extension(request(proof));
+    const ordinary = await extension(request());
+    expect(forged.runtimeOptions).toEqual(baseline.runtimeOptions);
+    expect(ordinary.runtimeOptions).toEqual(baseline.runtimeOptions);
+    await baseline.settleCleanup?.(); await forged.settleCleanup?.(); await ordinary.settleCleanup?.();
     await expect(access(join(target, "acp-peer-handoff"))).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("renders an attribution-only host label and carries verified depth, not free metadata", async () => {

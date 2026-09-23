@@ -148,6 +148,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
             if (peer !== undefined && peer.chain.at(-1) !== caller) throw new Error("Peer call chain is not bound to this caller.");
             if (sourceId === caller || peer?.chain.includes(sourceId)) throw new Error("Peer call cycle rejected: target already appears in the verified source chain.");
             const chain = [...(peer?.chain ?? [caller]), sourceId];
+            if (chain.length > 64) throw new Error("Peer source chain exhausted (limit 64).");
             // The exclusive owner lock is held through completion, also across concurrent caller turns.
             const lease = await acquireContinuationStoreLock(key);
             let held = true;

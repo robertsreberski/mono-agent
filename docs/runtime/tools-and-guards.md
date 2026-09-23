@@ -16,8 +16,10 @@ credentials. Configure `peers.finance.sourceId` and allow `PeerAgent` in
 `send` waits for a bounded untrusted answer, or `background:true` returns a
 started process-job receipt when an exact-origin wake is available. `stop`
 requests ACP cancellation. ACP-served turns can only send in the foreground.
-Named sessions survive restarts without replaying interrupted prompts. The
-peer's AskUser is unsupported in this version (explicit
+Named sessions survive restarts without replaying interrupted prompts; a lost
+session starts fresh only on the next explicit send. Signed generations reject
+replays and the source chain rejects cycles before a nested foreground call can
+deadlock its origin. The peer's AskUser is unsupported in this version (explicit
 `interaction_required` failure); a peer request is not owner approval. See
 [ACP bridge](/programmatic/acp-bridge/) for the handoff and trust boundary.
 
