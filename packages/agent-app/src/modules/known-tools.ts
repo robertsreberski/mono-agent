@@ -47,6 +47,7 @@ export const APP_TOOL_NAMES = [
   "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject",
   "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject",
   "MemoryJournal",
+  "PeerAgent",
   "Remember",
 ] as const;
 

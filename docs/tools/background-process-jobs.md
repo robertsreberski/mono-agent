@@ -8,7 +8,16 @@ sidebar:
 Background process jobs let the existing Pi-native `Exec` and `Bash` tools
 return immediately while mono-agent continues to own the spawned POSIX process
 group.
-There is no separate job tool. When the host has an available process-job
+For `Exec`/`Bash` there is no separate job tool. Configured `PeerAgent` can
+also use the internal durable job lane for background peer calls; it is not a
+subagent. Its started receipt binds the caller conversation, peer and thread;
+terminal wake output is a bounded, untrusted preview, not owner instructions.
+Peer calls made while serving an ACP request have no wake-capable origin and
+must remain foreground. A restart interrupts an in-flight call without prompt
+replay; a later explicit send resumes the named ACP session. The existing
+ambiguous-delivery suppression applies to peer terminal wakes too.
+
+When the host has an available process-job
 controller, both schemas gain the optional `background: true` field. Without
 that controller, background starts are unavailable. A configured host still
 discloses request lineage diagnostics in the tool descriptions, including

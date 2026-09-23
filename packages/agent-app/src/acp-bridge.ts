@@ -36,6 +36,7 @@ import {
 } from "@mono-agent/web";
 
 import { agentAppPackageVersion } from "./package-version.js";
+import { verifyPeerHandoff } from "./peer-provenance.js";
 import {
   createAcpSessionAuthorization,
   loadAcpSessionAuthorization,
@@ -227,6 +228,12 @@ async function runPrompt(
   }
   const target = await requestTarget(options.resolveTarget, context.signal);
   await requireSessionAuthorization(target, params.sessionId, options.sourceId);
+  const offeredPeer = params._meta?.["mono-agent.peer"];
+  const verifiedPeer = offeredPeer === undefined ? undefined
+    : await verifyPeerHandoff(target.artifactDir, offeredPeer, params.sessionId, text);
+  if (offeredPeer !== undefined && verifiedPeer === undefined) {
+    throw bridgeError("invalid_peer_handoff", "Peer provenance handoff is invalid or not bound to this prompt.");
+  }
   const controller = new AbortController();
   const signal = controller.signal;
   const active: ActiveTurn = { controller, client: target.client };
@@ -278,7 +285,7 @@ async function runPrompt(
       conversationId: params.sessionId,
       text,
       attachments: [],
-      metadata: {},
+      metadata: verifiedPeer === undefined ? {} : { peerHandoff: verifiedPeer },
       client: "acp",
       ...(target.info.supportsToolEnvironment === true
         ? { toolEnvironment: requestToolEnvironment(options.env) }

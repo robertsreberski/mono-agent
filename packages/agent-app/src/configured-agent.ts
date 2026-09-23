@@ -81,6 +81,7 @@ import {
   isMemoryJournalToolAllowed,
 } from "./memory-journal.js";
 import { BUILTIN_TOOL_NAMES, canonicalToolName, isAllowAllTools } from "./modules/known-tools.js";
+import { createPeerAgentRuntimeExtension } from "./peer-agent.js";
 import {
   createSharedMemoryRecallRuntimeExtension,
   isSharedRecallStore,
@@ -1240,7 +1241,13 @@ async function createConfiguredAgentHarnessInternal(
   }
   const persistentSubagents = instanceRegistry === undefined ? undefined
     : createSubagentsRuntimeExtension(config, subagentDeps, instanceRegistry);
+  const peerAgent = createPeerAgentRuntimeExtension({
+    config, service: internalHooks.processJobs?.service,
+    channelId: internalHooks.processJobs?.channelId,
+    conversationScheme: internalHooks.processJobs?.conversationScheme,
+  });
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
+    peerAgent,
     memoryRecall,
     memoryJournal,
     memoryRemember,

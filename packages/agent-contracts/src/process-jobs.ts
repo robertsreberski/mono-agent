@@ -214,17 +214,17 @@ export function isProcessJobSubagentProgress(value: unknown): value is ProcessJo
 }
 
 /**
- * Tool names an internal (subagent) process job can carry.
+ * Tool names an internal process job can carry (managed subagents or local ACP peers).
  *
  * `"AgentSend"` is legacy history: the tool was renamed to `AgentManage` with
  * no alias, so records and projections persisted before the rename keep the old
  * name. It stays valid on the read/validation path — stored jobs must still
  * load and render — and must never be emitted for a new job.
  */
-export type InternalProcessJobTool = "Agent" | "AgentManage" | "AgentSend";
+export type InternalProcessJobTool = "Agent" | "AgentManage" | "AgentSend" | "PeerAgent";
 
 /** Accepted internal tool names, including the legacy `AgentSend` history value. */
-const INTERNAL_PROCESS_JOB_TOOLS: readonly InternalProcessJobTool[] = ["Agent", "AgentManage", "AgentSend"];
+const INTERNAL_PROCESS_JOB_TOOLS: readonly InternalProcessJobTool[] = ["Agent", "AgentManage", "AgentSend", "PeerAgent"];
 
 /**
  * Secret-free operator projection of one durable process job.
@@ -294,6 +294,7 @@ export function parseProcessJobProjection(value: unknown): ProcessJobProjection 
     || !boundedNonEmptyString(value.jobId, 256)
     || (value.kind === "internal" ? !INTERNAL_PROCESS_JOB_TOOLS.includes(String(value.tool) as InternalProcessJobTool)
       || typeof value.instanceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(value.instanceId)
+      || (value.tool === "PeerAgent" && (value.subagentProgress !== undefined || value.subagentQuestion !== undefined))
       || (value.subagentProgress !== undefined && !isProcessJobSubagentProgress(value.subagentProgress))
       || typeof value.childStillBusy !== "boolean" || (value.subagentQuestion !== undefined && !validSubagentJobQuestion(value.subagentQuestion))
       : value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined || value.subagentProgress !== undefined

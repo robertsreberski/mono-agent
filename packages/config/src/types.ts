@@ -308,6 +308,8 @@ export interface MonoAgentConfig {
     readonly maxConcurrentRuns?: number;
     readonly maxPendingRuns?: number;
   };
+  /** Configured local ACP peers; names are tool-facing, source IDs resolve at call time. */
+  readonly peers?: Readonly<Record<string, { readonly sourceId: string }>>;
   /** Subagent profiles and caps for the `Agent` tool. */
   readonly subagents?: MonoAgentSubagentsConfig;
   readonly context: {

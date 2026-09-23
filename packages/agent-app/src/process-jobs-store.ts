@@ -1156,7 +1156,7 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
     || !isJobId(value.jobId)
     // "AgentSend" is legacy history: renamed to "AgentManage" with no alias, so
     // records persisted before the rename must still validate. Never emitted.
-    || (value.kind === "internal" ? !["Agent", "AgentManage", "AgentSend"].includes(String(value.tool))
+    || (value.kind === "internal" ? !["Agent", "AgentManage", "AgentSend", "PeerAgent"].includes(String(value.tool))
       || typeof value.instanceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(value.instanceId)
       || (value.subagentVerification !== undefined && (value.kind !== "internal" || !value.subagentOwnership || !isSubagentVerificationTarget(value.subagentVerification)))
       || (value.subagentObservation !== undefined && (value.kind !== "internal" || !value.subagentOwnership || !isSubagentVerificationObservation(value.subagentObservation)))

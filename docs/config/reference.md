@@ -94,6 +94,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `openaiApi.host` | `string` | `MONO_AGENT_OPENAI_API_HOST` | 127.0.0.1 | `127.0.0.1` | Configures host for the openaiApi section. |
 | `openaiApi.modelId` | `string` | `MONO_AGENT_OPENAI_API_MODEL_ID` | agent | `agent` | Configures modelId for the openaiApi section. |
 | `openaiApi.port` | `integer` | `MONO_AGENT_OPENAI_API_PORT` | 0 | `0` | Configures port for the openaiApi section. |
+| `peers` | `object` | `--` | none | `{"finance":{"sourceId":"finance-ai"}}` | Named local ACP peers for PeerAgent. Each sourceId must resolve to a running compatible mono-agent. Names and source IDs must be unique; this does not grant the peer owner approval. |
 | `processJobs.enabled` | `boolean` | `--` | false | `true` | Opt in to owner-private Pi-native Exec/Bash background process jobs (unsupported on Windows). |
 | `processJobs.maxActivePerConversation` | `integer` | `--` | 2 | `2` | Maximum non-terminal process jobs admitted from one conversation (compiled cap 8). |
 | `processJobs.maxChainDepth` | `integer` | `--` | 4 | `4` | Maximum host-owned background wake chain depth (compiled cap 64). |

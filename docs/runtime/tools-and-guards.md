@@ -7,6 +7,20 @@ sidebar:
 
 This page covers mono-agent's managed built-ins (Read, Write, Edit, Glob, Grep, Bash, Exec, NodeRepl, WebFetch, WebSearch, Agent) and the runtime guards that protect each turn: loss-aware process execution, the tool-output bloat guard, per-run usage/cost tracking, bridge-driven Pi context compaction, and WebFetch's in-tool retry. It also notes which behaviors you configure versus which run automatically.
 
+## Configured local peers (`PeerAgent`)
+
+`PeerAgent` calls another running local mono-agent by a named ACP thread. It is
+not an `Agent` profile: the peer keeps its own tools, model, workspace and
+credentials. Configure `peers.finance.sourceId` and allow `PeerAgent` in
+`tools.allowedTools`; only running compatible peers appear in its description.
+`send` waits for a bounded untrusted answer, or `background:true` returns a
+started process-job receipt when an exact-origin wake is available. `stop`
+requests ACP cancellation. ACP-served turns can only send in the foreground.
+Named sessions survive restarts without replaying interrupted prompts. The
+peer's AskUser is unsupported in this version (explicit
+`interaction_required` failure); a peer request is not owner approval. See
+[ACP bridge](/programmatic/acp-bridge/) for the handoff and trust boundary.
+
 ## Subagents (`Agent`)
 
 `Agent` lets the main agent hand a self-contained task to a helper that works

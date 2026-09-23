@@ -66,6 +66,11 @@ const CHANNEL_FIELDS: readonly ConfigReferenceField[] = CHANNEL_FIELD_GROUPS.fla
 
 const APP_FIELDS: readonly ConfigReferenceField[] = [
   {
+    jsonPath: "peers", env: "--", type: "object", defaultLabel: "none", defaultValue: {},
+    example: { finance: { sourceId: "finance-ai" } },
+    description: "Named local ACP peers for PeerAgent. Each sourceId must resolve to a running compatible mono-agent. Names and source IDs must be unique; this does not grant the peer owner approval.",
+  },
+  {
     jsonPath: "processJobs.enabled", env: "--", type: "boolean",
     defaultLabel: "false", defaultValue: false, example: true,
     description: "Opt in to owner-private Pi-native Exec/Bash background process jobs (unsupported on Windows).",
@@ -484,6 +489,15 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
       },
     },
   });
+  root.peers = {
+    type: "object",
+    description: "Named local mono-agent ACP targets; only running compatible sources can be called.",
+    propertyNames: { pattern: "^[a-z][a-z0-9-]{0,39}$" },
+    additionalProperties: {
+      type: "object", additionalProperties: false, required: ["sourceId"],
+      properties: { sourceId: { type: "string", pattern: "^(?!.*\\.\\.)[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$" } },
+    },
+  };
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     $id: MONO_AGENT_CONFIG_SCHEMA_URL,
