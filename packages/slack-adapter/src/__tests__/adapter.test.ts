@@ -954,6 +954,21 @@ describe("SlackAdapter", () => {
     expect(api.postMessageCalls).toHaveLength(1);
   });
 
+  it("renders a bounded untrusted peer question and its current state", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({ api, allowAllChannels: true, responder: responderFrom(async () => ({ text: "unused" })) });
+    const internal: ProcessJobProjection = { ...processJobProjection("succeeded"), kind: "internal", tool: "PeerAgent",
+      instanceId: "finance", childStillBusy: false, peerQuestion: { state: "awaiting_answer",
+        questionId: "11111111-1111-4111-8111-111111111111", peer: "finance", thread: "portfolio",
+        message: "<!channel> choose?", expiresAt: "2026-09-23T20:00:00.000Z",
+        requestedSchema: { type: "object", properties: { question_1: { type: "string" } } } } };
+    await adapter.updateProcessJob("C1", "171.5", internal);
+    const update = api.postMessageCalls.at(-1)!;
+    expect(update.text).toContain("questionId 11111111-1111-4111-8111-111111111111");
+    expect(update.text).toContain("[untrusted]");
+    expect(update.text).not.toContain("<!channel>");
+  });
+
   it("keeps the child-busy warning off a running job whose child is still working", async () => {
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({ api, allowAllChannels: true, responder: responderFrom(async () => ({ text: "unused" })) });

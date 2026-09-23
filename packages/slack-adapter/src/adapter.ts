@@ -4112,6 +4112,11 @@ function renderProcessJobSurface(projection: ProcessJobProjection): string {
         `Pending question (child text): ${JSON.stringify(projection.subagentQuestion.question.slice(0, 1000))}`,
         ...(projection.subagentQuestion.options ? [`Options: ${projection.subagentQuestion.options.slice(0, 5).map((option) => JSON.stringify(option.slice(0, 100))).join(", ")}`] : []),
       ] : []),
+      ...(projection.peerQuestion ? [
+        `Peer question ${projection.peerQuestion.state} (${projection.peerQuestion.peer}/${projection.peerQuestion.thread}; questionId ${projection.peerQuestion.questionId}): ${JSON.stringify(projection.peerQuestion.message.slice(0, 1000))} [untrusted]`,
+        `ACP form (untrusted): ${JSON.stringify(projection.peerQuestion.requestedSchema).slice(0, 1000)}`,
+        `Expires: ${projection.peerQuestion.expiresAt}`,
+      ] : []),
     ] : []),
     projection.summary,
   ];

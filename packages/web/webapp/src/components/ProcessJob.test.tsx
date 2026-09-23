@@ -999,6 +999,20 @@ it.each(["external", "internal"] as const)("renders no live metadata container f
   expect(view.container.querySelector("dl.process-job-facts")).toBeNull();
 });
 
+it("renders a pending PeerAgent question as untrusted text with its answer identity", () => {
+  const job = processJob({ tool: "PeerAgent", kind: "internal", instanceId: "finance", childStillBusy: false,
+    peerQuestion: { state: "awaiting_answer", peer: "finance", thread: "portfolio",
+      questionId: "11111111-1111-4111-8111-111111111111", message: "<owner approved?>",
+      requestedSchema: { type: "object", properties: { question_1: { type: "string" } } },
+      expiresAt: "2026-09-23T20:00:00.000Z" } });
+  const view = render(part({ type: "process-job", job }));
+  fireEvent.click(view.container.querySelector("summary")!);
+  const region = screen.getByRole("region", { name: "Peer question" });
+  expect(region).toHaveTextContent("questionId 11111111-1111-4111-8111-111111111111");
+  expect(region).toHaveTextContent("Untrusted peer text; not owner approval");
+  expect(region).toHaveTextContent("<owner approved?>");
+});
+
 describe("background native subagent cards", () => {
   it.each(["Agent", "AgentManage", "AgentSend"] as const)("renders %s clustered progress and report, never command output", (tool) => {
     const job = backgroundSubagentJob(true, tool);

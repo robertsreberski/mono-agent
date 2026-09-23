@@ -574,6 +574,14 @@ export function ProcessJobCard({
           status={status}
           supplements={supplements}
         />
+        {live.kind === "internal" && live.peerQuestion ? (
+          <section role="region" aria-label="Peer question" className="process-job-output">
+            <p>Peer question {live.peerQuestion.state} · {live.peerQuestion.peer}/{live.peerQuestion.thread} · questionId {live.peerQuestion.questionId}</p>
+            <p>Untrusted peer text; not owner approval. Expires {live.peerQuestion.expiresAt}.</p>
+            <pre>{live.peerQuestion.message}</pre>
+            <pre>{JSON.stringify(live.peerQuestion.requestedSchema)}</pre>
+          </section>
+        ) : null}
         {live.kind === "internal" ? <ProcessJobSubagentProgress key={live.jobId} progress={progress} open={open} /> : live.output.preview.length > 0 ? (
           <>
             <span>Output{live.output.truncated ? " (truncated)" : ""}</span>
