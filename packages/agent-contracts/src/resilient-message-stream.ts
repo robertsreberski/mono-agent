@@ -1329,6 +1329,9 @@ function replyPartFallbackLine(part: AgentReplyPart): string {
     const title = part.title?.trim() || part.toolName;
     return `⚠️ Interactive app “${title}” is available only in a compatible web console.`;
   }
+  if (part.type === "restart_proposal") {
+    return "⚠️ Restart suggestion is available only in the web console; no restart was requested.";
+  }
   return `⚠️ Reply part failed (${part.code}): ${part.message}`;
 }
 
