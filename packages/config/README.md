@@ -185,8 +185,8 @@ Search selects one strict provider or a non-empty ordered array. The default is
 configurations fail with their previous explicit order, and the removed `hound`
 value fails with a rename-to-`local` migration error. SearXNG
 endpoints are deliberately limited to unauthenticated loopback HTTP URLs. Local search runs locally in Node without a service endpoint. Remove retired
-`search.hound.endpoint` and `fetch.hound.endpoint` settings and their environment
-variables; their presence is a migration error. The
+`search.hound.endpoint` and `fetch.hound.endpoint` settings; their presence is a
+migration error. Former core environment names are silently ignored. The
 legacy `search.endpoint` spelling remains a compatibility alias for
 `search.searxng.endpoint`. Ollama defaults to the loopback host; the exact
 official `https://ollama.com` origin requires an API key named by `apiKeyEnv`,

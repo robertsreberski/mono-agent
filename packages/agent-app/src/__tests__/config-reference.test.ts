@@ -710,13 +710,13 @@ it("keeps the subagent maxTurns loader ceilings aligned with the generated schem
     throw new Error("missing schema maximum for subagents.instances.maxTurns");
   }
 
-  const baseEnv = {
-    MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
-    MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
-  };
-  const loadSubagents = (payload: unknown) => () => loadMonoAgentConfig({
+  const loadSubagents = (payload: unknown) => () => resolveJsonMonoAgentConfig({
     cwd: process.cwd(),
-    env: { ...baseEnv, MONO_AGENT_SUBAGENTS_JSON: JSON.stringify(payload) },
+    json: {
+      runtime: { model: "openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      subagents: payload as never,
+    },
   });
   const definition = (maxTurns: unknown) => ({
     name: "helper", description: "Help", prompt: "Help", maxTurns,

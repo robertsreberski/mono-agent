@@ -66,11 +66,11 @@ Set `tools.web.fetch.render` to `auto` only when this agent regularly needs
 JavaScript-heavy pages and `agent-browser` 0.33.1 or newer is installed. Static
 extraction remains the first choice even in `auto` mode.
 
-Environment equivalents:
+Core web configuration is JSON-only:
 
 | Config key | Environment variable | Default |
 | --- | --- | --- |
-| `tools.web.coordination` | `MONO_AGENT_WEB_COORDINATION` | `process` |
+| `tools.web.coordination` | — | `process` |
 | `tools.web.search.backend` | — | `parallel,ollama` |
 | `tools.web.search.maxRequestsPerRun` | — | `4` |
 | `tools.web.search.searxng.endpoint` | — | unset |

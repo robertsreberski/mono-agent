@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { loadMonoAgentConfig } from "@mono-agent/config";
+import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime, createSandboxPolicy } from "@mono-agent/runtime-adapter";
 import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
 import { buildSubagentsOptions, createSubagentsRuntimeExtension } from "../configured-agent.js";

@@ -4,7 +4,7 @@ import { formatHostCapabilities } from "@mono-agent/agent-harness";
 import { execToolRun } from "../../../agent-runtime/src/agent/tools/exec.js";
 import { parseProcessJobProjection, type ProcessJobProjection } from "@mono-agent/agent-contracts";
 import { fileURLToPath } from "node:url";
-import { loadMonoAgentConfig } from "@mono-agent/config";
+import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime, createSandboxPolicy } from "@mono-agent/runtime-adapter";
 import { buildSubagentsOptions } from "../configured-agent.js";
 // @ts-expect-error Real Pi test seam; transport only is fake.
@@ -1963,10 +1963,10 @@ it.each([
   [900_000, 3_600_000, false, undefined],
 ] as const)("derives child command ceiling config=%s remaining=%s detached=%s", async (commandTimeoutMs, remaining, detached, expected) => {
   vi.useFakeTimers(); vi.setSystemTime(1_000_000);
-  const config = loadMonoAgentConfig({ cwd: process.cwd(), env: {
-    MONO_AGENT_IDENTITY_PATH: resolve(process.cwd(), "IDENTITY.md"),
-    MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
-    MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, commandTimeoutMs }),
+  const config = resolveJsonMonoAgentConfig({ cwd: process.cwd(), json: {
+    runtime: { model: "openai-codex:gpt-5.5" },
+    context: { identityPath: resolve(process.cwd(), "IDENTITY.md") },
+    subagents: { enabled: true, ...(commandTimeoutMs === undefined ? {} : { commandTimeoutMs }) },
   } });
   const run = vi.fn(async (_prompt: string, _options: any) => ({ text: "done" }));
   const subagents: any = buildSubagentsOptions(config, { runtime: { run } as never, baseModel: config.runtime.model })!.subagents;
