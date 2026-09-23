@@ -74,6 +74,23 @@ describe("operator restart", () => {
     expect(response.status).toBe(202);
   });
 
+  it("keeps /v1/info live and refuses POST when injected supervisor inspection never settles", async () => {
+    const f = fixture();
+    f.verify.mockImplementation(() => new Promise(() => undefined));
+    const authority = { ...f.authority, verifyFresh: () => new Promise<never>(() => undefined) };
+    running = await startTuiAdapter({ apiKey: "owner", responder: { respond: async () => ({ text: "unused" }) }, restart: authority });
+    const started = Date.now();
+    const info = await fetch(running.infoUrl, { headers: { authorization: "Bearer owner" } });
+    expect(info.status).toBe(200);
+    expect((await info.json() as { capabilities: { restart: unknown } }).capabilities.restart)
+      .toEqual({ supported: false, reason: "Supervisor verification timed out." });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    const refused = await f.request();
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ error: { message: "Supervisor verification timed out." } });
+    expect(f.stop).not.toHaveBeenCalled();
+  });
+
   it("dead A during verification cannot wedge live B or mint a false 202", async () => {
     const f = fixture();
     let resolveA!: (support: TuiRestartSupport) => void;
@@ -87,6 +104,8 @@ describe("operator restart", () => {
     const second = await f.request();
     expect(second.status).toBe(202);
     resolveA({ supported: true });
+    await Promise.resolve();
+    await Promise.resolve(); // flush dead A's verification/response continuation
     expect(((await second.json()) as { operation: unknown }).operation).toEqual({ id: "op-1" });
     expect(f.authority.accept).toHaveBeenCalledTimes(1);
     expect(f.stop).toHaveBeenCalledTimes(1);

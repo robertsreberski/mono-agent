@@ -69,13 +69,45 @@ describe("verifySupervisedRestart", () => {
         `Restart=${policy}`,
       ].join("\n") }),
     }, latch);
-    expect(await authority.verify()).toEqual({ supported: true });
+    expect(await authority.verifyFresh?.()).toEqual({ supported: true });
     policy = "no";
-    const current = await authority.verify();
+    const current = await authority.verifyFresh!();
     expect(current.supported).toBe(false);
     expect(authority.accept(current).kind).toBe("refused");
     expect(latch.exitCode).toBe(0);
   });
+  it("answers cached capability promptly and refuses a hanging fresh POST inspection", async () => {
+    vi.useFakeTimers();
+    try {
+      const latch = createSupervisedRestartLatch();
+      const authority = createSupervisedRestartAuthority({ configPath: CONFIG_PATH, startedAt: "boot-1",
+        platform: "linux", pid: 777, systemdRun: () => new Promise(() => undefined) }, latch);
+      await expect(authority.verify()).resolves.toEqual({ supported: false, reason: "Supervisor verification is pending." });
+      const fresh = authority.verifyFresh!();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(fresh).resolves.toEqual({ supported: false, reason: "Supervisor verification timed out." });
+      await expect(authority.verify()).resolves.toEqual({ supported: false, reason: "Supervisor verification timed out." });
+      expect(latch.exitCode).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("returns the existing id to a concurrent verified request even if its token is not the latest", async () => {
+    const latch = createSupervisedRestartLatch();
+    const authority = createSupervisedRestartAuthority({ configPath: CONFIG_PATH, startedAt: "boot-1",
+      platform: "linux", pid: 777, systemdRun: systemdShow({
+        LoadState: "loaded", ActiveState: "active", MainPID: "777",
+        FragmentPath: `/home/u/.config/systemd/user/${EXPECTED_UNIT}`,
+        ExecStart: `argv[]=/node /cli start --foreground --config ${CONFIG_PATH} --expected-background-snapshot proof`,
+        Restart: "on-failure",
+      }) }, latch);
+    const [first, second] = await Promise.all([authority.verifyFresh!(), authority.verifyFresh!()]);
+    const accepted = authority.accept(first);
+    expect(accepted.kind).toBe("accepted");
+    if (accepted.kind !== "accepted") throw new Error("expected acceptance");
+    expect(authority.accept(second)).toEqual({ kind: "conflict", operationId: accepted.operationId });
+    expect(latch.exitCode).toBe(42);
+  });
+
   it("supports a launchd worker whose loaded service owns this PID with the expected definition", async () => {
     const verification = await verifySupervisedRestart({
       configPath: CONFIG_PATH,
@@ -315,6 +347,19 @@ describe("verifySupervisedRestart", () => {
       ...base,
       systemdRun: systemdShow({ ...active, Restart: "always" }),
     })).resolves.toEqual({ supported: true });
+  });
+
+  it.each([
+    { RestartPreventExitStatus: "42 SIGTERM" },
+    { SuccessExitStatus: "1 42" },
+  ])("refuses a loaded systemd unit that reclassifies restart exit 42: %j", async (override) => {
+    await expect(verifySupervisedRestart({
+      configPath: CONFIG_PATH, startedAt: "boot-1", platform: "linux", pid: 777,
+      systemdRun: systemdShow({ LoadState: "loaded", ActiveState: "active", MainPID: "777",
+        FragmentPath: `/home/u/.config/systemd/user/${EXPECTED_UNIT}`,
+        ExecStart: `argv[]=/node /cli start --foreground --config ${CONFIG_PATH} --expected-background-snapshot proof`,
+        Restart: "on-failure", ...override }),
+    })).resolves.toEqual({ supported: false, reason: "The loaded systemd unit would not relaunch restart exit 42." });
   });
 
   it("reports unsupported without a user manager instead of throwing", async () => {

@@ -37,6 +37,9 @@ export interface SystemdService {
   readonly fragmentPath: string;
   /** Loaded relaunch policy; empty when systemctl omits it. */
   readonly restart: string;
+  /** Exceptions that would prevent or reclassify a deliberate exit 42. */
+  readonly restartPreventExitStatus: string;
+  readonly successExitStatus: string;
   /** Loaded worker command, for verifying the installed worker identity. */
   readonly execStart: string;
 }
@@ -91,9 +94,9 @@ export function renderSystemdUnit(definition: SystemdDefinition): string {
   ].join("\n");
 }
 
-export async function runSystemdTool(command: string, args: readonly string[]): Promise<SystemdResult> {
+export async function runSystemdTool(command: string, args: readonly string[], timeoutMs = 90_000): Promise<SystemdResult> {
   try {
-    const result = await promisify(execFile)(command, [...args], { timeout: 90_000, maxBuffer: 1024 * 1024, env: { ...process.env, LC_ALL: "C" } });
+    const result = await promisify(execFile)(command, [...args], { timeout: timeoutMs, maxBuffer: 1024 * 1024, env: { ...process.env, LC_ALL: "C" } });
     return { code: 0, ...result };
   } catch (error) {
     const failure = error as { code?: unknown; stdout?: string; stderr?: string; message?: string };
@@ -109,7 +112,7 @@ async function checked(args: readonly string[], deps: SystemdDeps): Promise<Syst
 
 export async function inspectSystemd(identity: string, deps: SystemdDeps = {}): Promise<SystemdService> {
   const result = await (deps.run ?? runSystemdTool)("systemctl", ["--user", "show", systemdUnitName(identity),
-    "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp,UnitFileState,FragmentPath,Restart,ExecStart"]);
+    "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp,UnitFileState,FragmentPath,Restart,ExecStart,RestartPreventExitStatus,SuccessExitStatus"]);
   const properties = Object.fromEntries(result.stdout.trim().split("\n").map((line) => {
     const index = line.indexOf("=");
     return [line.slice(0, index), line.slice(index + 1)];
@@ -129,6 +132,7 @@ export async function inspectSystemd(identity: string, deps: SystemdDeps = {}): 
     loadState: properties.LoadState, activeState: properties.ActiveState, subState: properties.SubState ?? "unknown",
     pid, startedAt: properties.ExecMainStartTimestamp ?? "", enabled: properties.UnitFileState === "enabled",
     fragmentPath: properties.FragmentPath ?? "", restart: properties.Restart ?? "", execStart: properties.ExecStart ?? "",
+    restartPreventExitStatus: properties.RestartPreventExitStatus ?? "", successExitStatus: properties.SuccessExitStatus ?? "",
   };
 }
 

@@ -252,7 +252,10 @@ export type TuiRestartAcceptance =
 
 /** The supervised CLI host owns acceptance and the nonzero process disposition. */
 export interface TuiRestartAuthority {
+  /** Cached, prompt response for /v1/info and proposal-tool visibility. */
   verify(): Promise<TuiRestartSupport>;
+  /** Fresh, bounded request-time inspection before the host commits acceptance. */
+  verifyFresh?(): Promise<TuiRestartSupport>;
   accept(verified: TuiRestartSupport): TuiRestartAcceptance;
   processIdentity(): { readonly pid: number; readonly startedAt: string };
   beginStop(operationId: string): void;
@@ -533,11 +536,11 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     }
     // Capture callbacks without relying on a receiver; injected authorities may
     // be prototype methods and must bind their own state explicitly.
-    const verify = authority.verify.bind(authority);
+    const verify = (authority.verifyFresh ?? authority.verify).bind(authority);
     const accept = authority.accept.bind(authority);
     const identity = authority.processIdentity.bind(authority);
     const beginStop = authority.beginStop.bind(authority);
-    void verify().then((support) => {
+    void boundedRestartVerify(verify, 1_000).then((support) => {
       if (res.destroyed || res.closed) return;
       const result = accept(support);
       if (result.kind === "refused") {
@@ -2680,11 +2683,24 @@ function restartReason(reason: unknown): string {
     ? reason : "Agent restart is unavailable.";
 }
 
+async function boundedRestartVerify(verify: () => Promise<TuiRestartSupport>, deadlineMs: number): Promise<TuiRestartSupport> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(verify),
+      new Promise<TuiRestartSupport>((resolve) => {
+        timer = setTimeout(() => resolve({ supported: false, reason: "Supervisor verification timed out." }), deadlineMs);
+        timer.unref();
+      }),
+    ]);
+  } finally { if (timer !== undefined) clearTimeout(timer); }
+}
+
 async function describeRestartSupport(authority: TuiRestartAuthority | undefined, apiKey: string | undefined): Promise<TuiRestartSupport> {
   if (apiKey === undefined) return { supported: false, reason: "Agent restart requires a configured operator API key." };
   if (authority === undefined) return { supported: false, reason: "Agent is not a supervised worker." };
   try {
-    const support = await authority.verify();
+    const support = await boundedRestartVerify(() => authority.verify(), 150);
     return support.supported === true ? { supported: true } : { supported: false, reason: restartReason(support.reason) };
   } catch {
     return { supported: false, reason: "Supervisor verification failed." };

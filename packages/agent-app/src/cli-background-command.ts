@@ -64,7 +64,7 @@ import type {
 import { readCliConfigSnapshot } from "./first-run-readiness.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { purgeConversationState, type PurgeConversationStateResult } from "./sessions.js";
-import { deriveLaunchdLabel, launchdPathsFor } from "./launchd.js";
+import { deriveLaunchdLabel, launchdPathsFor, makeLaunchctlRunner } from "./launchd.js";
 import { waitForManagedRuntimePublication } from "./managed-runtime-publication.js";
 import * as ui from "./ui.js";
 
@@ -282,7 +282,7 @@ async function runForeground(
     : createSupervisedRestartAuthority({
         configPath,
         startedAt: new Date().toISOString(),
-        ...(managedBackgroundWorker ? { launchdRunner: defaultBackgroundDeps().runner } : {}),
+        ...(managedBackgroundWorker ? { launchdRunner: makeLaunchctlRunner(2_000) } : {}),
         logger: consoleLogger(),
       }, restartLatch);
   try {

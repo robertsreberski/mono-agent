@@ -1,4 +1,5 @@
 import { deriveLaunchdLabel, launchdManagedWorkerInfo, type LaunchctlRunner } from "./launchd.js";
+import { AGENT_RESTART_EXIT_CODE } from "./supervised-restart-latch.js";
 import {
   inspectSystemd,
   isSystemdUserManagerUnavailable,
@@ -106,7 +107,7 @@ async function verifySystemdRestart(
   deps: SupervisedRestartDeps,
   pid: number,
 ): Promise<SupervisedRestartVerification> {
-  const run = deps.systemdRun ?? runSystemdTool;
+  const run = deps.systemdRun ?? ((command: string, args: readonly string[]) => runSystemdTool(command, args, 2_000));
   let service: Awaited<ReturnType<typeof inspectSystemd>>;
   try {
     service = await inspectSystemd(deps.configPath, { run });
@@ -148,6 +149,10 @@ async function verifySystemdRestart(
       supported: false,
       reason: `The supervised service is not configured to relaunch this worker (Restart=${service.restart === "" ? "unknown" : service.restart}).`,
     };
+  }
+  const exitCode = new RegExp(`(?:^|[\\s,])${AGENT_RESTART_EXIT_CODE}(?:$|[\\s,])`, "u");
+  if (exitCode.test(service.restartPreventExitStatus) || exitCode.test(service.successExitStatus)) {
+    return { supported: false, reason: `The loaded systemd unit would not relaunch restart exit ${AGENT_RESTART_EXIT_CODE}.` };
   }
   return { supported: true };
 }

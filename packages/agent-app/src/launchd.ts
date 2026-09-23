@@ -620,10 +620,12 @@ export function serviceTarget(label: string, uid: number): string {
   return `gui/${uid}/${label}`;
 }
 
-export function makeLaunchctlRunner(): LaunchctlRunner {
+export function makeLaunchctlRunner(timeoutMs = 90_000): LaunchctlRunner {
   return (args) =>
     new Promise<LaunchctlResult>((resolvePromise) => {
-      const child = spawn("/bin/launchctl", [...args], { stdio: ["ignore", "pipe", "pipe"] });
+      // A stuck `launchctl print` must not hold agent info/turn admission or
+      // leave an inspection child alive after a restart check times out.
+      const child = spawn("/bin/launchctl", [...args], { stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs });
       let stdout = "";
       let stderr = "";
       child.stdout?.on("data", (chunk: Buffer) => {
@@ -635,8 +637,8 @@ export function makeLaunchctlRunner(): LaunchctlRunner {
       child.on("error", (error: Error) => {
         resolvePromise({ code: 127, stdout, stderr: `${stderr}${error.message}` });
       });
-      child.on("close", (code) => {
-        resolvePromise({ code: code ?? 0, stdout, stderr });
+      child.on("close", (code, signal) => {
+        resolvePromise({ code: code ?? (signal === null ? 1 : 124), stdout, stderr });
       });
     });
 }

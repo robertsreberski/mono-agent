@@ -2,28 +2,71 @@ import type { TuiRestartAuthority, TuiRestartSupport } from "@mono-agent/operato
 import { createSupervisedRestartLatch, type SupervisedRestartLatch } from "./supervised-restart-latch.js";
 import { verifySupervisedRestart, type SupervisedRestartDeps } from "./supervised-restart.js";
 
-/** Installed only in a supervised CLI worker; verification is fresh on each info read and POST. */
-export function createSupervisedRestartAuthority(deps: SupervisedRestartDeps, latch: SupervisedRestartLatch = createSupervisedRestartLatch()): TuiRestartAuthority {
-  let current: TuiRestartSupport | undefined;
+const INSPECTION_TIMEOUT_MS = 1_000;
+const CAPABILITY_TTL_MS = 30_000;
+const TIMED_OUT: TuiRestartSupport = { supported: false, reason: "Supervisor verification timed out." };
+const PENDING: TuiRestartSupport = { supported: false, reason: "Supervisor verification is pending." };
+
+/** Supervision probes are bounded; a hung inspector cannot make agent info or web turns appear dead. */
+export function createSupervisedRestartAuthority(
+  deps: SupervisedRestartDeps,
+  latch: SupervisedRestartLatch = createSupervisedRestartLatch(),
+): TuiRestartAuthority {
+  let cached: { readonly verdict: TuiRestartSupport; readonly expiresAt: number } | undefined;
+  let background: Promise<void> | undefined;
+  let revision = 0;
+  const freshTokens = new WeakMap<TuiRestartSupport, number>();
+
+  const inspect = async (): Promise<TuiRestartSupport> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<TuiRestartSupport>((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), INSPECTION_TIMEOUT_MS);
+      timer.unref();
+    });
+    try {
+      return await Promise.race([
+        verifySupervisedRestart(deps).catch(() => ({ supported: false, reason: "Supervisor verification failed." })),
+        timedOut,
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
+  const refresh = (): void => {
+    if (background !== undefined) return;
+    const ticket = ++revision;
+    background = inspect().then((verdict) => {
+      if (ticket === revision) cached = { verdict, expiresAt: Date.now() + CAPABILITY_TTL_MS };
+    }).finally(() => { background = undefined; });
+  };
+  // Start checking immediately, without making startup or /v1/info await it.
+  refresh();
   return {
     async verify() {
-      const verdict = await verifySupervisedRestart(deps);
-      current = verdict;
+      if (cached !== undefined && cached.expiresAt > Date.now()) return cached.verdict;
+      refresh();
+      return PENDING;
+    },
+    async verifyFresh() {
+      const ticket = ++revision;
+      const verdict = { ...await inspect() };
+      if (ticket === revision) cached = { verdict, expiresAt: Date.now() + CAPABILITY_TTL_MS };
+      freshTokens.set(verdict, Date.now() + INSPECTION_TIMEOUT_MS);
       return verdict;
     },
     accept(verified) {
-      // Only the exact latest verification object produced by this authority
-      // can be committed; another in-flight check cannot replace its token.
-      // An already-accepted operation always returns its immutable id, even
-      // when a later supervisor probe fails or races another info read.
-      if (verified !== current || verified.supported !== true) {
-        const existing = latch.accept({ supported: false });
-        if (existing.kind === "conflict") return existing;
-        return { kind: "refused", reason: verified === current
-          ? verified.reason ?? "Supervisor verification failed."
-          : "Supervisor verification is no longer current." };
+      // A committed operation always wins, even when another independent POST
+      // completed a fresher inspection or the relaunch policy changed later.
+      const conflict = latch.accept({ supported: false });
+      if (conflict.kind === "conflict") return conflict;
+      if (verified.supported !== true) {
+        return { kind: "refused", reason: verified.reason ?? "Supervisor verification failed." };
       }
-      current = undefined;
+      const expiresAt = freshTokens.get(verified);
+      if (expiresAt === undefined || expiresAt < Date.now()) {
+        return { kind: "refused", reason: "Supervisor verification is no longer current." };
+      }
+      freshTokens.delete(verified);
       return latch.accept(verified);
     },
     processIdentity: () => ({ pid: deps.pid ?? process.pid, startedAt: deps.startedAt }),
