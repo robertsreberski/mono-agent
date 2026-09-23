@@ -21,6 +21,12 @@ function readRepoFile(path: string): string {
   return readFileSync(join(repoRoot(), path), "utf8");
 }
 
+it("documents the current JSON-only configuration loader in the root README", () => {
+  const readme = readRepoFile("README.md");
+  expect(readme).toContain('import { loadMonoAgentConfig } from "@mono-agent/config"');
+  expect(readme).not.toMatch(/loadMonoAgentConfigWithSources|resolveProjectedMonoAgentConfig|CONFIG_ENV_KEYS/u);
+});
+
 function section(page: string, heading: string): string {
   const marker = `## ${heading}`;
   const start = page.indexOf(marker);

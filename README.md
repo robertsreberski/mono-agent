@@ -109,11 +109,10 @@ Keep the workspace for interactive work, or compose the agent into your own Node
 For an existing agent folder, a configured responder starts with:
 
 ```ts
-import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
+import { loadMonoAgentConfig } from "@mono-agent/config";
 import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
 
-const config = await loadMonoAgentConfigWithSources({
-  env: process.env,
+const config = await loadMonoAgentConfig({
   cwd: process.cwd(),
   jsonPath: "./mono-agent.config.json",
 });
