@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Let `Bash` and `Exec` run in policy-allowed workdirs outside the session
+  workspace, including background jobs; reject denied or missing directories
+  instead of silently switching to the workspace.
+
 - Log an undelivered process-job card update once, with its reason. Agents
   previously wrote a second warning reading only "unknown lifecycle-surface
   failure" for every such failure. An update skipped while the web console

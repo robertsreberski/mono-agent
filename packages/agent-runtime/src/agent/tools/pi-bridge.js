@@ -116,10 +116,14 @@ export function normalizeMcpToolParams(_serverName, toolName, params, { qaOutput
   };
 }
 
-function normalizeWorkdir(value, cwd, ctx) {
+function normalizeWorkdir(value, cwd, ctx, allowOutside = false) {
   const base = resolve(cwd || (requireToolContext(ctx)).workspace || process.cwd());
   const resolved = value ? resolve(absolutizePath(value, base)) : base;
-  return isInsidePath(base, resolved) ? resolved : base;
+  // Command tools check the requested cwd against isWorkdirAllowed/isPathAllowed
+  // before preparing either foreground or background execution. Keep the older
+  // clamp for file tools: their workdir is not a schema field, and in legacy
+  // mode it can itself become an allowed file-access root.
+  return allowOutside || isInsidePath(base, resolved) ? resolved : base;
 }
 
 function withAbsolutePaths(name, params, cwd, ctx) {
@@ -127,7 +131,7 @@ function withAbsolutePaths(name, params, cwd, ctx) {
   if (["Read", "Write", "Edit"].includes(name)) next.file_path = absolutizePath(next.file_path, cwd);
   if (["Glob", "Grep"].includes(name)) next.path = absolutizePath(next.path, cwd);
   if (["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec"].includes(name)) {
-    next.workdir = normalizeWorkdir(next.workdir, cwd, ctx);
+    next.workdir = normalizeWorkdir(next.workdir, cwd, ctx, name === "Bash" || name === "Exec");
   }
   return next;
 }
@@ -632,7 +636,7 @@ export function getPiBuiltinTools(allowedTools, {
     }, ["pattern"]), grepToolImpl, toolContext),
     Bash: createBuiltinTool("Bash", "Bash", "Execute a shell command for pipelines, redirection, conditionals, or other shell syntax. Prefer Exec for one executable with an argv array. This is macOS: do not assume GNU-only commands or flags." + " " + foregroundTimeoutDescription, objectSchema({
       command: { type: "string" },
-      workdir: { type: "string" },
+      workdir: { type: "string", description: "Run in this directory. Relative paths resolve from the session cwd/workspace; directories outside it are accepted only when path policy allows them. A denied directory returns workdir_denied, never a fallback cwd." },
       description: processDescriptionSchema,
       timeout_ms: processTimeoutSchema,
       timeout: legacyBashTimeoutSchema,
@@ -642,7 +646,7 @@ export function getPiBuiltinTools(allowedTools, {
     Exec: createBuiltinTool("Exec", "Exec", "Execute one program directly from an argv array without shell parsing. Prefer this for ordinary commands; use Bash only when shell syntax is required." + " " + foregroundTimeoutDescription, objectSchema({
       executable: { type: "string", minLength: 1 },
       args: { type: "array", items: { type: "string" }, maxItems: 256 },
-      workdir: { type: "string" },
+      workdir: { type: "string", description: "Run in this directory. Relative paths resolve from the session cwd/workspace; directories outside it are accepted only when path policy allows them. A denied directory returns workdir_denied, never a fallback cwd." },
       description: processDescriptionSchema,
       timeout_ms: processTimeoutSchema,
       max_output_chars: bashLimitSchema,

@@ -27,6 +27,12 @@ pnpm add @mono-agent/agent-runtime
 Node.js 22.19 or newer is required. Pi is the only runtime, and it talks to
 providers over their SDKs, so no provider CLI has to be on `PATH`.
 
+`Bash` and `Exec` honor an explicit `workdir` outside the session workspace when
+path policy permits it (including background process jobs). Relative workdirs
+resolve from the session cwd/workspace; an omitted workdir keeps that default.
+Disallowed workdirs report `workdir_denied`, and missing workdirs report
+`workdir_not_found` instead of silently running elsewhere.
+
 When a host enables background Exec/Bash, `wake_on_completion` defaults to true;
 explicit false retains terminal lifecycle updates without a completion turn.
 Using that field without `background: true` is invalid. Host-provided
