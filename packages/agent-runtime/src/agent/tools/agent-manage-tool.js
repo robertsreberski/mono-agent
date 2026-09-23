@@ -46,7 +46,7 @@ export function createAgentManageTool(subagents, context = {}) {
     /** @param {string} callId @param {{id: string, message?: string, close?: boolean, stop?: boolean, steer?: string, description?: string, background?: boolean, inspect?: boolean, ack?: string, model?: string, effort?: string}} params @param {AbortSignal} [signal] */
     async execute(callId, params, signal) {
       if (Object.hasOwn(params, "steer")) return steerSubagent(subagents, params, signal);
-      if (Object.hasOwn(params, "stop")) return stopSubagent(subagents, params, signal);
+      if (Object.hasOwn(params, "stop")) return stopSubagent(subagents, params, signal, context.recoveryAccess);
       if (!instances) throw new Error("Error: persistent subagent instances are unavailable in this conversation.");
       if (signal?.aborted) throw new Error("tool execution aborted");
       if (params.inspect !== undefined && typeof params.inspect !== "boolean") throw new Error("Error: inspect must be a boolean.");

@@ -1296,6 +1296,35 @@ describe("detached persistent subagents", () => {
     await expect(send.execute("no-replay", { id: "helper", message: "continue" })).rejects.toThrow("subagent_recovery_required");
   });
 
+  it("releases a managed begun turn when slow registry admission consumes the remaining job budget", async () => {
+    const f = await managedFixture(undefined, { maxRuntimeMs: 1_500 });
+    const run = vi.fn(async () => ({ text: "provider must not start" }));
+    const { options } = tools(f, run, { timeoutMs: 60_000 });
+    options.instances = { ...f.instances, begin: async (...args: any[]) => {
+      const begun = await (f.instances.begin as any)(...args);
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_800));
+      return begun;
+    } };
+    const agent = createAgentTool(options, { recoveryAccess: { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) } });
+    const first = await agent.execute("slow-admission", { persist: true, background: true, id: "helper", prompt: "work" });
+    await done(f.service, first.details.jobId);
+    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("idle"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    expect((await f.instances.get("helper"))?.activeTurn).toBeUndefined();
+    expect(run).not.toHaveBeenCalled();
+  }, 25_000);
+  it("does not certify a timed-out child whose native result also reports session loss", async () => {
+    const f = await managedFixture();
+    const { agent, send } = tools(f, async (request: any) => {
+      await new Promise<void>((resolve) => request.abortSignal.addEventListener("abort", () => resolve(), { once: true }));
+      return { cancelled: true, failureKind: "session_continuity_lost",
+        subagentContinuity: { turnToken: request.turnToken, state: "retained" } };
+    }, { timeoutMs: 1_500 });
+    const first = await agent.execute("loss", { persist: true, background: true, id: "helper", prompt: "work" });
+    await done(f.service, first.details.jobId);
+    expect((await f.instances.get("helper"))?.recovery).toMatchObject({ reason: "session_continuity_lost", continuity: "lost" });
+    expect((await f.instances.get("helper"))?.recovery).not.toHaveProperty("certifiedTimeout");
+    await expect(send.execute("no-ordinary-resume", { id: "helper", message: "next" })).rejects.toThrow("subagent_recovery_required");
+  }, 20_000);
   it("stop aborts active work, bounds waiting, and restart delivers the retained interruption once", async () => {
     const f = await fixture(); const gate = deferred<any>();
     const { agent } = tools(f, () => gate.promise);
@@ -1428,6 +1457,14 @@ it.each(["cooperative", "late"])("certified %s detached child timeout resumes re
     const subagents: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
       { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
     subagents.backgroundSubagentController = f.service.internalController(origin, 0);
+    const publications: any[] = [];
+    if (mode === "late") f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
+      verify: async (identity) => await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        publications.push({ phase, ...publication });
+        await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+      },
+    });
     const access = { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) };
     const agent = createAgentTool(subagents, { model: config.runtime.model, recoveryAccess: access });
     const send = createAgentManageTool(subagents, { model: config.runtime.model, recoveryAccess: access });
@@ -1444,10 +1481,19 @@ it.each(["cooperative", "late"])("certified %s detached child timeout resumes re
     if (mode === "late") {
       expect(terminal).toMatchObject({ state: "timed_out", childStillBusy: true });
       expect((await send.execute("inspect-unsettled", { id: "helper", inspect: true })).details.recovery.status).toBe("held");
+      const record = (await f.instances.get("helper"))!;
+      const identity = { storeRoot: f.service.settings.stateDir, jobId: first.details.jobId, conversationId: origin.conversationId,
+        instanceId: "helper", instanceIncarnation: record.incarnation!, turnToken: first.details.jobId };
       releaseLate.resolve();
+      await f.service.refreshSubagentOwner!(identity); // Concurrent inspection-scheduled publication.
     }
     await vi.waitFor(async () => expect((await f.instances.get("helper"))?.recovery).toMatchObject({ reason: "timeout", continuity: "retained", certifiedTimeout: true }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     await vi.waitFor(async () => expect((await send.execute("inspect", { id: "helper", inspect: true })).details.recovery).toMatchObject({ status: "ready", resumable: true, recovery: { certifiedTimeout: true } }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    expect((await send.execute("already-idle", { id: "helper", stop: true })).details.stop).toMatchObject({ status: "already_idle", resumable: true, childStillBusy: false });
+    if (mode === "late") {
+      expect(publications.some((entry) => entry.released && entry.disposition?.certifiedTimeout)).toBe(true);
+      expect(publications.filter((entry) => entry.released).every((entry) => entry.disposition?.certifiedTimeout === true)).toBe(true);
+    }
     expect(f.wake).toHaveBeenCalledOnce();
     let resumed: any;
     faux.setResponses([(context: any) => { resumed = context; return fauxAssistantMessage([fauxText("done")]); }]);

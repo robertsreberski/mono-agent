@@ -665,7 +665,13 @@ is inspectable as `resumable:true` and accepts ordinary `AgentManage({id,
 message})` (also `background:true`) without an ack. An uncertified timeout,
 parent cancellation or `childStillBusy` remains fenced. Optional Git verification
 may report `observation_unavailable` while certified continuation remains
-resumable under the current authorization policy.
+resumable under the current authorization policy. If the job deadline also
+arrives after the child's own timer, a later matching native settlement can
+still certify continuity without changing the terminal job or sending a second
+wake. A durable certified disposition remains resumable after restart, subject
+to the same ownership and current-policy checks. Once job retention removes
+required owner proof, authorization fails closed (`policy_unavailable`); do not
+remove records to force a resume.
 Interactive turns and foreground children retain the 120-second cap, and
 NodeRepl retains its fixed 120-second timer. Child-owned background commands
 remain unsupported and are explicitly out of scope.

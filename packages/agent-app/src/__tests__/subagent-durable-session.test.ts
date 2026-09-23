@@ -106,6 +106,32 @@ describe("app persistent subagent durable sessions", () => {
     } finally { deliver(); await owner.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
   }, 15_000);
 
+  it("fails closed when native receipt capture throws after a foreground answer", async () => {
+    const root = await mkdtemp(resolve(process.cwd(), "node_modules/.foreground-capture-failure-"));
+    const owner = createMonoRuntime();
+    try {
+      const config = resolveJsonMonoAgentConfig({ cwd: root, json: {
+        runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: resolve(root, "IDENTITY.md") },
+        tools: { allowedTools: ["Agent", "AgentManage"] },
+        subagents: { enabled: true, instances: { root: resolve(root, "children") } },
+      } });
+      let answered = false;
+      const runtime = { recoverSession: owner.recoverSession!.bind(owner), run: async (_prompt: string, options: Record<string, unknown>) => {
+        expect(options.sessionRecovery).toBeDefined();
+        answered = true; // Equivalent to Pi producing an answer before receipt capture fails.
+        throw new Error("native receipt capture failed");
+      } };
+      const registry = createSubagentInstanceRegistry({ root: resolve(root, "children"), retireSession: async (id, sessionsRoot) => owner.retireDurableSession!(id, sessionsRoot) });
+      const handle = await registry.open("capture-failure");
+      const subagents = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
+        { conversationId: "capture-failure", runId: "parent", instances: handle })!.subagents;
+      const first = await createAgentTool(subagents, { model: config.runtime.model }).execute("capture", { persist: true, id: "critic", prompt: "work" });
+      expect(answered).toBe(true);
+      expect(first.details.subagent.status).toBe("failed");
+      expect((await handle.get("critic"))?.recovery).toMatchObject({ continuity: "unknown" });
+      await expect(createAgentManageTool(subagents, { model: config.runtime.model }).execute("unsafe", { id: "critic", message: "continue" })).rejects.toThrow("subagent_recovery_required");
+    } finally { await owner.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
+  });
   it("creates and resumes a real Pi transcript through AgentManage after warm-session disposal, then retires it", async () => {
     const root = await mkdtemp(resolve(process.cwd(), ".durable-subagent-test-"));
     const owner = createMonoRuntime();
