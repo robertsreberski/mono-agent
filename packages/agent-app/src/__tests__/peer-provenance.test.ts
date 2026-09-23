@@ -58,6 +58,8 @@ describe("verified peer context and lineage", () => {
       sourceId: "agent-B", generation: "11111111-1111-4111-8111-111111111111",
       depth: 3, text: "text",
     });
+    const wrongSignature = { ...proof, proof: `${proof.proof[0] === "A" ? "B" : "A"}${proof.proof.slice(1)}` };
+    expect(await verifyPeerHandoff(artifactDir, wrongSignature, proof.session, "text", "agent-B")).toBeUndefined();
     const operatorProof = await stampPeerOperatorHandoff(artifactDir, proof);
     const generation = { id: "11111111-1111-4111-8111-111111111111", rootKeys: [] };
     const extension = createProcessJobsRuntimeExtension({
