@@ -20,6 +20,8 @@ export interface InternalProcessJobRequest {
   run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: SubagentProgressEvent) => void, execution?: { deadlineAt: number; managed?: ManagedSubagentExecution }): Promise<{ answer?: string; output: string; status: string; childStillBusy?: boolean; question?: { question: string; options?: string[] }; peerQuestion?: PeerProcessJobQuestion }>;
   /** Releases only this job's unstarted reservation; idempotent after begin. */
   cleanup(): Promise<void>;
+  /** Called when the settled result could not be persisted (and so will not wake). */
+  onSettlementFailure?(): void;
 }
 
 export interface SubagentStopIdentity { readonly instanceId: string; readonly instanceIncarnation: string; readonly turnToken: string }

@@ -3584,6 +3584,27 @@ it("publishes a typed untrusted peer question and wakes the exact caller for ans
   expect(wake).toHaveBeenCalledOnce();
 });
 
+it("applies a peer question retirement that raced ahead of the question's completion persist", async () => {
+  const fixture = await createFixture();
+  const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+  const service = await startService(fixture, { wake });
+  await service.activateWakes();
+  const peerQuestion = { state: "awaiting_answer" as const, peer: "finance", thread: "portfolio",
+    questionId: "11111111-1111-4111-8111-111111111111", message: "Proceed?",
+    requestedSchema: { type: "object", properties: {} }, expiresAt: new Date(Date.now() + 60_000).toISOString() };
+  const gate = deferred<void>();
+  const started = await service.internalController(ORIGIN, 0).startInternal({ kind: "internal",
+    tool: "PeerAgent", jobId: "99999999-9999-4999-8999-999999999999", instanceId: "finance",
+    wakeOnCompletion: true, cleanup: async () => {},
+    run: async () => { await gate.promise; return { status: "awaiting_reply", output: "question", peerQuestion }; },
+  });
+  await service.settlePeerQuestion?.(started.jobId, peerQuestion.questionId, "interrupted");
+  gate.resolve();
+  await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+  expect(await service.get(started.jobId)).toMatchObject({ peerQuestion: { state: "interrupted" } });
+  expect(wake.mock.calls[0]?.[0].prompt).not.toContain("PeerAgent answer with this exact");
+});
+
 it("external and internal jobs share the same durable admission and queue", async () => {
   const fixture = await createFixture({ maxConcurrent: 1, maxQueued: 1 });
   const completion = deferred<ProcessJobProcessResult>();

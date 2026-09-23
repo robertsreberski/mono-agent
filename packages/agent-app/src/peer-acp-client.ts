@@ -87,9 +87,14 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
     const messageBytes = Buffer.from(params.message, "utf8");
     const boundedMessage = messageBytes.length <= 2_000 ? params.message
       : `${messageBytes.subarray(0, 1_980).toString("utf8").replace(/�$/u, "")} [truncated]`;
-    return await options.onQuestion({ message: boundedMessage, requestedSchema: params.requestedSchema as Readonly<Record<string, unknown>>,
-      sessionId: params.sessionId as string, toolCallId: params.toolCallId,
-      expiresAt: new Date(turnDeadlineAt).toISOString() });
+    try {
+      return await options.onQuestion({ message: boundedMessage, requestedSchema: params.requestedSchema as Readonly<Record<string, unknown>>,
+        sessionId: params.sessionId as string, toolCallId: params.toolCallId,
+        expiresAt: new Date(turnDeadlineAt).toISOString() });
+    } catch {
+      // Never forward caller-local diagnostics (paths, store errors) to the peer.
+      throw new Error("The calling agent could not hold this question; the peer turn is interrupted.");
+    }
   });
   let answer = "";
   let oversized = false;

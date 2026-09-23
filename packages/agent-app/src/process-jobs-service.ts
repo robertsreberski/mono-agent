@@ -382,14 +382,24 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     ) });
   }
 
+  /** In-memory only: a restart already reconciles parked questions as interrupted. */
+  private readonly pendingPeerRetirements = new Map<string, { readonly questionId: string; readonly state: "answered" | "expired" | "interrupted" }>();
+
   async settlePeerQuestion(jobId: string, questionId: string,
     state: "answered" | "expired" | "interrupted"): Promise<void> {
     let changed = false;
     await this.withLock(async () => {
       await this.storeMutate("peer.question.settle", (records) => {
         const record = records.get(jobId);
-        if (record?.tool !== "PeerAgent" || record.peerQuestion?.questionId !== questionId
-          || record.peerQuestion.state !== "awaiting_answer") return;
+        if (record?.tool !== "PeerAgent") return;
+        if (record.peerQuestion === undefined && !isTerminalProcessJobState(record.state)) {
+          // The question result has not been persisted yet; apply on completion.
+          if (this.pendingPeerRetirements.size < 1_024 || this.pendingPeerRetirements.has(jobId)) {
+            this.pendingPeerRetirements.set(jobId, { questionId, state });
+          }
+          return;
+        }
+        if (record.peerQuestion?.questionId !== questionId || record.peerQuestion.state !== "awaiting_answer") return;
         record.peerQuestion = { ...record.peerQuestion, state };
         changed = true;
       });
@@ -1530,6 +1540,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             }
             record.childStillBusy = result.childStillBusy === true;
             if (finalProgress) record.subagentProgress = finalProgress;
+            if (!result.peerQuestion) this.pendingPeerRetirements.delete(jobId);
             if (result.peerQuestion && record.tool === "PeerAgent") {
               const redactQuestionText = (text: string, maxBytes: number): string => {
                 const redacted = redactOutput(text, active.redactionSecrets);
@@ -1546,7 +1557,11 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
                   if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) safeSchema = parsed as Record<string, unknown>;
                 } catch { /* keep the bounded redacted fallback */ }
               }
+              // A retirement that raced ahead of this persist wins over awaiting_answer.
+              const early = this.pendingPeerRetirements.get(jobId);
+              this.pendingPeerRetirements.delete(jobId);
               record.peerQuestion = { ...result.peerQuestion,
+                ...(early?.questionId === result.peerQuestion.questionId ? { state: early.state } : {}),
                 message: redactQuestionText(result.peerQuestion.message, 2_000), requestedSchema: safeSchema };
             }
             if (result.question) {
@@ -1647,6 +1662,11 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           transitioned = true;
         });
       } catch (error) {
+        // The owner could not durably publish this result (e.g. a peer question);
+        // let an internal owner release anything it still holds for it.
+        if (isInternal(active.request)) {
+          try { active.request.onSettlementFailure?.(); } catch { /* best effort */ }
+        }
         if (completionRecord !== undefined && !isTerminalProcessJobState(completionRecord.state)) {
           completionRecord.exitCode = result.code;
           completionRecord.signal = result.signal;

@@ -22,7 +22,7 @@ vi.mock("../peer-acp-client.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../peer-acp-client.js")>(), runPeerAcpTurn: mocks.run,
 }));
 
-import { createPeerAgentRuntimeExtension } from "../peer-agent.js";
+import { createPeerAgentRuntimeExtension, withoutLocalPaths } from "../peer-agent.js";
 import { PeerSessionGoneError, type PeerAcpTurn } from "../peer-acp-client.js";
 import { makePeerHandoff, stampPeerOperatorHandoff } from "../peer-provenance.js";
 import type { InternalProcessJobRequest } from "../process-jobs-internal.js";
@@ -362,6 +362,34 @@ describe("PeerAgent request lifecycle", () => {
       expect(result.isError).not.toBe(true);
       expect(result.content).toEqual([{ type: "text", text: "[Untrusted peer answer] continued" }]);
     } finally { await Promise.all(opened.map(async ({ client, cleanup }) => { await client.close(); await cleanup?.(); })); await f.close(); }
+  });
+
+  it("stores a parked question compactly and scrubs local paths from model-visible errors", async () => {
+    const f = await setup();
+    mocks.run.mockImplementation(parked);
+    try {
+      await f.send();
+      const key = join(dirname(f.config.artifacts.dir), "peer-threads",
+        createHash("sha256").update(JSON.stringify([f.request.conversationId, "finance", "portfolio"])).digest("hex"));
+      const raw = await readFile(join(key, "thread.json"), "utf8");
+      expect(raw.trimEnd()).not.toContain("\n");
+      expect(JSON.parse(raw)).toMatchObject({ status: "awaiting_answer" });
+    } finally { await f.close(); }
+    expect(withoutLocalPaths("Continuation state is already owned by another live process: /Users/me/agent/.mono-agent/peer-threads/abc"))
+      .toBe("Continuation state is already owned by another live process: <path>");
+    expect(withoutLocalPaths("finance/portfolio is waiting")).toBe("finance/portfolio is waiting");
+  });
+
+  it("releases a parked background question whose result could not be persisted", async () => {
+    const f = await setup();
+    mocks.run.mockImplementation(parked);
+    try {
+      await f.send(true);
+      const job = f.pending()!;
+      expect(await job.run(new AbortController().signal, () => {}, () => {})).toMatchObject({ status: "awaiting_reply" });
+      job.onSettlementFailure?.();
+      await vi.waitFor(() => expect(mocks.run.mock.calls[0]?.[0].signal.aborted).toBe(true));
+    } finally { await f.close(); }
   });
 
   it("retires a background peer question projection when stopped", async () => {
