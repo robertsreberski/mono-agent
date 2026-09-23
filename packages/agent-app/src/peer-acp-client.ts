@@ -179,10 +179,14 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
     const code = typeof error === "object" && error !== null && "data" in error
       ? (error.data as { code?: unknown } | undefined)?.code : undefined;
     if (code === "peer_session_exhausted") throw new PeerSessionGoneError("peer_session_exhausted");
-    const safe = code === "interaction_required" || message.includes("requested AskUser")
-      ? "Peer AskUser interaction is unsupported: this ACP client does not relay questions (interaction_required)."
-      : /^(?:ACP peer|Peer turn)/u.test(message)
-        ? message.slice(0, 256) : "ACP bridge or operator transport failed (no prompt was replayed).";
+    const safe = code === "sensitive_elicitation_unsupported"
+      ? "Peer AskUser sensitive request was refused (sensitive_elicitation_unsupported)."
+      : code === "invalid_elicitation_response"
+        ? "Peer AskUser answer was rejected by ACP form validation (invalid_elicitation_response)."
+        : code === "interaction_required" || message.includes("requested AskUser")
+          ? "Peer AskUser interaction is unsupported (interaction_required)."
+          : /^(?:ACP peer|Peer turn)/u.test(message)
+            ? message.slice(0, 256) : "ACP bridge or operator transport failed (no prompt was replayed).";
     throw new Error(`Peer ACP turn failed: ${safe}`, { cause: error });
   } finally {
     options.signal.removeEventListener("abort", abort);

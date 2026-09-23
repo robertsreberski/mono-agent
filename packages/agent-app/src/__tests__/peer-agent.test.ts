@@ -1,6 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,7 +23,7 @@ vi.mock("../peer-acp-client.js", async (importOriginal) => ({
 }));
 
 import { createPeerAgentRuntimeExtension } from "../peer-agent.js";
-import { PeerSessionGoneError } from "../peer-acp-client.js";
+import { PeerSessionGoneError, type PeerAcpTurn } from "../peer-acp-client.js";
 import { makePeerHandoff, stampPeerOperatorHandoff } from "../peer-provenance.js";
 import type { InternalProcessJobRequest } from "../process-jobs-internal.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
@@ -99,6 +100,105 @@ async function setup(depth?: number | "forged", surface: "web" | "acp" = "web", 
 }
 
 describe("PeerAgent request lifecycle", () => {
+  const parked = async (options: PeerAcpTurn) => {
+    await options.onSession("acp:finance-ai:cebc81c1-e853-468f-a5d2-b88a97a9aa01");
+    const response = await options.onQuestion!({ sessionId: "acp:finance-ai:cebc81c1-e853-468f-a5d2-b88a97a9aa01",
+      toolCallId: "ask-1", message: "Proceed?", requestedSchema: { type: "object",
+        properties: { question_1: { type: "string", enum: ["yes", "no"] } }, required: ["question_1"] } });
+    if (response.action !== "accept") throw new Error("Peer question declined or interrupted.");
+    return { sessionId: "acp:finance-ai:cebc81c1-e853-468f-a5d2-b88a97a9aa01", answer: "[Untrusted peer answer] continued" };
+  };
+
+  it("returns a foreground question then resumes the same run after an exact answer", async () => {
+    const f = await setup();
+    mocks.run.mockImplementation(parked);
+    try {
+      const asked = await f.send();
+      expect(asked.isError).not.toBe(true);
+      const question = JSON.parse(String((asked.content as Array<{ text?: string }>)[0]?.text)) as { questionId: string; state: string };
+      expect(question.state).toBe("awaiting_answer");
+      for (const { thread, questionId } of [
+        { thread: "wrong", questionId: question.questionId },
+        { thread: "portfolio", questionId: "22222222-2222-4222-8222-222222222222" },
+      ]) {
+        const rejected = await f.client.callTool({ name: "PeerAgent", arguments: { action: "answer", peer: "finance",
+          thread, questionId, answers: { question_1: "yes" } } });
+        expect(rejected.isError).toBe(true);
+      }
+      const answered = await f.client.callTool({ name: "PeerAgent", arguments: { action: "answer", peer: "finance",
+        thread: "portfolio", questionId: question.questionId, answers: { question_1: "yes" } } });
+      expect(answered.isError).not.toBe(true);
+      expect(answered.content).toEqual([{ type: "text", text: "[Untrusted peer answer] continued" }]);
+      const duplicate = await f.client.callTool({ name: "PeerAgent", arguments: { action: "answer", peer: "finance",
+        thread: "portfolio", questionId: question.questionId, answers: { question_1: "yes" } } });
+      expect(duplicate.isError).toBe(true);
+    } finally { await f.close(); }
+  });
+
+  it.each(["decline", "stop"] as const)("interrupts a parked question on %s and rejects late answers", async (action) => {
+    const f = await setup();
+    mocks.run.mockImplementation(parked);
+    try {
+      const asked = await f.send();
+      const question = JSON.parse(String((asked.content as Array<{ text?: string }>)[0]?.text)) as { questionId: string };
+      const stopped = await f.client.callTool({ name: "PeerAgent", arguments: { action, peer: "finance",
+        thread: "portfolio", ...(action === "decline" ? { questionId: question.questionId } : {}) } });
+      if (action === "stop") expect(stopped.isError).not.toBe(true);
+      else expect(stopped.isError).toBe(true);
+      const late = await f.client.callTool({ name: "PeerAgent", arguments: { action: "answer", peer: "finance",
+        thread: "portfolio", questionId: question.questionId, answers: { question_1: "yes" } } });
+      expect(late.isError).toBe(true);
+    } finally { await f.close(); }
+  });
+
+  it("marks a persisted but ownerless question interrupted after caller restart", async () => {
+    const f = await setup();
+    const key = join(dirname(f.config.artifacts.dir), "peer-threads",
+      createHash("sha256").update(JSON.stringify([f.request.conversationId, "finance", "portfolio"])).digest("hex"));
+    await mkdir(key, { recursive: true, mode: 0o700 });
+    const questionId = "11111111-1111-4111-8111-111111111111";
+    await writeFile(join(key, "thread.json"), JSON.stringify({ schema: 1, conversation: f.request.conversationId,
+      peer: "finance", thread: "portfolio", sourceId: "finance-ai", sessionId: "acp:finance-ai:prior",
+      generation: "22222222-2222-4222-8222-222222222222", status: "awaiting_answer",
+      question: { questionId, message: "Proceed?", peer: "finance", thread: "portfolio",
+        requestedSchema: { type: "object" }, expiresAt: new Date(Date.now() + 30_000).toISOString() },
+    }), { mode: 0o600 });
+    const fresh = await createPeerAgentRuntimeExtension({ config: f.config, channelId: "tui" })!({
+      runId: "after-restart", request: f.request, context: {} as never,
+    });
+    expect(JSON.parse(await readFile(join(key, "thread.json"), "utf8"))).toMatchObject({ status: "interrupted" });
+    const spec = (fresh.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-peer-agent"]!;
+    const client = new Client({ name: "peer-restart-test", version: "1" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+    try {
+      const late = await client.callTool({ name: "PeerAgent", arguments: { action: "answer", peer: "finance",
+        thread: "portfolio", questionId, answers: { question_1: "yes" } } });
+      expect(late.isError).toBe(true);
+      expect(late.content).toEqual([{ type: "text", text: expect.stringContaining("interrupted") }]);
+      expect(JSON.parse(await readFile(join(key, "thread.json"), "utf8"))).toMatchObject({ status: "interrupted" });
+      expect(mocks.run).not.toHaveBeenCalled();
+    } finally { await client.close(); await fresh.cleanup?.(); await f.close(); }
+  });
+
+  it("settles a background question wake then a continuation wake on the exact original origin", async () => {
+    const f = await setup();
+    mocks.run.mockImplementation(parked);
+    try {
+      expect((await f.send(true)).isError).not.toBe(true);
+      const questionJob = f.pending()!;
+      const questionResult = await questionJob.run(new AbortController().signal, () => {}, () => {});
+      expect(questionResult).toMatchObject({ status: "awaiting_reply", peerQuestion: {
+        questionId: expect.any(String), message: "Proceed?", state: "awaiting_answer" } });
+      const questionId = questionResult.peerQuestion!.questionId;
+      const receipt = await f.client.callTool({ name: "PeerAgent", arguments: { action: "answer", peer: "finance",
+        thread: "portfolio", questionId, answers: { question_1: "yes" } } });
+      expect(receipt.isError).not.toBe(true);
+      expect(receipt.content).toEqual([{ type: "text", text: expect.stringContaining('"state":"started"') }]);
+      expect(f.admittedOrigin()).toMatchObject({ conversationId: "web:origin", replyToConversationId: "web:origin" });
+      const completion = await f.pending()!.run(new AbortController().signal, () => {}, () => {});
+      expect(completion).toMatchObject({ status: "ok", answer: "[Untrusted peer answer] continued" });
+    } finally { await f.close(); }
+  });
   it("persists started before dispatch and binds the exact caller for terminal wake", async () => {
     const f = await setup();
     try {

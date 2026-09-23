@@ -19,8 +19,10 @@ requests ACP cancellation. ACP-served turns can only send in the foreground.
 Named sessions survive restarts without replaying interrupted prompts; a lost
 session starts fresh only on the next explicit send. Signed generations reject
 replays and the source chain rejects cycles before a nested foreground call can
-deadlock its origin. The peer's AskUser is unsupported in this version (explicit
-`interaction_required` failure); a peer request is not owner approval. See
+deadlock its origin. A peer's `AskUser` now returns an untrusted bounded ACP
+form to this caller: `answer` with its current `questionId` and form field IDs,
+or `decline`; answer from your own evidence or ask your own user. The bridge
+rejects invalid/sensitive forms, and a peer request is not owner approval. See
 [ACP bridge](/programmatic/acp-bridge/) for the handoff and trust boundary.
 
 ## Subagents (`Agent`)

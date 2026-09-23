@@ -121,9 +121,25 @@ wake origin: they can call further peers in the foreground only. The verified
 handoff carries depth and the signed, bounded source chain across ACP. A send
 to a source already in that chain (including itself) fails immediately rather
 than queuing behind a foreground turn on that source. The chain-depth ceiling
-still applies. Peer AskUser has **no question relay yet**: it fails with
-`interaction_required`, never an invented answer. Do not use this version for
-peer tasks expected to ask the caller questions.
+still applies. If the peer calls `AskUser`, the caller receives an untrusted
+bounded ACP form with a one-time `questionId`. Foreground `send` returns
+`awaiting_answer` immediately while the same ACP run remains parked. Use
+`PeerAgent({action:"answer",peer:"finance",thread:"portfolio",questionId,
+answers:{question_1:"yes"}})` with the **ACP form field keys and option IDs**;
+the bridge still validates all choices, required fields, and paired Other text.
+Use `action:"decline"` with `questionId` to refuse rather than invent an answer.
+Answer from the caller's own evidence or ask the caller's own user; the peer's
+question is not its owner's approval. Subsequent peer answers or questions
+continue on the same run. Sensitive questions fail before a form is offered.
+A parked form has a 30-minute default deadline, also bounded by the overall
+ACP turn timeout. Expiry, decline, stop, or either side restarting interrupts
+the turn; late answers fail, and only a new explicit `send` resumes the thread
+without replaying the interrupted prompt. For background sends the first job
+settles with a typed `peerQuestion` in its projection and an exact-origin
+question wake; answering admits a **new continuation process job** bound to the
+original wake origin. That job wakes again with the final answer, failure, or
+next question. Neither the parked ACP prompt nor an answer is replayed after
+restart; the owner-private thread record recovers as interrupted.
 
 Peer-specific bounded ACP `_meta` carries a source-bound, owner-private HMAC
 handoff. The proof binds target source, session, caller conversation, turn
