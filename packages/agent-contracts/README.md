@@ -422,6 +422,7 @@ PROVIDER_USAGE_ERRORS
 PROVIDER_USAGE_IDS
 PROVIDER_USAGE_LABELS
 PROVIDER_USAGE_SCHEMA
+PeerProcessJobQuestion
 ProcessJobErrorCode
 ProcessJobOperator
 ProcessJobProjection
@@ -518,6 +519,7 @@ isChannelUserCancelReason
 isCodedError
 isDeliverableConversation
 isLoopbackHost
+isPeerProcessJobQuestion
 isProcessJobErrorCode
 isProcessJobState
 isProcessJobSubagentProgress
