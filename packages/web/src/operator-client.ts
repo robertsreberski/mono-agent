@@ -130,7 +130,18 @@ export interface OperatorConnection {
   readonly processJobsBearer?: string;
 }
 
+export interface OperatorRestartSupport {
+  readonly supported: boolean;
+  readonly reason?: string;
+}
+
+export type OperatorRestartResponse =
+  | { readonly kind: "accepted" | "in_progress"; readonly operationId: string }
+  | { readonly kind: "refused"; readonly reason: string };
+
 export interface OperatorInfo {
+  /** Always fail closed on older or malformed producers. */
+  readonly restart: OperatorRestartSupport;
   readonly schema: number;
   readonly label?: string;
   readonly model?: string;
@@ -253,6 +264,9 @@ export class OperatorClient {
     const contextImport = parseContextImportCapability(capabilities?.contextImport);
     return {
       schema: body.schema,
+      restart: this.apiKey === undefined
+        ? { supported: false, reason: "Agent restart requires a configured operator API key." }
+        : parseRestartSupport(capabilities?.restart),
       ...(typeof body.label === "string" ? { label: body.label } : {}),
       ...(typeof body.model === "string" ? { model: body.model } : {}),
       ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
@@ -282,6 +296,41 @@ export class OperatorClient {
         ? { supportsProviderAuthChecks: true }
         : {}),
     };
+  }
+
+  /** Send only to the discovered operator connection; no agent-supplied target. */
+  async restart(signal?: AbortSignal): Promise<OperatorRestartResponse> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}/v1/restart`, {
+        method: "POST", redirect: "error", headers: this.headers(true), body: "{}",
+        ...(signal === undefined ? {} : { signal }),
+      });
+    } catch {
+      // Request may have reached the worker and committed despite transport loss.
+      throw new WebConsoleError("restart_unconfirmed", "The restart request could not be confirmed.", 502);
+    }
+    let body: Record<string, unknown> | undefined;
+    try {
+      body = record(JSON.parse(await readBoundedBody(response, 4096, "restart_unconfirmed")) as unknown);
+    } catch {
+      throw new WebConsoleError("restart_unconfirmed", "The restart response could not be confirmed.", 502);
+    }
+    const operation = record(body?.operation);
+    const operationId = operation?.id;
+    if (response.status === 202 && typeof operationId === "string" && operationId.length > 0
+      && Buffer.byteLength(operationId, "utf8") <= 128) {
+      return { kind: "accepted", operationId };
+    }
+    const error = record(body?.error);
+    if (response.status === 409 && error?.code === "restart_in_progress"
+      && typeof operationId === "string" && operationId.length > 0 && Buffer.byteLength(operationId, "utf8") <= 128) {
+      return { kind: "in_progress", operationId };
+    }
+    if ([400, 401, 403, 409].includes(response.status) && typeof error?.code === "string") {
+      return { kind: "refused", reason: boundedRestartReason(error.message) };
+    }
+    throw new WebConsoleError("restart_unconfirmed", "The restart response could not be confirmed.", 502);
   }
 
   async providerUsage(provider?: ProviderUsageId, signal?: AbortSignal): Promise<ProviderUsageSnapshot> {
@@ -1381,6 +1430,21 @@ function parseProviders(value: unknown): readonly WebAgentProvider[] | undefined
 
 function stringArray(value: unknown): readonly string[] | undefined {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value : undefined;
+}
+
+function boundedRestartReason(value: unknown): string {
+  return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= 256
+    ? value : "Agent restart was refused.";
+}
+
+function parseRestartSupport(value: unknown): OperatorRestartSupport {
+  const support = record(value);
+  if (support === undefined || !hasOnlyKeys(support, ["supported", "reason"])) {
+    return { supported: false, reason: "Agent restart support is unavailable." };
+  }
+  if (support.supported === true && support.reason === undefined) return { supported: true };
+  if (support.supported === false) return { supported: false, reason: boundedRestartReason(support.reason) };
+  return { supported: false, reason: "Agent restart support is unavailable." };
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
