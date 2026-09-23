@@ -8,6 +8,9 @@ import { fileURLToPath } from "node:url";
 const cliPath = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
+import { isPeerProcessJobQuestion } from "@mono-agent/agent-contracts";
+import type { InternalProcessJobRequest } from "../process-jobs-internal.js";
+import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createAgentResponder } from "@mono-agent/agent-harness";
@@ -38,7 +41,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
-async function fixture(answer = "ok", askUser: boolean | "sensitive" = false, incomplete = false, pending = false,
+async function fixture(answer = "ok", askUser: boolean | "sensitive" | "long" = false, incomplete = false, pending = false,
   onTurn?: (turn: { conversationId: string; metadata: Record<string, unknown>; text: string }) => Promise<void>) {
   const temporary = await mkdtemp(join(tmpdir(), "mono-agent-peer-client-"));
   roots.push(temporary);
@@ -85,7 +88,8 @@ async function fixture(answer = "ok", askUser: boolean | "sensitive" = false, in
       askGets += 1;
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ ask: {
-        interactionId: "interaction-1", message: askUser === "sensitive" ? "Provide your API key" : "Approve?", questions: [{
+        interactionId: "interaction-1", message: askUser === "sensitive" ? "Provide your API key"
+          : askUser === "long" ? "界".repeat(900) : "Approve?", questions: [{
           id: "q1", header: "Decision", question: "Proceed?",
           options: [{ id: "yes", label: "Yes", description: "" }, { id: "no", label: "No", description: "" }], multiSelect: false,
         }], answers: [], activeQuestionIndex: 0, status: "pending",
@@ -293,6 +297,51 @@ describe("peer ACP client over a real spawned bridge", () => {
     } finally { await client.close(); await extension.cleanup?.(); }
   }, 30_000);
 
+  it("wakes a background caller with a bounded non-ASCII question through the real bridge", async () => {
+    const f = await fixture("continued", "long");
+    const callerRoot = join(f.root, "caller");
+    await mkdir(callerRoot);
+    discovery.enabled = true;
+    discovery.root = f.root;
+    discovery.artifactDir = f.artifactDir;
+    discovery.callerArtifactDir = join(callerRoot, "artifacts");
+    const config = resolveJsonMonoAgentConfig({ cwd: callerRoot, json: {
+      runtime: { model: "pi:openai-codex:gpt-5.5", workspace: callerRoot },
+      context: { identityPath: "IDENTITY.md" }, artifacts: { dir: discovery.callerArtifactDir },
+      traceability: { sourceId: "agent-a" }, tools: { allowedTools: ["PeerAgent"] },
+      peers: { finance: { sourceId: "peer-test" } },
+    } });
+    let pending: InternalProcessJobRequest | undefined;
+    const service = { settings: { maxChainDepth: 4 }, internalController: () => ({
+      startInternal: async (request: InternalProcessJobRequest) => {
+        pending = request; return { jobId: request.jobId, state: "queued", startedAt: null };
+      },
+    }) } as unknown as ProcessJobsServiceHandle;
+    const extension = await createPeerAgentRuntimeExtension({ config, service, channelId: "tui", cliPath,
+      env: { ...process.env, MONO_AGENT_TRACE_REGISTRY_DIR: join(f.root, "registry") } })!({
+      runId: "run", request: { conversationId: "web:owner", userMessage: "ask peer",
+        metadata: { source: "web" }, abortSignal: new AbortController().signal }, context: {} as never,
+    });
+    const spec = (extension.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-peer-agent"]!;
+    const client = new Client({ name: "peer-background-bridge", version: "1" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+    try {
+      const receipt = await client.callTool({ name: "PeerAgent", arguments: { action: "send", peer: "finance",
+        thread: "portfolio", message: "ask", background: true } });
+      expect(receipt.isError).not.toBe(true);
+      const first = await pending!.run(new AbortController().signal, () => {}, () => {});
+      expect(first.status).toBe("awaiting_reply");
+      expect(isPeerProcessJobQuestion(first.peerQuestion)).toBe(true);
+      expect(Buffer.byteLength(first.peerQuestion!.message, "utf8")).toBeLessThanOrEqual(2_000);
+      const answered = await client.callTool({ name: "PeerAgent", arguments: { action: "answer",
+        peer: "finance", thread: "portfolio", questionId: first.peerQuestion!.questionId,
+        answers: { question_1: "yes" } } });
+      expect(answered.isError).not.toBe(true);
+      expect((await pending!.run(new AbortController().signal, () => {}, () => {}))).toMatchObject({ status: "ok" });
+      expect(f.submission()).toMatchObject({ interactionId: "interaction-1" });
+    } finally { await client.close(); await extension.cleanup?.(); }
+  }, 30_000);
+
   it("relays a real ACP form into the same parked peer turn and resumes after acceptance", async () => {
     const f = await fixture("continued", true);
     let question: import("../peer-acp-client.js").PeerAcpQuestion | undefined;
@@ -308,6 +357,18 @@ describe("peer ACP client over a real spawned bridge", () => {
     expect(f.submission()).toMatchObject({ interactionId: "interaction-1" });
     expect(result.answer).toContain("continued");
     expect(f.turns).toHaveLength(1);
+  }, 30_000);
+
+  it("bounds a non-ASCII ACP question in UTF-8 bytes before background projection", async () => {
+    const f = await fixture("continued", "long");
+    let bounded = "";
+    await f.turn(undefined, new AbortController().signal, async (question) => {
+      bounded = question.message;
+      return { action: "accept", content: { question_1: "yes" } };
+    });
+    expect(Buffer.byteLength("界".repeat(900), "utf8")).toBeGreaterThan(2_000);
+    expect(Buffer.byteLength(bounded, "utf8")).toBeLessThanOrEqual(2_000);
+    expect(bounded).toContain("[truncated]");
   }, 30_000);
 
   it("submits a valid paired Other response through the bridge validator", async () => {

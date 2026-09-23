@@ -154,7 +154,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
   const active = new Map<string, () => Promise<void>>();
   const reservedQuestions = new Set<string>();
   const relays = new Map<string, { relay: PeerQuestionRelay; background: boolean;
-    origin: ReturnType<typeof processJobOriginForRequest>; depth: number }>();
+    origin: ReturnType<typeof processJobOriginForRequest>; depth: number; setQuestionJobId(id: string): void }>();
   let recovery: Promise<void> | undefined;
   return async (input) => {
     recovery ??= reconcileInterruptedPeerThreads(config);
@@ -221,9 +221,15 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
               reservedQuestions.add(key);
               const response = args.action === "decline" ? { action: "decline" as const }
                 : { action: "accept" as const, content: args.answers! };
+              const cancelParked = (): void => {
+                entry.relay.decline();
+                const cancel = active.get(key);
+                if (cancel) void cancel().catch(() => undefined);
+              };
               if (entry.background) {
                 if (!service || !entry.origin) { reservedQuestions.delete(key); throw new Error("Original peer wake origin is unavailable."); }
                 let answerAllowed = false;
+                let continuationStarted = false;
                 let allowAnswer!: () => void;
                 const answerGate = new Promise<void>((resolve) => { allowAnswer = resolve; });
                 try {
@@ -232,23 +238,51 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                     jobId: randomUUID(), instanceId: args.peer,
                     description: `Peer ${args.peer} thread ${args.thread} question continuation`,
                     wakeOnCompletion: true,
-                    run: async () => {
-                      try { await answerGate; if (!answerAllowed) throw new Error("Peer answer admission failed; form remains parked.");
-                        await entry.relay.respond(args.questionId!, response); return peerJobEvent(await entry.relay.next()); }
-                      catch (error) { return { status: "failed", output: `Peer question failed: ${error instanceof Error ? error.message.slice(0, 300) : "unknown error"}` }; }
-                      finally { reservedQuestions.delete(key); }
-                    }, cleanup: async () => { reservedQuestions.delete(key); },
+                    run: async (signal) => {
+                      continuationStarted = true;
+                      const abortContinuation = () => cancelParked();
+                      signal.addEventListener("abort", abortContinuation, { once: true });
+                      try {
+                        await answerGate;
+                        if (!answerAllowed || signal.aborted) throw new Error("Peer answer continuation was cancelled before dispatch.");
+                        await entry.relay.respond(args.questionId!, response);
+                        const event = await entry.relay.next();
+                        if (signal.aborted) throw new Error("Peer answer continuation was cancelled after dispatch.");
+                        return peerJobEvent(event);
+                      } catch (error) {
+                        if (signal.aborted) cancelParked();
+                        return { status: "failed", output: `Peer question failed: ${error instanceof Error ? error.message.slice(0, 300) : "unknown error"}` };
+                      } finally {
+                        signal.removeEventListener("abort", abortContinuation);
+                        reservedQuestions.delete(key);
+                      }
+                    }, cleanup: async () => {
+                      reservedQuestions.delete(key);
+                      if (!continuationStarted) cancelParked();
+                    },
                   });
+                  entry.setQuestionJobId(started.jobId);
                   const receipt = reply(JSON.stringify({ peer: args.peer, thread: args.thread, jobId: started.jobId, state: "started" }));
                   answerAllowed = true;
                   setImmediate(allowAnswer);
                   return receipt;
                 } catch (error) { reservedQuestions.delete(key); allowAnswer(); throw error; }
               }
+              const abortAnswer = () => cancelParked();
+              input.request.abortSignal.addEventListener("abort", abortAnswer, { once: true });
               try {
+                if (input.request.abortSignal.aborted) throw new Error("Peer answer request was cancelled.");
                 await entry.relay.respond(args.questionId, response);
-                return peerEventReply(await entry.relay.next());
-              } finally { reservedQuestions.delete(key); }
+                const event = await entry.relay.next();
+                if (input.request.abortSignal.aborted) throw new Error("Peer answer request was cancelled; peer turn interrupted.");
+                return peerEventReply(event);
+              } catch (error) {
+                if (input.request.abortSignal.aborted) cancelParked();
+                throw error;
+              } finally {
+                input.request.abortSignal.removeEventListener("abort", abortAnswer);
+                reservedQuestions.delete(key);
+              }
             }
             if (args.questionId !== undefined || args.answers !== undefined || !args.message?.trim()
               || args.message.length > 16_384) throw new Error("send requires only a nonempty message of at most 16384 characters.");
@@ -267,8 +301,17 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
             if (sourceId === caller || peer?.chain.includes(sourceId)) throw new Error("Peer call cycle rejected: target already appears in the verified source chain.");
             const chain = [...(peer?.chain ?? [caller]), sourceId];
             if (chain.length > 64) throw new Error("Peer source chain exhausted (limit 64).");
-            // The exclusive owner lock is held through completion, also across concurrent caller turns.
-            const lease = await acquireContinuationStoreLock(key);
+            // The exclusive owner lock is held through completion, including a parked form.
+            const parked = relays.get(key)?.relay.question;
+            if (parked) throw new Error(`Peer thread is awaiting questionId ${parked.questionId}; answer, decline, or stop it before another send.`);
+            let lease: Awaited<ReturnType<typeof acquireContinuationStoreLock>>;
+            try { lease = await acquireContinuationStoreLock(key); }
+            catch (error) {
+              if (error instanceof Error && error.message.startsWith("Continuation state is already owned")) {
+                throw new Error("Peer thread is busy in another turn; answer, decline, or stop its pending question before another send.");
+              }
+              throw error;
+            }
             let held = true;
             const release = async () => { if (held) { held = false; await lease.release(); } };
             const stop = new AbortController();
@@ -293,18 +336,25 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                 generation: randomUUID(), status: "busy",
               };
               await saveThread(key, record);
+              let questionJobId: string | undefined;
+              const settleQuestion = async (question: PeerQuestion, state: "answered" | "expired" | "interrupted") => {
+                if (questionJobId) await service?.settlePeerQuestion?.(questionJobId, question.questionId, state);
+              };
               const relay = new PeerQuestionRelay(args.peer, args.thread,
                 async (question) => {
                   record.question = question;
                   record.status = "awaiting_answer";
                   await saveThread(key, record);
                 },
-                async () => {
+                async (question, response) => {
+                  await settleQuestion(question, response.action === "accept" ? "answered" : "interrupted");
                   record.status = "busy";
                   delete record.question;
                   await saveThread(key, record);
-                });
-              relays.set(key, { relay, background: args.background === true, origin, depth });
+                },
+                async (question, state) => await settleQuestion(question, state));
+              relays.set(key, { relay, background: args.background === true, origin, depth,
+                setQuestionJobId: (id) => { questionJobId = id; } });
               let cancelAcp: (() => Promise<void>) | undefined;
               active.set(key, async () => {
                 stop.abort();
@@ -361,6 +411,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                     finally { await release(); }
                   },
                 });
+                questionJobId = started.jobId;
                 const receipt = reply(JSON.stringify({ peer: args.peer, thread: args.thread, jobId: started.jobId, state: "started" }));
                 setImmediate(allowDispatch);
                 return receipt;
@@ -376,6 +427,8 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
             } catch (error) {
               stop.abort();
               allowDispatch();
+              relays.delete(key);
+              reservedQuestions.delete(key);
               active.delete(key);
               try {
                 const pending = await readThread(key);

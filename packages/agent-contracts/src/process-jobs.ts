@@ -236,7 +236,7 @@ const INTERNAL_PROCESS_JOB_TOOLS: readonly InternalProcessJobTool[] = ["Agent", 
  * projection's reply route, including any host-owned rollover bucket.
  */
 export interface PeerProcessJobQuestion {
-  readonly state: "awaiting_answer";
+  readonly state: "awaiting_answer" | "answered" | "expired" | "interrupted";
   readonly questionId: string;
   readonly peer: string;
   readonly thread: string;
@@ -247,7 +247,8 @@ export interface PeerProcessJobQuestion {
 
 export function isPeerProcessJobQuestion(value: unknown): value is PeerProcessJobQuestion {
   if (!isRecord(value) || !hasExactlyKeys(value, ["state", "questionId", "peer", "thread", "message", "requestedSchema", "expiresAt"])) return false;
-  if (value.state !== "awaiting_answer" || !boundedNonEmptyString(value.questionId, 64)
+  if (!["awaiting_answer", "answered", "expired", "interrupted"].includes(String(value.state))
+    || !boundedNonEmptyString(value.questionId, 64)
     || !boundedNonEmptyString(value.peer, 40) || !boundedNonEmptyString(value.thread, 40)
     || !boundedNonEmptyString(value.message, 2_000) || !boundedNonEmptyString(value.expiresAt, 40)
     || !isRecord(value.requestedSchema)) return false;

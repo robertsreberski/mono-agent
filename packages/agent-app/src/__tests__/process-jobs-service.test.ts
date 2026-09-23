@@ -3579,6 +3579,9 @@ it("publishes a typed untrusted peer question and wakes the exact caller for ans
     prompt: expect.stringContaining("PeerAgent answer with this exact peer/thread/questionId"),
     projection: { peerQuestion } });
   expect(wake.mock.calls[0]?.[0].prompt).toContain("<untrusted_process_job_result>");
+  await service.settlePeerQuestion?.(started.jobId, peerQuestion.questionId, "expired");
+  expect(await service.get(started.jobId)).toMatchObject({ peerQuestion: { state: "expired" } });
+  expect(wake).toHaveBeenCalledOnce();
 });
 
 it("external and internal jobs share the same durable admission and queue", async () => {

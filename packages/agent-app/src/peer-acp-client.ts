@@ -48,6 +48,7 @@ export interface PeerAcpQuestion {
   readonly requestedSchema: Readonly<Record<string, unknown>>;
   readonly sessionId: string;
   readonly toolCallId: string;
+  readonly expiresAt?: string;
 }
 
 function limitedFrames(): Transform {
@@ -73,17 +74,22 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
   // An async spawn failure otherwise emits an uncaught ChildProcess error.
   child.on("error", (error) => frames.destroy(error));
   const app = client({ name: "mono-agent-peer-client" });
+  const turnDeadlineAt = Date.now() + 30 * 60_000;
   let questionsSeen = 0;
   app.onRequest(methods.client.elicitation.create, async ({ params }) => {
     if (options.onQuestion === undefined || params.mode !== "form" || ++questionsSeen > 8
       || !("sessionId" in params) || params.sessionId !== sessionId || typeof params.toolCallId !== "string"
       || typeof params.message !== "string" || typeof params.requestedSchema !== "object"
       || params.requestedSchema === null || Buffer.byteLength(JSON.stringify(params.requestedSchema)) > 8_192
-      || params.message.length > 2_000) {
+      || Buffer.byteLength(params.message, "utf8") > 16_384) {
       throw new Error("ACP peer question is unsupported, mismatched, or oversized.");
     }
-    return await options.onQuestion({ message: params.message, requestedSchema: params.requestedSchema as Readonly<Record<string, unknown>>,
-      sessionId: params.sessionId as string, toolCallId: params.toolCallId });
+    const messageBytes = Buffer.from(params.message, "utf8");
+    const boundedMessage = messageBytes.length <= 2_000 ? params.message
+      : `${messageBytes.subarray(0, 1_980).toString("utf8").replace(/�$/u, "")} [truncated]`;
+    return await options.onQuestion({ message: boundedMessage, requestedSchema: params.requestedSchema as Readonly<Record<string, unknown>>,
+      sessionId: params.sessionId as string, toolCallId: params.toolCallId,
+      expiresAt: new Date(turnDeadlineAt).toISOString() });
   });
   let answer = "";
   let oversized = false;
@@ -97,7 +103,7 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
     Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
     Readable.toWeb(frames) as ReadableStream<Uint8Array>,
   ));
-  const timeout = AbortSignal.timeout(30 * 60_000);
+  const timeout = AbortSignal.timeout(Math.max(1, turnDeadlineAt - Date.now()));
   let sessionId = options.sessionId;
   let cancelGrace: ReturnType<typeof setTimeout> | undefined;
   let forceKill: ReturnType<typeof setTimeout> | undefined;

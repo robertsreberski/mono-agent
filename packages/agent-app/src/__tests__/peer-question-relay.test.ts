@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { PEER_QUESTION_TIMEOUT_MS, PeerQuestionRelay } from "../peer-question-relay.js";
+import { PeerQuestionRelay } from "../peer-question-relay.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -10,13 +10,16 @@ describe("owner-held peer ACP question", () => {
 
   it("expires without inventing an answer and rejects late replies", async () => {
     vi.useFakeTimers({ now: new Date("2026-09-23T19:00:00.000Z") });
-    const relay = new PeerQuestionRelay("finance", "portfolio", async () => {}, async () => {});
-    const response = relay.request(form);
+    const retire = vi.fn(async () => {});
+    const relay = new PeerQuestionRelay("finance", "portfolio", async () => {}, async () => {}, retire);
+    const response = relay.request({ ...form, expiresAt: "2026-09-23T19:01:00.000Z" });
     const event = await relay.next();
+    expect(event).toMatchObject({ kind: "question", question: { expiresAt: "2026-09-23T19:01:00.000Z" } });
     expect(event).toMatchObject({ kind: "question", question: { message: "Proceed?" } });
     if (event.kind !== "question") throw new Error("No question");
-    await vi.advanceTimersByTimeAsync(PEER_QUESTION_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(await response).toEqual({ action: "decline" });
+    expect(retire).toHaveBeenCalledWith(event.question, "expired");
     await expect(relay.respond(event.question.questionId, { action: "accept", content: { question_1: "yes" } }))
       .rejects.toThrow(/stale|expired/u);
   });
