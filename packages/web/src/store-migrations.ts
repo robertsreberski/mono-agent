@@ -246,6 +246,13 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
     database.exec("DROP TRIGGER IF EXISTS message_search_update; DROP TRIGGER IF EXISTS message_search_settle;");
     refreshMessageSearch();
   } },
+  { version: 35, name: "restart-operations", up: ({ database }) => {
+    assertColumns(database, "restart_operations", [
+      "id", "source_id", "generation", "operation_id", "requested_at", "deadline", "stage", "outcome",
+      "reason", "uncertain", "approximate_running_turns",
+    ]);
+    assertIndex(database, "restart_operations_one_active_source", ["source_id"]);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -303,6 +310,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       monitor_wake_deliveries: ["projection_json", "thread_id", "payload_sha256"],
       notification_deliveries: ["message_id", "job_id", "run_id"],
       agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
+      restart_operations: ["id", "source_id", "generation", "operation_id", "requested_at", "deadline", "stage", "outcome", "reason", "uncertain", "approximate_running_turns"],
       messages: ["seq", "cron_suppressed"],
       message_search_writes: ["message_id"],
       process_job_cards: ["state", "completed_at"],
@@ -376,6 +384,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ...THREAD_READ_INDEXES,
       ["cron_reply_operations_one_pending_run", ["source_id", "job_id", "run_id"]],
       ["thread_tags_by_tag", ["tag_id", "thread_id"]],
+      ["restart_operations_one_active_source", ["source_id"]],
       ["projects_by_source", ["source_id", "archived_at", "updated_at", "id"]],
       ["threads_by_project", ["project_id", "archived_at", "updated_at", "id"]],
     ] as const) assertIndex(database, index, expected);
