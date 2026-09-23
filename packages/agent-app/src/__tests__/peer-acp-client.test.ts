@@ -6,7 +6,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const cliPath = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
+import { createAgentResponder } from "@mono-agent/agent-harness";
+import { createProcessJobsRuntimeExtension } from "../process-jobs-runtime.js";
 
 import { PeerSessionGoneError, runPeerAcpTurn } from "../peer-acp-client.js";
 import { verifyPeerOperatorHandoff } from "../peer-provenance.js";
@@ -18,7 +21,8 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
-async function fixture(answer = "ok", askUser = false, incomplete = false, pending = false) {
+async function fixture(answer = "ok", askUser = false, incomplete = false, pending = false,
+  onTurn?: (turn: { conversationId: string; metadata: Record<string, unknown>; text: string }) => Promise<void>) {
   const temporary = await mkdtemp(join(tmpdir(), "mono-agent-peer-client-"));
   roots.push(temporary);
   const root = await realpath(temporary);
@@ -37,6 +41,7 @@ async function fixture(answer = "ok", askUser = false, incomplete = false, pendi
       let body = "";
       for await (const chunk of req) body += String(chunk);
       turns.push(JSON.parse(body) as (typeof turns)[number]);
+      await onTurn?.(turns[turns.length - 1]!);
       turnStarted();
       res.setHeader("content-type", "application/x-ndjson");
       if (pending) {
@@ -104,6 +109,45 @@ describe("peer ACP client over a real spawned bridge", () => {
       { ...f.turns[0]!.metadata.peerHandoff as object, depth: 0 }, first.sessionId, "request text")).toBeUndefined();
     expect(await verifyPeerOperatorHandoff(f.artifactDir, f.turns[0]!.metadata.peerHandoff,
       first.sessionId, "request text", "wrong-target")).toBeUndefined();
+  }, 30_000);
+
+  it("carries the real bridge prompt unchanged through the harness responder into verified runtime depth", async () => {
+    const observations: Array<{ text: string; depth: number; caller: string }> = [];
+    let f!: Awaited<ReturnType<typeof fixture>>;
+    f = await fixture("ok", false, false, false, async (turn) => {
+      const config = resolveJsonMonoAgentConfig({ cwd: f.root, json: {
+        runtime: { model: "pi:openai-codex:gpt-5.5", workspace: f.root },
+        context: { identityPath: "IDENTITY.md" }, artifacts: { dir: f.artifactDir },
+      } });
+      const generation = { id: "11111111-1111-4111-8111-111111111111", rootKeys: [] };
+      const extension = createProcessJobsRuntimeExtension({
+        coreConfig: config, baseModel: config.runtime.model, channelId: undefined,
+        registry: { kind: "empty", generation } as never,
+        ownership: { coordinator: { acquireRequestLease: () => ({ generation, releaseAfterSettlement: vi.fn() }) } } as never,
+        attestRegistry: (async (snapshot: unknown) => snapshot) as never,
+        service: { settings: { maxChainDepth: 4 }, controller: vi.fn() } as never,
+        sandboxEngine: { id: "test", isAvailable: async () => true } as never,
+      });
+      const responder = createAgentResponder({ harness: { run: async (request: {
+        conversationId: string; userMessage: string; metadata?: Record<string, unknown>;
+      }) => {
+        const runtime = await extension({ runId: "run", request, context: {} } as never);
+        const peer = await verifyPeerOperatorHandoff(f.artifactDir, request.metadata?.peerHandoff,
+          request.conversationId, request.userMessage, "peer-test");
+        observations.push({ text: request.userMessage,
+          depth: (runtime.runtimeOptions?.processJobsAvailability as { chainDepth?: number } | undefined)?.chainDepth ?? -1,
+          caller: peer?.caller ?? "unverified" });
+        await runtime.settleCleanup?.();
+        return { text: "ok", metadata: { runId: "run", conversationId: request.conversationId,
+          contextSources: [], contextSectionIds: [] } };
+      } } as never });
+      await responder.respond({ conversationId: turn.conversationId, text: turn.text,
+        metadata: { ...turn.metadata, source: "acp" }, abortSignal: new AbortController().signal },
+      { append: async () => undefined } as never);
+      await responder.dispose();
+    });
+    await f.turn();
+    expect(observations).toEqual([{ text: "request text", depth: 1, caller: "agent-test" }]);
   }, 30_000);
 
   it("reports a reset session without replay and permits an explicit new session", async () => {

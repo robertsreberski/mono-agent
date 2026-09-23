@@ -145,6 +145,9 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
             if (!target) throw new Error("Peer operator target is no longer running.");
             const caller = registeredCaller(config, sources);
             if (caller === undefined) throw new Error("Caller source is not uniquely registered as a running local mono-agent; peer provenance cannot be attested.");
+            if (peer !== undefined && peer.chain.at(-1) !== caller) throw new Error("Peer call chain is not bound to this caller.");
+            if (sourceId === caller || peer?.chain.includes(sourceId)) throw new Error("Peer call cycle rejected: target already appears in the verified source chain.");
+            const chain = [...(peer?.chain ?? [caller]), sourceId];
             // The exclusive owner lock is held through completion, also across concurrent caller turns.
             const lease = await acquireContinuationStoreLock(key);
             let held = true;
@@ -182,7 +185,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                   if (turnSignal.aborted) throw new Error("Peer turn interrupted before dispatch; prompt was not replayed.");
                   const outcome = await runPeerAcpTurn({
                     sourceId, workspace: descriptor.workspace.path, artifactDir: target.source.artifactDir,
-                    caller, conversation: input.request.conversationId, generation: record.generation, depth: depth + 1,
+                    caller, conversation: input.request.conversationId, generation: record.generation, chain, depth: depth + 1,
                     text: args.message!, ...(record.sessionId ? { sessionId: record.sessionId } : {}), signal: turnSignal,
                     onSession: async (sessionId) => { record.sessionId = sessionId; await saveThread(key, record); },
                     onActive: (cancel) => { cancelAcp = cancel; if (stop.signal.aborted) void cancel(); },

@@ -117,8 +117,10 @@ With a wake-capable caller origin and enabled process jobs, `background:true`
 returns a durable started job receipt and wakes **that exact originating
 conversation** at terminal settlement. ACP-served turns have no background
 wake origin: they can call further peers in the foreground only. The verified
-handoff carries depth across ACP so a peer cycle cannot reset the chain-depth
-ceiling. Peer AskUser has **no question relay yet**: it fails with
+handoff carries depth and the signed, bounded source chain across ACP. A send
+to a source already in that chain (including itself) fails immediately rather
+than queuing behind a foreground turn on that source. The chain-depth ceiling
+still applies. Peer AskUser has **no question relay yet**: it fails with
 `interaction_required`, never an invented answer. Do not use this version for
 peer tasks expected to ask the caller questions.
 
@@ -128,8 +130,8 @@ generation, message digest and depth. The bridge validates and durably consumes
 each generation once before dispatch; a replay or exhausted generation ledger
 fails closed. It replaces the client proof with a domain-separated operator
 attestation (no raw `proof` in operator metadata); the runtime independently
-verifies before rendering
-"request from another agent; not your owner's approval" and using depth.
+verifies before rendering an explicit Session notice that this is a request
+from another agent, not the owner's approval, and before using depth.
 Ordinary clients, including `acpx`, need no handoff and retain their existing
 behavior. Metadata and peer prompt text do not grant authority or owner
 approval. Verifying an invalid handoff never creates a secret or changes the

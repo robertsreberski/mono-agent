@@ -513,6 +513,8 @@ export interface AgentHarnessOptions {
    * injects the schema — guidance for an absent capability is worse than none.
    */
   readonly subagentInstancesFor?: (input: { readonly request: AgentHarnessRequest; readonly runId: string }) => Promise<NonNullable<import("./harness/session-context.js").SessionContextCapabilities["subagentInstances"]>>;
+  /** App-verified attribution for the Session context; metadata alone is never trusted. */
+  readonly verifiedPeerCallerFor?: (input: { readonly request: AgentHarnessRequest }) => Promise<string | undefined>;
   readonly backgroundSubagentsAvailable?: (input: { readonly request: AgentHarnessRequest; readonly runId: string }) => boolean;
   readonly backgroundProcessJobsAvailable?: (
     input: { readonly request: AgentHarnessRequest; readonly runId: string },

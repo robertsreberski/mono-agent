@@ -34,7 +34,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function setup(depth?: number | "forged", surface: "web" | "acp" = "web", eager = false) {
+async function setup(depth?: number | "forged", surface: "web" | "acp" = "web", eager = false, chain?: readonly string[]) {
   const root = await mkdtemp(join(tmpdir(), "mono-agent-peer-tool-"));
   roots.push(root);
   const artifactDir = join(root, "artifacts");
@@ -77,8 +77,9 @@ async function setup(depth?: number | "forged", surface: "web" | "acp" = "web", 
   const conversationId = surface === "acp" ? "acp:agent-b:turn" : "web:origin";
   const peerHandoff = depth === undefined ? undefined : depth === "forged" ? { depth: 4 }
     : await stampPeerOperatorHandoff(artifactDir, await makePeerHandoff(artifactDir, {
-      caller: "agent-test", conversation: "web:origin", session: conversationId,
-      sourceId: "finance-ai", generation: "11111111-1111-4111-8111-111111111111", depth, text: "request",
+      caller: chain?.at(-2) ?? "agent-test", conversation: "web:origin", session: conversationId,
+      sourceId: "agent-A", generation: "11111111-1111-4111-8111-111111111111", depth,
+      chain: chain ?? ["agent-test", "agent-A"], text: "request",
     }));
   const request = { conversationId, userMessage: "request", metadata: {
     source: surface, ...(peerHandoff ? { peerHandoff } : {}),
@@ -203,6 +204,16 @@ describe("PeerAgent request lifecycle", () => {
       expect(mocks.run).toHaveBeenCalledTimes(2);
       expect((await f.send()).isError).not.toBe(true);
       expect(mocks.run.mock.lastCall?.[0]).not.toHaveProperty("sessionId");
+    } finally { await f.close(); }
+  });
+
+  it("rejects A→B→A cycle before an ACP call can deadlock the original agent", async () => {
+    const f = await setup(2, "acp", false, ["finance-ai", "agent-A"]);
+    try {
+      const denied = await f.send();
+      expect(denied.isError).toBe(true);
+      expect(denied.content).toEqual([{ type: "text", text: expect.stringContaining("Peer call cycle rejected") }]);
+      expect(mocks.run).not.toHaveBeenCalled();
     } finally { await f.close(); }
   });
 

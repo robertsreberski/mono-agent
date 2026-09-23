@@ -7,8 +7,10 @@
   progress, then report success only for a new ready process; refusals and
   unconfirmed requests stay distinct. Other channels do not receive the tool.
 - Add config-declared local `PeerAgent` calls with named ACP threads, foreground
-  replies, and optional durable background wakes on wake-capable turns. Peer
-  AskUser interaction relay is not supported yet; requests fail explicitly.
+  replies, and optional durable background wakes on wake-capable turns. Reject
+  replayed handoffs and peer cycles; reset lost sessions only on a new explicit
+  send, without changing ordinary clients' sandbox posture. Peer AskUser
+  interaction relay is not supported yet; requests fail explicitly.
 
 ## 0.24.0 — JSON-only core configuration (2026-09-23)
 

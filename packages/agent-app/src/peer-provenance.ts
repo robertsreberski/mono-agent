@@ -11,6 +11,7 @@ export interface PeerHandoff {
   readonly session: string;
   readonly sourceId: string;
   readonly generation: string;
+  readonly chain: readonly string[];
   readonly depth: number;
   readonly digest: string;
   readonly proof: string;
@@ -21,18 +22,19 @@ function peerSecretDir(artifactDir: string): string {
 }
 
 function payload(value: Omit<PeerHandoff, "proof">): string {
-  return JSON.stringify([value.version, value.caller, value.conversation, value.session, value.sourceId, value.generation, value.depth, value.digest]);
+  return JSON.stringify([value.version, value.caller, value.conversation, value.session, value.sourceId, value.generation, value.chain, value.depth, value.digest]);
 }
 
 export async function makePeerHandoff(artifactDir: string, input: {
-  caller: string; conversation: string; session: string; sourceId: string; generation: string; depth: number; text: string;
+  caller: string; conversation: string; session: string; sourceId: string; generation: string; chain?: readonly string[]; depth: number; text: string;
 }): Promise<PeerHandoff> {
   const root = peerSecretDir(artifactDir);
   await ensureOwnerOnlyDirectory(root);
   const secret = await loadOrCreateContinuationSecret(root);
   const body = {
     version: 1 as const, caller: input.caller, conversation: input.conversation,
-    session: input.session, sourceId: input.sourceId, generation: input.generation, depth: input.depth,
+    session: input.session, sourceId: input.sourceId, generation: input.generation,
+    chain: input.chain ?? [input.caller, input.sourceId], depth: input.depth,
     digest: createHash("sha256").update(input.text).digest("hex"),
   };
   return { ...body, proof: createHmac("sha256", secret).update(payload(body)).digest("base64url") };
@@ -41,12 +43,19 @@ export async function makePeerHandoff(artifactDir: string, input: {
 export async function verifyPeerHandoff(artifactDir: string, value: unknown, session: string, text?: string, sourceId?: string): Promise<PeerHandoff | undefined> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const p = value as Partial<PeerHandoff>;
-  if (Object.keys(p).sort().join(",") !== "caller,conversation,depth,digest,generation,proof,session,sourceId,version"
-    || p.version !== 1 || p.session !== session || (sourceId !== undefined && p.sourceId !== sourceId)
+  if (Object.keys(p).sort().join(",") !== "caller,chain,conversation,depth,digest,generation,proof,session,sourceId,version"
+    || p.version !== 1 || typeof p.session !== "string"
+    || !(p.session === session || (session.startsWith(`${p.session}#`) && /^\d{4}-\d{2}-\d{2}$/u.test(session.slice(p.session.length + 1))))
+    || (sourceId !== undefined && p.sourceId !== sourceId)
     || typeof p.sourceId !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(p.sourceId)
     || typeof p.generation !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(p.generation)
     || typeof p.caller !== "string"
     || !/^[a-zA-Z0-9._:-]{1,128}$/u.test(p.caller)
+    || !Array.isArray(p.chain) || p.chain.length < 2 || p.chain.length > 64
+    || p.chain.some((entry) => typeof entry !== "string" || !/^[a-zA-Z0-9._:-]{1,128}$/u.test(entry))
+    || new Set(p.chain).size !== p.chain.length
+    || p.chain[p.chain.length - 1] !== p.sourceId || p.chain[p.chain.length - 2] !== p.caller
+    || (typeof p.depth === "number" && p.depth < p.chain.length - 1)
     || typeof p.conversation !== "string" || p.conversation.length < 1 || p.conversation.length > 256
     || !Number.isSafeInteger(p.depth) || p.depth! < 1 || p.depth! > 64
     || typeof p.digest !== "string" || !/^[a-f0-9]{64}$/u.test(p.digest)
@@ -110,14 +119,14 @@ export async function stampPeerOperatorHandoff(artifactDir: string, proof: PeerH
 export async function verifyPeerOperatorHandoff(artifactDir: string, value: unknown, session: string, text: string, sourceId?: string): Promise<PeerOperatorHandoff | undefined> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const input = value as Partial<PeerOperatorHandoff>;
-  if (Object.keys(input).sort().join(",") !== "attestation,caller,conversation,depth,digest,generation,session,sourceId,version"
+  if (Object.keys(input).sort().join(",") !== "attestation,caller,chain,conversation,depth,digest,generation,session,sourceId,version"
     || typeof input.attestation !== "string" || !/^[a-zA-Z0-9_-]{43}$/u.test(input.attestation)) return undefined;
   // Reuse all structural/digest checks without allowing a client proof on this path.
   const secret = await readPeerSecret(artifactDir);
   if (secret === undefined) return undefined;
   const body = { version: input.version, caller: input.caller, conversation: input.conversation,
     session: input.session, sourceId: input.sourceId, generation: input.generation,
-    depth: input.depth, digest: input.digest };
+    chain: input.chain, depth: input.depth, digest: input.digest };
   const expected = operatorAttestation(secret, body as Omit<PeerHandoff, "proof">);
   const received = Buffer.from(input.attestation, "base64url");
   if (received.length !== expected.length || !timingSafeEqual(received, expected)) return undefined;

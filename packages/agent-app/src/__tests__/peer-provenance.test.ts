@@ -49,8 +49,8 @@ describe("verified peer context and lineage", () => {
       service: { settings: { maxChainDepth: 4 }, controller: vi.fn() } as never,
       sandboxEngine: { id: "test", isAvailable: async () => true } as never,
     });
-    const request = (metadata: Record<string, unknown>, userMessage = "text") => ({
-      runId: "run", request: { conversationId: "acp:agent-B:uuid", userMessage, metadata }, context: {},
+    const request = (metadata: Record<string, unknown>, userMessage = "text", conversationId = "acp:agent-B:uuid") => ({
+      runId: "run", request: { conversationId, userMessage, metadata }, context: {},
     }) as never;
     const signed = await extension(request({ source: "acp", peerHandoff: operatorProof }));
     expect(signed.runtimeOptions).toMatchObject({
@@ -64,6 +64,9 @@ describe("verified peer context and lineage", () => {
     expect(rendered).toContain('"caller":"agent-A"');
     expect(rendered).not.toContain('"proof"');
     await signed.settleCleanup?.();
+    const daily = await extension(request({ source: "acp", peerHandoff: operatorProof }, "text", "acp:agent-B:uuid#2026-09-23"));
+    expect(daily.runtimeOptions?.processJobsAvailability).toMatchObject({ chainDepth: 3 });
+    await daily.settleCleanup?.();
     const forged = await extension(request({ source: "acp", peerHandoff: { ...operatorProof, depth: 0 } }));
     expect(forged.runtimeOptions?.processJobsAvailability).toMatchObject({ chainDepth: 0 });
     expect(forged.runtimeOptions?.hostCapabilities).not.toHaveProperty("PeerAgent.request");

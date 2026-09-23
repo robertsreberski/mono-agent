@@ -28,6 +28,7 @@ export interface PeerAcpTurn {
   readonly caller: string;
   readonly conversation: string;
   readonly generation?: string;
+  readonly chain?: readonly string[];
   readonly depth: number;
   readonly text: string;
   readonly sessionId?: string;
@@ -133,6 +134,7 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
     const handoff = await makePeerHandoff(options.artifactDir, {
       caller: options.caller, conversation: options.conversation, session: sessionId,
       sourceId: options.sourceId, generation: options.generation ?? randomUUID(),
+      ...(options.chain === undefined ? {} : { chain: options.chain }),
       depth: options.depth, text: options.text,
     });
     options.onActive?.(cancel);

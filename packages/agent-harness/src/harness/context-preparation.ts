@@ -47,10 +47,12 @@ export async function prepareHarnessContext(
       ? await loadHarnessMemory(options, request.conversationId, request.userMessage, contextOptions.turnId, emit)
       : undefined;
     const selectedSkills = await loadHarnessSkills(options, skillsCache);
+    const peerCaller = await options.verifiedPeerCallerFor?.({ request });
     const baseContext = await loadContextFromFiles({
       identityPath: options.identityPath,
       userMessage: request.userMessage,
       session: sessionContextBlock(request, {
+        ...(peerCaller === undefined ? {} : { peerCaller }),
         ...(options.subagentInstancesFor === undefined ? {} : { subagentInstances: await options.subagentInstancesFor({ request, runId: contextOptions.turnId }) }),
         backgroundSubagents: options.backgroundSubagentsAvailable?.({ request, runId: contextOptions.turnId }) === true,
         hostManagedMemory: options.memory !== undefined,
