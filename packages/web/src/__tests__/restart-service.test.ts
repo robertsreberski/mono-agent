@@ -10,6 +10,7 @@ afterEach(async () => { await Promise.all(roots.splice(0).map(async (root) => rm
 async function scenario(options: {
   readonly response?: () => Response | Promise<Response>;
   readonly turns?: () => Response | Promise<Response>;
+  readonly infoResponse?: (call: number, normal: Response) => Response | Promise<Response> | undefined;
 } = {}) {
   const root = await temporaryRoot(); roots.push(root);
   let discovered = fakeDiscoveredAgent({ apiKey: "fixture-key" });
@@ -27,7 +28,8 @@ async function scenario(options: {
       if (url.endsWith("/v1/info")) {
         calls++;
         if (!ready) throw new Error("info probe unavailable");
-        return Response.json({ schema: 1, pid: infoPidOverride ?? discovered.source.pid, capabilities: { restart: { supported, ...(supported ? {} : { reason: "Restart=no" }) } } });
+        const normal = Response.json({ schema: 1, pid: infoPidOverride ?? discovered.source.pid, capabilities: { restart: { supported, ...(supported ? {} : { reason: "Restart=no" }) } } });
+        return options.infoResponse?.(calls, normal) ?? normal;
       }
       if (url.endsWith("/v1/restart")) {
         restartCalls++;
@@ -101,6 +103,28 @@ describe("web-owned restart lifecycle", () => {
       expect(s.service.message(card.thread.id, card.messageId).parts.find((p) => p.type === "restart_proposal"))
         .toMatchObject({ restartable: { state: "used", operationId: linked } });
       expect(s.service.latestAgentRestart("agent-one")).toMatchObject({ id: linked, stage: "restarting" });
+    } finally { await s.service.stop(); }
+  });
+
+  it("does not shadow a settled winning card operation with a losing click's fabricated failure", async () => {
+    let releaseSecond!: (response: Response) => void;
+    const s = await scenario({
+      infoResponse: (call) => call === 3
+        ? new Promise<Response>((resolve) => { releaseSecond = resolve; })
+        : undefined,
+      response: () => Response.json({ error: { code: "restart_unsupported", message: "Supervisor refused." } }, { status: 409 }),
+    });
+    try {
+      const card = proposal(s);
+      const first = s.service.restartFromProposal(card.thread.id, card.messageId, card.partId);
+      const second = s.service.restartFromProposal(card.thread.id, card.messageId, card.partId);
+      const winner = await first;
+      expect(winner).toMatchObject({ outcome: "failure", reason: "Supervisor refused." });
+      expect(releaseSecond).toBeDefined();
+      releaseSecond(Response.json({ schema: 1, pid: 123, capabilities: { restart: { supported: true } } }));
+      expect(await second).toEqual(winner);
+      expect(s.service.latestAgentRestart("agent-one")?.id).toBe(winner.id);
+      expect(s.restartCalls).toBe(1);
     } finally { await s.service.stop(); }
   });
 

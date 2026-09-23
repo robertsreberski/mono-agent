@@ -1435,7 +1435,11 @@ export class WebService {
   }
 
   /** Shared entry point for settings and (later) persisted reply-part clicks. */
-  async requestAgentRestart(sourceId: string, onPrepared?: (operationId: string) => boolean): Promise<WebAgentRestartOperation> {
+  async requestAgentRestart(
+    sourceId: string,
+    onPrepared?: (operationId: string) => boolean,
+    alreadyBound?: () => string | undefined,
+  ): Promise<WebAgentRestartOperation> {
     const agent = this.store.getAgent(sourceId);
     if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     const active = this.store.activeRestartOperation(sourceId);
@@ -1468,6 +1472,12 @@ export class WebService {
     if (verified.restart.supported !== true || verified.pid !== connection.pid) {
       throw new WebConsoleError("restart_unsupported", verified.restart.reason ?? "Agent process identity changed.", 409);
     }
+    // A second click may finish its async info probe only after the first
+    // click's operation has already settled. Re-read the card's durable link
+    // before allocating another operation; never shadow its real outcome with
+    // a fabricated failed CAS attempt.
+    const boundId = alreadyBound?.();
+    if (boundId !== undefined) return this.restartStatus(boundId);
     const now = (this.options.clock ?? (() => new Date()))();
     const created = this.store.createRestartOperation({
       sourceId, generation: connection.processGeneration, requestedAt: now.toISOString(),
@@ -1610,7 +1620,11 @@ export class WebService {
       throw new WebConsoleError(`restart_proposal_${availability.state}`, availability.reason ?? "Restart proposal is unavailable.", 409);
     }
     const result = await this.requestAgentRestart(binding.sourceId, (id) =>
-      this.store.claimRestartProposalOperation(messageId, partId, binding.sourceId, binding.generation, id));
+      this.store.claimRestartProposalOperation(messageId, partId, binding.sourceId, binding.generation, id), () => {
+      const latest = this.store.restartProposalBinding(messageId, partId);
+      return latest?.sourceId === binding.sourceId && latest.generation === binding.generation
+        && latest.threadId === binding.threadId ? latest.operationId : undefined;
+    });
     // Another click can join the source's request before the first POST settles.
     // Only the card that claimed it may treat that operation as its own.
     if (this.store.restartProposalBinding(messageId, partId)?.operationId !== result.id) {
