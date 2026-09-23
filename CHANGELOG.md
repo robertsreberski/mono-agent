@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix the Compact button not appearing for agents in the web console when
+  manual compaction is available.
+
 - Let `Bash` and `Exec` run in policy-allowed workdirs outside the session
   workspace, including background jobs; reject denied or missing directories
   instead of silently switching to the workspace.
