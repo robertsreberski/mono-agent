@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Let native `subagents.timeoutMs` and profile timeouts reach four hours; reserve
+  settlement time inside detached job deadlines. Resume the same persistent
+  transcript with an ordinary `AgentManage` message after a certified settled
+  child timeout, without ack. Uncertain ownership or continuity stays fenced;
+  coordinate host and console upgrades for the optional strict recovery marker.
+
 - Let operators restart one supervised, keyed agent from its web-console settings
   or a `ProposeRestart` reply card. Show interruption confirmation and durable
   progress, then report success only for a new ready process; refusals and

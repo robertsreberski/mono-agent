@@ -142,6 +142,10 @@ async function owner(root, scenario) {
   if (shortCommand) assert.equal(record.subagentOwnership.command.state, "released");
   if (certificateScenario) {
     const records = JSON.parse(await readFile(resolve(subagentConversationRoot(resolve(root, "children"), origin.conversationId), "instances.json"), "utf8"));
+    assert.deepEqual(records[0].recovery && {
+      reason: records[0].recovery.reason, continuity: records[0].recovery.continuity,
+      certifiedTimeout: records[0].recovery.certifiedTimeout,
+    }, { reason: "timeout", continuity: "retained", certifiedTimeout: true });
     assert.equal(records[0].ownerReceipt.finalized, scenario !== "certificate-before-write");
     assert.equal(records[0].ownerReceipt.acknowledged, scenario === "certificate-after-ack");
     assert.equal(record.subagentOwnership.publication.receiptRecorded === record.subagentOwnership.publication.sequence,
@@ -177,11 +181,23 @@ async function recover(root, expectedWakes, attempt) {
         assert.equal(record.subagentCommandReceipts.commands[0].exitCode, 0);
         const registry = JSON.parse(await readFile(resolve(subagentConversationRoot(resolve(root, "children"), origin.conversationId), "instances.json"), "utf8"));
         assert.equal(registry[0].ownerReceipt.finalized, true);
+        assert.deepEqual(registry[0].recovery && {
+          reason: registry[0].recovery.reason, continuity: registry[0].recovery.continuity,
+          certifiedTimeout: registry[0].recovery.certifiedTimeout,
+        }, { reason: "timeout", continuity: "retained", certifiedTimeout: true });
+        await assert.rejects(f.instances.begin("proof"), { code: "subagent_recovery_policy_unavailable" });
         await f.store.applyRetention(f.service.settings, new Date(Date.now() + 60_000));
         assert.equal(await f.store.get(proof.jobId), undefined);
       }
-      assert.equal((await f.instances.get("proof")).activeTurn, undefined);
-      await assert.rejects(f.instances.begin("proof"), { code: "subagent_recovery_required" });
+      const instance = await f.instances.get("proof");
+      assert.equal(instance.activeTurn, undefined);
+      assert.deepEqual(instance.recovery && {
+        reason: instance.recovery.reason, continuity: instance.recovery.continuity,
+        certifiedTimeout: instance.recovery.certifiedTimeout,
+      }, { reason: "timeout", continuity: "retained", certifiedTimeout: true });
+      // Positive native continuity is not a policy bypass: this fixture has no
+      // recovery authorization, and attempt 0 has already pruned the job proof.
+      await assert.rejects(f.instances.begin("proof"), { code: "subagent_recovery_policy_unavailable" });
       assert.equal((await readFile(resolve(root, "executions.txt"), "utf8")).trim(), "start");
       assert.equal(f.wakes(), 0);
       console.log(JSON.stringify({ kind: "managed-certificate-reopen", attempt, retainedBeforeBind: attempt === 0, wakes: 0, result: "passed" }));

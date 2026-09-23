@@ -53,6 +53,17 @@ describe("durable subagent ownership predicate", () => {
 });
 
 describe("strict bounded ownership schema", () => {
+  it("loads old dispositions and restricts timeout certificates to retained settled timeouts", () => {
+    const value = ownership(); value.owner.settlement = "settled"; value.revoked = true;
+    value.disposition = { status: "timeout", reason: "timeout", continuity: "unknown" };
+    expect(isSubagentExecutionOwnership(value)).toBe(true);
+    value.disposition = { status: "timeout", reason: "timeout", continuity: "retained", certifiedTimeout: true };
+    expect(isSubagentExecutionOwnership(value)).toBe(true);
+    for (const disposition of [{ ...value.disposition, reason: "failed" }, { ...value.disposition, continuity: "unknown" },
+      { ...value.disposition, status: "cancelled" }, { ...value.disposition, certifiedTimeout: false }]) {
+      expect(isSubagentExecutionOwnership({ ...value, disposition })).toBe(false);
+    }
+  });
   it("accepts pre-launch, active and released identities without raw command contents", () => {
     const value = ownership(); expect(isSubagentExecutionOwnership(value)).toBe(true);
     value.command = { ...command(), state: "preparing", pid: null, pgid: null, incarnation: null };

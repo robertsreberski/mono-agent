@@ -131,10 +131,11 @@ function object(value: unknown): value is Record<string, unknown> { return typeo
 function exact(value: Record<string, unknown>, keys: readonly string[]): boolean { return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }
 
 function disposition(value: unknown): value is SubagentDisposition {
-  return object(value) && exact(value, ["status", "continuity", ...["reason", "closeAfterSuccess", "resumeAfterStop"].filter((key) => Object.hasOwn(value, key))])
+  return object(value) && exact(value, ["status", "continuity", ...["reason", "closeAfterSuccess", "resumeAfterStop", "certifiedTimeout"].filter((key) => Object.hasOwn(value, key))])
     && (!Object.hasOwn(value, "resumeAfterStop") || (value.resumeAfterStop === true && value.continuity === "retained"
       && ((value.status === "cancelled" && value.reason === "cancelled")
         || (["ok", "awaiting_reply"].includes(String(value.status)) && value.reason === undefined))))
+    && (value.certifiedTimeout === undefined || (value.certifiedTimeout === true && value.status === "timeout" && value.reason === "timeout" && value.continuity === "retained"))
     && (value.closeAfterSuccess === undefined || typeof value.closeAfterSuccess === "boolean")
     && ["ok", "awaiting_reply", "failed", "timeout", "cancelled", "empty", "interrupted", "busy"].includes(String(value.status))
     && ["retained", "lost", "unknown"].includes(String(value.continuity))

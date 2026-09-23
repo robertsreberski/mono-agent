@@ -411,6 +411,7 @@ it("describes detached child availability and retained job identity without expo
   });
   expect(rendered).toContain("background: true");
   expect(rendered).toContain("childStillBusy:true");
+  expect(rendered).toContain("inspect reporting resumable:true after a certified timeout");
   expect(rendered).toContain("job job-identity");
 });
 

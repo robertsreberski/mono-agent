@@ -75,12 +75,13 @@ export interface SubagentRecoveryInspection {
   readonly status: "not_required" | "held" | "ready" | "structured_job_recovery_unavailable" | "observation_policy_unavailable" | "observation_policy_denied" | "observation_unavailable" | "observation_inconsistent" | "observation_truncated";
   readonly facts?: SubagentRecoveryFacts;
   readonly parentVerificationRequired: boolean;
+  readonly resumable?: true;
   readonly ack?: string;
 }
 export interface InstanceSpec { verification?: SubagentVerificationDeclaration; id?: string; name: string; systemPrompt: string; definition: InstanceDefinition }
 /** A new route for the turn being admitted, persisted on the stored definition so later continuations inherit it. */
 export interface InstanceRoute { model?: RuntimeModelReference; effort?: string }
-export interface InstanceOutcome { status: string; continuity?: { turnToken: string; state: "retained" | "lost" | "unknown" }; closeAfterSuccess?: boolean; failureKind?: "session_continuity_lost"; usage?: Partial<InstanceUsage>; answerHead?: string; question?: SubagentQuestion }
+export interface InstanceOutcome { status: string; certifiedTimeout?: true; continuity?: { turnToken: string; state: "retained" | "lost" | "unknown" }; closeAfterSuccess?: boolean; failureKind?: "session_continuity_lost"; usage?: Partial<InstanceUsage>; answerHead?: string; question?: SubagentQuestion }
 export interface InstanceRegistryHandle {
   verifyOwner(identity: SubagentOwnerIdentity): Promise<{ retained: boolean; verification?: SubagentVerificationTarget }>;
   inspect(id: string, access?: unknown): Promise<SubagentRecoveryInspection>;
@@ -298,9 +299,13 @@ export function createSubagentInstanceRegistry(options: {
         if (bytes() > SUBAGENT_REGISTRY_MAX_BYTES) throw new Error("Subagent instance registry exceeds its 16 MiB safety limit.");
         await privateRegistryIo(async () => await (options.writeRegistry ?? writeJsonAtomic)(file, records, true, SUBAGENT_REGISTRY_MAX_BYTES));
       };
-      const assertCanDrive = (record: StoredSubagentInstance): void => {
+      const assertCanDrive = async (record: StoredSubagentInstance, recoveryAccess?: unknown): Promise<void> => {
         if (record.activeTurn?.kind === "detached" && !turns.has(turnPath(record.id))) throw new SubagentRecoveryError("subagent_owner_unavailable");
         if (receiptHeld(record)) throw new SubagentRecoveryError("subagent_owner_unavailable");
+        if (record.recovery?.certifiedTimeout) {
+          await authorizeRecovery(record, recoveryAccess);
+          return;
+        }
         if (record.recovery) throw new SubagentRecoveryError("subagent_recovery_required");
       };
       const profileOf = (record: StoredSubagentInstance): unknown => [record.systemPrompt, record.definition];
@@ -337,7 +342,8 @@ export function createSubagentInstanceRegistry(options: {
         if ((proof.state !== "released" && proof.state !== "not_admitted") || !sameSubagentOwner(identity, proof.identity)
           || !Number.isSafeInteger(proof.sequence) || proof.sequence < 1) return;
         const fence: SubagentRecoveryFence = { turnToken: identity.turnToken, sequence: proof.sequence,
-          reason: proof.reason ?? "settlement_unknown", continuity: proof.continuity };
+          reason: proof.reason ?? "settlement_unknown", continuity: proof.continuity,
+          ...(proof.certifiedTimeout && proof.reason === "timeout" && proof.continuity === "retained" && !proof.receiptPending ? { certifiedTimeout: true } : {}) };
         if (!isSubagentRecoveryFence(fence)) return;
         if (record.recovery && (record.recovery.turnToken !== fence.turnToken || record.recovery.sequence > fence.sequence
           || (record.recovery.sequence === fence.sequence && (record.recovery.reason !== fence.reason || record.recovery.continuity !== fence.continuity)))) return;
@@ -459,6 +465,7 @@ export function createSubagentInstanceRegistry(options: {
             return { ...base, parentVerificationRequired: !unavailable, status: unavailable ? "observation_policy_unavailable" : "observation_policy_denied" };
           }
           const facts = subject.owner && options.observeRecovery ? await options.observeRecovery(subject, access) : undefined;
+          if (record.recovery?.certifiedTimeout) return { ...base, ...(facts ? { facts } : {}), parentVerificationRequired: false, status: "ready", resumable: true };
           if (facts && facts.status !== "observed") return { ...base, parentVerificationRequired: facts.status !== "observation_unavailable", facts, status: facts.status };
           if (facts && record.recovery) {
             if (record.recovery.sequence === Number.MAX_SAFE_INTEGER) throw new SubagentRecoveryError("subagent_recovery_ack_stale");
@@ -512,7 +519,8 @@ export function createSubagentInstanceRegistry(options: {
               conversationId, instanceId: record.id, instanceIncarnation: record.incarnation, turnToken: record.activeTurn.token })) throw new SubagentRecoveryError("subagent_stale_turn");
             const disposition = publication.disposition;
             if (disposition.reason && !disposition.resumeAfterStop) record.recovery = { turnToken: identity.turnToken, sequence: publication.sequence,
-              reason: disposition.reason, continuity: disposition.continuity };
+              reason: disposition.reason, continuity: disposition.continuity,
+              ...(disposition.certifiedTimeout && publication.released && phase === "confirm" ? { certifiedTimeout: true } : {}) };
             if (phase === "intent") return;
             record.ownerReceipt = { jobId: identity.jobId, storeRoot: identity.storeRoot, turnToken: identity.turnToken, sequence: publication.sequence, finalized: false, acknowledged: false };
             if (!publication.released) return;
@@ -586,11 +594,12 @@ export function createSubagentInstanceRegistry(options: {
           try { return await transaction(async (records) => {
             const record = required(records, id);
             if (acknowledgement) await assertAcknowledgement(record, acknowledgement, access);
-            else assertCanDrive(record);
+            else await assertCanDrive(record, access);
             if (["queued", "running"].includes(record.status)) throw new Error(`Subagent instance "${id}" is busy.`);
             if (record.turns >= (options.maxTurns ?? 60)) throw new Error(`Subagent instance "${id}" reached maxTurns.`);
             acquired = await acquirePrivateLock(turnPath(id));
             turns.set(turnPath(id), { release: () => acquired!.release(), token });
+            if (record.recovery?.certifiedTimeout) delete record.recovery;
             if (acknowledgement) {
               consumeRecoveryAcknowledgement(record.recoveryBinding!, acknowledgement, profileOf(record), token);
               delete record.recovery;
@@ -635,13 +644,14 @@ export function createSubagentInstanceRegistry(options: {
           const record = required(records, id);
           if (token !== undefined && (record.status !== "queued" || record.reservation?.token !== token)) throw new SubagentRecoveryError("subagent_stale_turn");
           if (acknowledgement) await assertAcknowledgement(record, acknowledgement, access);
-          else if (record.status !== "queued" || record.reservation?.token !== token) assertCanDrive(record);
+          else if (record.status !== "queued" || record.reservation?.token !== token) await assertCanDrive(record, access);
           if (record.status === "running" || (record.status === "queued" && record.reservation?.token !== token)) throw new Error(`Subagent instance "${id}" is busy.`);
           if (record.turns >= (options.maxTurns ?? 60)) throw new Error(`Subagent instance "${id}" reached maxTurns; close it and create another.`);
           const lock = record.status === "queued" ? turns.get(turnPath(id)) : await acquirePrivateLock(turnPath(id));
           if (!lock) throw new Error("Subagent reservation ownership was lost.");
           acquired = lock;
           turns.set(turnPath(id), lock);
+          if (record.recovery?.certifiedTimeout) delete record.recovery;
           record.incarnation ??= randomUUID();
           record.activeTurn ??= { token: randomUUID(), kind: "foreground", settlementPending: true };
           if (acknowledgement) {
@@ -678,7 +688,8 @@ export function createSubagentInstanceRegistry(options: {
           if (!["ok", "awaiting_reply", "busy"].includes(outcome.status)) {
             record.recovery = { turnToken: record.activeTurn!.token, sequence: 1,
               reason: outcome.failureKind ?? (["timeout", "cancelled", "empty", "interrupted"].includes(outcome.status) ? outcome.status as "timeout" | "cancelled" | "empty" | "interrupted" : "failed"),
-              continuity: outcome.failureKind === "session_continuity_lost" ? "lost" : "unknown" };
+              continuity: outcome.failureKind === "session_continuity_lost" ? "lost" : outcome.certifiedTimeout === true && outcome.status === "timeout" && outcome.continuity?.state === "retained" && outcome.continuity.turnToken === record.activeTurn!.token ? "retained" : "unknown",
+              ...(outcome.certifiedTimeout === true && outcome.status === "timeout" && outcome.failureKind !== "session_continuity_lost" && outcome.continuity?.state === "retained" && outcome.continuity.turnToken === record.activeTurn!.token ? { certifiedTimeout: true as const } : {}) };
           }
           delete record.activeTurn;
           if (outcome.status === "awaiting_reply") {

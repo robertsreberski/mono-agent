@@ -244,6 +244,70 @@ describe("Agent tool outcomes", () => {
   });
 });
 
+describe("detached child deadline admission", () => {
+  const instances = () => ({
+    create: async (spec) => ({ id: "inst-1", turns: 0, status: "idle", sessionId: "session", sessionsRoot: "/tmp/sessions", ...spec }),
+    reserve: async (id) => ({ id, activeTurn: { token: "turn" }, sessionId: "session", sessionsRoot: "/tmp/sessions" }),
+    begin: async (id) => ({ id, activeTurn: { token: "turn" }, sessionId: "session", sessionsRoot: "/tmp/sessions" }),
+    get: async (id) => ({ id, turns: 1, status: "idle" }), finish: async (id) => ({ id, turns: 1, status: "idle" }), releaseReservation: async () => {},
+  });
+  it("fires the child's timer ahead of an equal job deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const deadlineAt = Date.now() + 60_000;
+      let abortedAt;
+      const run = vi.fn((request) => new Promise((resolve) => {
+        request.abortSignal.addEventListener("abort", () => { abortedAt = Date.now(); resolve({ cancelled: true, subagentContinuity: { turnToken: "turn", state: "retained" } }); }, { once: true });
+      }));
+      const background = { startInternal: async (options) => {
+        expect(options.timeoutMs).toBe(75_000); // Host may clamp this to its configured 60s job limit.
+        await options.run(new AbortController().signal, () => {}, () => {}, { deadlineAt });
+        return { jobId: "job", state: "timed_out", startedAt: new Date().toISOString() };
+      } };
+      const tool = createAgentTool(subagentOptions({ run, timeoutMs: 60_000, instances: instances(), backgroundSubagentController: background }));
+      const pending = tool.execute("call", { persist: true, background: true, prompt: "work" });
+      await vi.advanceTimersByTimeAsync(53_999);
+      expect(abortedAt).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(abortedAt).toBeLessThan(deadlineAt);
+      expect(run).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+  it("recomputes after slow begin and releases the begun turn if its deadline has passed", async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn(); const finished = vi.fn(async (id) => ({ id, status: "idle", turns: 0 }));
+      const slow = { ...instances(), begin: async (id) => {
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        return { id, activeTurn: { token: "turn" }, sessionId: "session", sessionsRoot: "/tmp/sessions" };
+      }, finish: finished };
+      const background = { startInternal: async (options) => options.run(new AbortController().signal, () => {}, () => {}, { deadlineAt: Date.now() + 1_000 }) };
+      const tool = createAgentTool(subagentOptions({ run, timeoutMs: 60_000, instances: slow, backgroundSubagentController: background }));
+      const pending = tool.execute("slow", { persist: true, background: true, prompt: "work" });
+      const denied = expect(pending).rejects.toThrow("insufficient job runtime remains");
+      await vi.advanceTimersByTimeAsync(2_100);
+      await denied;
+      expect(finished).toHaveBeenCalledWith("inst-1", { status: "busy" }, expect.anything());
+      expect(run).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+  it.each([NaN, Infinity])("rejects a non-finite job deadline (%s) without starting the child", async (deadlineAt) => {
+    const run = vi.fn(); const finished = vi.fn(async (id) => ({ id, status: "idle", turns: 0 }));
+    const background = { startInternal: async (options) => options.run(new AbortController().signal, () => {}, () => {}, { deadlineAt }) };
+    const tool = createAgentTool(subagentOptions({ run, timeoutMs: 60_000, instances: { ...instances(), finish: finished }, backgroundSubagentController: background }));
+    await expect(tool.execute("invalid", { persist: true, background: true, prompt: "work" })).rejects.toThrow("insufficient job runtime remains");
+    expect(finished).toHaveBeenCalledOnce(); expect(run).not.toHaveBeenCalled();
+  });
+  it("refuses provider admission when the remaining job budget cannot reserve settlement time", async () => {
+    const run = vi.fn();
+    const background = { startInternal: async (options) => options.run(new AbortController().signal, () => {}, () => {}, { deadlineAt: Date.now() + 1 }) };
+    const tool = createAgentTool(subagentOptions({ run, timeoutMs: 60_000, instances: instances(), backgroundSubagentController: background }));
+    await expect(tool.execute("call", { persist: true, background: true, prompt: "work" })).rejects.toThrow("insufficient job runtime remains");
+    expect(run).not.toHaveBeenCalled();
+  });
+});
+
 describe("Agent tool result budget", () => {
   it("keeps a pathological subagent result far under the bloat guard", async () => {
     const run = vi.fn(async (request) => {

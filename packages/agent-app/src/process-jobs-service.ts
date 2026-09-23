@@ -450,7 +450,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (!busy || Date.now() >= deadline) return { jobId: record.jobId, stopRequested: owner.parentStopRequested === true,
         childStillBusy: busy, disposition: owner.disposition?.status ?? null,
         resumable: !busy && owner.disposition?.continuity === "retained"
-          && (owner.disposition.resumeAfterStop === true || !owner.disposition.reason) };
+          && (owner.disposition.resumeAfterStop === true || owner.disposition.certifiedTimeout === true || !owner.disposition.reason) };
       await new Promise<void>((resolve) => setTimeout(resolve, 20));
     }
   }
@@ -714,7 +714,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       // acknowledgement still pins retention/capacity. It is not absence evidence.
       return { state: "released", identity, sequence: owner.publication.sequence, receiptPending: hasPendingSubagentReleaseReceipt(record), receiptRecorded: owner.publication.receiptRecorded === owner.publication.sequence, continuity: owner.disposition?.continuity ?? "unknown",
         ...(owner.disposition?.resumeAfterStop ? { resumeAfterStop: true as const } : {}),
-        ...(owner.disposition?.reason ? { reason: owner.disposition.reason } : {}) };
+        ...(owner.disposition?.reason ? { reason: owner.disposition.reason } : {}),
+        ...(owner.disposition?.certifiedTimeout ? { certifiedTimeout: true as const } : {}) };
     }).catch(() => ({ state: "unavailable" as const }));
   }
 
@@ -781,6 +782,16 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           const owner = record.subagentOwnership!;
           if (owner.owner.settlement === "settled") return { progressCostAdded: false, parentStopRequested: owner.parentStopRequested };
           owner.owner.settlement = "settled"; owner.revoked = true;
+          // Publish the same-turn native timeout certificate WITH true settlement.
+          // A concurrent inspection can schedule publication immediately after
+          // this store mutation; it must never see released ownership paired with
+          // the older provisional unknown disposition and discard activeTurn.
+          if (outcome?.certifiedTimeout === true && outcome.status === "timeout"
+            && outcome.failureKind !== "session_continuity_lost" && !owner.parentStopRequested
+            && outcome.continuity?.turnToken === owner.turnToken && outcome.continuity.state === "retained"
+            && (!owner.disposition?.reason || owner.disposition.reason === "timeout")) {
+            owner.disposition = { status: "timeout", reason: "timeout", continuity: "retained", certifiedTimeout: true };
+          }
           if (outcome?.usage) owner.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, ...outcome.usage };
           const costUsd = pricedSubagentCostUsd(owner.usage?.costUsd);
           // A child may outlive the process-job cancellation grace. Its terminal
@@ -828,16 +839,23 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     if (!record || !owner || !this.managedRegistry || owner.registryRoot !== this.managedRegistry.root) throw new Error("Managed subagent registry is unavailable.");
     const status = (["ok", "awaiting_reply", "timeout", "cancelled", "empty", "interrupted", "busy"].includes(outcome.status) ? outcome.status : "failed") as SubagentDisposition["status"];
     const incomingFailure = !["ok", "awaiting_reply", "busy"].includes(status);
+    const certifiedTimeout = outcome.certifiedTimeout === true && outcome.failureKind !== "session_continuity_lost"
+      && status === "timeout" && !owner.parentStopRequested
+      && owner.owner.settlement === "settled" && (!owner.disposition?.reason || owner.disposition.reason === "timeout")
+      && outcome.continuity?.turnToken === owner.turnToken && outcome.continuity.state === "retained";
     const continuity = outcome.failureKind === "session_continuity_lost" ? "lost"
+      : certifiedTimeout ? "retained"
       : owner.parentStopRequested && outcome.continuity?.turnToken === owner.turnToken ? outcome.continuity.state
       : owner.parentStopRequested && owner.owner.settlement === "not_started" ? "retained" : undefined;
     const resumeAfterStop = owner.parentStopRequested === true && continuity === "retained"
       && ["settled", "not_started"].includes(owner.owner.settlement)
       && ["cancelled", "ok", "awaiting_reply"].includes(status)
       && (!owner.disposition?.reason || owner.disposition.reason === "cancelled");
-    if (owner.disposition && (owner.disposition.resumeAfterStop || (!resumeAfterStop && (owner.disposition.reason || !incomingFailure)))) { await this.publishManaged(jobId, outcome); return; }
+    if (owner.disposition && (owner.disposition.resumeAfterStop || owner.disposition.certifiedTimeout
+      || (!resumeAfterStop && !certifiedTimeout && (owner.disposition.reason || !incomingFailure)))) { await this.publishManaged(jobId, outcome); return; }
     const disposition: SubagentDisposition = { status,
       ...(resumeAfterStop ? { resumeAfterStop: true } : {}),
+      ...(certifiedTimeout ? { certifiedTimeout: true } : {}),
       ...(outcome.closeAfterSuccess ? { closeAfterSuccess: true } : {}),
       continuity: continuity ?? (outcome.failureKind === "session_continuity_lost" ? "lost" : owner.disposition?.continuity === "retained" || (["ok", "awaiting_reply"].includes(status) && owner.owner.settlement === "settled") ? "retained" : "unknown"),
       ...(["ok", "awaiting_reply", "busy"].includes(status) ? {} : { reason: outcome.failureKind ?? (status === "failed" ? "failed" : status as "timeout" | "cancelled" | "empty" | "interrupted") }) };
@@ -846,7 +864,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     await this.withManagedLock(async () => await this.storeMutate("subagent.report", (records) => {
       const record = requireRecord(records, jobId);
       const current = record.subagentOwnership!;
-      if (!current.disposition?.reason || resumeAfterStop) current.disposition = disposition;
+      if (!current.disposition?.reason || resumeAfterStop || certifiedTimeout) current.disposition = disposition;
       if (outcome.usage) current.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, ...outcome.usage };
       if (outcome.question) record.subagentQuestion = outcome.question;
       current.revoked = true;

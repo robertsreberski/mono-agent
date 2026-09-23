@@ -663,6 +663,24 @@ setup and `subagents.commandTimeoutMs` (positive integer milliseconds; default
 the job's abort signal still stops commands when its deadline arrives, including
 commands started later in the turn. Raising the command ceiling does not extend
 `subagents.timeoutMs`, profile timeouts, or `processJobs.maxRuntimeMs`.
+Both child turn timeout fields accept 1,000–14,400,000 ms (four hours). For
+attached detached children the effective timer is the smaller of that timeout
+and the job's remaining runtime minus a settlement reserve (10% of remaining
+runtime, capped at 15 seconds). Admission fails when no child budget remains;
+the job's hard deadline is never extended. Configure `processJobs.maxRuntimeMs`
+above 14,415,000 ms for a full four-hour child turn. A timeout that actually
+settled with matching native Pi continuity and released commands/publication
+is inspectable as `resumable:true` and accepts ordinary `AgentManage({id,
+message})` (also `background:true`) without an ack. An uncertified timeout,
+parent cancellation or `childStillBusy` remains fenced. Optional Git verification
+may report `observation_unavailable` while certified continuation remains
+resumable under the current authorization policy. If the job deadline also
+arrives after the child's own timer, a later matching native settlement can
+still certify continuity without changing the terminal job or sending a second
+wake. A durable certified disposition remains resumable after restart, subject
+to the same ownership and current-policy checks. Once job retention removes
+required owner proof, authorization fails closed (`policy_unavailable`); do not
+remove records to force a resume.
 Interactive turns and foreground children retain the 120-second cap, and
 NodeRepl retains its fixed 120-second timer. Child-owned background commands
 remain unsupported and are explicitly out of scope.
@@ -720,8 +738,9 @@ resumable receipt. Unsupported ownership/storage returns
 `subagent_stop_unavailable`; uncertain cancellation acceptance is reported as
 `stopRequested:"unknown"`. A stale captured turn is refused. These errors never
 authorize bypassing recovery fences. Intentional, certified parent stops do not
-require a failure acknowledgement; unrelated timeout, cancellation and failure
-recovery rules below are unchanged.
+require a failure acknowledgement; certified, fully settled child-owned
+timeouts also admit an ordinary continuation. Uncertified timeouts,
+cancellation and failure recovery rules below are unchanged.
 
 ### Parent steering
 
@@ -836,17 +855,17 @@ A proven rejected admission retains a not-started disposition; ambiguous absence
 never authorizes retry. Lost/unknown continuity cannot be acknowledged back into
 retained context: resolve ownership, then explicitly close/create instead.
 
-The configured foreground persistent path currently classifies failures as
-`lost` (a native response outside the selected session) or `unknown` (including
-late timeout settlement). It does not establish a retained failure epoch eligible
-for acknowledgement. While the original runtime is unresolved, inspection is
-`held` and close/continuation remain blocked. After settlement, authorized
-inspection reports `structured_job_recovery_unavailable` with the minimal registry
-fence, not a ProcessJob, command checkpoint or acknowledgement token. Explicitly
-close the instance and create another with the necessary context. A late answer
-or existing JSONL file does not upgrade unknown continuity. Ordinary successful
-foreground continuation and AskParent replies still resume their retained session
-without a recovery acknowledgement.
+Foreground persistent failures still classify as `lost` (a native response
+outside the selected session) or `unknown` unless the child's own timeout fires
+and its matching native recovery receipt is applied after actual settlement.
+While the runtime is unresolved, inspection is `held` and close/continuation
+remain blocked. A certified timeout reports `ready`, `resumable:true` and a
+retained fence, with no ack token; ordinary `AgentManage({id,message})` continues
+the same instance in foreground or detached mode. Other foreground failures
+report `structured_job_recovery_unavailable` with a minimal fence. Explicitly
+close and recreate those lost/unknown children with the necessary context. A
+late answer or existing JSONL file does not upgrade unknown continuity. Ordinary
+successful foreground continuation and AskParent replies remain unchanged.
 
 For a managed detached failure explicitly classified as retained, an accepted
 acknowledgement resumes the same durable session; it does not replay the failed

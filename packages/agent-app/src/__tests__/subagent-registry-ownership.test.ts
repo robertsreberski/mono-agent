@@ -4,7 +4,17 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
-import type { SubagentOwnerIdentity, SubagentOwnerResolution } from "../subagent-registry-ownership.js";
+import { isSubagentRecoveryFence, type SubagentOwnerIdentity, type SubagentOwnerResolution } from "../subagent-registry-ownership.js";
+
+it("loads old recovery fences and restricts new timeout certificates to retained timeout", () => {
+  const legacy = { turnToken: randomUUID(), sequence: 1, reason: "timeout", continuity: "unknown" };
+  expect(isSubagentRecoveryFence(legacy)).toBe(true);
+  expect(isSubagentRecoveryFence({ ...legacy, continuity: "retained", certifiedTimeout: true })).toBe(true);
+  for (const bad of [{ reason: "failed", continuity: "retained" }, { reason: "timeout", continuity: "unknown" }, { reason: "timeout", continuity: "lost" }]) {
+    expect(isSubagentRecoveryFence({ ...legacy, ...bad, certifiedTimeout: true })).toBe(false);
+  }
+  expect(isSubagentRecoveryFence({ ...legacy, certifiedTimeout: false })).toBe(false);
+});
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });

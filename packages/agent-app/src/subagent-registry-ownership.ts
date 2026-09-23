@@ -12,6 +12,8 @@ export interface SubagentRecoveryFence {
   readonly sequence: number;
   readonly reason: SubagentFailureReason;
   readonly continuity: SubagentContinuity;
+  /** Set only after the matching native receipt and true settlement of a child-owned timeout. */
+  readonly certifiedTimeout?: true;
 }
 /** Private: never project the root to the provider or choose an owner by opening this path. */
 export interface SubagentOwnerLink { readonly storeRoot: string; readonly jobId: string }
@@ -23,7 +25,7 @@ export interface SubagentOwnerIdentity extends SubagentOwnerLink {
 }
 export type SubagentOwnerResolution =
   | { readonly state: "held" | "unavailable" }
-  | { readonly state: "released" | "not_admitted"; readonly identity: SubagentOwnerIdentity; readonly sequence: number; readonly resumeAfterStop?: true; readonly receiptPending?: boolean; readonly receiptRecorded?: boolean; readonly reason?: SubagentFailureReason; readonly continuity: SubagentContinuity };
+  | { readonly state: "released" | "not_admitted"; readonly identity: SubagentOwnerIdentity; readonly sequence: number; readonly resumeAfterStop?: true; readonly receiptPending?: boolean; readonly receiptRecorded?: boolean; readonly reason?: SubagentFailureReason; readonly continuity: SubagentContinuity; readonly certifiedTimeout?: true };
 
 export class SubagentRecoveryError extends Error {
   constructor(readonly code: "subagent_owner_unavailable" | "subagent_ownership_held" | "subagent_recovery_required" | "subagent_stale_turn" | "subagent_recovery_ack_invalid" | "subagent_recovery_ack_stale" | "subagent_recovery_already_consumed" | "subagent_recovery_ack_conflict" | "subagent_recovery_not_retained" | "subagent_recovery_background_required" | "subagent_recovery_policy_unavailable" | "subagent_recovery_policy_denied") {
@@ -41,9 +43,10 @@ export function isSubagentTurnIntent(value: unknown): value is SubagentTurnInten
     && ["foreground", "detached"].includes(String(value.kind)) && value.settlementPending === true;
 }
 export function isSubagentRecoveryFence(value: unknown): value is SubagentRecoveryFence {
-  return object(value) && exact(value, ["turnToken", "sequence", "reason", "continuity"]) && isSubagentUuid(value.turnToken)
+  return object(value) && exact(value, ["turnToken", "sequence", "reason", "continuity", ...(Object.hasOwn(value, "certifiedTimeout") ? ["certifiedTimeout"] : [])]) && isSubagentUuid(value.turnToken)
     && typeof value.sequence === "number" && Number.isSafeInteger(value.sequence) && value.sequence > 0
-    && isSubagentFailureReason(value.reason) && ["retained", "lost", "unknown"].includes(String(value.continuity));
+    && isSubagentFailureReason(value.reason) && ["retained", "lost", "unknown"].includes(String(value.continuity))
+    && (value.certifiedTimeout === undefined || (value.certifiedTimeout === true && value.reason === "timeout" && value.continuity === "retained"));
 }
 export function isSubagentOwnerLink(value: unknown): value is SubagentOwnerLink {
   return object(value) && exact(value, ["storeRoot", "jobId"]) && isSubagentUuid(value.jobId)

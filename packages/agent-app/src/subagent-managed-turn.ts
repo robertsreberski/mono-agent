@@ -12,6 +12,7 @@ export interface SubagentDisposition {
   closeAfterSuccess?: boolean;
   /** Intentional parent stop, certified continuity and released ownership only. */
   resumeAfterStop?: true;
+  certifiedTimeout?: true;
 }
 export interface ManagedSubagentAdmission {
   readonly instanceIncarnation: string;

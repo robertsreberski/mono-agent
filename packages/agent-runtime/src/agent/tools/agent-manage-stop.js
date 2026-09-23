@@ -4,8 +4,9 @@
  * @param {import('../../ai/types.js').RuntimeSubagentsOptions|null|undefined} subagents
  * @param {{id: string, stop?: boolean, description?: string}} params
  * @param {AbortSignal} [signal]
+ * @param {unknown} [recoveryAccess]
  */
-export async function stopSubagent(subagents, params, signal) {
+export async function stopSubagent(subagents, params, signal, recoveryAccess) {
   let jobId = null;
   /** @type {boolean|"unknown"} */
   let stopRequested = false;
@@ -35,8 +36,13 @@ export async function stopSubagent(subagents, params, signal) {
       const record = await instances.get(params.id);
       if (!record || !["queued", "running", "idle", "awaiting_reply"].includes(record.status)) return error("subagent_stop_instance_not_found");
       const blocked = (value) => value.recovery || value.recoveryBlocked || value.activeTurn;
+      const certifiedResumable = async (value) => {
+        if (value.recovery?.certifiedTimeout !== true || !instances.inspect) return false;
+        const inspection = await instances.inspect(value.id, recoveryAccess);
+        return inspection !== null && typeof inspection === "object" && "resumable" in inspection && inspection.resumable === true;
+      };
       if (!["queued", "running"].includes(record.status)) {
-        if (blocked(record)) return error("subagent_stop_recovery_required");
+        if (blocked(record) && !(await certifiedResumable(record))) return error("subagent_stop_recovery_required");
         return receipt({ instanceId: record.id, jobId: null, status: "already_idle", instanceStatus: record.status,
           turns: record.turns, disposition: record.lastStatus ?? null, stopRequested: false, childStillBusy: false, resumable: true });
       }
@@ -52,7 +58,7 @@ export async function stopSubagent(subagents, params, signal) {
       const current = await instances.get(record.id);
       if (!current || current.incarnation !== record.incarnation || (current.activeTurn && current.activeTurn.token !== jobId)
         || (!current.activeTurn && current.settledTurnToken !== jobId) || current.turns > record.turns + 1) return error("subagent_stale_turn");
-      if (!proof.childStillBusy && (!proof.resumable || blocked(current))) return error("subagent_stop_recovery_required");
+      if (!proof.childStillBusy && (!proof.resumable || blocked(current)) && !(await certifiedResumable(current))) return error("subagent_stop_recovery_required");
       if (proof.childStillBusy && (!stopRequested || !["queued", "running"].includes(current.status))) return error("subagent_stop_unavailable");
       if (!proof.childStillBusy && !["idle", "awaiting_reply"].includes(current.status)) return error("subagent_stale_turn");
       return receipt({ instanceId: current.id, jobId, status: proof.childStillBusy ? "stop_requested" : "stopped",

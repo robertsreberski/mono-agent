@@ -1107,6 +1107,17 @@ describe("resolveJsonMonoAgentConfig", () => {
     expect(config.subagents?.definitions?.[1]?.model).toMatchObject({ provider: "openai-codex", model: "gpt-5.6-sol" });
   });
 
+  it("bounds global and per-profile native child timeouts to four hours", () => {
+    const load = (subagents: unknown) => resolveJsonMonoAgentConfig({ cwd: "/repo", json: {
+      runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" }, subagents: subagents as never,
+    } });
+    const definition = (timeoutMs: number) => ({ name: "researcher", description: "Research", prompt: "Read", timeoutMs });
+    expect(load({ timeoutMs: 14_400_000 }).subagents?.timeoutMs).toBe(14_400_000);
+    expect(() => load({ timeoutMs: 14_400_001 })).toThrow(/timeoutMs must be an integer between 1000 and 14400000/u);
+    expect(load({ definitions: [definition(14_400_000)] }).subagents?.definitions?.[0]?.timeoutMs).toBe(14_400_000);
+    expect(() => load({ definitions: [definition(14_400_001)] })).toThrow(/timeoutMs must be an integer between 1000 and 14400000/u);
+  });
+
   it("loads named and shorthand subagent model choices", () => {
     const config = resolveJsonMonoAgentConfig({ cwd: "/repo", json: {
   runtime: {
