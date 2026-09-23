@@ -180,6 +180,21 @@ describe("PeerAgent request lifecycle", () => {
     } finally { await client.close(); await fresh.cleanup?.(); await f.close(); }
   });
 
+  it("answers a question from an ACP-served peer in foreground without inventing a wake", async () => {
+    const f = await setup(2, "acp");
+    mocks.run.mockImplementation(parked);
+    try {
+      const asked = await f.send();
+      const question = JSON.parse(String((asked.content as Array<{ text?: string }>)[0]?.text)) as { questionId: string };
+      expect((await f.send(true)).isError).toBe(true);
+      const result = await f.client.callTool({ name: "PeerAgent", arguments: { action: "answer", peer: "finance",
+        thread: "portfolio", questionId: question.questionId, answers: { question_1: "yes" } } });
+      expect(result.isError).not.toBe(true);
+      expect(result.content).toEqual([{ type: "text", text: "[Untrusted peer answer] continued" }]);
+      expect(f.pending()).toBeUndefined();
+    } finally { await f.close(); }
+  });
+
   it("settles a background question wake then a continuation wake on the exact original origin", async () => {
     const f = await setup();
     mocks.run.mockImplementation(parked);
