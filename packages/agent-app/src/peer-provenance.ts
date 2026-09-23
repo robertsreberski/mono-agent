@@ -1,7 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 
-import { ensureOwnerOnlyDirectory, loadOrCreateContinuationSecret } from "./continuation-store-fs.js";
+import { ensureOwnerOnlyDirectory, loadOrCreateContinuationSecret, readBoundedOwnerOnlyFile } from "./continuation-store-fs.js";
 
 /** Private, source-bound peer handoff. Attribution is never owner approval or tool authority. */
 export interface PeerHandoff {
@@ -52,9 +52,12 @@ export async function verifyPeerHandoff(artifactDir: string, value: unknown, ses
     || typeof p.digest !== "string" || !/^[a-f0-9]{64}$/u.test(p.digest)
     || typeof p.proof !== "string" || !/^[a-zA-Z0-9_-]{43}$/u.test(p.proof)) return undefined;
   if (text !== undefined && createHash("sha256").update(text).digest("hex") !== p.digest) return undefined;
-  const root = peerSecretDir(artifactDir);
-  await ensureOwnerOnlyDirectory(root);
-  const secret = await loadOrCreateContinuationSecret(root);
+  // Verification must never provision an owner secret on behalf of an ACP client.
+  let encoded: string;
+  try { encoded = await readBoundedOwnerOnlyFile(join(peerSecretDir(artifactDir), "continuation-secret"), 128, "Peer handoff secret"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  const secret = Buffer.from(encoded.trim(), "base64url");
+  if (secret.length !== 32) return undefined;
   const expected = createHmac("sha256", secret).update(payload(p as PeerHandoff)).digest();
   const received = Buffer.from(p.proof, "base64url");
   return received.length === expected.length && timingSafeEqual(received, expected) ? p as PeerHandoff : undefined;

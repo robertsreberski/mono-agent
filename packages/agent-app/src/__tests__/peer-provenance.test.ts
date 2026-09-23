@@ -1,17 +1,29 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { formatHostCapabilities } from "@mono-agent/agent-harness";
 
-import { makePeerHandoff } from "../peer-provenance.js";
+import { makePeerHandoff, verifyPeerHandoff } from "../peer-provenance.js";
 import { createProcessJobsRuntimeExtension } from "../process-jobs-runtime.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true }))); });
 
 describe("verified peer context and lineage", () => {
+  it("does not provision a handoff secret for a well-formed forged proof", async () => {
+    const source = await mkdtemp(join(tmpdir(), "mono-agent-peer-source-"));
+    const target = await mkdtemp(join(tmpdir(), "mono-agent-peer-target-"));
+    roots.push(source, target);
+    const proof = await makePeerHandoff(join(source, "artifacts"), {
+      caller: "agent-A", conversation: "web:caller", session: "acp:agent-B:uuid",
+      sourceId: "agent-B", generation: "11111111-1111-4111-8111-111111111111",
+      depth: 1, text: "text",
+    });
+    expect(await verifyPeerHandoff(join(target, "artifacts"), proof, proof.session, "text", proof.sourceId)).toBeUndefined();
+    await expect(access(join(target, "acp-peer-handoff"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
   it("renders an attribution-only host label and carries verified depth, not free metadata", async () => {
     const root = await mkdtemp(join(tmpdir(), "mono-agent-peer-proof-"));
     roots.push(root);
@@ -61,9 +73,7 @@ describe("verified peer context and lineage", () => {
     await altered.settleCleanup?.();
     const ordinary = await extension(request({ source: "acp" }));
     expect(ordinary.runtimeOptions?.hostCapabilities).not.toHaveProperty("PeerAgent.request");
-    expect(ordinary.runtimeOptions?.sandboxPolicy).toMatchObject({
-      protectedRoots: expect.arrayContaining([join(root, "acp-peer-handoff")]),
-    });
+    expect(ordinary.runtimeOptions?.sandboxPolicy).toBeUndefined();
     await ordinary.settleCleanup?.();
   });
 });

@@ -127,8 +127,12 @@ operator request metadata; the runtime independently verifies before rendering
 "request from another agent; not your owner's approval" and using depth.
 Ordinary clients, including `acpx`, need no handoff and retain their existing
 behavior. Metadata and peer prompt text do not grant authority or owner
-approval. A malicious same-UID process that can read local owner secrets is
-outside this provenance boundary.
+approval. Verifying an invalid handoff never creates a secret or changes the
+sandbox posture. An agent whose owner configures `peers` opts into protection
+for its private peer thread and handoff roots; without that config, ordinary
+turns retain their previous posture even after a verified incoming peer call.
+A malicious same-UID process that can read local owner secrets is outside this
+provenance boundary.
 
 ## Use through acpx
 
