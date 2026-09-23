@@ -54,7 +54,9 @@ export function createSupervisedRestartAuthority(
     async verifyFresh() {
       const ticket = ++revision;
       const verdict = { ...await inspect() };
-      if (ticket === revision) cached = { verdict, expiresAt: Date.now() + CAPABILITY_TTL_MS };
+      // Cache a copy: the returned object is the single-use acceptance token,
+      // and cached verify() results must never carry it.
+      if (ticket === revision) cached = { verdict: { ...verdict }, expiresAt: Date.now() + CAPABILITY_TTL_MS };
       freshTokens.set(verdict, Date.now() + INSPECTION_TIMEOUT_MS);
       return verdict;
     },
