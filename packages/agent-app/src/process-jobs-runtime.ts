@@ -79,7 +79,7 @@ export function createProcessJobsRuntimeExtension(
       );
       const artifactDir = options.coreConfig.artifacts?.dir;
       const verifiedPeer = artifactDir === undefined || input.request.metadata?.peerHandoff === undefined ? undefined
-        : await verifyPeerHandoff(artifactDir, input.request.metadata.peerHandoff, input.request.conversationId);
+        : await verifyPeerHandoff(artifactDir, input.request.metadata.peerHandoff, input.request.conversationId, input.request.userMessage);
       const peerOwnerRoot = artifactDir === undefined ? undefined : dirname(artifactDir);
       const protectedRoots = [
         ...processJobsProtectionPolicyRoots(attested),

@@ -98,7 +98,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
     const origin = processJobOriginForRequest(input, options.channelId, options.conversationScheme);
     const wake = processJobWakeContextForRequest(input.request);
     const peer = input.request.metadata?.peerHandoff === undefined ? undefined
-      : await verifyPeerHandoff(config.artifacts.dir, input.request.metadata.peerHandoff, input.request.conversationId);
+      : await verifyPeerHandoff(config.artifacts.dir, input.request.metadata.peerHandoff, input.request.conversationId, input.request.userMessage);
     const depth = peer?.depth ?? (wake.kind === "resolved" ? wake.context.chainDepth : 0);
     const ceiling = service?.settings.maxChainDepth ?? 4;
     const background = service !== undefined && origin !== undefined && wake.kind !== "missed" && depth < ceiling;
@@ -145,20 +145,31 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                 || previous.peer !== args.peer || previous.thread !== args.thread || previous.sourceId !== sourceId)) {
                 throw new Error("Peer thread identity/source changed; refusing to resume.");
               }
+              // A stale busy generation can only be a turn lost with its former owner.
+              // Settle it explicitly; never replay that old prompt on resume.
+              if (previous?.status === "busy") await saveThread(key, { ...previous, status: "interrupted" });
               const record: ThreadRecord = {
                 schema: 1, conversation: input.request.conversationId, peer: args.peer, thread: args.thread,
                 sourceId, ...(previous?.sessionId ? { sessionId: previous.sessionId } : {}),
                 generation: randomUUID(), status: "busy",
               };
               await saveThread(key, record);
+              const stop = new AbortController();
+              let cancelAcp: (() => Promise<void>) | undefined;
+              active.set(key, async () => {
+                stop.abort();
+                await cancelAcp?.();
+              });
               const run = async (signal: AbortSignal) => {
                 try {
+                  const turnSignal = AbortSignal.any([signal, stop.signal]);
+                  if (turnSignal.aborted) throw new Error("Peer turn interrupted before dispatch; prompt was not replayed.");
                   const outcome = await runPeerAcpTurn({
                     sourceId, workspace: descriptor.workspace.path, artifactDir: target.source.artifactDir,
                     caller, conversation: input.request.conversationId, depth: depth + 1,
-                    text: args.message!, ...(record.sessionId ? { sessionId: record.sessionId } : {}), signal,
+                    text: args.message!, ...(record.sessionId ? { sessionId: record.sessionId } : {}), signal: turnSignal,
                     onSession: async (sessionId) => { record.sessionId = sessionId; await saveThread(key, record); },
-                    onActive: (cancel) => active.set(key, cancel),
+                    onActive: (cancel) => { cancelAcp = cancel; if (stop.signal.aborted) void cancel(); },
                   });
                   record.status = "idle";
                   await saveThread(key, record);
@@ -179,14 +190,24 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                     try { const answer = await run(signal); return { answer, output: answer.slice(0, 2000), status: "ok" }; }
                     catch (error) { return { output: `Peer turn interrupted or failed: ${error instanceof Error ? error.message.slice(0, 300) : "unknown error"}`, status: "failed" }; }
                   },
-                  cleanup: release,
+                  cleanup: async () => {
+                    if (!held) return;
+                    active.delete(key);
+                    try { record.status = "interrupted"; await saveThread(key, record); }
+                    finally { await release(); }
+                  },
                 });
                 return reply(JSON.stringify({ peer: args.peer, thread: args.thread, jobId: started.jobId, state: "started" }));
               }
-              const controller = new AbortController();
-              input.request.abortSignal.addEventListener("abort", () => controller.abort(), { once: true });
-              return reply(await run(controller.signal));
-            } catch (error) { await release(); throw error; }
+              return reply(await run(input.request.abortSignal));
+            } catch (error) {
+              active.delete(key);
+              try {
+                const pending = await readThread(key);
+                if (pending?.status === "busy") await saveThread(key, { ...pending, status: "interrupted" });
+              } finally { await release(); }
+              throw error;
+            }
           } catch (error) {
             return reply(`PeerAgent failed: ${error instanceof Error ? error.message : String(error)}`, true);
           }

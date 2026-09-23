@@ -112,6 +112,24 @@ describe("PeerAgent request lifecycle", () => {
     } finally { await f.close(); }
   });
 
+  it("stops a queued background turn before it dispatches and never replays its prompt", async () => {
+    const f = await setup();
+    try {
+      await f.send(true);
+      const stopped = await f.client.callTool({ name: "PeerAgent", arguments: {
+        action: "stop", peer: "finance", thread: "portfolio",
+      } });
+      expect(stopped.isError).not.toBe(true);
+      expect(stopped.content).toEqual([{ type: "text", text: expect.stringContaining("settling") }]);
+      const result = await f.pending()!.run(new AbortController().signal, () => {}, () => {});
+      expect(result).toMatchObject({ status: "failed" });
+      expect(mocks.turns).toEqual([]);
+      const next = await f.send();
+      expect(next.isError).not.toBe(true);
+      expect(mocks.turns).toEqual(["do work"]);
+    } finally { await f.close(); }
+  });
+
   it("exhausts verified A→B→A lineage instead of resetting to zero", async () => {
     const f = await setup(4);
     try {

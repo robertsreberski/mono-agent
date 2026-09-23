@@ -17,7 +17,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
-async function fixture(answer = "ok") {
+async function fixture(answer = "ok", askUser = false) {
   const temporary = await mkdtemp(join(tmpdir(), "mono-agent-peer-client-"));
   roots.push(temporary);
   const root = await realpath(temporary);
@@ -29,13 +29,29 @@ async function fixture(answer = "ok") {
   const server = createServer(async (req, res) => {
     if (req.url === "/gui/v1/info") {
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ schema: 1, label: "Peer fixture", capabilities: {} }));
+      res.end(JSON.stringify({ schema: 1, label: "Peer fixture", capabilities: askUser ? { askUser: true } : {} }));
     } else if (req.url === "/gui/v1/turns" && req.method === "POST") {
       let body = "";
       for await (const chunk of req) body += String(chunk);
       turns.push(JSON.parse(body) as (typeof turns)[number]);
       res.setHeader("content-type", "application/x-ndjson");
-      res.end(`${JSON.stringify({ kind: "append", delta: answer })}\n${JSON.stringify({ kind: "finish", finalText: answer })}\n`);
+      if (askUser) {
+        res.write(`${JSON.stringify({ kind: "event", event: {
+          type: "tool_call_started", id: "ask-peer-1", name: "AskUser",
+        } })}\n`);
+        res.end();
+      } else {
+        res.end(`${JSON.stringify({ kind: "append", delta: answer })}\n${JSON.stringify({ kind: "finish", finalText: answer })}\n`);
+      }
+    } else if (askUser && req.url?.endsWith("/ask") && req.method === "GET") {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ask: {
+        interactionId: "interaction-1", message: "Approve?", questions: [{
+          id: "q1", header: "Decision", question: "Proceed?",
+          options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }], multiSelect: false,
+        }], answers: [], activeQuestionIndex: 0, status: "pending",
+        createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      } }));
     } else { res.statusCode = 404; res.end(); }
   });
   servers.push(server);
@@ -81,6 +97,12 @@ describe("peer ACP client over a real spawned bridge", () => {
   it("rejects oversize peer output instead of returning a truncated success", async () => {
     const f = await fixture("x".repeat(35_000));
     await expect(f.turn()).rejects.toThrow(/exceeds 32 KiB/u);
+  }, 30_000);
+
+  it("returns an explicit unsupported-interaction error for a peer AskUser", async () => {
+    const f = await fixture("ok", true);
+    await expect(f.turn()).rejects.toThrow(/AskUser interaction is unsupported.*interaction_required/u);
+    expect(f.turns).toHaveLength(1);
   }, 30_000);
 
   it("fails closed when the bridge cannot find the configured source", async () => {

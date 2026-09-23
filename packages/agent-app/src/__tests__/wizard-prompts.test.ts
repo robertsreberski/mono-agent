@@ -265,6 +265,7 @@ describe("wizard prompt builders", () => {
       "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead",
       "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject",
       "MemoryJournal",
+      "PeerAgent",
       "Remember",
       "TelegramSendMessage",
       "AskUser",

@@ -49,5 +49,10 @@ describe("verified peer context and lineage", () => {
     expect(forged.runtimeOptions?.processJobsAvailability).toMatchObject({ chainDepth: 0 });
     expect(forged.runtimeOptions?.hostCapabilities).not.toHaveProperty("PeerAgent.request");
     await forged.settleCleanup?.();
+    const altered = await extension({ ...request({ source: "acp", peerHandoff: proof }),
+      request: { ...request({ source: "acp", peerHandoff: proof }).request, userMessage: "different prompt" } } as never);
+    expect(altered.runtimeOptions?.processJobsAvailability).toMatchObject({ chainDepth: 0 });
+    expect(altered.runtimeOptions?.hostCapabilities).not.toHaveProperty("PeerAgent.request");
+    await altered.settleCleanup?.();
   });
 });
