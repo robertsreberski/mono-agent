@@ -22,10 +22,13 @@ const apiMock = vi.hoisted(() => ({
   beginProviderAuthCheck: vi.fn(),
   providerAuthCheck: vi.fn(),
   cancelProviderAuthCheck: vi.fn(),
+  latestAgentRestart: vi.fn(),
+  requestAgentRestart: vi.fn(),
+  restartStatus: vi.fn(),
 }));
 
 vi.mock("../console-store", () => ({ useConsoleStore: () => storeMock }));
-vi.mock("../api", () => ({ api: apiMock }));
+vi.mock("../api", async (importOriginal) => ({ ...await importOriginal<typeof import("../api")>(), api: apiMock }));
 vi.mock("./assistant-ui/ModelSelector", () => ({ ModelSelector: () => null }));
 
 import { AgentSettingsDialog } from "./AgentSettingsDialog";
@@ -38,6 +41,7 @@ const providers = [
 
 beforeEach(() => {
   vi.clearAllMocks();
+  apiMock.latestAgentRestart.mockResolvedValue(null);
   storeMock.selectedAgent = agent("alpha", {
     label: "Alpha",
     supportsProviderAuth: true,

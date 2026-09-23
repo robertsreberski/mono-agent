@@ -17,6 +17,9 @@ export interface RestartAgentCardProps {
   readonly approximateRunningCount?: number;
   /** Settings can restore this from GET /api/v1/agents/:id/restart. */
   readonly initialOperation?: RestartOperation | null;
+  /** Settings only: retained outcomes may be followed by a fresh confirmed request. */
+  readonly allowRestartAgain?: boolean;
+  readonly unavailableReason?: string;
 }
 
 const STAGES: readonly { readonly key: RestartOperation["stage"]; readonly label: string }[] = [
@@ -31,6 +34,7 @@ function shortReason(reason: unknown): string | undefined {
 
 export function RestartAgentCard({
   sourceId, agentLabel, reason, proposal, approximateRunningCount = 0, initialOperation,
+  allowRestartAgain = false, unavailableReason,
 }: RestartAgentCardProps) {
   const [confirming, setConfirming] = useState(false);
   const [operation, setOperation] = useState<RestartOperation | null>(initialOperation ?? null);
@@ -49,7 +53,7 @@ export function RestartAgentCard({
     ? "Restart status is unavailable."
     : availability !== undefined && availability.state !== "available" && availability.state !== "used"
       ? availability.reason ?? "Restart is unavailable."
-      : sourceId.length === 0 ? "Agent is unavailable." : undefined;
+      : unavailableReason ?? (sourceId.length === 0 ? "Agent is unavailable." : undefined);
 
   useEffect(() => {
     setOperation(initialOperation ?? null);
@@ -137,6 +141,17 @@ export function RestartAgentCard({
       {outcome === "success" && <p className="restart-agent-outcome">Restarted — agent is back online.</p>}
       {outcome === "failure" && <p className="restart-agent-outcome">Restart failed{outcomeReason === undefined ? "." : `: ${outcomeReason}`}</p>}
       {outcome === "not_confirmed" && <p className="restart-agent-outcome">Restart not confirmed — check the agent{outcomeReason === undefined ? "." : `. ${outcomeReason}`}</p>}
+      {outcome !== undefined && allowRestartAgain && (
+        <div className="restart-agent-actions">
+          <button type="button" disabled={disabled !== undefined} onClick={() => {
+            setOperation(null);
+            setRequestFailure(null);
+            setPollWarning(null);
+            setConfirming(true);
+          }}>Restart {agentLabel} again</button>
+          {disabled !== undefined && <span className="restart-agent-disabled">{disabled}</span>}
+        </div>
+      )}
       {pollWarning !== null && outcome === undefined && <p className="restart-agent-disabled">{pollWarning}</p>}
     </section>
   );

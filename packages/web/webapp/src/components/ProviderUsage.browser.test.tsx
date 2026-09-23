@@ -6,9 +6,9 @@ import { agent } from "../test/fixtures";
 import type { ProviderAuthStatusSnapshot, ProviderUsageSnapshot } from "../types";
 import "../styles.css";
 const store = vi.hoisted(() => ({ selectedAgent: null as ReturnType<typeof agent> | null, catalogByProvider: {}, ensureProviderCatalog: vi.fn(), setAgentPinned: vi.fn(), setAgentRunDefaults: vi.fn(), clearAgentRunDefaults: vi.fn() }));
-const mocks = vi.hoisted(() => ({ providerAuthStatus: vi.fn(), providerUsage: vi.fn(), refreshProviderUsage: vi.fn() }));
+const mocks = vi.hoisted(() => ({ providerAuthStatus: vi.fn(), providerUsage: vi.fn(), refreshProviderUsage: vi.fn(), latestAgentRestart: vi.fn() }));
 vi.mock("../console-store", () => ({ useConsoleStore: () => store }));
-vi.mock("../api", () => ({ api: mocks }));
+vi.mock("../api", async (importOriginal) => ({ ...await importOriginal<typeof import("../api")>(), api: mocks }));
 import { AgentSettingsDialog } from "./AgentSettingsDialog";
 declare module "vitest" {
   export interface ProvidedContext { providerUsageTouch: boolean }
@@ -41,6 +41,7 @@ const snapshot: ProviderUsageSnapshot = { schema: "mono-agent.provider-usage.v1"
 ] };
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.latestAgentRestart.mockResolvedValue(null);
   store.selectedAgent = agent("fixture", { label: "Synthetic usage fixture", supportsProviderAuth: true, supportsProviderUsage: true, supportsProviderUsageRefresh: true, supportsProviderAuthChecks: true,
     defaultModel: "anthropic:claude-sonnet-4-6", models: ["anthropic:claude-sonnet-4-6"],
   });

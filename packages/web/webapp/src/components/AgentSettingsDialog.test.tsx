@@ -3,7 +3,7 @@ import { createRef } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent } from "../test/fixtures";
-import type { ProviderUsageSnapshot } from "../types";
+import type { ProviderUsageSnapshot, RestartOperation } from "../types";
 import "../styles.css";
 
 const storeMock = vi.hoisted(() => ({
@@ -25,10 +25,13 @@ const apiMock = vi.hoisted(() => ({
   beginProviderAuthCheck: vi.fn(),
   providerAuthCheck: vi.fn(),
   cancelProviderAuthCheck: vi.fn(),
+  latestAgentRestart: vi.fn(),
+  requestAgentRestart: vi.fn(),
+  restartStatus: vi.fn(),
 }));
 
 vi.mock("../console-store", () => ({ useConsoleStore: () => storeMock }));
-vi.mock("../api", () => ({ api: apiMock }));
+vi.mock("../api", async (importOriginal) => ({ ...await importOriginal<typeof import("../api")>(), api: apiMock }));
 vi.mock("./assistant-ui/ModelSelector", () => ({
   ModelSelector: ({ onValueChange, onEffortChange }: {
     readonly onValueChange: (value: string) => void;
@@ -55,6 +58,7 @@ const expectDialogTypography = (element: Element, size: "9px" | "10px" | "11px" 
 
 beforeEach(() => {
   vi.resetAllMocks();
+  Object.assign(storeMock, { activeThreads: null });
   storeMock.selectedAgent = agent("alpha", {
     label: "Alpha",
     models: ["provider/model", "provider/other"],
@@ -67,6 +71,7 @@ beforeEach(() => {
   storeMock.clearAgentRunDefaults.mockResolvedValue(undefined);
   apiMock.cancelProviderAuth.mockResolvedValue(undefined);
   apiMock.cancelProviderAuthCheck.mockResolvedValue(undefined);
+  apiMock.latestAgentRestart.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -120,6 +125,73 @@ const advanceProviderPollsUntil = async (expectation: () => void, maxPolls = 12)
 };
 
 describe("AgentSettingsDialog", () => {
+  const restartOperation = (stage: RestartOperation["stage"], outcome?: RestartOperation["outcome"]): RestartOperation => ({
+    id: "web-restart-id", sourceId: "alpha", stage,
+    requestedAt: "2026-09-23T10:00:00Z", deadline: "2026-09-23T10:02:00Z",
+    ...(outcome === undefined ? {} : { outcome }),
+  });
+
+  it("shows the shared restart section and advisory warning before the settings POST", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", restart: { supported: true } });
+    Object.assign(storeMock, { activeThreads: { runningCounts: { alpha: 2 } } });
+    apiMock.requestAgentRestart.mockResolvedValue(restartOperation("requesting"));
+    apiMock.restartStatus.mockResolvedValue(restartOperation("restarting"));
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole("button", { name: "Restart Alpha" }));
+    expect(screen.getByText("About 2 running conversations will be interrupted (approximate).")).toBeVisible();
+    expect(apiMock.requestAgentRestart).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
+    await act(async () => { await Promise.resolve(); });
+    expect(apiMock.requestAgentRestart).toHaveBeenCalledExactlyOnceWith("alpha");
+    expect(screen.getByRole("list", { name: "Restart progress" })).toBeVisible();
+  });
+
+  it("disables unsupported settings restart with the server's short reason", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", restart: { supported: false, reason: "Restart=no" } });
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole("button", { name: "Restart Alpha" })).toBeDisabled();
+    expect(screen.getByText("Restart=no")).toBeVisible();
+    expect(apiMock.requestAgentRestart).not.toHaveBeenCalled();
+  });
+
+  it("rehydrates an in-flight operation after dialog reload and polls to the server's outcome", async () => {
+    vi.useFakeTimers();
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", restart: { supported: true } });
+    apiMock.latestAgentRestart.mockResolvedValue(restartOperation("requesting"));
+    apiMock.restartStatus.mockResolvedValueOnce(restartOperation("restarting"))
+      .mockResolvedValue(restartOperation("back_online", "success"));
+    const props = { onClose: vi.fn(), dialogRef: createRef<HTMLElement>() };
+    const view = render(<AgentSettingsDialog open {...props} />);
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(apiMock.latestAgentRestart).toHaveBeenCalledWith("alpha", expect.any(AbortSignal));
+    expect(apiMock.restartStatus).toHaveBeenCalledWith("alpha", "web-restart-id", expect.any(AbortSignal));
+    view.rerender(<AgentSettingsDialog open={false} {...props} />);
+    await act(async () => { vi.advanceTimersByTime(4_000); await Promise.resolve(); });
+    expect(apiMock.restartStatus).toHaveBeenCalledTimes(1);
+    view.rerender(<AgentSettingsDialog open {...props} />);
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(apiMock.latestAgentRestart).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Restarted — agent is back online.")).toBeVisible();
+  });
+
+  it("shows the retained outcome and offers a fresh confirmed settings restart", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", restart: { supported: true } });
+    apiMock.latestAgentRestart.mockResolvedValue(restartOperation("back_online", "success"));
+    apiMock.requestAgentRestart.mockResolvedValue(restartOperation("requesting"));
+    apiMock.restartStatus.mockResolvedValue(restartOperation("restarting"));
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText("Restarted — agent is back online.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Restart Alpha again" }));
+    expect(screen.getByText(/may interrupt active conversations/u)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
+    await act(async () => { await Promise.resolve(); });
+    expect(apiMock.requestAgentRestart).toHaveBeenCalledExactlyOnceWith("alpha");
+  });
   const usageSnapshot: ProviderUsageSnapshot = { schema: "mono-agent.provider-usage.v1", providers: [
     { providerId: "github-copilot", label: "GitHub Copilot", plan: "Individual", fetchedAt: "2026-09-15T12:00:00Z", stale: false,
       windows: [{ kind: "credits", label: "Credits", usedPercent: 42, periodMs: 2592000000 }] },

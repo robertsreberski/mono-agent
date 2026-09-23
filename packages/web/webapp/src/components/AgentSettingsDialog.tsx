@@ -10,10 +10,12 @@ import type {
   ProviderAuthProviderStatus,
   ProviderAuthSessionSnapshot,
   ProviderAuthStatusSnapshot,
+  RestartOperation,
 } from "../types";
 import { buildSelectorModels, effectiveModelForAgent, effortLevelsForAgentModel, findCatalogModel, providerOfModel } from "./model-catalog";
 import { ModelSelector } from "./assistant-ui/ModelSelector";
 import { Icon } from "./Icon";
+import { RestartAgentCard } from "./RestartAgentCard";
 
 export function AgentSettingsDialog({
   open,
@@ -151,6 +153,8 @@ export function AgentSettingsDialog({
             Config default: <code>{settings.config.model ?? "provider"}</code> · <code>{settings.config.effort ?? "provider"}</code>
           </p>
           {agent.status === "offline" && <p className="agent-settings-warning">Reconnect this agent before saving. Revert remains available.</p>}
+          <AgentRestartSection key={agent.sourceId} agent={agent}
+            approximateRunningCount={store.activeThreads?.runningCounts[agent.sourceId] ?? 0} />
           <ProviderAuthSection key={`${agent.sourceId}:${agent.generation ?? "unknown"}`} agent={agent} />
           {error && <p className="agent-settings-error" role="alert">{error}</p>}
         </div>
@@ -171,6 +175,41 @@ export function AgentSettingsDialog({
         </footer>
       </section>
     </div>
+  );
+}
+
+function AgentRestartSection({ agent, approximateRunningCount }: {
+  readonly agent: AgentSummary;
+  readonly approximateRunningCount: number;
+}) {
+  const [initialOperation, setInitialOperation] = useState<RestartOperation | null>(null);
+  const [readState, setReadState] = useState<"loading" | "ready" | "error">("loading");
+  useEffect(() => {
+    const controller = new AbortController();
+    setReadState("loading");
+    void api.latestAgentRestart(agent.sourceId, controller.signal).then((operation) => {
+      if (controller.signal.aborted) return;
+      setInitialOperation(operation);
+      setReadState("ready");
+    }).catch(() => {
+      if (!controller.signal.aborted) setReadState("error");
+    });
+    return () => controller.abort();
+  }, [agent.sourceId]);
+  const unavailableReason = readState === "error"
+    ? "Restart status is unavailable. Try reopening settings."
+    : agent.status === "offline" ? "The agent is offline."
+      : agent.restart?.supported === true ? undefined : agent.restart?.reason ?? "This agent cannot restart from the console.";
+  return (
+    <section className="agent-settings-restart" aria-label="Restart agent settings">
+      <h3>Restart agent</h3>
+      {readState === "loading"
+        ? <p role="status">Checking restart status…</p>
+        : <RestartAgentCard sourceId={agent.sourceId} agentLabel={agent.label}
+            approximateRunningCount={approximateRunningCount}
+            initialOperation={initialOperation} allowRestartAgain
+            {...(unavailableReason === undefined ? {} : { unavailableReason })} />}
+    </section>
   );
 }
 

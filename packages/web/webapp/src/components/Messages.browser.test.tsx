@@ -290,6 +290,48 @@ function CronReplyHarness({ width }: { readonly width: number }) {
   );
 }
 
+function RestartProposalHarness({ width }: { readonly width: number }) {
+  const response: WebMessage = {
+    id: "restart-reply", threadId: "thread", role: "assistant", status: "complete",
+    createdAt: "2026-09-23T10:00:00.000Z", updatedAt: "2026-09-23T10:00:01.000Z",
+    attachments: [], parts: [
+      { type: "tool-call", toolCallId: "inspect", toolName: "Read", status: "complete" },
+      { type: "text", text: "The answer is ready." },
+      { type: "restart_proposal", id: "proposal-one", reason: "Refresh the agent context",
+        restartable: { state: "stale", reason: "The agent has restarted since this suggestion." } },
+    ],
+  };
+  const runtime = useExternalStoreRuntime<WebMessage>({
+    messages: [response], convertMessage: (value) => convertWebMessage(value), onNew: async () => undefined,
+  });
+  return <div style={{ width, minHeight: 320 }}>
+    <AssistantRuntimeProvider runtime={runtime}>
+      <ThreadPrimitive.Root>
+        <ThreadPrimitive.Messages components={{ AssistantMessage, SystemMessage, UserMessage }} />
+      </ThreadPrimitive.Root>
+    </AssistantRuntimeProvider>
+  </div>;
+}
+
+describe("restart proposal placement in Chromium", () => {
+  it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)(
+    "puts a non-actionable stale card below the answer, outside Activity at %ipx (%s)", async (width, height, _label) => {
+      await page.viewport(width, height);
+      const { container } = render(<RestartProposalHarness width={Math.min(width, 760)} />);
+      const answer = screen.getByText("The answer is ready.");
+      const card = container.querySelector<HTMLElement>(".restart-agent-card")!;
+      const root = container.querySelector<HTMLElement>(".message-assistant")!;
+      expect(card).not.toBeNull();
+      expect(card.closest(".activity-root")).toBeNull();
+      expect((answer.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true);
+      expect(card.getBoundingClientRect().top).toBeGreaterThanOrEqual(answer.getBoundingClientRect().bottom - 1);
+      expect(screen.getByRole("button", { name: "Restart agent" })).toBeDisabled();
+      expect(root.scrollWidth).toBeLessThanOrEqual(root.clientWidth);
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    },
+  );
+});
+
 describe("live-input settlement labels in Chromium", () => {
   it.each([
     [1440, "desktop"],
