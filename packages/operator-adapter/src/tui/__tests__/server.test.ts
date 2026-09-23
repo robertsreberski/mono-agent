@@ -198,7 +198,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       label: "test-agent",
       model: "claude-fable-5",
     });
@@ -273,7 +273,7 @@ describe("startTuiAdapter", () => {
     });
 
     await expect((await fetch(running.infoUrl)).json()).resolves.toMatchObject({
-      capabilities: { attachments: true, askUser: true, askById: true },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." }, askUser: true, askById: true },
     });
     const route = `${running.baseUrl}/v1/conversations/${encodeURIComponent("web:thread/one")}/ask`;
     await expect((await fetch(route)).json()).resolves.toEqual({ ask: snapshot });
@@ -721,7 +721,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       label: "test-agent",
       model: "claude-fable-5",
       effort: "high",
@@ -739,7 +739,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       model: "claude-fable-5",
       models: ["claude-fable-5", "codex:gpt-5.5"],
     });
@@ -792,7 +792,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       model: "pi:ollama:qwen3.6",
       models: ["pi:ollama:qwen3.6", "pi:lmstudio:qwen3-8b"],
       modelOptions: {
@@ -960,7 +960,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       model: "claude-fable-5",
       modelOptions: { "claude-fable-5": { reasoning: true } },
     });
@@ -1173,7 +1173,7 @@ describe("startTuiAdapter", () => {
     const info = await (await fetch(running.infoUrl, {
       headers: { authorization: "Bearer fixture-secret" },
     })).json() as { capabilities: Record<string, boolean> };
-    expect(info.capabilities).toEqual({ attachments: true, historyAppend: true });
+    expect(info.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent is not a supervised worker." }, historyAppend: true });
 
     const url = `${running.baseUrl}/v1/conversations/web%3Anotification-1/verbatim`;
     const unauthorized = await fetch(url, {
@@ -1385,7 +1385,7 @@ describe("startTuiAdapter", () => {
     });
 
     const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, boolean> };
-    expect(info.capabilities).toEqual({ attachments: true, liveInput: true });
+    expect(info.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." }, liveInput: true });
     const responsePromise = fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1420,7 +1420,7 @@ describe("startTuiAdapter", () => {
     });
 
     const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, unknown> };
-    expect(info.capabilities).toEqual({ attachments: true });
+    expect(info.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } });
   });
 
   it("holds a Web-targeted offer until the exact turn publishes mailbox ownership", async () => {
@@ -2684,7 +2684,7 @@ describe("startTuiAdapter /v1/info payload fence", () => {
     expect(info.bytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
     // Schema 1 survives shedding: the console compares it with `!==`.
     expect(info.body.schema).toBe(1);
-    expect(info.body.capabilities).toEqual({ attachments: true });
+    expect(info.body.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } });
     // Only the offending field is gone. Shedding in a fixed least-important
     // order would have taken modelOptions, models and providers with it, so a
     // 1.6 MiB skill registry would have cost the console its model picker too.

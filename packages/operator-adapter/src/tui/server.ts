@@ -101,6 +101,7 @@ import {
   type CronOperatorService,
 } from "./cron.js";
 import { TuiAdapterError } from "./errors.js";
+import { scheduleRestartStop } from "./restart-response.js";
 import type { RequestToolEnvironmentConfig } from "./config.js";
 
 export interface TuiAdapterLogger {
@@ -239,6 +240,24 @@ export interface TuiAdapterInfo {
   readonly skills?: TuiSkillRegistry;
 }
 
+export interface TuiRestartSupport {
+  readonly supported: boolean;
+  readonly reason?: string;
+}
+
+export type TuiRestartAcceptance =
+  | { readonly kind: "accepted"; readonly operationId: string }
+  | { readonly kind: "conflict"; readonly operationId: string }
+  | { readonly kind: "refused"; readonly reason: string };
+
+/** The supervised CLI host owns acceptance and the nonzero process disposition. */
+export interface TuiRestartAuthority {
+  verify(): Promise<TuiRestartSupport>;
+  accept(verified: TuiRestartSupport): TuiRestartAcceptance;
+  processIdentity(): { readonly pid: number; readonly startedAt: string };
+  beginStop(operationId: string): void;
+}
+
 export interface TuiAdapterOptions {
   readonly host?: string;
   readonly port?: number;
@@ -283,6 +302,8 @@ export interface TuiAdapterOptions {
   /** Pi credential status/login surface; uses apiKey when the endpoint has one. */
   readonly providerAuth?: ProviderAuthOperator;
   readonly providerUsage?: ProviderUsageOperator;
+  /** Present only on a supervised CLI worker. Keyless endpoints cannot use it. */
+  readonly restart?: TuiRestartAuthority;
 }
 
 export interface TuiAdapterStartResult {
@@ -415,8 +436,8 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
           });
           return { kind: "degraded" } as const;
         });
-    void Promise.all([resolveInfo(options.info), cronInfo])
-      .then(([info, cronState]) => {
+    void Promise.all([resolveInfo(options.info), cronInfo, describeRestartSupport(options.restart, apiKey)])
+      .then(([info, cronState, restartSupport]) => {
         sendBoundedInfo(res, {
           schema: TUI_WIRE_SCHEMA,
           pid: process.pid,
@@ -460,6 +481,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                         && cronState.overview.actionsEnabled === true,
                     },
                   }),
+            restart: restartSupport,
             ...(options.processJobs === undefined || processJobsBearer === undefined ? {} : { jobs: true }),
             ...(options.requestToolEnvironment === undefined ? {} : { toolEnvironment: true }),
             ...(options.modelCatalog === undefined
@@ -490,6 +512,53 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         options.logger?.error?.("TUI info provider failed.", { error: errorToMessage(error) });
         sendJsonError(res, 500, error);
       });
+  });
+
+  // The operator key is mandatory here; generic authorize() permits keyless callers.
+  // The host commits exit disposition synchronously BEFORE a 202 can be written.
+  app.post(`${basePath}/v1/restart`, express.json({ limit: "4kb", strict: true }), (req, res) => {
+    if (apiKey === undefined) {
+      res.status(403).json({ error: { code: "restart_requires_api_key", message: "Agent restart requires a configured operator API key." } });
+      return;
+    }
+    if (!authorize(req, res, apiKey)) return;
+    if (req.body === null || typeof req.body !== "object" || Array.isArray(req.body) || Object.keys(req.body as object).length !== 0) {
+      res.status(400).json({ error: { code: "invalid_request", message: "Restart requires an empty JSON object." } });
+      return;
+    }
+    const authority = options.restart;
+    if (authority === undefined) {
+      res.status(409).json({ error: { code: "restart_unsupported", message: "Agent is not a supervised worker." } });
+      return;
+    }
+    // Capture callbacks without relying on a receiver; injected authorities may
+    // be prototype methods and must bind their own state explicitly.
+    const verify = authority.verify.bind(authority);
+    const accept = authority.accept.bind(authority);
+    const identity = authority.processIdentity.bind(authority);
+    const beginStop = authority.beginStop.bind(authority);
+    void verify().then((support) => {
+      if (res.destroyed || res.closed) return;
+      const result = accept(support);
+      if (result.kind === "refused") {
+        res.status(409).json({ error: { code: "restart_unsupported", message: restartReason(result.reason) } });
+        return;
+      }
+      if (result.kind === "conflict") {
+        res.status(409).json({ error: { code: "restart_in_progress", message: "Agent restart is already in progress." }, operation: { id: result.operationId } });
+        return;
+      }
+      const id = result.operationId;
+      // Acceptance cannot be rolled back if the client disappears. Either a
+      // finished response or a bounded timer begins the one host-owned stop.
+      scheduleRestartStop(res, () => beginStop(id));
+      res.status(202).json({ operation: { id }, process: identity() });
+    }).catch((error: unknown) => {
+      options.logger?.error?.("Restart verification failed.", { error: errorToMessage(error) });
+      if (!res.headersSent && !res.destroyed) {
+        res.status(409).json({ error: { code: "restart_unsupported", message: "Supervisor verification failed." } });
+      }
+    });
   });
 
   app.get(modelsPath, (req, res, next) => {
@@ -2604,6 +2673,22 @@ function sendBoundedCronJson(res: Response, status: number, value: unknown): voi
     );
   }
   res.status(status).type("application/json").send(serialized);
+}
+
+function restartReason(reason: unknown): string {
+  return typeof reason === "string" && reason.length > 0 && Buffer.byteLength(reason, "utf8") <= 256
+    ? reason : "Agent restart is unavailable.";
+}
+
+async function describeRestartSupport(authority: TuiRestartAuthority | undefined, apiKey: string | undefined): Promise<TuiRestartSupport> {
+  if (apiKey === undefined) return { supported: false, reason: "Agent restart requires a configured operator API key." };
+  if (authority === undefined) return { supported: false, reason: "Agent is not a supervised worker." };
+  try {
+    const support = await authority.verify();
+    return support.supported === true ? { supported: true } : { supported: false, reason: restartReason(support.reason) };
+  } catch {
+    return { supported: false, reason: "Supervisor verification failed." };
+  }
 }
 
 function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {
