@@ -1836,9 +1836,6 @@ export async function runAuth(args: ParsedCliArgs): Promise<number> {
     configuredPiAuthPath = await resolvePiAuthPathForLogin({
       configPath,
       cwd,
-      ...(process.env.MONO_AGENT_PI_AUTH_PATH === undefined
-        ? {}
-        : { envPath: process.env.MONO_AGENT_PI_AUTH_PATH }),
       ...(args.piAuthPath === undefined ? {} : { piAuthPath: args.piAuthPath }),
     });
   } catch (error) {
@@ -1974,7 +1971,6 @@ export async function readApiKeyFromStdin(input: NodeJS.ReadableStream): Promise
 
 export async function resolvePiAuthPathForLogin(options: {
   readonly piAuthPath?: string;
-  readonly envPath?: string;
   readonly configPath: string;
   readonly cwd?: string;
 }): Promise<string> {
@@ -1985,7 +1981,6 @@ export async function resolvePiAuthPathForLogin(options: {
   return resolveEffectivePiAuthPath({
     cwd: options.cwd ?? dirname(resolve(options.configPath)),
     ...(nonEmptyEnv(options.piAuthPath) ? { explicitPath: options.piAuthPath } : {}),
-    ...(nonEmptyEnv(options.envPath) ? { envPath: options.envPath } : {}),
     ...(nonEmptyEnv(configured) ? { configPath: configured } : {}),
   });
 }

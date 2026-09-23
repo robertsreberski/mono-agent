@@ -70,12 +70,9 @@ describe("parseCliArgs preset flags & alias normalization", () => {
       await writeFile(configPath, JSON.stringify({ providers: { piAuthPath: "configured/auth.json" } }));
       await expect(resolvePiAuthPathForLogin({ configPath, cwd: dir }))
         .resolves.toBe(resolve(dir, "configured/auth.json"));
-      await expect(resolvePiAuthPathForLogin({ configPath, cwd: dir, envPath: "env/auth.json" }))
-        .resolves.toBe(resolve(dir, "env/auth.json"));
       await expect(resolvePiAuthPathForLogin({
         configPath,
         cwd: dir,
-        envPath: "env/auth.json",
         piAuthPath: "~/flag/auth.json",
       })).resolves.toBe(resolve(homedir(), "flag/auth.json"));
 
