@@ -41,7 +41,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 
 ## Version pins (keep them exact)
 
-- `packages/agent-runtime`: `@earendil-works/pi-ai` at `0.87.0`; `pi-agent-core` at `0.87.0`.
+- `packages/agent-runtime`: `@earendil-works/pi-ai` at `0.87.1`; `pi-agent-core` at `0.87.1`.
   Pi 0.85 replaces the old constructor/session surface with
   `AgentHarness.create()`, explicit operation `Context` arguments, and
   lane-scoped prompt, navigation, compaction, and event APIs. Keep that
@@ -63,6 +63,12 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   advertised strict support, so no bridge change. The new catalog
   `inputLimits.images` resize metadata is unread by mono-agent (vision still
   keys off `input` including `"image"`; attachment resizing stays Sharp-owned).
+- Pi 0.87.1 ships `anthropic:claude-opus-5-5` and `gpt-6-sol`/`gpt-6-luna`
+  on both `openai` and `openai-codex` natively, so no runtime supplement or
+  OAuth identity patch is needed. Sol/Luna have a
+  272,000-token context window and priced tier above 272,000 input tokens;
+  Opus 5.5 exposes low through max efforts. Anthropic OAuth sends Claude Code
+  2.1.280 from upstream.
 - Pi's standalone OAuth registry remains unavailable at runtime.
   `packages/agent-runtime/src/ai/pi-oauth-compat.js` owns the compatibility
   surface over `provider.auth.oauth`; do not bypass it with private upstream
@@ -74,7 +80,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   `resolvePiOAuthApiKey`, and `loginPiOAuth`. The model APIs return cloned
   snapshots, and the OAuth APIs do not expose Pi provider instances.
   A consumer test that still imports Pi's faux helpers must use an isolated
-  fixture or the runtime's exact Pi AI `0.87.0` and Pi Agent Core `0.87.0`
+  fixture or the runtime's exact Pi AI `0.87.1` and Pi Agent Core `0.87.1`
   compatibility pins as development-only pins; a floating
   host range can otherwise satisfy Pi Agent Core's upstream dependency with a
   different copy.
@@ -82,7 +88,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   the upgraded representation when the resumed session next persists a turn.
   Preserve an end-to-end legacy-resume regression test instead of adding a
   second mono-agent-owned file migration.
-- A packed consumer should resolve Pi AI `0.87.0` from both the runtime and Pi
+- A packed consumer should resolve Pi AI `0.87.1` from both the runtime and Pi
   Agent Core. The release guard verifies both resolution paths independently so
   Core's upstream floating range cannot be rewired by a host dependency.
 

@@ -701,10 +701,10 @@ function piModelResolutionIssue(
     return undefined;
   }
 
-  // pi-supplement: validate against the runtime's supplement-aware facade, not
-  // pi-ai directly, so a supplemented model (see agent-runtime's
-  // ai/pi-supplement.js) validates exactly like a pi builtin. Unknown refs
-  // still fail with the same diagnostic.
+  // Validate against the runtime's upstream catalog facade, not pi-ai directly,
+  // so a pi builtin validates through the same snapshot-cloned view the
+  // runtime resolves and prices with. Unknown refs still fail with the same
+  // diagnostic.
   if (
     isPiBuiltinProvider(model.provider)
     && getPiBuiltinModel(model.provider, model.model) !== undefined
