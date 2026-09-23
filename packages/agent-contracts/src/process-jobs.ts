@@ -235,10 +235,30 @@ const INTERNAL_PROCESS_JOB_TOOLS: readonly InternalProcessJobTool[] = ["Agent", 
  * it is the exact bound originating conversation and therefore the operator
  * projection's reply route, including any host-owned rollover bucket.
  */
+export interface PeerProcessJobQuestion {
+  readonly state: "awaiting_answer";
+  readonly questionId: string;
+  readonly peer: string;
+  readonly thread: string;
+  readonly message: string;
+  readonly requestedSchema: Readonly<Record<string, unknown>>;
+  readonly expiresAt: string;
+}
+
+export function isPeerProcessJobQuestion(value: unknown): value is PeerProcessJobQuestion {
+  if (!isRecord(value) || !hasExactlyKeys(value, ["state", "questionId", "peer", "thread", "message", "requestedSchema", "expiresAt"])) return false;
+  if (value.state !== "awaiting_answer" || !boundedNonEmptyString(value.questionId, 64)
+    || !boundedNonEmptyString(value.peer, 40) || !boundedNonEmptyString(value.thread, 40)
+    || !boundedNonEmptyString(value.message, 2_000) || !boundedNonEmptyString(value.expiresAt, 40)
+    || !isRecord(value.requestedSchema)) return false;
+  try { return JSON.stringify(value.requestedSchema).length <= 8_192 && Number.isFinite(Date.parse(value.expiresAt)); }
+  catch { return false; }
+}
+
 export type ProcessJobProjection = ProcessJobProjectionBase & (
   | { readonly tool: "Exec" | "Bash"; readonly kind?: never }
   | { readonly tool: InternalProcessJobTool; readonly kind: "internal"; readonly instanceId: string;
-      readonly childStillBusy: boolean; readonly subagentProgress?: ProcessJobSubagentProgress; readonly subagentQuestion?: { readonly question: string; readonly options?: string[] } }
+      readonly childStillBusy: boolean; readonly subagentProgress?: ProcessJobSubagentProgress; readonly subagentQuestion?: { readonly question: string; readonly options?: string[] }; readonly peerQuestion?: PeerProcessJobQuestion }
 );
 
 interface ProcessJobProjectionBase {
@@ -287,7 +307,7 @@ const PROJECTION_KEYS = [
 
 /** Strictly parse one projection, rejecting unknown keys at every depth. */
 export function parseProcessJobProjection(value: unknown): ProcessJobProjection {
-  if (!isRecord(value) || !hasExactlyKeys(value, [...PROJECTION_KEYS, ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "subagentProgress"].filter((key) => Object.prototype.hasOwnProperty.call(value, key))])) {
+  if (!isRecord(value) || !hasExactlyKeys(value, [...PROJECTION_KEYS, ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "subagentProgress", "peerQuestion"].filter((key) => Object.prototype.hasOwnProperty.call(value, key))])) {
     throw invalid("envelope");
   }
   if (value.schema !== "mono-agent.process-job-projection.v1"
@@ -295,9 +315,10 @@ export function parseProcessJobProjection(value: unknown): ProcessJobProjection 
     || (value.kind === "internal" ? !INTERNAL_PROCESS_JOB_TOOLS.includes(String(value.tool) as InternalProcessJobTool)
       || typeof value.instanceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(value.instanceId)
       || (value.tool === "PeerAgent" && (value.subagentProgress !== undefined || value.subagentQuestion !== undefined))
+      || (value.peerQuestion !== undefined && (value.tool !== "PeerAgent" || !isPeerProcessJobQuestion(value.peerQuestion)))
       || (value.subagentProgress !== undefined && !isProcessJobSubagentProgress(value.subagentProgress))
       || typeof value.childStillBusy !== "boolean" || (value.subagentQuestion !== undefined && !validSubagentJobQuestion(value.subagentQuestion))
-      : value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined || value.subagentProgress !== undefined
+      : value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined || value.subagentProgress !== undefined || value.peerQuestion !== undefined
         || (value.tool !== "Exec" && value.tool !== "Bash"))
     || !isProcessJobState(value.state)
     || !boundedString(value.summary, 8_000)

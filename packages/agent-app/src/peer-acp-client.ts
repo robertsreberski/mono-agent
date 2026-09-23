@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Readable, Transform, Writable } from "node:stream";
 
-import { client, methods, ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
+import { client, methods, ndJsonStream, PROTOCOL_VERSION, type CreateElicitationResponse } from "@agentclientprotocol/sdk";
 
 import { makePeerHandoff } from "./peer-provenance.js";
 
@@ -40,6 +40,14 @@ export interface PeerAcpTurn {
   /** Persist before sending the prompt; a failed persistence must not dispatch. */
   onSession(sessionId: string): Promise<void>;
   onActive?(cancel: () => Promise<void>): void;
+  onQuestion?(question: PeerAcpQuestion): Promise<CreateElicitationResponse>;
+}
+
+export interface PeerAcpQuestion {
+  readonly message: string;
+  readonly requestedSchema: Readonly<Record<string, unknown>>;
+  readonly sessionId: string;
+  readonly toolCallId: string;
 }
 
 function limitedFrames(): Transform {
@@ -65,6 +73,18 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
   // An async spawn failure otherwise emits an uncaught ChildProcess error.
   child.on("error", (error) => frames.destroy(error));
   const app = client({ name: "mono-agent-peer-client" });
+  let questionsSeen = 0;
+  app.onRequest(methods.client.elicitation.create, async ({ params }) => {
+    if (options.onQuestion === undefined || params.mode !== "form" || ++questionsSeen > 8
+      || !("sessionId" in params) || params.sessionId !== sessionId || typeof params.toolCallId !== "string"
+      || typeof params.message !== "string" || typeof params.requestedSchema !== "object"
+      || params.requestedSchema === null || Buffer.byteLength(JSON.stringify(params.requestedSchema)) > 8_192
+      || params.message.length > 2_000) {
+      throw new Error("ACP peer question is unsupported, mismatched, or oversized.");
+    }
+    return await options.onQuestion({ message: params.message, requestedSchema: params.requestedSchema as Readonly<Record<string, unknown>>,
+      sessionId: params.sessionId as string, toolCallId: params.toolCallId });
+  });
   let answer = "";
   let oversized = false;
   app.onNotification(methods.client.session.update, ({ params }) => {
@@ -105,7 +125,7 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
   try {
     if (options.signal.aborted) throw new Error("Peer turn was cancelled before startup.");
     const init = await connection.agent.request(methods.agent.initialize, {
-      protocolVersion: PROTOCOL_VERSION, clientCapabilities: {},
+      protocolVersion: PROTOCOL_VERSION, clientCapabilities: options.onQuestion === undefined ? {} : { elicitation: { form: {} } },
       clientInfo: { name: "mono-agent-peer-client", version: "1" },
     });
     const descriptor = init._meta?.["mono-agent"] as { sourceId?: unknown; workspace?: { path?: unknown }; compatible?: unknown } | undefined;

@@ -83,6 +83,12 @@ describe("process-job contracts", () => {
   it("parses a PeerAgent job without classifying it as a managed subagent", () => {
     const peer = { ...projection(), kind: "internal", tool: "PeerAgent", instanceId: "finance", childStillBusy: false };
     expect(parseProcessJobProjection(peer)).toEqual(peer);
+    const peerQuestion = { state: "awaiting_answer", questionId: "11111111-1111-4111-8111-111111111111",
+      peer: "finance", thread: "portfolio", message: "Proceed?", expiresAt: "2026-09-23T22:00:00.000Z",
+      requestedSchema: { type: "object", properties: { question_1: { type: "string" } } } };
+    expect(parseProcessJobProjection({ ...peer, peerQuestion })).toMatchObject({ peerQuestion });
+    expect(() => parseProcessJobProjection({ ...peer, peerQuestion: { ...peerQuestion, message: "x".repeat(2_001) } })).toThrow(TypeError);
+    expect(() => parseProcessJobProjection({ ...projection(), peerQuestion })).toThrow(TypeError);
     expect(() => parseProcessJobProjection({ ...peer, subagentQuestion: { question: "Owner approval?" } })).toThrow(TypeError);
     expect(() => parseProcessJobProjection({ ...peer, subagentProgress: {} })).toThrow(TypeError);
   });
