@@ -1908,7 +1908,7 @@ describe("validateMonoAgentFolder", () => {
     const placement = sectionById(report, "secret-placement");
     expect(placement.status).toBe("waiting");
     expect(placement.details).toEqual([
-      "[WARN] memory.embeddings.apiKey is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY).",
+      "[WARN] memory.embeddings.apiKey is a secret read from mono-agent.config.json — put it in an environment variable of your choice and set memory.embeddings.apiKeyEnv in JSON to that variable's name.",
     ]);
   });
 
@@ -1976,7 +1976,7 @@ describe("validateMonoAgentFolder", () => {
     expect(placement.details.join("\n")).not.toContain("ignored-secret-cron");
   });
 
-  it("warns non-fatally for removed memory env keys without requiring a memory path", async () => {
+  it("silently ignores stale core memory env keys without requiring a memory path", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
       runtime: { model: "openai-codex:gpt-5.5" },
@@ -1997,13 +1997,7 @@ describe("validateMonoAgentFolder", () => {
 
       expect(report.ok).toBe(true);
       expect(sectionById(report, "memory").status).toBe("disabled");
-      const placement = sectionById(report, "secret-placement");
-      expect(placement.status).toBe("waiting");
-      expect(placement.details).toEqual([
-        "[WARN] MONO_AGENT_MEMORY_REFLECTION_ENABLED is removed and ignored; use MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED or MONO_AGENT_MEMORY_CONSOLIDATION_CRON instead.",
-        "[WARN] MONO_AGENT_MEMORY_MIGRATION_CRON is removed and ignored; use MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED or MONO_AGENT_MEMORY_CONSOLIDATION_CRON instead.",
-      ]);
-      expect(placement.details.join("\n")).not.toContain("ignored-secret-cron");
+      expect(report.sections.find((section) => section.id === "secret-placement")).toBeUndefined();
     } finally {
       warn.mockRestore();
     }

@@ -573,7 +573,6 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
         value: embeddings.apiKey?.present === true ? "set" : "unset",
         jsonPresent: json.memory?.embeddings?.apiKey !== undefined,
         redacted: true,
-        envKey: "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
       }),
       toField({
         id: "memory.embeddings.apiKeyEnv",
@@ -1125,8 +1124,8 @@ export function buildMonoAgentConfigView(
 
 /**
  * Find advisory warnings for secret-marked fields whose resolved source is the
- * committed JSON config. The warning uses only stable field ids and env-var
- * names, never the secret value itself.
+ * committed JSON config. Core secrets use JSON apiKeyEnv references; adapter
+ * secrets retain their independently supported env names. No value is emitted.
  */
 export function findJsonSecretConfigWarnings(
   sections: readonly ConfigViewSection[],
@@ -1137,11 +1136,11 @@ export function findJsonSecretConfigWarnings(
       if (field.redacted !== true || field.source !== "json") {
         continue;
       }
-      const envVar = field.envKey;
-      if (envVar === undefined) {
-        continue;
+      if (field.id === "memory.embeddings.apiKey") {
+        warnings.push("[WARN] memory.embeddings.apiKey is a secret read from mono-agent.config.json — put it in an environment variable of your choice and set memory.embeddings.apiKeyEnv in JSON to that variable's name.");
+      } else if (field.envKey !== undefined) {
+        warnings.push(`[WARN] ${field.id} is a secret read from mono-agent.config.json — move it to .env (${field.envKey}).`);
       }
-      warnings.push(`[WARN] ${field.id} is a secret read from mono-agent.config.json — move it to .env (${envVar}).`);
     }
   }
   return warnings;
@@ -1149,42 +1148,16 @@ export function findJsonSecretConfigWarnings(
 
 export interface RemovedConfigWarningsInput {
   readonly json: MonoAgentConfigJson;
-  readonly env: Record<string, string | undefined>;
 }
 
-const REMOVED_MEMORY_ENV_KEYS = [
-  "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
-  "MONO_AGENT_MEMORY_REFLECTION_CRON",
-  "MONO_AGENT_MEMORY_MIGRATION_ENABLED",
-  "MONO_AGENT_MEMORY_MIGRATION_CRON",
-] as const;
-
-/**
- * Find advisory migration warnings for removed or one-release deprecated
- * config surfaces. Warnings mention only stable paths/names, never values.
- * Removed env keys still warn (migration diagnostics only — they never affect
- * the resolved config, which is JSON-only).
- */
+/** Find migration warnings only for retired JSON keys. Stale core env is ignored. */
 export function findRemovedConfigWarnings(input: RemovedConfigWarningsInput): readonly string[] {
   const warnings: string[] = [];
-  if (envHas(input.env, "MONO_AGENT_LOCAL_PROVIDERS_JSON")) {
-    warnings.push("[WARN] MONO_AGENT_LOCAL_PROVIDERS_JSON is deprecated; use MONO_AGENT_PROVIDERS_JSON with the provider-map shape instead.");
-  }
   if (input.json.memory?.reflection !== undefined) {
     warnings.push("[WARN] memory.reflection is removed and ignored; use memory.consolidation instead.");
   }
   if (input.json.memory?.migration !== undefined) {
     warnings.push("[WARN] memory.migration is removed and ignored; use memory.consolidation instead.");
   }
-  for (const key of REMOVED_MEMORY_ENV_KEYS) {
-    if (envHas(input.env, key)) {
-      warnings.push(`[WARN] ${key} is removed and ignored; use MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED or MONO_AGENT_MEMORY_CONSOLIDATION_CRON instead.`);
-    }
-  }
   return warnings;
-}
-
-function envHas(env: Record<string, string | undefined>, key: string): boolean {
-  const value = env[key];
-  return value !== undefined && value.trim().length > 0;
 }
