@@ -1,5 +1,7 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { WEB_STORAGE_SCHEMA_VERSION } from "../store-migrations.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebStore } from "../store.js";
 import { temporaryRoot } from "./helpers.js";
@@ -11,6 +13,23 @@ const deadline = "2026-09-23T10:02:00.000Z";
 const input = { sourceId: "one", generation: "generation-1", requestedAt, deadline, approximateRunningTurns: 2 };
 
 describe("durable restart operations", () => {
+  it("upgrades retained schema 35 with a private per-part binding table", async () => {
+    const root = await temporaryRoot(); roots.push(root);
+    const stateDir = join(root, "state");
+    const old = await WebStore.open({ stateDir });
+    const databasePath = old.paths.database;
+    old.close();
+    const raw = new DatabaseSync(databasePath);
+    try { raw.exec("DROP TABLE restart_proposal_bindings; PRAGMA user_version = 35;"); }
+    finally { raw.close(); }
+    const upgraded = await WebStore.open({ stateDir });
+    try {
+      expect(upgraded.restartProposalBinding("missing-message", "part")).toBeUndefined();
+      const db = new DatabaseSync(upgraded.paths.database);
+      try { expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(WEB_STORAGE_SCHEMA_VERSION); }
+      finally { db.close(); }
+    } finally { upgraded.close(); }
+  });
   it("atomically binds one sanitized reply part to its persisted thread source and originating process across reopen", async () => {
     const root = await temporaryRoot(); roots.push(root);
     const stateDir = join(root, "state");
