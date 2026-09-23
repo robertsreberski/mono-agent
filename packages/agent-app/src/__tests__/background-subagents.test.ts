@@ -1490,6 +1490,9 @@ it.each(["cooperative", "late"])("certified %s detached child timeout resumes re
     await vi.waitFor(async () => expect((await f.instances.get("helper"))?.recovery).toMatchObject({ reason: "timeout", continuity: "retained", certifiedTimeout: true }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     await vi.waitFor(async () => expect((await send.execute("inspect", { id: "helper", inspect: true })).details.recovery).toMatchObject({ status: "ready", resumable: true, recovery: { certifiedTimeout: true } }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     expect((await send.execute("already-idle", { id: "helper", stop: true })).details.stop).toMatchObject({ status: "already_idle", resumable: true, childStillBusy: false });
+    const settledRecord = (await f.instances.get("helper"))!;
+    expect(await f.service.internalController(origin, 0).stop!({ instanceId: "helper", instanceIncarnation: settledRecord.incarnation!, turnToken: first.details.jobId }))
+      .toMatchObject({ resumable: true, childStillBusy: false, disposition: "timeout" });
     if (mode === "late") {
       expect(publications.some((entry) => entry.released && entry.disposition?.certifiedTimeout)).toBe(true);
       expect(publications.filter((entry) => entry.released).every((entry) => entry.disposition?.certifiedTimeout === true)).toBe(true);
