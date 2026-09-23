@@ -143,8 +143,15 @@ settles with a typed `peerQuestion` in its projection and an exact-origin
 question wake; answering admits a **new continuation process job** bound to the
 original wake origin. That job wakes again with the final answer, failure, or
 next question. The first job's `peerQuestion.state` is durably updated to
-`answered`, `expired`, or `interrupted` as the parked question settles; no
-additional expiry wake is emitted. Neither the parked ACP prompt nor an answer
+`answered`, `expired`, or `interrupted` as the parked question settles (even if
+that happens just before the question result is persisted); no additional expiry
+wake is emitted. Slack and Telegram edit the existing card in place for that
+change and never post a new card for a retirement alone, for example after a
+restart. Cards show the question and one line per form field with its choices,
+never raw schema JSON; the web card keeps the raw form in a collapsed section.
+If the question result cannot be persisted, the parked peer turn is cancelled
+rather than left waiting for an answer nobody can see. Errors returned to the
+model or the peer never include local filesystem paths. Neither the parked ACP prompt nor an answer
 is replayed after restart; the owner-private thread record and its original
 question job card recover as interrupted on the next request (where the job
 still exists). A damaged owner-only peer thread is skipped
