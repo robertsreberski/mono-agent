@@ -179,6 +179,42 @@ function pushSubscriptionBody(endpoint = "https://push.example.test/send/opaque"
 }
 
 describe("web HTTP server", () => {
+  it("requires exact origin and a discovered keyed source for restart, then serves a small source-bound status", async () => {
+    let posts = 0;
+    const fallback = operatorFetch();
+    const { baseUrl } = await start({
+      discoverImpl: async () => [fakeDiscoveredAgent({ apiKey: "owner" })],
+      fetchImpl: (async (input, init) => {
+        if (String(input).endsWith("/v1/info")) return Response.json({ schema: 1, pid: 123, capabilities: { restart: { supported: true } } });
+        if (String(input).endsWith("/v1/restart")) {
+          posts++;
+          expect((init?.headers as Record<string, string>).authorization).toBe("Bearer owner");
+          return Response.json({ operation: { id: "agent-op" }, process: { pid: 123, startedAt: "2026-09-23T10:00:00.000Z" } }, { status: 202 });
+        }
+        return fallback(input, init);
+      }) as typeof fetch,
+    });
+    const path = `${baseUrl}/api/v1/agents/agent-one/restart`;
+    const body = "{}";
+    expect((await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body })).status).toBe(403);
+    expect((await fetch(path, { method: "POST", headers: { "content-type": "application/json", "X-Mono-Agent-Web-Origin": "https://evil.example" }, body })).status).toBe(403);
+    expect((await fetch(path, { method: "POST", headers: { "content-type": "application/json", "X-Mono-Agent-Web-Origin": baseUrl }, body: '{"target":"elsewhere"}' })).status).toBe(400);
+    expect(posts).toBe(0);
+    const result = await fetch(path, { method: "POST", headers: { "content-type": "application/json", "X-Mono-Agent-Web-Origin": baseUrl }, body });
+    expect(result.status).toBe(200);
+    const operation = await json(result);
+    expect(operation).toMatchObject({ sourceId: "agent-one", stage: "restarting" });
+    expect(operation).not.toHaveProperty("operationId");
+    expect(operation).not.toHaveProperty("generation");
+    const id = operation.id;
+    expect(typeof id).toBe("string");
+    const status = `${path}/${id as string}`;
+    expect((await fetch(status)).status).toBe(403);
+    expect((await fetch(status, { headers: { "X-Mono-Agent-Web-Origin": baseUrl } })).status).toBe(200);
+    expect((await fetch(`${baseUrl}/api/v1/agents/other/restart/${id as string}`, { headers: { "X-Mono-Agent-Web-Origin": baseUrl } })).status).toBe(404);
+    expect((await fetch(path, { method: "POST", headers: { "content-type": "application/json", "X-Mono-Agent-Web-Origin": baseUrl }, body })).status).toBe(200);
+    expect(posts).toBe(1);
+  });
   it("bounds manual compaction writes, rejects cross-origin requests and disables caching", async () => {
     const compacted: string[] = [];
     const { baseUrl } = await start({ fetchImpl: operatorFetch({ supportsManualCompaction: true,

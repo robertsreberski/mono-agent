@@ -252,6 +252,11 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
       "reason", "uncertain", "approximate_running_turns",
     ]);
     assertIndex(database, "restart_operations_one_active_source", ["source_id"]);
+    const index = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'restart_operations_one_active_source'")
+      .get() as { sql: string } | undefined;
+    if (!/\bUNIQUE\s+INDEX\b/iu.test(index?.sql ?? "") || !/\bWHERE\s+outcome\s+IS\s+NULL\b/iu.test(index?.sql ?? "")) {
+      throw new Error("Invalid active-restart uniqueness fence.");
+    }
   } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
@@ -388,6 +393,12 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ["projects_by_source", ["source_id", "archived_at", "updated_at", "id"]],
       ["threads_by_project", ["project_id", "archived_at", "updated_at", "id"]],
     ] as const) assertIndex(database, index, expected);
+    const restartIndex = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'restart_operations_one_active_source'")
+      .get() as { sql: string } | undefined;
+    if (!/\bUNIQUE\s+INDEX\b/iu.test(restartIndex?.sql ?? "")
+      || !/\bWHERE\s+outcome\s+IS\s+NULL\b/iu.test(restartIndex?.sql ?? "")) {
+      throw new Error("Invalid active-restart uniqueness fence.");
+    }
     for (const [table, from, target, onDelete] of [
       ["agent_run_overrides", "source_id", "agents", "CASCADE"],
       ["tags", "source_id", "agents", "CASCADE"],

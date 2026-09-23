@@ -300,6 +300,33 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     } catch (error) { next(error); }
   });
 
+  app.use("/api/v1/agents/:id/restart", (_req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    next();
+  });
+
+  app.post("/api/v1/agents/:id/restart", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      if (req.body === null || typeof req.body !== "object" || Array.isArray(req.body)
+        || Object.keys(req.body as object).length !== 0) {
+        throw new WebConsoleError("invalid_request", "Restart requires an empty JSON object.", 400);
+      }
+      void trackOperation(service.requestAgentRestart(pathParam(req.params.id)), activeOperations)
+        .then((operation) => res.status(200).json(operation)).catch(next);
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/agents/:id/restart/:operationId", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const sourceId = pathParam(req.params.id);
+      const operation = service.restartStatus(pathParam(req.params.operationId));
+      if (operation.sourceId !== sourceId) throw new WebConsoleError("restart_not_found", "Restart request not found.", 404);
+      res.json(operation);
+    } catch (error) { next(error); }
+  });
+
   app.use("/api/v1/agents/:id/provider-auth", (_req, res, next) => {
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
     next();

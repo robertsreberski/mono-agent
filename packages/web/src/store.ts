@@ -4663,6 +4663,11 @@ export class WebStore {
     return this.finishTurn(turnId, "interrupted", undefined, "interrupted", message, undefined);
   }
 
+  interruptTurnForRestart(turnId: string): StoredTurnFinish {
+    return this.finishTurn(turnId, "interrupted", undefined, "agent_restart_interrupted",
+      "The agent stopped during a requested restart.", undefined);
+  }
+
   recordCancelOrigin(turnId: string, origin: WebCancelOrigin): void {
     this.database.prepare("UPDATE turns SET cancel_origin = COALESCE(cancel_origin, ?) WHERE id = ? AND status = 'running'")
       .run(origin, turnId);
@@ -5985,7 +5990,9 @@ export class WebStore {
         : status === "cancelled"
           ? "The run was cancelled."
           : status === "interrupted"
-            ? "The run was interrupted when the web service stopped."
+            ? errorCode === "agent_restart_interrupted"
+              ? "The run was interrupted when the agent restarted."
+              : "The run was interrupted when the web service stopped."
             : errorMessage ?? "The run failed.";
       this.enqueueWebPushEventInTransaction({
         logicalKey: `turn:${turnId}:terminal`,

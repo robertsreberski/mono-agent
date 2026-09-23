@@ -48,27 +48,29 @@ describe("OperatorClient", () => {
   it("fails closed on missing/malformed restart capability and preserves verified keyed support", async () => {
     for (const capability of [undefined, null, {}, { supported: "true" }, { supported: true, reason: "unexpected" }, { supported: true, url: "http://elsewhere" }]) {
       const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "key",
-        fetchImpl: async () => Response.json({ schema: 1, capabilities: { restart: capability } }) });
+        fetchImpl: async () => Response.json({ schema: 1, pid: 123, capabilities: { restart: capability } }) });
       expect((await client.info()).restart.supported).toBe(false);
     }
     const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "key",
-      fetchImpl: async () => Response.json({ schema: 1, capabilities: { restart: { supported: true } } }) });
+      fetchImpl: async () => Response.json({ schema: 1, pid: 123, capabilities: { restart: { supported: true } } }) });
     expect((await client.info()).restart).toEqual({ supported: true });
   });
 
   it("bounds restart responses and treats unknown outcomes as ambiguous, not refused", async () => {
     const calls: string[] = [];
-    let response = Response.json({ operation: { id: "op-1" } }, { status: 202 });
+    let response = Response.json({ operation: { id: "op-1" }, process: { pid: 123, startedAt: "2026-09-23T10:00:00.000Z" } }, { status: 202 });
     const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "key",
       fetchImpl: (async (input, init) => { calls.push(String(input)); expect(init?.body).toBe("{}"); return response; }) as typeof fetch });
-    await expect(client.restart()).resolves.toEqual({ kind: "accepted", operationId: "op-1" });
+    await expect(client.restart()).resolves.toEqual({ kind: "accepted", operationId: "op-1", pid: 123 });
     response = Response.json({ operation: { id: "op-1" }, error: { code: "restart_in_progress" } }, { status: 409 });
     await expect(client.restart()).resolves.toEqual({ kind: "in_progress", operationId: "op-1" });
     response = Response.json({ error: { code: "restart_unsupported", message: "Restart=no" } }, { status: 409 });
     await expect(client.restart()).resolves.toEqual({ kind: "refused", reason: "Restart=no" });
+    response = Response.json({ error: { code: "restart_in_progress" } }, { status: 409 });
+    await expect(client.restart()).rejects.toMatchObject({ code: "restart_unconfirmed" });
     response = Response.json({ unexpected: true }, { status: 202 });
     await expect(client.restart()).rejects.toMatchObject({ code: "restart_unconfirmed" });
-    expect(calls).toEqual(Array(4).fill("http://127.0.0.1:1234/gui/v1/restart"));
+    expect(calls).toEqual(Array(5).fill("http://127.0.0.1:1234/gui/v1/restart"));
   });
   it("feature-detects v1 manual compaction and posts only the exact conversation", async () => {
     const calls: Array<{ url: string; body: unknown }> = [];

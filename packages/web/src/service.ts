@@ -58,6 +58,7 @@ import {
   type StartWebSubmissionInput,
   type WebAgentsChangedPayload,
   type WebAgentSummary,
+  type WebAgentRestartOperation,
   type WebAgentProvider,
   type WebAttachment,
   type WebBootstrap,
@@ -132,6 +133,7 @@ import {
   WEB_THREAD_PAGE_DEFAULT,
   notificationPushLogicalKey,
   type StoredAttachment,
+  type StoredRestartOperation,
   type StoredMessageWrite,
   type CronRunReconciliationResult,
   type StoredTurnExecution,
@@ -533,6 +535,9 @@ type HostWakeReceipt = NonNullable<DeliverWebNotificationResult["delivery"]>;
 interface AgentConnection {
   readonly client: OperatorClient;
   readonly info: OperatorInfo;
+  readonly pid: number | undefined;
+  /** Process-only identity, never the endpoint-plus-process connection digest. */
+  readonly processGeneration: string;
   /** Process plus endpoint identity; unlike a summary generation, an endpoint move retires this client. */
   readonly generation: string;
 }
@@ -648,6 +653,8 @@ export class WebService {
   private readonly replyAccessKey: Buffer;
   private readonly askWatches = new Map<string, AskWatch>();
   private connections = new Map<string, AgentConnection>();
+  /** Preserve the process binding of in-flight turn clients across discovery replacement. */
+  private readonly clientProcessGeneration = new WeakMap<OperatorClient, string>();
   /**
    * Source id -> the capability signature projected for it on the last
    * discovery pass. No projected capability is on the summary or in the store,
@@ -873,8 +880,14 @@ export class WebService {
     const providerAuth = connection?.info.supportsProviderAuth === true;
     const providerAuthChecks = connection?.info.supportsProviderAuthChecks === true;
     const providerUsage = connection?.info.supportsProviderUsage === true;
+    const restart = connection === undefined || agent.status === "offline"
+      ? { supported: false, reason: "Agent is offline." } as const
+      : connection.pid === undefined || connection.info.pid !== connection.pid
+        ? { supported: false, reason: "Agent process identity could not be verified." } as const
+        : connection.info.restart;
     return {
       ...agent,
+      restart,
       ...(providerAuth ? { supportsProviderAuth: true as const } : {}),
       ...(connection?.info.supportsManualCompaction === true ? { supportsManualCompaction: true as const } : {}),
       ...(providerUsage ? { supportsProviderUsage: true as const } : {}),
@@ -890,6 +903,7 @@ export class WebService {
   private projectedCapabilitySignature(agent: WebAgentSummary): string {
     const projected = this.decorateProjectedCapabilities(agent);
     return [
+      JSON.stringify(projected.restart),
       projected.supportsProviderUsage === true ? "providerUsage" : "",
       projected.supportsProviderUsageRefresh === true ? "providerUsageRefresh" : "",
       projected.supportsProviderAuth === true ? "providerAuth" : "",
@@ -1416,6 +1430,108 @@ export class WebService {
     this.emitThread("thread.changed", { threadId: resolved, removed: true });
     this.emitThread("threads.changed", { threadId: resolved, removed: true });
     if (projectId !== null) this.refreshProject(projectId);
+  }
+
+  /** Shared entry point for settings and (later) persisted reply-part clicks. */
+  async requestAgentRestart(sourceId: string): Promise<WebAgentRestartOperation> {
+    const agent = this.store.getAgent(sourceId);
+    if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const active = this.store.activeRestartOperation(sourceId);
+    if (active !== undefined) {
+      const current = this.restartStatus(active.id);
+      if (current.outcome === undefined) return current;
+    }
+    const connection = this.connections.get(sourceId);
+    if (connection === undefined || agent.status === "offline" || agent.generation !== connection.processGeneration) {
+      throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    }
+    if (connection.pid === undefined || connection.info.pid !== connection.pid) {
+      throw new WebConsoleError("restart_unsupported", "Agent process identity could not be verified.", 409);
+    }
+    if (connection.info.restart.supported !== true) {
+      throw new WebConsoleError("restart_unsupported", connection.info.restart.reason ?? "Agent restart is unavailable.", 409);
+    }
+    // Probe support again before committing the web-owned pending marker.
+    // A policy change after advertisement must refuse without forwarding.
+    let verified: OperatorInfo;
+    try {
+      verified = await connection.client.info(AbortSignal.timeout(INFO_TIMEOUT_MS));
+    } catch {
+      throw new WebConsoleError("restart_unavailable", "Could not verify the agent's restart support.", 409);
+    }
+    if (this.connections.get(sourceId) !== connection
+      || this.store.getAgent(sourceId)?.generation !== connection.processGeneration) {
+      throw new WebConsoleError("agent_generation_changed", "This agent changed during restart verification.", 409);
+    }
+    if (verified.restart.supported !== true || verified.pid !== connection.pid) {
+      throw new WebConsoleError("restart_unsupported", verified.restart.reason ?? "Agent process identity changed.", 409);
+    }
+    const now = (this.options.clock ?? (() => new Date()))();
+    const created = this.store.createRestartOperation({
+      sourceId, generation: connection.processGeneration, requestedAt: now.toISOString(),
+      deadline: new Date(now.getTime() + 120_000).toISOString(),
+      approximateRunningTurns: this.store.listActiveThreads().runningCounts[sourceId] ?? 0,
+    });
+    if (!created.created) return this.restartStatus(created.operation.id);
+    const id = created.operation.id;
+    // No await between the durable operation and the adapter POST. The
+    // cancellation frame can arrive before we parse the POST's 202.
+    try {
+      const receipt = await connection.client.restart(AbortSignal.timeout(10_000));
+      if (receipt.kind === "refused") {
+        this.store.updateRestartOperation(id, { outcome: "failure", reason: receipt.reason });
+      } else if (receipt.kind === "accepted" && receipt.pid !== connection.pid) {
+        this.store.updateRestartOperation(id, { uncertain: true,
+          reason: "The responding agent process did not match the discovered agent." });
+      } else {
+        this.store.updateRestartOperation(id, { stage: "restarting", operationId: receipt.operationId });
+      }
+    } catch {
+      this.store.updateRestartOperation(id, {
+        uncertain: true, reason: "The restart request was sent, but acceptance was not confirmed.",
+      });
+    }
+    return this.restartStatus(id);
+  }
+
+  /** Pollable minimal DTO. Success is only a new ready process on the same source id. */
+  restartStatus(id: string): WebAgentRestartOperation {
+    const operation = this.store.restartOperation(id);
+    if (operation === undefined) throw new WebConsoleError("restart_not_found", "Restart request not found.", 404);
+    this.reconcileRestartOperation(operation);
+    const current = this.store.restartOperation(id)!;
+    return {
+      id: current.id, sourceId: current.sourceId, requestedAt: current.requestedAt,
+      deadline: current.deadline, stage: current.stage,
+      ...(current.outcome === undefined ? {} : { outcome: current.outcome }),
+      ...(current.reason === undefined ? {} : { reason: current.reason }),
+      ...(current.approximateRunningTurns === undefined ? {} : { approximateRunningTurns: current.approximateRunningTurns }),
+    };
+  }
+
+  private reconcilePendingRestartOperations(): void {
+    for (const operation of this.store.pendingRestartOperations()) this.reconcileRestartOperation(operation);
+  }
+
+  private reconcileRestartOperation(operation: StoredRestartOperation): void {
+    if (operation.outcome !== undefined) return;
+    const now = (this.options.clock ?? (() => new Date()))().getTime();
+    if (now >= new Date(operation.deadline).getTime()) {
+      this.store.updateRestartOperation(operation.id, { outcome: "not_confirmed", reason: "Agent restart was not confirmed within two minutes." });
+      return;
+    }
+    const agent = this.store.getAgent(operation.sourceId);
+    const connection = this.connections.get(operation.sourceId);
+    if (agent?.generation === undefined || agent.generation === operation.generation
+      || agent.status === "offline" || connection === undefined || connection.processGeneration !== agent.generation) return;
+    // nextConnections contains only successful /v1/info probes; an endpoint
+    // move with the same PROCESS digest cannot pass this comparison.
+    if (operation.operationId !== undefined) {
+      this.store.updateRestartOperation(operation.id, { stage: "back_online", outcome: "success" });
+    } else if (operation.uncertain) {
+      this.store.updateRestartOperation(operation.id, { stage: "back_online", outcome: "not_confirmed",
+        reason: "A new process is online, but acceptance of the restart request was not confirmed." });
+    }
   }
 
   patchAgent(sourceId: string, patch: PatchWebAgentInput): WebAgentSummary {
@@ -2439,15 +2555,27 @@ export class WebService {
       } catch (flushError) {
         failure = flushError;
       }
-      const cancelled = isChannelUserCancelReason(controller.signal.reason)
-        || controller.signal.reason instanceof WebTurnCancellation
-        || (error as { cancelled?: unknown }).cancelled === true;
+      const explicitCancellation = this.store.turnCancelOrigin(started.turnId) !== undefined
+        || isChannelUserCancelReason(controller.signal.reason)
+        || controller.signal.reason instanceof WebTurnCancellation;
+      const cancelled = explicitCancellation || (error as { cancelled?: unknown }).cancelled === true;
       const code = errorCode(failure);
-      const detail = this.store.failTurn(started.turnId, {
-        message: cancelled ? "Turn cancelled." : errorMessage(failure),
-        ...(code === undefined ? {} : { code }),
-        cancelled,
-      });
+      const pendingRestart = this.store.activeRestartOperation(started.thread.sourceId);
+      // The pending marker was committed before POST. The shutdown frame can
+      // therefore arrive before the response's 202 is parsed (N3); an actual
+      // user cancel or diagnosed provider failure keeps its own classification.
+      const restartSevered = !explicitCancellation
+        && pendingRestart !== undefined
+        && pendingRestart.generation === this.clientProcessGeneration.get(client)
+        && (this.options.clock ?? (() => new Date()))().getTime() <= new Date(pendingRestart.deadline).getTime()
+        && (code === undefined || code === "cancelled" || code === "agent_unreachable");
+      const detail = restartSevered
+        ? this.store.interruptTurnForRestart(started.turnId)
+        : this.store.failTurn(started.turnId, {
+            message: cancelled ? "Turn cancelled." : errorMessage(failure),
+            ...(code === undefined ? {} : { code }),
+            cancelled,
+          });
       this.emitMessageWrite(started.thread.id, detail.write);
       this.emit("turn.changed", started.thread.id, { turn: detail.thread.runState });
       this.emitThread("thread.changed", { thread: detail.thread });
@@ -3237,6 +3365,7 @@ export class WebService {
       // clients disappear in the same pass and are announced independently of
       // whether the retained summary itself changed.
       this.connections = new Map();
+      this.reconcilePendingRestartOperations();
       const projected = new Map(
         this.store.listAgents().map((summary) => [
           summary.sourceId,
@@ -3297,7 +3426,8 @@ export class WebService {
         // so the next failure starts a fresh count rather than resuming one
         // from a stall that this pass has just disproved.
         this.probeFailures.delete(agent.source.sourceId);
-        nextConnections.set(agent.source.sourceId, { client, info, generation: connectionGeneration });
+        nextConnections.set(agent.source.sourceId, { client, info, pid: agent.source.pid, generation: connectionGeneration, processGeneration: generation });
+        this.clientProcessGeneration.set(client, generation);
         this.seedModelCatalogFromOptions(agent.source.sourceId, generation, info.modelOptions);
         await this.restorePersistedModelAdmission(
           client,
@@ -3345,6 +3475,7 @@ export class WebService {
     const previousConnections = this.connections;
     this.connections = nextConnections;
     const agentsChanged = this.store.replaceAgents(summaries);
+    this.reconcilePendingRestartOperations();
     // Usable provider authentication comes from the live connection, so when it
     // turns on or off nothing on the discovery summary moves and `replaceAgents`
     // is right to say so. An operator can start or stop advertising

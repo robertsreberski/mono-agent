@@ -136,13 +136,15 @@ export interface OperatorRestartSupport {
 }
 
 export type OperatorRestartResponse =
-  | { readonly kind: "accepted" | "in_progress"; readonly operationId: string }
+  | { readonly kind: "accepted"; readonly operationId: string; readonly pid: number }
+  | { readonly kind: "in_progress"; readonly operationId: string }
   | { readonly kind: "refused"; readonly reason: string };
 
 export interface OperatorInfo {
   /** Always fail closed on older or malformed producers. */
   readonly restart: OperatorRestartSupport;
   readonly schema: number;
+  readonly pid?: number;
   readonly label?: string;
   readonly model?: string;
   readonly effort?: string;
@@ -264,9 +266,12 @@ export class OperatorClient {
     const contextImport = parseContextImportCapability(capabilities?.contextImport);
     return {
       schema: body.schema,
+      ...(Number.isSafeInteger(body.pid) && (body.pid as number) > 0 ? { pid: body.pid as number } : {}),
       restart: this.apiKey === undefined
         ? { supported: false, reason: "Agent restart requires a configured operator API key." }
-        : parseRestartSupport(capabilities?.restart),
+        : !Number.isSafeInteger(body.pid) || (body.pid as number) <= 0
+          ? { supported: false, reason: "Agent restart needs a verified process identity." }
+          : parseRestartSupport(capabilities?.restart),
       ...(typeof body.label === "string" ? { label: body.label } : {}),
       ...(typeof body.model === "string" ? { model: body.model } : {}),
       ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
@@ -318,17 +323,23 @@ export class OperatorClient {
     }
     const operation = record(body?.operation);
     const operationId = operation?.id;
+    const process = record(body?.process);
     if (response.status === 202 && typeof operationId === "string" && operationId.length > 0
-      && Buffer.byteLength(operationId, "utf8") <= 128) {
-      return { kind: "accepted", operationId };
+      && Buffer.byteLength(operationId, "utf8") <= 128
+      && Number.isSafeInteger(process?.pid) && (process?.pid as number) > 0
+      && typeof process?.startedAt === "string" && Number.isFinite(Date.parse(process.startedAt))) {
+      return { kind: "accepted", operationId, pid: process.pid as number };
     }
     const error = record(body?.error);
-    if (response.status === 409 && error?.code === "restart_in_progress"
-      && typeof operationId === "string" && operationId.length > 0 && Buffer.byteLength(operationId, "utf8") <= 128) {
-      return { kind: "in_progress", operationId };
+    if (response.status === 409 && error?.code === "restart_in_progress") {
+      if (typeof operationId === "string" && operationId.length > 0 && Buffer.byteLength(operationId, "utf8") <= 128) {
+        return { kind: "in_progress", operationId };
+      }
+      throw new WebConsoleError("restart_unconfirmed", "The in-progress restart ID was not confirmed.", 502);
     }
-    if ([400, 401, 403, 409].includes(response.status) && typeof error?.code === "string") {
-      return { kind: "refused", reason: boundedRestartReason(error.message) };
+    if ([400, 401, 403].includes(response.status)
+      || (response.status === 409 && error?.code === "restart_unsupported")) {
+      return { kind: "refused", reason: boundedRestartReason(error?.message) };
     }
     throw new WebConsoleError("restart_unconfirmed", "The restart response could not be confirmed.", 502);
   }
