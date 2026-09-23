@@ -43,9 +43,13 @@ export function createSupervisedRestartAuthority(
   refresh();
   return {
     async verify() {
-      if (cached !== undefined && cached.expiresAt > Date.now()) return cached.verdict;
-      refresh();
-      return PENDING;
+      // Stale-while-revalidate: an expired verdict is still served while one
+      // bounded refresh runs, so the advertised capability does not flip to
+      // "pending" every TTL. Only a worker that has never finished an
+      // inspection reports pending. Acceptance never relies on this path;
+      // POST uses verifyFresh().
+      if (cached === undefined || cached.expiresAt <= Date.now()) refresh();
+      return cached?.verdict ?? PENDING;
     },
     async verifyFresh() {
       const ticket = ++revision;

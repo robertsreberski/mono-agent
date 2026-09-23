@@ -91,6 +91,38 @@ describe("verifySupervisedRestart", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("keeps serving an expired verdict while one refresh runs instead of flipping to pending", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      let release: (() => void) | undefined;
+      const supported = [
+        "LoadState=loaded", "ActiveState=active", "MainPID=777",
+        `FragmentPath=/home/u/.config/systemd/user/${EXPECTED_UNIT}`,
+        `ExecStart=argv[]=/node /cli start --foreground --config ${CONFIG_PATH} --expected-background-snapshot proof`,
+        "Restart=on-failure",
+      ].join("\n");
+      const authority = createSupervisedRestartAuthority({ configPath: CONFIG_PATH, startedAt: "boot-1",
+        platform: "linux", pid: 777, systemdRun: () => {
+          calls += 1;
+          // First (startup) inspection answers at once; the refresh after
+          // expiry is held open so the test observes the in-between state.
+          if (calls === 1) return Promise.resolve({ code: 0, stderr: "", stdout: supported });
+          return new Promise((resolve) => { release = () => resolve({ code: 0, stderr: "", stdout: supported }); });
+        } }, createSupervisedRestartLatch());
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(authority.verify()).resolves.toEqual({ supported: true });
+      await vi.advanceTimersByTimeAsync(30_001);
+      // Expired: must still report the last verdict, not "pending", and start one refresh.
+      await expect(authority.verify()).resolves.toEqual({ supported: true });
+      await expect(authority.verify()).resolves.toEqual({ supported: true });
+      expect(calls).toBe(2);
+      release?.();
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(authority.verify()).resolves.toEqual({ supported: true });
+    } finally { vi.useRealTimers(); }
+  });
+
   it("returns the existing id to a concurrent verified request even if its token is not the latest", async () => {
     const latch = createSupervisedRestartLatch();
     const authority = createSupervisedRestartAuthority({ configPath: CONFIG_PATH, startedAt: "boot-1",
