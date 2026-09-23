@@ -179,6 +179,24 @@ function pushSubscriptionBody(endpoint = "https://push.example.test/send/opaque"
 }
 
 describe("web HTTP server", () => {
+  it("bounds manual compaction writes, rejects cross-origin requests and disables caching", async () => {
+    const compacted: string[] = [];
+    const { baseUrl } = await start({ fetchImpl: operatorFetch({ supportsManualCompaction: true,
+      onCompact: (id) => { compacted.push(id); return { status: "succeeded", trigger: "manual", operationId: "manual-1" }; } }) });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const url = `${baseUrl}/api/v1/threads/${encodeURIComponent(threadId)}/compact`;
+    const headers = { "content-type": "application/json" };
+    const invalid = await fetch(url, { method: "POST", headers, body: '{"unexpected":true}' });
+    expect(invalid.status).toBe(400);
+    const hostile = await fetch(url, { method: "POST", headers: { ...headers, origin: "https://evil.example" }, body: "{}" });
+    expect(hostile.status).toBeGreaterThanOrEqual(400);
+    expect(compacted).toEqual([]);
+    const response = await fetch(url, { method: "POST", headers, body: "{}" });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(await json(response)).toMatchObject({ status: "succeeded", trigger: "manual" });
+    expect(compacted).toHaveLength(1);
+  });
   it("persists, applies, validates, and reverts web-only new-conversation defaults", async () => {
     const { baseUrl } = await start({ host: "127.0.0.1" });
     const mutation = { "content-type": "application/json", origin: baseUrl };

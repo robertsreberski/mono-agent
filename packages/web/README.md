@@ -86,7 +86,7 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   conversation-level stack after the transcript. Queued, starting, and running
   cards stay visible by default; terminal cards remain mounted behind
   expandable history so status counts and live transitions stay current.
-  When a loaded launching `Exec`/`Bash`/`Agent`/`AgentSend` call has its exact persisted machine
+  When a loaded launching `Exec`/`Bash`/`Agent`/`AgentManage` call has its exact persisted machine
   receipt, that response's Activity shows one start row for the launch: the
   launch call folds into the `<Tool> job started` row, which carries the launch
   arguments behind its disclosure alongside the job facts. The
@@ -106,13 +106,17 @@ suggestions without stopping a run; use Stop response (or `/stop`) deliberately.
 Mid-turn plain-text sends use the active turn’s live-input admission path.
 
 On iPhone and iPad the installed console paints the band behind the status bar
-itself (`apple-mobile-web-app-status-bar-style: black-translucent`), so that
-band follows the active theme instead of a system strip whose colour iOS samples
-once and caches until the app is relaunched. iOS reads that choice when the app
-is added to the Home Screen: a console installed before this change keeps its
-old status band until it is removed and added again. Status-bar glyph contrast
-follows the system appearance, which is what the console’s light and dark themes
-follow as well.
+itself (`apple-mobile-web-app-status-bar-style: black-translucent`). A fixed,
+full-width, header-coloured band covers the safe-area inset: WebKit's
+`LocalFrameView::fixedContainerEdges` probes the top midpoint at y=4 for a
+fixed/sticky box spanning at least 90% of the viewport. Recognising this edge
+hides the installed console's soft scroll-edge blur (or colours the hard pocket
+on iPad), without covering header content or using layout space. The band
+follows the active theme instead of a system strip whose colour iOS samples
+once and caches until relaunch. iOS reads the status-bar style when the app is
+added to the Home Screen: an older install must be removed and added again.
+Status-bar glyph contrast follows the system appearance, which the console’s
+light and dark themes follow as well.
 
 Cancellation requests accept an optional `origin` (`user-stop`,
 `client-disconnect`, `client-reconnect`, `service-shutdown`, or `api`) on
@@ -305,7 +309,13 @@ tokens and conversation cost. Running turns are labeled `Updating`; failed
 turns and model changes are `Last measured`. A running or successful compaction
 suppresses the older number until the next exact snapshot, while legacy and
 unsupported-runtime threads show `Context —` instead of deriving a percentage
-from aggregate work.
+from aggregate work. On capable connected agents, **Compact** in the context
+usage popup summarizes the selected idle conversation without a chat turn;
+it is disabled while running and reports approximate before/after tokens,
+no useful reduction, or an error. It also works after a cold restart by
+resuming or seeding the agent's provider session. The next exact context
+percentage awaits a fresh provider measurement; this action does not change
+automatic compaction thresholds.
 Structured reasoning, routine tools, process-job lifecycle evidence, and one
 update-in-place row per compaction share the stream-aware Activity disclosure,
 which collapses at every terminal message state without reordering answer

@@ -281,7 +281,7 @@
       ]
     },
     "subagents": {
-      "description": "Subagent profiles the Agent tool can deploy, plus its caps. instances enables conversation-scoped persistent children when subagents are enabled and effective tool policy allows both Agent and AgentSend: root defaults to <artifacts.dir>/../subagents, maxPerConversation is 1–32 (default 8), idleTtlMs is 60000–604800000 (default 86400000), and maxTurns is 1–500 (default 60). Agent persist:true creates a child; AgentSend resumes or closes it. Persistent children automatically receive AskParent unless global/profile policy denies it; it durably saves a question and returns successful awaiting_reply. Answer through ordinary AgentSend in the same session. Disabling instances preserves stateless Agent. commandTimeoutMs (positive integer milliseconds, default 1800000) is the foreground Bash/Exec ceiling for detached persistent children, clamped to their process job's remaining runtime; interactive turns and foreground children keep the 120 s default. models is an operator allow-list of model reference strings or {name?, model} objects; an omitted name uses the canonical reference. Explicit names must be lowercase kebab-case (1-40 characters), unique, and distinct from profile names and general-purpose; duplicate models are rejected. Agent accepts model from that list and effort on every call shape. Each value resolves as call-time override, profile pin, parent effective value, then base/runtime default. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected. The agent may also author a specialized subagent at call time unless inline.enabled is false; inline.allowedTools caps what an authored subagent may request, defaulting to the parent agent's own built-ins. maxConcurrent is a ceiling, not a scheduling guarantee: Pi 0.85 serializes all tool calls when any stateful/mutating or MCP tool is offered.",
+      "description": "Subagent profiles the Agent tool can deploy, plus its caps. instances enables conversation-scoped persistent children when subagents are enabled and effective tool policy allows both Agent and AgentManage: root defaults to <artifacts.dir>/../subagents, maxPerConversation is 1–32 (default 8), idleTtlMs is 60000–604800000 (default 86400000), and maxTurns is 1–500 (default 60). Agent persist:true creates a child; AgentManage resumes or closes it. Persistent children automatically receive AskParent unless global/profile policy denies it; it durably saves a question and returns successful awaiting_reply. Answer through ordinary AgentManage in the same session. Disabling instances preserves stateless Agent. commandTimeoutMs (positive integer milliseconds, default 1800000) is the foreground Bash/Exec ceiling for detached persistent children, clamped to their process job's remaining runtime; interactive turns and foreground children keep the 120 s default. models is an operator allow-list of model reference strings or {name?, model} objects; an omitted name uses the canonical reference. Explicit names must be lowercase kebab-case (1-40 characters), unique, and distinct from profile names and general-purpose; duplicate models are rejected. Agent accepts model from that list and effort on every call shape. Each value resolves as call-time override, profile pin, parent effective value, then base/runtime default. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected. The agent may also author a specialized subagent at call time unless inline.enabled is false; inline.allowedTools caps what an authored subagent may request, defaulting to the parent agent's own built-ins. maxConcurrent is a ceiling, not a scheduling guarantee: Pi 0.85 serializes all tool calls when any stateful/mutating or MCP tool is offered.",
       "examples": [
         {
           "enabled": true,
@@ -1164,7 +1164,7 @@
                         "duckduckgo",
                         "startpage",
                         "parallel",
-                        "hound"
+                        "local"
                       ]
                     },
                     {
@@ -1181,7 +1181,7 @@
                           "duckduckgo",
                           "startpage",
                           "parallel",
-                          "hound"
+                          "local"
                         ]
                       }
                     }
@@ -1293,7 +1293,7 @@
                   }
                 },
                 "provider": {
-                  "description": "WebFetch provider name or ordered chain: local (default), parallel, hound. Parallel cannot serve raw format, custom headers, or browser rendering. Hound is built-in HTTP-only local acquisition/extraction with proactive robots checks; it supports raw format and allowed headers but not browser rendering.",
+                  "description": "WebFetch provider name or ordered chain: local (default), parallel. Parallel cannot serve raw format, custom headers, or browser rendering. Local is built-in HTTP static acquisition/extraction; it enforces sandbox network policy but performs no robots.txt preflight. It supports raw format and allowed headers; browser rendering follows tools.web.fetch.render.",
                   "examples": [
                     "local"
                   ],
@@ -1307,8 +1307,7 @@
                       "type": "string",
                       "enum": [
                         "local",
-                        "parallel",
-                        "hound"
+                        "parallel"
                       ]
                     },
                     {
@@ -1319,8 +1318,7 @@
                         "type": "string",
                         "enum": [
                           "local",
-                          "parallel",
-                          "hound"
+                          "parallel"
                         ]
                       }
                     }

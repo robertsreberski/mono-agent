@@ -43,6 +43,8 @@ import {
   MEMORY_LLM_PROVIDERS,
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
+  renamedToolMessage,
+  renamedToolName,
 } from "./enums.js";
 import type { MonoAgentConfigJson } from "./json-source.js";
 import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryWriteMode, MonoAgentConfig, PiNativeProviderConfig, RedactedMonoAgentConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentModelChoice, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
@@ -141,11 +143,11 @@ export const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
   },
   {
     path: "tools.web.search.hound.endpoint",
-    message: "`tools.web.search.hound.endpoint` was removed: Hound is built in. Delete the endpoint setting; no external Hound service is contacted.",
+    message: "`tools.web.search.hound.endpoint` was removed: local search is built in. Delete the endpoint setting; no external service is contacted.",
   },
   {
     path: "tools.web.fetch.hound.endpoint",
-    message: "`tools.web.fetch.hound.endpoint` was removed: Hound is built in. Delete the endpoint setting; no external Hound service is contacted.",
+    message: "`tools.web.fetch.hound.endpoint` was removed: local fetch is built in. Delete the endpoint setting; no external service is contacted.",
   },
   {
     path: "runtime.executionMode",
@@ -450,8 +452,9 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
   const fetchJson = jsonContainer(webJson?.fetch);
   const webSearchBackend = readWebProviderSelection<WebSearchBackend>(
     searchJson?.backend, "tools.web.search.backend",
-    ["searxng", "ollama", "codex", "keyless", "duckduckgo", "startpage", "parallel", "hound"],
+    ["searxng", "ollama", "codex", "keyless", "duckduckgo", "startpage", "parallel", "local"],
     ["parallel", "ollama"], searchAutoRepair(searchJson),
+    { hound: "`tools.web.search.backend` value `hound` was renamed to `local`; use `local` instead." },
   );
   const legacyWebSearchEndpoint = readWebSearchEndpoint(
     jsonString(searchJson?.endpoint, "tools.web.search.endpoint"),
@@ -490,8 +493,9 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
   }
   const webSearchParallel = readParallelWebConfig(searchJson?.parallel, "tools.web.search.parallel.apiKeyEnv");
   const webFetchParallel = readParallelWebConfig(fetchJson?.parallel, "tools.web.fetch.parallel.apiKeyEnv");
-  const webFetchProvider = readWebProviderSelection<"local" | "parallel" | "hound">(
-    fetchJson?.provider, "tools.web.fetch.provider", ["local", "parallel", "hound"], "local",
+  const webFetchProvider = readWebProviderSelection<"local" | "parallel">(
+    fetchJson?.provider, "tools.web.fetch.provider", ["local", "parallel"], "local", undefined,
+    { hound: "`tools.web.fetch.provider` value `hound` was renamed to `local`, which is not equivalent: `local` uses the standard fetch retry policy, performs no robots preflight, and honors the configured render mode instead of forcing document-only/render-never. Update the selection to `local` only if that posture is acceptable." },
   );
   const webFetchRender = jsonChoice<WebFetchRenderMode>(
     jsonContainer(webJson?.fetch)?.render,
@@ -904,7 +908,7 @@ function readSubagentsConfig(
     ...(record.maxPerTurn === undefined ? {} : { maxPerTurn: readSubagentInteger(record.maxPerTurn, "maxPerTurn", 1, 200) }),
     ...(record.timeoutMs === undefined ? {} : { timeoutMs: readSubagentInteger(record.timeoutMs, "timeoutMs", 1_000, 3_600_000) }),
     ...(record.commandTimeoutMs === undefined ? {} : { commandTimeoutMs: readSubagentInteger(record.commandTimeoutMs, "commandTimeoutMs", 1, Number.MAX_SAFE_INTEGER) }),
-    ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, "maxTurns", 1, 200) }),
+    ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, "maxTurns", 1, 400) }),
     ...(definitions === undefined ? {} : { definitions }),
     ...(models === undefined ? {} : { models }),
     ...(record.inline === undefined ? {} : { inline: readInlineSubagentsConfig(record.inline) }),
@@ -991,8 +995,8 @@ function readInlineSubagentsConfig(value: unknown): MonoAgentInlineSubagentsConf
   if (allowedTools?.includes(ALLOW_ALL_TOOLS)) {
     throw invalidSubagents(`inline allowedTools cannot use the ${ALLOW_ALL_TOOLS} wildcard; list the tools it needs.`);
   }
-  if (allowedTools?.some((tool) => tool === "Agent" || tool === "AgentSend")) {
-    throw invalidSubagents("inline allowedTools cannot allow Agent or AgentSend; subagents never spawn subagents or continue other instances.");
+  if (allowedTools?.some((tool) => tool === "Agent" || tool === "AgentManage")) {
+    throw invalidSubagents("inline allowedTools cannot allow Agent or AgentManage; subagents never spawn subagents or continue other instances.");
   }
   return {
     ...(record.enabled === undefined ? {} : { enabled: readSubagentBoolean(record.enabled, "inline.enabled") }),
@@ -1042,8 +1046,8 @@ function readSubagentDefinitions(
     if (allowedTools?.includes(ALLOW_ALL_TOOLS)) {
       throw invalidSubagents(`definition "${name}" cannot use the ${ALLOW_ALL_TOOLS} wildcard; list the tools it needs.`);
     }
-    if (allowedTools?.some((tool) => tool === "Agent" || tool === "AgentSend")) {
-      throw invalidSubagents(`definition "${name}" cannot allow Agent or AgentSend; subagents never spawn subagents or continue other instances.`);
+    if (allowedTools?.some((tool) => tool === "Agent" || tool === "AgentManage")) {
+      throw invalidSubagents(`definition "${name}" cannot allow Agent or AgentManage; subagents never spawn subagents or continue other instances.`);
     }
     return {
       name,
@@ -1057,7 +1061,7 @@ function readSubagentDefinitions(
       ...(allowedTools === undefined ? {} : { allowedTools }),
       ...(disallowedTools === undefined ? {} : { disallowedTools }),
       ...(mcpServers === undefined ? {} : { mcpServers }),
-      ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, `definition "${name}" maxTurns`, 1, 200) }),
+      ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, `definition "${name}" maxTurns`, 1, 400) }),
       ...(record.timeoutMs === undefined ? {} : { timeoutMs: readSubagentInteger(record.timeoutMs, `definition "${name}" timeoutMs`, 1_000, 3_600_000) }),
     } satisfies MonoAgentSubagentConfig;
   });
@@ -1087,7 +1091,16 @@ function readSubagentTools(value: unknown, subject: string, field: string): read
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || entry.trim().length === 0)) {
     throw invalidSubagents(`${subject} ${field} must be an array of non-empty strings.`);
   }
-  return value.map((entry) => String(entry).trim());
+  const tools = value.map((entry) => String(entry).trim());
+  if (field !== "mcpServers") {
+    // A renamed tool has no alias, so a stale entry would grant or deny
+    // nothing. Name the migration instead of accepting it silently.
+    const retired = tools.find((tool) => renamedToolName(tool) !== undefined);
+    if (retired !== undefined) {
+      throw invalidSubagents(renamedToolMessage(retired, `${subject} ${field}`));
+    }
+  }
+  return tools;
 }
 
 function readSubagentBoolean(value: unknown, field: string): boolean {
@@ -2402,10 +2415,12 @@ function searchAutoRepair(search: Record<string, unknown> | undefined): readonly
 
 function readWebProviderSelection<T extends string>(
   value: unknown, path: string, names: readonly T[], fallback: T | readonly T[],
-  autoRepair?: readonly string[],
+  autoRepair?: readonly string[], renamed?: Record<string, string>,
 ): T | readonly T[] {
   if (value === undefined) return fallback;
   if (Array.isArray(value)) {
+    const retired = value.find((name) => typeof name === "string" && renamed && Object.hasOwn(renamed, name));
+    if (typeof retired === "string") throw new MonoAgentConfigError("invalid_json", renamed![retired]!, { path });
     if (value.length === 0 || value.some((name) => typeof name !== "string" || !names.includes(name as T))) {
       throw new MonoAgentConfigError("invalid_json", `${path} must be one provider or a non-empty ordered chain of: ${names.join(", ")}.`, { path });
     }
@@ -2424,6 +2439,10 @@ function readWebProviderSelection<T extends string>(
   try { selection = trimmed.startsWith("[") ? JSON.parse(trimmed) : trimmed.includes(",") ? trimmed.split(",").map((name) => name.trim()) : trimmed; }
   catch { selection = null; }
   const list = Array.isArray(selection) ? selection : [selection];
+  if (renamed) {
+    const retired = list.find((name) => typeof name === "string" && Object.hasOwn(renamed, name));
+    if (typeof retired === "string") throw new MonoAgentConfigError("invalid_json", renamed[retired]!, { path });
+  }
   if (!list.length || list.some((name) => typeof name !== "string" || !names.includes(name as T))) {
     throw new MonoAgentConfigError("invalid_json", `${path} must be one provider or a non-empty ordered chain of: ${names.join(", ")}.`, { path });
   }

@@ -244,7 +244,7 @@ describe("tui channel driver — info composition", () => {
         schema: "mono-agent.acp-source.v1",
         bridgeVersion: 1,
         protocolVersion: 1,
-        installedVersion: "0.22.0",
+        installedVersion: "0.23.0",
         workspacePath: await realpath("/tmp"),
       },
     });
@@ -1386,6 +1386,38 @@ async function runningWebChannel(
   if (start === undefined) throw new Error("expected the app-owned TUI start path");
   return await start;
 }
+
+describe("web process-job surface update classification", () => {
+  const updateInput = {
+    conversationId: "web:thread-1",
+    deliveryKey: PROCESS_JOB.wake.deliveryKey,
+    processJob: PROCESS_JOB,
+  };
+
+  it("reports a console that is away as an unavailable destination, not a failure", async () => {
+    // A console restart removes its ingress record for a moment. The console
+    // re-reads every running card when it reconnects, so this is the expected
+    // gap, not a delivery failure worth a warning.
+    const running = await runningWebChannel(async () => {
+      throw new WebConsoleError("notification_ingress_unavailable", "console is down", 503);
+    });
+
+    await expect(running.processJobs?.update(updateInput)).resolves.toMatchObject({
+      delivered: false,
+      code: "destination_channel_unavailable",
+      retryable: true,
+      channelId: "tui",
+    });
+  });
+
+  it("still surfaces every other delivery failure", async () => {
+    const running = await runningWebChannel(async () => {
+      throw new WebConsoleError("notification_ingress_timeout", "timed out", 504);
+    });
+
+    await expect(running.processJobs?.update(updateInput)).rejects.toThrow("timed out");
+  });
+});
 
 describe("web process-job wake classification", () => {
   const wakeInput = {

@@ -127,7 +127,7 @@ the operator response ceiling.
 
 ## Architecture
 
-`provider-usage.ts` defines the strict `mono-agent.provider-usage.v1` subscription projection, at most four providers (Claude, Codex, OpenCode Go and GitHub Copilot), at most three core percent windows per provider, fixed errors and read-only `ProviderUsageOperator`. Copilot alone admits Credits/Chat/Completions window kinds; existing provider rules stay unchanged. It carries no credentials or vendor account identifiers. Provider-auth status distinguishes additive `verified_by_account_request` (vendor account API accepted the credential, not inference or model entitlement) from stronger `verified_by_live_request`; `lastFailure.model` is optional for account-level rejection.
+`provider-usage.ts` defines the strict `mono-agent.provider-usage.v1` subscription projection, at most four providers (Claude, Codex, OpenCode Go and GitHub Copilot), at most three core percent windows per provider, fixed errors and read-only `ProviderUsageOperator`. Copilot alone admits Credits/Chat/Completions window kinds; existing provider rules stay unchanged. It carries no credentials or vendor account identifiers. Dependency-free burn-projection helpers (`projectProviderUsageWindow`, `projectProviderUsage`) derive constant-rate pace, run-out and ok/ahead/unsustainable severity from fields already present, anchored at the measurement. A projected run-out carries `leadMs`, the millisecond gap to its reset, with the shared `formatProviderUsageLead()` compact shape (`3d 2h` / `5h 20m` / `12m`). Windows under 1x pace at normal confidence instead carry `projectedUnusedPercent`, the share of the window expected to go unused. Provider-auth status distinguishes additive `verified_by_account_request` (vendor account API accepted the credential, not inference or model entitlement) from stronger `verified_by_live_request`; `lastFailure.model` is optional for account-level rejection.
 
 ### Data flow
 
@@ -268,6 +268,8 @@ AgentLiveInputOwnership
 AgentLiveInputRequest
 AgentLiveInputSettlement
 AgentLiveInputUnavailableReason
+AgentManualCompactionOptions
+AgentManualCompactionResult
 AgentMcpAppHostRequest
 AgentMcpAppLoadRequest
 AgentMcpAppResource
@@ -348,6 +350,7 @@ EnvEncodeKind
 HostWakeDeliveryResult
 HostWakeDisposition
 InboundHttpHeaders
+InternalProcessJobTool
 JsonEnvFieldSpec
 JsonEnvMapping
 ListenErrorFactories
@@ -457,8 +460,10 @@ ProviderUsage
 ProviderUsageErrorCode
 ProviderUsageId
 ProviderUsageOperator
+ProviderUsageProjection
 ProviderUsageSnapshot
 ProviderUsageWindow
+ProviderUsageWindowProjection
 ReadSettingsJsonResult
 RedactedSecretValue
 ResilientAgentMessageStream
@@ -497,6 +502,7 @@ encodeJsonEnvValue
 fieldSpecMappings
 formatLiveInputActivityLine
 formatProviderStatusLine
+formatProviderUsageLead
 frameFeedingMessageStream
 generateBearerToken
 hostForUrl
@@ -536,6 +542,8 @@ parseProviderAuthSessionStartInput
 parseProviderAuthStatusSnapshot
 parseProviderUsageSnapshot
 processJobPublicError
+projectProviderUsage
+projectProviderUsageWindow
 readAuthorizationBearer
 readBoolean
 readChoice
@@ -573,19 +581,24 @@ ProviderUsage
 ProviderUsageErrorCode
 ProviderUsageId
 ProviderUsageOperator
+ProviderUsageProjection
 ProviderUsageSnapshot
 ProviderUsageWindow
+ProviderUsageWindowProjection
+formatProviderUsageLead
 isProviderUsageId
 parseProviderUsageSnapshot
+projectProviderUsage
+projectProviderUsageWindow
 ```
 
 <!-- public-api-inventory:end -->
 
-Persistent Agent/AgentSend can run detached through the app-private in-process
+Persistent Agent/AgentManage can run detached through the app-private in-process
 ProcessJobs lane. Durable admission reserves the child; completion and AskParent
 wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
-`AgentSend({id, stop:true})` cooperatively stops managed detached work without
+`AgentManage({id, stop:true})` cooperatively stops managed detached work without
 starting a new turn. Only a proven `resumable:true` receipt permits ordinary
 message continuation on the same session or `close:true`; `stop_requested`
 keeps messages/close blocked. Stop neither force-kills nor undoes external effects.
@@ -594,11 +607,18 @@ See [background subagents](../../docs/tools/background-process-jobs.md#detached-
 Process-job projection v1 is a local owner API deployed lockstep with its operator
 clients. New readers continue to accept old external Exec/Bash stored records
 without a `kind` field. Mixed-version network clients are not promised compatibility
-with internal Agent/AgentSend projections, whose discriminant and instance identity
+with internal Agent/AgentManage projections, whose discriminant and instance identity
 are required.
 
 The browser-safe `@mono-agent/agent-contracts/provider-usage` entrypoint exposes
 the same strict parser and usage DTOs without the Node-only root helpers.
+`projectProviderUsageWindow()` and `projectProviderUsage()` share one pure
+burn-pace derivation for the tool and the console meters: constant-rate pace
+(1 = on track), projected run-out with its lead to the reset only when ahead
+of pace, and ok/ahead (above 1x) versus unsustainable (1.5x and above)
+severity, all anchored at the measurement `fetchedAt` — an extrapolation, not
+a forecast. The meter countdown and the lead share the
+`formatProviderUsageLead()` granularity.
 `ProviderUsageOperator.snapshot()` retains its cached-read contract. Optional
 `refresh()` awaits shared account-usage work, bypassing successful freshness but
 not error backoff. Capability-aware hosts expose it separately; snapshot-only

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -45,6 +46,37 @@ describe("persistent subagent registry", () => {
     await expect(handle.begin(record.id)).rejects.toThrow(/maxTurns/u);
     await handle.close(record.id);
     expect((await handle.create({ ...spec, id: record.id })).turns).toBe(0);
+  });
+  it("persists a retarget on the stored definition and keeps it after a failed turn", async () => {
+    const { handle, root, retireSession } = await setup();
+    const created = await handle.create(spec);
+    expect(created.definition.model).toBeUndefined();
+    const model = { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" };
+    const begun = await handle.begin(created.id, undefined, undefined, undefined, { model, effort: "high" });
+    expect(begun.definition).toMatchObject({ model, effort: "high" });
+    // A failed turn keeps the new route: the next continuation inherits what was
+    // asked for rather than silently reverting to the old one.
+    await handle.finish(created.id, { status: "failed" });
+    const reopened = await createSubagentInstanceRegistry({ root, retireSession }).open("conversation");
+    expect((await reopened.get(created.id))?.definition).toMatchObject({ model, effort: "high" });
+  });
+  it("keeps a route persisted when a detached start fails after the reservation", async () => {
+    const { handle } = await setup();
+    const created = await handle.create(spec);
+    const token = randomUUID();
+    await handle.reserve(created.id, token, undefined, undefined, { effort: "low" });
+    await handle.releaseReservation(created.id, token);
+    expect(await handle.get(created.id)).toMatchObject({ status: "idle", definition: { effort: "low" } });
+  });
+  it("refuses an invalid route and admits no turn", async () => {
+    const { handle } = await setup();
+    const created = await handle.create(spec);
+    await expect(handle.begin(created.id, undefined, undefined, undefined, { effort: "turbo" })).rejects.toThrow(/route effort/u);
+    await expect(handle.begin(created.id, undefined, undefined, undefined,
+      { model: { provider: "openai-codex", model: "gpt-5.6-sol", reference: "anthropic:claude-fable-5-1" } })).rejects.toThrow(/route model/u);
+    expect(await handle.get(created.id)).toMatchObject({ status: "idle", turns: 0 });
+    expect((await handle.get(created.id))?.definition).toEqual(spec.definition);
+    await handle.begin(created.id);
   });
   it("isolates conversations and rejects duplicate live ids", async () => {
     const { registry, handle } = await setup();
@@ -168,7 +200,7 @@ describe("persistent subagent registry", () => {
     { definition: { ...spec.definition, model: { provider: "openai", model: "a", reference: "openai:b" } } },
     { definition: { ...spec.definition, effort: ["high"] } },
     { definition: { ...spec.definition, allowedTools: [42] } },
-    { definition: { ...spec.definition, allowedTools: ["AgentSend"] } },
+    { definition: { ...spec.definition, allowedTools: ["AgentManage"] } },
     { definition: { ...spec.definition, disallowedTools: {} } },
     { definition: { ...spec.definition, mcpServerNames: [{ command: "stale" }] } },
     { definition: { ...spec.definition, mcpServers: { stale: { command: "old" } } } },

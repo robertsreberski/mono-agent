@@ -4,7 +4,10 @@ import { claimWebSearchRequest, countWebSearchDispatch } from "../web-search-sta
 import { requestSignal, readLimitedText, normalizedResult, ollamaFetchFailure, parseRetryAfter } from "./shared.js";
 export const ollamaProvider = {
   name: "ollama", batchesQueries: false,
-  filterSupport: { language: "advisory", timeRange: "advisory", country: "unsupported" },
+  // domains: "unverified" — Ollama's web_search API documents only a raw query
+  // string with no operator syntax, so the site: text is still sent but only
+  // the client-side domain filter can be relied on.
+  filterSupport: { language: "advisory", timeRange: "advisory", country: "unsupported", domains: "unverified" },
   configure(input, selected) {
     const result = normalizeOllamaSearchConfig(input?.ollama, selected ? "ollama" : undefined);
     return result.error ? result : { value: { ollama: result.value } };

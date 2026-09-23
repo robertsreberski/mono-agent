@@ -101,9 +101,9 @@ function readHeaderPresentation(panel: HTMLElement, header: HTMLElement): Header
   expect(samplerRect.top).toBe(0);
   expect(samplerRect.left).toBe(0);
   expect(samplerRect.width).toBe(window.innerWidth);
-  expect(samplerRect.height).toBe(1);
+  expect(samplerRect.height).toBe(0); // Chromium browser tab has no top safe-area inset.
   expect(samplerStyle.pointerEvents).toBe("none");
-  expect(samplerStyle.zIndex).toBe("-1");
+  expect(samplerStyle.zIndex).toBe("50");
   expect(sampler.inert).toBe(true);
   expect(sampler.tabIndex).toBe(-1);
   expect(samplerStyle.backgroundColor).toBe(getComputedStyle(shell).backgroundColor);
@@ -185,12 +185,49 @@ afterEach(async () => {
   await commands.emulateColorScheme(null);
   await page.viewport(414, 896);
   delete document.documentElement.dataset.consoleTheme;
+  document.documentElement.style.removeProperty("--status-bar-inset");
   document.title = "";
   document.head.querySelectorAll('meta[name="theme-color"]').forEach((meta) => meta.remove());
   document.body.replaceChildren();
 });
 
 describe.each(VIEWPORTS)("header chrome at $name viewport", (viewport) => {
+  it.each(THEMES)("exposes a fixed top edge with %s's header colour in both appearances", async (theme) => {
+    await page.viewport(viewport.width, viewport.height);
+    const { header } = renderHeaderFixture();
+    applyConsolePresentation({ hostName: "builder-01", displayName: "Builder", theme });
+    const strip = document.querySelector<HTMLElement>(".status-bar-surface")!;
+    const shell = document.querySelector<HTMLElement>(".app-shell")!;
+    const before = [shell, header].map((element) => element.getBoundingClientRect().toJSON());
+    expect(strip.getBoundingClientRect().height).toBe(0);
+    document.documentElement.style.setProperty("--status-bar-inset", "47px");
+    for (const scheme of ["light", "dark"] as const) {
+      await emulateColorScheme(scheme);
+      const style = getComputedStyle(strip);
+      const rect = strip.getBoundingClientRect();
+      expect(style.position).toBe("fixed");
+      expect(style.zIndex).toBe("50");
+      expect(style.opacity).toBe("1");
+      expect(style.backdropFilter).toBe("none");
+      expect(style.backgroundColor).toBe(getComputedStyle(shell).backgroundColor);
+      expect(parseComputedColor(style.backgroundColor).alpha).toBe(1);
+      expect(rect.width).toBeGreaterThanOrEqual(window.innerWidth * 0.9);
+      expect(rect.height).toBe(47); // >10px: WebKit uses the box's CSS background directly.
+      expect(rect.top).toBe(0);
+      expect(getComputedStyle(header).paddingTop).toBe("47px");
+      expect(style.pointerEvents).toBe("none");
+      // Chromium's elementFromPoint honours pointer-events; WebKit's first
+      // fixedContainerEdges hit test ignores them. Temporarily enable hits.
+      strip.inert = false; // Chromium also suppresses hits on inert nodes.
+      strip.style.pointerEvents = "auto";
+      expect(document.elementFromPoint(window.innerWidth / 2, 4)).toBe(strip);
+      strip.style.removeProperty("pointer-events");
+      strip.inert = true;
+    }
+    document.documentElement.style.removeProperty("--status-bar-inset");
+    expect(strip.getBoundingClientRect().height).toBe(0);
+    expect([shell, header].map((element) => element.getBoundingClientRect().toJSON())).toEqual(before);
+  });
   it("transitions the initial shell between real light and dark media", async () => {
     await page.viewport(viewport.width, viewport.height);
     seedInitialThemeMetas();

@@ -125,9 +125,8 @@ export function resolvePiRuntimeModel(resolved, options) {
     throw new Error("invalid pi model reference: provider and model are required");
   }
   if (options.customProvider) return resolveCustomPiModel(resolved, options);
-  // The upstream catalog is authoritative: the model resolves here exactly as
-  // pi-ai ships it (pi-ai 0.86.1 carries opencode-go:deepseek-v4.1-flash
-  // natively, retiring the mono-agent catalog backfill).
+  // The upstream catalog is authoritative: every former backfill row resolves
+  // exactly as pi-ai ships it.
   const catalogModel = getPiModel(/** @type {*} */ (provider), model);
   if (!catalogModel) {
     // Phrasing matters: this must match ai/failure.js's NON_RETRYABLE_PROVIDER_RE

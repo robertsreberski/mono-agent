@@ -394,6 +394,11 @@ export const api = {
     );
   },
 
+  /** Promptless manual compaction of one idle conversation; returns counts only. */
+  compactThread: (threadId: string) => request<import("@mono-agent/agent-contracts").AgentManualCompactionResult>(
+    `/api/v1/threads/${encodeURIComponent(threadId)}/compact`,
+    { method: "POST", body: JSON.stringify({}) },
+  ),
   /**
    * One whole conversation, with the validator the response carried.
    *

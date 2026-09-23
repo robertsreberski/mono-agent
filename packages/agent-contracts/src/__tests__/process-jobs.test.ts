@@ -68,7 +68,7 @@ describe("process-job contracts", () => {
   });
 
   it("discriminates private subagent projections and bounds structured questions", () => {
-    const internal = { ...projection(), kind: "internal", tool: "AgentSend", instanceId: "helper", childStillBusy: true,
+    const internal = { ...projection(), kind: "internal", tool: "AgentManage", instanceId: "helper", childStillBusy: true,
       subagentQuestion: { question: "Which branch?", options: ["one", "two"] } };
     expect(parseProcessJobProjection(internal)).toEqual(internal);
     for (const invalid of [
@@ -78,6 +78,13 @@ describe("process-job contracts", () => {
       { ...internal, subagentQuestion: { question: "q", options: ["same", "same"] } },
       { ...projection(), childStillBusy: false },
     ]) expect(() => parseProcessJobProjection(invalid)).toThrow(TypeError);
+  });
+
+  it("still parses a stored projection carrying the legacy AgentSend tool name", () => {
+    // `AgentSend` was renamed to `AgentManage` with no alias. Jobs persisted
+    // before the rename must keep loading; nothing emits the old name again.
+    const legacy = { ...projection(), kind: "internal", tool: "AgentSend", instanceId: "helper", childStillBusy: false };
+    expect(parseProcessJobProjection(legacy)).toEqual(legacy);
   });
 
   it("accepts the configured retention plus transient active-record boundary", () => {
@@ -208,6 +215,15 @@ describe("internal subagent progress projection", () => {
     const parsedLegacy = parseProcessJobProjection({ ...internal(), subagentProgress: legacyProgress });
     expect(parsedLegacy.kind === "internal" ? parsedLegacy.subagentProgress : undefined).toEqual(legacyProgress);
     expect(() => parseProcessJobProjection({ ...projection(), subagentProgress: progress })).toThrow();
+  });
+
+  it("accepts a bounded optional command directory and rejects malformed locations", () => {
+    const withDirectory = { ...progress, recent: [{ ...progress.recent[0], workdir: "~/worktrees/project" }] };
+    expect(parseProcessJobProjection({ ...internal(), subagentProgress: withDirectory }))
+      .toEqual({ ...internal(), subagentProgress: withDirectory });
+    for (const workdir of ["😀".repeat(65), 17, null]) {
+      expect(isProcessJobSubagentProgress({ ...withDirectory, recent: [{ ...withDirectory.recent[0], workdir }] })).toBe(false);
+    }
   });
 
   it("accepts absent and non-negative bounded cost while rejecting malformed prices", () => {

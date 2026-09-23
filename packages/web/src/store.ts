@@ -847,6 +847,22 @@ export interface UpsertWebProcessJobCardInput {
 const STREAM_SEQUENCE_CONFLICT = Symbol("stream sequence conflict");
 
 export class WebStore {
+  /** Persist a promptless compaction notice on this thread's last settled answer. */
+  recordManualCompaction(threadId: string, result: import("@mono-agent/agent-contracts").AgentManualCompactionResult): string | undefined {
+    this.requireThread(threadId);
+    const row = this.database.prepare(`SELECT id, parts_json FROM messages
+      WHERE thread_id = ? AND role = 'assistant' AND status != 'running'
+      ORDER BY created_at DESC, id DESC LIMIT 1`).get(threadId) as { id: string; parts_json: string } | undefined;
+    if (row === undefined) return undefined;
+    const parts = parseParts(row.parts_json);
+    upsertContextCompaction(parts, {
+      type: "runtime_telemetry", kind: "context_compaction",
+      data: { ...result, sdk: "pi", timestamp: Date.now() },
+    });
+    this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ?, seq = seq + 1 WHERE id = ?")
+      .run(serializeParts(parts), this.now(), row.id);
+    return row.id;
+  }
   private readonly streamSnapshots = new Map<string, WebMessage>();
   readonly paths: WebStatePaths;
   private readonly database: DatabaseSync;
@@ -1663,6 +1679,29 @@ export class WebStore {
       throw new WebConsoleError("cron_reply_unavailable", "Only visible terminal cron results can be replied to.", 422);
     }
     if (snapshotKind === "summary") {
+      // A gate skip is not a failure: its bounded reason rides in `error` on
+      // the wire, so surface it as result text rather than a failure message.
+      // That text is synthesized here, never a truncation of `run.text`, so no
+      // fuller-text recovery applies to it.
+      const gateSkip = run.status === "skipped_gate";
+      const compactText = gateSkip
+        ? `Skipped by preflight gate${run.error === undefined ? "" : `: ${run.error}`}`
+        : run.text ?? "";
+      // The summary projection clips `text` to a 2 KiB prefix, but the verbatim
+      // notification text (or a loaded detail) for this exact run is already
+      // persisted in the run's message parts or turn. Hand the fuller copy to
+      // the 32 KiB context import instead of the clipped prefix. Provenance
+      // stays honest: `text` leaves `sourceFieldsTruncated` only when the
+      // handed text is complete; otherwise the truncation blame is unchanged.
+      const storedTextParts: string[] = [];
+      for (const part of parseParts(row.parts_json)) {
+        if (part.type === "text") storedTextParts.push(part.text);
+      }
+      const recoveredText = !gateSkip
+        && run.fieldsTruncated?.includes("text") === true
+        && typeof run.text === "string" && run.text.length > 0
+        ? fullerStoredTextForTruncatedPrefix(run.text, [...storedTextParts, row.text])
+        : undefined;
       return {
         sourceId,
         jobId,
@@ -1670,14 +1709,12 @@ export class WebStore {
         snapshotKind,
         capturedAt: this.now(),
         run,
-        // A gate skip is not a failure: its bounded reason rides in `error` on
-        // the wire, so surface it as result text rather than a failure message.
-        text: run.status === "skipped_gate"
-          ? `Skipped by preflight gate${run.error === undefined ? "" : `: ${run.error}`}`
-          : run.text ?? "",
+        text: recoveredText ?? compactText,
         ...(run.failureKind === undefined ? {} : { errorCode: run.failureKind }),
         ...(run.error === undefined || run.status === "skipped_gate" ? {} : { errorMessage: run.error }),
-        sourceFieldsTruncated: run.fieldsTruncated ?? [],
+        sourceFieldsTruncated: recoveredText === undefined
+          ? run.fieldsTruncated ?? []
+          : (run.fieldsTruncated ?? []).filter((field) => field !== "text"),
         sourceTruncationKnown: true,
       };
     }
@@ -1973,13 +2010,24 @@ export class WebStore {
           && priorParts.some((part) => part.type === "telemetry"
             && part.event === "cron_run"
             && record(part.data)?.activityLoaded === true);
+        // A later summary poll must not downgrade an already-stored fuller turn
+        // text to the 2 KiB prefix either. Unlike the activity-loaded case
+        // above, this needs no load flag: the prefix-consistency guard inside
+        // `fullerStoredTextForTruncatedPrefix` only preserves the stored text
+        // when it is strictly longer than, and starts with, this poll's
+        // prefix — so a genuinely new result still replaces a stale turn.
+        const preserveFullerTurnText = run.projection === "summary"
+          && run.fieldsTruncated?.includes("text") === true
+          && typeof run.text === "string" && run.text.length > 0
+          && existingTurn !== undefined
+          && fullerStoredTextForTruncatedPrefix(run.text, [existingTurn.text]) !== undefined;
         const preserveLoadedError = run.projection === "summary"
           && priorParts.some((part) => part.type === "telemetry"
             && part.event === "cron_run"
             && record(part.data)?.activityLoaded === true)
           && (run.fieldsTruncated?.includes("error") === true
             || run.fieldsTruncated?.includes("failureKind") === true);
-        const turnText = preserveLoadedText && existingTurn !== undefined
+        const turnText = (preserveLoadedText || preserveFullerTurnText) && existingTurn !== undefined
           ? existingTurn.text
           : run.text ?? "";
         const turnErrorCode = preserveLoadedError && existingTurn !== undefined
@@ -6903,6 +6951,38 @@ function clearSilentCronPart(part: WebMessagePart): WebMessagePart {
     ? { ...part, data: withoutCronSilentFlag(part.data) } : part;
 }
 
+/**
+ * Recover fuller result text already persisted for a run whose compact summary
+ * projection truncated `text` to its 2 KiB prefix.
+ *
+ * The operator summary prefix is UTF-8-boundary-safe, so a genuine fuller copy
+ * starts with the prefix byte-for-byte. A candidate only wins when it is
+ * strictly longer AND has the prefix as a prefix: this keeps a later summary
+ * poll (or a reply capture) from grafting stale or mismatched text from an
+ * earlier reconciliation onto a newer run result. The bare
+ * `NOTHING_TO_REPORT` sentinel never qualifies — a fuller copy that short
+ * cannot exist under an honest 2 KiB truncation flag, and claiming a bare
+ * sentinel as the complete result would overstate what was reported.
+ */
+function fullerStoredTextForTruncatedPrefix(
+  prefix: string,
+  candidates: readonly (string | undefined | null)[],
+): string | undefined {
+  const prefixBytes = Buffer.byteLength(prefix, "utf8");
+  let best: string | undefined;
+  let bestBytes = prefixBytes;
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string" || candidate.length === 0) continue;
+    if (candidate.trim().toUpperCase() === NOTHING_TO_REPORT_SENTINEL) continue;
+    if (!candidate.startsWith(prefix)) continue;
+    const bytes = Buffer.byteLength(candidate, "utf8");
+    if (bytes <= bestBytes) continue;
+    best = candidate;
+    bestBytes = bytes;
+  }
+  return best;
+}
+
 function definitelySilentCronRun(run: WebCronRun): boolean {
   return run.status === "succeeded" && run.fieldsTruncated?.includes("text") !== true
     && classifyNotifySuppression(run.text) !== "none";
@@ -7561,10 +7641,17 @@ function withEventHistoryUpdate<T extends WebToolCall | SubagentPart>(
  * the operator wire, so a malformed payload must fall through to an ordinary
  * tool-call part instead of keying a group on a non-string.
  */
-/** Late child stream events cannot replace a canonical detached launch receipt. */
+/**
+ * Late child stream events cannot replace a canonical detached launch receipt.
+ *
+ * `"AgentSend"` is legacy history: the tool was renamed to `AgentManage` with
+ * no alias, and retained transcripts still carry the old tool name on their
+ * stored receipts. Accepted on this read path only; never emitted.
+ */
 function hasDetachedSubagentReceipt(parts: readonly WebMessagePart[], id: string): boolean {
   const part = parts.find((candidate) => candidate.type === "tool-call" && candidate.toolCallId === id);
-  if (part?.type !== "tool-call" || (part.toolName !== "Agent" && part.toolName !== "AgentSend")) return false;
+  if (part?.type !== "tool-call"
+    || (part.toolName !== "Agent" && part.toolName !== "AgentManage" && part.toolName !== "AgentSend")) return false;
   const value = part.structuredResult;
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const receipt = value as Record<string, unknown>;

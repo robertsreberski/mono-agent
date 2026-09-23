@@ -293,7 +293,7 @@ export function ActivityStep({
   children,
 }: {
   readonly toolName: string;
-  readonly summary?: string;
+  readonly summary?: ReactNode;
   readonly failed?: string;
   readonly duration?: string;
   readonly defaultOpen?: boolean;

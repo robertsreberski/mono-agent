@@ -939,7 +939,7 @@ describe("SlackAdapter", () => {
   it.each(["timed_out", "succeeded"] as const)("retains bounded internal busy and question state without Slack formatting (%s)", async (state) => {
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({ api, allowAllChannels: true, responder: responderFrom(async () => ({ text: "unused" })) });
-    const internal: ProcessJobProjection = { ...processJobProjection("running"), kind: "internal", tool: "AgentSend",
+    const internal: ProcessJobProjection = { ...processJobProjection("running"), kind: "internal", tool: "AgentManage",
       instanceId: "helper", childStillBusy: false };
     await adapter.updateProcessJob("C1", "171.5", internal);
     await adapter.updateProcessJob("C1", "171.5", { ...internal, state, childStillBusy: state === "timed_out",

@@ -4,7 +4,7 @@ import { keylessHtmlSearch, canonicalizeSearchUrl, collapseWhitespace } from "./
 import { duckDuckGoRegion, unsupportedCountryFilter } from "../web-search-country.js";
 export const duckduckgoProvider = {
   name: "duckduckgo", batchesQueries: false,
-  filterSupport: { language: "advisory", timeRange: "provider", country: "provider" },
+  filterSupport: { language: "advisory", timeRange: "provider", country: "provider", domains: "operator" },
   configure: () => ({ value: {} }), eligibility: () => true,
   admission: () => ({ kind: "duckduckgo", key: "duckduckgo", processPolicy: "keyless" }),
   networkTargets: () => ["https://html.duckduckgo.com"],

@@ -7,16 +7,16 @@ https://files.pythonhosted.org/packages/be/5c/d5b006bdb8a67bbd4e983cb7a1c6ac84f7
 
 SHA-256: `c6263e5ac09f7079d5a0c78bfe7baea03aa0dbb64c0c4224eef40c9d0cb691bc`.
 
-The native JS modules under `src/agent/tools/hound-local/` adapt Hound's
+The native JS modules under `src/agent/tools/local/` adapt Hound's
 Python algorithms, not its Python runtime, server, or anti-detection transports.
 `extract.js` adapts `trafilatura_extractor.py` title/stage fallback and
 `extractor.py` noise removal, using Defuddle/Readability/Turndown instead of
 trafilatura/lxml/markdownify. `links.js` adapts `links.py` anchor classification
 and fragment deduplication, with Mono's URL safety and output bounds.
-`engines.js` adapts the DuckDuckGo/Brave/Mojeek request fields and DOM selectors
+`engines.js` adapts the DuckDuckGo request fields and DOM selectors
 from `search_metasearch.py`, URL consensus/snippet aggregation and lean ranking
 ideas from `search_engines.py` (GitHub owner/repository-only case folding, host
-diversity). Fixtures in `hound-web-provider.test.js` exercise those ported shapes;
+diversity). Fixtures in `local-web-provider.test.js` exercise those ported shapes;
 they are synthetic, not recorded proof of public-engine availability.
 `search.js` supplies Mono-owned bounded fanout, accounting and cancellation.
 `robots.js` adapts the origin-cache idea from `robots.py` but deliberately rejects

@@ -156,14 +156,13 @@
    `dvh` is the same unit `.app-shell` already uses, so the shell and the
    document it lives in now measure the same viewport everywhere. */
 html, body, #root { width: 100%; min-width: 320px; height: 100dvh; margin: 0; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-/* Installed iOS can sample a real fixed element at the viewport top rather
-   than theme-color. With `black-translucent` the header's own surface is what
-   shows behind the status bar, so this is now the launch and document fallback
-   for the same band — it still paints the header's surface, without overlaying
-   UI or participating in layout, and it still matters for an older install that
-   has not been re-added to the Home Screen yet. CSS variables follow the same
-   theme/media changes as the header, not a JS color snapshot. */
-html { --status-bar-bg: var(--panel); background: var(--status-bar-bg); }
+/* WebKit's LocalFrameView::fixedContainerEdges hit-tests the viewport's top
+   midpoint at y=4 and needs a fixed/sticky box spanning >=90% of that edge.
+   The full-width, opaque status band below is that box: WebKit extends its
+   colour into the status bar and hides the installed app's soft scroll pocket.
+   The shared inset also lets browser tests simulate the safe area in Chromium;
+   without an override it is exactly the platform's safe-area-inset-top. */
+html { --status-bar-inset: env(safe-area-inset-top); --status-bar-bg: var(--panel); background: var(--status-bar-bg); }
 /* These full-screen states deliberately use a different surface. */
 html:has(#root > :is(.initial-state, .fatal-state)) { --status-bar-bg: var(--surface); }
 /* `overscroll-behavior: none` is the second half of that fix: the console owns
@@ -176,10 +175,15 @@ body { overflow: hidden; overscroll-behavior: none; background: var(--status-bar
   top: 0;
   left: 0;
   width: 100%;
-  height: 1px;
+  height: var(--status-bar-inset);
   background: var(--status-bar-bg);
   pointer-events: none;
-  z-index: -1;
+  z-index: 50; /* Above the phone chat (40), below dialogs and popovers (100+). */
+}
+/* Some installed iOS apps report a zero safe-area inset. Five pixels still
+   contain WebKit's y=4 probe, inside the headers' >=7px top-padding floor. */
+@media (display-mode: standalone) {
+  .status-bar-surface { height: max(5px, var(--status-bar-inset)); }
 }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { border: 0; }
@@ -268,7 +272,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
   background: var(--panel);
   border-right: 1px solid var(--line);
 }
-.dashboard-header { min-height: 64px; display: flex; align-items: center; gap: 12px; flex: none; padding: max(10px, env(safe-area-inset-top)) var(--gutter-right) 10px var(--gutter-left); }
+.dashboard-header { min-height: 64px; display: flex; align-items: center; gap: 12px; flex: none; padding: max(10px, var(--status-bar-inset)) var(--gutter-right) 10px var(--gutter-left); }
 .dashboard-title-block { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .dashboard-brand { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dashboard-agent-name { min-width: 0; margin: 0; overflow: hidden; color: var(--text); font-size: 18px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
@@ -549,7 +553,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
    on the Dashboard's scale (the rows' 12px title, the labels' 10px caps), so
    the page and the list it came from read as one surface. */
 .project-page { --gutter-left: 17px; --gutter-right: 17px; width: 100%; height: 100%; min-width: 0; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); }
-.project-header { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: max(10px, env(safe-area-inset-top)) var(--gutter-right) 10px var(--gutter-left); }
+.project-header { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: max(10px, var(--status-bar-inset)) var(--gutter-right) 10px var(--gutter-left); }
 /* Back is navigation, not a tile: the bare glyph and the thumb-sized target
    the conversation header's back control keeps. */
 .project-back { min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 4px; flex: 1; margin-left: -6px; padding: 0; color: var(--text-soft); background: transparent; cursor: pointer; text-align: left; font-size: 13px; font-weight: 500; }
@@ -616,7 +620,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 @media (max-width: 900px) {
   .dashboard-panel .project-page { border-right: 0; }
   .project-page { --gutter-left: max(17px, env(safe-area-inset-left)); --gutter-right: max(17px, env(safe-area-inset-right)); }
-  .project-header { min-height: 58px; padding-block: max(7px, env(safe-area-inset-top)) 7px; }
+  .project-header { min-height: 58px; padding-block: max(7px, var(--status-bar-inset)) 7px; }
 }
 
 /* Chat shell
@@ -626,7 +630,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
    already share their measures; sharing the palette is what makes them read as
    one interface rather than two apps in one window. */
 .chat-panel { position: relative; min-width: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: var(--panel); }
-.chat-header { min-height: 64px; display: flex; align-items: center; gap: 15px; padding: max(10px, env(safe-area-inset-top)) max(17px, env(safe-area-inset-right)) 10px max(17px, env(safe-area-inset-left)); background: color-mix(in srgb, var(--panel) 94%, transparent); border-bottom: 1px solid var(--line); z-index: 5; }
+.chat-header { min-height: 64px; display: flex; align-items: center; gap: 15px; padding: max(10px, var(--status-bar-inset)) max(17px, env(safe-area-inset-right)) 10px max(17px, env(safe-area-inset-left)); background: color-mix(in srgb, var(--panel) 94%, transparent); border-bottom: 1px solid var(--line); z-index: 5; }
 /* The conversation's trailing actions are the Dashboard header's trailing
    actions: the same 36px tile, the same subtle fill, the same hover. Back is
    not one of them -- it is navigation, and it keeps the bare glyph and the
@@ -805,6 +809,11 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .context-display-provider-heading .context-display-section-title { margin-bottom: 0; }
 .context-display-provider-usage .provider-usage { grid-template-columns: 1fr; padding-top: 8px; }
 .context-display-provider-loading { margin: 8px 0 0; color: var(--text-muted); font-size: 10px; }
+.context-display-compact { padding-top: 10px; border-top: 1px solid var(--line); font-size: 10px; }
+.context-display-compact button { padding: 5px 10px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 7px; cursor: pointer; }
+.context-display-compact button:disabled { opacity: 0.55; cursor: wait; }
+.context-display-compact [role="alert"] { color: var(--danger); }
+.context-display-compact p { margin: 7px 0 0; }
 .context-display-window { display: grid; gap: 7px; margin-bottom: 12px; }
 .context-display-window-summary { display: flex; justify-content: space-between; gap: 12px; color: var(--text-muted); font-size: 10px; }
 .context-display-percent { color: var(--accent); font-family: var(--font-mono); font-weight: 700; }
@@ -1448,8 +1457,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .app-shell { grid-template-columns: minmax(0, 1fr); }
   .mobile-navigation { display: flex; align-items: center; gap: 2px; margin-left: -6px; }
   .mobile-navigation .icon-button { width: 44px; height: 44px; }
-  .chat-header { min-height: 58px; gap: 8px; padding-block: max(7px, env(safe-area-inset-top)) 7px; }
-  .dashboard-header { min-height: 58px; padding-block: max(7px, env(safe-area-inset-top)) 7px; }
+  .chat-header { min-height: 58px; gap: 8px; padding-block: max(7px, var(--status-bar-inset)) 7px; }
+  .dashboard-header { min-height: 58px; padding-block: max(7px, var(--status-bar-inset)) 7px; }
   .conversation-title { max-width: min(42vw, 340px); }
   .chat-status { display: none; }
   /* The mobile shell has no ⌘↵: the shortcut line is noise there, and the row
@@ -1704,7 +1713,16 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-subagent-progress .activity-payload pre { max-height: none; overflow: visible; }
 .process-job-subagent-calls { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
 .process-job-subagent-calls li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
-.process-job-subagent-call { min-width: 0; overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.process-job-subagent-call { min-width: 0; flex: 1; font-family: var(--font-mono); white-space: normal; overflow-wrap: anywhere; }
+.process-job-command-summary { min-width: 0; display: flex; align-items: baseline; gap: 6px; }
+.process-job-command-preview { min-width: 0; overflow: hidden; text-overflow: clip; white-space: nowrap; }
+.process-job-command-preview-mobile { display: none; }
+@media (max-width: 600px) {
+  .process-job-command-summary:has(.process-job-command-preview-mobile) .process-job-command-preview { display: none; }
+  .process-job-command-preview-mobile { min-width: 0; display: block; white-space: nowrap; }
+}
+.process-job-child-directory { color: var(--text-muted); opacity: .78; font-family: var(--font-mono); white-space: nowrap; }
+.process-job-subagent-progress .activity-step-summary:has(.process-job-command-summary) { text-overflow: clip; }
 .process-job-subagent-status { flex: none; font-family: var(--font-mono); font-size: 9px; }
 .process-job-subagent-calls li[data-status="failed"] .process-job-subagent-status { color: var(--danger); }
 .process-job-subagent-calls li[data-status="running"] .process-job-subagent-status { color: var(--accent); }
@@ -1736,6 +1754,20 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .provider-usage-window { min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .provider-usage-label { display: flex; justify-content: space-between; gap: 4px; }
 .provider-usage-window time { color: var(--text-muted); font-size: 9px; }
+.provider-usage-projection { font-size: 9px; line-height: 1.3; }
+.provider-usage-projection.is-ahead { color: var(--warning); }
+.provider-usage-projection.is-unsustainable { color: var(--danger); }
+.provider-usage-projection.is-unused { color: var(--text-muted); }
+.provider-usage-pace { font-size: 9px; font-weight: 600; color: var(--text-muted); }
+.provider-usage-pace.is-ahead { color: var(--warning); }
+.provider-usage-pace.is-unsustainable { color: var(--danger); }
+.provider-usage-bar { position: relative; display: flex; align-items: center; line-height: 0; }
+/* Where an on-track window would be: a dot riding inside the bar, in the
+   meter's own accent family. Once the fill passes it the dot sits on the
+   accent, so it flips to the surface colour to stay legible in either theme. */
+.provider-usage-tick { position: absolute; top: 50%; width: 3px; height: 3px; margin: -1.5px 0 0 -1.5px; border-radius: 50%; background: var(--accent-strong); }
+.provider-usage progress { display: block; }
+.provider-usage-tick.is-passed { background: var(--surface); }
 .provider-usage progress { appearance: none; width: 100%; height: 4px; overflow: hidden; border: 0; border-radius: 3px; background: var(--line-strong); }
 .provider-usage progress::-webkit-progress-bar { background: var(--line-strong); border-radius: 3px; }
 .provider-usage progress::-webkit-progress-value { background: var(--accent); border-radius: 3px; }

@@ -1,4 +1,5 @@
-import type { SubagentStopIdentity, SubagentStopProof } from "./process-jobs-internal.js";
+import type { SubagentStopIdentity, SubagentSteerProof, SubagentStopProof } from "./process-jobs-internal.js";
+import { createLiveInputMailbox, type LiveInputMailbox } from "@mono-agent/agent-harness";
 import type { SubagentVerificationTarget, SubagentVerificationObservation } from "./subagent-verification-observer.js";
 import type { SubagentCommandReceipts } from "./subagent-command-receipts.js";
 import { boundSubagentCommandReceipts } from "./process-jobs-store.js";
@@ -282,6 +283,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private managedWritesClosed = false;
   private managedRegistry: ManagedSubagentRegistry | undefined;
   private readonly managedCommands = new Map<string, ReturnType<typeof createSubagentOwnedCommands>>();
+  // In-process only: a steering mailbox never outlives its detached turn, and a
+  // host restart leaves this map empty so steer answers with a truthful negative.
+  private readonly subagentLiveInput = new Map<string, LiveInputMailbox>();
   private readonly managedPublications = new Map<string, Promise<void>>();
   /** Coalesces a durable publication edge observed while this job's publisher is busy. */
   private readonly managedPublicationRearmPending = new Set<string>();
@@ -371,7 +375,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
 
   internalController(origin: ProcessJobOriginRecord, chainDepth: number | (() => number)): InternalProcessJobsController {
     const captured = structuredClone(origin);
-    return Object.freeze({ managed: this.managedRegistry !== undefined, stop: (identity: SubagentStopIdentity) => this.stopSubagent(captured.conversationId, identity), startInternal: (request: InternalProcessJobRequest) => this.start(
+    return Object.freeze({ managed: this.managedRegistry !== undefined, stop: (identity: SubagentStopIdentity) => this.stopSubagent(captured.conversationId, identity), steer: (identity: SubagentStopIdentity, text: string) => this.steerSubagent(captured.conversationId, identity, text), startInternal: (request: InternalProcessJobRequest) => this.start(
       captured, typeof chainDepth === "function" ? chainDepth() : chainDepth, request,
     ) });
   }
@@ -451,6 +455,47 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     }
   }
 
+  /**
+   * Offers text into a running detached turn's model loop. It starts no turn,
+   * forces no answer and changes no ownership: the receipt reports only what
+   * this offer did, so an unconsumed offer stays visibly unconsumed.
+   */
+  private async steerSubagent(conversationId: string, identity: SubagentStopIdentity, text: string): Promise<SubagentSteerProof> {
+    if (!isSubagentUuid(identity.turnToken) || !isSubagentUuid(identity.instanceIncarnation) || !this.managedRegistry) {
+      throw Object.assign(new Error("subagent_steer_unavailable"), { code: "subagent_steer_unavailable" });
+    }
+    const ownerIdentity: SubagentOwnerIdentity = { ...identity, conversationId, jobId: identity.turnToken, storeRoot: this.settings.stateDir };
+    const record = await this.storeGet(identity.turnToken, "subagent.steer");
+    if (!record?.subagentOwnership || !sameSubagentOwner(ownerIdentity, this.managedIdentity(record))) {
+      throw Object.assign(new Error("subagent_stale_turn"), { code: "subagent_stale_turn" });
+    }
+    if (isTerminalProcessJobState(record.state) || record.cancelRequested || record.subagentOwnership.revoked) {
+      return { jobId: record.jobId, delivery: "rejected", reason: "inactive" };
+    }
+    const mailbox = this.subagentLiveInput.get(identity.turnToken);
+    // A queued turn has no provider loop to steer yet: that is a retryable
+    // negative receipt. A turn that already started and has no mailbox (a host
+    // restart dropped it) is inactive instead — telling that caller to retry
+    // would be a lie about a loop that no longer exists.
+    if (mailbox === undefined) return { jobId: record.jobId, delivery: "rejected", reason: record.startedAt ? "inactive" : "not_started" };
+    const offer = mailbox.offer({ conversationId, id: randomUUID(), text, receivedAt: this.now().toISOString(), targetRunId: identity.turnToken });
+    if (offer.status !== "accepted") {
+      return { jobId: record.jobId, delivery: offer.reason === "unsupported" ? "unsupported" : "rejected", reason: offer.reason };
+    }
+    // A bounded wait, because a child mid-tool cannot read its mailbox yet. An
+    // unsettled offer is reported as offered, never as applied.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waited = new Promise<undefined>((resolveWait) => { timer = setTimeout(() => resolveWait(undefined), 3_000); });
+    try {
+      const settlement = await Promise.race([offer.settled, waited]);
+      if (settlement === undefined) return { jobId: record.jobId, delivery: "offered", reason: "not_settled" };
+      if (settlement.status === "applied") return { jobId: record.jobId, delivery: "consumed" };
+      // The same fact must read the same whichever side of the offer observed
+      // it: a route that cannot take live input is unsupported, not rejected.
+      return { jobId: record.jobId, delivery: settlement.reason === "unsupported" ? "unsupported" : "rejected", reason: settlement.reason };
+    } finally { clearTimeout(timer); }
+  }
+
   private async cancelOwned(jobId: string, stopIdentity?: SubagentOwnerIdentity): Promise<ProcessJobProjection> {
     const overlay = this.completionOverlays.get(jobId);
     if (overlay !== undefined && !stopIdentity) {
@@ -494,6 +539,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         await this.drainQueue();
       } else {
         this.managedCommands.get(jobId)?.revoke();
+      this.closeSubagentLiveInput(jobId);
       this.active.get(jobId)?.handle.cancel();
       }
       return structuredClone(this.projectWithOutput(record));
@@ -686,6 +732,24 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       instanceId: record.instanceId!, instanceIncarnation: owner.instanceIncarnation, turnToken: owner.turnToken };
   }
 
+  /**
+   * Idempotent. Settles every outstanding offer so a steer can never sit pending
+   * forever, while KEEPING the closed mailbox registered: between the child's
+   * last breath and the durable terminal state, a steer must read the honest
+   * `inactive`, not the retryable `not_started` a missing entry would imply.
+   */
+  private closeSubagentLiveInput(jobId: string): void {
+    this.subagentLiveInput.get(jobId)?.close("closed");
+  }
+
+  /** Terminal removal. Only run once the turn's outcome is durably recorded. */
+  private forgetSubagentLiveInput(jobId: string): void {
+    const mailbox = this.subagentLiveInput.get(jobId);
+    if (mailbox === undefined) return;
+    this.subagentLiveInput.delete(jobId);
+    mailbox.close("closed");
+  }
+
   private managedExecution(jobId: string, deadlineAt: number): ManagedSubagentExecution {
     const commands = createSubagentOwnedCommands({ deadlineAt, maxOutputBytes: this.settings.maxOutputBytes, now: () => this.now().getTime(),
       readIncarnation: this.readIncarnation,
@@ -699,7 +763,11 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       changed: async () => { await this.publishManaged(jobId); },
     });
     this.managedCommands.set(jobId, commands);
-    return { ownedForegroundProcesses: commands.processes,
+    // Keyed on the job id, which is the managed detached turn's token, so an
+    // offer aimed at a superseded turn cannot land in this one.
+    const liveInput = createLiveInputMailbox(jobId);
+    this.subagentLiveInput.set(jobId, liveInput);
+    return { ownedForegroundProcesses: commands.processes, liveInput,
       started: async () => await this.withManagedLock(async () => await this.storeMutate("subagent.provider_start", (records) => {
         const record = requireRecord(records, jobId);
         const owner = record.subagentOwnership!;
@@ -751,6 +819,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
 
   private async reportManaged(jobId: string, outcome: InstanceOutcome): Promise<void> {
     this.managedCommands.get(jobId)?.revoke();
+    // Before the closed-writes throw below: a finished child must never leave an
+    // accepted offer waiting, which would read as a false pending receipt.
+    this.closeSubagentLiveInput(jobId);
     if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended.");
     const record = await this.storeGet(jobId, "subagent.report_intent");
     const owner = record?.subagentOwnership;
@@ -834,7 +905,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           if (this.runningOccupancy() < occupied) await this.drainQueue();
         });
       }
-      if (publication.released) this.managedCommands.delete(jobId);
+      if (publication.released) { this.managedCommands.delete(jobId); this.closeSubagentLiveInput(jobId); }
       this.scheduleWake(jobId);
     });
     this.managedPublications.set(jobId, task);
@@ -1194,9 +1265,16 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         (chunk) => outputTail.writeStdout(chunk), (event) => this.reportSubagentProgress(jobId, event), Date.parse(startedAt) + current.maxRuntimeMs,
         pending.request.managed ? this.managedExecution(jobId, Date.parse(startedAt) + current.maxRuntimeMs) : undefined);
       this.active.set(jobId, { ...pending, handle, outputTail, progress });
-      const settlement = handle.completion.then((result) => this.complete(jobId, result))
+      const settlement = handle.completion
+        // Settlement closes the mailbox before any reporting can throw, so a
+        // steer that arrives after the turn ends is refused rather than queued.
+        .finally(() => { this.closeSubagentLiveInput(jobId); })
+        .then((result) => this.complete(jobId, result))
         .catch((error: unknown) => { if (this.stopping) this.shutdownFailures.push(error); })
-        .finally(() => this.settlements.delete(jobId));
+        // Removal waits for the durable terminal state, so the window in
+        // between still answers a steer with `inactive` rather than
+        // `not_started`. This chain always settles, so it always runs.
+        .finally(() => { this.forgetSubagentLiveInput(jobId); this.settlements.delete(jobId); });
       this.settlements.set(jobId, settlement);
       if (scheduleSurface) this.scheduleSurfaceUpdate(jobId);
       return { jobId, state: "running", startedAt, maxRuntimeMs: current.maxRuntimeMs };
@@ -1888,6 +1966,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     if (this.stopped) return;
     this.stopping = true;
     for (const commands of this.managedCommands.values()) commands.revoke();
+    for (const jobId of [...this.subagentLiveInput.keys()]) this.forgetSubagentLiveInput(jobId);
     this.wakesActive = false;
     this.wakeRearmPending.clear();
     for (const timer of this.wakeRearmTimers.values()) clearTimeout(timer);
@@ -2076,7 +2155,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         `Process-job chain depth cannot exceed ${String(this.settings.maxChainDepth)}.`,
       );
     }
-    if ((isInternal(request) ? !["Agent", "AgentSend"].includes(request.tool) || typeof request.run !== "function" || typeof request.cleanup !== "function"
+    if ((isInternal(request) ? !["Agent", "AgentManage"].includes(request.tool) || typeof request.run !== "function" || typeof request.cleanup !== "function"
       || !/^[a-f0-9-]{36}$/u.test(request.jobId) || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(request.instanceId)
       : (request.tool !== "Exec" && request.tool !== "Bash") || typeof request.launch !== "function")
       || (request.wakeOnCompletion !== undefined && typeof request.wakeOnCompletion !== "boolean")) {

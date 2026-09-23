@@ -98,6 +98,7 @@ async function performSearch(
   const explicitDomains = normalizeDomains(Array.isArray(domains) ? domains : []);
   const includeDomains = normalizeDomains([...explicitDomains, ...querySiteDomains(normalizedQuery)]);
   const excludeDomains = normalizeDomains(exclude_domains);
+  const domainsRequested = includeDomains.length > 0 || excludeDomains.length > 0;
   const config = normalizeSearchConfig(searchConfig);
   if ("error" in config) return searchFailure(
     `Error: ${config.error}`,
@@ -119,7 +120,7 @@ async function performSearch(
   const providerFailures = [];
   const engineOutcomes = [];
   let partialEngines = false;
-  let houndStopped = false;
+  let localStopped = false;
   const providersUsed = new Set();
   const attemptedBackends = new Set();
   const actualQueries = [];
@@ -160,10 +161,13 @@ async function performSearch(
     // Chain failures are reported even when a later backend rescued the query,
     // so a silent degradation to the fallback is still visible in the outcome.
     if (result.failures?.length) providerFailures.push(...result.failures);
-    if (result.backend === "hound" && Array.isArray(result.engineOutcomes)) {
+    if (result.backend === "local" && Array.isArray(result.engineOutcomes)) {
       engineOutcomes.push(...result.engineOutcomes.slice(0, 3));
       partialEngines ||= result.partial === true;
-      houndStopped ||= result.engineOutcomes.some((entry) => ["robots_denied", "robots_unavailable", "robots_crawl_delay", "access_challenge", "authentication_required", "rate_limited", "search_budget_exhausted", "network_denied"].includes(entry.code));
+      // Only a terminal local-provider failure (no answer possible now) marks
+      // the provider stopped. A per-engine denial on a search that still
+      // answered must never gate the chain or the remaining query variants.
+      localStopped ||= result.ok === false && result.engineOutcomes.some((entry) => ["robots_denied", "robots_unavailable", "robots_crawl_delay", "access_challenge", "authentication_required", "rate_limited", "search_budget_exhausted", "network_denied"].includes(entry.code));
     }
     if (result.ok) {
       if (typeof result.actualQuery === "string" && result.actualQuery.trim()) {
@@ -216,9 +220,13 @@ async function performSearch(
         break;
       }
       if (!result.ok && !result.relevance) disabledForCall.add(backend);
-      if (houndStopped || providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
+      // A stopped local provider only stops further local attempts (via
+      // disabledForCall above); the chain still advances to the next
+      // configured backend, and alternate queries still run against it. Only
+      // run-wide terminal conditions stop the whole call.
+      if (providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
     }
-    if (houndStopped || providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
+    if (providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
   }
   rememberRunProviderFailures(searchState, providerFailures);
   if (signal?.aborted) {
@@ -250,7 +258,7 @@ async function performSearch(
     const networkDenied = providerFailures.length > 0
       && providerFailures.every((entry) => entry.message === "Network access denied by sandbox policy.");
     const throttled = providerFailures.some((entry) => entry.rateLimited || entry.cooldown);
-    const terminalHoundCode = houndStopped ? providerFailures.find((entry) => entry.backend === "hound")?.code : undefined;
+    const terminalLocalCode = localStopped ? providerFailures.find((entry) => entry.backend === "local")?.code : undefined;
     const strictProviderCode = !Array.isArray(config.backend)
       ? providerFailures.find((entry) => typeof entry.code === "string")?.code
       : undefined;
@@ -259,7 +267,7 @@ async function performSearch(
     return searchFailure(networkDenied
       ? "Error: Network access denied by sandbox policy."
       : `Error: WebSearch failed: ${reason}`,
-    networkDenied ? "network_denied" : (throttled ? "rate_limited" : (terminalHoundCode || strictProviderCode || "backend_unavailable")), startedAt, searchState, callClaims.requests, {
+    networkDenied ? "network_denied" : (throttled ? "rate_limited" : (terminalLocalCode || strictProviderCode || "backend_unavailable")), startedAt, searchState, callClaims.requests, {
       attempts,
       ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12) } : {}),
       backend: config.backend,
@@ -276,11 +284,18 @@ async function performSearch(
       retryInRun: false,
       nextAction: "use_available_evidence",
       providerAttempts: providerAttemptMetadata(providerFailures),
-      ...(country ? {
-        filterSupport: { country: providerFailures.length > 0 && providerFailures.every((entry) => entry.code === "unsupported_country_filter") ? "unsupported" : "not_applied" },
+      ...(country || domainsRequested ? {
+        filterSupport: {
+          ...(country ? { country: providerFailures.length > 0 && providerFailures.every((entry) => entry.code === "unsupported_country_filter") ? "unsupported" : "not_applied" } : {}),
+          ...(domainsRequested ? { domains: domainFilterMechanism(config.backend) } : {}),
+        },
         requestedFilters: {
-          country,
-          note: "Country is a provider-dependent localization preference, not a guarantee that results are located there; IP-based ranking may still apply.",
+          ...(country ? { country } : {}),
+          ...(domainsRequested ? { domains: includeDomains } : {}),
+          note: [
+            country ? "Country is a provider-dependent localization preference, not a guarantee that results are located there; IP-based ranking may still apply." : null,
+            domainsRequested ? domainFilterNote(config.backend, domainFilterMechanism(config.backend)) : null,
+          ].filter(Boolean).join(" "),
         },
       } : {}),
     });
@@ -291,7 +306,7 @@ async function performSearch(
     : providersUsed.size > 1 ? "mixed" : config.backend;
   const bounded = boundWebSearchEntries(merged);
   const budget = webSearchBudgetSnapshot(searchState, callClaims.requests);
-  const retryInRun = !houndStopped && searchState.requestsUsed < searchState.maxRequests;
+  const retryInRun = !localStopped && searchState.requestsUsed < searchState.maxRequests;
   const nextAction = bounded.resultCount > 0
     ? "fetch_existing_sources"
     : retryInRun ? "refine_query" : "use_available_evidence";
@@ -312,7 +327,7 @@ async function performSearch(
     .map((entry) => `${entry.backend}:${entry.code}`);
   const coverage = {
     resultCount: fittedEntries.length,
-    ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12), partialEngines, searchStopped: houndStopped } : {}),
+    ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12), partialEngines, searchStopped: localStopped } : {}),
     truncated: truncatedFinal,
     ...(omittedCount > 0 ? { omittedResults: omittedCount } : {}),
     backend,
@@ -327,14 +342,19 @@ async function performSearch(
       language: language ? (webSearchProviders.get(backend)?.filterSupport.language ?? "advisory") : "not_requested",
       country: country ? (webSearchProviders.get(backend)?.filterSupport.country ?? "provider_dependent") : "not_requested",
       timeRange: time_range ? (webSearchProviders.get(backend)?.filterSupport.timeRange ?? "provider") : "not_requested",
+      domains: domainsRequested ? domainFilterMechanism(backend) : "not_requested",
     },
-    ...(language || country || time_range ? { requestedFilters: {
+    ...(language || country || time_range || domainsRequested ? { requestedFilters: {
       ...(language ? { language: collapseWhitespace(language).slice(0, 100) } : {}),
       ...(country ? { country } : {}),
       ...(time_range ? { timeRange: collapseWhitespace(time_range).slice(0, 100) } : {}),
-      note: country
-        ? "Country is a provider-dependent localization preference, not a guarantee that results are located there; IP-based ranking may still apply. Verify dates in sources."
-        : "Provider-dependent; verify dates in sources.",
+      ...(domainsRequested ? { domains: includeDomains } : {}),
+      note: [
+        country
+          ? "Country is a provider-dependent localization preference, not a guarantee that results are located there; IP-based ranking may still apply. Verify dates in sources."
+          : "Provider-dependent; verify dates in sources.",
+        domainsRequested ? domainFilterNote(backend, domainFilterMechanism(backend)) : null,
+      ].filter(Boolean).join(" "),
     } } : {}),
     ...budget,
     retryInRun,
@@ -400,7 +420,7 @@ async function performSearch(
       cooldownSkipCount: providerFailures.filter((r) => r.cooldown).length,
       quotaSkipCount: providerFailures.filter((r) => r.quotaSkipped).length,
       filterSupport: coverage.filterSupport,
-      ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12), partialEngines, searchStopped: houndStopped } : {}),
+      ...(engineOutcomes.length ? { engineOutcomes: engineOutcomes.slice(0, 12), partialEngines, searchStopped: localStopped } : {}),
       providerFailureCount: providerFailures.length,
       rateLimited: coverage.rateLimited,
       cooldownBackends: coverage.cooldownBackends,
@@ -503,6 +523,9 @@ function normalizeSearchConfig(input) {
     return { error: `tools.web.search.backend "auto" was removed; use ${JSON.stringify(previous)} (the previous auto order for this configuration)` };
   }
   const names = Array.isArray(backend) ? backend : [backend];
+  if (names.some((name) => name === "hound")) {
+    return { error: '`tools.web.search.backend` value `hound` was renamed to `local`; use `local` instead.' };
+  }
   if (!names.length || names.some((name) => name !== "keyless" && !webSearchProviders.has(name))) {
     return { error: "Unknown web search provider." };
   }
@@ -597,6 +620,34 @@ function queryWithDomains(query, domains) {
 function querySiteDomains(query) {
   return [...String(query).matchAll(/\bsite:([a-z0-9.-]+)(?:\/\S*)?/giu)]
     .map((match) => match[1]);
+}
+
+// Domain constraints travel as site: operators in the query text; the
+// per-provider mechanism is declared in each adapter's filterSupport.domains:
+// "operator" means the provider honours site: server-side, "unverified" means
+// only the client-side domain filter can be relied on. Results are always
+// filtered client-side by filterByDomains as well.
+function domainFilterMechanism(backend) {
+  const names = Array.isArray(backend) ? backend : [backend];
+  const mechanisms = names
+    .flatMap((name) => name === "keyless" ? expandSearchProvider(name) : [name])
+    .map((name) => webSearchProviders.get(name)?.filterSupport.domains)
+    .filter((mechanism) => typeof mechanism === "string");
+  if (mechanisms.length === 0) return "provider_dependent";
+  if (mechanisms.every((mechanism) => mechanism === "operator")) return "operator";
+  if (mechanisms.every((mechanism) => mechanism === "unverified")) return "unverified";
+  return "provider_dependent";
+}
+
+function domainFilterNote(backend, mechanism) {
+  const target = Array.isArray(backend) ? backend.join(", ") : String(backend);
+  if (mechanism === "operator") {
+    return `Domain constraints travel as site: operators in the query text, which ${target} honours server-side; results are additionally filtered client-side by domain.`;
+  }
+  if (mechanism === "unverified") {
+    return `Domain support is unverified for ${target}: site: operators travel in the query text and results are enforced client-side by domain filtering.`;
+  }
+  return "Domain constraints are enforced client-side by domain filtering; provider-side handling is provider-dependent.";
 }
 
 function sanitizeFailureMetadata(failures) {

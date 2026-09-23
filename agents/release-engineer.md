@@ -29,7 +29,7 @@ git diff --check
 
 ## Registry gotcha (always)
 
-The machine's machine-level proxy `.npmrc` breaks npm against npmjs. Every npm read/write
+A machine-level proxy `.npmrc` can break npm against npmjs. Every npm read/write
 pins the registry or blanks the userconfig:
 
 ```bash

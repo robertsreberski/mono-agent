@@ -184,7 +184,7 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps actual %s tool arrays
         toolLimits: { bashTimeoutMs: 120000 - index * 1000 },
         processJobsAvailability: { chainDepth: index, maxChainDepth: 4, remainingStarts: Math.max(0, 4 - index), ...(index >= 4 ? { unavailableReason: 'chain_depth_exhausted' } : {}) },
       };
-      const tools = getPiBuiltinTools(['Bash', 'Exec', 'Agent', 'AgentSend', 'AskParent'], {
+      const tools = getPiBuiltinTools(['Bash', 'Exec', 'Agent', 'AgentManage', 'AskParent'], {
         ...options, ctx, processJobsController: options.processJobs,
       });
       if (profile === 'persistent-child') expect(tools.map((tool) => tool.name)).toEqual(['AskParent', 'Bash', 'Exec']);

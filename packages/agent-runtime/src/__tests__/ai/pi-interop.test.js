@@ -273,9 +273,8 @@ describe("Pi interoperability facade", () => {
     });
 
     it("reads one row straight from upstream with no miss-fallback", () => {
-      // pi-ai 0.86.1 ships every model mono-agent needs (including the former
-      // opencode-go:deepseek-v4.1-flash backfill), so the facade reports the
-      // upstream row verbatim and undefined on a genuine miss.
+      // All former backfill rows ship upstream in 0.87.1. The facade reports
+      // the upstream row verbatim and undefined on a genuine miss.
       piMocks.getBuiltinModel.mockImplementation((provider, id) =>
         id === "model-1" ? rawModel : undefined);
 

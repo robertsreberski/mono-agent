@@ -1,19 +1,23 @@
 // @ts-check
-// Adapted from Hound 13.2.0 search_metasearch.py (DuckDuckGo 315-352,
-// Brave 408-433, Mojeek 636-657). Hound MIT (c) 2026 Bishesh Bhandari;
-// vendored ddgs MIT (c) 2022 deedy5 / Pragmatic School. Full notices and
-// verified source digest: package-root THIRD_PARTY_NOTICES.md.
+// Adapted from Hound 13.2.0 search_metasearch.py (DuckDuckGo 315-352).
+// Hound MIT (c) 2026 Bishesh Bhandari; vendored ddgs MIT (c) 2022 deedy5 /
+// Pragmatic School. Full notices and verified source digest: package-root
+// THIRD_PARTY_NOTICES.md.
+//
+// Brave (`https://search.brave.com/search`) and Mojeek
+// (`https://www.mojeek.com/search`) serve `Disallow: /search` to every user
+// agent in their robots.txt, so the proactive robots gate refuses them on
+// every search and they can never return a result. The pool is therefore a
+// single DuckDuckGo HTML engine until a robots-permitted endpoint exists.
 import { parseHTML } from "linkedom";
 import { canonicalizeSearchUrl, collapseWhitespace, wrappedSearchDestination } from "../web-search-providers/shared.js";
 import { duckDuckGoRegion } from "../web-search-country.js";
 
-export const HOUND_ENGINES = Object.freeze([
+export const LOCAL_ENGINES = Object.freeze([
   { name: "duckduckgo", origin: "https://html.duckduckgo.com", date: true, country: true },
-  { name: "brave", origin: "https://search.brave.com", date: true, country: false },
-  { name: "mojeek", origin: "https://www.mojeek.com", date: false, country: false },
 ]);
 
-export function houndEngineRequest(engine, query, timeRange, language, country) {
+export function localEngineRequest(engine, query, timeRange, language, country) {
   const headers = { "Accept-Language": language || "en-US,en;q=0.8" };
   const date = { day: "d", month: "m", year: "y" }[timeRange];
   if (engine.name === "duckduckgo") {
@@ -21,37 +25,18 @@ export function houndEngineRequest(engine, query, timeRange, language, country) 
     if (date) body.set("df", date);
     return { url: `${engine.origin}/html/`, init: { method: "POST", body, headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" } } };
   }
-  const url = new URL("/search", engine.origin);
-  url.searchParams.set("q", query);
-  if (engine.name === "brave") {
-    url.searchParams.set("source", "web");
-    if (date) url.searchParams.set("tf", { d: "pd", m: "pm", y: "py" }[date]);
-  }
-  return { url: url.href, init: { headers } };
+  throw Object.assign(new Error(`Unsupported local search engine (${engine?.name}).`), { code: "endpoint_not_supported" });
 }
 
-export function parseHoundEngine(engine, html) {
+export function parseLocalEngine(engine, html) {
   const { document } = parseHTML(html);
   for (const node of document.querySelectorAll("script,style")) node.remove();
-  const selector = { duckduckgo: ".result, div.body", brave: 'div[data-type="web"]', mojeek: "ul.results > li" }[engine.name];
   const results = [];
   const seen = new Set();
-  for (const row of document.querySelectorAll(selector)) {
-    let link;
-    let title;
-    let snippet;
-    if (engine.name === "duckduckgo") {
-      link = row.querySelector("a.result__a, h2 a") ?? [...row.children].find((node) => node.tagName === "A");
-      title = row.querySelector("h2")?.textContent ?? link?.textContent;
-      snippet = row.querySelector(".result__snippet")?.textContent ?? (link?.getAttribute("class") ? "" : link?.textContent);
-    } else if (engine.name === "brave") {
-      link = [...row.querySelectorAll("a[href]")].find((node) => node.querySelector('[class*="title"]'));
-      title = link?.querySelector('[class*="title"]')?.textContent;
-      snippet = row.querySelector('[class*="snippet"] [class*="content"]')?.textContent;
-    } else {
-      link = row.querySelector("h2 a"); title = row.querySelector("h2")?.textContent;
-      snippet = row.querySelector("p.s")?.textContent;
-    }
+  for (const row of document.querySelectorAll(".result, div.body")) {
+    const link = row.querySelector("a.result__a, h2 a") ?? [...row.children].find((node) => node.tagName === "A");
+    const title = row.querySelector("h2")?.textContent ?? link?.textContent;
+    const snippet = row.querySelector(".result__snippet")?.textContent ?? (link?.getAttribute("class") ? "" : link?.textContent);
     const href = safeSearchUrl(link?.getAttribute("href"), engine.origin);
     if (!href || !collapseWhitespace(title) || seen.has(href)) continue;
     if (new URL(href).pathname === "/y.js" && new URL(href).hostname === "duckduckgo.com") continue;
@@ -60,7 +45,7 @@ export function parseHoundEngine(engine, html) {
     if (results.length >= 30) break;
   }
   if (!results.length && !/\bno results (?:found|for|were found)\b/iu.test(document.documentElement?.textContent || "")) {
-    throw Object.assign(new Error("Unrecognized Hound engine result layout."), { code: "invalid_response" });
+    throw Object.assign(new Error("Unrecognized local engine result layout."), { code: "invalid_response" });
   }
   return results;
 }
@@ -93,11 +78,12 @@ function dedupeKey(url) {
   return target.href;
 }
 
-/** Hound consensus/snippet aggregation + lean position ranking and host
- * diversity. Engine order is fixed, not completion order; independent index
- * families are DDG/Bing, Brave, Mojeek. No neural model or authority labels.
+/** Local consensus/snippet aggregation + lean position ranking and host
+ * diversity. With the single-engine pool every result carries one engine vote;
+ * the merge still dedupes and diversifies hosts. No neural model or authority
+ * labels.
  */
-export function mergeHoundResults(lists, { includeDomains = [], excludeDomains = [] } = {}) {
+export function mergeLocalResults(lists, { includeDomains = [], excludeDomains = [] } = {}) {
   const byUrl = new Map();
   const matches = (host, domain) => host === domain || host.endsWith(`.${domain}`);
   for (const list of lists) for (const [position, result] of list.entries()) {
@@ -119,5 +105,5 @@ export function mergeHoundResults(lists, { includeDomains = [], excludeDomains =
     const count = counts.get(host) ?? 0; counts.set(host, count + 1);
     (includeDomains.length === 1 || count < 2 ? leading : deferred).push(result);
   }
-  return [...leading, ...deferred].map(({ engine: _engine, position: _position, engines: _engines, ...result }) => ({ ...result, backend: "hound" }));
+  return [...leading, ...deferred].map(({ engine: _engine, position: _position, engines: _engines, ...result }) => ({ ...result, backend: "local" }));
 }

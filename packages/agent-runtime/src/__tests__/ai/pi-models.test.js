@@ -10,6 +10,59 @@ import { describe, expect, it } from "vitest";
 import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "../../ai/providers/pi-models.js";
 import { retryableProviderFailureInfo } from "../../ai/failure.js";
 import { thinkingLevelForEffort } from "../../ai/providers/pi-native/turn-runner.js";
+import { getBuiltinModel, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
+import { getPiBuiltinModel, listPiBuiltinModels } from "../../ai/pi-interop.js";
+import { estimateCost } from "../../ai/cost.js";
+
+// Exercise the real pinned 0.87.1 catalog, rather than a mock or a copied
+// temporary row: pricing, dispatch, advertised effort and listing must agree.
+describe("Pi 0.87.1 native model integration", () => {
+  const rows = [
+    ["anthropic", "claude-opus-5-5", 1_000_000, ["low", "medium", "high", "xhigh", "max"], 4, 20],
+    ["openai-codex", "gpt-6-sol", 272_000, ["none", "minimal", "low", "medium", "high", "xhigh", "max"], 2, 10],
+    ["openai-codex", "gpt-6-luna", 272_000, ["none", "minimal", "low", "medium", "high", "xhigh", "max"], 0.1, 0.5],
+    ["openai", "gpt-6-sol", 272_000, ["none", "low", "medium", "high", "xhigh", "max"], 2, 10],
+    ["openai", "gpt-6-luna", 272_000, ["none", "low", "medium", "high", "xhigh", "max"], 0.1, 0.5],
+  ];
+
+  for (const [provider, model, contextWindow, levels, input, output] of rows) {
+    it(`uses one upstream ${provider}:${model} row for listing, resolution and pricing`, () => {
+      const upstream = getBuiltinModel(provider, model);
+      expect(upstream).toBeDefined();
+      expect(getBuiltinModels(provider).filter((row) => row.id === model)).toHaveLength(1);
+      const listed = listPiBuiltinModels(provider).filter((row) => row.id === model);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toEqual(upstream);
+      expect(getPiBuiltinModel(provider, model)).toEqual(upstream);
+      const resolved = resolvePiRuntimeModel({ provider, model, reference: `${provider}:${model}` }, {});
+      expect(resolved.model).toEqual(upstream);
+      expect(resolved.model.contextWindow).toBe(contextWindow);
+      expect(resolved.capabilities.reasoning_levels).toEqual(levels);
+      expect(thinkingLevelForEffort("max", resolved.capabilities)).toBe("max");
+      expect(estimateCost({ model: `${provider}:${model}`, inputTokens: 1_000, outputTokens: 1_000 }))
+        .toBeCloseTo((input + output) / 1_000, 6);
+    });
+  }
+
+  it("rejects genuinely unknown refs instead of inventing backfill rows", () => {
+    for (const [provider, model] of [
+      ["openai-codex", "gpt-6-nemesis"],
+      ["anthropic", "claude-opus-9"],
+    ]) {
+      expect(() => resolvePiRuntimeModel({ provider, model, reference: `${provider}:${model}` }, {}))
+        .toThrow(`pi model not found: ${provider}:${model}`);
+    }
+  });
+
+  it("honors Pi's >272K request tier for the two Codex models", () => {
+    for (const [model, input, output] of [["gpt-6-sol", 4, 15], ["gpt-6-luna", 0.2, 0.75]]) {
+      const upstream = getBuiltinModel("openai-codex", model);
+      expect(upstream.cost.tiers).toMatchObject([{ inputTokensAbove: 272_000, input, output }]);
+      expect(estimateCost({ model: `openai-codex:${model}`, inputTokens: 1_000_000, outputTokens: 1_000_000 }))
+        .toBeCloseTo(input + output, 6);
+    }
+  });
+});
 
 describe("resolvePiRuntimeModel — unknown builtin model guard", () => {
   it("throws a clean 'pi model not found' error instead of a raw TypeError on a catalog miss", () => {
@@ -37,16 +90,16 @@ describe("resolvePiRuntimeModel — OpenAI Codex GPT-5.6 metadata", () => {
     "gpt-5.6-sol": {
       name: "GPT-5.6 Sol",
       cost: {
-        input: 5,
-        output: 30,
-        cacheRead: 0.5,
-        cacheWrite: 6.25,
+        input: 4,
+        output: 20,
+        cacheRead: 0.4,
+        cacheWrite: 5,
         tiers: [{
           inputTokensAbove: 272_000,
-          input: 10,
-          output: 45,
-          cacheRead: 1,
-          cacheWrite: 12.5,
+          input: 8,
+          output: 30,
+          cacheRead: 0.8,
+          cacheWrite: 10,
         }],
       },
     },
@@ -128,7 +181,7 @@ describe("resolvePiRuntimeModel — OpenAI Codex GPT-5.6 metadata", () => {
 });
 
 describe("resolvePiRuntimeModel — OpenCode Go DeepSeek V4.1 Flash upstream builtin", () => {
-  // pi-ai 0.86.1 ships this model natively (retiring the mono-agent catalog
+  // pi-ai 0.87.0 ships this model natively (retiring the mono-agent catalog
   // backfill): the row below is the upstream row, and the resolution pins THAT
   // behavior. Upstream's thinkingLevelMap pins `off`/`minimal`/`medium`/
   // `xhigh` to null, so — unlike the retired backfill, which left `off`

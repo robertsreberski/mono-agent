@@ -15,13 +15,22 @@ import { createAgentTool } from "../../../../agent-runtime/src/agent/tools/agent
 import { generatePiNativeResponse } from "../../../../agent-runtime/src/ai/providers/pi-native.js";
 import { createToolContext, updateToolContext } from "../../../../agent-runtime/src/agent/tools/shared/tool-context.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js";
+import { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } from "./verification-scratch.mjs";
 
 const durationMs = Number(process.argv[2] ?? 250);
 assert(Number.isSafeInteger(durationMs) && durationMs >= 1 && durationMs <= 180_000);
+const keepScratch = keepVerificationScratch();
 const verification = resolve(process.cwd(), ".mono-agent/verification");
 await mkdir(verification, { recursive: true });
+await pruneVerificationScratch(verification, "managed-built-", "managed-built", { keep: keepScratch });
 const root = await mkdtemp(resolve(verification, "managed-built-"));
-const ownership = await acquireAgentRootOwnership(root);
+let ownership;
+try {
+  ownership = await acquireAgentRootOwnership(root);
+} catch (error) {
+  await removeVerificationScratch(root, { keep: keepScratch, label: "managed-built" });
+  throw error;
+}
 let service;
 let runtime;
 try {
@@ -46,7 +55,7 @@ try {
   const instances = await registry.open(origin.conversationId);
   const config = loadMonoAgentConfig({ cwd: root, env: {
     MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
-    MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend,Exec", MONO_AGENT_SANDBOX_MODE: "off",
+    MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage,Exec", MONO_AGENT_SANDBOX_MODE: "off",
     MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, timeoutMs: 300_000, commandTimeoutMs: 300_000, instances: { root: registryRoot }, definitions: [{ name: "verifier", description: "Bounded verification", prompt: "Run the supplied verification once.", allowedTools: ["Exec"] }] }),
   } });
   const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
@@ -96,4 +105,8 @@ try {
   await runtime?.disposeAllSessions?.();
   await service?.stop();
   ownership.release();
+  // Only this fixture creates the root, so only it removes it — after the
+  // service stopped and ownership released. Cleanup failures are reported,
+  // never thrown, so they cannot mask the proof verdict.
+  await removeVerificationScratch(root, { keep: keepScratch, label: "managed-built" });
 }

@@ -55,6 +55,9 @@ export function createSlackPostedReplyHistory(options: SlackPostedReplyHistoryOp
             ? await responder.respond(request, stream)
             : await scopes.run(scope, async () => await responder.respond(request, stream));
         },
+        ...(responder.compactConversation === undefined
+          ? {}
+          : { compactConversation: responder.compactConversation.bind(responder) }),
         ...(responder.cancel === undefined ? {} : { cancel: responder.cancel.bind(responder) }),
         ...(responder.liveInputOwnership === undefined ? {} : { liveInputOwnership: responder.liveInputOwnership }),
         ...(responder.offerLiveInput === undefined

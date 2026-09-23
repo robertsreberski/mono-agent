@@ -4,10 +4,9 @@ import { normalizeSearchCountry } from "./web-search-country.js";
 /**
  * Shared managed web-research response contract for WebSearch and WebFetch.
  *
- * Interaction design is Hound-inspired (compact actionable envelope, focused
- * views, typed continuations); this envelope module remains independently
- * implemented. Native extraction adaptations carry their own source and
- * license notices.
+ * Interaction design is a compact actionable envelope with focused views and
+ * typed continuations; this envelope module is independently implemented.
+ * Native extraction adaptations carry their own source and license notices.
  * Provider selection, admission, budget, cooldown, and sandbox enforcement
  * stay in the existing controller and providers — this module only shapes what
  * the model sees and guarantees the typed action surface.

@@ -54,7 +54,9 @@ version, a bad date, and a malformed file. It never edits older sections.
 ## Checks
 
 - `pnpm run check:changelog` — structure, published-version coverage, and
-  (in a PR context) the new-entry rule.
+  (in a ready-for-review PR) the new-entry rule. A draft PR defers the
+  entry rule until it is marked ready for review; structure and coverage
+  still run on every PR and on pushes.
 - `vitest run scripts/__tests__/check-changelog.test.mjs` when touching the
   check; the release-side file under `scripts/release/__tests__/` when
   touching the release scripts.

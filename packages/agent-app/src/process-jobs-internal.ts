@@ -6,7 +6,7 @@ import type { ProcessJobProcessResult, ProcessJobStartResult } from "@mono-agent
 export interface InternalProcessJobRequest {
   readonly kind: "internal";
   readonly managed?: ManagedSubagentAdmission;
-  readonly tool: "Agent" | "AgentSend";
+  readonly tool: "Agent" | "AgentManage";
   readonly jobId: string;
   readonly instanceId: string;
   readonly timeoutMs?: number;
@@ -29,8 +29,15 @@ export interface SubagentStopProof {
   readonly resumable: boolean;
   readonly disposition: string | null;
 }
+/** Delivery is an observation of this offer only, never a claim about the child's answer. */
+export interface SubagentSteerProof {
+  readonly jobId: string;
+  readonly delivery: "consumed" | "offered" | "rejected" | "unsupported";
+  readonly reason?: string;
+}
 export interface InternalProcessJobsController {
   stop?(identity: SubagentStopIdentity): Promise<SubagentStopProof>;
+  steer?(identity: SubagentStopIdentity, text: string): Promise<SubagentSteerProof>;
   readonly managed?: boolean;
   startInternal(request: InternalProcessJobRequest): Promise<ProcessJobStartResult>;
 }

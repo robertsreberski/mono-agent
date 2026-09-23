@@ -68,6 +68,9 @@ export {
   MEMORY_LLM_PROVIDERS,
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
+  RENAMED_TOOL_NAMES,
+  renamedToolMessage,
+  renamedToolName,
 } from "./enums.js";
 export { buildMonoAgentConfigView, CORE_CONFIG_FIELD_IDS, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "./config-view.js";
 export type {

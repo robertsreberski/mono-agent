@@ -2140,6 +2140,25 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("persists only terminal manual compaction on this thread's settled assistant row", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const other = store.createThread("agent-one");
+    expect(store.recordManualCompaction(thread.id, { status: "skipped", trigger: "manual", operationId: "no-answer" })).toBeUndefined();
+    const turn = store.beginTurn({ threadId: thread.id, text: "hello", attachmentIds: [] });
+    store.completeTurn(turn.turnId, "answer");
+    const id = store.recordManualCompaction(thread.id, {
+      status: "succeeded", trigger: "manual", operationId: "c1", tokensBefore: 50_000, tokensAfter: 10_000,
+    });
+    expect(id).toBe(store.getThreadDetail(thread.id)?.messages.at(-1)?.id);
+    expect(JSON.stringify(store.getThreadDetail(thread.id)?.messages.at(-1)?.parts)).toContain('"status":"succeeded"');
+    expect(store.getThreadDetail(other.id)?.messages).toEqual([]);
+    store.close();
+  });
+
   it("updates a compaction lifecycle in place while keeping distinct operations", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -3568,7 +3587,9 @@ describe("WebStore subagent parts", () => {
     return detail.messages.at(-1)?.parts ?? [];
   }
 
-  it.each(["Agent", "AgentSend"])("preserves an exact detached %s receipt against late child bookends and calls", async (tool) => {
+  // "AgentSend" is retained history only: the tool was renamed to
+  // "AgentManage" with no alias, and stored transcripts still carry it.
+  it.each(["Agent", "AgentManage", "AgentSend"])("preserves an exact detached %s receipt against late child bookends and calls", async (tool) => {
     const receipt = { schema: "mono-agent.process-job-start-receipt.v1", tool, jobId: "job", state: "running", startedAt: "2026-09-13T10:00:00.000Z" };
     const parts = await turnWith([
       { kind: "event", event: { type: "tool_call_started", id: "launch", name: tool } },

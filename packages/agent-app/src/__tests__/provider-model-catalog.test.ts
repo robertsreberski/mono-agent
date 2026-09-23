@@ -117,6 +117,25 @@ describe("provider-model-catalog", () => {
     }
   });
 
+  it("advertises each new 0.87.1 Pi model once with upstream limits and effort", () => {
+    for (const [provider, model, contextWindow] of [
+      ["anthropic", "claude-opus-5-5", 1_000_000],
+      ["openai-codex", "gpt-6-sol", 272_000],
+      ["openai-codex", "gpt-6-luna", 272_000],
+      ["openai", "gpt-6-sol", 272_000],
+      ["openai", "gpt-6-luna", 272_000],
+    ] as const) {
+      const upstream = listPiBuiltinModels(provider).find((row) => row.id === model)!;
+      const catalog = buildProviderModelCatalog({ providers: [{ id: provider }] });
+      const advertised = catalog.listModels(provider).models.filter((row) => row.id === model);
+      expect(advertised).toHaveLength(1);
+      expect(advertised[0]).toMatchObject({
+        id: model, provider, contextWindow,
+        reasoning: resolveAdvertisedModelEffortForBuiltin(upstream).reasoning,
+      });
+    }
+  });
+
   it("advertises the upstream opencode-go DeepSeek V4.1 Flash like a builtin", () => {
     const catalog = buildProviderModelCatalog({ providers: [{ id: "opencode-go" }] });
     const provider = catalog.listProviders().find((entry) => entry.id === "opencode-go");

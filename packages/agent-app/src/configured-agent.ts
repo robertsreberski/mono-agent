@@ -23,6 +23,7 @@ import type {
   AgentHarnessRuntimeOptionsInput,
   AgentHarnessToolHistoryOptions,
   ConversationHistoryStore,
+  LiveInputMailbox,
   SkillIndexSummary,
   ToolHistoryWriterHandle,
 } from "@mono-agent/agent-harness";
@@ -48,6 +49,7 @@ import {
   createSrtSandboxEngine,
   describeMonoRuntimeSupport,
   modelReferenceKey,
+  monoRuntimeSupportsLiveInput,
   monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
   runtimeOptionsForLocalProvider,
@@ -194,6 +196,7 @@ export interface ConfiguredAgentHarnessOptions {
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
+  readonly runtimeOptionsForManualCompaction?: AgentHarnessOptions["runtimeOptionsForManualCompaction"];
   /** Best-effort diagnostic when the default MemoryRecall endpoint cannot start. */
   readonly onMemoryRecallUnavailable?: (error: unknown) => void;
   /** Best-effort diagnostic when the chronological MemoryJournal endpoint cannot start. */
@@ -605,7 +608,7 @@ function selectMcpServers(
 /** Denied for every subagent regardless of profile. Mirrors the kernel's own list. */
 const SUBAGENT_HARD_DENY = [
   "Agent",
-  "AgentSend",
+  "AgentManage",
   "AskUser",
   "SlackSendMessage",
   "TelegramSendMessage",
@@ -640,6 +643,8 @@ function inlineSubagentCeiling(config: MonoAgentConfig): readonly string[] {
 
 interface SubagentRunRequest {
   readonly ownedForegroundProcesses?: OwnedForegroundProcesses;
+  /** Host mailbox for parent steering of this detached turn; used only if this route supports live input. */
+  readonly liveInput?: LiveInputMailbox;
   readonly detached?: true;
   readonly turnToken?: string;
   readonly deadlineAt?: number;
@@ -809,7 +814,16 @@ export function buildSubagentsOptions(
     };
     const recovery = request.detached && request.instance && request.turnToken && runtime.recoverSession
       ? { runId: request.turnToken, revision: 0 } : undefined;
+    // Mirrors the harness's main-conversation gate: an unsupported route must
+    // say so through the mailbox, so a parent steer reports unsupported instead
+    // of waiting on a loop that can never read it.
+    let steeringSupported = false;
+    if (request.liveInput !== undefined) {
+      try { steeringSupported = monoRuntimeSupportsLiveInput(); } catch { steeringSupported = false; }
+      if (!steeringSupported) request.liveInput.markUnsupported();
+    }
     const result = await runtime.run(`${childSystemPrompt}\n\n${HOST_TURN_CONTEXT_GUIDANCE}`, {
+      ...(request.liveInput !== undefined && steeringSupported ? { liveInput: request.liveInput } : {}),
       ...childCapabilityOptions,
       ...(recovery ? { sessionRecovery: recovery } : {}),
       ...(config.providers?.piNative?.cacheRetention === undefined ? {} : { cacheRetention: config.providers.piNative.cacheRetention }),
@@ -1379,6 +1393,9 @@ async function createConfiguredAgentHarnessInternal(
     ...(runtimeOptionsForRequest === undefined
       ? {}
       : { runtimeOptionsForRequest }),
+    ...(options.runtimeOptionsForManualCompaction === undefined
+      ? {}
+      : { runtimeOptionsForManualCompaction: options.runtimeOptionsForManualCompaction }),
     // Same predicate the process-jobs extension uses, so the session block only
     // describes backgrounding on turns whose Exec/Bash actually offer it.
     backgroundSubagentsAvailable: (input) => backgroundSubagentsAvailableForRequest(input, {

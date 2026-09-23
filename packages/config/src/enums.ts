@@ -26,3 +26,26 @@ export const MEMORY_LLM_PROVIDERS = ["ollama", "agent-host"] as const;
 
 /** Sentinel in tools.allowedTools meaning "all built-in tools" (an allow-all wildcard). */
 export const ALLOW_ALL_TOOLS = "*";
+
+/**
+ * Built-in tools removed by a rename, mapped to their current name.
+ *
+ * Unlike the snake_case input aliases these names are NOT accepted: the old
+ * name is not registered, so a policy entry that still uses it silently grants
+ * nothing — and a stale deny entry silently stops denying the renamed tool.
+ * Every tool-policy validator reports the rename instead of ignoring it.
+ */
+export const RENAMED_TOOL_NAMES: Readonly<Record<string, string>> = {
+  AgentSend: "AgentManage",
+};
+
+/** The current name for a tool retired by a rename, or undefined when the name is not retired. */
+export function renamedToolName(name: string): string | undefined {
+  return Object.hasOwn(RENAMED_TOOL_NAMES, name) ? RENAMED_TOOL_NAMES[name] : undefined;
+}
+
+/** The shared migration diagnostic for one retired tool name in a policy list. */
+export function renamedToolMessage(name: string, field: string): string {
+  return `${field} lists ${name}, which was renamed to ${String(renamedToolName(name))}. `
+    + `There is no alias: rename the entry to ${String(renamedToolName(name))}.`;
+}

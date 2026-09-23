@@ -20,6 +20,7 @@ import { createAgentTool } from "../../../../agent-runtime/src/agent/tools/agent
 import { generatePiNativeResponse } from "../../../../agent-runtime/src/ai/providers/pi-native.js";
 import { createToolContext, updateToolContext } from "../../../../agent-runtime/src/agent/tools/shared/tool-context.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js";
+import { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } from "./verification-scratch.mjs";
 
 const ROOT = fileURLToPath(new URL("../../../../../", import.meta.url)).replace(/\/$/, "");
 assert.equal(process.cwd(), ROOT);
@@ -93,14 +94,12 @@ async function owner(root, scenario) {
   }
   const shortCommand = scenario === "terminal" || certificateScenario;
   const timeoutMs = shortCommand ? 6000 : 300_000;
-  // Core configuration comes only from mono-agent.config.json; a stale
-  // MONO_AGENT_* environment is silently ignored, so the fixture writes the
-  // file the loader reads instead of projecting config through env.
+  // The child uses the same JSON-only loader as production hosts.
   const configPath = resolve(root, "mono-agent.config.json");
   await writeFile(configPath, JSON.stringify({
     runtime: { model: "openai-codex:gpt-5.5" },
     context: { identityPath: "./IDENTITY.md" },
-    tools: { allowedTools: ["Agent", "AgentSend", "Exec"] },
+    tools: { allowedTools: ["Agent", "AgentManage", "Exec"] },
     sandbox: { mode: "off" },
     subagents: { enabled: true, timeoutMs, commandTimeoutMs: 300_000, instances: { root: resolve(root, "children") },
       definitions: [{ name: "verifier", description: "Bounded verification", prompt: "Run the supplied verification once.", allowedTools: ["Exec"] }] },
@@ -219,7 +218,9 @@ if (mode === "owner") await owner(resolve(process.argv[3]), process.argv[4]);
 else if (mode === "recover") await recover(resolve(process.argv[3]), Number(process.argv[4]), Number(process.argv[5]));
 else {
   assert(["running", "terminal", "preparing", "attested", "release-fence", "certificate-before-write", "certificate-lost-ack", "certificate-after-copy", "certificate-after-ack"].includes(mode));
+  const keepScratch = keepVerificationScratch();
   await mkdir(verification, { recursive: true });
+  await pruneVerificationScratch(verification, "managed-crash-", "managed-crash", { keep: keepScratch });
   const root = await mkdtemp(resolve(verification, "managed-crash-"));
   const host = child(["owner", root, mode]);
   let helper;
@@ -244,9 +245,14 @@ else {
     console.log(JSON.stringify({ kind: "managed-physical-crash-proof", root, scenario: mode, initialWakes: proof.wakes, reopens: 2, result: "passed" }));
   } finally {
     for (const process of [host.process, helper?.process]) if (process && process.exitCode === null && process.signalCode === null) process.kill("SIGKILL");
+    await Promise.allSettled([host.exited, helper?.exited].filter(Boolean));
     const actual = proof?.command.pid && await readProcessIncarnation(proof.command.pid);
     if (actual && processIncarnationsEqual(actual, proof.command.incarnation)) {
       try { process.kill(-proof.command.pgid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
     }
+    // Only this driver creates the root, so only it removes it — after every
+    // child it owns is dead. Cleanup failures are reported, never thrown, so
+    // they cannot mask the proof verdict; the next run prunes this prefix.
+    await removeVerificationScratch(root, { keep: keepScratch, label: "managed-crash" });
   }
 }

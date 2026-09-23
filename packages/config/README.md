@@ -181,9 +181,10 @@ The resolved `tools.web` block configures the managed Pi `WebSearch` and
 
 Search selects one strict provider or a non-empty ordered array. The default is
 `["parallel", "ollama"]`; local Ollama requires no block. `searxng`, `codex`,
-`keyless`, `duckduckgo`, `startpage`, and `hound` are opt-in. Removed `auto`
-configurations fail with their previous explicit order. SearXNG
-endpoints are deliberately limited to unauthenticated loopback HTTP URLs. Hound runs locally in Node without a service endpoint. Remove retired
+`keyless`, `duckduckgo`, `startpage`, and `local` are opt-in. Removed `auto`
+configurations fail with their previous explicit order, and the removed `hound`
+value fails with a rename-to-`local` migration error. SearXNG
+endpoints are deliberately limited to unauthenticated loopback HTTP URLs. Local search runs locally in Node without a service endpoint. Remove retired
 `search.hound.endpoint` and `fetch.hound.endpoint` settings and their environment
 variables; their presence is a migration error. The
 legacy `search.endpoint` spelling remains a compatibility alias for
@@ -191,11 +192,12 @@ legacy `search.endpoint` spelling remains a compatibility alias for
 official `https://ollama.com` origin requires an API key named by `apiKeyEnv`,
 while other public origins require HTTPS plus `trustPublicUrl` and cannot
 receive that credential.
-`fetch.provider` is `"local"` by default; `"parallel"`, `"hound"`, or an ordered
+`fetch.provider` is `"local"` by default; `"parallel"` or an ordered
 array selects explicit extraction providers. Parallel is remote and cannot
-serve raw bodies, custom headers, or browser rendering. Hound is local HTTP-only
-extraction with proactive robots checks; it supports raw bodies and allowed
-headers, but not browser rendering.
+serve raw bodies, custom headers, or browser rendering. Local is HTTP-only
+extraction with no robots preflight; it supports raw bodies and allowed
+headers, plus browser rendering per `fetch.render`. The removed `hound` value
+fails with a migration error spelling out the behavior delta.
 Optional search/fetch `parallel.apiKeyEnv` fields name a
 credential variable; omit them for anonymous Parallel access.
 Fetch rendering config is `never` by default (browser capability disabled) or
@@ -368,6 +370,7 @@ MonoAgentRuntimeFallbackJson
 PiNativeProviderConfig
 ProviderCoverageRoute
 ProviderDefinition
+RENAMED_TOOL_NAMES
 RETIRED_CONFIG_FIELDS
 ReadMonoAgentConfigJsonResult
 RedactedLocalProviderDefinition
@@ -388,6 +391,8 @@ findRemovedConfigWarnings
 loadMonoAgentConfig
 readMonoAgentConfigJson
 redactMonoAgentConfig
+renamedToolMessage
+renamedToolName
 resolveConfiguredProviders
 resolveJsonMonoAgentConfig
 writeMonoAgentConfigJson

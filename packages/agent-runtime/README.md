@@ -27,6 +27,12 @@ pnpm add @mono-agent/agent-runtime
 Node.js 22.19 or newer is required. Pi is the only runtime, and it talks to
 providers over their SDKs, so no provider CLI has to be on `PATH`.
 
+`Bash` and `Exec` honor an explicit `workdir` outside the session workspace when
+path policy permits it (including background process jobs). Relative workdirs
+resolve from the session cwd/workspace; an omitted workdir keeps that default.
+Disallowed workdirs report `workdir_denied`, and missing workdirs report
+`workdir_not_found` instead of silently running elsewhere.
+
 When a host enables background Exec/Bash, `wake_on_completion` defaults to true;
 explicit false retains terminal lifecycle updates without a completion turn.
 Using that field without `background: true` is invalid. Host-provided
@@ -98,6 +104,12 @@ The runtime forwards retention only to Anthropic Messages, including child
 routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
 unsupported models receive no one-hour TTL.
 
+Manual compaction on a durable Pi session uses the same guarded summary driver
+as automatic proactive compaction, but an explicit operator action bypasses the
+automatic trigger (including `compaction.enabled:false`). No new user prompt or
+assistant turn is generated. The host coordinates the provider transcript with
+its canonical history revision and reports only bounded counts to the operator.
+
 One-hour writes cost **2× normal input**, reads **0.1×**, versus **1.25×** for
 short-cache writes. Model support is required, and no cache hit is guaranteed.
 Metadata-only diagnostics record the requested setting and observed cache TTL;
@@ -114,15 +126,16 @@ set `"short"` instead.
 
 ## Architecture
 
-The opt-in `hound` providers run native Node search (fixed DDG/Brave/Mojeek HTML
-engines) and HTTP-only fetch with per-request policy/admission and fail-closed
-robots. No Hound service or Python runtime is used; retired endpoint settings
-are rejected. `inspectHoundWeb()` reports local capability, not engine liveness.
+The opt-in `local` search provider runs native Node search (fixed DuckDuckGo
+HTML engine) with per-request policy/admission and fail-closed robots. No
+external service or Python runtime is used; retired endpoint settings
+are rejected. `inspectLocalWeb()` reports local capability, not engine liveness.
 
-Local web extraction uses native Hound-derived title/stage fallback and content
-link classification, with Defuddle/Readability/Turndown as the parser equivalents.
-The default `local` fetch provider needs no Python or Hound service and gains no
-new robots.txt prerequisite. See `THIRD_PARTY_NOTICES.md` for source provenance
+Local web extraction uses native title/stage fallback and content
+link classification adapted from Hound's MIT-licensed code, with
+Defuddle/Readability/Turndown as the parser equivalents.
+The `local` fetch provider needs no Python or external service and performs no
+robots.txt preflight. See `THIRD_PARTY_NOTICES.md` for source provenance
 and licenses. Fetch rate limits and access refusals are terminal across provider
 fallback; ordinary transient failures remain bounded.
 
@@ -216,7 +229,7 @@ Terminal states reuse the observability taxonomy: `success` has no failure kind;
 provider-supplied known kind when available and otherwise `runtime_error`.
 
 Persistent Agent can declare observation-only `verification` metadata; it does
-not change the child cwd or authorize a command. Recovery-capable AgentSend
+not change the child cwd or authorize a command. Recovery-capable AgentManage
 supports mutually exclusive `inspect: true` and explicit message + `ack`.
 Inspection starts no provider. Consumed/conflicting acknowledgements return a
 typed non-executing response rather than replaying an execution receipt; the app
@@ -414,7 +427,7 @@ execToolRun
 globToolImpl
 grepToolImpl
 inspectCodexSubscriptionSearch
-inspectHoundWeb
+inspectLocalWeb
 inspectParallelWeb
 isPathAllowed
 isWorkdirAllowed
@@ -753,10 +766,15 @@ defensively cloned model snapshots; `getPiBuiltinModel(providerId, modelId)`
 returns one cloned snapshot or `undefined`; and
 `reasoningLevelsForPiModel(model)` translates a Pi model into mono-agent's
 reasoning vocabulary, including `none` rather than Pi's `off`.
-Pi 0.86.1 exposes GPT-6 Astra through these same catalog APIs as
+Pi 0.87.0 exposes GPT-6 Astra through these same catalog APIs as
 `openai:gpt-6-astra` for OpenAI API keys and
 `openai-codex:gpt-6-astra` for Codex subscriptions; no separate model allowlist
-is maintained by mono-agent.
+is maintained by mono-agent. Pi 0.87.1 also exposes
+`anthropic:claude-opus-5-5` and `gpt-6-sol`/`gpt-6-luna` on both
+`openai` and `openai-codex` without a runtime backfill. Sol and Luna use
+Pi's 272,000-token context window
+and a pricing tier above 272,000 input tokens; Opus 5.5 supports low through
+max effort. Anthropic OAuth requests use Pi's Claude Code 2.1.280 identity.
 `resolvePiOAuthApiKey(providerId, credentials)` refreshes a caller-owned
 credential snapshot and returns `{ apiKey, newCredentials }` or `null`, while
 `loginPiOAuth(providerId, callbacks)` runs the selected supported login flow.
@@ -802,8 +820,8 @@ Per-call options (a non-exhaustive selection):
 | `skills` / `skillsRoot` | `{name, description}[]` / `string` | Skills disclosed to the run and the directory holding `<name>/SKILL.md`. |
 | `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http). |
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
-| `webSearchConfig` | `{ backend?, maxRequestsPerRun?, searxng?: { endpoint? }, hound?: { endpoint? /* deprecated; rejected */ }, ollama?: { baseUrl?, apiKey?, apiKeyEnv?, trustPublicUrl? }, codex?: { model? } }` | Run-scoped ordered WebSearch selection and a 1–20 answered-search budget (default 4), including empty answers. Failed attempts are refunded; network dispatches are capped at four times the budget. The default chain is Parallel then local Ollama; names are strict and arrays are ordered fallback chains. Keyless and Hound are opt-in; `auto` is rejected. The deprecated top-level `endpoint` remains a SearXNG compatibility alias. Hound is native Node metasearch with per-engine policy/admission and proactive robots checks; retired endpoint settings are rejected. Restricted policies gate each actual destination instead of rejecting the entire provider. |
-| `webFetchConfig` | `{ provider?, hound?: { endpoint? /* deprecated; rejected */ }, render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. The default provider is local; `parallel` selects remote extraction; `hound` selects native HTTP-only acquisition/extraction with proactive robots checks and policy checks at each redirect. Hound supports raw output and allowed headers, not browser rendering; retired endpoint settings are rejected. |
+| `webSearchConfig` | `{ backend?, maxRequestsPerRun?, searxng?: { endpoint? }, hound?: { endpoint? /* deprecated; rejected */ }, ollama?: { baseUrl?, apiKey?, apiKeyEnv?, trustPublicUrl? }, codex?: { model? } }` | Run-scoped ordered WebSearch selection and a 1–20 answered-search budget (default 4), including empty answers. Failed attempts are refunded; network dispatches are capped at four times the budget. The default chain is Parallel then local Ollama; names are strict and arrays are ordered fallback chains. Keyless and local search are opt-in; `auto` is rejected and `hound` is rejected with a rename-to-`local` migration error. The deprecated top-level `endpoint` remains a SearXNG compatibility alias. Local search is native Node DuckDuckGo with per-request policy/admission and proactive robots checks; a refused local attempt advances the chain instead of stopping the call. Retired endpoint settings are rejected. Restricted policies gate each actual destination instead of rejecting the entire provider. |
+| `webFetchConfig` | `{ provider?, hound?: { endpoint? /* deprecated; rejected */ }, render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. The default provider is local; `parallel` selects remote extraction. `hound` is rejected with a migration error: `local` is not equivalent (standard retries, no robots preflight, configured render mode honored). Local supports raw output and allowed headers; retired endpoint settings are rejected. |
 | `piToolExecutionMode` | `"safe-parallel" \| "sequential"` | Pi built-in scheduling. Safe parallelism is the default; read-only tools may overlap only when the offered tool set contains no stateful/mutating or MCP tool. Otherwise Pi 0.85 serializes the whole batch. |
 | `maxTurns` | `number` | Hard cap on agent turns. |
 | `outputSchema` | `JSONSchema` | Requests structured JSON; see “Structured output” below. |
@@ -854,22 +872,22 @@ Pinned or overridden routes appear in the result header and `details.subagent.re
 `details.subagent.executed` records the successful child route when available.
 
 Hosts may inject a conversation-scoped `subagents.instances` facade to enable
-`Agent({persist: true, id?})` and `AgentSend({id, message?, close?, stop?})`. Continuations
+`Agent({persist: true, id?})` and `AgentManage({id, message?, close?, stop?})`. Continuations
 retain the child’s selected profile and use `sessionId`, `piSessionsRoot`, and
 `sessionKeepAlive` for true durable resume. Both tools share caps and deny child
 recursion. A persistent child's host injects `askParentController.submit(question)`
 to publish a bounded question durably before `AskParent` returns `terminate: true`.
-The enclosing result carries `subagentQuestion`, surfaced by Agent/AgentSend as
-successful `awaiting_reply` with structured question/options. AgentSend replies
+The enclosing result carries `subagentQuestion`, surfaced by Agent/AgentManage as
+successful `awaiting_reply` with structured question/options. AgentManage replies
 resume the same transcript; failed replies preserve the pending question.
 AskParent is child-only and automatic unless denied by global/profile policy.
-Without the facade, `Agent` stays stateless and `AgentSend` is absent.
+Without the facade, `Agent` stays stateless and `AgentManage` is absent.
 
-Persistent Agent/AgentSend can run detached through the app-private in-process
+Persistent Agent/AgentManage can run detached through the app-private in-process
 ProcessJobs lane. Durable admission reserves the child; completion and AskParent
 wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
-`AgentSend({id, stop:true})` cooperatively stops managed detached work without
+`AgentManage({id, stop:true})` cooperatively stops managed detached work without
 starting a new turn. Only a proven `resumable:true` receipt permits ordinary
 message continuation on the same session or `close:true`; `stop_requested`
 keeps messages/close blocked. Stop neither force-kills nor undoes external effects.
@@ -881,7 +899,7 @@ See [background subagents](../../docs/tools/background-process-jobs.md#detached-
 ### Built-in tools
 
 The agent kernel's managed tools are `Read`, `Write`, `Edit`, `Glob`, `Grep`,
-`Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`, `Agent`, `AgentSend`, and child-only `AskParent`.
+`Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`, `Agent`, `AgentManage`, and child-only `AskParent`.
 `Exec({ executable, args })` invokes one executable directly; `Bash` is the
 clean non-interactive shell surface for pipelines, redirection, and other shell
 syntax. Both preserve bounded partial stdout/stderr and structured exit,
@@ -919,8 +937,7 @@ primary/alternate queries once and supports optional remote WebFetch extraction.
 WebSearch calls may request a case-insensitive ISO 3166-1 alpha-2 `country`
 localization preference. Omission requests no country/global mode where the
 provider supports one, without claiming IP-neutral ranking. Parallel treats it
-as advisory; DuckDuckGo applies its documented region token; native Hound skips
-Brave and Mojeek for that call. Providers without a reviewed per-call transport
+as advisory; DuckDuckGo applies its documented region token for local search. Providers without a reviewed per-call transport
 are skipped before dispatch and budget instead of silently ignoring it. Country
 is separate from language and does not guarantee the location of each result.
 `fetch.provider` defaults to local; Parallel cannot serve raw/header/browser

@@ -46,6 +46,7 @@ import {
   startLiveInput,
 } from "../../ai/providers/pi-native/turn-runner.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+import { refreshProviderSession, syncProviderSession } from "../../ai/runtime/sessions.js";
 
 const FAUX_MODEL = { api: "faux", provider: "faux", id: "faux-model" };
 
@@ -688,7 +689,7 @@ describe("pi-native AgentHarness bridge", () => {
   it("routes the upstream opencode-go model through the run collection to provider_auth", async () => {
     // No `piResolvedModel`/`piResolvedModels` seam: production resolution
     // (`resolvePiRuntimeModel`) plus the real `builtinModels()` run collection
-    // serve this turn — pi-ai 0.86.1 ships `deepseek-v4.1-flash` natively, so no
+    // serve this turn — pi-ai 0.87.0 ships `deepseek-v4.1-flash` natively, so no
     // backfill registration is needed. With no credential the run must reach
     // the auth stage — only possible if the harness resolved
     // `deepseek-v4.1-flash` by id inside the collection. The env is stubbed so
@@ -712,6 +713,34 @@ describe("pi-native AgentHarness bridge", () => {
       expect(result.failureKind).toBe("provider_auth");
     } finally {
       vi.unstubAllEnvs();
+    }
+  });
+
+  it.each([
+    ["anthropic", "claude-opus-5-5", "medium"],
+    ["openai-codex", "gpt-6-sol", "none"],
+    ["openai-codex", "gpt-6-luna", "none"],
+  ])("resolves native %s:%s through the real run collection before auth", async (provider, model, effort) => {
+    // No injected model or collection: only Pi's built-in run collection can
+    // resolve this id. Isolate Pi's entire ambient auth context, including
+    // ANTHROPIC_AUTH_TOKEN and ANTHROPIC_OAUTH_TOKEN, not just the API key.
+    // Stored credentials are also disabled by the null resolver below.
+    const authContext = { env: vi.fn(async () => undefined), fileExists: vi.fn(async () => false) };
+    const result = await generatePiNativeResponse("system", {
+      model: { provider, model, reference: `${provider}:${model}` },
+      messages: [{ role: "user", content: "hello" }],
+      effort,
+      allowedTools: [],
+      resolvePiApiKey: async () => null,
+      providerCheckAuthContext: authContext,
+      piSessionsRoot: sessionsRoot,
+    });
+    expect(result.error).toBe(`Provider is not configured: ${provider}`);
+    expect(result.failureKind).toBe("provider_auth");
+    if (provider === "anthropic") {
+      expect(authContext.env.mock.calls.map(([name]) => name)).toEqual([
+        "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY",
+      ]);
     }
   });
 
@@ -1845,6 +1874,102 @@ describe("pi-native auto-compaction", () => {
     expect(summaryCalled).toBe(true);
     expect(result.capabilitiesUsed.context_compaction_applied).toBe(true);
     expect(result.diagnostics.context_compaction_proactive).toBe(true);
+  });
+
+  it("manually compacts a cold seeded session without submitting a user prompt", async () => {
+    const base = setup();
+    let summaries = 0;
+    let summaryContext;
+    faux.setResponses([(context) => {
+      summaries += 1;
+      summaryContext = context;
+      return fauxAssistantMessage([fauxText("SUMMARY of earlier work")]);
+    }]);
+    const result = await generatePiNativeResponse("HOST-PLACEHOLDER-PROMPT", runOptions(base, {
+      manualCompaction: true,
+      piResolvedModel: { ...base, contextWindow: 128_000 },
+      model: { provider: "faux", model: "manual", reference: "faux:manual" },
+      messages: bigHistory(60, 2000),
+      sessionKeepAlive: true,
+      resolvePiApiKey: async () => "faux-key",
+    }));
+    expect(result.manualCompaction).toMatchObject({ status: "succeeded" });
+    expect(summaries).toBe(1);
+    expect(result.events).toBeUndefined();
+    // The only provider request is Pi's own summarization prompt; the host
+    // system prompt never reaches a model in manual mode.
+    expect(summaryContext.messages[0]).toMatchObject({ role: "system", content: expect.stringContaining("context summarization assistant") });
+    expect(JSON.stringify(summaryContext)).not.toContain("HOST-PLACEHOLDER-PROMPT");
+  });
+
+  it("reopens a synced manual summary from durable JSONL without replaying canonical history", async () => {
+    const base = setup();
+    const id = "d".repeat(64);
+    const history = bigHistory(60, 2000);
+    faux.setResponses([fauxAssistantMessage([fauxText("SUMMARY durable cut")])]);
+    const compacted = await generatePiNativeResponse("system", runOptions(base, {
+      manualCompaction: true, messages: history, sessionId: id, providerSessionId: id,
+      sessionKeepAlive: true, piSessionsRoot: sessionsRoot,
+      resolvePiApiKey: async () => "faux-key",
+    }));
+    expect(compacted.manualCompaction).toMatchObject({ status: "succeeded" });
+    expect(await syncProviderSession(id)).toBe(true);
+    await refreshProviderSession(id);
+    let resumedContext;
+    faux.setResponses([(context) => {
+      resumedContext = context;
+      return fauxAssistantMessage([fauxText("continued")]);
+    }]);
+    const reply = await generatePiNativeResponse("system", runOptions(base, {
+      messages: [...history, { role: "user", content: "after-cut" }],
+      sessionId: id, providerSessionId: id, sessionKeepAlive: true,
+      piSessionsRoot: sessionsRoot, resolvePiApiKey: async () => "faux-key",
+    }));
+    expect(reply.error).toBeNull();
+    expect(reply.text).toBe("continued");
+    expect(JSON.stringify(resumedContext)).toContain("SUMMARY durable cut");
+    expect(JSON.stringify(resumedContext)).not.toContain("u0 xxxxx");
+  });
+
+  it("aborts an in-flight manual summary when the host cancels", async () => {
+    const base = setup();
+    const controller = new AbortController();
+    let summarySignal;
+    faux.setResponses([async (_context, streamOptions) => {
+      summarySignal = streamOptions?.signal;
+      controller.abort();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return fauxAssistantMessage([fauxText("SUMMARY too late")]);
+    }]);
+    const result = await generatePiNativeResponse("system", runOptions(base, {
+      manualCompaction: true,
+      messages: bigHistory(60, 2000),
+      abortSignal: controller.signal,
+      resolvePiApiKey: async () => "faux-key",
+    }));
+    expect(result.manualCompaction).toBeUndefined();
+    expect(result.cancelled).toBe(true);
+    expect(summarySignal?.aborted).toBe(true);
+  });
+
+  it("does not answer a user turn when a manual summary fails or there is nothing to cut", async () => {
+    const base = setup();
+    faux.setResponses([]);
+    const skipped = await generatePiNativeResponse("system", runOptions(base, {
+      manualCompaction: true,
+      messages: [{ role: "user", content: "short" }],
+      resolvePiApiKey: async () => "faux-key",
+    }));
+    expect(skipped.manualCompaction).toMatchObject({ status: "skipped" });
+    expect(skipped.manualCompaction.reason).toBe("nothing_to_compact");
+    faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: "summary failed" })]);
+    const failed = await generatePiNativeResponse("system", runOptions(base, {
+      manualCompaction: true,
+      messages: bigHistory(60, 2000),
+      resolvePiApiKey: async () => "faux-key",
+    }));
+    expect(failed.manualCompaction).toBeUndefined();
+    expect(failed.error).toBeTruthy();
   });
 
   it("uses the same OpenCode session headers for compaction and the main turn", async () => {

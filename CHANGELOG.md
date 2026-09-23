@@ -7,6 +7,177 @@
   silently ignore stale `MONO_AGENT_*` core variables. Environment values remain
   available for adapter settings, secret references, and process plumbing.
 
+- Show commands first in background agent job progress and inline subagent
+  activity: the working directory appears once in the job metadata line instead
+  of a `cd` prefix, and expanded job calls wrap rather than hiding their
+  trailing arguments.
+
+- Fix the Compact button not appearing for agents in the web console when
+  manual compaction is available.
+
+- Let `Bash` and `Exec` run in policy-allowed workdirs outside the session
+  workspace, including background jobs; reject denied or missing directories
+  instead of silently switching to the workspace.
+
+- Log an undelivered process-job card update once, with its reason. Agents
+  previously wrote a second warning reading only "unknown lifecycle-surface
+  failure" for every such failure. An update skipped while the web console
+  restarts is now logged at info rather than as a warning, because the console
+  re-reads running job cards when it reconnects.
+
+- Fix installed iOS 27 consoles showing system blur over the top of the screen;
+  the status-bar band now takes the header colour without changing layout.
+
+- Add a Compact action to the web console's context-usage popup for capable
+  agents. It summarizes the selected conversation on demand without sending a
+  new chat turn, reports token estimates or errors, and leaves automatic
+  compaction thresholds unchanged.
+
+- Let Pi 0.87.1 provide Claude Opus 5.5 and GPT-6 Sol/Luna directly in model
+  discovery, runtime routing and pricing (Sol/Luna on both OpenAI and Codex).
+  Sol/Luna now have Pi's 272,000-token context window instead of the temporary
+  1,050,000-token backfill, so compaction uses the smaller limit. Anthropic
+  OAuth now uses Pi's Claude Code identity.
+
+- Use Pi 0.87.1's lower GPT-5.6 Sol catalog rates: input/output $4/$20 per
+  million tokens, down from $5/$30; requests above 272,000 input tokens use
+  $8/$30 instead of $10/$45. Cache read/write rates also decrease.
+
+## 0.23.0 — Framework simplification and AgentManage (2026-09-22)
+
+- **Change a persistent subagent's model or effort on its next turn.**
+  `AgentManage({id, message, model, effort})` runs the continuation on the new
+  route while the child keeps its durable session and full prior context, and
+  persists that route on the instance so later continuations inherit it without
+  repeating it. `model` offers the same configured choices as `Agent` and only
+  appears when the host configured any; `effort` takes the usual levels. Both
+  compose with `background: true`, `close: true` and `ack`, and are rejected —
+  with no turn started and no registry write — for `stop`, `steer`, `inspect`
+  and close-only calls, and for an unknown model name or effort level. The
+  result reports `requested` and `executed` exactly as `Agent` does, and the new
+  route badges the activity row from the moment the turn starts. A turn that
+  fails keeps the new route, because the next continuation should inherit what
+  was asked for; a failed foreground retarget still leaves the instance
+  close-only until its recovery evidence is acknowledged, exactly as any other
+  failed foreground turn does.
+
+- Restyle the usage meters' on-track marker as a dot inside the bar in the
+  meter's own accent palette, instead of a full-contrast hairline drawn across
+  it. Once the fill passes the dot it flips to the surface colour, so it stays
+  readable on both the filled and unfilled track in light and dark themes. Screenshot evidence now covers
+  both themes. No projection, contract or accessible-name change.
+
+- Fix `Reply` on a cron run importing only the first 2 KiB of a longer
+  result. The reply context now carries the full stored result text, bounded
+  only by the 32 KiB context-import limit, and later summary polls no longer
+  downgrade already-stored fuller run text to the clipped prefix.
+
+- **Steer a running detached subagent.** `AgentManage({id, steer: "<text>"})`
+  offers text into a persistent child's in-progress detached turn, the way live
+  input reaches a running conversation, and returns an honest receipt: `applied`
+  when the child consumed it, `pending` when the offer was accepted but had not
+  settled within the bounded three-second wait, `not_applied` with a reason
+  (`not_started`, `inactive`, `cancelled`, `closed`, …) when it was refused, and
+  `unsupported` when the child's runtime route cannot take live input at all.
+  Steering starts no turn, forces no answer and is exclusive with every other
+  parameter, including `description`; a queued or running instance still rejects
+  `message` and `close`. A foreground child can be reached by neither steer nor
+  stop — it blocks the parent's own turn, so only cancelling that turn ends it.
+  The mailbox is in-process and never persisted: it is closed at every
+  detached-turn termination path and is never handed to the max-turns wrap-up
+  continuation, and a started turn with no live mailbox — including after a host
+  restart — answers with a truthful negative receipt rather than a retryable
+  one. The turn envelope now publishes `AgentManage.steer`. Stop behaviour is
+  unchanged.
+
+- **Breaking: rename the `AgentSend` tool to `AgentManage`.** The tool that
+  continues, closes, stops, inspects and acknowledges a persistent subagent
+  instance is now `AgentManage`; its modes, parameters, results and behavior are
+  unchanged. There is no alias and no compatibility shim: calling `AgentSend` is
+  an unknown tool. Rename it in `tools.allowedTools` and `tools.disallowedTools`,
+  in subagent profile tool lists, and in any prompt or identity file that names
+  the tool — a stale allow entry grants nothing, and a stale deny entry no longer
+  denies the renamed tool. A subagent tool list that still names `AgentSend`
+  fails config validation with the migration message, and `doctor` reports the
+  rename for the global tool policy instead of calling it an unknown name. The
+  turn envelope now publishes `AgentManage`, `AgentManage.background`,
+  `AgentManage.inspect` and `AgentManage.ack`. Process-job records and
+  transcripts written before the rename keep the old tool name: they still
+  validate, load and render as history, and nothing emits it again.
+
+- Add subscription burn-pace reporting to the `ProviderUsage` tool and the web
+  console usage meters. Both surfaces share one constant-rate projection
+  anchored at the measurement: per-window pace (1 = on track), a projected
+  run-out timestamp only when ahead of pace together with its lead time before
+  the reset (`3d 2h` shape, also inline in the meter line and the tool
+  warning), a neutral unused-share note for windows clearly under pace, and
+  `ahead`/`unsustainable` (1.5x and above) warnings. Meters also show an
+  on-track tick per bar and a one-decimal pace chip beside the percentage. The
+  v1 snapshot transport is unchanged and on-track meters stay quiet.
+
+- Make the `AskUser` and `AgentManage` tool descriptions decision-bearing. `AskUser`
+  now states when to ask — before work whose scope, destination or irreversible
+  effects depend on a missing decision — instead of only listing mechanics, and
+  it is exposed ahead of the channel send tools. When the host admits `AskUser`
+  but the surface cannot serve it, the turn envelope now says to put the question
+  in the final reply with numbered options. `AgentManage` is described as five
+  explicit modes (continue, close, stop, inspect, ack) matching its handler, and
+  every parameter carries its own schema description. No tool contract, schema
+  shape or handler behavior changed.
+
+- Upgrade the pinned Pi AI and Agent Core dependencies to 0.87.0 with no
+  config change. Pi replaces the low-level `shouldStopAfterTurn` loop hook
+  with `finishTurn`, which stays off the harness options the runtime builds
+  on, so the local max-turn ceiling is unchanged. Unknown OpenAI-compatible
+  endpoints no longer receive strict tool schemas unless they advertise
+  support, while capable built-in models keep strict tools.
+
+- Add a Markdown blog to the marketing site at `/blog/`, with an index,
+  article pages, RSS, sitemap entries, and per-post social cards. The
+  collection ships empty and the index reads intentionally until the first
+  post lands; the authoring contract lives in `marketing/BLOG.md`.
+
+- Fix `subagents.maxTurns` and `subagents.definitions[].maxTurns` rejecting
+  the advertised 400 ceiling. The loader now accepts the full 1–400 range the
+  generated schema describes, so a config already set to the published maximum
+  loads instead of failing with a "between 1 and 200" error. Values above 400
+  are still rejected, and `subagents.instances.maxTurns` (1–500) is unchanged.
+
+- **Breaking: rename the built-in `hound` web provider to `local`.** Select
+  `tools.web.search.backend: "local"` and `tools.web.fetch.provider: "local"`;
+  the old `hound` value fails with a migration error naming the new value. For
+  search this is a pure rename. For fetch it is not equivalent: the removed
+  `hound` fetch path (robots preflight, no retries, forced
+  document-only/render-never) is gone and `local` keeps the classic behavior
+  (standard retries, no robots preflight, configured render mode honored).
+  Update a `hound` fetch selection only if that posture is acceptable.
+
+- Fix `WebSearch` fallback chains dead-ending on a refused local provider. A
+  throttled or robots-denied local search now advances to the next configured
+  backend and still runs alternate queries against it, instead of stopping the
+  whole call. Brave and Mojeek left the local engine pool because their only
+  search paths are robots-disallowed for every user agent, leaving a single
+  DuckDuckGo engine, so healthy searches no longer report `partial`.
+
+- Clamp over-long BuJo capture memory text on the host instead of rejecting the
+  whole extraction. The structured-output capture schema enforced the
+  160-code-point bound as a tool-call constraint, so one long sentence failed
+  validation and discarded every other memory submitted with it; with the
+  memory LLM limited to a single turn the model could not act on the validation
+  feedback, and the run surfaced the misleading `max turns reached`. Memory text
+  beyond the bound is now trimmed, restoring the tolerance the pre-structured
+  capture path applied. Trimming, character-class, and emptiness rules stay
+  strict, and structural fields such as entity ids are still rejected rather
+  than truncated. When clamping makes two otherwise distinct memories
+  indistinct, only the colliding candidate is dropped; memories the model
+  itself authored as indistinct still fail the whole attempt.
+
+- Let `WebSearch` report how domain constraints are handled per provider.
+  `site:` operators in the query text and the `domains`/`exclude_domains`
+  parameters keep travelling as query-text operators, which Parallel honours
+  server-side; coverage now reports the per-provider mechanism in
+  `filterSupport.domains` with the effective lists in `requestedFilters`.
+
 - Raise the configurable ceiling for `subagents.maxTurns` and
   `subagents.definitions[].maxTurns` from 200 to 400. Long single-run
   implementation work could exhaust its turn budget while an operator was
@@ -43,6 +214,14 @@
 - Fix managed subagent cancellation settlement so a newer terminal release
   publication is durably rearmed after an older publication finishes, without
   releasing capacity or waking the parent early.
+
+- Give a subagent run that exhausts its per-run `maxTurns` budget one bounded
+  wrap-up continuation (3 turns, inside the existing `timeoutMs` guard) with
+  an explicit commit-and-report instruction, instead of ending with no report,
+  no commit and no statement of position. The parent's tool result carries the
+  wrap-up's final text, which budget was hit with turns used vs. allowed, and
+  whether the wrap-up succeeded, failed, or was unavailable. The `usage_limit`
+  classification, defaults, ceilings, and timeouts are unchanged.
 
 - Keep active console conversation refreshes responsive by reading validated job
   summaries instead of repeatedly parsing retained transcripts.

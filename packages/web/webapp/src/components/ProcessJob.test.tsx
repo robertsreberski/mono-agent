@@ -254,8 +254,10 @@ describe("ProcessJobActivityEventPart", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each(["Agent", "AgentSend", "Bash", "Exec"] as const)("uses the correct glyph for both %s lifecycle rows", (tool) => {
-    const expected = render(<Icon name={tool === "Agent" || tool === "AgentSend" ? "agent" : "terminal"} />);
+  // "AgentSend" is retained history: renamed to "AgentManage" with no alias,
+  // and stored lifecycle rows must keep rendering as subagent work.
+  it.each(["Agent", "AgentManage", "AgentSend", "Bash", "Exec"] as const)("uses the correct glyph for both %s lifecycle rows", (tool) => {
+    const expected = render(<Icon name={tool === "Bash" || tool === "Exec" ? "terminal" : "agent"} />);
     const glyph = expected.container.querySelector("svg")!.innerHTML;
     for (const phase of ["started", "terminal"] as const) {
       const view = render(eventPart({
@@ -998,7 +1000,7 @@ it.each(["external", "internal"] as const)("renders no live metadata container f
 });
 
 describe("background native subagent cards", () => {
-  it.each(["Agent", "AgentSend"] as const)("renders %s clustered progress and report, never command output", (tool) => {
+  it.each(["Agent", "AgentManage", "AgentSend"] as const)("renders %s clustered progress and report, never command output", (tool) => {
     const job = backgroundSubagentJob(true, tool);
     const view = render(part({ job: { ...job, output: { ...job.output, preview: "PRIVATE_RAW_JSON" } } }));
     const card = screen.getByRole("group", { name: `${tool} background job succeeded` });

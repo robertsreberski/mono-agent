@@ -573,6 +573,133 @@ describe("operator probe failure tolerance", () => {
 });
 
 describe("WebService", () => {
+  it("only compacts an owned idle thread and rejects concurrent actions", async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const admitted = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const compacted: string[] = [];
+    const service = await createService({ fetchImpl: operatorFetch({ supportsManualCompaction: true,
+      onCompact: async (id) => {
+        compacted.push(id);
+        started();
+        await gate;
+        return { status: "succeeded", operationId: "manual-1", trigger: "manual", tokensBefore: 1000, tokensAfter: 200 };
+      },
+    }) });
+    try {
+      await service.refreshAgents();
+      const thread = service.createThread("agent-one");
+      const turn = service.store.beginTurn({ threadId: thread.id, text: "hello", attachmentIds: [] });
+      service.store.completeTurn(turn.turnId, "hello back");
+      expect((await service.bootstrap()).agents[0]?.supportsManualCompaction).toBe(true);
+      const pending = service.compactThread(thread.id);
+      await admitted;
+      await expect(service.compactThread(thread.id)).rejects.toMatchObject({ code: "compaction_busy" });
+      await expect(service.startTurn(thread.id, { text: "wait" })).rejects.toMatchObject({ code: "compaction_busy" });
+      release();
+      await expect(pending).resolves.toMatchObject({ status: "succeeded", tokensAfter: 200 });
+      expect(compacted).toEqual([`web:${thread.id}`]);
+      expect(JSON.stringify(service.store.getThreadDetail(thread.id)?.messages.at(-1)?.parts))
+        .toContain('"operationId":"manual-1"');
+    } finally {
+      release();
+      await service.stop();
+    }
+  });
+
+  it("holds queued follow-ups and process-job wakes until compaction settles and sends the thread's model", async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const admitted = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const compactBodies: Record<string, unknown>[] = [];
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({ fetchImpl: operatorFetch({ supportsManualCompaction: true,
+      onTurn(body) { turnBodies.push(body); },
+      onCompact: async (_id, body) => {
+        compactBodies.push(body);
+        started();
+        await gate;
+        return { status: "succeeded", operationId: "manual-2", trigger: "manual" };
+      },
+    }) });
+    try {
+      await service.refreshAgents();
+      const thread = service.createThread("agent-one", { model: "provider/fallback" });
+      const turn = service.store.beginTurn({ threadId: thread.id, text: "hello", attachmentIds: [] });
+      service.store.completeTurn(turn.turnId, "hello back");
+      const pending = service.compactThread(thread.id);
+      await admitted;
+      expect(compactBodies).toEqual([{ model: "provider/fallback" }]);
+      expect(service.submitLiveInput(thread.id, "after compaction").disposition).toBe("queued");
+      const terminal = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+      const wake = service.deliverNotification({
+        sourceId: "agent-one", triggerKind: "job" as const, deliveryKey: terminal.wake.deliveryKey,
+        threadId: thread.id, processJob: terminal, wakePrompt: "Inspect the completed worker result",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(turnBodies).toEqual([]);
+      release();
+      await expect(pending).resolves.toMatchObject({ status: "succeeded" });
+      await expect(wake).resolves.toMatchObject({ delivery: { delivered: true } });
+      await waitFor(() => turnBodies.length === 2 && service.store.getThread(thread.id)?.runState.status === "complete");
+      expect(JSON.stringify(turnBodies)).toContain("after compaction");
+    } finally {
+      release();
+      await service.stop();
+    }
+  });
+
+  it("treats host wakes and live-input drains as busy and survives a thread deleted mid-compaction", async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const admitted = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const service = await createService({ fetchImpl: operatorFetch({ supportsManualCompaction: true,
+      onCompact: async () => {
+        started();
+        await gate;
+        return { status: "succeeded", operationId: "manual-3", trigger: "manual" };
+      },
+    }) });
+    try {
+      await service.refreshAgents();
+      const thread = service.createThread("agent-one");
+      const turn = service.store.beginTurn({ threadId: thread.id, text: "hello", attachmentIds: [] });
+      service.store.completeTurn(turn.turnId, "hello back");
+      const internals = service as unknown as {
+        hostWakeReservations: Map<string, number>;
+        drainingLiveInputThreads: Set<string>;
+      };
+      internals.hostWakeReservations.set(thread.id, 1);
+      await expect(service.compactThread(thread.id)).rejects.toMatchObject({ code: "compaction_busy" });
+      internals.hostWakeReservations.delete(thread.id);
+      internals.drainingLiveInputThreads.add(thread.id);
+      await expect(service.compactThread(thread.id)).rejects.toMatchObject({ code: "compaction_busy" });
+      internals.drainingLiveInputThreads.delete(thread.id);
+      const pending = service.compactThread(thread.id);
+      await admitted;
+      service.patchThread(thread.id, { archived: true });
+      await service.deleteThread(thread.id);
+      release();
+      await expect(pending).resolves.toMatchObject({ status: "succeeded", operationId: "manual-3" });
+      expect(service.store.getThread(thread.id)).toBeUndefined();
+    } finally {
+      release();
+      await service.stop();
+    }
+  });
+
+  it("rejects an older agent without manual compaction and an unknown thread", async () => {
+    const service = await createService();
+    try {
+      await service.refreshAgents();
+      const thread = service.createThread("agent-one");
+      await expect(service.compactThread(thread.id)).rejects.toMatchObject({ code: "compaction_unsupported" });
+      await expect(service.compactThread("missing")).rejects.toMatchObject({ code: "thread_not_found" });
+    } finally { await service.stop(); }
+  });
   it("includes a current live agent's provider-auth capabilities in bootstrap", async () => {
     const service = await createService({ fetchImpl: operatorFetch({ supportsProviderAuthChecks: true }) });
     try {

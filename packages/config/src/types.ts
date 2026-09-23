@@ -13,8 +13,8 @@ import type {
 
 export type MemoryWriteMode = (typeof MEMORY_WRITE_MODES)[number];
 export type MemoryMode = (typeof MEMORY_MODES)[number];
-export type WebSearchBackend = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel" | "hound";
-export type WebFetchProvider = "local" | "parallel" | "hound";
+export type WebSearchBackend = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel" | "local";
+export type WebFetchProvider = "local" | "parallel";
 export interface ParallelWebConfig {
   /** Environment variable name only; the credential is read at call time. */
   readonly apiKeyEnv?: string;
@@ -27,10 +27,10 @@ export interface SearxngWebSearchConfig {
 }
 
 /** @deprecated Source-compatible tombstone; any endpoint setting is rejected.
- * Hound is a built-in native provider and needs no service endpoint.
+ * Local web search/fetch is built in and needs no service endpoint.
  */
-export interface HoundWebEndpointConfig {
-  /** @deprecated Remove this setting; no external Hound service is contacted. */
+export interface LocalWebEndpointConfig {
+  /** @deprecated Remove this setting; no external service is contacted. */
   readonly endpoint: string;
 }
 
@@ -396,8 +396,8 @@ export interface MonoAgentConfig {
         readonly searxng?: SearxngWebSearchConfig;
         readonly ollama?: OllamaWebSearchConfig;
         readonly parallel?: ParallelWebConfig;
-        /** @deprecated Endpoint settings are rejected: Hound search is built in. */
-        readonly hound?: HoundWebEndpointConfig;
+        /** @deprecated Endpoint settings are rejected: local search is built in. */
+        readonly hound?: LocalWebEndpointConfig;
         /** ChatGPT-subscription Codex app-server search settings. */
         readonly codex?: {
           /** Defaults to the low-cost, low-latency GPT-5.6 Luna route. */
@@ -407,8 +407,8 @@ export interface MonoAgentConfig {
       readonly fetch: {
         readonly provider?: WebFetchProvider | readonly WebFetchProvider[];
         readonly parallel?: ParallelWebConfig;
-        /** @deprecated Endpoint settings are rejected: Hound fetch is built in. */
-        readonly hound?: HoundWebEndpointConfig;
+        /** @deprecated Endpoint settings are rejected: local fetch is built in. */
+        readonly hound?: LocalWebEndpointConfig;
         readonly render: WebFetchRenderMode;
         readonly browserCommand: string;
       };

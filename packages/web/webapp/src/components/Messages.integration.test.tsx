@@ -1286,7 +1286,7 @@ describe("message actions", () => {
     expect(within(started).getByText(job.jobId)).toBeInTheDocument();
   });
 
-  it.each(["Agent", "AgentSend"] as const)("renders causally attributed lifecycle rows in response Activity without duplicating the stack card", (tool) => {
+  it.each(["Agent", "AgentManage"] as const)("renders causally attributed lifecycle rows in response Activity without duplicating the stack card", (tool) => {
     const baseJob = processJob();
     const job = { ...baseJob, kind: "internal" as const, tool, instanceId: "helper", childStillBusy: false };
     const origin: WebMessage = {

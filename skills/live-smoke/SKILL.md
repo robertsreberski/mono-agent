@@ -132,7 +132,7 @@ literal matches.
 - pi 0.80 reports provider failures as a terse "Connection error." — failover
   noise, not necessarily your bug. Check which model actually answered.
 - Verify WHICH dist you're exercising (worktree vs main repo) before trusting results.
-- Never touch `~/example-instance` or `~/ops-agents/*` for smoke — that's the live
+- Never touch other agents' live instance directories for smoke — that's the live
   fleet (see `fleet-deploy`). All smoke lives in `/tmp` throwaway dirs and named
   tmux sessions, and gets cleaned up.
 - Capture evidence (pane captures, log greps, curl bodies) and quote it in your

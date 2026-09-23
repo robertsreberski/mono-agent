@@ -17,6 +17,7 @@ import {
   MAX_INFO_PROVIDER_ID_BYTES,
   MAX_INFO_PROVIDER_ITEMS,
   MAX_INFO_PROVIDER_LABEL_BYTES,
+  type AgentManualCompactionResult,
   type AgentLiveInputSettlement,
   type AgentLiveInputUnavailableReason,
   type AgentAttachment,
@@ -93,6 +94,9 @@ const CONTEXT_IMPORT_TIMEOUT_MS = 5_000;
 const PRESERVED_PROCESS_JOB_ERRORS = new Map<string, number>([
   ["process_job_not_found", 404],
 ]);
+const PRESERVED_COMPACTION_ERRORS = new Map<string, number>([
+  ["compaction_busy", 409], ["compaction_unsupported", 501], ["compaction_failed", 500],
+]);
 const PRESERVED_CONTEXT_IMPORT_ERRORS = new Map<string, number>([
   ["context_import_conflict", 409],
   ["context_import_failed", 500],
@@ -139,6 +143,7 @@ export interface OperatorInfo {
   readonly skills?: OperatorSkillRegistry;
   readonly supportsAttachments: boolean;
   readonly supportsHistoryAppend: boolean;
+  readonly supportsManualCompaction?: true;
   readonly contextImport?: {
     readonly version: typeof AGENT_CONTEXT_IMPORT_VERSION;
     readonly maxTextBytes: number;
@@ -257,6 +262,7 @@ export class OperatorClient {
       ...(skills === undefined ? {} : { skills }),
       supportsAttachments: capabilities?.attachments === true,
       supportsHistoryAppend: capabilities?.historyAppend === true,
+      ...(record(capabilities?.manualCompaction)?.version === 1 ? { supportsManualCompaction: true } : {}),
       ...(contextImport === undefined ? {} : { contextImport }),
       supportsAskUser: capabilities?.askUser === true,
       ...(capabilities?.askById === true ? { supportsAskById: true } : {}),
@@ -495,6 +501,50 @@ export class OperatorClient {
       return { status: "unavailable", reason: body.reason };
     }
     throw new WebConsoleError("invalid_operator_live_input", "The agent returned an invalid live-input settlement.", 502);
+  }
+
+  async compactConversation(conversationId: string, options?: { readonly model?: string }): Promise<AgentManualCompactionResult> {
+    let response: Response;
+    try {
+      response = await this.request(
+        `${this.baseUrl}/v1/conversations/${encodeURIComponent(conversationId)}/compact`,
+        {
+          method: "POST",
+          headers: this.headers(true),
+          // The same model selection the next turn would declare; {} means the agent default.
+          body: JSON.stringify(options?.model === undefined ? {} : { model: options.model }),
+          signal: AbortSignal.timeout(180_000),
+        },
+        PRESERVED_COMPACTION_ERRORS,
+      );
+    } catch (error) {
+      if ((error instanceof DOMException && ["TimeoutError", "AbortError"].includes(error.name))
+        || (error instanceof WebConsoleError && error.code === "agent_unreachable")) {
+        throw new WebConsoleError("compaction_outcome_unknown", "The compaction response was lost; its outcome is unknown. Refresh this conversation.", 504);
+      }
+      throw error;
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readBoundedBody(response, 2048, "compaction_response_too_large")) as unknown;
+    } catch {
+      throw new WebConsoleError("invalid_compaction_response", "The agent returned invalid compaction data.", 502);
+    }
+    const body = record(raw);
+    if (body === undefined || !["succeeded", "skipped", "failed"].includes(String(body.status))
+      || body.trigger !== "manual" || typeof body.operationId !== "string"
+      || body.operationId.length === 0 || body.operationId.length > 128
+      || (body.tokensBefore !== undefined && (typeof body.tokensBefore !== "number" || !Number.isFinite(body.tokensBefore) || body.tokensBefore < 0))
+      || (body.tokensAfter !== undefined && (typeof body.tokensAfter !== "number" || !Number.isFinite(body.tokensAfter) || body.tokensAfter < 0))) {
+      throw new WebConsoleError("invalid_compaction_response", "The agent returned invalid compaction data.", 502);
+    }
+    return {
+      status: body.status as AgentManualCompactionResult["status"], trigger: "manual", operationId: body.operationId,
+      ...(typeof body.reason === "string" ? { reason: body.reason.slice(0, 128) } : {}),
+      ...(typeof body.tokensBefore === "number" ? { tokensBefore: body.tokensBefore } : {}),
+      ...(typeof body.tokensAfter === "number" ? { tokensAfter: body.tokensAfter } : {}),
+      tokenCountsExact: body.tokenCountsExact === true,
+    };
   }
 
   async recordVerbatim(conversationId: string, text: string, idempotencyKey: string): Promise<void> {

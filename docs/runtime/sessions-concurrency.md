@@ -340,7 +340,7 @@ For retry behavior across *different* models (provider failover, not transport r
 
 ## Persistent child sessions
 
-`Agent({persist: true})` creates a conversation-scoped child, and `AgentSend`
+`Agent({persist: true})` creates a conversation-scoped child, and `AgentManage`
 resumes that child's own Pi-native durable session. Its registry lives at
 `<subagents root>/<sha256(conversationId)>/instances.json`; provider transcripts
 live in the sibling `sessions/` directory. The default root is
@@ -353,8 +353,8 @@ recovers with an interrupted outcome on the next access: `awaiting_reply` if a
 pending question exists, otherwise idle. Session context
 is retained on disk, while an in-flight task is not automatically restarted.
 `AskParent` persists a pending question under the turn lock before its terminating
-tool result returns. `Agent`/`AgentSend` expose it as successful `awaiting_reply`;
-the parent answers through ordinary `AgentSend` in the same durable transcript.
+tool result returns. `Agent`/`AgentManage` expose it as successful `awaiting_reply`;
+the parent answers through ordinary `AgentManage` in the same durable transcript.
 Failed replies preserve the pending question and a minimal recovery fence;
 they are not permission to retry the same transcript. Successful replies clear
 the question, and another question replaces it. Idle expiry includes clean

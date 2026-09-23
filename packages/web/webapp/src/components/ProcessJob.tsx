@@ -6,7 +6,12 @@ import { currentDataMode } from "../data-mode";
 import { useDocumentVisible } from "../document-visibility";
 import { useToolCallRepair } from "./tool-call-repair";
 import type { MessagePart, ProcessJobProjection, ProcessJobState } from "../types";
-import type { ProcessJobActivityEvent } from "../process-job-presentation";
+import {
+  isSubagentProcessJobTool,
+  PROCESS_JOB_TOOL_NAMES,
+  type ProcessJobActivityEvent,
+  type ProcessJobToolName,
+} from "../process-job-presentation";
 import { formatUsd } from "../usage";
 import { ActivityPayload, ActivityRow, truncationProps, type ActivityStatus } from "./ActivityRow";
 import { ActivityElapsed, type ActivityTiming } from "./assistant-ui/ActivityElapsed";
@@ -219,7 +224,7 @@ const activityEvent = (value: unknown): ProcessJobActivityEvent | undefined => {
       || typeof record.id !== "string"
       || typeof record.toolCallId !== "string"
       || typeof record.jobId !== "string"
-      || !["Exec", "Bash", "Agent", "AgentSend"].includes(String(record.tool))
+      || !PROCESS_JOB_TOOL_NAMES.includes(String(record.tool) as ProcessJobToolName)
       || typeof record.summary !== "string"
       || (record.phase !== "started" && record.phase !== "terminal")
       || typeof record.state !== "string"
@@ -281,7 +286,7 @@ export function ProcessJobActivityEventPart({ data }: DataMessagePartProps) {
   return (
     <ActivityRow
       variant="job"
-      jobIcon={event.tool === "Agent" || event.tool === "AgentSend" ? "agent" : "terminal"}
+      jobIcon={isSubagentProcessJobTool(event.tool) ? "agent" : "terminal"}
       status={terminal && TERMINAL_PROCESS_JOB_STATES.has(event.state)
         && event.state !== "succeeded" ? "failed" : "complete"}
       label={`${event.tool} job ${terminal ? stateLabel : "started"}`}

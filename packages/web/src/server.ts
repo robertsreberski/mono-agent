@@ -873,6 +873,18 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.post("/api/v1/threads/:id/compact", (req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    if (req.body === null || typeof req.body !== "object" || Array.isArray(req.body)
+      || Object.keys(req.body as object).length !== 0) {
+      next(new WebConsoleError("invalid_compaction_request", "Compaction requires an empty JSON object.", 400));
+      return;
+    }
+    void trackOperation(service.compactThread(pathParam(req.params.id)), activeOperations)
+      .then((result) => res.status(200).json(result))
+      .catch(next);
+  });
+
   app.post("/api/v1/threads/:id/turns", (req, res, next) => {
     let input: StartWebTurnInput;
     let threadId: string;

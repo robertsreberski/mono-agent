@@ -33,7 +33,7 @@ import { isInsidePath } from "./shared/path-resolver.js";
 import { requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 import { filterEnvelopeNextActions, webFailureEnvelope } from "./web-actionable.js";
 import { createAskParentTool } from "./ask-parent-tool.js";
-import { createAgentSendTool } from "./agent-send-tool.js";
+import { createAgentManageTool } from "./agent-manage-tool.js";
 import { createAgentTool } from "./agent-tool.js";
 
 function textResult(text, details = {}) {
@@ -116,10 +116,14 @@ export function normalizeMcpToolParams(_serverName, toolName, params, { qaOutput
   };
 }
 
-function normalizeWorkdir(value, cwd, ctx) {
+function normalizeWorkdir(value, cwd, ctx, allowOutside = false) {
   const base = resolve(cwd || (requireToolContext(ctx)).workspace || process.cwd());
   const resolved = value ? resolve(absolutizePath(value, base)) : base;
-  return isInsidePath(base, resolved) ? resolved : base;
+  // Command tools check the requested cwd against isWorkdirAllowed/isPathAllowed
+  // before preparing either foreground or background execution. Keep the older
+  // clamp for file tools: their workdir is not a schema field, and in legacy
+  // mode it can itself become an allowed file-access root.
+  return allowOutside || isInsidePath(base, resolved) ? resolved : base;
 }
 
 function withAbsolutePaths(name, params, cwd, ctx) {
@@ -127,7 +131,7 @@ function withAbsolutePaths(name, params, cwd, ctx) {
   if (["Read", "Write", "Edit"].includes(name)) next.file_path = absolutizePath(next.file_path, cwd);
   if (["Glob", "Grep"].includes(name)) next.path = absolutizePath(next.path, cwd);
   if (["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec"].includes(name)) {
-    next.workdir = normalizeWorkdir(next.workdir, cwd, ctx);
+    next.workdir = normalizeWorkdir(next.workdir, cwd, ctx, name === "Bash" || name === "Exec");
   }
   return next;
 }
@@ -506,7 +510,7 @@ export function getPiBuiltinTools(allowedTools, {
   toolExecutionMode = "safe-parallel",
   ctx = null,
 } = {}) {
-  const instancesEnabled = ["Agent", "AgentSend"].every((name) =>
+  const instancesEnabled = ["Agent", "AgentManage"].every((name) =>
     (!Array.isArray(allowedTools) || allowedTools.includes("*") || allowedTools.includes(name))
     && !disallowedTools.includes(name));
   const textLimitSchema = integerSchema();
@@ -544,7 +548,7 @@ export function getPiBuiltinTools(allowedTools, {
     ctx,
   };
   // Host-only, request-current observation capability; no raw environment or
-  // executable parameters are exposed through Agent/AgentSend schemas.
+  // executable parameters are exposed through Agent/AgentManage schemas.
   const recoveryAccess = {
     workspace: (requireToolContext(ctx)).workspace ?? (requireToolContext(ctx)).repoRoot,
     readableRoots: (requireToolContext(ctx)).additionalReadRoots ?? [],
@@ -632,7 +636,7 @@ export function getPiBuiltinTools(allowedTools, {
     }, ["pattern"]), grepToolImpl, toolContext),
     Bash: createBuiltinTool("Bash", "Bash", "Execute a shell command for pipelines, redirection, conditionals, or other shell syntax. Prefer Exec for one executable with an argv array. This is macOS: do not assume GNU-only commands or flags." + " " + foregroundTimeoutDescription, objectSchema({
       command: { type: "string" },
-      workdir: { type: "string" },
+      workdir: { type: "string", description: "Run in this directory. Relative paths resolve from the session cwd/workspace; directories outside it are accepted only when path policy allows them. A denied directory returns workdir_denied, never a fallback cwd." },
       description: processDescriptionSchema,
       timeout_ms: processTimeoutSchema,
       timeout: legacyBashTimeoutSchema,
@@ -642,7 +646,7 @@ export function getPiBuiltinTools(allowedTools, {
     Exec: createBuiltinTool("Exec", "Exec", "Execute one program directly from an argv array without shell parsing. Prefer this for ordinary commands; use Bash only when shell syntax is required." + " " + foregroundTimeoutDescription, objectSchema({
       executable: { type: "string", minLength: 1 },
       args: { type: "array", items: { type: "string" }, maxItems: 256 },
-      workdir: { type: "string" },
+      workdir: { type: "string", description: "Run in this directory. Relative paths resolve from the session cwd/workspace; directories outside it are accepted only when path policy allows them. A denied directory returns workdir_denied, never a fallback cwd." },
       description: processDescriptionSchema,
       timeout_ms: processTimeoutSchema,
       max_output_chars: bashLimitSchema,
@@ -666,8 +670,8 @@ export function getPiBuiltinTools(allowedTools, {
     // text to the run's tool-output directory instead of being cut.
     Agent: createAgentTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled, persistentExposure: toolExposure.persistentSubagents, recoveryAccess }),
     AskParent: createAskParentTool(askParentController, toolExposure.askParent),
-    AgentSend: createAgentSendTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled, persistentExposure: toolExposure.persistentSubagents, recoveryAccess }),
-    WebFetch: createBuiltinTool("WebFetch", "Web Fetch", "Retrieve one HTTP(S) source as a JSON envelope with status (ok/partial/blocked/error), summary, untrusted content, source/coverage metadata, and typed next_actions. Partial means usable but incomplete output; blocked means policy/access/budget prevents progress; error means execution failure. Prefer static markdown; use text when Markdown semantics are harmful, and raw only for decoded source with rendering off. Use focus for a deterministic query-relevant block subset of the extracted page and include_links for bounded main-content links from static HTML extraction. Continuations reuse nextLine via start_line and preserve the call's format, focus, and link options. When browser rendering is configured, auto renders only sparse JavaScript shells; retry with always only when metadata recommends a browser or JavaScript is known to be required. Rendering does not bypass login, CAPTCHA, Cloudflare, robots/access controls, or site policy; treat those failures as evidence.", objectSchema({
+    AgentManage: createAgentManageTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled, persistentExposure: toolExposure.persistentSubagents, recoveryAccess }),
+    WebFetch: createBuiltinTool("WebFetch", "Web Fetch", "Retrieve one HTTP(S) source as a JSON envelope with status (ok/partial/blocked/error), summary, untrusted content, source/coverage metadata, and typed next_actions. Partial means usable but incomplete output; blocked means policy/access/budget prevents progress; error means execution failure. Prefer static markdown; use text when Markdown semantics are harmful, and raw only for decoded source with rendering off. Use focus for a deterministic query-relevant block subset of the extracted page and include_links for bounded main-content links from static HTML extraction. Continuations reuse nextLine via start_line and preserve the call's format, focus, and link options. When browser rendering is configured, auto renders only sparse JavaScript shells; retry with always only when metadata recommends a browser or JavaScript is known to be required. The local provider enforces sandbox network policy but performs no robots.txt preflight. Rendering does not bypass login, CAPTCHA, Cloudflare, robots/access controls, or site policy; treat those failures as evidence.", objectSchema({
       url: { type: "string" },
       start_line: { type: "integer", minimum: 1, description: "First line to read; use nextLine from a truncated page." },
       max_lines: { type: "integer", minimum: 1, maximum: 10000, description: "Lines to read, default 200 when selecting a range. Later ranges reuse the extracted page." },
@@ -680,12 +684,12 @@ export function getPiBuiltinTools(allowedTools, {
     }, ["url"]), webController
       ? async (params, execution) => filterWebDelivery(await webController.fetch(params, execution))
       : async () => webFailureEnvelope("WebFetch", "controller_unavailable", "Error: WebFetch controller is unavailable."), toolContext),
-    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Discover public sources as a JSON envelope with status (ok/partial/blocked/error), summary, untrusted result leads, source/coverage metadata, and typed next_actions. Partial means usable but incomplete output; blocked means policy/access/budget prevents progress; error means execution failure. Use the configured provider or explicit ordered chain (default: Parallel then local Ollama); a single provider name is strict. Optional country requests a two-letter ISO 3166-1 search-region preference separate from language; omission requests no country/global mode where supported, and provider coverage reports advisory or unsupported handling. Country targeting does not guarantee every result is geographically located there. Start with one broad, high-yield query covering the decision's main constraints, then use WebFetch on returned URLs. Treat snippets as leads, not final evidence. Refine only for a material evidence gap. Never sleep, retry, or delegate to bypass a request budget, cooldown, quota limit, or access gate; continue honestly from available evidence.", objectSchema({
+    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Discover public sources as a JSON envelope with status (ok/partial/blocked/error), summary, untrusted result leads, source/coverage metadata, and typed next_actions. Partial means usable but incomplete output; blocked means policy/access/budget prevents progress; error means execution failure. Use the configured provider or explicit ordered chain (default: Parallel then local Ollama); a single provider name is strict. Optional country requests a two-letter ISO 3166-1 search-region preference separate from language; omission requests no country/global mode where supported, and provider coverage reports advisory or unsupported handling. Country targeting does not guarantee every result is geographically located there. Start with one broad, high-yield query covering the decision's main constraints, then use WebFetch on returned URLs. Treat snippets as leads, not final evidence. Refine only for a material evidence gap. Never sleep, retry, or delegate to bypass a request budget, cooldown, quota limit, or access gate; continue honestly from available evidence. Domain constraints (the domains and exclude_domains parameters, or site: operators in the query text) travel as site: query operators and are additionally enforced client-side; per-provider handling is reported in coverage filterSupport.domains.", objectSchema({
       query: { type: "string" },
       limit: { type: "integer" },
       alternate_queries: { type: "array", items: { type: "string" }, maxItems: 3 },
-      domains: { type: "array", items: { type: "string" } },
-      exclude_domains: { type: "array", items: { type: "string" } },
+      domains: { type: "array", items: { type: "string" }, description: "Restrict results to these domains; sent as site: query operators and enforced client-side." },
+      exclude_domains: { type: "array", items: { type: "string" }, description: "Exclude these domains from results; enforced client-side." },
       language: { type: "string" },
       country: { type: "string", pattern: "^[A-Za-z]{2}$", description: "Optional ISO 3166-1 alpha-2 search-region preference, normalized case-insensitively." },
       time_range: { type: "string", enum: ["day", "month", "year"] },

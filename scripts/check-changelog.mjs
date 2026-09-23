@@ -36,6 +36,14 @@
  *                        Containing `skip-changelog` passes the gate.
  *   CHANGELOG_PR_BODY    Full PR body text. A line matching
  *                        /^Changelog:\s*none\b/m passes the gate.
+ *   CHANGELOG_PR_DRAFT   Whether the PR is a draft: the string GitHub Actions
+ *                        renders from ${{ github.event.pull_request.draft }}.
+ *                        Only the value `true` (case-insensitive, surrounding
+ *                        whitespace ignored) counts as a draft. Empty (non-PR
+ *                        events), unset, or unrecognized means "not draft" so
+ *                        the gate fails closed and never silently skips. A
+ *                        draft PR passes the entry gate with a deferral note;
+ *                        the structure and coverage checks still run.
  *
  * Exit 0 only when every applicable part passes; every failure names the
  * offending file and line.
@@ -366,6 +374,10 @@ export function parsePrLabels(raw) {
   return text.split(",").map((label) => label.trim()).filter(Boolean);
 }
 
+export function parsePrDraft(raw) {
+  return (raw ?? "").trim().toLowerCase() === "true";
+}
+
 function bulletCounts(bullets) {
   const counts = new Map();
   for (const bullet of bullets) {
@@ -379,6 +391,7 @@ export function evaluatePrGate({
   headText,
   labels = [],
   prBody = "",
+  draft = false,
   fileName = CHANGELOG_FILE_NAME,
 }) {
   if (labels.includes(SKIP_CHANGELOG_LABEL)) {
@@ -412,6 +425,12 @@ export function evaluatePrGate({
   }
   if (versionSectionAdded) {
     return { status: "pass", detail: "release cut: new version section, no new `## Unreleased` bullets required" };
+  }
+  // A draft is explicitly unfinished, so a missing entry is deferred — not
+  // excused. This sits last so a real entry, label, or `Changelog: none`
+  // line is still reported for what it is instead of as a deferral.
+  if (draft === true) {
+    return { status: "pass", detail: "draft PR: entry gate deferred until ready for review" };
   }
   return {
     status: "fail",
@@ -496,6 +515,7 @@ export async function runCheckChangelog(options = {}) {
         headText: changelogText,
         labels: parsePrLabels(env.CHANGELOG_PR_LABELS),
         prBody: env.CHANGELOG_PR_BODY ?? "",
+        draft: parsePrDraft(env.CHANGELOG_PR_DRAFT),
       });
       if (gate.status === "pass") {
         stdout.write(`PR entry gate: pass (${gate.detail})\n`);

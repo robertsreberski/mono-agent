@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { formatProviderUsageLead, projectProviderUsageWindow } from "@mono-agent/agent-contracts/provider-usage";
 import { api } from "../api";
 import type { AgentSummary, ProviderUsage, ProviderUsageSnapshot } from "../types";
 
@@ -86,12 +87,13 @@ export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
 }
 
 function countdown(reset: string, now: number): string {
-  const minutes = Math.max(0, Math.ceil((Date.parse(reset) - now) / 60_000));
-  if (minutes === 0) return "Reset due";
-  if (minutes >= 1440) return `Resets in ${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h`;
-  if (minutes >= 60) return `Resets in ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-  return `Resets in ${minutes}m`;
+  const diffMs = Date.parse(reset) - now;
+  if (Math.max(0, Math.ceil(diffMs / 60_000)) === 0) return "Reset due";
+  return `Resets in ${formatProviderUsageLead(diffMs)}`;
 }
+// How early the window runs out is the decision, so it rides on the countdown
+// line as one fragment. The absolute instant stays in the title.
+const earlyLine = (leadMs: number): string => `empty ${formatProviderUsageLead(leadMs)} early`;
 /** The plan chip is rendered inline by the provider heading; this shows only the meters. */
 export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage }) {
   const [now, setNow] = useState(Date.now);
@@ -105,11 +107,39 @@ export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage 
     {usage.stale && <div className="provider-usage-meta">
       <span title={`Fetched ${new Date(usage.fetchedAt).toLocaleString()}`}>Last known usage</span>
     </div>}
-    {usage.windows.map((window) => <div className="provider-usage-window" key={window.kind}>
-      <div className="provider-usage-label"><span>{window.label}</span><span>{window.usedPercent}%</span></div>
-      <progress aria-label={`${usage.label} ${window.label} used`} max={100} value={window.usedPercent} />
-      {window.resetsAt && <time dateTime={window.resetsAt} title={new Date(window.resetsAt).toLocaleString()}>{countdown(window.resetsAt, now)}</time>}
-    </div>)}
+    {usage.windows.map((window) => {
+      // One shared derivation, anchored at the measurement: a window is never both ahead and under.
+      const projection = projectProviderUsageWindow(window, usage.fetchedAt);
+      const alert = projection !== undefined && projection.exhaustsAt !== undefined && projection.leadMs !== undefined
+        && (projection.severity === "ahead" || projection.severity === "unsustainable") ? projection : undefined;
+      const unused = alert === undefined && projection?.projectedUnusedPercent !== undefined && projection.projectedUnusedPercent >= 5
+        ? Math.round(projection.projectedUnusedPercent) : undefined;
+      const chip = projection !== undefined && projection.confidence === "normal"
+        ? { text: `${projection.pace.toFixed(1)}×`, tier: projection.severity === "ok" ? "is-steady" : `is-${projection.severity}` } : undefined;
+      // Where an on-track window would be, drawn in the meter's own palette: a
+      // small rounded cap in the accent family, not a foreign line across the bar.
+      const expected = projection === undefined ? undefined : Math.min(100, Math.max(0, projection.elapsedFraction * 100));
+      const name = projection === undefined ? `${usage.label} ${window.label} used`
+        : `${usage.label} ${window.label} used, ${window.usedPercent} %, ${Math.round(projection.elapsedFraction * 100)} % of the window elapsed, pace ${projection.pace.toFixed(1)}x`
+          + (alert === undefined ? "" : `, projected to run out before reset (${alert.severity})`);
+      return <div className="provider-usage-window" key={window.kind}>
+        <div className="provider-usage-label"><span>{window.label}</span><span>{window.usedPercent}%{chip !== undefined && <> <span className={`provider-usage-pace ${chip.tier}`}>{chip.text}</span></>}</span></div>
+        <span className="provider-usage-bar">
+          <progress aria-label={name} max={100} value={window.usedPercent} />
+          {expected !== undefined && <span className={`provider-usage-tick${window.usedPercent > expected ? " is-passed" : ""}`}
+            aria-hidden="true" style={{ left: `${expected}%` }} />}
+        </span>
+        {window.resetsAt && <time dateTime={window.resetsAt} title={new Date(window.resetsAt).toLocaleString()}>
+          {countdown(window.resetsAt, now)}
+          {alert?.exhaustsAt !== undefined && alert.leadMs !== undefined
+            ? <span className={`provider-usage-projection is-${alert.severity}`}
+              title={`Projected to run out ${new Date(alert.exhaustsAt).toLocaleString()} at current pace ${alert.pace.toFixed(2)}x`}> · {earlyLine(alert.leadMs)}</span>
+            : unused !== undefined
+              ? <span className="provider-usage-projection is-unused"
+                title={`At this pace about ${unused} % of the window is left unused at reset`}> · {unused}% unused</span> : null}
+        </time>}
+      </div>;
+    })}
     {usage.error && <p className="provider-usage-error" role="status">Usage unavailable — {usage.error.message}</p>}
   </div>;
 }

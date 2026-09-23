@@ -1,6 +1,6 @@
 // @ts-check
 
-import { houndEndpointError } from "./hound-local/config.js";
+import { localEndpointError } from "./local/config.js";
 import { parallelCacheIdentity, parallelSessionId } from "./parallel-mcp.js";
 import { createHash, randomUUID } from "node:crypto";
 import { passthroughSandbox } from "../sandbox-seam.js";
@@ -122,8 +122,8 @@ export function createWebToolController({
     namespace,
 
     async search(params, execution = {}) {
-      const migration = houndEndpointError(searchConfig?.hound);
-      if (migration) return webFailureEnvelope("WebSearch", "invalid_hound_config", migration);
+      const migration = localEndpointError(searchConfig?.hound);
+      if (migration) return webFailureEnvelope("WebSearch", "invalid_local_config", migration);
       if (execution.signal?.aborted) return webFailureEnvelope("WebSearch", "aborted", "Error: WebSearch was aborted.");
       const normalizedCountry = normalizeSearchCountry(params.country);
       if (normalizedCountry.error) return webFailureEnvelope("WebSearch", "invalid_country", `Error: ${normalizedCountry.error}`);
@@ -170,7 +170,7 @@ export function createWebToolController({
     },
 
     async fetch(params, execution = {}) {
-      const migration = houndEndpointError(fetchConfig?.hound);
+      const migration = localEndpointError(fetchConfig?.hound);
       if (migration) return webFailureEnvelope("WebFetch", "invalid_fetch_config", migration);
       if (execution.signal?.aborted) return webFailureEnvelope("WebFetch", "aborted", "Error: WebFetch was aborted.");
       const resolvedCtx = requireToolContext(ctx);

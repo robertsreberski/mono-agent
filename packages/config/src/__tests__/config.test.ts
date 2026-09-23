@@ -1172,9 +1172,17 @@ describe("resolveJsonMonoAgentConfig", () => {
     ["an out-of-range maxConcurrent", JSON.stringify({ maxConcurrent: 99 }), /maxConcurrent must be an integer between 1 and 10/u],
     ["a non-object inline policy", JSON.stringify({ inline: [] }), /inline must be an object/u],
     ["an inline allow-all wildcard", JSON.stringify({ inline: { allowedTools: ["*"] } }), /cannot use the \* wildcard/u],
-    ["a profile AgentSend grant", JSON.stringify({ definitions: [{ name: "a", description: "d", prompt: "p", allowedTools: ["AgentSend"] }] }), /cannot allow Agent or AgentSend/u],
-    ["an inline AgentSend grant", JSON.stringify({ inline: { allowedTools: ["AgentSend"] } }), /cannot allow Agent or AgentSend/u],
+    ["a profile AgentManage grant", JSON.stringify({ definitions: [{ name: "a", description: "d", prompt: "p", allowedTools: ["AgentManage"] }] }), /cannot allow Agent or AgentManage/u],
+    ["an inline AgentManage grant", JSON.stringify({ inline: { allowedTools: ["AgentManage"] } }), /cannot allow Agent or AgentManage/u],
     ["an inline Agent grant", JSON.stringify({ inline: { allowedTools: ["Agent"] } }), /subagents never spawn subagents/u],
+    // The rename carries no alias, so a stale entry must name its migration
+    // instead of being read as an unknown (and therefore inert) tool.
+    ["a profile AgentSend grant", JSON.stringify({ definitions: [{ name: "a", description: "d", prompt: "p", allowedTools: ["AgentSend"] }] }),
+      /allowedTools lists AgentSend, which was renamed to AgentManage\. There is no alias: rename the entry to AgentManage\./u],
+    ["an inline AgentSend grant", JSON.stringify({ inline: { allowedTools: ["AgentSend"] } }),
+      /allowedTools lists AgentSend, which was renamed to AgentManage/u],
+    ["a profile AgentSend denial", JSON.stringify({ definitions: [{ name: "a", description: "d", prompt: "p", disallowedTools: ["AgentSend"] }] }),
+      /disallowedTools lists AgentSend, which was renamed to AgentManage/u],
   ])("rejects %s", (_label, payload, expected) => {
     expect(() => resolveJsonMonoAgentConfig({ cwd: "/repo", json: {
   runtime: {

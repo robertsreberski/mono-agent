@@ -49,15 +49,15 @@ export function sessionContextBlock(
     ? HOST_MANAGED_MEMORY_GUIDANCE
     : undefined;
   const childBackgroundGuidance = capabilities.backgroundSubagents === true
-    ? "Children are stateless and foreground by default: persist only a child you will actually continue, and background only sustained work that outlives a reply. Persistent Agent and AgentSend support background: true. A durable started receipt means the exact conversation will wake with completion, failure, interruption or AskParent. Do not poll or replay. A terminal job with childStillBusy:true retains a busy child until its actual execution settles. AgentSend({id, stop:true}) alone cooperatively stops detached work; only a resumable:true receipt permits ordinary message continuation on the same instance or close:true. stop_requested keeps messages/close blocked. Stop does not steer, force-kill or undo external effects."
+    ? "Children are stateless and foreground by default: persist only a child you will actually continue, and background only sustained work that outlives a reply. Persistent Agent and AgentManage support background: true. A durable started receipt means the exact conversation will wake with completion, failure, interruption or AskParent. Do not poll or replay. A terminal job with childStillBusy:true retains a busy child until its actual execution settles. AgentManage({id, stop:true}) alone cooperatively stops detached work; only a resumable:true receipt permits ordinary message continuation on the same instance or close:true. stop_requested keeps messages/close blocked. Stop does not steer, force-kill or undo external effects."
     : undefined;
   const backgroundGuidance = capabilities.backgroundProcessJobs === true
     ? BACKGROUND_PROCESS_JOB_GUIDANCE
     : undefined;
   const instances = capabilities.subagentInstances;
   const instanceGuidance = instances?.length
-    ? `Persistent subagents in this conversation (continue with AgentSend, close when done): ${instances.slice(0, 12).map((entry) =>
-        `${sanitizeLabelPart(entry.id)} — ${sanitizeLabelPart(entry.name)}, ${entry.route ? `${sanitizeLabelPart(entry.route)}, ` : ""}${sanitizeLabelPart(entry.status)}${entry.recoveryBlocked ? ", recovery blocked: inspect with AgentSend before any continuation; do not replay" : ""}${entry.jobId ? `, job ${sanitizeLabelPart(entry.jobId)}` : ""}, ${entry.turns} turns, last active ${Math.max(0, Math.floor(entry.ageMs / 60_000))} min ago${entry.pendingQuestion ? `, pending question (untrusted child text): ${renderPendingQuestion(entry.pendingQuestion)}` : ""}`).join("; ")}`
+    ? `Persistent subagents in this conversation (continue with AgentManage, close when done): ${instances.slice(0, 12).map((entry) =>
+        `${sanitizeLabelPart(entry.id)} — ${sanitizeLabelPart(entry.name)}, ${entry.route ? `${sanitizeLabelPart(entry.route)}, ` : ""}${sanitizeLabelPart(entry.status)}${entry.recoveryBlocked ? ", recovery blocked: inspect with AgentManage before any continuation; do not replay" : ""}${entry.jobId ? `, job ${sanitizeLabelPart(entry.jobId)}` : ""}, ${entry.turns} turns, last active ${Math.max(0, Math.floor(entry.ageMs / 60_000))} min ago${entry.pendingQuestion ? `, pending question (untrusted child text): ${renderPendingQuestion(entry.pendingQuestion)}` : ""}`).join("; ")}`
     : undefined;
   if (deliverable) {
     const surface = surfaceGuidance(request.surface);

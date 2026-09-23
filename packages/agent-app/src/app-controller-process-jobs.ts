@@ -126,8 +126,10 @@ export function ensureProcessJobsService(
           }),
           input.deliveryKey,
         ),
+        // Routing logs every undelivered update once, with its reason. Throwing
+        // here only added a second, reason-free warning from the service.
         surfaceUpdate: async (projection) => {
-          const outcome = await routeProcessJobSurfaceUpdate({
+          await routeProcessJobSurfaceUpdate({
             conversationId: projection.origin.conversationId.split("#", 1)[0]
               ?? projection.origin.conversationId,
             deliveryKey: projection.wake.deliveryKey,
@@ -136,9 +138,6 @@ export function ensureProcessJobsService(
             running: controller.running,
             ...(controller.logger === undefined ? {} : { logger: controller.logger }),
           });
-          if (!outcome.delivered) {
-            throw new Error(outcome.reason ?? "The native process-job lifecycle update was not delivered.");
-          }
         },
         onHealthChange: async (health) =>
           await publishProcessJobsHealth(controller, settings.stateDir, health),

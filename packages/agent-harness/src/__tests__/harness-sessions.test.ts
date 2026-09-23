@@ -185,6 +185,273 @@ function createSpyMemoryStore() {
   return { store, hostSummaryCalls: () => hostSummaryCalls, captureCalls: () => captureCalls };
 }
 
+const OVERRIDE_MODEL = "anthropic:claude-opus-4-8";
+type ManualRunOptions = RuntimeRunOptions & { manualCompaction?: boolean };
+const isManual = (options: RuntimeRunOptions): boolean => (options as ManualRunOptions).manualCompaction === true;
+const manualResult = (options: RuntimeRunOptions, status: "succeeded" | "skipped" = "succeeded"): RuntimeResult => ({
+  providerSessionId: options.sessionId as string,
+  manualCompaction: { status, trigger: "manual", operationId: `manual-${status}`, tokensBefore: 1000, tokensAfter: 300, tokenCountsExact: false },
+}) as unknown as RuntimeResult;
+const defaultManualRun = async (_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> =>
+  isManual(options) ? manualResult(options) : { text: "answer", providerSessionId: options.sessionId as string };
+
+async function manualFixture(options: {
+  readonly run?: (prompt: string, options: RuntimeRunOptions, call: number) => Promise<RuntimeResult>;
+  readonly sync?: (providerSessionId: string, call: number) => Promise<boolean | void>;
+  readonly failNextCommit?: { armed: boolean };
+  readonly seedHistory?: boolean;
+  readonly defaultPrivateEndpoint?: boolean;
+} = {}) {
+  const identityPath = await identityFixture();
+  const root = await mkdtemp(join(tmpdir(), "agent-manual-compact-"));
+  tempDirs.push(root);
+  const historyRoot = join(root, "history");
+  const durable = createCoordinatedDurableHistoryStore({ root: historyRoot });
+  if (options.seedHistory !== false) await durable.append("manual", [{ role: "assistant", content: HISTORY_MARKER }]);
+  const failNextCommit = options.failNextCommit;
+  const historyStore: ConversationHistoryStore = failNextCommit === undefined ? durable : Object.assign(Object.create(durable), {
+    async beginProviderSessionTurn(...args: Parameters<NonNullable<ConversationHistoryStore["beginProviderSessionTurn"]>>) {
+      const turn = await durable.beginProviderSessionTurn(...args);
+      return { ...turn, prepareCommit: async (...commitArgs: Parameters<typeof turn.prepareCommit>) => {
+        const prepared = await turn.prepareCommit(...commitArgs);
+        if (!failNextCommit.armed) return prepared;
+        failNextCommit.armed = false;
+        return { commit: async () => { throw new Error("PRIVATE COMMIT FAILURE"); }, abort: prepared.abort };
+      }, abort: turn.abort };
+    },
+  }) as ConversationHistoryStore;
+  const fake = createSessionFakeRuntime(options.run ?? defaultManualRun, options.sync);
+  // Mirrors the app's request-model extension: a declared web model selects the route.
+  const runtimeOptionsForRequest = ({ request: turn }: { request: { metadata?: Record<string, unknown> } }) => {
+    const selected = (turn.metadata?.web as { model?: string } | undefined)?.model;
+    return { runtimeOptions: selected === undefined ? {} : {
+      model: parseMonoRuntimeModelReference(selected), ...(options.defaultPrivateEndpoint ? { isPrivateProvider: null } : {}),
+    } };
+  };
+  const makeHarness = () => createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore,
+    session, piSessionsRoot: join(root, "pi"), runtimeOptionsForRequest,
+    ...(options.defaultPrivateEndpoint ? {
+      runtimeOptions: { isPrivateProvider: true },
+      runtimeOptionsForManualCompaction: async () => ({ isPrivateProvider: null }),
+    } : {}),
+  });
+  return { fake, historyStore, makeHarness, revision: async () => (await readHistoryRecord(historyRoot, "manual")).providerSession.revision };
+}
+
+describe("AgentHarness manual compaction", () => {
+  it("compacts a warm session without replaying history, a real prompt, or a refresh", async () => {
+    const { fake, makeHarness, revision } = await manualFixture();
+    const harness = makeHarness();
+    await harness.run(request("manual", "first"));
+    const sessionId = fake.calls[0]?.options.sessionId;
+    const refreshed = fake.refreshedSessions.length;
+    await expect(harness.compactConversation!("manual")).resolves.toEqual({ status: "succeeded", trigger: "manual",
+      operationId: "manual-succeeded", tokensBefore: 1000, tokensAfter: 300, tokenCountsExact: false });
+    expect(isManual(fake.calls[1]!.options)).toBe(true);
+    expect(fake.calls[1]?.options.sessionId).toBe(sessionId);
+    expect(fake.calls[1]?.options.messages).toEqual([]);
+    expect(fake.calls[1]?.prompt).not.toContain("You are Mono.");
+    expect(fake.refreshedSessions).toHaveLength(refreshed);
+    expect(await revision()).toBe(2);
+    await harness.run(request("manual", "next"));
+    // Still warm at the committed revision: only the current user message.
+    expect(fake.calls[2]?.options.sessionId).toBe(sessionId);
+    expect(fake.calls[2]?.options.messages).toHaveLength(1);
+    expect(fake.refreshedSessions).toHaveLength(refreshed);
+    expect(await revision()).toBe(3);
+  });
+
+  it("seeds a create-on-miss session exactly like a cold turn and resumes it after restart", async () => {
+    const { fake, makeHarness, revision } = await manualFixture();
+    await expect(makeHarness().compactConversation!("manual")).resolves.toMatchObject({ status: "succeeded", tokensAfter: 300 });
+    expect(fake.refreshedSessions).toEqual([fake.calls[0]?.options.sessionId]);
+    expect(fake.calls[0]?.options.messages).toHaveLength(1);
+    expect(fake.calls[0]?.options.messages?.[0]).toMatchObject({ role: "assistant", content: expect.stringContaining(HISTORY_MARKER) });
+    expect(await revision()).toBe(1);
+    const restarted = makeHarness();
+    await restarted.run(request("manual", "next"));
+    expect(fake.calls[1]?.options.sessionId).toBe(fake.calls[0]?.options.sessionId);
+    // Cold turn sends the same canonical replay; Pi skips it on a true JSONL resume.
+    expect(fake.calls[1]?.options.messages?.slice(0, -1)).toEqual(fake.calls[0]?.options.messages);
+    expect(await revision()).toBe(2);
+  });
+
+  it("strictly refreshes a durable session at the matching revision after restart", async () => {
+    const { fake, makeHarness, revision } = await manualFixture();
+    await makeHarness().run(request("manual", "first"));
+    const sessionId = fake.calls[0]?.options.sessionId as string;
+    const refreshed = fake.refreshedSessions.length;
+    await makeHarness().compactConversation!("manual");
+    expect(fake.refreshedSessions.slice(refreshed)).toEqual([sessionId]);
+    expect(fake.calls[1]?.options.sessionId).toBe(sessionId);
+    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain(HISTORY_MARKER);
+    expect(await revision()).toBe(2);
+  });
+
+  it("refreshes a stale warm mapping after another harness advanced the revision", async () => {
+    const { fake, makeHarness, revision } = await manualFixture();
+    const stale = makeHarness();
+    await stale.run(request("manual", "first"));
+    await makeHarness().run(request("manual", "second"));
+    const refreshed = fake.refreshedSessions.length;
+    await stale.compactConversation!("manual");
+    expect(fake.refreshedSessions.slice(refreshed)).toEqual([fake.calls[0]?.options.sessionId]);
+    expect(fake.calls[2]?.options.messages?.length).toBeGreaterThan(0);
+    expect(await revision()).toBe(3);
+    await stale.run(request("manual", "third"));
+    expect(fake.calls[3]?.options.messages).toHaveLength(1);
+  });
+
+  it("keeps a healthy session after a skipped compaction", async () => {
+    const { fake, makeHarness, revision } = await manualFixture({
+      run: async (_prompt, options) => isManual(options) ? manualResult(options, "skipped")
+        : { text: "answer", providerSessionId: options.sessionId as string },
+    });
+    const harness = makeHarness();
+    await harness.run(request("manual", "first"));
+    await expect(harness.compactConversation!("manual")).resolves.toMatchObject({ status: "skipped" });
+    expect(fake.invalidatedSessions).toEqual([]);
+    expect(await revision()).toBe(2);
+    await harness.run(request("manual", "next"));
+    expect(fake.calls[2]?.options.sessionId).toBe(fake.calls[0]?.options.sessionId);
+    expect(fake.calls[2]?.options.messages).toHaveLength(1);
+  });
+
+  it.each(["summary", "sync", "throw", "commit"] as const)(
+    "fails closed after a %s failure and the next turn reseeds from intact canonical history",
+    async (failure) => {
+      const failNextCommit = { armed: false };
+      const { fake, historyStore, makeHarness } = await manualFixture({
+        failNextCommit,
+        run: async (_prompt, options) => {
+          if (!isManual(options)) return { text: "answer", providerSessionId: options.sessionId as string };
+          if (failure === "throw") throw new Error("PRIVATE PROVIDER ERROR");
+          if (failure === "summary") return { error: "PRIVATE SUMMARY ERROR", providerSessionId: options.sessionId } as unknown as RuntimeResult;
+          return manualResult(options);
+        },
+        sync: async (_id, call) => !(failure === "sync" && call === 2),
+      });
+      const harness = makeHarness();
+      await harness.run(request("manual", "first"));
+      const sessionId = fake.calls[0]?.options.sessionId as string;
+      const before = await historyStore.load("manual");
+      failNextCommit.armed = failure === "commit";
+      const error = await harness.compactConversation!("manual").catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(AgentHarnessError);
+      expect(error).toMatchObject({ failureKind: "compaction_failed" });
+      expect(String((error as Error).message)).not.toContain("PRIVATE");
+      expect(fake.invalidatedSessions).toContain(sessionId);
+      expect(await historyStore.load("manual")).toEqual(before);
+      await harness.run(request("manual", "next"));
+      expect(fake.calls[2]?.options.sessionId).not.toBe(sessionId);
+      expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain(HISTORY_MARKER);
+      await expect(harness.dispose!()).resolves.toBeUndefined();
+    },
+  );
+
+  it("admits one compaction and rejects compaction during a running turn", async () => {
+    let releaseManual!: () => void;
+    let releaseTurn!: () => void;
+    const manualGate = new Promise<void>((resolve) => { releaseManual = resolve; });
+    let turnGate: Promise<void> = Promise.resolve();
+    const { fake, makeHarness } = await manualFixture({
+      run: async (_prompt, options) => {
+        if (isManual(options)) { await manualGate; return manualResult(options); }
+        await turnGate;
+        return { text: "answer", providerSessionId: options.sessionId as string };
+      },
+    });
+    const harness = makeHarness();
+    await harness.run(request("manual", "first"));
+    const pending = harness.compactConversation!("manual");
+    await expect(harness.compactConversation!("manual")).rejects.toMatchObject({ failureKind: "compaction_busy" });
+    await vi.waitFor(() => { expect(fake.calls).toHaveLength(2); });
+    releaseManual();
+    await expect(pending).resolves.toMatchObject({ status: "succeeded" });
+    turnGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const turn = harness.run(request("manual", "busy"));
+    await vi.waitFor(() => { expect(fake.calls).toHaveLength(3); });
+    await expect(harness.compactConversation!("manual")).rejects.toMatchObject({ failureKind: "compaction_busy" });
+    releaseTurn();
+    await turn;
+    expect(fake.calls).toHaveLength(3);
+  });
+
+  it("compacts an override-bound conversation's own session and keeps the next override turn warm", async () => {
+    const { fake, makeHarness, revision } = await manualFixture({ defaultPrivateEndpoint: true });
+    const harness = makeHarness();
+    const overrideTurn = (text: string) => ({ ...request("manual", text), metadata: { web: { model: OVERRIDE_MODEL } } });
+    await harness.run(overrideTurn("first"));
+    const sessionId = fake.calls[0]?.options.sessionId;
+    await expect(harness.compactConversation!("manual", { model: OVERRIDE_MODEL })).resolves.toMatchObject({ status: "succeeded" });
+    expect(fake.calls[1]?.options.model?.reference).toBe(OVERRIDE_MODEL);
+    expect(fake.calls[1]?.options.isPrivateProvider).toBeUndefined();
+    expect(fake.calls[1]?.options.sessionId).toBe(sessionId);
+    expect(fake.calls[1]?.options.messages).toEqual([]);
+    expect(fake.invalidatedSessions).toEqual([]);
+    expect(await revision()).toBe(2);
+    await harness.run(overrideTurn("next"));
+    expect(fake.calls[2]?.options.sessionId).toBe(sessionId);
+    expect(fake.calls[2]?.options.messages).toHaveLength(1);
+    expect(await revision()).toBe(3);
+  });
+
+  it("declines a conversation bound to another model without rotating or retiring it", async () => {
+    const { fake, historyStore, makeHarness, revision } = await manualFixture();
+    const harness = makeHarness();
+    await harness.run({ ...request("manual", "first"), metadata: { web: { model: OVERRIDE_MODEL } } });
+    const sessionId = fake.calls[0]?.options.sessionId;
+    // The store also fences the mismatch atomically if another process changes
+    // the binding after the harness's read-only preflight.
+    await expect(historyStore.beginProviderSessionTurn!("manual", "mismatch-probe",
+      { modelKey: "other:model", skipModelRotation: true })).rejects.toMatchObject({ name: "ProviderSessionModelChangedError" });
+    await expect(harness.compactConversation!("manual")).resolves.toMatchObject({ status: "skipped", reason: "model_changed" });
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.invalidatedSessions).toEqual([]);
+    expect(fake.retiredSessions).toEqual([]);
+    expect(await revision()).toBe(1);
+    await harness.run({ ...request("manual", "next"), metadata: { web: { model: OVERRIDE_MODEL } } });
+    expect(fake.calls[1]?.options.sessionId).toBe(sessionId);
+    expect(fake.calls[1]?.options.messages).toHaveLength(1);
+  });
+
+  it("aborts a hung compaction on dispose, releases its leases, and reseeds on the next harness", async () => {
+    let seenSignal: AbortSignal | undefined;
+    const { fake, historyStore, makeHarness } = await manualFixture({
+      run: async (_prompt, options) => {
+        if (!isManual(options)) return { text: "answer", providerSessionId: options.sessionId as string };
+        seenSignal = options.abortSignal;
+        return await new Promise<RuntimeResult>(() => undefined);
+      },
+    });
+    const harness = makeHarness();
+    await harness.run(request("manual", "first"));
+    const sessionId = fake.calls[0]?.options.sessionId as string;
+    const before = await historyStore.load("manual");
+    const pending = harness.compactConversation!("manual").catch((error: unknown) => error);
+    await vi.waitFor(() => { expect(fake.calls).toHaveLength(2); });
+    await harness.dispose!();
+    expect(seenSignal?.aborted).toBe(true);
+    expect(await pending).toMatchObject({ failureKind: "compaction_failed" });
+    expect(fake.invalidatedSessions).toContain(sessionId);
+    expect(await historyStore.load("manual")).toEqual(before);
+    const next = makeHarness();
+    await next.run(request("manual", "next"));
+    expect(fake.calls[2]?.options.sessionId).not.toBe(sessionId);
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain(HISTORY_MARKER);
+  });
+
+  it("skips an empty conversation and rejects hosts without durable Pi sessions", async () => {
+    const { fake, makeHarness } = await manualFixture({ seedHistory: false });
+    await expect(makeHarness().compactConversation!("manual")).resolves.toMatchObject({ status: "skipped", reason: "nothing_to_compact" });
+    expect(fake.calls).toEqual([]);
+    const identityPath = await identityFixture();
+    const volatile = createAgentHarness({ identityPath, runtime: fake.runtime, model,
+      historyStore: await primedHistoryStore("manual"), session });
+    await expect(volatile.compactConversation!("manual")).rejects.toMatchObject({ failureKind: "compaction_unsupported" });
+  });
+});
+
 describe("AgentHarness continuous sessions", () => {
   it("first run goes fresh with history, second run resumes without history", async () => {
     const identityPath = await identityFixture();

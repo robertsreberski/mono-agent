@@ -19,24 +19,30 @@ export function composeHostTurnEnvelope(turnContext: string, userMessage: string
 /** Format current admission observations, never controllers or executable authority. */
 export function formatHostCapabilities(options: Partial<RuntimeRunOptions>): string {
   const fact = (available: boolean, reason = "controller_unavailable") => ({ available, ...(available ? {} : { reason }) });
-  const subagents = options.subagents as { instances?: { reserve?: unknown; releaseReservation?: unknown; inspect?: unknown; checkAcknowledgement?: unknown }; backgroundSubagentController?: unknown } | undefined;
+  const subagents = options.subagents as { instances?: { reserve?: unknown; releaseReservation?: unknown; inspect?: unknown; checkAcknowledgement?: unknown }; backgroundSubagentController?: { steer?: unknown } } | undefined;
   const instances = subagents?.instances;
   const background = Boolean(instances?.reserve && instances?.releaseReservation && subagents?.backgroundSubagentController);
   const facts = {
     "Bash/Exec.background": fact(Boolean(options.processJobs), options.processJobsAvailability?.unavailableReason),
     "Agent.persist": fact(Boolean(instances)),
     "Agent.background": fact(background),
-    AgentSend: fact(Boolean(instances)),
-    "AgentSend.background": fact(background),
-    "AgentSend.inspect": fact(Boolean(instances?.inspect)),
-    "AgentSend.ack": fact(Boolean(instances?.checkAcknowledgement)),
+    AgentManage: fact(Boolean(instances)),
+    "AgentManage.background": fact(background),
+    "AgentManage.inspect": fact(Boolean(instances?.inspect)),
+    "AgentManage.steer": fact(background && Boolean(subagents?.backgroundSubagentController?.steer)),
+    "AgentManage.ack": fact(Boolean(instances?.checkAcknowledgement)),
     AskParent: fact(Boolean(options.askParentController)),
     ...options.hostCapabilities,
   };
+  // An admitted-but-unusable AskUser otherwise reads as a bare fact the model
+  // cannot act on; the stable fallback names the only remaining channel.
+  const askUserFallback = options.hostCapabilities?.AskUser?.available === false
+    ? "\nAskUser is unavailable on this surface: put any question the user must answer in your final reply, with numbered options."
+    : "";
   // Stable ordering is useful for inspection; values describe only this turn.
   return "Current tool admission (observations, not authorization):\n" + JSON.stringify({
     operations: Object.fromEntries(Object.entries(facts).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)),
     command: { foregroundTimeoutMs: options.toolLimits?.bashTimeoutMs ?? 120_000, backgroundMaxRuntimeMs: options.processJobs?.limits?.maxRuntimeMs ?? null },
     processLineage: options.processJobsAvailability ?? null,
-  });
+  }) + askUserFallback;
 }

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { Buffer } from "node:buffer";
 import { existsSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -6,9 +7,10 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE } from "@mono-agent/agent-contracts";
+import { AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES, AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE } from "@mono-agent/agent-contracts";
 
 import type { WebAgentSummary, WebCronRun, WebCronRunSummary } from "../contracts.js";
+import { formatCronReplyContext, parseCronReplyContext } from "../cron-reply-context.js";
 import { notificationPushLogicalKey, WebStore } from "../store.js";
 import { temporaryRoot } from "./helpers.js";
 
@@ -1702,6 +1704,197 @@ describe("automation delivery and push boundary", () => {
       expect(pushCount(store)).toBe(0);
       // ... but the run is still visible history.
       expect(store.getThreadDetail(threadId)!.messages).toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("cron reply full-text recovery", () => {
+  async function fixture() {
+    const root = await temporaryRoot("cron-reply-full-text-");
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]);
+    const thread = syncCronJob(store).jobs[0]!.threadId;
+    return { store, thread };
+  }
+
+  function proseResult(lines: number): string {
+    return Array.from(
+      { length: lines },
+      (_, index) => `Finding ${String(index)}: the nightly health check passed with no action needed.`,
+    ).join("\n");
+  }
+
+  function summaryPrefix(fullText: string): string {
+    return Buffer.from(fullText, "utf8").subarray(0, 2048).toString("utf8");
+  }
+
+  function storedTurnText(store: WebStore): string {
+    const database = new DatabaseSync(store.paths.database, { readOnly: true });
+    try {
+      return (database.prepare("SELECT text FROM turns").get() as { text: string }).text;
+    } finally {
+      database.close();
+    }
+  }
+
+  function deliverFullResult(store: WebStore, runId: string, fullText: string): void {
+    const reservation = store.reserveNotification({
+      sourceId: "agent-one",
+      triggerKind: "cron",
+      deliveryKey: `${runId}:success`,
+      jobId: "daily:brief",
+      runId,
+      text: fullText,
+    });
+    store.completeNotification(reservation);
+  }
+
+  it("captures the full notification-backed result instead of the 2 KiB summary prefix", async () => {
+    const { store, thread } = await fixture();
+    try {
+      const runId = "cron:daily%3Abrief:2026-09-22T10:00:00.000Z";
+      const fullText = proseResult(60);
+      expect(Buffer.byteLength(fullText, "utf8")).toBeGreaterThan(2048);
+      deliverFullResult(store, runId, fullText);
+      const summary = cronRun({
+        runId,
+        sequence: 4,
+        status: "succeeded",
+        startedAt: "2026-09-22T10:00:01.000Z",
+        completedAt: "2026-09-22T10:00:02.000Z",
+        text: summaryPrefix(fullText),
+        fieldsTruncated: ["text"],
+      });
+      store.reconcileCronRunsResult("agent-one", "daily:brief", [summary]);
+
+      // The message already holds the verbatim result; only the compact run
+      // (and hence the turn) carries the clipped prefix.
+      expect(store.getThreadDetail(thread)!.messages[0]!.parts).toContainEqual({ type: "text", text: fullText });
+
+      const captured = store.captureCronReplySnapshot("agent-one", "daily:brief", runId, "summary");
+      expect(captured.text).toBe(fullText);
+      expect(captured.sourceFieldsTruncated ?? []).not.toContain("text");
+      const wire = formatCronReplyContext(captured);
+      expect(parseCronReplyContext(wire)?.result.text).toBe(fullText);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("keeps the fuller stored text across later summary polls", async () => {
+    const { store, thread } = await fixture();
+    try {
+      const runId = "cron:daily%3Abrief:2026-09-22T10:00:00.000Z";
+      const fullText = proseResult(60);
+      deliverFullResult(store, runId, fullText);
+      const summary = cronRun({
+        runId,
+        sequence: 4,
+        status: "succeeded",
+        startedAt: "2026-09-22T10:00:01.000Z",
+        completedAt: "2026-09-22T10:00:02.000Z",
+        text: summaryPrefix(fullText),
+        fieldsTruncated: ["text"],
+      });
+      store.reconcileCronRunsResult("agent-one", "daily:brief", [summary]);
+      const partsBefore = store.getThreadDetail(thread)!.messages[0]!.parts;
+      const turnBefore = storedTurnText(store);
+
+      const repeat = store.reconcileCronRunsResult("agent-one", "daily:brief", [summary]);
+      expect(repeat.changed).toBe(false);
+      expect(store.getThreadDetail(thread)!.messages[0]!.parts).toEqual(partsBefore);
+      expect(storedTurnText(store)).toBe(turnBefore);
+      expect(store.captureCronReplySnapshot("agent-one", "daily:brief", runId, "summary").text).toBe(fullText);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("preserves an already-stored fuller turn when later summaries lose the loaded-activity flag", async () => {
+    const { store } = await fixture();
+    try {
+      const runId = "cron:daily%3Abrief:2026-09-22T10:00:00.000Z";
+      const fullText = proseResult(60);
+      const prefix = summaryPrefix(fullText);
+      const base = cronRun({
+        runId,
+        sequence: 5,
+        status: "succeeded",
+        startedAt: "2026-09-22T10:00:01.000Z",
+        completedAt: "2026-09-22T10:00:02.000Z",
+        eventCount: 30,
+      });
+      store.reconcileCronRunsResult("agent-one", "daily:brief", [{
+        ...base,
+        projection: "detail",
+        text: fullText,
+        events: [],
+        eventsIncluded: 0,
+      }]);
+      expect(storedTurnText(store)).toBe(fullText);
+
+      // New activity arrives that this console has not loaded: the rebuilt
+      // telemetry drops `activityLoaded`, so the older preservation condition
+      // no longer applies on the poll after this one.
+      const drifted = { ...base, eventCount: 31, text: prefix, fieldsTruncated: ["text"] as const };
+      store.reconcileCronRunsResult("agent-one", "daily:brief", [drifted]);
+      expect(storedTurnText(store)).toBe(fullText);
+      store.reconcileCronRunsResult("agent-one", "daily:brief", [drifted]);
+      expect(storedTurnText(store)).toBe(fullText);
+
+      // The preserved turn still lets a reply recover the complete result.
+      const captured = store.captureCronReplySnapshot("agent-one", "daily:brief", runId, "summary");
+      expect(captured.text).toBe(fullText);
+      expect(captured.sourceFieldsTruncated ?? []).not.toContain("text");
+      expect(parseCronReplyContext(formatCronReplyContext(captured))?.result.text).toBe(fullText);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("still truncates a genuinely oversized result inside the 32 KiB context import", async () => {
+    const { store } = await fixture();
+    try {
+      const runId = "cron:daily%3Abrief:2026-09-22T10:00:00.000Z";
+      const hugeText = "0123456789abcdef".repeat(3000);
+      expect(Buffer.byteLength(hugeText, "utf8")).toBeGreaterThan(AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES);
+      const base = cronRun({
+        runId,
+        sequence: 6,
+        status: "succeeded",
+        startedAt: "2026-09-22T10:00:01.000Z",
+        completedAt: "2026-09-22T10:00:02.000Z",
+      });
+      store.reconcileCronRunsResult("agent-one", "daily:brief", [{
+        ...base,
+        projection: "detail",
+        text: hugeText,
+        events: [],
+        eventsIncluded: 0,
+      }]);
+      store.reconcileCronRunsResult("agent-one", "daily:brief", [{
+        ...base,
+        text: summaryPrefix(hugeText),
+        fieldsTruncated: ["text"],
+      }]);
+
+      const captured = store.captureCronReplySnapshot("agent-one", "daily:brief", runId, "summary");
+      expect(captured.text).toBe(hugeText);
+      expect(captured.sourceFieldsTruncated ?? []).not.toContain("text");
+
+      const wire = formatCronReplyContext(captured);
+      expect(Buffer.byteLength(wire, "utf8")).toBeLessThanOrEqual(AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES);
+      const body = JSON.parse(wire.slice(wire.indexOf("\n", wire.indexOf("\n") + 1) + 1)) as {
+        snapshot: { truncatedFields: string[]; originalResultBytes: number; retainedResultBytes: number };
+        result: { text: string };
+      };
+      expect(body.snapshot.truncatedFields).toEqual(["result.text"]);
+      expect(body.snapshot.originalResultBytes).toBe(Buffer.byteLength(hugeText, "utf8"));
+      expect(body.snapshot.retainedResultBytes).toBe(Buffer.byteLength(body.result.text, "utf8"));
+      expect(parseCronReplyContext(wire)).toBeDefined();
     } finally {
       store.close();
     }

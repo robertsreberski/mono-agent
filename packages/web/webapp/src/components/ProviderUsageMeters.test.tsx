@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agent } from "../test/fixtures";
-import type { AgentSummary, ProviderUsageSnapshot } from "../types";
+import type { AgentSummary, ProviderUsage, ProviderUsageSnapshot } from "../types";
 const mocks = vi.hoisted(() => ({ providerUsage: vi.fn(), refreshProviderUsage: vi.fn() }));
 vi.mock("../api", () => ({ api: mocks }));
 import { ProviderUsageMeters, useProviderUsage } from "./ProviderUsageMeters";
@@ -105,5 +105,80 @@ describe("usage rows and lifecycle", () => {
     view.unmount();
     await vi.advanceTimersByTimeAsync(600_000);
     expect(mocks.providerUsage).toHaveBeenCalledTimes(2);
+  });
+});
+const weekMs = 604800000;
+const weekReset = "2026-09-26T08:10:22.000Z";
+function codexUsage(usedPercent: number, stale = false): ProviderUsage {
+  return { providerId: "openai-codex", label: "Codex", plan: "Pro 20x", fetchedAt: "2026-09-22T09:35:00.000Z", stale,
+    windows: [{ kind: "weekly", label: "Weekly", usedPercent, periodMs: weekMs, resetsAt: weekReset }] };
+}
+describe("burn-pace projection lines", () => {
+  it("renders healthy windows with a tick, chip and unused note instead of a warning", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    // 25 % at half the window: pace 0.5, on track, half the quota unused.
+    const view = render(<ProviderUsageMeters usage={{ ...codexUsage(25), fetchedAt: "2026-09-22T20:10:22.000Z" }} />);
+    expect(screen.queryByText(/empty/)).toBeNull();
+    expect(screen.getByText(/50% unused/)).toHaveClass("provider-usage-projection", "is-unused");
+    expect(screen.getByText("0.5×")).toHaveClass("provider-usage-pace", "is-steady");
+    // Used 25 % against 50 % elapsed: a soft headroom tail covers the unclaimed quarter.
+    expect(view.container.querySelector(".provider-usage-tick")).toHaveStyle({ left: "50%" });
+    expect(view.container.querySelector(".provider-usage-tick")).not.toHaveClass("is-passed");
+    expect(screen.getByRole("progressbar").getAttribute("aria-label"))
+      .toBe("Codex Weekly used, 25 %, 50 % of the window elapsed, pace 0.5x");
+  });
+  it("shows the unused note at exactly 5 % and hides it below", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    const view = render(<ProviderUsageMeters usage={{ ...codexUsage(47.5), fetchedAt: "2026-09-22T20:10:22.000Z" }} />);
+    expect(screen.getByText(/5% unused/)).toBeInTheDocument();
+    view.rerender(<ProviderUsageMeters usage={{ ...codexUsage(48), fetchedAt: "2026-09-22T20:10:22.000Z" }} />);
+    expect(screen.queryByText(/% unused/)).toBeNull();
+    // The tick and chip still render: the trajectory is a fact even without a note.
+    expect(view.container.querySelector(".provider-usage-tick")).not.toBeNull();
+    expect(screen.getByText("1.0×")).toBeInTheDocument();
+  });
+  it("marks ahead and unsustainable tiers with distinct classes and accessible names", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    const view = render(<ProviderUsageMeters usage={codexUsage(55)} />);
+    const ahead = screen.getByText(/empty/);
+    expect(ahead).toHaveClass("provider-usage-projection", "is-ahead");
+    expect(ahead.textContent).toMatch(/empty .+ early/);
+    expect(ahead.getAttribute("title")).toMatch(/Projected to run out .* at current pace 1\.26x/);
+    // A window is never both ahead and under: the run-out excludes the unused note.
+    expect(screen.queryByText(/% unused/)).toBeNull();
+    expect(screen.getByText("1.3×")).toHaveClass("provider-usage-pace", "is-ahead");
+    expect(view.container.querySelector(".provider-usage-tick")).toHaveClass("is-passed");
+    expect(screen.getByRole("progressbar").getAttribute("aria-label"))
+      .toBe("Codex Weekly used, 55 %, 44 % of the window elapsed, pace 1.3x, projected to run out before reset (ahead)");
+    view.rerender(<ProviderUsageMeters usage={codexUsage(96)} />);
+    const exhausted = screen.getByText(/empty/);
+    expect(exhausted).toHaveClass("provider-usage-projection", "is-unsustainable");
+    expect(exhausted.textContent).toMatch(/empty .+ early/);
+    expect(screen.getByText("2.2×")).toHaveClass("provider-usage-pace", "is-unsustainable");
+    expect(view.container.querySelector(".provider-usage-tick")).toHaveClass("is-passed");
+    expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/projected to run out before reset \(unsustainable\)/);
+    expect(exhausted).not.toHaveClass("is-ahead");
+  });
+  it("suppresses the chip and both lines at low confidence while keeping the tick", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-19T12:00:00Z"));
+    // 8 % elapsed with 50 % burned: 10x pace, but too early to say so.
+    const view = render(<ProviderUsageMeters usage={codexUsage(50, false)} />);
+    view.rerender(<ProviderUsageMeters usage={{ ...codexUsage(50, false), fetchedAt: "2026-09-19T16:34:22.000Z" }} />);
+    expect(screen.queryByText(/empty/)).toBeNull();
+    expect(screen.queryByText(/% unused/)).toBeNull();
+    expect(view.container.querySelector(".provider-usage-pace")).toBeNull();
+    // Over pace but too early to say so: the cap sits behind the fill, no alarm colour.
+    expect(view.container.querySelector(".provider-usage-tick")).toHaveClass("is-passed");
+    expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/pace 10\.0x/);
+  });
+  it("keeps the anchored projection unchanged on stale snapshots as wall-clock advances", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    render(<ProviderUsageMeters usage={codexUsage(96, true)} />);
+    expect(screen.getByText("Last known usage")).toBeInTheDocument();
+    const line = screen.getByText(/empty/).textContent;
+    // Same measurement, later wall-clock: the anchor does not move, so the lead stays put.
+    vi.setSystemTime(new Date("2026-09-25T12:00:00Z"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(screen.getByText(/empty/).textContent).toBe(line);
   });
 });

@@ -476,6 +476,18 @@ describe("WebSearch", () => {
     expect(JSON.parse(result.text).coverage.requestedFilters).toMatchObject({ country: "GB", language: "pl", timeRange: "month" });
   });
 
+  it("sends domain constraints as site: operators to DuckDuckGo and reports operator support", async () => {
+    const fetchImpl = vi.fn(async () => new Response('<div class="result"><a class="result__a" href="https://example.com/mono-agent">Mono Agent evidence</a></div>'));
+    const result = await performWebSearch({ query: "mono agent", domains: ["example.com"] }, {
+      searchConfig: { backend: "duckduckgo" }, fetchImpl, ctx: runtimeContext(),
+    });
+    expect(new URL(fetchImpl.mock.calls[0][0]).searchParams.get("q")).toBe("mono agent (site:example.com)");
+    expect(result).toMatchObject({ error: false, outcome: {
+      backend: "duckduckgo", filterSupport: { domains: "operator" },
+    } });
+    expect(JSON.parse(result.text).coverage.requestedFilters).toMatchObject({ domains: ["example.com"] });
+  });
+
   it("canonicalizes country for cache identity while separating PL, GB, and global calls", async () => {
     const seenRegions = [];
     const fetchImpl = vi.fn(async (url) => {

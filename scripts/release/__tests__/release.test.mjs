@@ -341,9 +341,9 @@ describe("release graph validation", () => {
       throw new Error("validateRelease did not reject floating Pi dependencies");
     } catch (error) {
       expect(error.issues).toEqual([
-        "@mono-agent/agent-app dependencies.@earendil-works/pi-ai must pin known-compatible version 0.86.1 exactly; found ^0.80.6",
-        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-agent-core must pin known-compatible version 0.86.1 exactly; found ~0.80.6",
-        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-ai must pin known-compatible version 0.86.1 exactly; found 0.80.8",
+        "@mono-agent/agent-app dependencies.@earendil-works/pi-ai must pin known-compatible version 0.87.1 exactly; found ^0.80.6",
+        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-agent-core must pin known-compatible version 0.87.1 exactly; found ~0.80.6",
+        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-ai must pin known-compatible version 0.87.1 exactly; found 0.80.8",
       ]);
     }
   });
@@ -638,7 +638,7 @@ describe("current launch manifest", () => {
     const piAi = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"];
     const piCore = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-agent-core"];
 
-    expect(piCore).toBe("0.86.1");
+    expect(piCore).toBe("0.87.1");
     expect(guidance).toContain(
       `packages/agent-runtime\`: \`@earendil-works/pi-ai\` at \`${piAi}\`; \`pi-agent-core\` at \`${piCore}\``,
     );

@@ -152,6 +152,8 @@ export interface ProcessJobSubagentProgress {
     readonly id: string;
     readonly toolName: string;
     readonly argsSummary?: string;
+    /** Redacted explicit command directory; older progress records omit it. */
+    readonly workdir?: string;
     readonly status: "running" | "complete" | "failed";
     readonly executionMs?: number;
   }[];
@@ -199,16 +201,30 @@ export function isProcessJobSubagentProgress(value: unknown): value is ProcessJo
   return value.recent.every((call: unknown) => {
     if (!isRecord(call)
       || !hasExactlyKeys(call, ["id", "toolName", "status",
-        ...["argsSummary", "executionMs"].filter((key) => Object.hasOwn(call, key))])
+        ...["argsSummary", "workdir", "executionMs"].filter((key) => Object.hasOwn(call, key))])
       || !boundedNonEmptyString(call.id, 256) || ids.has(call.id)
       || !boundedNonEmptyString(call.toolName, 128)
       || (call.argsSummary !== undefined && !boundedString(call.argsSummary, 256))
+      || (call.workdir !== undefined && !boundedString(call.workdir, 256))
       || !["running", "complete", "failed"].includes(String(call.status))
       || (call.executionMs !== undefined && !nonNegativeInteger(call.executionMs))) return false;
     ids.add(call.id);
     return true;
   });
 }
+
+/**
+ * Tool names an internal (subagent) process job can carry.
+ *
+ * `"AgentSend"` is legacy history: the tool was renamed to `AgentManage` with
+ * no alias, so records and projections persisted before the rename keep the old
+ * name. It stays valid on the read/validation path — stored jobs must still
+ * load and render — and must never be emitted for a new job.
+ */
+export type InternalProcessJobTool = "Agent" | "AgentManage" | "AgentSend";
+
+/** Accepted internal tool names, including the legacy `AgentSend` history value. */
+const INTERNAL_PROCESS_JOB_TOOLS: readonly InternalProcessJobTool[] = ["Agent", "AgentManage", "AgentSend"];
 
 /**
  * Secret-free operator projection of one durable process job.
@@ -221,7 +237,7 @@ export function isProcessJobSubagentProgress(value: unknown): value is ProcessJo
  */
 export type ProcessJobProjection = ProcessJobProjectionBase & (
   | { readonly tool: "Exec" | "Bash"; readonly kind?: never }
-  | { readonly tool: "Agent" | "AgentSend"; readonly kind: "internal"; readonly instanceId: string;
+  | { readonly tool: InternalProcessJobTool; readonly kind: "internal"; readonly instanceId: string;
       readonly childStillBusy: boolean; readonly subagentProgress?: ProcessJobSubagentProgress; readonly subagentQuestion?: { readonly question: string; readonly options?: string[] } }
 );
 
@@ -276,7 +292,7 @@ export function parseProcessJobProjection(value: unknown): ProcessJobProjection 
   }
   if (value.schema !== "mono-agent.process-job-projection.v1"
     || !boundedNonEmptyString(value.jobId, 256)
-    || (value.kind === "internal" ? !["Agent", "AgentSend"].includes(String(value.tool))
+    || (value.kind === "internal" ? !INTERNAL_PROCESS_JOB_TOOLS.includes(String(value.tool) as InternalProcessJobTool)
       || typeof value.instanceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(value.instanceId)
       || (value.subagentProgress !== undefined && !isProcessJobSubagentProgress(value.subagentProgress))
       || typeof value.childStillBusy !== "boolean" || (value.subagentQuestion !== undefined && !validSubagentJobQuestion(value.subagentQuestion))

@@ -153,7 +153,7 @@ export function getPiBuiltinModel(providerId, modelId) {
 let builtinProviderLabels;
 function builtinProviderLabelMap() {
   // `getBuiltinProviders()` is the authoritative static catalog set (41 ids in
-  // pi-ai 0.86.1), but it returns bare ids — the human display label lives on
+  // pi-ai 0.87.0), but it returns bare ids — the human display label lives on
   // the constructed `Provider.name`, which only `builtinProviders()` exposes.
   // Build the name lookup once from the constructed providers and gate what we
   // ADVERTISE on the static id set below, so providers without a generated

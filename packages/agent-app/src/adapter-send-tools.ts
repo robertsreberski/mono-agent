@@ -243,6 +243,11 @@ function resolveAskUserToolSettings(
 
 export function adapterSendToolNames(settings: AdapterSendToolsSettings): readonly string[] {
   const names: string[] = [];
+  // AskUser leads the list: it is a decision tool the model should reach for
+  // before doing work, not the last entry in a row of channel utilities.
+  if (settings.askUser !== undefined) {
+    names.push("AskUser");
+  }
   if (settings.slack !== undefined) {
     names.push("SlackSendMessage");
   }
@@ -251,9 +256,6 @@ export function adapterSendToolNames(settings: AdapterSendToolsSettings): readon
   }
   if (settings.telegram?.tools.file === true) {
     names.push("TelegramSendFile");
-  }
-  if (settings.askUser !== undefined) {
-    names.push("AskUser");
   }
   return names;
 }
@@ -521,6 +523,12 @@ export async function createAdapterSendToolsServer(
 ): Promise<McpServer> {
   const server = new McpServer({ name: "agent-adapter-send-tools", version: "0.3.0" });
 
+  // Registered first so the listed order matches adapterSendToolNames: asking the
+  // user is a decision step, not a trailing channel utility.
+  // Target availability is checked before any bridge request, not in the schema.
+  if (settings.askUser !== undefined) {
+    registerAskUserTool(server, settings.askUser, options.fetchImpl ?? globalThis.fetch);
+  }
   if (settings.slack !== undefined && clients.slack !== undefined) {
     const adapter = await loadSlackModule();
     registerSlackSendTool(
@@ -557,10 +565,6 @@ export async function createAdapterSendToolsServer(
       );
     }
   }
-  // Target availability is checked before any bridge request, not in the schema.
-  if (settings.askUser !== undefined) {
-    registerAskUserTool(server, settings.askUser, options.fetchImpl ?? globalThis.fetch);
-  }
 
   return server;
 }
@@ -578,7 +582,9 @@ function registerAskUserTool(
     {
       title: "Ask the user and wait",
       description:
-        "Ask 1–5 related questions and WAIT for the user to answer them in the current conversation. Each question must offer 2–3 concise options with descriptions; the UI also permits a custom reply. Use multiSelect only when several choices may be combined. Put long decision context or a draft in message. A second concurrent AskUser call fails. "
+        "Ask the user 1–5 related questions and WAIT for their answers in the current conversation.\n"
+        + "Ask whenever a missing decision would change what you build, where you send it, or what you irreversibly touch — before doing the work, not after. A guess that is cheap to reverse is fine; a guess about scope, destination, data you delete or money you spend is not. Ask when the request has two readings that lead to materially different deliverables, when a required input is absent and cannot be derived from the conversation, files or one cheap tool call, or when you are about to assume authority you were not given. Do not ask what the conversation or its attachments already answer, and do not re-ask for approval of work already authorized. One good question early costs less than a wrong deliverable.\n"
+        + "Each question must offer 2–3 concise options with descriptions; the UI also permits a custom reply, so options are suggestions, not a closed set. Use multiSelect only when several choices may be combined. Put long decision context or a draft in message — one call carrying several related questions beats several rounds. A second concurrent AskUser call fails. "
         + "The current host timeout policy controls expiry. Keep waiting until the user answers, cancels, or the wait expires; on expiry finish gracefully with partial answers and state assumptions.",
       inputSchema: {
         message: z.string().min(1).max(4_096).optional().describe("Optional context or draft shown above the questions."),

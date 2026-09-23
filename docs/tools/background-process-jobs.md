@@ -560,7 +560,7 @@ The command refuses remote endpoints, derives an independent owner capability
 from the selected agent's private store, and exits `1` with
 `agent_unreachable` when the agent cannot be reached. Misuse exits `2`.
 
-Successful background `Exec`/`Bash` and persistent `Agent`/`AgentSend` launches carry a bounded versioned start
+Successful background `Exec`/`Bash` and persistent `Agent`/`AgentManage` launches carry a bounded versioned start
 receipt in their machine-readable tool result. The receipt records the exact job
 id, tool, admission state, and real start stamp when one exists; the human result
 text is not an identity source. The web console uses that causal receipt only
@@ -612,14 +612,21 @@ paths, does not mutate the live controller, and never creates a missing store.
 
 When ProcessJobs is enabled and healthy on an exact-conversation Pi-native route,
 `Agent({persist:true, background:true, prompt:"Review the change"})` returns a
-durable started receipt. `AgentSend({id:"helper", message:"Continue", background:true})`
-continues the same child transcript. Both require the ordinary Agent/AgentSend
+durable started receipt. `AgentManage({id:"helper", message:"Continue", background:true})`
+continues the same child transcript. Both require the ordinary Agent/AgentManage
 policy. Close-only calls remain synchronous. Bare runtime hosts need a supplied
 background controller; unsupported calls fail clearly.
 
+A detached continuation can also carry `model` and `effort`
+(`AgentManage({id:"helper", message:"Continue", background:true, model:"fable"})`).
+The route is persisted on the instance when the turn is reserved, before the job
+starts, so it survives a failed start or a failed turn and later continuations
+inherit it. Retargeting is rejected for `stop`, `steer`, `inspect` and
+close-only calls, which start no turn.
+
 In the web console, detached launches keep their receipt in the parent's Activity,
 which shows `Agent job started` / `Agent job succeeded` (or the actual terminal
-state); `AgentSend` uses the corresponding label. The child no longer streams
+state); `AgentManage` uses the corresponding label. The child no longer streams
 foreground-style subagent rows into the parent response. Its Background jobs
 card uses the subagent glyph and a height-bounded scroll region with clustered
 tool calls, running/complete/failed status, durations, and a plain-text terminal
@@ -656,18 +663,19 @@ queue, runtime/output limits, lineage, lifecycle card and exact-origin wake.
 A queued child is reserved before the receipt returns, so another send or close
 reports busy. Its prompt and raw parameters are never stored in job metadata.
 Completion, failure and AskParent deliver one terminal wake; AskParent preserves
-`awaiting_reply` and its structured question for a later AgentSend. Do not poll or
+`awaiting_reply` and its structured question for a later AgentManage. Do not poll or
 replay a started job. Message plus close closes only after a successful answer.
 
 ### Parent stop and resume
 
-Use `AgentSend({id, stop: true})` to cooperatively stop a queued or running
+Use `AgentManage({id, stop: true})` to cooperatively stop a queued or running
 managed detached child. An optional `description` string of at most 80 characters
 is accepted and ignored: stop creates no job to label. Stop is exclusive with
 message, close, background, inspect and ack (even explicitly false values).
-It invokes no new provider turn (`executed:false`) and accepts no job id. Foreground children are
-not stoppable through this operation. Stop never force-kills an in-process
-provider or rolls back filesystem/network effects.
+It invokes no new provider turn (`executed:false`) and accepts no job id. Foreground
+children are reachable by neither stop nor steer: a foreground child blocks the
+parent's own turn, so only cancelling that parent turn ends it. Stop never
+force-kills an in-process provider or rolls back filesystem/network effects.
 
 Invalid requests return a JSON error receipt with a human-readable `message`,
 `stopRequested:false` and `executed:false`, before instance lookup:
@@ -690,9 +698,11 @@ The operation waits at most six seconds, including storage work:
   accepted, but settlement remains unproven. Ownership and capacity remain held.
   Ordinary messages and close remain blocked; do not poll or replay the job.
 
-Only after a resumable receipt, use `AgentSend({id, message: "Continue"})`
-(optionally `background:true`) to resume the same warm instance and prior
-context, or `AgentSend({id, close:true})` to retire it. A queued stop charges no
+After a resumable receipt (`stopped` or `already_idle`), use
+`AgentManage({id, message: "Continue"})` (optionally `background:true`) to resume
+the same warm instance and prior context, or `AgentManage({id, close:true})` to
+retire it. While a `stop_requested` receipt stands the instance is still busy,
+so both are rejected until it settles. A queued stop charges no
 turn; a begun stopped turn charges one. Completion winning the race keeps its
 actual disposition, and pending AskParent questions survive stopping.
 
@@ -703,6 +713,53 @@ resumable receipt. Unsupported ownership/storage returns
 authorize bypassing recovery fences. Intentional, certified parent stops do not
 require a failure acknowledgement; unrelated timeout, cancellation and failure
 recovery rules below are unchanged.
+
+### Parent steering
+
+Use `AgentManage({id, steer: "<text>"})` to offer text to a managed detached turn
+that is already in progress, the way live input reaches a running conversation.
+Steering starts no turn, invokes no new provider turn (`executed:false`), forces
+no answer and changes no ownership: the child's model loop decides what to do
+with the text on its next step. Steer is exclusive with every other parameter,
+including `description` — one mode per call — and a queued or running instance
+keeps rejecting `message` and `close` exactly as before.
+
+Invalid requests return a JSON error receipt with a human-readable `message`,
+`status:"not_applied"`, `applied:false` and `executed:false`, before instance lookup:
+
+- `subagent_steer_invalid_request`: `steer` must be a non-empty string of at most
+  8000 characters.
+- `subagent_steer_invalid_id`: `id` must be a string of 1–40 lowercase letters,
+  digits or hyphens, starting with a letter or digit.
+- `subagent_steer_unexpected_parameters`: only `id` and `steer` are accepted; the
+  message lists unexpected keys in sorted order.
+- `subagent_steer_unavailable`: no steering controller, or the offer's delivery
+  stayed unknown within the bounded wait.
+- `subagent_steer_foreground_unsupported`: the instance's active turn is foreground.
+- `subagent_steer_instance_not_found`, `subagent_steer_not_running`: unknown or
+  closed instance, or no detached turn to steer — use `message` to start one.
+
+The offer waits at most three seconds for the child to settle it, and the whole
+operation is bounded at six seconds. The receipt reports only what this offer did:
+
+| `status` | Meaning |
+| --- | --- |
+| `applied` | The child consumed the text into its turn (`applied:true`). |
+| `pending` | Offered and still unsettled within the bounded wait; it may still be consumed, so do not resend. |
+| `not_applied` | Refused. `not_started` means the turn is still queued with no provider loop yet, and is the only retryable reason. `inactive` means the turn has started but can no longer take input — it settled, was cancelled, moved on to its wrap-up continuation, or lost its mailbox to a host restart. `cancelled`, `closed`, `full`, `too_large` and `invalid` come from the mailbox itself. |
+| `unsupported` | This child's runtime route cannot take live input at all. |
+
+The mailbox is in-process and never persisted: it is created with the detached
+turn and closed and removed at every termination path, including cancellation,
+reporting, release and host shutdown. After a host restart there is no mailbox,
+and steer answers with a truthful negative receipt — the provider loop it would
+have steered did not survive either. A steer that arrives after the turn settles
+is refused, never silently queued for a later turn.
+
+Steering reaches the main run only. When a child exhausts `maxTurns`, the
+mailbox closes before the commit-and-report wrap-up continuation and is not
+handed to it at all, so a late steer reads `not_applied` (`inactive`) instead of
+being injected into that wrap-up.
 
 Timeout/cancellation requests abort and wait through the Agent grace period.
 If execution remains unresolved, the terminal job reports `childStillBusy:true`.
@@ -753,11 +810,12 @@ verification. These private receipts do not widen ProcessJob/wake projections.
 
 ### Explicit child recovery inspection and acknowledgement
 
-`AgentSend({id, inspect: true})` is separate from message/close/background/ack
+`AgentManage({id, inspect: true})` is separate from message/close/background/ack
 requests and invokes no provider. It can perform one bounded owner reconciliation
 pass, then returns held/unavailable or current-policy-authorized recovery facts.
-After independently verifying the work, a retained-only acknowledgement may be
-submitted with a message; recovery of a detached job requires `background: true`.
+Acknowledgement is the parent's own decision after reading that evidence: the
+handler requires a retained-only token plus a message, not a preceding
+`inspect` call, and recovery of a detached job requires `background: true`.
 The same token and request semantics return `subagent_recovery_already_consumed`
 without execution, even while the first continuation is busy. Changed semantics
 return conflict. Consumption and the new reservation are durable before admission.

@@ -31,7 +31,7 @@ real surfaces, never by reading code and asserting it "should work".
 
 ## Safety rails
 
-- NEVER touch `~/example-instance`, `~/ops-agents/*`, launchd services, or the
+- NEVER touch other agents' live instance directories, launchd services, or the
   `:4599` production web instance unless the task explicitly says fleet. All
   smoke lives in `/tmp` throwaway directories and uses unused local ports.
 - ALWAYS clean up child processes and throwaway directories, even on failure.

@@ -20,61 +20,61 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3)
       '@mono-agent/a2a-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:extras/a2a-adapter
       '@mono-agent/agent-app':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:packages/agent-app
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:packages/agent-contracts
       '@mono-agent/agent-harness':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:packages/agent-harness
       '@mono-agent/agent-orchestrator':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:extras/agent-orchestrator
       '@mono-agent/config':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:packages/config
       '@mono-agent/cron-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:packages/cron-adapter
       '@mono-agent/docs-mcp':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:extras/docs-mcp
       '@mono-agent/memory':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:packages/memory
       '@mono-agent/messenger-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:extras/messenger-adapter
       '@mono-agent/observability':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:packages/observability
       '@mono-agent/openai-api-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:packages/openai-api-adapter
       '@mono-agent/operator-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:packages/operator-adapter
       '@mono-agent/runtime-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:packages/runtime-adapter
       '@mono-agent/slack-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:packages/slack-adapter
       '@mono-agent/telegram-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:packages/telegram-adapter
       '@mono-agent/web':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:packages/web
       '@mono-agent/webhook-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:packages/webhook-adapter
       '@mono-agent/whatsapp-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:extras/whatsapp-adapter
       '@types/node':
         specifier: ^22.15.18
@@ -101,7 +101,7 @@ importers:
         specifier: 1.0.0-alpha.0
         version: 1.0.0-alpha.0(express@5.2.1(supports-color@7.2.0))
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../../packages/agent-contracts
       express:
         specifier: ^5.1.0
@@ -117,7 +117,7 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3)
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../../packages/agent-contracts
       zod:
         specifier: ^4.4.3
@@ -141,13 +141,13 @@ importers:
   extras/messenger-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../../packages/agent-contracts
 
   extras/whatsapp-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../../packages/agent-contracts
       '@whiskeysockets/baileys':
         specifier: ^7.0.0-rc13
@@ -162,52 +162,52 @@ importers:
         specifier: ^1.7.0
         version: 1.7.0
       '@earendil-works/pi-ai':
-        specifier: 0.86.1
-        version: 0.86.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)
+        specifier: 0.87.1
+        version: 0.87.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3)
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-contracts
       '@mono-agent/agent-harness':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-harness
       '@mono-agent/agent-runtime':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-runtime
       '@mono-agent/config':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../config
       '@mono-agent/cron-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../cron-adapter
       '@mono-agent/memory':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../memory
       '@mono-agent/observability':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../observability
       '@mono-agent/openai-api-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../openai-api-adapter
       '@mono-agent/operator-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../operator-adapter
       '@mono-agent/runtime-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../runtime-adapter
       '@mono-agent/slack-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../slack-adapter
       '@mono-agent/telegram-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../telegram-adapter
       '@mono-agent/web':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../web
       '@mono-agent/webhook-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../webhook-adapter
       undici:
         specifier: 8.9.0
@@ -224,27 +224,27 @@ importers:
   packages/agent-harness:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-contracts
       '@mono-agent/observability':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../observability
       '@mono-agent/runtime-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../runtime-adapter
     devDependencies:
       '@earendil-works/pi-ai':
-        specifier: 0.86.1
-        version: 0.86.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)
+        specifier: 0.87.1
+        version: 0.87.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)
 
   packages/agent-runtime:
     dependencies:
       '@earendil-works/pi-agent-core':
-        specifier: 0.86.1
-        version: 0.86.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)
+        specifier: 0.87.1
+        version: 0.87.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)
       '@earendil-works/pi-ai':
-        specifier: 0.86.1
-        version: 0.86.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)
+        specifier: 0.87.1
+        version: 0.87.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3)
@@ -289,22 +289,22 @@ importers:
   packages/config:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-contracts
       '@mono-agent/runtime-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../runtime-adapter
 
   packages/create-mono-agent:
     dependencies:
       '@mono-agent/agent-app':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-app
 
   packages/cron-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-contracts
       cron-parser:
         specifier: ^5.5.0
@@ -313,7 +313,7 @@ importers:
   packages/memory:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-contracts
       better-sqlite3:
         specifier: ^11.8.1
@@ -329,13 +329,13 @@ importers:
   packages/observability:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-contracts
 
   packages/openai-api-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-contracts
       express:
         specifier: ^5.1.0
@@ -348,7 +348,7 @@ importers:
   packages/operator-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-contracts
       express:
         specifier: ^5.1.0
@@ -364,16 +364,16 @@ importers:
   packages/runtime-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-contracts
       '@mono-agent/agent-runtime':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-runtime
 
   packages/slack-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-contracts
       ws:
         specifier: 8.21.1
@@ -389,7 +389,7 @@ importers:
         specifier: ^2.0.3
         version: 2.0.3(grammy@1.44.0(supports-color@7.2.0))
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-contracts
       grammy:
         specifier: ^1.44.0
@@ -401,16 +401,16 @@ importers:
   packages/web:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-contracts
       '@mono-agent/config':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../config
       '@mono-agent/observability':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../observability
       '@mono-agent/operator-adapter':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../operator-adapter
       compression:
         specifier: 1.8.1
@@ -438,7 +438,7 @@ importers:
   packages/webhook-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.22.0
+        specifier: workspace:0.23.0
         version: link:../agent-contracts
       express:
         specifier: ^5.1.0
@@ -612,21 +612,21 @@ packages:
     resolution: {integrity: sha512-y7/yvZ2TPAnR9+jnc00klvNNLkJiXFFrQA/hlLCcxA9a2A4zQIOimyFQ9XfwYKiGD1fb5GY8vbKIIgO8d5Tb2A==}
     engines: {node: '>= 20.12.0'}
 
-  '@earendil-works/chord@0.86.1':
-    resolution: {integrity: sha512-GzUr5n4tFBHUYxN9CjcRHK8QWo9tbxNrZu6iWPQ+PFiFrLASvSZOKeAVAgh3gHv/t0X5OvUpFlrMQ/nEFfCYpg==}
+  '@earendil-works/chord@0.87.1':
+    resolution: {integrity: sha512-bg7IkJGFcEaMqqYgOGUiq5Ky9RghpRfrlZ8I/v/1b4bBZ02A7t3E+6uhPRbadwWb/kWsnVFbZsqOKRN4a3LLCg==}
     engines: {node: '>=22.19.0'}
 
-  '@earendil-works/pi-agent-core@0.86.1':
-    resolution: {integrity: sha512-8TbBzhYsDeu5V1Zl2NsyrBqJAzX1EiEL3Np3ZjGpy0pSDdGRVOpcyW1qruLqfWmEqGcnxmvgnTMLS/wJNZO2XQ==}
+  '@earendil-works/pi-agent-core@0.87.1':
+    resolution: {integrity: sha512-Zev3B0HK7YS5A4EZQ2XnEqiJuirx6QBiltJ+LpmjV5a/+2IU0cfKtIfnkNkORK707XOvKBY2WRtk7cAwHpbh2Q==}
     engines: {node: '>=22.19.0'}
 
-  '@earendil-works/pi-ai@0.86.1':
-    resolution: {integrity: sha512-1XHhI6D/fyQdsBieHC/E/4zGKVOoGe4yDyX67VXvzoYkFsX/qE7NpZE7E1RC8e6Bz8B9oG/P+MQFXikv2/BGEg==}
+  '@earendil-works/pi-ai@0.87.1':
+    resolution: {integrity: sha512-X/3PfQBnnoeVdO9Cv8zHghUMglzlgNZYGNzoPnbRoGnHl3Rw3TlA2UKSUB7BRHUOxMryHXYa8dnjWZlbRheDZA==}
     engines: {node: '>=22.19.0'}
     hasBin: true
 
-  '@earendil-works/pi-telemetry@0.86.1':
-    resolution: {integrity: sha512-SOcEqOS3oVGgKeahs2jHB906d8hFjuLP+RBee8xKYMRgw5KAeWHNg+YABfL0ALlp3Bt6tW4b632MLghc3vnTog==}
+  '@earendil-works/pi-telemetry@0.87.1':
+    resolution: {integrity: sha512-MC6TRQH5lgMXpcN+Vku2WMI2T8BsiUPzMQHGo81uqFZD3/9O79WWJAysEDGuzduP6R4tvtgwMLwmqIxynM10JQ==}
     engines: {node: '>=22.19.0'}
 
   '@emnapi/runtime@1.11.3':
@@ -3492,15 +3492,15 @@ snapshots:
       fast-wrap-ansi: 0.2.2
       sisteransi: 1.0.5
 
-  '@earendil-works/chord@0.86.1':
+  '@earendil-works/chord@0.87.1':
     dependencies:
       esbuild: 0.28.2
 
-  '@earendil-works/pi-agent-core@0.86.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)':
+  '@earendil-works/pi-agent-core@0.87.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)':
     dependencies:
-      '@earendil-works/chord': 0.86.1
-      '@earendil-works/pi-ai': 0.86.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)
-      '@earendil-works/pi-telemetry': 0.86.1
+      '@earendil-works/chord': 0.87.1
+      '@earendil-works/pi-ai': 0.87.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)
+      '@earendil-works/pi-telemetry': 0.87.1
       diff: 8.0.4
       ignore: 7.0.8
       typebox: 1.3.27
@@ -3514,11 +3514,11 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-ai@0.86.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)':
+  '@earendil-works/pi-ai@0.87.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)':
     dependencies:
       '@anthropic-ai/sdk': 0.124.0(zod@4.4.3)
       '@aws-sdk/client-bedrock-runtime': 3.1127.0
-      '@earendil-works/pi-telemetry': 0.86.1
+      '@earendil-works/pi-telemetry': 0.87.1
       '@google/genai': 2.21.0(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)
       '@smithy/node-http-handler': 4.12.1
       http-proxy-agent: 9.1.0(supports-color@7.2.0)
@@ -3535,7 +3535,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-telemetry@0.86.1': {}
+  '@earendil-works/pi-telemetry@0.87.1': {}
 
   '@emnapi/runtime@1.11.3':
     dependencies:

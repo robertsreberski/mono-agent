@@ -71,6 +71,8 @@ import {
 } from "./pi-native/session-lifecycle.js";
 import {
   resolveLiveCompactionPolicy,
+  estimateSessionMessageTokens,
+  tryCompact,
   runProactiveCompaction,
   runReactiveCompaction,
 } from "./pi-native/compaction-driver.js";
@@ -573,7 +575,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       structuredTool,
       mcpClients: builtMcpClients,
       closeRunTools: builtCloseRunTools,
-    } = await buildTurnTools(runState, {
+    } = options.manualCompaction === true
+      ? { tools: [], structuredTool: null, mcpClients: [], closeRunTools: async () => {} }
+      : await buildTurnTools(runState, {
       options,
       capabilities,
       toolLimits,
@@ -626,7 +630,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // transcript, so prior messages are skipped; a fresh run AND a create-on-miss
     // (requestedSessionId set but the durable session was just created empty)
     // both seed, since their on-disk transcript is empty.
-    const { priorMessages, promptText, promptImages } = splitPromptMessages(options.messages, runtime.model);
+    const { priorMessages, promptText, promptImages } = options.manualCompaction === true
+      ? { priorMessages: toAgentMessages(options.messages || [], runtime.model), promptText: "", promptImages: [] }
+      : splitPromptMessages(options.messages, runtime.model);
     runState.sessionBaselineCount = (await runState.session.buildContext()).messages.length;
     if (!requestedSessionId || runState.createdOnMiss) {
       for (const message of priorMessages) {
@@ -642,6 +648,65 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // drops it entirely via the fresh-run path (no leaf to roll back to).
     if (requestedSessionId && !runState.createdOnMiss) {
       try { runState.baselineLeafId = await runState.session.getLeafId(); } catch { /* best-effort */ }
+    }
+
+    if (options.manualCompaction === true) {
+      // The same resolve/reopen/seed path as a turn, but without a user prompt,
+      // tool execution, turn telemetry, or response generation. The guarded
+      // driver alone may request a summary from the current provider.
+      const policy = resolveLiveCompactionPolicy({
+        harness, runtime, resolved, toolLimits: options.toolLimits,
+        compaction: options.compaction,
+        contextWindowOverride: options.compaction?.contextWindowOverride,
+      });
+      const transcriptTokens = await estimateSessionMessageTokens(runState.session);
+      // A prefix smaller than the retained recent tail cannot yield a useful
+      // cut. Avoid spending a summary call merely to discover this afterward.
+      const tooSmall = transcriptTokens !== null && transcriptTokens < policy.keepRecentTokens;
+      // Host cancellation (e.g. shutdown) aborts the in-flight summary operation.
+      if (options.abortSignal) {
+        const abortManual = () => { void harness.abort().catch(() => {}); };
+        options.abortSignal.addEventListener("abort", abortManual, { once: true });
+        runState.removeAbortHandler = () => options.abortSignal.removeEventListener?.("abort", abortManual);
+        if (options.abortSignal.aborted) throw new Error("Manual compaction was cancelled.");
+      }
+      if (!tooSmall) await tryCompact(harness, {
+        trigger: "manual",
+        onEvent,
+        runtimeWarnings,
+        onCompactionRecorded: options.onCompactionRecorded,
+        runId: options.runId,
+        model: reference,
+        session: runState.session,
+        policy,
+      });
+      const terminal = tooSmall
+        ? { status: "skipped", operationId: randomUUID(), reason: "nothing_to_compact" }
+        : [...events].reverse().find((event) => event?.type === "context_compaction" && event?.trigger === "manual" && event?.status !== "running");
+      if (!terminal || terminal.status === "failed" || options.abortSignal?.aborted) {
+        throw new Error("Manual compaction failed or was cancelled.");
+      }
+      await commitSession(runState, {
+        options,
+        requestedSessionId,
+        providerSessionId,
+        durableRepo,
+        sessionTtlMs,
+        externalAbort: false,
+        errorMessage: null,
+        onEvent,
+      });
+      return {
+        manualCompaction: {
+          status: terminal.status,
+          operationId: terminal.operationId,
+          ...(terminal.reason ? { reason: terminal.reason } : {}),
+          ...(terminal.tokensBefore === undefined ? {} : { tokensBefore: terminal.tokensBefore }),
+          ...(terminal.tokensAfter === undefined ? {} : { tokensAfter: terminal.tokensAfter }),
+          tokenCountsExact: terminal.tokenCountsExact === true,
+        },
+        providerSessionId,
+      };
     }
 
     activateTurnHarness(runState, {

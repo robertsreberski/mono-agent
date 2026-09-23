@@ -410,6 +410,6 @@ it("gives blocked child recovery guidance using only the bounded job identity", 
   const rendered = sessionContextBlock({ conversationId: "web:recovery" }, {
     subagentInstances: [{ id: "helper", name: "helper", status: "idle", turns: 1, ageMs: 0, jobId: "job-identity", recoveryBlocked: true }],
   });
-  expect(rendered).toContain("recovery blocked: inspect with AgentSend before any continuation; do not replay");
+  expect(rendered).toContain("recovery blocked: inspect with AgentManage before any continuation; do not replay");
   expect(rendered).toContain("job job-identity");
 });

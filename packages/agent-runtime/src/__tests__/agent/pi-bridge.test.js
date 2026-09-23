@@ -1,7 +1,7 @@
 import { createToolContext, updateToolContext } from "../../agent/tools/shared/tool-context.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import sharp from "sharp";
 import { createFakeSandbox, testSandboxPolicy as failClosedSandboxPolicy } from "../helpers/fake-sandbox.js";
@@ -218,6 +218,88 @@ describe("pi MCP tool helpers", () => {
     expect(bashSchema.properties.timeout.maximum).toBeUndefined();
     expect(bashSchema.properties.timeout.description).toContain("milliseconds");
     expect(bashSchema.properties.workdir.type).toBe("string");
+  });
+
+  it.each(["Bash", "Exec"])("honors policy-allowed workdirs outside the session workspace for %s", async (name) => {
+    const workspace = tempWorkspace();
+    const outside = tempWorkspace();
+    const deniedDir = tempWorkspace();
+    updateToolContext(ctx, { workspace });
+    const sandboxPolicy = failClosedSandboxPolicy({
+      root: workspace,
+      readableRoots: [workspace, outside],
+      writableRoots: [workspace, outside],
+    });
+    const sandboxEngine = {
+      isAvailable: async () => true,
+      prepareCommand: async (command) => ({ ...command, sandboxed: false }),
+    };
+    const tool = getPiBuiltinTools([name], { ctx, cwd: workspace, sandboxPolicy, sandboxEngine })
+      .find((entry) => entry.name === name);
+    const params = name === "Bash" ? { command: "pwd -P" } : { executable: "/bin/pwd", args: ["-P"] };
+
+    const allowed = await tool.execute(`${name}:outside`, { ...params, workdir: outside });
+    expect(allowed.details.outcome.code).toBe("ok");
+    expect(allowed.content[0].text.trim()).toBe(realpathSync(outside));
+
+    const relativeOutside = await tool.execute(`${name}:relative`, { ...params, workdir: relative(workspace, outside) });
+    expect(relativeOutside.details.outcome.code).toBe("ok");
+    expect(relativeOutside.content[0].text.trim()).toBe(realpathSync(outside));
+
+    const denied = await tool.execute(`${name}:denied`, { ...params, workdir: deniedDir });
+    expect(denied.details.outcome.code).toBe("workdir_denied");
+    expect(denied.content[0].text).toContain(deniedDir);
+
+    const inside = join(workspace, "child");
+    mkdirSync(inside);
+    const resolved = await tool.execute(`${name}:child`, { ...params, workdir: "child" });
+    expect(resolved.details.outcome.code).toBe("ok");
+    expect(resolved.content[0].text.trim()).toBe(realpathSync(inside));
+
+    const omitted = await tool.execute(`${name}:default`, params);
+    expect(omitted.details.outcome.code).toBe("ok");
+    expect(omitted.content[0].text.trim()).toBe(realpathSync(workspace));
+
+    const missing = join(outside, "missing");
+    const notFound = await tool.execute(`${name}:missing`, { ...params, workdir: missing });
+    expect(notFound.details.outcome.code).toBe("workdir_not_found");
+    expect(notFound.content[0].text).toContain(missing);
+  });
+
+  it.each(["Bash", "Exec"])("passes allowed outside workdirs into %s background process jobs", async (name) => {
+    const workspace = tempWorkspace();
+    const outside = tempWorkspace();
+    updateToolContext(ctx, { workspace });
+    const sandboxPolicy = failClosedSandboxPolicy({ root: workspace, readableRoots: [workspace, outside] });
+    const starts = [];
+    const processJobsController = {
+      start: async (request) => {
+        starts.push(request.prepared.cwd);
+        return { jobId: "test-job", state: "queued", startedAt: null };
+      },
+    };
+    const sandboxEngine = {
+      isAvailable: async () => true,
+      prepareCommand: async (command) => ({ ...command, sandboxed: false }),
+    };
+    const tool = getPiBuiltinTools([name], { ctx, cwd: workspace, sandboxPolicy, sandboxEngine, processJobsController })
+      .find((entry) => entry.name === name);
+    const params = name === "Bash" ? { command: "pwd -P" } : { executable: "/bin/pwd", args: ["-P"] };
+    const allowed = await tool.execute(`${name}:background`, { ...params, workdir: outside, background: true });
+    expect(allowed.details.outcome.code).toBe("background_started");
+    expect(starts).toEqual([outside]);
+    const denied = await tool.execute(`${name}:denied`, { ...params, workdir: resolve(workspace, ".."), background: true });
+    expect(denied.details.outcome.code).toBe("workdir_denied");
+    expect(starts).toEqual([outside]);
+  });
+
+  it("keeps file-tool bridge workdirs scoped to the run cwd", () => {
+    const workspace = tempWorkspace();
+    const outside = tempWorkspace();
+    for (const name of ["Read", "Write", "Edit", "Glob", "Grep"]) {
+      expect(normalizePiBuiltinToolParams(name, { workdir: outside }, { ctx, cwd: workspace }).workdir)
+        .toBe(workspace);
+    }
   });
 
   it("leaves a background hand-off's timeout to the host's process-job budget", () => {

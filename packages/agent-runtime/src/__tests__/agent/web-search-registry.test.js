@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { performWebSearch, __resetWebSearchThrottleForTests } from "../../agent/tools/web-search.js";
-import { registerSearchProvider } from "../../agent/tools/web-search-providers/registry.js";
+import { registerSearchProvider, webSearchProviders } from "../../agent/tools/web-search-providers/registry.js";
 import { claimWebSearchRequest } from "../../agent/tools/web-search-state.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 
@@ -18,7 +18,21 @@ function register(name, search, overrides = {}) {
   }));
 }
 describe("source-level search registry", () => {
-  it("executes a newly registered provider without editing the chain", async () => {
+  it("declares a domains filter mechanism for every registered provider", () => {
+    expect(webSearchProviders.size).toBeGreaterThan(0);
+    for (const provider of webSearchProviders.values()) {
+      expect(["operator", "unverified"]).toContain(provider.filterSupport.domains);
+    }
+    // Parallel honours site: inside search_queries server-side (verified live).
+    // Codex is model-mediated through an unpublished server-side search tool
+    // and SearXNG support belongs to each deployment's configured upstreams,
+    // so neither claims operator support; Ollama documents only a raw query.
+    expect(webSearchProviders.get("parallel")?.filterSupport.domains).toBe("operator");
+    expect(webSearchProviders.get("duckduckgo")?.filterSupport.domains).toBe("operator");
+    expect(webSearchProviders.get("codex")?.filterSupport.domains).toBe("unverified");
+    expect(webSearchProviders.get("searxng")?.filterSupport.domains).toBe("unverified");
+    expect(webSearchProviders.get("ollama")?.filterSupport.domains).toBe("unverified");
+  });  it("executes a newly registered provider without editing the chain", async () => {
     register("fake", (query, options) => {
       claimWebSearchRequest(options.searchState, "fake", options.callClaims);
       return { ok: true, backend: "fake", results: [{ url: "https://example.com", title: query, snippet: "evidence", backend: "fake" }] };

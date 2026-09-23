@@ -45,16 +45,16 @@ Different consumer classes intentionally use different runtime sources:
   launchd command and instance wrappers must agree with the immutable managed
   runtime referenced by its plist. The checkout CLI version is not serving-
   process provenance.
-- OPS services: use the installed package graph and `./bin/agents versions`
-  from `~/ops-agents`; do not compare them to a mono-agent managed-runtime path.
+- Separate-product services: use the installed package graph and `./bin/agents versions`
+  from that product's own checkout; do not compare them to a mono-agent managed-runtime path.
 
 A mismatch within one consumer is a finding. A difference between these
 consumer classes is not.
 
 ## Log size audit
 
-Managed mono-agent logs normally live under `~/.mono-agent/logs`; OPS logs
-normally live under `~/Library/Logs/ops-agents`. Resolve paths from plists
+Managed mono-agent logs normally live under `~/.mono-agent/logs`; separate-product logs
+normally live under that product's own log directory. Resolve paths from plists
 before trusting either convention.
 
 For a full mono-agent audit, check active files and the three managed retained
