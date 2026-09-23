@@ -179,6 +179,55 @@ function pushSubscriptionBody(endpoint = "https://push.example.test/send/opaque"
 }
 
 describe("web HTTP server", () => {
+  it("requires exact-origin persisted message/part binding before a proposal can request one restart", async () => {
+    let restarts = 0;
+    const fallback = operatorFetch();
+    const { baseUrl } = await start({
+      discoverImpl: async () => [fakeDiscoveredAgent({ apiKey: "owner" })],
+      fetchImpl: (async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/v1/info")) return Response.json({ schema: 1, pid: 123, capabilities: { restart: { supported: true } } });
+        if (url.endsWith("/v1/restart")) {
+          restarts++;
+          return Response.json({ operation: { id: "host-op" }, process: { pid: 123, startedAt: "2026-09-23T10:00:00.000Z" } }, { status: 202 });
+        }
+        if (url.endsWith("/v1/turns")) return new Response(JSON.stringify({ kind: "finish", finalText: "Answer",
+          parts: [{ type: "restart_proposal", id: "proposal-1", reason: "Quick refresh" }] }) + "\n",
+        { headers: { "content-type": "application/x-ndjson" } });
+        return fallback(input, init);
+      }) as typeof fetch,
+    });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const startTurn = await fetch(`${baseUrl}/api/v1/threads/${threadId}/turns`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "work" }) });
+    expect(startTurn.status).toBe(202);
+    let messageId = "";
+    await waitFor(async () => {
+      const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`));
+      const messages = detail.messages as Array<{ id: string; parts: readonly { type: string; restartable?: unknown }[] }>;
+      messageId = messages?.find((message) => message.parts.some((part) => part.type === "restart_proposal"))?.id ?? "";
+      return messageId.length > 0;
+    });
+    const path = `${baseUrl}/api/v1/threads/${threadId}/messages/${messageId}/parts/proposal-1/restart`;
+    const body = "{}";
+    expect((await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body })).status).toBe(403);
+    expect((await fetch(path, { method: "POST", headers: { "content-type": "application/json", "X-Mono-Agent-Web-Origin": "https://other.example" }, body })).status).toBe(403);
+    expect((await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages/not-the-message/parts/proposal-1/restart`, { method: "POST",
+      headers: { "content-type": "application/json", "X-Mono-Agent-Web-Origin": baseUrl }, body })).status).toBe(404);
+    expect((await fetch(path, { method: "POST", headers: { "content-type": "application/json", "X-Mono-Agent-Web-Origin": baseUrl }, body: '{"target":"other"}' })).status).toBe(400);
+    expect(restarts).toBe(0);
+    const authorized = { method: "POST", headers: { "content-type": "application/json", "X-Mono-Agent-Web-Origin": baseUrl }, body };
+    const first = await fetch(path, authorized);
+    expect(first.status).toBe(200);
+    const firstDto = await json(first);
+    const second = await fetch(path, authorized);
+    expect(second.status).toBe(200);
+    expect(await json(second)).toMatchObject({ id: firstDto.id });
+    expect(restarts).toBe(1);
+    const message = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages/${messageId}`));
+    expect((message.message as { parts: readonly unknown[] }).parts).toContainEqual({ type: "restart_proposal", id: "proposal-1", reason: "Quick refresh", restartable: { state: "used", reason: "This proposal has already been used." } });
+  });
+
   it("requires exact origin and a discovered keyed source for restart, then serves a small source-bound status", async () => {
     let posts = 0;
     const fallback = operatorFetch();

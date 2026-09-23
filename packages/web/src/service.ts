@@ -59,6 +59,7 @@ import {
   type WebAgentsChangedPayload,
   type WebAgentSummary,
   type WebAgentRestartOperation,
+  type WebRestartProposalAvailability,
   type WebAgentProvider,
   type WebAttachment,
   type WebBootstrap,
@@ -134,6 +135,7 @@ import {
   notificationPushLogicalKey,
   type StoredAttachment,
   type StoredRestartOperation,
+  type StoredRestartProposalBinding,
   type StoredMessageWrite,
   type CronRunReconciliationResult,
   type StoredTurnExecution,
@@ -1433,7 +1435,7 @@ export class WebService {
   }
 
   /** Shared entry point for settings and (later) persisted reply-part clicks. */
-  async requestAgentRestart(sourceId: string): Promise<WebAgentRestartOperation> {
+  async requestAgentRestart(sourceId: string, onPrepared?: (operationId: string) => boolean): Promise<WebAgentRestartOperation> {
     const agent = this.store.getAgent(sourceId);
     if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     const active = this.store.activeRestartOperation(sourceId);
@@ -1474,6 +1476,17 @@ export class WebService {
     });
     if (!created.created) return this.restartStatus(created.operation.id);
     const id = created.operation.id;
+    if (onPrepared !== undefined) {
+      let claimed = false;
+      try { claimed = onPrepared(id); } catch {
+        // Bind failure is definitive before forwarding. Do not strand the
+        // unique active-source reservation or send an unaudited POST.
+      }
+      if (!claimed) {
+        this.store.updateRestartOperation(id, { outcome: "failure", reason: "The proposal is no longer available." });
+        throw new WebConsoleError("restart_proposal_unavailable", "The proposal is no longer available.", 409);
+      }
+    }
     // No await between the durable operation and the adapter POST. The
     // cancellation frame can arrive before we parse the POST's 202.
     try {
@@ -1532,6 +1545,65 @@ export class WebService {
       this.store.updateRestartOperation(operation.id, { stage: "back_online", outcome: "not_confirmed",
         reason: "A new process is online, but acceptance of the restart request was not confirmed." });
     }
+  }
+
+  /** Resolve a persisted card, never a model-provided target or generation. */
+  private requireRestartProposal(threadId: string, messageId: string, partId: string): {
+    readonly thread: WebThread;
+    readonly binding: StoredRestartProposalBinding;
+  } {
+    const thread = this.store.getThread(threadId);
+    const message = this.store.getMessage(messageId);
+    if (thread === undefined || message === undefined || message.threadId !== thread.id
+      || message.role !== "assistant"
+      || !message.parts.some((part) => part.type === "restart_proposal" && part.id === partId)) {
+      throw new WebConsoleError("restart_proposal_not_found", "Restart proposal not found.", 404);
+    }
+    const binding = this.store.restartProposalBinding(messageId, partId);
+    if (binding === undefined || binding.threadId !== thread.id || binding.sourceId !== thread.sourceId) {
+      throw new WebConsoleError("restart_proposal_unavailable", "This restart proposal has no valid agent binding.", 409);
+    }
+    return { thread, binding };
+  }
+
+  private restartProposalAvailability(binding: StoredRestartProposalBinding): {
+    readonly state: WebRestartProposalAvailability; readonly reason?: string;
+  } {
+    if (binding.operationId !== undefined) return { state: "used", reason: "This proposal has already been used." };
+    const agent = this.store.getAgent(binding.sourceId);
+    if (agent?.generation !== undefined && agent.generation !== binding.generation) {
+      return { state: "stale", reason: "The agent has restarted since this suggestion." };
+    }
+    const connection = this.connections.get(binding.sourceId);
+    if (connection === undefined || agent?.status === "offline") return { state: "offline", reason: "The agent is offline." };
+    if (connection.processGeneration !== binding.generation) return { state: "stale", reason: "The agent process changed." };
+    if (connection.pid === undefined || connection.info.pid !== connection.pid
+      || connection.info.restart.supported !== true) {
+      return { state: "unsupported", reason: connection.info.restart.reason ?? "Agent restart is unavailable." };
+    }
+    const active = this.store.activeRestartOperation(binding.sourceId);
+    if (active !== undefined && this.restartStatus(active.id).outcome === undefined) {
+      return { state: "in_progress", reason: "A restart is already in progress." };
+    }
+    return { state: "available" };
+  }
+
+  /** Same operation as settings, but a card must carry persisted source/process proof. */
+  async restartFromProposal(threadId: string, messageId: string, partId: string): Promise<WebAgentRestartOperation> {
+    const { binding } = this.requireRestartProposal(threadId, messageId, partId);
+    if (binding.operationId !== undefined) return this.restartStatus(binding.operationId);
+    const availability = this.restartProposalAvailability(binding);
+    if (availability.state !== "available") {
+      throw new WebConsoleError(`restart_proposal_${availability.state}`, availability.reason ?? "Restart proposal is unavailable.", 409);
+    }
+    const result = await this.requestAgentRestart(binding.sourceId, (id) =>
+      this.store.claimRestartProposalOperation(messageId, partId, binding.sourceId, binding.generation, id));
+    // Another click can join the source's request before the first POST settles.
+    // Only the card that claimed it may treat that operation as its own.
+    if (this.store.restartProposalBinding(messageId, partId)?.operationId !== result.id) {
+      throw new WebConsoleError("restart_proposal_in_progress", "A restart is already in progress.", 409);
+    }
+    return result;
   }
 
   patchAgent(sourceId: string, patch: PatchWebAgentInput): WebAgentSummary {
@@ -2528,6 +2600,7 @@ export class WebService {
         ...(onAdmitted === undefined ? {} : { onAdmitted }),
       });
       await coalescer.flush();
+      const replyProcessGeneration = this.clientProcessGeneration.get(client);
       const detail = this.store.completeTurn(
         started.turnId,
         response.finalText,
@@ -2535,6 +2608,7 @@ export class WebService {
         response.parts,
         {
           ...(hostWakeDeliveryKey === undefined ? {} : { hostWakeDeliveryKey }),
+          ...(replyProcessGeneration === undefined ? {} : { replyProcessGeneration }),
         },
       );
       this.emitMessageWrite(started.thread.id, detail.write);
@@ -4409,6 +4483,16 @@ export class WebService {
    */
   private shapePart(message: WebMessage, part: WebMessagePart, options: WebTranscriptShape): WebMessagePart {
     if (part.type === "attachment" || part.type === "mcp_app") return this.decorateReplyPart(message, part);
+    if (part.type === "restart_proposal") {
+      const binding = this.store.restartProposalBinding(message.id, part.id);
+      const restartable = binding === undefined || binding.threadId !== message.threadId
+        ? { state: "unsupported" as const, reason: "This proposal has no verified agent binding." }
+        : this.restartProposalAvailability(binding);
+      // Reconstruct from allowlisted fields even on ?full=1: the browser never
+      // receives the private source, generation or operation binding.
+      return { type: "restart_proposal", id: part.id,
+        ...(part.reason === undefined ? {} : { reason: part.reason }), restartable };
+    }
     if (options.full === true) return part;
     if (message.role === "assistant"
       && message.turnId === undefined

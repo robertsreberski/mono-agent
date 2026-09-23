@@ -713,6 +713,20 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.post("/api/v1/threads/:threadId/messages/:messageId/parts/:partId/restart", (req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    try {
+      exactRequestOrigin(req);
+      if (req.body === null || typeof req.body !== "object" || Array.isArray(req.body)
+        || Object.keys(req.body as object).length !== 0) {
+        throw new WebConsoleError("invalid_request", "Restart proposal action requires an empty JSON object.", 400);
+      }
+      void trackOperation(service.restartFromProposal(
+        pathParam(req.params.threadId), pathParam(req.params.messageId), pathParam(req.params.partId),
+      ), activeOperations).then((operation) => res.status(200).json(operation)).catch(next);
+    } catch (error) { next(error); }
+  });
+
   // Registered above `/threads/:id` and above the message page for the same
   // reason the tool-call read is: this is how a console whose delta stream
   // skipped a version repairs ONE message instead of re-reading the whole

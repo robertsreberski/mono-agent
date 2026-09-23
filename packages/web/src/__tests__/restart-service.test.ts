@@ -49,7 +49,70 @@ async function scenario(options: {
 
 async function settle(service: WebService): Promise<void> { await service.refreshAgents(); }
 
+function proposal(s: Awaited<ReturnType<typeof scenario>>, partId = "proposal-1") {
+  const thread = s.service.createThread("agent-one");
+  const turn = s.service.store.beginTurn({ threadId: thread.id, text: "question", attachmentIds: [] });
+  s.service.store.completeTurn(turn.turnId, "Answer", {}, [{ type: "restart_proposal", id: partId, reason: "Please restart" }],
+    { replyProcessGeneration: agentGeneration(s.agent()) });
+  return { thread, messageId: turn.assistantMessageId, partId };
+}
+
 describe("web-owned restart lifecycle", () => {
+  it("serves only sanitized card state; stale process, wrong thread or unsupported agent cannot forward", async () => {
+    const s = await scenario();
+    try {
+      const card = proposal(s);
+      const part = s.service.message(card.thread.id, card.messageId).parts.find((p) => p.type === "restart_proposal");
+      expect(part).toEqual({ type: "restart_proposal", id: card.partId, reason: "Please restart",
+        restartable: { state: "available" } });
+      expect(s.service.message(card.thread.id, card.messageId, { full: true }).parts.find((p) => p.type === "restart_proposal"))
+        .toEqual(part);
+      expect(JSON.stringify(part)).not.toContain(agentGeneration(s.agent()));
+      const foreign = s.service.createThread("agent-one");
+      await expect(s.service.restartFromProposal(foreign.id, card.messageId, card.partId))
+        .rejects.toMatchObject({ code: "restart_proposal_not_found" });
+      const old = s.agent();
+      s.updateAgent(fakeDiscoveredAgent({ ...old, source: { ...old.source, pid: 900, startedAt: "2026-09-23T10:01:00Z" } }));
+      await settle(s.service);
+      expect(s.service.message(card.thread.id, card.messageId).parts.find((p) => p.type === "restart_proposal"))
+        .toMatchObject({ restartable: { state: "stale" } });
+      await expect(s.service.restartFromProposal(card.thread.id, card.messageId, card.partId))
+        .rejects.toMatchObject({ code: "restart_proposal_stale" });
+      expect(s.restartCalls).toBe(0);
+    } finally { await s.service.stop(); }
+  });
+
+  it("links the part BEFORE forwarding; concurrent duplicate clicks get the same operation with one adapter POST", async () => {
+    let release!: (response: Response) => void;
+    const s = await scenario({ response: () => new Promise<Response>((resolve) => { release = resolve; }) });
+    try {
+      const card = proposal(s);
+      const first = s.service.restartFromProposal(card.thread.id, card.messageId, card.partId);
+      await vi.waitFor(() => expect(release).toBeDefined());
+      const linked = s.service.store.restartProposalBinding(card.messageId, card.partId)?.operationId;
+      expect(linked).toBeDefined();
+      const duplicate = await s.service.restartFromProposal(card.thread.id, card.messageId, card.partId);
+      expect(duplicate).toMatchObject({ id: linked, stage: "requesting" });
+      expect(s.restartCalls).toBe(1);
+      release(Response.json({ operation: { id: "host-1" }, process: { pid: 123, startedAt: "2026-09-23T10:00:00.000Z" } }, { status: 202 }));
+      expect(await first).toMatchObject({ id: linked, stage: "restarting" });
+      expect(s.service.message(card.thread.id, card.messageId).parts.find((p) => p.type === "restart_proposal"))
+        .toMatchObject({ restartable: { state: "used" } });
+    } finally { await s.service.stop(); }
+  });
+
+  it("disables an unclaimed proposal when settings already started a restart", async () => {
+    const s = await scenario();
+    try {
+      const card = proposal(s);
+      await s.service.requestAgentRestart("agent-one");
+      expect(s.service.message(card.thread.id, card.messageId).parts.find((p) => p.type === "restart_proposal"))
+        .toMatchObject({ restartable: { state: "in_progress" } });
+      await expect(s.service.restartFromProposal(card.thread.id, card.messageId, card.partId))
+        .rejects.toMatchObject({ code: "restart_proposal_in_progress" });
+      expect(s.restartCalls).toBe(1);
+    } finally { await s.service.stop(); }
+  });
   it("probes live support, records before POST and never succeeds on endpoint churn", async () => {
     let inspectedPending = false;
     let s!: Awaited<ReturnType<typeof scenario>>;
