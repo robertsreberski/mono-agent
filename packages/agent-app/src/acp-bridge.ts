@@ -36,7 +36,7 @@ import {
 } from "@mono-agent/web";
 
 import { agentAppPackageVersion } from "./package-version.js";
-import { consumePeerGeneration, stampPeerOperatorHandoff, verifyPeerHandoff } from "./peer-provenance.js";
+import { consumePeerGeneration, PeerSessionExhaustedError, prunePeerGenerationLedger, stampPeerOperatorHandoff, verifyPeerHandoff } from "./peer-provenance.js";
 import {
   createAcpSessionAuthorization,
   loadAcpSessionAuthorization,
@@ -71,6 +71,8 @@ export interface RunAcpBridgeOptions {
   readonly sourceId: string;
   readonly requireToolEnvironment?: boolean;
   readonly env?: Readonly<Record<string, string | undefined>>;
+  /** Test-only cap seam; CLI always uses the 1024-generation production limit. */
+  readonly peerGenerationLimit?: number;
   /** Test seams; the CLI uses the process stdio streams. */
   readonly input?: Readable;
   readonly output?: Writable;
@@ -178,6 +180,7 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
   app.onRequest(methods.agent.session.prompt, async (context) => {
     return await runPrompt(context, {
       sourceId: options.sourceId,
+      peerGenerationLimit: options.peerGenerationLimit,
       env,
       resolveTarget,
       activeTurns,
@@ -207,6 +210,7 @@ async function runPrompt(
   context: AgentRequestContext<PromptRequest>,
   options: {
     readonly sourceId: string;
+    readonly peerGenerationLimit?: number | undefined;
     readonly env: Readonly<Record<string, string | undefined>>;
     readonly resolveTarget: (signal?: AbortSignal) => Promise<BridgeTarget>;
     readonly activeTurns: Map<string, ActiveTurn>;
@@ -237,12 +241,13 @@ async function runPrompt(
   let operatorPeer: Awaited<ReturnType<typeof stampPeerOperatorHandoff>> | undefined;
   if (verifiedPeer !== undefined) {
     try {
-      if (!await consumePeerGeneration(target.artifactDir, verifiedPeer)) {
+      if (!await consumePeerGeneration(target.artifactDir, verifiedPeer, options.peerGenerationLimit)) {
         throw bridgeError("peer_handoff_replayed", "This peer turn generation was already consumed.");
       }
       operatorPeer = await stampPeerOperatorHandoff(target.artifactDir, verifiedPeer);
     } catch (error) {
       if (error instanceof RequestError) throw error;
+      if (error instanceof PeerSessionExhaustedError) throw bridgeError("peer_session_exhausted", "Peer ACP session reached its generation limit; the next explicit send must start a new session.");
       throw bridgeError("peer_handoff_persistence_failed", "Peer turn generation could not be persisted before dispatch.");
     }
   }
@@ -823,6 +828,8 @@ async function requireSessionAuthorization(
     );
   }
   if (record === undefined) {
+    // Reset authorization invalidates every old peer proof for this session.
+    await prunePeerGenerationLedger(target.artifactDir, sessionId).catch(() => undefined);
     throw RequestError.invalidParams(
       { code: "unknown_session_id" },
       "The ACP session is not authorized for this mono-agent source.",

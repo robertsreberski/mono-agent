@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
-import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -155,10 +155,27 @@ describe("peer ACP client over a real spawned bridge", () => {
     const first = await f.turn();
     await rm(join(f.root, "acp-sessions", `${createHash("sha256").update(first.sessionId).digest("hex")}.json`));
     await expect(f.turn(first.sessionId)).rejects.toBeInstanceOf(PeerSessionGoneError);
+    await expect(access(join(f.root, "acp-peer-handoff", "consumed",
+      createHash("sha256").update(first.sessionId).digest("hex")))).rejects.toMatchObject({ code: "ENOENT" });
     expect(f.turns).toHaveLength(1);
     const fresh = await f.turn();
     expect(fresh.sessionId).not.toBe(first.sessionId);
     expect(f.turns).toHaveLength(2);
+  }, 30_000);
+
+  it("maps an exhausted bridge session to explicit no-replay recovery", async () => {
+    const f = await fixture();
+    await expect(runPeerAcpTurn({
+      sourceId: "peer-test", cliPath, env: { ...process.env, MONO_AGENT_TRACE_REGISTRY_DIR: join(f.root, "registry") },
+      workspace: f.root, artifactDir: f.artifactDir, caller: "agent-test", conversation: "web:caller",
+      depth: 1, text: "request text", signal: new AbortController().signal,
+      onSession: async (id) => {
+        const directory = join(f.root, "acp-peer-handoff", "consumed", createHash("sha256").update(id).digest("hex"));
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await writeFile(join(directory, "generations.json"), JSON.stringify(Array.from({ length: 1024 }, () => randomUUID())), { mode: 0o600 });
+      },
+    })).rejects.toThrow(/peer_session_exhausted.*next explicit send/u);
+    expect(f.turns).toHaveLength(0);
   }, 30_000);
 
   it("rejects oversize peer output instead of returning a truncated success", async () => {

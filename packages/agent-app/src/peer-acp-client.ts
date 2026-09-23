@@ -12,7 +12,11 @@ const MAX_ANSWER = 32 * 1024;
 
 /** A reset peer lost this session; the caller may explicitly start a new turn. */
 export class PeerSessionGoneError extends Error {
-  constructor() { super("ACP peer session no longer exists (unknown_session_id); this prompt was not dispatched or replayed. The next explicit send starts a new session."); }
+  constructor(reason: "unknown_session_id" | "peer_session_exhausted" = "unknown_session_id") {
+    super(reason === "peer_session_exhausted"
+      ? "ACP peer session reached its generation limit (peer_session_exhausted); this prompt was not dispatched or replayed. The next explicit send starts a new session."
+      : "ACP peer session no longer exists (unknown_session_id); this prompt was not dispatched or replayed. The next explicit send starts a new session.");
+  }
 }
 
 export interface PeerAcpTurn {
@@ -154,6 +158,7 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
     const message = error instanceof Error ? error.message : "Unknown bridge error.";
     const code = typeof error === "object" && error !== null && "data" in error
       ? (error.data as { code?: unknown } | undefined)?.code : undefined;
+    if (code === "peer_session_exhausted") throw new PeerSessionGoneError("peer_session_exhausted");
     const safe = code === "interaction_required" || message.includes("requested AskUser")
       ? "Peer AskUser interaction is unsupported: this ACP client does not relay questions (interaction_required)."
       : /^(?:ACP peer|Peer turn)/u.test(message)

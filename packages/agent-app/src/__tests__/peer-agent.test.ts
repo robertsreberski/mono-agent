@@ -193,11 +193,11 @@ describe("PeerAgent request lifecycle", () => {
     } finally { await f.close(); }
   });
 
-  it("clears a dead session and creates a new session only on the next explicit send", async () => {
+  it.each(["unknown_session_id", "peer_session_exhausted"] as const)("clears a %s session only for the next explicit send", async (reason) => {
     const f = await setup();
     try {
       expect((await f.send()).isError).not.toBe(true);
-      mocks.run.mockRejectedValueOnce(new PeerSessionGoneError());
+      mocks.run.mockRejectedValueOnce(new PeerSessionGoneError(reason));
       const interrupted = await f.send();
       expect(interrupted.isError).toBe(true);
       expect(interrupted.content).toEqual([{ type: "text", text: expect.stringContaining("next explicit send") }]);

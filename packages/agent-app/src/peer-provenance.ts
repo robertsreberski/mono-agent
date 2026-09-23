@@ -1,4 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { rm } from "node:fs/promises";
+import { setTimeout as pause } from "node:timers/promises";
 import { dirname, join, resolve } from "node:path";
 
 import { acquireContinuationStoreLock, ensureOwnerOnlyDirectory, loadOrCreateContinuationSecret, readBoundedOwnerOnlyFile, writeJsonAtomic } from "./continuation-store-fs.js";
@@ -77,24 +79,45 @@ async function readPeerSecret(artifactDir: string): Promise<Buffer | undefined> 
   return secret.length === 32 ? secret : undefined;
 }
 
+function peerGenerationDirectory(artifactDir: string, sessionId: string): string {
+  return join(peerSecretDir(artifactDir), "consumed", createHash("sha256").update(sessionId).digest("hex"));
+}
+
+/** A reset session can no longer dispatch proof-bearing turns; retire its ledger. */
+export async function prunePeerGenerationLedger(artifactDir: string, sessionId: string): Promise<void> {
+  await rm(peerGenerationDirectory(artifactDir, sessionId), { recursive: true, force: true });
+}
+
+export class PeerSessionExhaustedError extends Error {
+  constructor() { super("Peer session generation ledger is full; the next explicit send must start a new session."); }
+}
+
 /** The bridge consumes each signed turn generation at most once, before dispatch.
  * Exhaustion fails closed rather than evicting old generations and enabling replay. */
-export async function consumePeerGeneration(artifactDir: string, proof: PeerHandoff): Promise<boolean> {
-  const sessionKey = createHash("sha256").update(proof.session).digest("hex");
-  const directory = join(peerSecretDir(artifactDir), "consumed", sessionKey);
-  const lease = await acquireContinuationStoreLock(directory);
+export async function consumePeerGeneration(artifactDir: string, proof: PeerHandoff, maxGenerations = 1024): Promise<boolean> {
+  const directory = peerGenerationDirectory(artifactDir, proof.session);
+  let lease: Awaited<ReturnType<typeof acquireContinuationStoreLock>> | undefined;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try { lease = await acquireContinuationStoreLock(directory); break; }
+    catch (error) {
+      if (attempt === 5 || !(error instanceof Error) || !error.message.startsWith("Continuation state is already owned")) throw error;
+      await pause(25);
+    }
+  }
+  if (lease === undefined) throw new Error("Peer generation ownership unavailable.");
   try {
     const path = join(directory, "generations.json");
     let encoded: string;
     try { encoded = await readBoundedOwnerOnlyFile(path, 64 * 1024, "Consumed peer generations"); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") encoded = "[]"; else throw error; }
     const entries: unknown = JSON.parse(encoded);
+    if (!Number.isSafeInteger(maxGenerations) || maxGenerations < 1 || maxGenerations > 1024) throw new Error("Peer generation limit is invalid.");
     if (!Array.isArray(entries) || entries.length > 1024 || entries.some((entry) => typeof entry !== "string"
       || !/^[a-f0-9-]{36}$/u.test(entry)) || new Set(entries).size !== entries.length) {
       throw new Error("Consumed peer generation state is invalid.");
     }
     if (entries.includes(proof.generation)) return false;
-    if (entries.length === 1024) throw new Error("Peer session generation limit reached; start a new thread.");
+    if (entries.length >= maxGenerations) throw new PeerSessionExhaustedError();
     await writeJsonAtomic(path, [...entries, proof.generation], true, 64 * 1024);
     return true;
   } finally { await lease.release(); }

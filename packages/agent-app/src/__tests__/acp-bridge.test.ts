@@ -56,6 +56,7 @@ afterEach(async () => {
 function startBridgeHarness(options: {
   readonly sourceId: string;
   readonly registry: string;
+  readonly peerGenerationLimit?: number;
 }): BridgeHarness {
   const input = new PassThrough();
   const output = new PassThrough();
@@ -64,6 +65,7 @@ function startBridgeHarness(options: {
   const frames = lines[Symbol.asyncIterator]();
   const bridge = runAcpBridge({
     sourceId: options.sourceId,
+    ...(options.peerGenerationLimit === undefined ? {} : { peerGenerationLimit: options.peerGenerationLimit }),
     env: { MONO_AGENT_TRACE_REGISTRY_DIR: options.registry },
     input,
     output,
@@ -1344,7 +1346,7 @@ describe("ACP bridge", () => {
       } });
       await expect(bridge.next()).resolves.toMatchObject({ id: 1, result: { protocolVersion: 1 } });
     };
-    const bridge = startBridgeHarness({ sourceId: "personal-agent", registry });
+    const bridge = startBridgeHarness({ sourceId: "personal-agent", registry, peerGenerationLimit: 1 });
     await init(bridge);
     bridge.send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: canonicalRoot, mcpServers: [] } });
     const created = await bridge.next();
@@ -1364,12 +1366,21 @@ describe("ACP bridge", () => {
     expect(turns[0]!.metadata).toHaveProperty("peerHandoff");
     expect((turns[0]!.metadata as Record<string, unknown>).peerHandoff).not.toHaveProperty("proof");
     await bridge.close();
-    const restarted = startBridgeHarness({ sourceId: "personal-agent", registry });
+    const restarted = startBridgeHarness({ sourceId: "personal-agent", registry, peerGenerationLimit: 1 });
     await init(restarted);
     restarted.send({ jsonrpc: "2.0", id: 4, method: "session/resume", params: { sessionId, cwd: canonicalRoot, mcpServers: [] } });
     await expect(restarted.next()).resolves.toMatchObject({ id: 4, result: expect.any(Object) });
     restarted.send(prompt(5));
     await expect(restarted.next()).resolves.toMatchObject({ id: 5, error: { data: { code: "peer_handoff_replayed" } } });
+    const second = await makePeerHandoff(artifactDir, {
+      caller: "agent-a", conversation: "web:caller", session: sessionId,
+      sourceId: "personal-agent", generation: "22222222-2222-4222-8222-222222222222",
+      depth: 1, text: "same prompt",
+    });
+    restarted.send({ ...prompt(6), params: { ...prompt(6).params,
+      _meta: { "mono-agent.peer": second },
+    } });
+    await expect(restarted.next()).resolves.toMatchObject({ id: 6, error: { data: { code: "peer_session_exhausted" } } });
     expect(turns).toHaveLength(1);
     await restarted.close();
   });

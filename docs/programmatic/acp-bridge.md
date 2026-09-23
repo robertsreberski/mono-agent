@@ -108,9 +108,10 @@ message:"Summarize the latest allocation"})` waits for a bounded, labelled
 **untrusted** answer. A later send on the same caller conversation, peer and
 thread resumes the exact ACP session, including after restarting either agent;
 it never automatically replays a prompt interrupted by a restart. If the peer
-cleared its ACP session, the current send fails explicitly without dispatch;
-the old session mapping is removed and only the next explicitly requested send
-starts a fresh session. A concurrent send to one thread is rejected. `PeerAgent({action:"stop",peer:"finance",
+cleared its ACP session, or its bounded single-use generation ledger reaches
+1024 sends, the current send fails explicitly (`unknown_session_id` or
+`peer_session_exhausted`) without dispatch; the old session mapping is removed
+and only the next explicitly requested send starts a fresh session. A concurrent send to one thread is rejected. `PeerAgent({action:"stop",peer:"finance",
 thread:"portfolio"})` requests ACP `session/cancel` for the active turn.
 
 With a wake-capable caller origin and enabled process jobs, `background:true`
@@ -127,8 +128,11 @@ peer tasks expected to ask the caller questions.
 Peer-specific bounded ACP `_meta` carries a source-bound, owner-private HMAC
 handoff. The proof binds target source, session, caller conversation, turn
 generation, message digest and depth. The bridge validates and durably consumes
-each generation once before dispatch; a replay or exhausted generation ledger
-fails closed. It replaces the client proof with a domain-separated operator
+each generation once before dispatch; replay fails closed, while exhaustion
+returns a distinct recoverable error without replay. Consumed ledgers are
+pruned when the bridge detects that their ACP session authorization is gone;
+short bounded lock contention between bridges does not immediately fail a
+valid distinct generation. It replaces the client proof with a domain-separated operator
 attestation (no raw `proof` in operator metadata); the runtime independently
 verifies before rendering an explicit Session notice that this is a request
 from another agent, not the owner's approval, and before using depth.

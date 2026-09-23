@@ -5,13 +5,25 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { formatHostCapabilities } from "@mono-agent/agent-harness";
 
-import { makePeerHandoff, stampPeerOperatorHandoff, verifyPeerHandoff } from "../peer-provenance.js";
+import { consumePeerGeneration, makePeerHandoff, stampPeerOperatorHandoff, verifyPeerHandoff } from "../peer-provenance.js";
 import { createProcessJobsRuntimeExtension } from "../process-jobs-runtime.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true }))); });
 
 describe("verified peer context and lineage", () => {
+  it("bounds ledger lock contention for distinct generations of one session", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mono-agent-peer-ledger-"));
+    roots.push(root);
+    const artifactDir = join(root, "artifacts");
+    const input = { caller: "agent-a", conversation: "web:caller", session: "acp:agent-b:uuid",
+      sourceId: "agent-b", depth: 1, text: "text" };
+    const first = await makePeerHandoff(artifactDir, { ...input, generation: "11111111-1111-4111-8111-111111111111" });
+    const next = await makePeerHandoff(artifactDir, { ...input, generation: "22222222-2222-4222-8222-222222222222" });
+    expect(await Promise.all([consumePeerGeneration(artifactDir, first, 2), consumePeerGeneration(artifactDir, next, 2)]))
+      .toEqual([true, true]);
+    expect(await consumePeerGeneration(artifactDir, first, 2)).toBe(false);
+  });
   it("does not provision a handoff secret for a well-formed forged proof", async () => {
     const source = await mkdtemp(join(tmpdir(), "mono-agent-peer-source-"));
     const target = await mkdtemp(join(tmpdir(), "mono-agent-peer-target-"));
