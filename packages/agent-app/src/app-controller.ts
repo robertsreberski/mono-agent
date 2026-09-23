@@ -10,6 +10,7 @@ import type {
   ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
+import type { TuiRestartAuthority } from "@mono-agent/operator-adapter";
 import type {
   MonoRuntimeLike,
   RuntimeModelReference,
@@ -119,6 +120,7 @@ export interface MonoAgentAppOptions {
   readonly memoryHealthWorkerUrl?: URL;
   /** Test seam for exercising the isolated memory-health request deadline. */
   readonly memoryHealthWorkerTimeoutMs?: number;
+  readonly restartAuthority?: TuiRestartAuthority;
 }
 
 export interface MonoAgentApp {
@@ -208,6 +210,7 @@ async function startMonoAgentAppInternal(
       ...(options.backgroundSnapshot === undefined ? {} : { backgroundSnapshot: options.backgroundSnapshot }),
       ...(options.memoryHealthWorkerUrl === undefined ? {} : { memoryHealthWorkerUrl: options.memoryHealthWorkerUrl }),
       ...(options.memoryHealthWorkerTimeoutMs === undefined ? {} : { memoryHealthWorkerTimeoutMs: options.memoryHealthWorkerTimeoutMs }),
+      ...(options.restartAuthority === undefined ? {} : { restartAuthority: options.restartAuthority }),
       trustedRuntimeReadRoots,
     });
     const startedController = controller;
@@ -278,6 +281,7 @@ interface MonoAgentAppControllerInput {
   readonly backgroundSnapshot?: BackgroundSnapshot;
   readonly memoryHealthWorkerUrl?: URL;
   readonly memoryHealthWorkerTimeoutMs?: number;
+  readonly restartAuthority?: TuiRestartAuthority;
   readonly trustedRuntimeReadRoots: readonly string[];
 }
 
@@ -308,6 +312,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   readonly sandboxEngine: SandboxEngine | undefined;
   readonly traceDefaults: AppTraceDefaults | undefined;
   readonly backgroundSnapshot: BackgroundSnapshot | undefined;
+  readonly restartAuthority: TuiRestartAuthority | undefined;
   readonly trustedRuntimeReadRoots: readonly string[];
   readonly agentRootOwnership: AgentRootOwnership;
   private agentRootOwnershipReleased = false;
@@ -428,6 +433,7 @@ export class MonoAgentAppController implements MonoAgentApp {
     this.sandboxEngine = input.sandboxEngine;
     this.traceDefaults = input.traceDefaults;
     this.backgroundSnapshot = input.backgroundSnapshot;
+    this.restartAuthority = input.restartAuthority;
     this.memoryHealthWorker = new MemoryHealthWorkerClient({
       ...(input.memoryHealthWorkerUrl === undefined ? {} : { workerUrl: input.memoryHealthWorkerUrl }),
       ...(input.memoryHealthWorkerTimeoutMs === undefined ? {} : { timeoutMs: input.memoryHealthWorkerTimeoutMs }),

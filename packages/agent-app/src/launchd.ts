@@ -130,6 +130,8 @@ export interface LaunchdManagedWorkerDefinition {
 export interface LaunchdManagedWorkerInfo extends LaunchdServiceInfo {
   /** Present only when launchctl exposes the exact current producer shape. */
   readonly definition?: LaunchdManagedWorkerDefinition;
+  /** Fail closed unless the loaded policy explicitly relaunches nonzero exits. */
+  readonly relaunchOnFailure: boolean;
 }
 
 export interface LaunchdWebMaintenanceDefinition {
@@ -668,11 +670,14 @@ export async function launchdManagedWorkerInfo(
   uid: number,
 ): Promise<LaunchdManagedWorkerInfo> {
   const result = await runner(["print", serviceTarget(label, uid)]);
-  if (result.code !== 0) return { loaded: false };
+  if (result.code !== 0) return { loaded: false, relaunchOnFailure: false };
   const pid = parseLaunchdServicePid(result.stdout);
   const definition = parseLaunchdManagedWorkerDefinition(result.stdout);
   return {
     loaded: true,
+    // launchctl print must expose the cached KeepAlive policy; a missing or
+    // changed policy is not evidence that a deliberate exit 42 will relaunch.
+    relaunchOnFailure: /successful\s*exit\s*=\s*false\b/iu.test(result.stdout),
     ...(pid === undefined ? {} : { pid }),
     ...(definition === undefined ? {} : { definition }),
   };

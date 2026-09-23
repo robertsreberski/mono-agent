@@ -65,6 +65,12 @@ describe("app channel capability composition", () => {
       traceabilityStatusValue: {} as never,
       processJobsService: undefined,
       processJobsDegradation: undefined,
+      restartAuthority: {
+        verify: async () => ({ supported: true }),
+        accept: () => ({ kind: "accepted", operationId: "fixture" }),
+        processIdentity: () => ({ pid: 17, startedAt: "boot" }),
+        beginStop: () => undefined,
+      },
       setStatus(channelId, channelStatus) {
         statuses.set(channelId, channelStatus);
         return channelStatus;
@@ -85,6 +91,7 @@ describe("app channel capability composition", () => {
         .resolves.toMatchObject({ kind: "running" });
       expect(captured?.providerAuth).toBeDefined();
       expect(captured).not.toHaveProperty("apiKey");
+      expect(captured).not.toHaveProperty("restart");
     } finally {
       await controller.running.get("tui")?.stop();
     }

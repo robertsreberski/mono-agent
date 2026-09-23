@@ -35,6 +35,10 @@ export interface SystemdService {
   readonly startedAt: string;
   readonly enabled: boolean;
   readonly fragmentPath: string;
+  /** Loaded relaunch policy; empty when systemctl omits it. */
+  readonly restart: string;
+  /** Loaded worker command, for verifying the installed worker identity. */
+  readonly execStart: string;
 }
 
 const MARKER = "# mono-agent systemd user service v1 ";
@@ -105,7 +109,7 @@ async function checked(args: readonly string[], deps: SystemdDeps): Promise<Syst
 
 export async function inspectSystemd(identity: string, deps: SystemdDeps = {}): Promise<SystemdService> {
   const result = await (deps.run ?? runSystemdTool)("systemctl", ["--user", "show", systemdUnitName(identity),
-    "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp,UnitFileState,FragmentPath"]);
+    "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp,UnitFileState,FragmentPath,Restart,ExecStart"]);
   const properties = Object.fromEntries(result.stdout.trim().split("\n").map((line) => {
     const index = line.indexOf("=");
     return [line.slice(0, index), line.slice(index + 1)];
@@ -124,7 +128,7 @@ export async function inspectSystemd(identity: string, deps: SystemdDeps = {}): 
   return {
     loadState: properties.LoadState, activeState: properties.ActiveState, subState: properties.SubState ?? "unknown",
     pid, startedAt: properties.ExecMainStartTimestamp ?? "", enabled: properties.UnitFileState === "enabled",
-    fragmentPath: properties.FragmentPath ?? "",
+    fragmentPath: properties.FragmentPath ?? "", restart: properties.Restart ?? "", execStart: properties.ExecStart ?? "",
   };
 }
 
