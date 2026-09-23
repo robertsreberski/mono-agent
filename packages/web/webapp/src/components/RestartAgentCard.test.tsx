@@ -70,6 +70,12 @@ describe("RestartAgentCard", () => {
     expect(screen.getByText(`${state} reason`)).toBeVisible();
   });
 
+  it("fails closed on a malformed used card without a pollable web id", () => {
+    render(<RestartAgentCard {...base} proposal={proposal("used")} />);
+    expect(screen.getByRole("button", { name: "Restart Agent One" })).toBeDisabled();
+    expect(screen.getByText("Restart status is unavailable.")).toBeVisible();
+  });
+
   it("rehydrates a used card from the linked WEB id and polls after remount", async () => {
     vi.useFakeTimers();
     const status = vi.spyOn(api, "restartStatus").mockResolvedValueOnce(operation("restarting"))

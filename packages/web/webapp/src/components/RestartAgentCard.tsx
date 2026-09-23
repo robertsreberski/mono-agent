@@ -38,14 +38,18 @@ export function RestartAgentCard({
   const [requestFailure, setRequestFailure] = useState<{ readonly outcome: "failure" | "not_confirmed"; readonly reason: string } | null>(null);
   const [pollWarning, setPollWarning] = useState<string | null>(null);
   const submitting = useRef(false);
-  const linkedId = proposal?.restartable.state === "used" ? proposal.restartable.operationId : undefined;
+  const linkedId = proposal?.restartable.state === "used"
+    && typeof proposal.restartable.operationId === "string" && proposal.restartable.operationId.length > 0
+    ? proposal.restartable.operationId : undefined;
   const operationId = linkedId ?? operation?.id;
   const currentOperation = operation?.id === operationId ? operation : null;
   const terminal = currentOperation?.outcome !== undefined || requestFailure !== null;
   const availability = proposal?.restartable;
-  const disabled = availability !== undefined && availability.state !== "available" && availability.state !== "used"
-    ? availability.reason ?? "Restart is unavailable."
-    : sourceId.length === 0 ? "Agent is unavailable." : undefined;
+  const disabled = availability?.state === "used" && linkedId === undefined
+    ? "Restart status is unavailable."
+    : availability !== undefined && availability.state !== "available" && availability.state !== "used"
+      ? availability.reason ?? "Restart is unavailable."
+      : sourceId.length === 0 ? "Agent is unavailable." : undefined;
 
   useEffect(() => {
     setOperation(initialOperation ?? null);
