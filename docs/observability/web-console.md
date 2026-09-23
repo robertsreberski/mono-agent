@@ -132,7 +132,9 @@ Progress reads **Requesting → Restarting → Back online**. The web service st
 the operation before contacting the agent and keeps status across browser reloads.
 An adapter acceptance means only that shutdown was committed; **success** needs
 that same discovered source id to return as a *different process* and answer a
-ready `/v1/info` probe. A definite refusal is **failure** with a short reason.
+ready `/v1/info` probe. A `degraded` discovery status still counts as ready
+when that info probe answered (for example, a stale heartbeat does not undo
+operator readiness). A definite refusal is **failure** with a short reason.
 A dropped reply, unknown acceptance, or no confirmed ready replacement within
 two minutes is **not confirmed**; observing a new process after a lost reply is
 not proof that this request caused it. The browser cannot infer success from
@@ -140,7 +142,10 @@ connection changes. Restarting does not purge saved conversations, memory or
 sessions; it interrupts running turns and stops process jobs and monitors, loses
 warm process-local sessions, and may delay notifications until the new worker is
 ready. Durable history and persistent subagent state remain available after
-recovery; an interrupted turn does not resume itself.
+recovery; an interrupted turn does not resume itself. A second externally sent
+`SIGTERM` while the worker is stopping for an accepted restart takes the OS
+signal's default action: the console cannot turn an external forced stop into
+a confirmed successful restart.
 
 Only a supervised launchd/systemd worker with a configured operator API key and
 a verifiably loaded relaunch policy advertises `capabilities.restart.supported`.

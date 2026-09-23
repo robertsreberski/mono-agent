@@ -54,9 +54,18 @@ identity and relaunch policy again when requested. On launchd, `launchctl print`
 represents that policy in `semaphores = { successful exit => 0 }`; absence or
 `=> 1` is not support. systemd requires an active loaded matching unit with a
 nonzero-exit relaunch policy (`Restart=on-failure` or `always`); `Restart=no`
-is unsupported. A signal before acceptance prevents it; a signal after
-acceptance cannot turn exit 42 into exit 0. None of this changes the existing
-explicit CLI `restart` lifecycle command.
+is unsupported. `RestartPreventExitStatus` or `SuccessExitStatus` naming exit
+`42` also refuses support: either setting defeats nonzero relaunch. The installed
+systemd unit limits restarts with `StartLimitIntervalSec=60` and
+`StartLimitBurst=5`; roughly a sixth rapid start within 60 seconds leaves the
+unit failed until it is explicitly recovered. A signal before acceptance
+prevents it; a signal after acceptance cannot change the committed nonzero
+exit to exit 0. A **second external** `SIGTERM` after the shutdown listener is
+removed takes the OS default action instead of making an orderly restart
+promise. Once accepted teardown has completed, a bounded 10-second fallback
+forces exit 42 if an unrelated referenced handle prevents the process from
+draining on its own. None of this changes the explicit CLI `restart` lifecycle
+command.
 
 ## Command summary
 
