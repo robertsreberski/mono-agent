@@ -58,6 +58,8 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "memory.path": "string",
   "memory.maxBytes": "integer",
   "memory.writeMode": "string",
+  "memory.capture.focus": "string",
+  "memory.capture.only": "string[]",
   "memory.embeddings.provider": "string",
   "memory.embeddings.model": "string",
   "memory.embeddings.endpoint": "string",

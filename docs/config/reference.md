@@ -64,6 +64,8 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `interaction.bridge.port` | `integer` | `--` | 0 | `0` | Bridge port. 0 chooses an ephemeral port. |
 | `interaction.progress.enabled` | `boolean` | `--` | true | `true` | Whether tool progress posts are relayed to channel status messages. |
 | `memory.backend` | `string` | `--` | bujo | `bujo` | Configures backend for the memory section. |
+| `memory.capture.focus` | `string` | `--` | unset | `Keep durable coding preferences and verified lessons; skip PR and CI status.` | Operator guidance (at most 2048 UTF-8 bytes) narrows BuJo capture extraction; it cannot override host safety or the strict JSON contract. Requires mode bujo and writeMode capture. |
+| `memory.capture.only` | `string[]` | `--` | unset | `["preference","lesson"]` | Keep automatic capture memories only when a host-accepted label matches one of these kinds. An empty array drops all automatic captures; unset preserves current behavior. Remember writes are unaffected. Requires mode bujo and writeMode capture. |
 | `memory.consolidation.cron` | `string` | `--` | 0 */2 * * * | `0 */2 * * *` | Configures consolidation.cron for the memory section. |
 | `memory.consolidation.enabled` | `boolean` | `--` | true | `true` | Enables the memory capability. |
 | `memory.embeddings.apiKey` | `string` | `--` | unset | `example` | Secret value for memory.embeddings.apiKey; prefer the env override. |

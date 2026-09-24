@@ -85,6 +85,8 @@ export const CORE_CONFIG_FIELD_IDS = {
   "memory.path": true,
   "memory.maxBytes": true,
   "memory.writeMode": true,
+  "memory.capture.focus": true,
+  "memory.capture.only": true,
   "memory.embeddings.provider": true,
   "memory.embeddings.model": true,
   "memory.embeddings.endpoint": true,
@@ -532,6 +534,18 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
       value: memory.writeMode,
       jsonPresent: json.memory?.writeMode !== undefined,
     }),
+    ...(memory.capture?.focus === undefined ? [] : [toField({
+      id: "memory.capture.focus",
+      label: "Capture focus",
+      value: memory.capture.focus,
+      jsonPresent: json.memory?.capture?.focus !== undefined,
+    })]),
+    ...(memory.capture?.only === undefined ? [] : [toField({
+      id: "memory.capture.only",
+      label: "Capture only",
+      value: JSON.stringify(memory.capture.only),
+      jsonPresent: json.memory?.capture?.only !== undefined,
+    })]),
     toField({
       id: "memory.recallTool.enabled",
       label: "Recall tool",

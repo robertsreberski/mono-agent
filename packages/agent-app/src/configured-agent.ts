@@ -1969,6 +1969,9 @@ async function createConfiguredMemoryInternal(
   }
   const { mode, path: root, maxBytes, embeddings: embeddingsConfig, llm: llmConfig } = config.memory;
   const bujo = await loadMemoryBujoModule();
+  if (config.memory.capture !== undefined && (mode !== "bujo" || config.memory.writeMode !== "capture")) {
+    throw new Error("memory.capture requires BuJo mode and capture writeMode.");
+  }
 
   if (mode === "lite") {
     if (embeddingsConfig !== undefined || llmConfig !== undefined || config.memory.consolidation !== undefined) {
@@ -2077,6 +2080,7 @@ async function createConfiguredMemoryInternal(
     dim,
     ...(maxBytes !== undefined && { maxBytes }),
     llm,
+    ...(config.memory.capture === undefined ? {} : { capture: config.memory.capture }),
     ...(deps.logger !== undefined && { logger: deps.logger }),
   });
 }

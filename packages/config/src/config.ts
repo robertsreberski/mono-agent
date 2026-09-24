@@ -1632,6 +1632,7 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
   assertJsonScalarFields(memory, "memory", { backend: "string", mode: "string", path: "string", maxBytes: "number", writeMode: "string" });
   const embeddingsJson = jsonRecord(memory.embeddings, "memory.embeddings");
   const llmJson = jsonRecord(memory.llm, "memory.llm");
+  const captureJson = jsonRecord(memory.capture, "memory.capture");
   const recallToolJson = jsonRecord(memory.recallTool, "memory.recallTool");
   const rememberToolJson = jsonRecord(memory.rememberTool, "memory.rememberTool");
   const consolidationJson = jsonRecord(memory.consolidation, "memory.consolidation");
@@ -1659,6 +1660,7 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
     const orphaned = [
       "memory.mode",
       "memory.writeMode",
+      "memory.capture",
       "memory.maxBytes",
       "memory.embeddings.provider",
       "memory.embeddings.model",
@@ -1713,6 +1715,32 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
       `memory.writeMode "capture" requires memory.mode "bujo" (it needs a chat LLM).`,
       { path: "memory.writeMode" },
     );
+  }
+  if (captureJson !== undefined && (mode !== "bujo" || writeMode !== "capture")) {
+    throw new MonoAgentConfigError("invalid_json",
+      'memory.capture requires memory.mode "bujo" and memory.writeMode "capture".', { path: "memory.capture" });
+  }
+  let capture: NonNullable<NonNullable<MonoAgentConfig["memory"]>["capture"]> | undefined;
+  if (captureJson !== undefined) {
+    const rawFocus = captureJson.focus;
+    if (rawFocus !== undefined && (typeof rawFocus !== "string" || rawFocus.trim().length === 0
+      || rawFocus !== rawFocus.trim() || Buffer.byteLength(rawFocus, "utf8") > 2048
+      || /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(rawFocus.replaceAll("\n", ""))
+      || /(?:^|\n)(?:END )?OPERATOR CAPTURE FOCUS\b/iu.test(rawFocus))) {
+      throw new MonoAgentConfigError("invalid_json", "memory.capture.focus must be safe, trimmed text of at most 2048 UTF-8 bytes.",
+        { path: "memory.capture.focus" });
+    }
+    const rawOnly = captureJson.only;
+    if (rawOnly !== undefined && (!Array.isArray(rawOnly) || rawOnly.length > 3
+      || rawOnly.some((kind: unknown) => kind !== "fact" && kind !== "preference" && kind !== "lesson")
+      || new Set(rawOnly).size !== rawOnly.length)) {
+      throw new MonoAgentConfigError("invalid_json", "memory.capture.only must be a unique subset of fact, preference, lesson.",
+        { path: "memory.capture.only" });
+    }
+    capture = {
+      ...(rawFocus === undefined ? {} : { focus: rawFocus as string }),
+      ...(rawOnly === undefined ? {} : { only: rawOnly as ("fact" | "preference" | "lesson")[] }),
+    };
   }
   if ((mode === "lite" || mode === "journal") && hasMemoryLlmJson(llmJson)) {
     const message = mode === "lite"
@@ -1797,6 +1825,7 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
     path: readPath(rawPath, cwd),
     maxBytes: jsonInteger(memory.maxBytes, "memory.maxBytes", DEFAULT_MEMORY_MAX_BYTES, { min: 1, max: 1_000_000 }),
     writeMode,
+    ...(capture === undefined ? {} : { capture }),
     ...(embeddings === undefined ? {} : { embeddings }),
     ...(llm === undefined ? {} : { llm }),
     recallTool: { enabled: recallToolEnabled },

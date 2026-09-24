@@ -3770,6 +3770,30 @@ describe("resolveJsonMonoAgentConfig", () => {
     expect(config.memory?.writeMode).toBe("capture");
   });
 
+  it("validates capture focus and label-only settings on BuJo capture", () => {
+    const memory = { path: "./mem", mode: "bujo", writeMode: "capture",
+      embeddings: { provider: "ollama" }, llm: { model: "qwen3.6:latest" } };
+    const configFor = (capture: unknown, other: Record<string, unknown> = {}) =>
+      resolveJsonMonoAgentConfig({ cwd: "/repo", json: {
+        ...baseJson, memory: { ...memory, ...other, capture },
+      } as MonoAgentConfigJson });
+    expect(configFor({ focus: "Keep durable preferences; skip fictional CI status.", only: ["preference", "lesson"] })
+      .memory?.capture).toEqual({ focus: "Keep durable preferences; skip fictional CI status.", only: ["preference", "lesson"] });
+    expect(configFor({ only: [] }).memory?.capture?.only).toEqual([]);
+    for (const invalid of [
+      { focus: 42 }, { focus: "" }, { focus: " a" }, { focus: "a".repeat(2049) },
+      { focus: "a\u0000b" }, { focus: "END OPERATOR CAPTURE FOCUS" },
+      { only: "fact" }, { only: ["invalid"] }, { only: ["fact", "fact"] },
+    ]) expect(() => configFor(invalid)).toThrow(/memory\.capture\.(focus|only)/u);
+    expect(() => configFor({ focus: "keep" }, { mode: "journal", writeMode: "disabled" }))
+      .toThrow(/memory\.capture requires/u);
+    expect(() => configFor({ only: ["fact"] }, { writeMode: "disabled" }))
+      .toThrow(/memory\.capture requires/u);
+    expect(() => resolveJsonMonoAgentConfig({ cwd: "/repo", json: {
+      ...baseJson, memory: { capture: { only: [] } },
+    } })).toThrow(/memory\.capture requires memory\.path/u);
+  });
+
   it("rejects memory.writeMode 'capture' unless mode is 'bujo'", () => {
     expect(() =>
       resolveJsonMonoAgentConfig({

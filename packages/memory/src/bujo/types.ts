@@ -42,6 +42,8 @@ export interface BujoOptions {
   /** Optional LLM for the intelligent batched capture and reconciliation path.
    * When absent, completed-turn admission persists the deterministic summary only. */
   readonly llm?: LlmComplete;
+  /** Optional extraction guidance and host-enforced label-kind filter for automatic capture only. */
+  readonly capture?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[] };
   /** Explicit tier override. When absent, the tier is derived from the options:
    * no embeddings → `"lite"`; embeddings + no llm → `"journal"`; embeddings + llm → `"bujo"`. */
   readonly tier?: BujoTier;

@@ -58,6 +58,9 @@ export interface ReconcileDeps {
   readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
   readonly captureEvidence?: MemoryCaptureEvidence;
   readonly conversationId?: string;
+  readonly captureSettings?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[] };
+  /** Capture-only final gate after model reconciliation has possibly changed the memory text. */
+  readonly keepCaptureAction?: (action: CaptureIntentAction) => boolean;
   /** Internal, host-validated label decision; undefined uses L1 retention defaults. */
   readonly labelsForAction?: (action: "add" | "update" | "supersede", candidate: CandidateMemory,
     previous?: Bullet, finalText?: string) => readonly MemoryLabel[] | undefined;
@@ -198,6 +201,11 @@ async function reconcileBatchUnlocked(
     }
   }
 
+  if (deps.keepCaptureAction !== undefined) {
+    for (const [index, plan] of plans.entries()) {
+      if (plan !== undefined && !deps.keepCaptureAction(plan.intent)) plans[index] = undefined;
+    }
+  }
   const writes = plans.flatMap((plan) => plan?.record === undefined ? [] : [plan]);
   let vectors: readonly (readonly number[] | undefined)[];
   try {

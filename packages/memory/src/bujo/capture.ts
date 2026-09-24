@@ -1,5 +1,6 @@
 import { extractCapturePlanStrict } from "./capture-batch.js";
 import { captureLabels } from "./capture-labels.js";
+import { labelsOf } from "./labels.js";
 import {
   replayCaptureIntent,
   writeCaptureIntent,
@@ -55,14 +56,26 @@ async function captureTurnUnlocked(
     ...(deps.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: deps.captureSpeakerKind }),
     ...(deps.captureEvidence === undefined ? {} : { captureEvidence: deps.captureEvidence }),
     ...(deps.conversationId === undefined ? {} : { conversationId: deps.conversationId }),
-  });
+  }, deps.captureSettings?.focus);
   deps.abortSignal?.throwIfAborted();
+  const only = deps.captureSettings?.only;
+  // The extractor already host-validates labels; don't let unaccepted candidates
+  // influence reconcile decisions or persist unrelated graph nodes.
+  const selected = only === undefined ? extraction : {
+    ...extraction,
+    candidates: extraction.candidates.filter((candidate) => candidate.labels?.some((label) => only.includes(label.kind))),
+  };
   const createdAt = observedAt.toISOString();
   const labelContext = { ...deps, entityNames: new Map(extraction.entities.map((entity) => [entity.id, entity.name])) };
   let intentHandle: CaptureIntentHandle | undefined;
   let preparedActions: readonly CaptureIntentAction[] = [];
-  await reconcileBatch(extraction.candidates, {
+  await reconcileBatch(selected.candidates, {
     ...deps,
+    ...(only === undefined ? {} : { keepCaptureAction: (action: CaptureIntentAction): boolean => {
+      const bullet = action.kind === "supersede" ? action.afterNew.bullet
+        : action.kind === "noop" ? undefined : action.after.bullet;
+      return bullet !== undefined && labelsOf(bullet).some((label) => only.includes(label.kind));
+    } }),
     // Reconciliation must reuse the same host-owned observation sample; it
     // cannot observe a later wall clock or reinterpret relative-time anchors.
     now: () => observedAt,
@@ -74,7 +87,7 @@ async function captureTurnUnlocked(
     // SQLite/canonical transaction without improving durability.
     deferBatchCommit: true,
     beforeBatchCommit: (prepared) => {
-      const graph = graphForPreparedActions(extraction, prepared, createdAt);
+      const graph = graphForPreparedActions(selected, prepared, createdAt, only !== undefined);
       intentHandle = writeCaptureIntent(
         deps.root,
         prepared,
@@ -113,6 +126,7 @@ function graphForPreparedActions(
   extraction: Awaited<ReturnType<typeof extractCapturePlanStrict>>,
   prepared: Parameters<NonNullable<ReconcileDeps["beforeBatchCommit"]>>[0],
   createdAt: string,
+  filterGraph = false,
 ): GraphBatchInput {
   const byIndex = new Map(prepared.map((action) => [action.candidateIndex, action]));
   const associations = extraction.candidates.flatMap((candidate, index) => {
@@ -126,14 +140,17 @@ function graphForPreparedActions(
       createdAt,
     }));
   });
+  const keptEntities = new Set(associations.map((association) => association.entityId));
   return {
-    entities: extraction.entities.map((entity) => ({
+    entities: extraction.entities.filter((entity) => !filterGraph || keptEntities.has(entity.id)).map((entity) => ({
       id: entity.id,
       name: entity.name,
       ...(entity.type !== undefined ? { type: entity.type } : {}),
       createdAt,
     })),
-    relations: extraction.relations.map((relation) => ({ ...relation, createdAt })),
+    relations: extraction.relations.filter((relation) => !filterGraph
+      || (keptEntities.has(relation.src) && keptEntities.has(relation.dst)))
+      .map((relation) => ({ ...relation, createdAt })),
     associations,
   };
 }
