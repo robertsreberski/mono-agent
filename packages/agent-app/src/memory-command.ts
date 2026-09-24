@@ -27,6 +27,7 @@ import type {
   CompletedTurnIntakeInspection,
   LegacyReplayAdoptionResult,
   CurateProposal,
+  CurateDiscard,
   MemoryBundleExportErrorCode,
   MemoryBundleImportErrorCode,
 } from "@mono-agent/memory/bujo";
@@ -114,6 +115,8 @@ export interface RunMemoryCommandInput {
   readonly curateReject?: string;
   readonly model?: string;
   readonly dryRun?: boolean;
+  /** Host-injected fake memory model for isolated curation preparation tests. */
+  readonly curateLlm?: import("@mono-agent/memory/bujo").LlmComplete;
   readonly planPath?: string;
   readonly backupPath?: string;
   readonly bundlePath?: string;
@@ -2891,6 +2894,7 @@ interface CuratePlan {
   readonly model: string;
   readonly createdAt: string;
   readonly proposals: readonly CurateProposal[];
+  readonly discarded: readonly CurateDiscard[];
   readonly planDigest: string;
 }
 
@@ -2899,12 +2903,18 @@ function curatePlanDigest(plan: Omit<CuratePlan, "planDigest">): string {
 }
 
 function parseCuratePlan(value: unknown): CuratePlan {
-  if (!isObject(value) || !hasExactKeys(value, ["schemaVersion", "operation", "rootFingerprint", "sourceFingerprint", "model", "createdAt", "proposals", "planDigest"])
+  if (!isObject(value) || !hasExactKeys(value, ["schemaVersion", "operation", "rootFingerprint", "sourceFingerprint", "model", "createdAt", "proposals", "discarded", "planDigest"])
     || value.schemaVersion !== 1 || value.operation !== "curate" || !isSha256(value.rootFingerprint)
     || !isSha256(value.sourceFingerprint) || typeof value.model !== "string" || value.model.length > 160
     || typeof value.createdAt !== "string" || !isCanonicalIso(value.createdAt)
     || !isSha256(value.planDigest)
-    || !Array.isArray(value.proposals) || value.proposals.length > 4096) throw new Error("invalid curate plan");
+    || !Array.isArray(value.proposals) || value.proposals.length > 4096
+    || !Array.isArray(value.discarded) || value.discarded.length > 8192
+    || value.discarded.some((entry: unknown) => !isObject(entry) || !hasExactKeys(entry, ["id", "reason"])
+      || typeof entry.id !== "string" || (entry.id !== "unbound" && !MEMORY_ID_RE.test(entry.id))
+      || !["unknown-id", "duplicate-id", "invalid-proposal", "missing-proposal", "invalid-preview"].includes(String(entry.reason)))) {
+    throw new Error("invalid curate plan");
+  }
   const bujo = value.proposals as CurateProposal[];
   const ids = new Set<string>();
   for (const proposal of bujo) {
@@ -2933,6 +2943,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
     const root = bujo.resolveExplicitMemoryCurateRoot(resolve(context.cwd, memory.path));
     if (operation === "prepare") {
       const snapshot = bujo.inspectCurateSource(root, input.limit ?? 120);
+      bujo.previewCurateMutations(root, []);
       if (Buffer.byteLength(JSON.stringify(snapshot.lines), "utf8") > MAX_CURATE_PLAN_BYTES / 2) {
         throw new Error("curate source exceeds private plan bound");
       }
@@ -2945,19 +2956,36 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         return 0;
       }
       process.stderr.write(estimateText);
-      const { createConfiguredCurationLlm } = await import("./configured-agent.js");
-      const llm = await createConfiguredCurationLlm(context.config, input.model);
-      const proposals = await bujo.proposeCurate(snapshot, llm, memory.capture);
-      bujo.previewCurateMutations(root, proposals);
+      const llm = input.curateLlm
+        ?? await (await import("./configured-agent.js")).createConfiguredCurationLlm(context.config, input.model);
+      const suggested = await bujo.proposeCurate(snapshot, llm, memory.capture);
+      if (snapshot.fingerprint !== bujo.readBujoCanonicalSourceFingerprint(root)) throw new Error("source changed while preparing");
+      const proposals: CurateProposal[] = [];
+      const discarded: CurateDiscard[] = [...suggested.discarded];
+      // Common case costs one canonical preview; bisect only a rejected group.
+      // An invalid individual suggestion cannot discard the rest of a paid pass.
+      const admit = (group: readonly CurateProposal[]): void => {
+        if (group.length === 0) return;
+        try { bujo.previewCurateMutations(root, [...proposals, ...group]); proposals.push(...group); }
+        catch {
+          if (group.length === 1) { discarded.push({ id: group[0]!.source.id, reason: "invalid-preview" }); return; }
+          const middle = Math.floor(group.length / 2);
+          admit(group.slice(0, middle)); admit(group.slice(middle));
+        }
+      };
+      admit(suggested.proposals);
       if (snapshot.fingerprint !== bujo.readBujoCanonicalSourceFingerprint(root)) throw new Error("source changed while preparing");
       const planPath = await canonicalProspectivePath(resolve(context.cwd, input.planPath!));
       if (isSameOrUnderDirectory(root, planPath)) throw new Error("plan cannot be inside memory root");
       const payload = { schemaVersion: 1, operation: "curate", rootFingerprint: memoryRootFingerprint(root),
-        sourceFingerprint: snapshot.fingerprint, model, createdAt: new Date().toISOString(), proposals } as const;
+        sourceFingerprint: snapshot.fingerprint, model, createdAt: new Date().toISOString(), proposals, discarded } as const;
       const plan: CuratePlan = { ...payload, planDigest: curatePlanDigest(payload) };
       await writePrivateJsonExclusive(planPath, plan, MAX_CURATE_PLAN_BYTES);
-      write(input.json, { operation: "curate-prepare", status: "prepared", planPath, count: proposals.length },
-        () => `Curate plan prepared: ${proposals.length} proposals at ${planPath}. Review before applying.\n`);
+      const discardedByReason = Object.fromEntries([...new Set(discarded.map(({ reason }) => reason))].map((reason) => [reason,
+        discarded.filter((item) => item.reason === reason).length]));
+      write(input.json, { operation: "curate-prepare", status: "prepared", planPath, count: proposals.length,
+        discarded: discarded.length, discardedByReason },
+        () => `Curate plan prepared: ${proposals.length} proposals, ${discarded.length} discarded (${JSON.stringify(discardedByReason)}) at ${planPath}. Review before applying.\n`);
       return 0;
     }
     if (operation === "review" || operation === "apply") {
@@ -2996,8 +3024,9 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
           if (item.accepted) count.accepted++;
           counts[key] = count;
         }
-        write(input.json, { operation: "curate-review", counts, examples: plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })) },
-          () => `Curate review: ${JSON.stringify(counts)}\nExamples: ${JSON.stringify(plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })))}\nUse --accept drop:generic-advice,label:* or --reject id:<id>; review the private plan before applying.\n`);
+        write(input.json, { operation: "curate-review", counts, discarded: plan.discarded,
+          examples: plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })) },
+          () => `Curate review: ${JSON.stringify(counts)}\nDiscarded suggestions (${plan.discarded.length}): ${JSON.stringify(plan.discarded.slice(0, 20))}${plan.discarded.length > 20 ? " (more in private plan)" : ""}\nExamples: ${JSON.stringify(plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })))}\nUse --accept drop:generic-advice,label:* or --reject id:<id>; review the private plan before applying.\n`);
         return 0;
       }
       // The package checks freshness under the writer lease. An interrupted root-swap

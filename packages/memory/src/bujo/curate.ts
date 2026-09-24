@@ -38,6 +38,9 @@ export interface CurateProposal {
   readonly mergeEntity?: { readonly from: string; readonly to: string };
   readonly accepted: boolean;
 }
+export type CurateDiscardReason = "unknown-id" | "duplicate-id" | "invalid-proposal" | "missing-proposal" | "invalid-preview";
+export interface CurateDiscard { readonly id: string; readonly reason: CurateDiscardReason }
+export interface CurateSuggestionResult { readonly proposals: readonly CurateProposal[]; readonly discarded: readonly CurateDiscard[] }
 export interface CurateSnapshot { readonly fingerprint: string; readonly lines: readonly CurateLine[]; readonly entityNames: readonly { readonly id: string; readonly name: string }[] }
 function hash(text: string): string { return createHash("sha256").update(text).digest("hex"); }
 
@@ -122,8 +125,9 @@ export function curateEstimate(snapshot: CurateSnapshot, options: CuratePromptOp
   return { lines: snapshot.lines.length, calls, inputTokens, outputTokens: calls * 1600, cost: "unknown" as const };
 }
 
-export async function proposeCurate(snapshot: CurateSnapshot, llm: LlmComplete, options: CuratePromptOptions = {}): Promise<readonly CurateProposal[]> {
+export async function proposeCurate(snapshot: CurateSnapshot, llm: LlmComplete, options: CuratePromptOptions = {}): Promise<CurateSuggestionResult> {
   const output: CurateProposal[] = [];
+  const discarded: CurateDiscard[] = [];
   const byId = new Map(snapshot.lines.map((line) => [line.id, line]));
   for (let offset = 0; offset < snapshot.lines.length; offset += BATCH) {
     const batch = snapshot.lines.slice(offset, offset + BATCH);
@@ -135,11 +139,24 @@ export async function proposeCurate(snapshot: CurateSnapshot, llm: LlmComplete, 
     if (!Array.isArray(parsed) || parsed.length !== batch.length) throw new Error("memory-curate: incomplete response");
     const seen = new Set<string>();
     for (const item of parsed) {
-      if (item === null || typeof item !== "object" || Array.isArray(item)) throw new Error("memory-curate: invalid response");
+      if (item === null || typeof item !== "object" || Array.isArray(item)) {
+        discarded.push({ id: "unbound", reason: "invalid-proposal" });
+        continue;
+      }
       const entry = item as Record<string, unknown>;
-      if (Object.keys(entry).some((key) => !["id", "action", "reason", "text", "labels", "mergeEntity"].includes(key)) || typeof entry.id !== "string"
-        || seen.has(entry.id) || !batch.some((line) => line.id === entry.id)) throw new Error("memory-curate: invalid response id");
+      if (typeof entry.id !== "string" || !batch.some((line) => line.id === entry.id)) {
+        discarded.push({ id: "unbound", reason: "unknown-id" });
+        continue;
+      }
+      if (seen.has(entry.id)) {
+        discarded.push({ id: entry.id, reason: "duplicate-id" });
+        continue;
+      }
       seen.add(entry.id);
+      if (Object.keys(entry).some((key) => !["id", "action", "reason", "text", "labels", "mergeEntity"].includes(key))) {
+        discarded.push({ id: entry.id, reason: "invalid-proposal" });
+        continue;
+      }
       const source = byId.get(entry.id)!;
       const proposal: CurateProposal = { source, action: entry.action as CurateAction, accepted: false,
         ...(entry.reason === undefined ? {} : { reason: entry.reason as CurateReason }),
@@ -150,11 +167,16 @@ export async function proposeCurate(snapshot: CurateSnapshot, llm: LlmComplete, 
             ? { ...label, attribution: "assistant-inferred" } : label) as MemoryLabel[]
           : entry.labels as MemoryLabel[] }),
         ...(entry.mergeEntity === undefined ? {} : { mergeEntity: entry.mergeEntity as { from: string; to: string } }) };
-      validateCurateProposal(proposal);
-      output.push(proposal);
+      try {
+        validateCurateProposal(proposal);
+        output.push(proposal);
+      } catch {
+        discarded.push({ id: source.id, reason: "invalid-proposal" });
+      }
     }
+    for (const line of batch) if (!seen.has(line.id)) discarded.push({ id: line.id, reason: "missing-proposal" });
   }
-  return output;
+  return { proposals: output, discarded };
 }
 
 function allDailyPaths(root: string): string[] {

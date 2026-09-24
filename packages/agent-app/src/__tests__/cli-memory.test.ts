@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveAppTraceRegistryDir } from "../app-config.js";
 import { parseCliArgs, renderHelp, renderHelpTopic, runCli } from "../cli.js";
+import { runMemoryCommand } from "../memory-command.js";
 
 /** Resolve a help topic to its rendered detail text. */
 function helpTopicText(topic: string): string {
@@ -2056,7 +2057,7 @@ describe("memory curate review safety", () => {
     const planPath = join(dir, "curation-plan.json");
     const plan = { schemaVersion: 1, operation: "curate", rootFingerprint: createHash("sha256").update(await realpath(memoryRoot)).digest("hex"),
       sourceFingerprint: bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot), model: "fake", createdAt: "2026-07-12T10:00:00.000Z",
-      proposals: [{ source: bujoMemory.inspectCurateSource(memoryRoot).lines[0]!, action: "drop", reason: "generic-advice", accepted: false }] };
+      proposals: [{ source: bujoMemory.inspectCurateSource(memoryRoot).lines[0]!, action: "drop", reason: "generic-advice", accepted: false }], discarded: [] };
     const planDigest = createHash("sha256").update(JSON.stringify({ ...plan, proposals: plan.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
     await writeFile(planPath, JSON.stringify({ ...plan, planDigest }), { mode: 0o600 });
     const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
@@ -2110,7 +2111,7 @@ describe("curate crash recovery CLI", { timeout: 30_000 }, () => {
       reason: "generic-advice" as const, accepted: true };
     const payload = { schemaVersion: 1, operation: "curate", rootFingerprint,
       sourceFingerprint: bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot), model: "fake",
-      createdAt: "2026-07-12T10:00:00.000Z", proposals: [proposal] };
+      createdAt: "2026-07-12T10:00:00.000Z", proposals: [proposal], discarded: [] };
     const planDigest = createHash("sha256").update(JSON.stringify({ ...payload,
       proposals: payload.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
     await writeFile(planPath, JSON.stringify({ ...payload, planDigest }), { mode: 0o600 });
@@ -2150,7 +2151,7 @@ describe("curate private plan bound", () => {
       proposals: Array.from({ length: 110 }, (_, index) => ({ action: "drop", reason: "generic-advice", accepted: false,
         source: { id: `fictional-${index}`, file: "daily/2026-07-12.md", line: index + 1, text: "Morgan example.",
           textHash: createHash("sha256").update("Morgan example.").digest("hex"), createdAt: "2026-07-12T10:00:00.000Z",
-          refs: Array.from({ length: 15 }, (_, offset) => `ref-${offset}-${"x".repeat(700)}`) } })) };
+          refs: Array.from({ length: 15 }, (_, offset) => `ref-${offset}-${"x".repeat(700)}`) } })), discarded: [] };
     const planDigest = createHash("sha256").update(JSON.stringify({ ...payload,
       proposals: payload.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
     await writeFile(planPath, JSON.stringify({ ...payload, planDigest }), { mode: 0o600 });
@@ -2160,5 +2161,40 @@ describe("curate private plan bound", () => {
     ]))));
     expect(result.code, result.stderr).toBe(0);
     expect(JSON.parse(await readFile(planPath, "utf8")).proposals.every((proposal: { accepted: boolean }) => proposal.accepted)).toBe(true);
+  });
+});
+
+describe("curate paid-run isolation", () => {
+  it("records individual invalid model proposals without losing valid siblings", async () => {
+    const memoryRoot = join(await tempDir(), "memory"); await mkdir(memoryRoot, { recursive: true });
+    for (const [index, text] of ["Generic example advice.", "Morgan used Maple as an alias.", "Morgan used another alias."].entries()) {
+      bujoMemory.appendBullet(memoryRoot, { id: `fictional-${index}`, type: "note", status: "open", text,
+        salience: 0.5, isInsight: false, createdAt: "2026-07-12T10:00:00.000Z", refs: [] },
+      new Date("2026-07-12T10:00:00.000Z"));
+    }
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const planPath = join(dir, "curate-private-plan.json");
+    let calls = 0;
+    const prepared = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath, json: true, strict: false,
+      curateLlm: { id: "fake", complete: async () => { calls++; return JSON.stringify([
+        { id: "fictional-0", action: "drop", reason: "generic-advice" },
+        { id: "fictional-1", action: "label", labels: [{ v: 1, kind: "fact", entityId: "person:morgan", key: "preferred_name",
+          value: { type: "text", text: "Maple" }, attribution: "user-stated" }] },
+        { id: "fictional-2", action: "merge", mergeEntity: { from: "person:unlisted", to: "person:absent" } },
+      ]); } },
+    }))));
+    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(calls).toBe(1);
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ count: 1, discarded: 2,
+      discardedByReason: { "invalid-proposal": 1, "invalid-preview": 1 } });
+    const plan = JSON.parse(await readFile(planPath, "utf8"));
+    expect(plan.proposals.map((proposal: { source: { id: string } }) => proposal.source.id)).toEqual(["fictional-0"]);
+    expect(plan.discarded).toEqual([{ id: "fictional-1", reason: "invalid-proposal" },
+      { id: "fictional-2", reason: "invalid-preview" }]);
+    const reviewed = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "curate", "review", "--plan", planPath, "--json"]))));
+    expect(JSON.parse(reviewed.stdout).discarded).toEqual(plan.discarded);
   });
 });

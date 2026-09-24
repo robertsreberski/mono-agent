@@ -28,6 +28,7 @@ describe("curation preparation", () => {
     expect(() => validateCurateProposal({ source, action: "label", accepted: true, labels: [{ v: 1, kind: "lesson", scope: "agent", verified: true }] })).toThrow();
     expect(() => validateCurateProposal({ source, action: "label", accepted: true, labels: [{ v: 1, kind: "lesson", scope: "agent", verified: false }] })).toThrow();
     expect(() => validateCurateProposal({ source, action: "label", accepted: true, labels: [{ v: 1, kind: "fact", entityId: "person:maple", key: "preferred_name", value: { type: "text", text: "Morgan" }, attribution: "unknown" }] })).toThrow();
+    expect(() => validateCurateProposal({ source, action: "label", accepted: true, labels: [{ v: 1, kind: "fact", entityId: "person:morgan", key: "preferred_name", value: { type: "text", text: "Morgan" }, attribution: "user-stated" }] })).toThrow();
     expect(() => validateCurateProposal({ source, action: "rewrite", text: "Unsafe\ntext", accepted: true })).toThrow();
     seed(path, "fictional-b", "Morgan visited yesterday.");
     const dated = inspectCurateSource(path).lines.find(({ id }) => id === "fictional-b")!;
@@ -44,15 +45,17 @@ describe("curation preparation", () => {
       return JSON.stringify([{ id: "fictional-a", action: "drop", reason: "generic-advice" }, { id: "fictional-b", action: "keep" }]);
     } });
     expect(calls).toBe(1);
-    expect(proposals).toHaveLength(2);
-    expect(proposals[0]).toMatchObject({ accepted: false, reason: "generic-advice" });
-    await expect(proposeCurate(snapshot, { id: "fake", complete: async () => JSON.stringify([{ id: "outside", action: "keep" }, { id: "fictional-b", action: "keep" }]) })).rejects.toThrow();
+    expect(proposals.proposals).toHaveLength(2);
+    expect(proposals.proposals[0]).toMatchObject({ accepted: false, reason: "generic-advice" });
+    const partlyInvalid = await proposeCurate(snapshot, { id: "fake", complete: async () => JSON.stringify([{ id: "outside", action: "keep" }, { id: "fictional-b", action: "keep" }]) });
+    expect(partlyInvalid.proposals.map(({ source }) => source.id)).toEqual(["fictional-b"]);
+    expect(partlyInvalid.discarded).toEqual([{ id: "unbound", reason: "unknown-id" }, { id: "fictional-a", reason: "missing-proposal" }]);
     const labelled = await proposeCurate(snapshot, { id: "fake", complete: async () => JSON.stringify([
       { id: "fictional-a", action: "keep" }, { id: "fictional-b", action: "label", labels: [{ v: 1, kind: "fact", entityId: "person:morgan",
         key: "preferred_name", value: { type: "text", text: "Morgan" }, attribution: "document" }] },
     ]) });
-    expect(labelled[1]?.labels?.[0]).toMatchObject({ attribution: "assistant-inferred" });
-    expect(() => validateCurateProposal({ ...labelled[1]!, labels: [{ ...labelled[1]!.labels![0]!, attribution: "document" }] })).toThrow();
+    expect(labelled.proposals[1]?.labels?.[0]).toMatchObject({ attribution: "assistant-inferred" });
+    expect(() => validateCurateProposal({ ...labelled.proposals[1]!, labels: [{ ...labelled.proposals[1]!.labels![0]!, attribution: "document" }] })).toThrow();
   });
 });
 

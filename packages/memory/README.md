@@ -524,10 +524,12 @@ CompletedTurnIntakeInspection
 CompletedTurnIntakeItem
 CompletedTurnIntakeSnapshot
 CurateAction
+CurateDiscard
 CurateLine
 CurateProposal
 CurateReason
 CurateSnapshot
+CurateSuggestionResult
 DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS
 DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT
 ExplicitForgetPreview
