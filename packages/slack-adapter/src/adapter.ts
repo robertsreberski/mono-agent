@@ -3908,6 +3908,7 @@ function buildAgentRequest(
     text,
     trigger: event.trigger,
     abortSignal,
+    captureSpeakerKind: event.userId === undefined ? "unknown" : "human-turn",
     metadata: { slack: metadata },
   };
   if (event.teamId !== undefined) {

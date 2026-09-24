@@ -2370,6 +2370,7 @@ describe("SlackAdapter", () => {
       eventId: "Ev1",
       teamId: "T1",
       userId: "UUSER1",
+      captureSpeakerKind: "human-turn",
       text: "hello agent",
       trigger: "direct",
       metadata: {

@@ -71,6 +71,21 @@ async function postTurn(
 }
 
 describe("startTuiAdapter", () => {
+  it.each([false, true])("stamps a %s key loopback turn as human regardless of body metadata", async (withKey) => {
+    let observed: AgentRequestBase | undefined;
+    running = await startTuiAdapter({
+      ...(withKey ? { apiKey: "test-owner" } : {}),
+      responder: scriptedResponder(async (request) => { observed = request; return { text: "ok" }; }),
+    });
+    const response = await postTurn(running.baseUrl, {
+      conversationId: "web:one", text: "hello", client: "web", captureSpeakerKind: "trigger",
+      metadata: { source: "web", captureSpeakerKind: "trigger" },
+    }, withKey ? { authorization: "Bearer test-owner" } : {});
+    expect(response.status).toBe(200);
+    await readFrames(response);
+    expect(observed?.captureSpeakerKind).toBe("human-turn");
+  });
+
   it("advertises and protects manual compaction without returning the summary", async () => {
     const compactConversation = vi.fn(async () => ({ status: "succeeded" as const, trigger: "manual" as const,
       operationId: "c-1", tokensBefore: 1500, tokensAfter: 600, summary: "PRIVATE SUMMARY" }));
@@ -2221,13 +2236,19 @@ describe("startTuiAdapter", () => {
     });
 
     const boundPort = rejectedBoundPort(rejected);
+    let observed: AgentRequestBase | undefined;
     running = await startTuiAdapter({
       host: "0.0.0.0",
       port: boundPort,
       allowNonLoopback: true,
-      responder: scriptedResponder(async () => ({ text: "ok" })),
+      responder: scriptedResponder(async (request) => { observed = request; return { text: "ok" }; }),
     });
     expect(running.port).toBe(boundPort);
+    await readFrames(await postTurn(running.baseUrl.replace("0.0.0.0", "127.0.0.1"), {
+      conversationId: "web:nonloopback", text: "hello", client: "web", captureSpeakerKind: "human-turn",
+      metadata: { source: "web", captureSpeakerKind: "human-turn" },
+    }));
+    expect(observed?.captureSpeakerKind).toBe("unknown");
   });
 
   it("truncates oversized event frames instead of streaming them verbatim", async () => {

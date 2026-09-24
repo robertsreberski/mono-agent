@@ -194,6 +194,8 @@ await store.persistCompletedTurn({
   conversationId: "conv-1",
   summary: "Host-observed completed turn.\nUser: Be concise.\nAssistant: Understood.",
   captureText: "User: Be concise.\nAssistant: Understood.",
+  // Only a host that verified the outer human speaker may set this:
+  captureSpeakerKind: "human-turn",
 });
 ```
 

@@ -291,6 +291,7 @@ export function buildAgentRequest(
     updateId: update.update_id,
     text: input.text,
     abortSignal,
+    captureSpeakerKind: message.from?.id !== undefined && message.from.is_bot !== true ? "human-turn" : "unknown",
     surface: surfaceFromTelegramChat(message.chat, maxMessageChars),
     metadata: {
       telegram: telegramMetadata,

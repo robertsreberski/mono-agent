@@ -1,4 +1,4 @@
-import { classifyNotifySuppression, type AgentMessageSender } from "@mono-agent/agent-contracts";
+import { classifyNotifySuppression, type AgentMessageSender, type MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
 import type { HistoryMessage } from "../context/index.js";
@@ -81,6 +81,7 @@ export async function persistSuccessfulMemory(
   persistenceOptions: {
     readonly runId: string;
     readonly source?: string;
+    readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
     readonly sender?: AgentMessageSender;
     readonly emit?: (event: RuntimeEventLike) => void;
   },
@@ -99,6 +100,8 @@ export async function persistSuccessfulMemory(
           runId: persistenceOptions.runId,
           conversationId,
           summary,
+          ...(persistenceOptions.captureSpeakerKind === undefined || persistenceOptions.captureSpeakerKind === "unknown"
+            ? {} : { captureSpeakerKind: persistenceOptions.captureSpeakerKind }),
           ...(mode === "capture"
             ? { captureText: captureTurnText(userMessage, assistantText, persistenceOptions) }
             : {}),
@@ -132,7 +135,7 @@ function deterministicHostSummary(
   assistantText: string,
   options: MemoryTurnOptions = {},
 ): string {
-  if (isTriggerSource(options.source)) {
+  if (isTriggerSource(options.source) || options.captureSpeakerKind === "trigger") {
     return [
       "Host-observed completed trigger turn.",
       `Assistant: ${compactOneLine(assistantText, 240)}`,
@@ -151,11 +154,12 @@ function captureTurnText(
   options: MemoryTurnOptions = {},
 ): string {
   // Richer than the compacted host summary: the distiller wants the real turn content.
-  if (isTriggerSource(options.source)) {
+  if (isTriggerSource(options.source) || options.captureSpeakerKind === "trigger") {
     // Do not include the untrusted trigger body (especially webhook payloads).
     // The source label gives the extractor the missing speaker context without
     // pretending that a scheduled instruction was a human statement.
-    const trigger = options.source === "cron" ? "Scheduled task trigger" : "Webhook trigger";
+    const trigger = options.source === "cron" ? "Scheduled task trigger"
+      : options.source === "webhook" ? "Webhook trigger" : "Automated trigger";
     return `${trigger} (not a user message; trigger text omitted):\nAssistant: ${assistantText}`;
   }
   return `User${speakerSuffix(options.sender)}: ${userMessage}\nAssistant: ${assistantText}`;
@@ -174,6 +178,7 @@ function speakerSuffix(sender: AgentMessageSender | undefined): string {
 
 interface MemoryTurnOptions {
   readonly source?: string;
+  readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
   readonly sender?: AgentMessageSender;
 }
 
@@ -197,7 +202,7 @@ const TRIVIAL_MEMORY_FILLER_TOKENS = new Set([
 function shouldSkipMemoryPersistence(
   userMessage: string,
   assistantText: string,
-  options: { readonly source?: string } = {},
+  options: MemoryTurnOptions = {},
 ): boolean {
   return isNothingToReportSentinel(assistantText) || isTrivialMemoryTurn(userMessage, assistantText, options);
 }
@@ -213,9 +218,10 @@ function isNothingToReportSentinel(assistantText: string): boolean {
 function isTrivialMemoryTurn(
   userMessage: string,
   assistantText: string,
-  options: { readonly source?: string } = {},
+  options: MemoryTurnOptions = {},
 ): boolean {
-  const candidate = isTriggerSource(options.source) ? assistantText : `${userMessage} ${assistantText}`;
+  const candidate = isTriggerSource(options.source) || options.captureSpeakerKind === "trigger"
+    ? assistantText : `${userMessage} ${assistantText}`;
   const compact = candidate.replace(/\s+/gu, " ").trim();
   if (compact.length === 0 || compact.length > MAX_TRIVIAL_MEMORY_TURN_CHARS) {
     return false;

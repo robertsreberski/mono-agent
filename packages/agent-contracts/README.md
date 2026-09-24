@@ -401,6 +401,7 @@ MCP_APPS_EXTENSION_ID
 MCP_APP_RESOURCE_MIME_TYPE
 MCP_APP_SUPPORTED_VERSIONS
 MemoryBlock
+MemoryCaptureSpeakerKind
 MemoryCompletedTurn
 MemoryCompletedTurnAdmissionStatus
 MemoryCompletedTurnResult

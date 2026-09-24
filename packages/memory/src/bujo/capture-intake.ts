@@ -74,6 +74,7 @@ interface IntakePayload {
   readonly conversationId: string;
   readonly summary: string;
   readonly captureText?: string;
+  readonly captureSpeakerKind?: "human-turn" | "trigger";
 }
 
 interface PendingRecord extends IntakePayload {
@@ -364,6 +365,7 @@ export class CompletedTurnIntakeManager {
       conversationId: payload.conversationId,
       summary: payload.summary,
       ...(payload.captureText === undefined ? {} : { captureText: payload.captureText }),
+      ...(payload.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: payload.captureSpeakerKind }),
       admittedAt,
       revision: 0,
       attempt: 0,
@@ -924,6 +926,7 @@ export function retryCompletedTurnIntake(
         conversationId: located.record.conversationId,
         summary: located.record.summary,
         ...(located.record.captureText === undefined ? {} : { captureText: located.record.captureText }),
+        ...(located.record.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: located.record.captureSpeakerKind }),
         admittedAt: located.record.admittedAt,
         revision: located.record.revision + 1,
         attempt: 0,
@@ -1700,6 +1703,7 @@ function moveToDead(
     conversationId: source.record.conversationId,
     summary: source.record.summary,
     ...(source.record.captureText === undefined ? {} : { captureText: source.record.captureText }),
+    ...(source.record.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: source.record.captureSpeakerKind }),
     admittedAt: source.record.admittedAt,
     revision: source.record.revision + 1,
     attempt,
@@ -1853,8 +1857,10 @@ function validateRecord(value: unknown, state: IntakeState, expectedId: string):
     conversationId: value.conversationId as string,
     summary: value.summary as string,
     ...(value.captureText === undefined ? {} : { captureText: value.captureText as string }),
+    ...(value.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: value.captureSpeakerKind as "human-turn" | "trigger" }),
   });
-  if (hashPayload(payload) !== value.payloadHash || idFor(payload.runId) !== value.id) {
+  if ((value.captureSpeakerKind !== undefined && value.captureSpeakerKind !== "human-turn" && value.captureSpeakerKind !== "trigger")
+    || hashPayload(payload) !== value.payloadHash || idFor(payload.runId) !== value.id) {
     throw new Error("memory-bujo: completed-turn intake payload commitment is invalid.");
   }
   if (typeof value.summaryWritten !== "boolean") {
@@ -1862,7 +1868,7 @@ function validateRecord(value: unknown, state: IntakeState, expectedId: string):
   }
   if (state === "pending") {
     if (!hasOnlyKeys(value, [
-      "schemaVersion", "state", "id", "payloadHash", "runId", "conversationId", "summary", "captureText",
+      "schemaVersion", "state", "id", "payloadHash", "runId", "conversationId", "summary", "captureText", "captureSpeakerKind",
       "admittedAt", "revision", "attempt", "nextAttemptAt", "summaryWritten", "lastError",
     ]) || !canonicalTimestamp(value.nextAttemptAt)
       || (value.lastError !== undefined && !validFailureCode(value.lastError))) {
@@ -1871,7 +1877,7 @@ function validateRecord(value: unknown, state: IntakeState, expectedId: string):
     return value as unknown as PendingRecord;
   }
   if (!hasOnlyKeys(value, [
-    "schemaVersion", "state", "id", "payloadHash", "runId", "conversationId", "summary", "captureText",
+    "schemaVersion", "state", "id", "payloadHash", "runId", "conversationId", "summary", "captureText", "captureSpeakerKind",
     "admittedAt", "revision", "attempt", "deadAt", "summaryWritten", "lastError",
   ]) || !canonicalTimestamp(value.deadAt) || !validFailureCode(value.lastError)) {
     throw new Error("memory-bujo: completed-turn dead letter is malformed.");
@@ -1880,7 +1886,7 @@ function validateRecord(value: unknown, state: IntakeState, expectedId: string):
 }
 
 function validatePayload(value: MemoryCompletedTurn): IntakePayload {
-  if (!isRecord(value) || !hasOnlyKeys(value, ["runId", "conversationId", "summary", "captureText"])) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["runId", "conversationId", "summary", "captureText", "captureSpeakerKind"])) {
     throw new Error("memory-bujo: completed-turn payload has unknown or missing fields.");
   }
   const runId = boundedText(value.runId, "runId", MAX_RUN_ID_BYTES, false);
@@ -1893,7 +1899,14 @@ function validatePayload(value: MemoryCompletedTurn): IntakePayload {
   if (value.captureText !== undefined) {
     captureText = boundedText(value.captureText, "captureText", MAX_CAPTURE_TEXT_BYTES, true);
   }
-  return { runId, conversationId, summary, ...(captureText === undefined ? {} : { captureText }) };
+  const captureSpeakerKind = value.captureSpeakerKind;
+  if (captureSpeakerKind !== undefined && captureSpeakerKind !== "unknown"
+    && captureSpeakerKind !== "human-turn" && captureSpeakerKind !== "trigger") {
+    throw new Error("memory-bujo: completed-turn captureSpeakerKind is invalid.");
+  }
+  // Unknown preserves the exact pre-upgrade payload hash for a retried run id.
+  return { runId, conversationId, summary, ...(captureText === undefined ? {} : { captureText }),
+    ...(captureSpeakerKind === undefined || captureSpeakerKind === "unknown" ? {} : { captureSpeakerKind }) };
 }
 
 function boundedText(value: unknown, label: string, maxBytes: number, allowLayoutWhitespace: boolean): string {
@@ -1906,6 +1919,7 @@ function payloadOf(record: PendingRecord | DeadRecord): MemoryCompletedTurn {
     conversationId: record.conversationId,
     summary: record.summary,
     ...(record.captureText === undefined ? {} : { captureText: record.captureText }),
+    ...(record.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: record.captureSpeakerKind }),
   };
 }
 

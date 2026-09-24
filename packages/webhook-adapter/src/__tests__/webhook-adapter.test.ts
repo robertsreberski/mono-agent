@@ -67,6 +67,23 @@ function sparseReplyParts(length: number): readonly AgentReplyPart[] {
 }
 
 describe("Webhook adapter", () => {
+  it("stamps trigger provenance despite a client-supplied human source", async () => {
+    let seen: Parameters<AgentResponder["respond"]>[0] | undefined;
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1", port: 0,
+      responder: { async respond(request) { seen = request; return { text: "ok" }; } },
+    });
+    try {
+      const response = await fetch(server.invokeUrl, postJson({ text: "hello", mode: "sync",
+        metadata: { source: "web", captureSpeakerKind: "human-turn" } }));
+      expect(response.status).toBe(200);
+      expect(seen?.captureSpeakerKind).toBe("trigger");
+      expect(seen?.metadata?.webhook).toMatchObject({ payloadMetadata: { source: "web", captureSpeakerKind: "human-turn" } });
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("keeps sync/status text exact and exposes bounded sanitized rich-part failures", async () => {
     const warn = vi.fn();
     const exactText = "  {\"answer\":true}\n";

@@ -13,6 +13,7 @@ import type {
   AgentSurface,
   AgentToolEnvironment,
   MemoryStore,
+  MemoryCaptureSpeakerKind,
 } from "@mono-agent/agent-contracts";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import type {
@@ -156,6 +157,8 @@ export interface InMemoryHistoryStoreOptions {
 }
 
 export interface AgentHarnessRequest {
+  /** Host-stamped memory provenance; never inferred from metadata.source. */
+  readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
   readonly onLiveInputOwnership?: (event: AgentLiveInputOwnership) => void;
   readonly conversationId: string;
   readonly userMessage: string;

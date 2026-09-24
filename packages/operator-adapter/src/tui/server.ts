@@ -1480,6 +1480,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       text: body.text,
       abortSignal: controller.signal,
       metadata: requestMetadata(body, requestId),
+      // Provenance is stamped after authorization from server bind/key state,
+      // never from the client-selected display label or request metadata.
+      captureSpeakerKind: apiKey !== undefined || !boundNonLoopback ? "human-turn" : "unknown",
       ...(target === undefined ? {} : {
         onLiveInputOwnership: (event) => {
           if (target?.state === "closed") return;

@@ -1090,6 +1090,7 @@ function startRun(
         conversationId: job.conversationId ?? `cron:${job.id}`,
         text: preflightPromptText(job.prompt, handoff.input),
         abortSignal: controller.signal,
+        captureSpeakerKind: "trigger",
         ...(job.notify === true ? toReplyTarget(notifyConversationId) : {}),
         metadata: {
           cron: {

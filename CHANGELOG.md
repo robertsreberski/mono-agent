@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add optional, host-verified speaker provenance to completed-turn memory
+  admission. Keep legacy retries byte-compatible and treat absent or direct
+  programmatic origins as unknown; this does not yet emit typed graph facts.
 - Let `Bash` and `Exec` use a `workdir` under the configured
   `tools.filesystem` roots when the sandbox is off, matching the file tools.
   Workdirs outside every allowed root, or symlinks escaping one, stay denied.

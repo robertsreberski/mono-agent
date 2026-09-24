@@ -38,6 +38,8 @@ await store.persistCompletedTurn({
   conversationId: "conversation-id",
   summary: "The host's deterministic summary",
   captureText: "The completed turn text approved for capture",
+  // Optional, only if the host verified this outer speaker:
+  captureSpeakerKind: "human-turn",
 });
 ```
 

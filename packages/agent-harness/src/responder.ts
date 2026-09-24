@@ -265,6 +265,7 @@ export function createAgentResponder(options: {
       ...(request.onLiveInputOwnership === undefined ? {} : { onLiveInputOwnership: request.onLiveInputOwnership }),
       abortSignal: request.abortSignal,
       ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
+      ...(request.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: request.captureSpeakerKind }),
       ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
       ...(request.toolEnvironment === undefined ? {} : { toolEnvironment: request.toolEnvironment }),
       ...(request.sender === undefined ? {} : { sender: request.sender }),
