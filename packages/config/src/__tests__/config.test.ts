@@ -2844,7 +2844,7 @@ describe("resolveJsonMonoAgentConfig", () => {
       cwd: "/repo",
       json: {
         ...baseJson,
-        memory: { path: "memory", mode: "journal", embeddings: { provider: "ollama", model: "bge-m3:latest", instructions } },
+        memory: { path: "memory", mode: "journal", embeddings: { provider: "ollama", model: "bge-m3:latest", instructions: instructions as never } },
       },
     });
     expect(load("none").memory?.embeddings?.instructions).toBe("none");
