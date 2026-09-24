@@ -104,6 +104,12 @@ describe("memory bundle error classification", () => {
   });
 
   it("preserves typed import prepare and apply codes", () => {
+    expect(classifyImportPrepareFailure(bujoMemory.MemoryBundleImportError,
+      new bujoMemory.MemoryBundleImportError("import_facts_not_supported")))
+      .toBe("import_facts_not_supported");
+    expect(classifyImportApplyFailure(bujoMemory,
+      new bujoMemory.MemoryBundleImportError("import_facts_not_supported")))
+      .toEqual(["import_facts_not_supported", false, undefined]);
     expect(classifyImportPrepareFailure(
       bujoMemory.MemoryBundleImportError,
       new bujoMemory.MemoryBundleImportError("import_derived_drift"),

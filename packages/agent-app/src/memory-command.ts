@@ -366,6 +366,7 @@ type MemoryBundleFailureCode =
   | "import_usage"
   | "import_config_invalid"
   | "import_bundle_invalid"
+  | "import_facts_not_supported"
   | "import_derived_drift"
   | "import_conflict"
   | "import_prepare_failed"
@@ -393,6 +394,7 @@ const MEMORY_BUNDLE_FAILURE_MESSAGES: Readonly<Record<MemoryBundleFailureCode, s
   import_usage: "Memory import arguments are invalid.",
   import_config_invalid: "Memory import requires a valid private configuration.",
   import_bundle_invalid: "The bundle failed verification; the memory store was not changed.",
+  import_facts_not_supported: "Importing or merging a non-empty typed-fact ledger is not supported yet; the memory store was not changed.",
   import_derived_drift: "Importing these entities would remove derived associations from existing memories; re-run with --accept-derived-association-drift to proceed.",
   import_conflict: "Incoming memory ids already exist with different content; re-run with --on-conflict skip to keep this store's versions.",
   import_prepare_failed: "Import-plan preparation failed without changing the memory store.",
@@ -716,6 +718,8 @@ export function classifyImportPrepareFailure(
   switch (code) {
     case "import_derived_drift":
       return "import_derived_drift";
+    case "import_facts_not_supported":
+      return "import_facts_not_supported";
     case "import_bundle_invalid":
     case "import_bundle_incompatible":
       return "import_bundle_invalid";
@@ -755,6 +759,8 @@ export function classifyImportApplyFailure(
       case "import_bundle_invalid":
       case "import_bundle_incompatible":
         return ["import_bundle_invalid", false, undefined];
+      case "import_facts_not_supported":
+        return ["import_facts_not_supported", false, undefined];
       case "import_pending_work":
         return ["import_pending_work", false, undefined];
       case "import_apply_failed":
