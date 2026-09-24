@@ -91,9 +91,8 @@ import { withOpenCodeSessionHeaders } from "./pi-native/provider-attribution.js"
 
 /**
  * Resolve mono-agent's programmatic mode once per run. Tool builders mark
- * stateful/mutating tools sequential; the Pi 0.85 harness adapter promotes any
- * such marker to its global toolExecution setting because mixed scheduling is
- * no longer available upstream.
+ * stateful/mutating tools sequential; the harness adapter gates each invoked
+ * call in safe-parallel mode, while the explicit sequential mode covers all calls.
  */
 export function resolvePiToolExecutionMode(options = {}) {
   const warnings = [];
@@ -600,8 +599,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       ? Number(options.maxRetryDelayMs)
       : 60_000;
     // Steering controls user follow-up delivery, not tool scheduling. Keep it
-    // independent from piToolExecutionMode; the adapter derives Pi 0.85's
-    // global scheduling mode from the tools' executionMode markers.
+    // independent from piToolExecutionMode; the adapter gates invoked calls.
     const toolSteeringMode = "one-at-a-time";
 
     const piModels = buildRunModels(runtime, options, runtimeWarnings, providerAttributionSessionId);
@@ -618,6 +616,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       systemPrompt,
       outputSchema: options.outputSchema,
       tools,
+      toolExecutionMode: toolExecution.mode,
       transport: piTransport,
       maxRetries,
       maxRetryDelayMs,

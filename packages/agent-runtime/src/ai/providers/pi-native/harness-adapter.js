@@ -10,6 +10,7 @@ import {
   getOrThrow,
 } from "@earendil-works/pi-agent-core";
 import { installPromptCacheDiagnostics, promptCacheRequest } from "./prompt-cache-diagnostics.js";
+import { createToolExecutionGate, isSharedTool } from "./tool-execution-gate.js";
 
 export const PI_CONTEXT = BACKGROUND_CONTEXT;
 
@@ -121,11 +122,28 @@ export function createPiSessionAdapter(rawSession) {
   };
 }
 
-function adaptTool(tool) {
+function adaptTool(tool, gate, questionState) {
   return {
     ...tool,
     async execute(toolCallId, params, onUpdate, _toolContext, _invocation, context) {
-      return tool.execute(toolCallId, params, context.abortSignal, onUpdate);
+      const signal = context.abortSignal;
+      const release = gate ? await gate.acquire(isSharedTool(tool), signal) : () => {};
+      try {
+        if (signal?.aborted) throw new Error("tool execution aborted");
+        // Pi prepares/publishes every invocation before execute. Its before_tool
+        // hook may therefore already have run while this call waited behind a
+        // successful AskParent. Never enter a later tool after that question.
+        if (questionState.awaiting) {
+          return { content: [{ type: "text", text: "Child turn ended awaiting a parent reply." }], terminate: true };
+        }
+        const result = await tool.execute(toolCallId, params, signal, onUpdate);
+        if (tool.name === "AskParent" && result?.details?.tool === "AskParent") {
+          questionState.awaiting = true;
+        }
+        return result;
+      } finally {
+        release();
+      }
     },
   };
 }
@@ -186,15 +204,13 @@ function legacyEvent(event) {
  */
 export async function createPiHarnessAdapter(session, options) {
   const originalTools = Array.isArray(options.tools) ? options.tools : [];
-  const adaptedTools = originalTools.map(adaptTool);
+  const toolExecution = options.toolExecutionMode === "sequential" ? "sequential" : "parallel";
+  // Pi's harness branches only on the run's global setting. In parallel mode
+  // the wrapper gates *invoked* calls, not the set of offered tools.
+  const gate = toolExecution === "parallel" ? createToolExecutionGate() : null;
+  const questionState = { awaiting: false };
+  const adaptedTools = originalTools.map((tool) => adaptTool(tool, gate, questionState));
   const activeToolNames = originalTools.map((tool) => tool.name);
-  // Pi 0.85 removed mixed per-tool scheduling from AgentHarness: its runner
-  // consults only this global setting. Preserve the safety contract by
-  // serializing the batch whenever any offered tool is stateful, mutating, or
-  // MCP-backed. Read-only-only tool sets can still overlap in safe-parallel.
-  const toolExecution = originalTools.some((tool) => tool?.executionMode === "sequential")
-    ? "sequential"
-    : "parallel";
 
   // Flipped by the bridge's mid-run compaction controller for the lifetime of a
   // single prompt; read by the permanent compaction-owner hook below.
@@ -250,16 +266,15 @@ export async function createPiHarnessAdapter(session, options) {
     // mixed batches closed too, and never execute calls after a durable question.
     if (activeToolNames.includes("AskParent")) {
       let questionBatch = false;
-      let awaiting = false;
       rawHarness.hooks.on("after_response", (event) => {
         questionBatch = event.message.content.some((part) => part.type === "toolCall" && part.name === "AskParent");
       }, { id: "mono-agent-ask-parent-batch" });
-      rawHarness.hooks.on("before_tool", () => awaiting
+      rawHarness.hooks.on("before_tool", () => questionState.awaiting
         ? { block: { reason: "Child turn ended awaiting a parent reply.", terminate: true } } : undefined,
       { id: "mono-agent-ask-parent-stop" });
       rawHarness.hooks.on("after_tool", (event) => {
-        if (event.toolName === "AskParent" && !event.isError && event.details?.tool === "AskParent") awaiting = true;
-        return awaiting || (questionBatch && event.toolName !== "AskParent") ? { terminate: true } : undefined;
+        if (event.toolName === "AskParent" && !event.isError && event.details?.tool === "AskParent") questionState.awaiting = true;
+        return questionState.awaiting || (questionBatch && event.toolName !== "AskParent") ? { terminate: true } : undefined;
       }, { id: "mono-agent-ask-parent-terminate" });
     }
     removePromptCacheDiagnostics = installPromptCacheDiagnostics(rawHarness, options);

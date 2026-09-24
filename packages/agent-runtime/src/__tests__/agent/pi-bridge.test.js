@@ -1497,10 +1497,13 @@ describe("getPiBuiltinTools Agent registration", () => {
     expect(names(getPiBuiltinTools(["Read"], { ctx, subagents: subagents() }))).not.toContain("Agent");
   });
 
-  it("keeps Agent parallel so it cannot serialize a mixed tool batch", () => {
+  it("marks Agent shareable and describes invoked exclusive barriers", () => {
     const agent = getPiBuiltinTools(["Agent"], { ctx, subagents: subagents() })
       .find((tool) => tool.name === "Agent");
     expect(agent.executionMode).toBeUndefined();
+    expect(agent.description).toContain("can overlap");
+    expect(agent.description).toContain("exclusive barrier");
+    expect(agent.description).toContain("background process jobs");
   });
 
   it("passes the run's skill context through to every child request", async () => {

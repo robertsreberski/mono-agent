@@ -127,10 +127,9 @@ a terminal report in the web Background jobs card, with a subagent glyph and
 scrollable body; the parent Activity keeps the launch and terminal job rows.
 
 **Limits.** `maxConcurrent` (default 5) is an upper bound on simultaneous
-subagents; the provider may schedule fewer. In particular, Pi 0.85 exposes only
-a global tool-execution mode, so any offered stateful/mutating or MCP tool makes
-the whole harness sequential, including an otherwise parallel batch of `Agent`
-calls. `maxPerTurn` (default 20) bounds the total per parent turn and is the real
+subagents; the provider may schedule fewer. `Agent` calls can overlap even when
+stateful tools are offered, but an **invoked** stateful, MCP, or unknown tool is
+an exclusive barrier: earlier calls settle first and later calls wait. `maxPerTurn` (default 20) bounds the total per parent turn and is the real
 runaway guard, since a delegation loop can spend budget serially without ever
 hitting the concurrency cap. Each subagent gets `maxTurns` (default 100) and
 `timeoutMs` (default 5 minutes), and its timeout starts only once it actually
@@ -493,12 +492,16 @@ This is distinct from provider-transport retries (`providers.piNative.piMaxRetri
 
 ## Tool scheduling (code-only)
 
-Pi defaults to safe parallelism. With Pi 0.85, independent read-only tools may
-overlap only when the offered tool set contains no sequential tool. If `Write`,
-`Edit`, `Bash`, `Exec`, `NodeRepl`, any MCP tool, or another stateful/mutating
-built-in is available, the harness serializes the whole batch because upstream
-no longer exposes mixed per-tool scheduling. A host can also force every tool
-to run sequentially:
+Pi defaults to safe parallelism. Invoked independent read-only tools and `Agent`
+calls may overlap even if stateful tools are merely offered. An invoked `Write`,
+`Edit`, `Bash`, `Exec`, `NodeRepl`, `Monitor`, `AgentManage`, `AskParent`,
+`StructuredOutput`, MCP, or unknown tool is exclusive: it waits for earlier
+admitted calls, then blocks later calls until its result settles. A background
+process job or detached Agent releases admission on its started receipt, not
+when the detached work finishes; separate job and child limits still apply.
+Calls waiting behind the gate already have Pi's durable `effect_pending` intent:
+if interrupted before admission, non-replay-safe calls recover as interrupted,
+not re-executed. A host can also force every tool to run sequentially:
 
 ```ts
 const runtimeOptions = {
