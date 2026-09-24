@@ -136,7 +136,7 @@ export async function proposeCurate(snapshot: CurateSnapshot, llm: LlmComplete, 
     const raw = await llm.complete(prompt, { label: "curate:propose" });
     if (raw.length > 32768) throw new Error("memory-curate: response exceeds bound");
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length !== batch.length) throw new Error("memory-curate: incomplete response");
+    if (!Array.isArray(parsed) || parsed.length > BATCH * 2) throw new Error("memory-curate: invalid response envelope");
     const seen = new Set<string>();
     for (const item of parsed) {
       if (item === null || typeof item !== "object" || Array.isArray(item)) {

@@ -50,6 +50,9 @@ describe("curation preparation", () => {
     const partlyInvalid = await proposeCurate(snapshot, { id: "fake", complete: async () => JSON.stringify([{ id: "outside", action: "keep" }, { id: "fictional-b", action: "keep" }]) });
     expect(partlyInvalid.proposals.map(({ source }) => source.id)).toEqual(["fictional-b"]);
     expect(partlyInvalid.discarded).toEqual([{ id: "unbound", reason: "unknown-id" }, { id: "fictional-a", reason: "missing-proposal" }]);
+    const shortened = await proposeCurate(snapshot, { id: "fake", complete: async () => JSON.stringify([{ id: "fictional-a", action: "keep" }]) });
+    expect(shortened.proposals).toHaveLength(1);
+    expect(shortened.discarded).toEqual([{ id: "fictional-b", reason: "missing-proposal" }]);
     const labelled = await proposeCurate(snapshot, { id: "fake", complete: async () => JSON.stringify([
       { id: "fictional-a", action: "keep" }, { id: "fictional-b", action: "label", labels: [{ v: 1, kind: "fact", entityId: "person:morgan",
         key: "preferred_name", value: { type: "text", text: "Morgan" }, attribution: "document" }] },
