@@ -3560,7 +3560,8 @@ it("delivers a bounded PeerAgent completion to the exact caller without subagent
 it("publishes a typed untrusted peer question and wakes the exact caller for answer", async () => {
   const fixture = await createFixture();
   const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
-  const service = await startService(fixture, { wake });
+  const surfaceUpdate = vi.fn(async (_projection: ProcessJobProjection, _options?: { readonly retirementOnly?: boolean }) => {});
+  const service = await startService(fixture, { wake, surfaceUpdate });
   await service.activateWakes();
   const peerQuestion = { state: "awaiting_answer" as const, peer: "finance", thread: "portfolio",
     questionId: "11111111-1111-4111-8111-111111111111", message: "Proceed?",
@@ -3582,6 +3583,10 @@ it("publishes a typed untrusted peer question and wakes the exact caller for ans
   await service.settlePeerQuestion?.(started.jobId, peerQuestion.questionId, "expired");
   expect(await service.get(started.jobId)).toMatchObject({ peerQuestion: { state: "expired" } });
   expect(wake).toHaveBeenCalledOnce();
+  // Only the retirement surface update carries the explicit retirement-only marker.
+  await waitFor(() => surfaceUpdate.mock.calls.some(([projection, options]) => options?.retirementOnly === true
+    && projection.kind === "internal" && projection.peerQuestion?.state === "expired"));
+  expect(surfaceUpdate.mock.calls.filter(([, options]) => options?.retirementOnly === true)).toHaveLength(1);
 });
 
 it("applies a peer question retirement that raced ahead of the question's completion persist", async () => {

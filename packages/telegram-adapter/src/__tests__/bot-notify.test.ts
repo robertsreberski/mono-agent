@@ -288,17 +288,27 @@ describe("createTelegramBot notify (proactive)", () => {
     expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(1);
     const edited = calls.filter((call) => call.method === "editMessageText").at(-1)!.payload;
     expect(edited.text).toContain("Peer question from finance/portfolio: Answered");
+    // A stale awaiting_answer projection, or another question, never reverts a retired card.
+    await expect(controller.updateProcessJob(42, internal)).resolves.toMatchObject({ code: "surface_unchanged" });
+    const other = { ...internal, peerQuestion: { ...internal.peerQuestion!, questionId: "22222222-2222-4222-8222-222222222222", state: "expired" as const } };
+    await expect(controller.updateProcessJob(42, other)).resolves.toMatchObject({ code: "surface_unchanged" });
+    expect(calls.filter((call) => call.method === "editMessageText")).toHaveLength(1);
   });
 
-  it("never posts a new card for a peer-question retirement without a known message", async () => {
+  it("suppresses only explicit retirement-only updates without a known message, never a first terminal post", async () => {
     const { controller, calls } = buildNotifiableBot({ async respond() { return { text: "unused" }; } });
     const retired: ProcessJobProjection = { ...processJobProjection("succeeded"), kind: "internal", tool: "PeerAgent",
       instanceId: "finance", childStillBusy: false, peerQuestion: { state: "expired",
         questionId: "11111111-1111-4111-8111-111111111111", peer: "finance", thread: "portfolio",
         message: "Proceed?", expiresAt: "2026-09-23T20:00:00.000Z",
         requestedSchema: { type: "object", properties: { question_1: { type: "string" } } } } };
-    await expect(controller.updateProcessJob(42, retired)).resolves.toMatchObject({ code: "surface_unchanged" });
+    await expect(controller.updateProcessJob(42, retired, { retirementOnly: true }))
+      .resolves.toMatchObject({ code: "surface_unchanged" });
     expect(calls.filter((call) => call.method === "sendMessage" || call.method === "editMessageText")).toHaveLength(0);
+    await expect(controller.updateProcessJob(42, retired)).resolves.toMatchObject({ delivered: true });
+    const sent = calls.filter((call) => call.method === "sendMessage");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.payload.text).toContain("Expired");
   });
 
   it("keeps the child-busy warning off a running job whose child is still working", async () => {

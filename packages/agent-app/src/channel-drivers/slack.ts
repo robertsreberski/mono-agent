@@ -195,7 +195,7 @@ export function createSlackChannelDriver(
         summary: {},
         stop: () => result.stop(),
         processJobs: {
-          update: async ({ conversationId, processJob }) => {
+          update: async ({ conversationId, processJob, retirementOnly }) => {
             if (processJob.origin.channel !== "slack"
               || conversationId !== baseConversationId(processJob.origin.conversationId)) {
               return {
@@ -214,6 +214,7 @@ export function createSlackChannelDriver(
                 channelId: string,
                 threadTs: string | undefined,
                 projection: typeof processJob,
+                options?: { readonly retirementOnly?: boolean },
               ) => Promise<NotifyDeliveryResult>;
             }).updateProcessJob;
             return typeof updater !== "function"
@@ -223,7 +224,8 @@ export function createSlackChannelDriver(
                   reason: "The running Slack adapter does not support process-job lifecycle updates.",
                   retryable: false,
                 }
-              : await updater.call(result.adapter, target.channelId, target.threadTs, processJob);
+              : await updater.call(result.adapter, target.channelId, target.threadTs, processJob,
+                retirementOnly === true ? { retirementOnly: true } : undefined);
           },
           wake: async ({ conversationId, text, deliveryKey, processJob }) => {
             if (processJob.origin.channel !== "slack"

@@ -144,7 +144,8 @@ export interface OpenProcessJobsServiceOptions {
   readonly attestRegistration?: typeof attestProcessJobsRootRegistration;
   readonly wake: (input: ProcessJobWakeInput) => Promise<NotifyDeliveryResult>;
   /** Best-effort retained lifecycle update for the exact originating surface. */
-  readonly surfaceUpdate?: (projection: ProcessJobProjection) => Promise<void>;
+  /** `retirementOnly`: the update only retires an already-published peer question. */
+  readonly surfaceUpdate?: (projection: ProcessJobProjection, options?: { readonly retirementOnly?: boolean }) => Promise<void>;
   readonly onHealthChange?: (health: ProcessJobsHealth) => void | Promise<void>;
   readonly logger?: {
     info?(message: string, details?: Readonly<Record<string, unknown>>): void;
@@ -404,7 +405,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         changed = true;
       });
     });
-    if (changed) this.scheduleSurfaceUpdate(jobId);
+    if (changed) this.scheduleSurfaceUpdate(jobId, true);
   }
 
   async list(): Promise<readonly ProcessJobProjection[]> {
@@ -2489,10 +2490,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     }
   }
 
-  private scheduleSurfaceUpdate(jobId: string): void {
+  private scheduleSurfaceUpdate(jobId: string, retirementOnly = false): void {
     if (this.options.surfaceUpdate === undefined) return;
     queueMicrotask(() => {
-      void this.updateSurfaceById(jobId).catch((error: unknown) => {
+      void this.updateSurfaceById(jobId, retirementOnly).catch((error: unknown) => {
         this.options.logger?.warn?.("Process-job lifecycle surface could not be loaded for update.", {
           jobId,
           reason: safeAmbientError(error, "unknown lifecycle-surface load failure"),
@@ -2501,9 +2502,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     });
   }
 
-  private async updateSurfaceById(jobId: string): Promise<void> {
+  private async updateSurfaceById(jobId: string, retirementOnly = false): Promise<void> {
     const projection = await this.get(jobId);
-    if (projection !== undefined) await this.updateSurface(projection);
+    if (projection !== undefined) await this.updateSurface(projection, retirementOnly);
   }
 
   private async updateInitialSurface(jobId: string): Promise<void> {
@@ -2523,10 +2524,12 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     if (timer !== undefined) clearTimeout(timer);
   }
 
-  private async updateSurface(projection: ProcessJobProjection): Promise<void> {
+  private async updateSurface(projection: ProcessJobProjection, retirementOnly = false): Promise<void> {
     if (this.options.surfaceUpdate === undefined) return;
     try {
-      await this.options.surfaceUpdate(projection);
+      await (retirementOnly
+        ? this.options.surfaceUpdate(projection, { retirementOnly: true })
+        : this.options.surfaceUpdate(projection));
     } catch (error) {
       this.options.logger?.warn?.("Process-job lifecycle surface could not be updated.", {
         jobId: projection.jobId,

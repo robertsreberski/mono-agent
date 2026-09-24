@@ -504,7 +504,7 @@ export interface TelegramBotController {
   updateProcessJob(
     chatId: TelegramChatId,
     projection: ProcessJobProjection,
-    options?: { readonly silent?: boolean },
+    options?: { readonly silent?: boolean; readonly retirementOnly?: boolean },
   ): Promise<TelegramNotifyResult>;
   /**
    * Post (or edit in place) a short tool-progress status line, keyed per
@@ -2188,7 +2188,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   function updateProcessJob(
     chatId: TelegramChatId,
     projection: ProcessJobProjection,
-    updateOptions?: { readonly silent?: boolean },
+    updateOptions?: { readonly silent?: boolean; readonly retirementOnly?: boolean },
   ): Promise<TelegramNotifyResult> {
     const previous: Promise<TelegramNotifyResult> = processJobUpdateTails.get(projection.jobId)
       ?? Promise.resolve({ delivered: true });
@@ -2227,17 +2227,22 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         }
         // A terminal PeerAgent card may still retire its question (answered,
         // expired, interrupted); that is an in-place edit, never a new message.
+        // Only forward, same-question retirements; stale projections never revert it.
         const peerQuestionChanged = terminal && current.terminal
-          && peerQuestionFingerprint(projection) !== lifecycle.peerQuestion;
+          && isForwardPeerRetirement(lifecycle.peerQuestion, projection);
         if ((current.terminal || rank <= current.rank) && !peerQuestionChanged) {
+          // Nothing was rendered: keep the fingerprint of what the card shows.
+          const shown = lifecycle.peerQuestion;
           rememberProcessJobMessage(lifecycle, current, projection, current.terminal);
+          lifecycle.peerQuestion = shown;
           return { delivered: true, code: "surface_unchanged", channelId: "telegram" };
         }
       }
       const text = renderProcessJobSurface(projection);
-      if (current === undefined && isPeerQuestionRetirement(projection)) {
-        // No known card (e.g. after restart): a retirement alone must not post
-        // a fresh message for an old job.
+      if (current === undefined && updateOptions?.retirementOnly === true) {
+        // An explicit retirement-only update with no known card (e.g. after
+        // restart) must not post a fresh message for an old job. Every other
+        // update, including a first terminal post, delivers normally.
         return { delivered: true, code: "surface_unchanged", channelId: "telegram" };
       }
       if (current === undefined) {
@@ -3361,9 +3366,11 @@ function peerQuestionFingerprint(projection: ProcessJobProjection): string | und
     ? `${projection.peerQuestion.questionId}:${projection.peerQuestion.state}` : undefined;
 }
 
-function isPeerQuestionRetirement(projection: ProcessJobProjection): boolean {
-  return isTerminalProcessJobState(projection.state) && projection.kind === "internal"
-    && projection.peerQuestion !== undefined && projection.peerQuestion.state !== "awaiting_answer";
+/** awaiting_answer → answered/expired/interrupted for the card's own questionId only. */
+function isForwardPeerRetirement(previous: string | undefined, projection: ProcessJobProjection): boolean {
+  if (projection.kind !== "internal" || projection.peerQuestion === undefined) return false;
+  return previous === `${projection.peerQuestion.questionId}:awaiting_answer`
+    && projection.peerQuestion.state !== "awaiting_answer";
 }
 
 /** Plain, bounded question text with readable option labels; never raw or cut JSON. */

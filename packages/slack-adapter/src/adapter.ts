@@ -1613,13 +1613,14 @@ export class SlackAdapter {
     channelId: SlackChannelId,
     threadTs: SlackMessageTs | undefined,
     projection: ProcessJobProjection,
+    updateOptions?: { readonly retirementOnly?: boolean },
   ): Promise<SlackNotifyResult> {
     const jobId = projection.jobId;
     const previous: Promise<SlackNotifyResult> = this.processJobUpdateTails.get(jobId)
       ?? Promise.resolve({ delivered: true });
     let task!: Promise<SlackNotifyResult>;
     task = previous.catch(() => ({ delivered: false })).then(async () =>
-      await this.updateProcessJobNow(channelId, threadTs, projection)).finally(() => {
+      await this.updateProcessJobNow(channelId, threadTs, projection, updateOptions)).finally(() => {
         if (this.processJobUpdateTails.get(jobId) === task) this.processJobUpdateTails.delete(jobId);
       });
     this.processJobUpdateTails.set(jobId, task);
@@ -1644,6 +1645,7 @@ export class SlackAdapter {
     channelId: SlackChannelId,
     threadTs: SlackMessageTs | undefined,
     projection: ProcessJobProjection,
+    updateOptions?: { readonly retirementOnly?: boolean },
   ): Promise<SlackNotifyResult> {
     const expectedConversationId = threadTs === undefined
       ? `slack:${channelId}`
@@ -1683,18 +1685,23 @@ export class SlackAdapter {
       }
       // A terminal PeerAgent card may still retire its question (answered,
       // expired, interrupted); that is an in-place edit, never a new message.
+      // Only forward, same-question retirements; stale projections never revert it.
       const peerQuestionChanged = terminal && current.terminal
-        && peerQuestionFingerprint(projection) !== lifecycle.peerQuestion;
+        && isForwardPeerRetirement(lifecycle.peerQuestion, projection);
       if ((current.terminal || rank <= current.rank) && !peerQuestionChanged) {
+        // Nothing was rendered: keep the fingerprint of what the card shows.
+        const shown = lifecycle.peerQuestion;
         this.rememberProcessJobMessage(lifecycle, current, projection, current.terminal);
+        lifecycle.peerQuestion = shown;
         return { delivered: true, code: "surface_unchanged", channelId: "slack" };
       }
     }
 
     const text = renderProcessJobSurface(projection);
-    if (current === undefined && isPeerQuestionRetirement(projection)) {
-      // No known card (e.g. after restart): a retirement alone must not post a
-      // fresh message for an old job.
+    if (current === undefined && updateOptions?.retirementOnly === true) {
+      // An explicit retirement-only update with no known card (e.g. after
+      // restart) must not post a fresh message for an old job. Every other
+      // update, including a first terminal post, delivers normally.
       return { delivered: true, code: "surface_unchanged", channelId: "slack" };
     }
     if (current === undefined) {
@@ -4106,9 +4113,11 @@ function peerQuestionFingerprint(projection: ProcessJobProjection): string | und
     ? `${projection.peerQuestion.questionId}:${projection.peerQuestion.state}` : undefined;
 }
 
-function isPeerQuestionRetirement(projection: ProcessJobProjection): boolean {
-  return isTerminalProcessJobState(projection.state) && projection.kind === "internal"
-    && projection.peerQuestion !== undefined && projection.peerQuestion.state !== "awaiting_answer";
+/** awaiting_answer → answered/expired/interrupted for the card's own questionId only. */
+function isForwardPeerRetirement(previous: string | undefined, projection: ProcessJobProjection): boolean {
+  if (projection.kind !== "internal" || projection.peerQuestion === undefined) return false;
+  return previous === `${projection.peerQuestion.questionId}:awaiting_answer`
+    && projection.peerQuestion.state !== "awaiting_answer";
 }
 
 /** Plain, bounded question text with readable option labels; never raw or cut JSON. */

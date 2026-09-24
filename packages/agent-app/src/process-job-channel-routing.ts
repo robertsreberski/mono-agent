@@ -38,7 +38,7 @@ export function assertUniqueProcessJobChannelSchemes(
 }
 
 export async function routeProcessJobSurfaceUpdate(
-  input: ProcessJobChannelRoutingInput,
+  input: ProcessJobChannelRoutingInput & { readonly retirementOnly?: boolean },
 ): Promise<NotifyDeliveryResult> {
   const resolved = resolveProcessJobChannel(input);
   if ("delivered" in resolved) return logUndeliveredSurfaceUpdate(input, resolved);
@@ -48,6 +48,7 @@ export async function routeProcessJobSurfaceUpdate(
       conversationId: input.conversationId,
       deliveryKey: input.deliveryKey,
       processJob: input.projection,
+      ...(input.retirementOnly === true ? { retirementOnly: true } : {}),
     });
   } catch (error) {
     return routingFailure(input, resolved.driver.id, "surface update", error);
