@@ -86,6 +86,18 @@ describe("labels on canonical bullets", () => {
     } finally { db.close(); }
   });
 
+  it("sorts mixed Unicode memory ids in SQLite UTF-8 byte order", async () => {
+    const dir = root();
+    appendBullet(dir, withMemoryLabels(bullet("A\u{10000}"), [preference]), when);
+    appendBullet(dir, withMemoryLabels(bullet("A\uE000"), [preference]), when);
+    const db = openMemoryDb({ path: join(dir, "memory.db") });
+    try {
+      await rebuildFromMarkdown(dir, db);
+      expect(db.guidanceForScope("project:fictional-project").map((hit) => hit.memoryId))
+        .toEqual(["A\uE000", "A\u{10000}"]);
+    } finally { db.close(); }
+  });
+
   it("reports malformed canonical labels through BuJo parity audit", async () => {
     const dir = root();
     appendBullet(dir, withMemoryLabels(bullet("B1"), [birthday]), when);

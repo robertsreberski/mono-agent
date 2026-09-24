@@ -16,7 +16,9 @@ export interface MemoryLabelHit extends IndexedMemoryLabel {
   readonly conflict: boolean;
   readonly currentAt?: boolean;
 }
-function byteOrder(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
+function byteOrder(a: string, b: string): number {
+  return Buffer.compare(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+}
 
 /** Canonical daily lines own labels; this table is only their queryable projection. */
 export class MemoryDbLabels extends MemoryDbGraph {
