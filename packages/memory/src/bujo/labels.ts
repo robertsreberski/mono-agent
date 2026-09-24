@@ -109,6 +109,7 @@ export function withMemoryLabels(bullet: Bullet, labels: readonly MemoryLabel[])
   // Validate pre-existing labels before replacing them; never repair malformed metadata silently.
   labelsOf(bullet);
   const result = { ...bullet, refs: [...refs, ...labels.map(encodeMemoryLabel)] };
+  if (result.refs.length > 64) return fail();
   labelsOf(result);
   return result;
 }

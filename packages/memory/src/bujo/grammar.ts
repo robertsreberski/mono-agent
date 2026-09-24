@@ -118,7 +118,13 @@ function parseMeta(meta: string): Record<string, string> {
   for (const pair of meta.trim().split(/\s+/u)) {
     const eq = pair.indexOf("=");
     if (eq === -1) continue;
-    out[pair.slice(0, eq)] = pair.slice(eq + 1);
+    const key = pair.slice(0, eq);
+    const value = pair.slice(eq + 1);
+    if (key === "refs" && out.refs !== undefined
+      && (out.refs.includes("label:") || value.includes("label:"))) {
+      throw new Error("memory-bujo: duplicate labelled refs metadata.");
+    }
+    out[key] = value;
   }
   return out;
 }
@@ -139,7 +145,9 @@ export function parseDailyFile(content: string): DailyFile & { bullets: Bullet[]
   for (let i = 0; i < rawLines.length; i += 1) {
     const raw = rawLines[i] ?? "";
     const lineNumber = i + 1;
-    const bullet = parseBullet(raw);
+    let bullet: Bullet | undefined;
+    try { bullet = parseBullet(raw); }
+    catch (error) { throw new Error(`memory-bujo: invalid label at line ${lineNumber}.`, { cause: error }); }
     if (bullet !== undefined) {
       lines.push({ raw, lineNumber, bullet });
       continue;
@@ -148,7 +156,9 @@ export function parseDailyFile(content: string): DailyFile & { bullets: Bullet[]
     const next = rawLines[i + 1];
     if (next !== undefined) {
       const splitRaw = `${raw}\n${next}`;
-      const splitBullet = parseBullet(splitRaw);
+      let splitBullet: Bullet | undefined;
+      try { splitBullet = parseBullet(splitRaw); }
+      catch (error) { throw new Error(`memory-bujo: invalid label at line ${lineNumber}.`, { cause: error }); }
       if (splitBullet !== undefined) {
         lines.push({ raw: splitRaw, lineNumber, bullet: splitBullet });
         i += 1;

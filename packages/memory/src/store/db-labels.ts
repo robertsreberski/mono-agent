@@ -22,6 +22,9 @@ function byteOrder(a: string, b: string): number { return a < b ? -1 : a > b ? 1
 export class MemoryDbLabels extends MemoryDbGraph {
   replaceMemoryLabels(memoryId: string, labels: readonly MemoryLabel[]): void {
     this.db.transaction(() => {
+      if (!this.db.prepare("SELECT 1 FROM memories WHERE id = ?").get(memoryId)) {
+        throw new Error("memory-store: label projection has no memory endpoint.");
+      }
       this.db.prepare("DELETE FROM memory_labels WHERE memory_id = ?").run(memoryId);
       const insert = this.db.prepare(`INSERT INTO memory_labels
         (memory_id, ordinal, kind, entity_id, scope, payload) VALUES (?, ?, ?, ?, ?, ?)`);
@@ -38,7 +41,9 @@ export class MemoryDbLabels extends MemoryDbGraph {
       this.db.prepare("DELETE FROM memory_labels").run();
       const insert = this.db.prepare(`INSERT INTO memory_labels
         (memory_id, ordinal, kind, entity_id, scope, payload) VALUES (?, ?, ?, ?, ?, ?)`);
+      const hasMemory = this.db.prepare("SELECT 1 FROM memories WHERE id = ?");
       for (const row of rows) {
+        if (!hasMemory.get(row.memoryId)) throw new Error("memory-store: label projection has no memory endpoint.");
         const label = validateMemoryLabel(row.label);
         insert.run(row.memoryId, row.ordinal, label.kind, label.kind === "fact" ? label.entityId : null,
           label.kind === "fact" ? null : label.scope, JSON.stringify(label));
@@ -64,7 +69,7 @@ export class MemoryDbLabels extends MemoryDbGraph {
       const exclusive = ["birth_date", "full_name", "preferred_name", "home_location", "work_location"].includes(label.key);
       const conflict = exclusive && hit.active && active.some((other) => {
         const otherLabel = other.label;
-        return otherLabel.kind === "fact" && other.memoryId !== hit.memoryId
+        return otherLabel.kind === "fact" && (other.memoryId !== hit.memoryId || other.ordinal !== hit.ordinal)
           && otherLabel.key === label.key && JSON.stringify(otherLabel.value) !== JSON.stringify(label.value)
           && (label.key !== "home_location" && label.key !== "work_location"
             || ((label.validFrom === undefined || otherLabel.validTo === undefined || label.validFrom <= otherLabel.validTo)

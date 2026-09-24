@@ -11,6 +11,7 @@ import { auditBujoMemoryHealth } from "../audit.js";
 import { writeCaptureIntent } from "../capture-outbox.js";
 import { parseDailyFile } from "../grammar.js";
 import { createIdFactory } from "../ids.js";
+import { encodeMemoryLabel, labelsOf, type MemoryLabel } from "../labels.js";
 import { migrate } from "../migrate.js";
 import { assertCanonicalGraphRepairBaseParity, safeRebuildMemoryIndex } from "../rebuild.js";
 import { reconcile, reconcileBatch, type ReconcileDeps } from "../reconcile.js";
@@ -75,7 +76,7 @@ async function seed(
   root: string,
   id: string,
   text: string,
-  opts: { type?: Bullet["type"]; salience?: number; isInsight?: boolean } = {},
+  opts: { type?: Bullet["type"]; salience?: number; isInsight?: boolean; labels?: readonly MemoryLabel[] } = {}, 
 ): Promise<void> {
   const type = opts.type ?? "note";
   const bullet: Bullet = {
@@ -86,7 +87,7 @@ async function seed(
     salience: opts.salience ?? 0.5,
     isInsight: opts.isInsight ?? false,
     createdAt: FIXED.toISOString(),
-    refs: [],
+    refs: (opts.labels ?? []).map(encodeMemoryLabel),
   };
   appendBullet(root, bullet, FIXED);
   const record: MemoryRecord = {
@@ -102,6 +103,7 @@ async function seed(
     source: { file: relative(root, dailyFilePath(root, FIXED)) },
   };
   await db.upsert(record);
+  db.replaceMemoryLabels(id, labelsOf(bullet));
 }
 
 function makeDeps(
@@ -126,6 +128,38 @@ function dailyContent(root: string): string {
 }
 
 describe("reconcile", () => {
+  it("clears labels on changed UPDATE and carries them as history on SUPERSEDE", async () => {
+    const label: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "preferred_name",
+      value: { type: "text", text: "Morgan" }, attribution: "user-stated" };
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "UPD1", "Morgan prefers concise technical reports", { labels: [label] });
+    const changed = "Morgan prefers concise technical status reports";
+    const update = fakeLlm([["CLASSIFY", `{"action":"update","targetId":"UPD1","text":"${changed}"}`]]);
+    await reconcile([{ type: "note", text: "Morgan prefers concise status reports", salience: 0.7,
+      isInsight: false }], makeDeps(db, root, update));
+    expect(db.labelsForEntity("person:morgan")).toEqual([]);
+    expect(parseDailyFile(dailyContent(root)).bullets.find((item) => item.id === "UPD1")?.refs).toEqual([]);
+    const replaced: MemoryLabel = { ...label, value: { type: "text", text: "M" } };
+    const replacementUpdate = fakeLlm([["CLASSIFY", `{"action":"update","targetId":"UPD1","text":"Morgan prefers concise weekly status reports"}`]]);
+    await reconcile([{ type: "note", text: "Morgan prefers weekly status reports", salience: 0.7,
+      isInsight: false }], makeDeps(db, root, replacementUpdate,
+      { labelsForAction: () => [replaced] }));
+    expect(db.labelsForEntity("person:morgan").map((hit) => hit.label)).toEqual([replaced]);
+
+    await seed(db, root, "OLD1", "Morgan prefers monthly concise status reports", { labels: [label] });
+    const newText = "Morgan prefers monthly detailed status reports";
+    const supersede = fakeLlm([["CLASSIFY", `{"action":"supersede","targetId":"OLD1","text":"${newText}"}`]]);
+    const actions = await reconcile([{ type: "note", text: "Morgan prefers monthly detailed reports", salience: 0.7,
+      isInsight: false }], makeDeps(db, root, supersede));
+    const replacementId = actions[0]?.kind === "supersede" ? actions[0].newId : "";
+    expect(replacementId).not.toBe("");
+    expect(db.labelsForEntity("person:morgan").map((hit) => [hit.memoryId, hit.active])).toEqual([
+      [replacementId, true], ["OLD1", false], ["UPD1", true],
+    ]);
+    expect(parseDailyFile(dailyContent(root)).bullets.find((item) => item.id === replacementId)?.refs)
+      .toEqual([encodeMemoryLabel(label)]);
+  });
   it("case 1 — novel candidate (no similar) → ADD", async () => {
     const root = newRoot();
     const db = openDb(root);

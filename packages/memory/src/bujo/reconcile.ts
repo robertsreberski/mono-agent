@@ -20,6 +20,7 @@ import type { CanonicalGraphRepairGuard } from "./graph.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
+import { labelsOf, withMemoryLabels, type MemoryLabel } from "./labels.js";
 
 /** The outcome of reconciling a single candidate against the existing index. */
 export type ReconcileAction =
@@ -53,6 +54,9 @@ export interface ReconcileDeps {
   /** Run-owned capture plans remain replayable until durable intake resolution. */
   readonly captureRetentionKey?: string;
   readonly canonicalGraphRepairGuard?: CanonicalGraphRepairGuard;
+  /** Internal, host-supplied label decision; capture never supplies labels in L1. */
+  readonly labelsForAction?: (action: "add" | "update" | "supersede", candidate: CandidateMemory,
+    previous?: Bullet) => readonly MemoryLabel[] | undefined;
 }
 
 const VALID_ACTIONS = new Set(["add", "update", "supersede", "noop"]);
@@ -371,7 +375,7 @@ function planAddWithoutIndex(
 ): Omit<BatchActionPlan, "index"> {
   const now = deps.now();
   const id = deps.nextId();
-  const bullet: Bullet = {
+  const bullet: Bullet = withMemoryLabels({
     id,
     type: candidate.type,
     status: "open",
@@ -380,7 +384,7 @@ function planAddWithoutIndex(
     isInsight: candidate.isInsight,
     createdAt: now.toISOString(),
     refs: [],
-  };
+  }, deps.labelsForAction?.("add", candidate) ?? []);
   const record = recordFor(bullet, deps.root, now);
   const file = record.source.file!;
   const threads = similar.flatMap((hit) => {
@@ -467,8 +471,9 @@ function planUpdate(
   const before = requireCanonicalTarget(deps.root, target.source.file, targetId);
   const mergedText = decision.text ?? candidate.text;
   // A changed sentence cannot silently keep claims it may no longer support.
-  const after: Bullet = { ...before, text: mergedText,
-    refs: mergedText === before.text ? before.refs : before.refs.filter((ref) => !ref.startsWith("label:")) };
+  const after: Bullet = withMemoryLabels({ ...before, text: mergedText },
+    deps.labelsForAction?.("update", candidate, before)
+      ?? (mergedText === before.text ? labelsOf(before) : []));
   return {
     action: { kind: "update", id: targetId },
     intent: {
@@ -501,7 +506,7 @@ function planSupersede(
   // never precede the memory it invalidates.
   const effectiveAt = new Date(Math.max(admittedAt.getTime(), Date.parse(beforeOld.createdAt)));
   const id = deps.nextId();
-  const bullet: Bullet = {
+  const bullet: Bullet = withMemoryLabels({
     id,
     type: candidate.type,
     status: "open",
@@ -509,8 +514,8 @@ function planSupersede(
     salience: candidate.salience,
     isInsight: candidate.isInsight,
     createdAt: effectiveAt.toISOString(),
-    refs: beforeOld.refs.filter((ref) => ref.startsWith("label:")),
-  };
+    refs: [],
+  }, deps.labelsForAction?.("supersede", candidate, beforeOld) ?? labelsOf(beforeOld));
   const record = recordFor(bullet, deps.root, effectiveAt);
   const newSourceFile = record.source.file!;
   return {

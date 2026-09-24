@@ -88,6 +88,15 @@ const CUMULATIVE_SCHEMA_BASELINE_DDL = [
     PRIMARY KEY(memory_id, entity_id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_memory_entities_entity ON memory_entities(entity_id)`,
+  `CREATE TABLE IF NOT EXISTS memory_labels (
+    memory_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('fact','preference','lesson')),
+    entity_id TEXT,
+    scope TEXT,
+    payload TEXT NOT NULL,
+    PRIMARY KEY(memory_id, ordinal)
+  )`,
   `CREATE TABLE IF NOT EXISTS content_hashes (
     content_hash TEXT PRIMARY KEY,
     memory_id TEXT NOT NULL,

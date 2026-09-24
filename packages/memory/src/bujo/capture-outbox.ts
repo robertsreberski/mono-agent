@@ -1593,8 +1593,12 @@ function validateAction(
       throw new Error("memory-capture: invalid update action in outbox intent.");
     }
     assertRecordMatchesBullet(action.record, action.after);
-    if (!bulletsEqual({ ...action.before.bullet, text: action.after.bullet.text }, action.after.bullet)) {
-      throw new Error("memory-capture: update intent changes fields outside its text outcome.");
+    const ordinaryRefs = (refs: readonly string[]): readonly string[] => refs.filter((ref) => !ref.startsWith("label:"));
+    if (!bulletsEqual({ ...action.before.bullet, text: action.after.bullet.text,
+      refs: action.after.bullet.refs }, action.after.bullet)
+      || JSON.stringify(ordinaryRefs(action.before.bullet.refs))
+        !== JSON.stringify(ordinaryRefs(action.after.bullet.refs))) {
+      throw new Error("memory-capture: update intent changes fields outside its text/label outcome.");
     }
     return;
   }

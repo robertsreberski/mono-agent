@@ -7,6 +7,7 @@ import { appendBullet, rewriteBullet } from "../daily.js";
 import { parseBullet, serializeBullet } from "../grammar.js";
 import { encodeMemoryLabel, labelsOf, withMemoryLabels, type MemoryLabel } from "../labels.js";
 import { rebuildFromMarkdown, safeRebuildMemoryIndex } from "../rebuild.js";
+import { auditCanonicalGraphParity } from "../graph-parity.js";
 import type { Bullet } from "../types.js";
 
 const roots: string[] = [];
@@ -40,6 +41,8 @@ describe("labels on canonical bullets", () => {
     for (const ref of ["label:v2:a", "label:v1:!", "label:v1:e30", `${encodeMemoryLabel(birthday)}x`]) {
       expect(() => serializeBullet({ ...valid, refs: [ref] })).toThrow(/invalid label/u);
     }
+    expect(() => parseBullet(serializeBullet(valid).replace("refs=existing-reference",
+      "refs=label:v1:bad refs=existing-reference"))).toThrow(/label/u);
     expect(() => encodeMemoryLabel({ ...birthday, value: { type: "date", date: "1990-02-30" } })).toThrow();
     expect(() => encodeMemoryLabel({ ...birthday, attribution: "claimed" } as unknown as MemoryLabel)).toThrow();
     expect(() => encodeMemoryLabel({ ...birthday, mystery: true } as unknown as MemoryLabel)).toThrow();
@@ -61,15 +64,39 @@ describe("labels on canonical bullets", () => {
     try {
       await rebuildFromMarkdown(dir, db);
       expect(db.labelsForEntity("person:morgan").filter((hit) => hit.conflict)).toHaveLength(2);
+      expect(auditCanonicalGraphParity(dir, db).labels.matched).toBe(6);
+      db.replaceMemoryLabels("B1", []);
+      expect(auditCanonicalGraphParity(dir, db).labels.missing).toBe(2);
+      await rebuildFromMarkdown(dir, db);
       expect(db.labelsForEntity("person:morgan").filter((hit) => hit.label.kind === "fact" && hit.label.key === "home_location")
         .every((hit) => !hit.conflict)).toBe(true);
       expect(db.guidanceForScope("project:fictional-project")[0]?.text).toBe("Morgan prefers short reports.");
       expect(db.guidanceForScope("agent")[0]?.label).toEqual(lesson);
-      expect(db.labelsForEntity("person:morgan", "2025-06-01").filter((hit) => hit.currentAt)).toHaveLength(3);
+      expect(db.guidanceForScope("conversation:unrelated")).toEqual([]);
+      appendBullet(dir, withMemoryLabels(bullet("B3", "Morgan lives in Westport."), [
+        { ...home, value: { type: "text", text: "Westport" }, validFrom: "2025-06-01", validTo: "2025-08-31" },
+      ]), when);
+      await rebuildFromMarkdown(dir, db);
+      expect(db.labelsForEntity("person:morgan").filter((hit) => hit.conflict)).toHaveLength(4);
+      expect(db.labelsForEntity("person:morgan", "2025-06-01").filter((hit) => hit.currentAt)).toHaveLength(4);
       rewriteBullet(dir, "daily/2026-07-11.md", "B1", { status: "invalidated" });
       await rebuildFromMarkdown(dir, db);
       expect(db.labelsForEntity("person:morgan").filter((hit) => hit.conflict)).toHaveLength(0);
       expect(db.labelsForEntity("person:morgan").filter((hit) => !hit.active)).toHaveLength(2);
+    } finally { db.close(); }
+  });
+
+  it("reports malformed canonical labels through BuJo parity audit", async () => {
+    const dir = root();
+    appendBullet(dir, withMemoryLabels(bullet("B1"), [birthday]), when);
+    const db = openMemoryDb({ path: join(dir, "memory.db") });
+    try {
+      await rebuildFromMarkdown(dir, db);
+      const path = join(dir, "daily", "2026-07-11.md");
+      writeFileSync(path, readFileSync(path, "utf8").replace(encodeMemoryLabel(birthday), "label:v1:bad"));
+      const audit = auditCanonicalGraphParity(dir, db);
+      expect(audit.status).toBe("invalid");
+      expect(audit.issues).toEqual([{ code: "canonical-read-failed" }]);
     } finally { db.close(); }
   });
 
