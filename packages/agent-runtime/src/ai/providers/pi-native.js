@@ -777,6 +777,19 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // Arm the main-prompt epoch after proactive compaction so compaction and
     // transcript seeding cannot be mistaken for live-input consumption.
     runState.recoveryBaselineTipId = await runState.session.getLeafId();
+
+    // Last abort check before Pi admits the prompt. Proactive compaction,
+    // mid-run arming and getLeafId all await after the pre-request check above;
+    // an abort landing there finds no open Pi operation, so the handler's
+    // harness.abort() is a no-op and the provider request would still run.
+    // Everything from here to lane.accept is synchronous, and an abort during
+    // accept is ordered after it, so Pi cancels the admitted operation itself.
+    // The finally below disarms mid-run compaction.
+    if (options.abortSignal?.aborted) {
+      await discardUncommittedSession(runState, { durableRepo });
+      return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport });
+    }
+
     const liveInputEpoch = createLiveInputPromptEpoch({ harness, onEvent });
     const liveInput = startLiveInput({ harness, options, onEvent, promptEpoch: liveInputEpoch });
 
