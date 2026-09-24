@@ -2965,7 +2965,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         const accept = input.curateAccept?.split(",") ?? [];
         const reject = input.curateReject?.split(",") ?? [];
         const selectors = [...accept, ...reject];
-        if (selectors.some((selector) => !/^(keep|drop|rewrite|label):(?:\*|[a-z][a-z-]{0,40})$|^id:[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u.test(selector))
+        if (selectors.some((selector) => !/^(keep|drop|rewrite|label|merge):(?:\*|[a-z][a-z-]{0,40})$|^id:[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u.test(selector))
           || new Set(selectors).size !== selectors.length) throw new Error("invalid or duplicate review selector");
         const matches = (selector: string, proposal: CurateProposal) => selector === `id:${proposal.source.id}`
           || selector === `${proposal.action}:*` || selector === `${proposal.action}:${proposal.reason ?? "none"}`;
