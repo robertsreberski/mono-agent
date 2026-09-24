@@ -86,6 +86,12 @@ describe("labels on canonical bullets", () => {
       await rebuildFromMarkdown(dir, db);
       expect(db.labelsForEntity("person:morgan").filter((hit) => hit.conflict)).toHaveLength(0);
       expect(db.labelsForEntity("person:morgan").filter((hit) => !hit.active)).toHaveLength(2);
+      const history = db.listLabels({ kind: "fact", entityId: "person:morgan" });
+      expect(history.hits.filter((hit) => hit.status === "invalidated")).toHaveLength(2);
+      expect(history.hits[0]?.sourceFile).toContain("daily/");
+      expect(history.hits[0]?.sourceLine).toEqual(expect.any(Number));
+      expect(db.listLabels({}, 1).truncated).toBe(true);
+      expect(db.listLabels({ kind: "lesson", scope: "agent" }).hits).toHaveLength(1);
     } finally { db.close(); }
   });
 

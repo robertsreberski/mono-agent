@@ -13,7 +13,7 @@ const MAX_BACKGROUND_BYTES = 1024;
 const GUIDANCE_FLOOR = 0.35;
 const PERSON_ID = /^person:[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const scopeId = (value: string): boolean => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/u.test(value);
-const safeLine = (text: string): string => text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/gu, " ").trim();
+export const safeLine = (text: string): string => text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/gu, " ").trim();
 const fold = (text: string): string => text.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase("und");
 
 /** Only name-sized, bounded query tokens reach SQLite; names are exact, never aliases. */
@@ -39,6 +39,32 @@ function ageAt(birth: string, date: string): number | undefined {
   return age >= 0 && age <= 130 ? age : undefined;
 }
 
+export function memoryGuidanceScopes(conversationId?: string, options: MemoryLoadOptions = {}): string[] {
+  const scopes = ["agent"];
+  if (conversationId !== undefined && scopeId(conversationId)) scopes.push(`conversation:${conversationId}`);
+  if (options.senderToken !== undefined && /^[a-f0-9]{32}$/u.test(options.senderToken)) scopes.push(`user:${options.senderToken}`);
+  // No project scope: the harness has no host-confirmed active project id.
+  return scopes;
+}
+
+/** Exact-name graph lookup (or explicit person ID); bounded as in automatic recall. */
+export function resolveMemoryEntities(store: LabelRecallStore, query: string, about = false): Array<{ id: string; name: string }> {
+  const entities: Array<{ id: string; name: string }> = [];
+  const names = about ? [fold(query.trim())].filter((name) => name.length > 0 && name.length <= 160)
+    : entityNamesInQuery(query);
+  for (const entity of store.findMemoryEntitiesByNames?.(names) ?? []) {
+    if (PERSON_ID.test(entity.id) && entity.id.length <= 96) entities.push({ id: entity.id, name: entity.name });
+  }
+  const ids = about ? [query.trim()] : query.match(/\bperson:[a-z0-9]+(?:-[a-z0-9]+)*\b/gu) ?? [];
+  for (const id of ids) {
+    if (id.length <= 96 && PERSON_ID.test(id) && !entities.some((entity) => entity.id === id)) {
+      entities.push({ id, name: id });
+    }
+  }
+  if (about && entities.length !== 1) return [];
+  return entities.slice(0, about ? 1 : 3);
+}
+
 /** Only labelled, host-scoped background. Never alters the ordinary answer-evidence gate. */
 export function formatMemoryBackground(
   store: LabelRecallStore,
@@ -51,10 +77,7 @@ export function formatMemoryBackground(
   if (store.guidanceForScope === undefined || store.labelsForEntity === undefined) return undefined;
   const date = options.hostDate;
   if (date === undefined || !/^\d{4}-\d{2}-\d{2}$/u.test(date)) return undefined;
-  const scopes = ["agent"];
-  if (scopeId(conversationId)) scopes.push(`conversation:${conversationId}`);
-  if (options.senderToken !== undefined && /^[a-f0-9]{32}$/u.test(options.senderToken)) scopes.push(`user:${options.senderToken}`);
-  // No project scope: the harness has no host-confirmed active project id.
+  const scopes = memoryGuidanceScopes(conversationId, options);
   const scores = new Map(hits.map((hit) => [hit.record.id, hit.score]));
   const applicable = scopes.flatMap((scope) => store.guidanceForScope!(scope))
     .filter((hit) => hit.active && (hit.label.kind === "preference" || (hit.label.kind === "lesson" && hit.label.verified))
@@ -72,15 +95,7 @@ export function formatMemoryBackground(
     .sort((a, b) => (scores.get(b.memoryId) ?? 0) - (scores.get(a.memoryId) ?? 0) || a.memoryId.localeCompare(b.memoryId))
     .filter((hit, index, all) => all.findIndex((other) => other.text === hit.text) === index);
 
-  const entities: Array<{ id: string; name: string }> = [];
-  for (const entity of store.findMemoryEntitiesByNames?.(entityNamesInQuery(query)) ?? []) {
-    if (PERSON_ID.test(entity.id) && entity.id.length <= 96) entities.push({ id: entity.id, name: entity.name });
-  }
-  for (const id of query.match(/\bperson:[a-z0-9]+(?:-[a-z0-9]+)*\b/gu) ?? []) {
-    if (id.length <= 96 && PERSON_ID.test(id) && !entities.some((entity) => entity.id === id)) {
-      entities.push({ id, name: id });
-    }
-  }
+  const entities = resolveMemoryEntities(store, query);
   const explicitIds = new Set(query.match(/\bperson:[a-z0-9]+(?:-[a-z0-9]+)*\b/gu) ?? []);
   const ambiguous = new Set(entities.filter((entity) => !explicitIds.has(entity.id)
     && entities.some((other) => other.id !== entity.id && fold(other.name) === fold(entity.name)))

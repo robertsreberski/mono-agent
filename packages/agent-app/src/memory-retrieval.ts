@@ -21,6 +21,7 @@ import {
 } from "@mono-agent/memory/bujo";
 
 import { formatMemoryBackground, type LabelRecallStore } from "./memory-guidance.js";
+import { readLabelSections, type LabelSectionRequest } from "./memory-label-sections.js";
 import {
   createMemoryRecallServer,
   MEMORY_RECALL_MCP_SERVER_NAME,
@@ -89,6 +90,7 @@ interface TurnCache {
   readonly expansions: Map<string, Promise<MemoryRecallOutcome>>;
   readonly accessedIds: Set<string>;
   original?: OriginalRecallSelection;
+  context?: MemoryLoadOptions & { readonly conversationId: string };
 }
 
 interface SharedRecallHit {
@@ -154,6 +156,7 @@ export class MemoryRetrievalService implements MemoryStore {
       return undefined;
     }
     try {
+      this.turnCache(turnId).context = { ...options, conversationId };
       let outcome: MemoryRecallOutcome;
       if (ephemeral || originalQuestion.length === 0) {
         if (!ephemeral) this.setOriginalUnavailable(turnId, "empty");
@@ -277,6 +280,14 @@ export class MemoryRetrievalService implements MemoryStore {
 
   supportsGraphExpansion(): boolean {
     return this.store.expandGraph !== undefined && this.store.supportsGraphExpansion?.() !== false;
+  }
+
+  supportsLabelSections(): boolean {
+    return this.store.labelsForEntity !== undefined && this.store.guidanceForScope !== undefined;
+  }
+
+  labelSectionsForTurn(turnId: string, request: LabelSectionRequest) {
+    return readLabelSections(this.store, request, this.turns.get(turnId)?.context);
   }
 
   supportsJournalBrowse(): boolean {
@@ -428,6 +439,9 @@ export function createSharedMemoryRecallRuntimeExtension(
     const graphEnabled = service.supportsGraphExpansion();
     const boundStore: RecallCapableStore = {
       recall: (query, options) => service.recallForTurn(runId, query, options),
+      ...(service.supportsLabelSections() ? {
+        labelSections: (request: LabelSectionRequest) => service.labelSectionsForTurn(runId, request),
+      } : {}),
       recallWithOutcome: (query, options) => service.recallOutcomeForTurn(runId, query, options),
       recallOriginalWithOutcome: (originalOptions) => service.recallOriginalOutcomeForTurn(runId, {
         ...(originalOptions?.topK === undefined ? {} : { topK: originalOptions.topK }),

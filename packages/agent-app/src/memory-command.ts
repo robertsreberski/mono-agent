@@ -31,6 +31,7 @@ import {
   resolveGlobalTraceRegistryDir,
 } from "./app-config.js";
 import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
+import { resolveMemoryEntities, safeLine } from "./memory-guidance.js";
 import type {
   MemoryRecallBujoSettings,
   MemoryRecallSettings,
@@ -93,6 +94,10 @@ export interface RunMemoryCommandInput {
   readonly positionals: readonly string[];
   readonly json: boolean;
   readonly strict: boolean;
+  readonly labelKind?: "fact" | "preference" | "lesson";
+  readonly labelAbout?: string;
+  readonly labelScope?: string;
+  readonly propose?: boolean;
   readonly limit?: number;
   readonly idsFile?: string;
   readonly reason?: string;
@@ -216,6 +221,10 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
     }
     case "top":
       return await runTop(context, input);
+    case "labels":
+      return await runLabelInventory(context, input);
+    case "lessons":
+      return await runLessonProposal(context, input);
     case "audit":
       return input.strict
         ? await runStrictAudit(context, input.json)
@@ -240,7 +249,7 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       return await runMemoryBundleImport(context, rest, input);
     default:
       process.stderr.write(ui.errorLine(`Unknown memory subcommand \`${subcommand}\`.`));
-      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, audit, inspect [id], retry [id], resolve <id> <reason>, rebuild, rollback, adopt-replay, forget prepare|apply|restore, export, or import prepare|apply|restore."));
+      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, labels, lessons --propose, audit, inspect [id], retry [id], resolve <id> <reason>, rebuild, rollback, adopt-replay, forget prepare|apply|restore, export, or import prepare|apply|restore."));
       return 2;
   }
 }
@@ -248,6 +257,10 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
 function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefined {
   const [rawSubcommand, ...rest] = input.positionals;
   const subcommand = rawSubcommand ?? "stats";
+  if ((input.labelKind !== undefined || input.labelAbout !== undefined || input.labelScope !== undefined) && subcommand !== "labels") {
+    return "--kind, --about, and --scope require `mono-agent memory labels`.";
+  }
+  if (input.propose === true && subcommand !== "lessons") return "--propose requires `mono-agent memory lessons`.";
   if (input.strict && subcommand !== "audit") {
     return "--strict is only supported for `mono-agent memory audit`.";
   }
@@ -255,6 +268,10 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
     return "--limit is only supported for memory stats, search, and top.";
   }
   switch (subcommand) {
+    case "labels":
+      return rest.length === 0 ? undefined : "Usage: mono-agent memory labels [--kind k] [--about entity] [--scope s] [--json].";
+    case "lessons":
+      return rest.length === 0 && input.propose === true ? undefined : "Usage: mono-agent memory lessons --propose.";
     case "stats":
     case "today":
     case "top":
@@ -1629,6 +1646,70 @@ async function runIndexTransition(
     return 0;
   } catch (error) {
     process.stderr.write(ui.errorLine(`memory ${operation} failed: ${reasonOf(error)}`));
+    return 1;
+  }
+}
+
+async function runLabelInventory(context: MemoryCommandContext, input: RunMemoryCommandInput): Promise<number> {
+  return await readLabelIndex(context, input, "labels");
+}
+
+async function runLessonProposal(context: MemoryCommandContext, input: RunMemoryCommandInput): Promise<number> {
+  return await readLabelIndex(context, input, "lessons");
+}
+
+/** Reads the active SQLite projection only; never acquires the writer lease. */
+async function readLabelIndex(context: MemoryCommandContext, input: RunMemoryCommandInput, operation: "labels" | "lessons"): Promise<number> {
+  const memory = context.config.memory;
+  if (memory === undefined) { writeNoMemory(context.configPath, input.json); return 0; }
+  const { resolveActiveMemoryDbPath } = await loadBujoModule();
+  const { openMemoryDb } = await loadMemoryStoreModule();
+  try {
+    const path = await resolveActiveMemoryDbPath(memory.path);
+    if (!await exists(path)) {
+      write(input.json, { labels: [], proposals: [], truncated: false }, () => "No indexed labels.\n");
+      return 0;
+    }
+    const db = openMemoryDb({ path, readOnly: true });
+    try {
+      const about = input.labelAbout;
+      const entity = about === undefined ? undefined : resolveMemoryEntities({
+        findMemoryEntitiesByNames: (names) => db.findEntitiesByNames(names),
+      }, about, true)[0];
+      const filters = operation === "lessons" ? { kind: "lesson" as const }
+        : { ...(input.labelKind === undefined ? {} : { kind: input.labelKind }),
+          ...(input.labelScope === undefined ? {} : { scope: input.labelScope }),
+          ...(entity === undefined ? {} : { entityId: entity.id }) };
+      const inventory = about !== undefined && entity === undefined
+        ? { hits: [], truncated: false } as const : db.listLabels(filters);
+      if (operation === "labels") {
+        const rows = inventory.hits.map((hit) => ({ id: hit.memoryId, ordinal: hit.ordinal, label: hit.label,
+          text: hit.text, status: hit.status, recordedAt: hit.createdAt.slice(0, 10),
+          source: hit.sourceFile === undefined ? undefined : `${hit.sourceFile}${hit.sourceLine === undefined ? "" : `:${hit.sourceLine}`}` }));
+        write(input.json, { labels: rows, truncated: inventory.truncated }, () =>
+          rows.length === 0 ? "No matching labels.\n" : `${rows.map((row) =>
+            `${row.recordedAt} [${row.status}] ${row.source ?? row.id} ${JSON.stringify(row.label)} — ${safeLine(row.text)}`).join("\n")}\n${inventory.truncated ? "More labels exist; output capped at 200.\n" : ""}`);
+      } else {
+        const groups = new Map<string, typeof inventory.hits[number][]>();
+        for (const hit of inventory.hits) {
+          if (!hit.active || hit.label.kind !== "lesson" || !hit.label.verified) continue;
+          const normalized = safeLine(hit.text).normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+          const key = `${hit.label.scope}\0${normalized}`;
+          groups.set(key, [...(groups.get(key) ?? []), hit]);
+        }
+        const proposals = [...groups.values()].filter((group) => group.length >= 2).map((group) => ({
+          scope: group[0]!.label.kind === "lesson" ? group[0]!.label.scope : "agent",
+          snippet: `When applicable: ${safeLine(group[0]!.text)}`,
+          sources: group.map((hit) => `${hit.sourceFile ?? hit.memoryId}${hit.sourceLine === undefined ? "" : `:${hit.sourceLine}`}`),
+        }));
+        write(input.json, { proposals, truncated: inventory.truncated }, () => proposals.length === 0
+          ? "No repeated verified lessons to propose.\n"
+          : `${proposals.map((proposal) => `[${proposal.scope}] ${proposal.snippet}\nSources: ${proposal.sources.join(", ")}`).join("\n\n")}\n${inventory.truncated ? "Further labels omitted.\n" : ""}`);
+      }
+      return 0;
+    } finally { db.close(); }
+  } catch (error) {
+    process.stderr.write(ui.errorLine(`memory ${operation} read failed: ${reasonOf(error)}`));
     return 1;
   }
 }

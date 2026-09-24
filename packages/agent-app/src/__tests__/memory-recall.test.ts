@@ -631,6 +631,44 @@ describe("explicit-only coverage scoring", () => {
 });
 
 describe("backend-agnostic recall server", () => {
+  it("prepends labelled fact/history/conflicts and scoped guidance in both modes without filtering ordinary hits", async () => {
+    const birth = (id: string, active: boolean) => ({ memoryId: id, ordinal: 0,
+      text: "Morgan was born 1990-05-17.", status: active ? "open" : "invalidated", active,
+      conflict: active, currentAt: active, createdAt: "2026-09-06T00:00:00.000Z",
+      label: { v: 1 as const, kind: "fact" as const, entityId: "person:morgan", key: "birth_date",
+        value: { type: "date" as const, date: "1990-05-17" }, attribution: "user-stated" as const } });
+    const store = {
+      recall: async () => [{ score: 0.9, record: { id: "hit", text: "Morgan's birthday was noted.", createdAt: "2026-09-06" } }],
+      recallOriginalWithOutcome: async () => ({ available: true as const, query: "Morgan birthday",
+        outcome: { hits: [{ score: 0.9, record: { id: "hit", text: "Morgan's birthday was noted." } }], retrievalMode: "hybrid" as const } }),
+      labelsForEntity: () => [birth("current", true), birth("past", false)],
+      guidanceForScope: (scope: string) => scope === "agent" ? [{ memoryId: "guidance", ordinal: 0,
+        text: "Keep reports concise.", status: "open", active: true, conflict: false,
+        createdAt: "2026-09-06T00:00:00.000Z", label: { v: 1 as const, kind: "preference" as const,
+          scope: "agent", attribution: "user-stated" as const } }] : [],
+      findMemoryEntitiesByNames: (names: readonly string[]) => names.includes("morgan")
+        ? [{ id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00.000Z" }] : [],
+      close: async () => {},
+    };
+    const server = createMemoryRecallServer(store);
+    const client = new Client({ name: "label-recall", version: "0.1.0" }, { capabilities: {} });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await server.connect(st); await client.connect(ct);
+    try {
+      const factResult = await client.callTool({ name: "MemoryRecall", arguments: { query: "Morgan birthday", about: "morgan", kind: "fact" } });
+      expect(factResult.structuredContent).toMatchObject({ hits: [{ id: "hit" }], factSheet: [
+        { current: true, conflict: true, attribution: "user-stated" }, { current: false, conflict: false }],
+      });
+      expect(factResult.structuredContent).not.toHaveProperty("preferencesAndLessons");
+      const lessonResult = await client.callTool({ name: "MemoryRecall", arguments: { useOriginalQuery: true, kind: "preference" } });
+      expect(lessonResult.structuredContent).toMatchObject({ queryMode: "original", hits: [{ id: "hit" }],
+        preferencesAndLessons: [{ scope: "agent", text: "Keep reports concise." }] });
+      expect(lessonResult.structuredContent).not.toHaveProperty("factSheet");
+      expect(JSON.stringify(lessonResult.content)).toContain("Preferences & lessons:");
+      const absent = await client.callTool({ name: "MemoryRecall", arguments: { query: "Morgan birthday", about: "unmatched" } });
+      expect(absent.structuredContent).toMatchObject({ factSheet: [] });
+    } finally { await client.close(); await server.close(); }
+  });
   it("renders source and validity dates on direct or graph-expanded records when supplied", async () => {
     const store = {
       recall: async () => [{ score: 0.9, record: { id: "a", text: "Morgan was born in May" } }],
@@ -666,6 +704,8 @@ describe("backend-agnostic recall server", () => {
       const text = result.content.map((part) => part.text).join("\n");
       expect(text).toContain("user prefers dark mode");
       expect(result.structuredContent?.hits[0]?.text).toBe("user prefers dark mode");
+      expect(result.structuredContent).not.toHaveProperty("factSheet");
+      expect(result.structuredContent).not.toHaveProperty("preferencesAndLessons");
     } finally {
       await client.close();
       await server.close();
