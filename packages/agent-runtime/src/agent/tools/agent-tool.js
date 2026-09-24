@@ -532,6 +532,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         const onParentAbort = () => { timedOut ||= detached && signal?.reason?.name === "TimeoutError"; controller.abort(signal?.reason); if (detached) { clearTimeout(timer); requestDeadline(); } };
         if (signal?.aborted) { timedOut ||= detached && signal.reason?.name === "TimeoutError"; controller.abort(signal.reason); if (detached) requestDeadline(); }
         else signal?.addEventListener("abort", onParentAbort, { once: true });
+        const childDeadlineAt = Date.now() + timeoutMs;
         const timer = setTimeout(() => {
           childTimeoutFired = !signal?.aborted;
           timedOut = true;
@@ -590,7 +591,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
          * like the main turn's.
          */
         const invokeChildRun = (childPrompt, childMaxTurns, steerable = true) => subagents.run({
-          ...(detached && execution ? { detached: true, deadlineAt: execution.deadlineAt } : {}),
+          ...(detached ? (execution ? { detached: true, deadlineAt: execution.deadlineAt } : {}) : { deadlineAt: childDeadlineAt }),
           ...(instance?.activeTurn?.token ? { turnToken: instance.activeTurn.token } : {}),
           ...(execution?.managed ? { ownedForegroundProcesses: execution.managed.ownedForegroundProcesses,
             // Opaque host mailbox for parent steering; the host decides whether

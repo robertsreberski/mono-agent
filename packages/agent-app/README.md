@@ -169,10 +169,13 @@ while retaining the child lock and runtime lease through actual settlement.
 starting a new turn. Only a proven `resumable:true` receipt permits ordinary
 message continuation on the same session or `close:true`; `stop_requested`
 keeps messages/close blocked. Stop neither force-kills nor undoes external effects.
-Detached children receive a foreground Bash/Exec ceiling bounded by their own
-job’s remaining runtime and `subagents.commandTimeoutMs` (default 30 minutes).
-The job deadline remains authoritative; child-owned background commands are
-unsupported. Interactive and foreground-child caps, and NodeRepl, are unchanged.
+Children receive a foreground Bash/Exec ceiling bounded by
+`subagents.commandTimeoutMs` (default 30 minutes). Detached children clamp it to
+their job’s remaining runtime; foreground children clamp it to their remaining
+turn time minus a settlement reserve (10% for short turns, at most 15 seconds).
+The child timer, job deadline (when detached), and parent abort remain
+authoritative; child-owned background commands are unsupported. Interactive
+parent turns and NodeRepl keep their 120-second caps.
 See [background subagents](../../docs/tools/background-process-jobs.md#detached-persistent-children).
 
 ## Install / Usage

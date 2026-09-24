@@ -804,11 +804,14 @@ export function buildSubagentsOptions(
         }
         subagentQuestion = structuredClone(question);
       } } : undefined;
-    // Snapshot the command ceiling after child setup/queueing. The owning job
-    // signal remains authoritative as its remaining runtime decreases.
-    const commandTimeoutMs = request.detached === true && Number.isFinite(request.deadlineAt)
-      ? Math.max(1, Math.min(Math.floor(request.deadlineAt! - Date.now()), subagents.commandTimeoutMs ?? 1_800_000))
-      : undefined;
+    // Snapshot the command ceiling after child setup/queueing. Detached jobs
+    // retain their job deadline; foreground children reserve settlement time
+    // inside their own timer. Either abort signal can stop a command sooner.
+    const remainingMs = Number.isFinite(request.deadlineAt) ? Math.floor(request.deadlineAt! - Date.now()) : undefined;
+    const settlementMarginMs = remainingMs === undefined || request.detached === true
+      ? 0 : Math.min(15_000, Math.max(1, Math.floor(remainingMs / 10)));
+    const commandTimeoutMs = remainingMs === undefined ? undefined
+      : Math.max(1, Math.min(remainingMs - settlementMarginMs, subagents.commandTimeoutMs ?? 1_800_000));
     const childCapabilityOptions = {
       toolExposure: { askParent: askParentExposed, persistentSubagents: false, },
       ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
