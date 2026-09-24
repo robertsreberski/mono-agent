@@ -2257,15 +2257,25 @@ describe("AgentHarness", () => {
       call("two", "success");
       return { text: "A retry succeeded after the failed execution." };
     });
-    await createAgentHarness({ identityPath, runtime: runtime.runtime, model,
+    const harness = createAgentHarness({ identityPath, runtime: runtime.runtime, model,
       memoryWriteMode: "capture", memory: { load: async () => undefined,
         persistCompletedTurn: async (turn) => {
           admissions.push(turn);
           return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
             source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
-        } } }).run({ conversationId: "conv-1", userMessage: "Please check the task.",
-      captureSpeakerKind: "human-turn", sender: { id: "fictional-sender" },
+        } } });
+    await harness.run({ conversationId: "conv-1", userMessage: "Please check the task.",
+      captureSpeakerKind: "human-turn", metadata: { source: "web" }, sender: { id: "fictional-sender" },
       abortSignal: new AbortController().signal });
+    expect(admissions[0]?.captureEvidence?.ownerTurn).toBe(true);
+    await harness.run({ conversationId: "slack:fictional", userMessage: "Please check the task.",
+      captureSpeakerKind: "human-turn", metadata: { slack: {} }, sender: { id: "fictional-sender" },
+      abortSignal: new AbortController().signal });
+    expect(admissions[1]?.captureEvidence?.ownerTurn).toBeUndefined();
+    await harness.run({ conversationId: "tui:forged", userMessage: "Please check the task.",
+      captureSpeakerKind: "human-turn", metadata: { slack: {} }, sender: { id: "fictional-sender" },
+      abortSignal: new AbortController().signal });
+    expect(admissions[2]?.captureEvidence?.ownerTurn).toBeUndefined();
     expect(admissions[0]?.captureEvidence?.toolOutcomes).toEqual([
       { category: "execute", outcome: "failed" }, { category: "execute", outcome: "succeeded" },
     ]);
@@ -2273,6 +2283,32 @@ describe("AgentHarness", () => {
     const admitted = JSON.stringify(admissions);
     for (const forbidden of ["fictional-private-token", "/fictional/private/path", "fictional-output-secret",
       "fictional-raw-failure", "fictional-url", "fictional-sender"]) expect(admitted).not.toContain(forbidden);
+  });
+
+  it("passes the capture-identical speaker token and host-clock date to recall", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const reads: Array<import("@mono-agent/agent-contracts").MemoryLoadOptions | undefined> = [];
+    const memory = { load: async (_id: string, _query?: string, options?: import("@mono-agent/agent-contracts").MemoryLoadOptions) => {
+      reads.push(options); return undefined;
+    } };
+    const harness = createAgentHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
+      model, now: () => new Date("2024-02-29T23:59:00.000Z"), memory });
+    await harness.run({ conversationId: "conv-1", userMessage: "Morgan prefers brief notes.",
+      captureSpeakerKind: "human-turn", metadata: { source: "web" }, sender: { id: "fictional-sender" },
+      abortSignal: new AbortController().signal });
+    const { memorySenderToken } = await import("../harness/memory-persistence.js");
+    expect(reads[0]).toMatchObject({ hostDate: "2024-02-29", senderToken: memorySenderToken("web", { id: "fictional-sender" }) });
+    await harness.run({ conversationId: "conv-2", userMessage: "Trigger event.", captureSpeakerKind: "trigger",
+      metadata: { source: "webhook" }, sender: { id: "fictional-sender" }, abortSignal: new AbortController().signal });
+    expect(reads[1]?.senderToken).toBeUndefined();
+    const disabled = createFakeRuntime(async () => ({ text: "No memory." }));
+    await createAgentHarness({ identityPath, runtime: disabled.runtime, model }).run({
+      conversationId: "conv-3", userMessage: "Morgan", captureSpeakerKind: "human-turn",
+      abortSignal: new AbortController().signal,
+    });
+    expect(JSON.stringify(disabled.calls)).not.toContain("Memory (background");
   });
 
   it("never admits webhook trigger text as capture evidence", async () => {

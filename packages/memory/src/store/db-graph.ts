@@ -387,6 +387,20 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM entities`).get() as { n: number }).n;
   }
 
+  /** Bounded exact folded-name lookup; no per-turn graph inventory scan. */
+  findEntitiesByNames(names: readonly string[]): EntityRecord[] {
+    if (names.length === 0) return [];
+    if (names.length > 48 || names.some((name) => name.length > 160 || name.length === 0)) {
+      throw new Error("memory-store: entity name lookup exceeds bounds.");
+    }
+    const placeholders = names.map(() => "?").join(", ");
+    const rows = this.db.prepare(`SELECT * FROM entities WHERE id LIKE 'person:%'
+      AND mono_agent_fold_entity_name(name) IN (${placeholders}) ORDER BY id LIMIT 9`)
+      .all(...names) as Record<string, unknown>[];
+    // Nine matches may hide ambiguous identities beyond the cap; abstain.
+    return rows.length === 9 ? [] : rows.map((row) => this.entityFromRow(row));
+  }
+
   /** A bounded entity page ordered deterministically by name and id, for index projections. */
   listEntities(limit = 50, offset = 0): EntityRecord[] {
     const rows = this.db.prepare(

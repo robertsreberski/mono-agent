@@ -639,7 +639,7 @@ describe("agent host composition helpers", () => {
       { append: async () => {} },
     );
 
-    expect(load).toHaveBeenCalledWith("generic-store", "Recall this", { turnId: "run-generic-store" });
+    expect(load).toHaveBeenCalledWith("generic-store", "Recall this", expect.objectContaining({ turnId: "run-generic-store" }));
     expect(JSON.stringify(fake.calls[0])).toContain("Neutral injected memory.");
     expect(persistCompletedTurn).toHaveBeenCalledWith(expect.objectContaining({
       runId: "run-generic-store",

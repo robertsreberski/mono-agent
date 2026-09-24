@@ -20,6 +20,7 @@ import {
   type JournalBrowseSnapshot,
 } from "@mono-agent/memory/bujo";
 
+import { formatMemoryBackground, type LabelRecallStore } from "./memory-guidance.js";
 import {
   createMemoryRecallServer,
   MEMORY_RECALL_MCP_SERVER_NAME,
@@ -28,7 +29,7 @@ import {
   type RecallCapableStore,
 } from "./memory-recall.js";
 
-export interface SharedRecallStore extends MemoryStore, RecallCapableStore {
+export interface SharedRecallStore extends MemoryStore, RecallCapableStore, LabelRecallStore {
   /** Local-tier chronology. External recall backends intentionally omit it. */
   tier?(): "lite" | "journal" | "bujo";
   browseJournal?(input: JournalBrowseInput): Promise<JournalBrowseSnapshot>;
@@ -181,15 +182,24 @@ export class MemoryRetrievalService implements MemoryStore {
         }
       }
       const hits = selectAutomaticRecallHits(outcome.hits, { query: evidenceQuery });
-      if (hits.length === 0) {
-        if (outcome.degradation?.code === "embedding_unavailable") {
-          throw new Error("Semantic memory retrieval is unavailable; lexical-only recall found no eligible automatic evidence.");
-        }
-        return undefined;
+      // Keep the degraded-no-evidence warning even if labels could render a card.
+      if (hits.length === 0 && outcome.degradation?.code === "embedding_unavailable") {
+        throw new Error("Semantic memory retrieval is unavailable; lexical-only recall found no eligible automatic evidence.");
       }
-      const block = formatRecallBlock(hits, this.source, this.maxBytes, outcome.degradation);
-      this.recordServed(turnId, hits);
-      return block;
+      const block = hits.length > 0 ? formatRecallBlock(hits, this.source, this.maxBytes, outcome.degradation) : undefined;
+      let background: ReturnType<typeof formatMemoryBackground>;
+      try {
+        const available = this.maxBytes - (block === undefined ? 0 : Buffer.byteLength(block.content, "utf8") + 2);
+        background = formatMemoryBackground(this.store, evidenceQuery, conversationId, options, outcome.hits, available);
+      } catch {
+        // Corrupt or temporarily unavailable labels must not erase ordinary recall.
+        background = undefined;
+      }
+      if (block === undefined && !background?.content) return undefined;
+      if (hits.length > 0) this.recordServed(turnId, hits);
+      return { kind: "markdown", source: this.source,
+        content: [block?.content, background?.content].filter((text) => text !== undefined && text.length > 0).join("\n\n"),
+        truncated: (block?.truncated ?? false) || (background?.truncated ?? false) };
     } finally {
       if (ephemeral) this.releaseTurn(turnId);
     }

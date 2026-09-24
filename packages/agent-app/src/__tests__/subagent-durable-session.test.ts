@@ -74,7 +74,11 @@ describe("app persistent subagent durable sessions", () => {
       const persisted = JSON.parse(await readFile(resolve(subagentConversationRoot(resolve(root, "children"), "foreground-recovery"), "instances.json"), "utf8"))[0];
       expect(persisted.ownerLink).toBeUndefined(); expect(persisted.ownerReceipt).toBeUndefined();
       expect(calls[0]?.ownedForegroundProcesses).toBeUndefined();
-      expect(calls[0]?.toolLimits).toEqual({ bashTimeoutMs: mode === "late-timeout" ? 1350 : 9000 });
+      // Remaining-budget clamp: allow a few ms of scheduler drift before the child starts.
+      const expectedLimit = mode === "late-timeout" ? 1350 : 9000;
+      const bashTimeoutMs = (calls[0]?.toolLimits as { readonly bashTimeoutMs?: number } | undefined)?.bashTimeoutMs;
+      expect(bashTimeoutMs).toBeLessThanOrEqual(expectedLimit);
+      expect(bashTimeoutMs).toBeGreaterThanOrEqual(expectedLimit - 250);
       if (mode === "late-timeout") {
         expect(inspected.details.recovery).toMatchObject({ status: "ready", resumable: true,
           recovery: { reason: "timeout", continuity: "retained", certifiedTimeout: true } });

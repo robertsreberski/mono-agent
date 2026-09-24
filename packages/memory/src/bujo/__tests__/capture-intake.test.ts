@@ -95,6 +95,21 @@ describe("completed-turn durable intake", () => {
     expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(true);
   });
 
+  it("commits owner-turn evidence without changing older capture hashes", () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot);
+    const previous = { userText: "Morgan prefers concise notes.", toolOutcomes: [] };
+    intake.admit(turn({ runId: "without-owner", captureEvidence: previous }));
+    expect(intake.admit(turn({ runId: "without-owner", captureEvidence: previous })).admissionStatus).toBe("duplicate");
+    expect(() => intake.admit(turn({ runId: "without-owner", captureEvidence: { ...previous, ownerTurn: true } })))
+      .toThrow(/conflicts/iu);
+    const admitted = intake.admit(turn({ runId: "owner", captureEvidence: { ...previous, ownerTurn: true } }));
+    expect(JSON.parse(readFileSync(admitted.source, "utf8")).captureEvidence.ownerTurn).toBe(true);
+    expect(() => intake.admit(turn({ runId: "invalid-owner", captureEvidence: { ...previous, ownerTurn: false } as never })))
+      .toThrow(/owner turn is invalid/iu);
+    intake.abortForShutdown(false);
+  });
+
   it("persists only outcome categories, never webhook trigger text, for a trigger turn", () => {
     const memoryRoot = root();
     const intake = manager(memoryRoot);

@@ -84,6 +84,7 @@ export async function persistSuccessfulMemory(
     readonly source?: string;
     readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
     readonly sender?: AgentMessageSender;
+    readonly ownerTurn?: true;
     readonly trustedUserText?: string;
     readonly toolOutcomes?: MemoryCaptureEvidence["toolOutcomes"];
     readonly emit?: (event: RuntimeEventLike) => void;
@@ -177,6 +178,13 @@ function toolOutcomeBlock(options: MemoryTurnOptions): string {
     .map(({ category, outcome }) => `${category}: ${outcome}`).join("\n")}`;
 }
 
+export function memorySenderToken(source: string | undefined, sender: AgentMessageSender | undefined): string | undefined {
+  const id = sender?.id;
+  return typeof id === "string" && id.length > 0 && Buffer.byteLength(id, "utf8") <= 256
+    ? createHash("sha256").update(`${source ?? "unknown"}\0${id}`).digest("hex").slice(0, 32)
+    : undefined;
+}
+
 function captureEvidence(options: MemoryTurnOptions): MemoryCaptureEvidence | undefined {
   // Only a host-stamped human turn may retain its outer message as evidence.
   // Automated/webhook bodies never enter the intake, even when supplied by a caller.
@@ -184,12 +192,11 @@ function captureEvidence(options: MemoryTurnOptions): MemoryCaptureEvidence | un
     ? options.trustedUserText : "";
   if (userText === undefined || Buffer.byteLength(userText, "utf8") > 16 * 1024
     || /[\p{Cs}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(userText)) return undefined;
-  const id = options.sender?.id;
-  const senderToken = options.captureSpeakerKind === "human-turn" && typeof id === "string"
-    && id.length > 0 && Buffer.byteLength(id, "utf8") <= 256
-    ? createHash("sha256").update(`${options.source ?? "unknown"}\0${id}`).digest("hex").slice(0, 32)
+  const senderToken = options.captureSpeakerKind === "human-turn"
+    ? memorySenderToken(options.source, options.sender)
     : undefined;
   return { userText, ...(senderToken === undefined ? {} : { senderToken }),
+    ...(options.ownerTurn === true ? { ownerTurn: true as const } : {}),
     toolOutcomes: [...(options.toolOutcomes ?? [])] };
 }
 
@@ -208,6 +215,7 @@ interface MemoryTurnOptions {
   readonly source?: string;
   readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
   readonly sender?: AgentMessageSender;
+  readonly ownerTurn?: true;
   readonly trustedUserText?: string;
   readonly toolOutcomes?: MemoryCaptureEvidence["toolOutcomes"];
 }

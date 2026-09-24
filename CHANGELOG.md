@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add bounded, scoped working preferences and lessons plus sourced person cards
+  to automatic BuJo recall. Conflicting facts prompt a question; direct-fact
+  selection and remote memory stores retain their existing behavior.
+
 - Stop a Pi-native turn that is aborted while proactive or mid-run compaction is
   being prepared. It now returns cancelled before the provider request instead of
   running the model and tools and rolling the turn back afterwards.
