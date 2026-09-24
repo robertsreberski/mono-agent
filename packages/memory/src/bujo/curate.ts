@@ -165,7 +165,7 @@ function mergePairs(root: string, proposals: readonly CurateProposal[]): Map<str
     if (proposal.action !== "merge") continue;
     const { from, to } = proposal.mergeEntity!;
     const source = entities.get(from); const target = entities.get(to);
-    if (!source || !target || source.id.split(":")[0] !== target.id.split(":")[0]
+    if (!source || !target || source.type === undefined || target.type === undefined || source.type !== target.type
       || normalizeName(source.name) !== normalizeName(target.name) || pairs.has(from) || pairs.has(to)
       || [...pairs.values()].includes(from) || [...pairs.values()].includes(to)
       || !proposal.source.text.toLowerCase().includes(source.name.toLowerCase())) throw new Error("memory-curate: ambiguous entity merge");

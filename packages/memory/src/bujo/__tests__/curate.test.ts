@@ -208,3 +208,23 @@ describe("curate preview label capacity", () => {
     expect(() => previewCurateMutations(path, [{ source: full, action: "label", labels: [label], accepted: true }])).toThrow();
   });
 });
+
+describe("curate merge identity safety", () => {
+  it("rejects same-prefix cross-type identities and self-relations before backup", async () => {
+    const { appendGraphBatch } = await import("../graph.js");
+    const { previewCurateMutations } = await import("../curate.js");
+    const at = "2026-07-12T10:00:00.000Z";
+    const path = root(); seed(path, "fictional-a", "Morgan used a fictional alias.");
+    appendGraphBatch(path, { entities: [
+      { id: "person:morgan", name: "Morgan", type: "person", createdAt: at },
+      { id: "person:morgan-alias", name: "Morgan", type: "project", createdAt: at },
+    ] });
+    const source = inspectCurateSource(path).lines[0]!;
+    const proposal = { source, action: "merge" as const, accepted: true,
+      mergeEntity: { from: "person:morgan-alias", to: "person:morgan" } };
+    expect(() => previewCurateMutations(path, [proposal])).toThrow(/ambiguous entity merge/u);
+    appendGraphBatch(path, { entities: [{ id: "person:morgan-alias", name: "Morgan", type: "person", createdAt: at }],
+      relations: [{ src: "person:morgan", dst: "person:morgan-alias", relation: "collaborates", createdAt: at }] });
+    expect(() => previewCurateMutations(path, [proposal])).toThrow(/self-relation/u);
+  });
+});
