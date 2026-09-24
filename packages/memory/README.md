@@ -167,6 +167,8 @@ and reports its file and line in audit; new writes reject invalid labels. Only `
 and `dropped` statuses make labels inactive; other statuses remain live. Internal
 `MemoryDb.labelsForEntity(entityId, asOfDate?)` returns fact labels, history,
 and conflicts; `guidanceForScope(scope)` returns preferences and lessons.
+`listLabels` reads up to 200 labelled rows (including inactive history) with
+kind/entity/scope filters and indexed source file/line, without a writer lease.
 BuJo capture can attach labels in its existing extraction call, dropping unsupported
 individual labels while retaining the memory. A fact needs support in the retained
 sentence; user-stated facts and preferences additionally require host-observed human

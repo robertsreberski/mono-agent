@@ -420,6 +420,11 @@ export class BujoMemoryStore implements MemoryStore {
     return this.db.findEntitiesByNames(names);
   }
 
+  listLabels(filters: Parameters<MemoryDb["listLabels"]>[0] = {}, limit = 200) {
+    this.assertOpen("listLabels");
+    return this.db.listLabels(filters, limit);
+  }
+
   /** Query-based hybrid recall (text + score). Used by the MCP and any deliberate recall surface. */
   async recall(query: string, options: { topK?: number; trackAccess?: boolean } = {}): Promise<RecallHit[]> {
     this.assertOpen("recall");

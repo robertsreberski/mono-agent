@@ -70,6 +70,24 @@ function fakeStore(options: { readonly fail?: boolean; readonly disputed?: boole
 }
 
 describe("MemoryRetrievalService", () => {
+  it("scopes explicit labelled guidance to the host-bound original turn", async () => {
+    const senderToken = "a".repeat(32);
+    const store = Object.assign(fakeStore(), {
+      labelsForEntity: () => [],
+      guidanceForScope: (scope: string) => scope === `user:${senderToken}` ? [{
+        memoryId: "guidance", ordinal: 0, status: "open", text: "Keep reports concise.", active: true,
+        conflict: false, createdAt: "2026-09-06T00:00:00.000Z",
+        label: { v: 1 as const, kind: "preference" as const, scope, attribution: "user-stated" as const },
+      }] : [],
+    });
+    const service = new MemoryRetrievalService(store);
+    await service.load("conv", "Morgan launch color", { turnId: "turn", senderToken, hostDate: "2026-09-24" });
+    expect(service.labelSectionsForTurn("turn", { query: "Morgan launch color", kind: "preference" })?.preferencesAndLessons)
+      .toMatchObject([{ scope: `user:${senderToken}` }]);
+    service.releaseTurn("turn");
+    expect(service.labelSectionsForTurn("turn", { query: "Morgan launch color", kind: "preference" })?.preferencesAndLessons)
+      .toEqual([]);
+  });
   it("forwards chronological browse only when the local store affirms the capability", async () => {
     const absent = new MemoryRetrievalService(fakeStore());
     expect(absent.supportsJournalBrowse()).toBe(false);

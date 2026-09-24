@@ -37,6 +37,93 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
+describe("memory label CLI flags", () => {
+  it("parses only the two read-only label verbs", () => {
+    expect(parseCliArgs(["memory", "labels", "--kind", "fact", "--about", "Morgan", "--scope", "agent", "--json"]))
+      .toMatchObject({ positionals: ["labels"], labelKind: "fact", labelAbout: "Morgan", labelScope: "agent", json: true });
+    expect(parseCliArgs(["memory", "lessons", "--propose"]).propose).toBe(true);
+    expect(() => parseCliArgs(["memory", "stats", "--kind", "lesson"])).toThrow(/memory labels/iu);
+    expect(() => parseCliArgs(["memory", "labels", "--kind", "unknown"])).toThrow(/--kind/iu);
+    expect(helpTopicText("memory")).toContain("memory lessons --propose");
+  });
+
+  it("preserves command-specific JSON envelopes without an index", async () => {
+    const dir = await agentDir({ memory: { mode: "lite", path: join(await tempDir(), "empty"),
+      writeMode: "append-host-summary", recallTool: { enabled: false } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    expect(JSON.parse((await invoke(["memory", "labels", "--json"])).stdout))
+      .toEqual({ labels: [], truncated: false });
+    expect(JSON.parse((await invoke(["memory", "lessons", "--propose", "--json"])).stdout))
+      .toEqual({ proposals: [], truncated: false });
+  });
+
+  it("requires two distinct source lines, not two labels on one memory, for a proposal", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({ memory: { mode: "lite", path: memoryRoot,
+      writeMode: "append-host-summary", recallTool: { enabled: false } } });
+    await seedLocalStore(memoryRoot);
+    const db = openMemoryDb({ path: join(memoryRoot, "memory.db") });
+    try {
+      const record = db.topSalient(1)[0]!;
+      db.replaceMemoryLabels(record.id, [{ v: 1, kind: "lesson", scope: "agent", verified: true },
+        { v: 1, kind: "lesson", scope: "agent", verified: true }]);
+      const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "lessons", "--propose", "--json"]))));
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout).proposals).toEqual([]);
+      for (let index = 0; index < 201; index++) {
+        const id = `lesson:cap-${index}`;
+        db.upsertLexical({ ...record, id, text: `Unique lesson ${index}.`,
+          source: { file: "daily/2026-09-06.md", line: index + 1 } });
+        db.replaceMemoryLabels(id, [{ v: 1, kind: "lesson", scope: "agent", verified: true }]);
+      }
+      const capped = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "lessons", "--propose"]))));
+      expect(capped.stdout).toContain("Inventory truncated at 200; proposals may be incomplete.");
+    } finally { db.close(); }
+  });
+
+  it("reads labelled history while a writer runs and proposes only repeated verified lessons", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({ memory: { mode: "lite", path: memoryRoot,
+      writeMode: "append-host-summary", recallTool: { enabled: false } } });
+    await seedLocalStore(memoryRoot);
+    const db = openMemoryDb({ path: join(memoryRoot, "memory.db") });
+    const records = db.topSalient(20);
+    const one = records.find((row) => row.text.startsWith("Deploy"))!;
+    const two = records.find((row) => row.id !== one.id)!;
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00.000Z" });
+    db.replaceMemoryLabels(one.id, [{ v: 1, kind: "lesson", scope: "agent", verified: true },
+      { v: 1, kind: "fact", entityId: "person:morgan", key: "birth_date",
+        value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" }]);
+    db.replaceMemoryLabels(two.id, [{ v: 1, kind: "lesson", scope: "agent", verified: false }]);
+    db.upsertLexical({ ...one, id: "lesson:repeat", text: "Deploy pipeline uses blue green releases!",
+      source: { file: "daily/2026-09-06.md", line: 99 } });
+    db.replaceMemoryLabels("lesson:repeat", [{ v: 1, kind: "lesson", scope: "agent", verified: true }]);
+    // Same normalized instruction and scope; an unverified third lesson is excluded.
+    const writer = createBujoMemoryStore({ root: memoryRoot });
+    try {
+      const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+      const all = await invoke(["memory", "labels", "--json"]);
+      expect(all.stderr).toBe("");
+      expect(all.code).toBe(0);
+      expect(JSON.parse(all.stdout)).toMatchObject({ labels: expect.arrayContaining([
+        expect.objectContaining({ label: expect.objectContaining({ kind: "fact" }), source: expect.any(String),
+          status: "open", recordedAt: expect.any(String) }),
+      ]) });
+      const exact = await invoke(["memory", "labels", "--kind", "fact", "--about", "morgan", "--json"]);
+      expect(JSON.parse(exact.stdout).labels).toHaveLength(1);
+      const filtered = await invoke(["memory", "labels", "--scope", "agent"]);
+      expect(filtered.stdout).toContain("lesson");
+      const proposals = await invoke(["memory", "lessons", "--propose", "--json"]);
+      expect(JSON.parse(proposals.stdout).proposals).toMatchObject([
+        { scope: "agent", snippet: expect.stringContaining("Deploy pipeline"), sources: expect.any(Array) },
+      ]);
+      expect(JSON.parse(proposals.stdout).proposals[0].sources).toHaveLength(2);
+    } finally { await writer.close(); db.close(); }
+  });
+});
+
 describe("parseCliArgs memory bundles", () => {
   it("parses export and import flags", () => {
     expect(parseCliArgs(["memory", "export", "--bundle", "/tmp/b", "--include-extras", "--json"]))

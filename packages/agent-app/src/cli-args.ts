@@ -144,6 +144,10 @@ export interface ParsedCliArgs {
   readonly json?: boolean;
   /** memory audit: fail closed on degraded or unknown health. */
   readonly strict?: boolean;
+  readonly labelKind?: "fact" | "preference" | "lesson";
+  readonly labelAbout?: string;
+  readonly labelScope?: string;
+  readonly propose?: boolean;
   /** memory: max rows for search/top/entity preview. */
   readonly limit?: number;
   /** continuations list: opaque keyset cursor from the previous page. */
@@ -205,6 +209,9 @@ const CLI_VALUE_FLAGS = new Set([
   "--stale-after-ms",
   "--limit",
   "--cursor",
+  "--kind",
+  "--about",
+  "--scope",
   "--ids-file",
   "--reason",
   "--plan",
@@ -245,6 +252,7 @@ const CLI_BOOLEAN_FLAGS = new Set([
   "--update",
   "--no-docs-mcp",
   "--json",
+  "--propose",
   "--strict",
   "--include-extras",
   "--allow-pending",
@@ -368,6 +376,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let staleAfterMs: number | undefined;
   let json = false;
   let strict = false;
+  let labelKind: "fact" | "preference" | "lesson" | undefined;
+  let labelAbout: string | undefined;
+  let labelScope: string | undefined;
+  let propose = false;
   let limit: number | undefined;
   let cursor: string | undefined;
   let idsFile: string | undefined;
@@ -456,6 +468,23 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--strict":
         strict = true;
+        break;
+      case "--propose":
+        propose = true;
+        break;
+      case "--kind": {
+        const value = requireValue(rest, ++i, flag);
+        if (value !== "fact" && value !== "preference" && value !== "lesson") throw new Error("--kind must be fact, preference, or lesson.");
+        labelKind = value;
+        break;
+      }
+      case "--about":
+        labelAbout = requireValue(rest, ++i, flag);
+        if (labelAbout.length > 160) throw new Error("--about exceeds 160 characters.");
+        break;
+      case "--scope":
+        labelScope = requireValue(rest, ++i, flag);
+        if (labelScope.length > 128) throw new Error("--scope exceeds 128 characters.");
         break;
       case "--limit": {
         const raw = requireValue(rest, ++i, flag);
@@ -758,6 +787,13 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (cursor !== undefined && cmd !== "continuations") {
     throw new Error("--cursor is only supported for `mono-agent continuations list`.");
   }
+  if ((labelKind !== undefined || labelAbout !== undefined || labelScope !== undefined)
+    && (cmd !== "memory" || positionals[0] !== "labels")) {
+    throw new Error("--kind, --about, and --scope are only supported for `mono-agent memory labels`.");
+  }
+  if (propose && (cmd !== "memory" || positionals[0] !== "lessons")) {
+    throw new Error("--propose is only supported for `mono-agent memory lessons`.");
+  }
   if (strict && (cmd !== "memory" || (positionals[0] ?? "stats") !== "audit")) {
     throw new Error("--strict is only supported for `mono-agent memory audit`.");
   }
@@ -915,6 +951,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(staleAfterMs === undefined ? {} : { staleAfterMs }),
     ...(json ? { json } : {}),
     ...(strict ? { strict } : {}),
+    ...(labelKind === undefined ? {} : { labelKind }),
+    ...(labelAbout === undefined ? {} : { labelAbout }),
+    ...(labelScope === undefined ? {} : { labelScope }),
+    ...(propose ? { propose } : {}),
     ...(limit === undefined ? {} : { limit }),
     ...(cursor === undefined ? {} : { cursor }),
     ...(idsFile === undefined ? {} : { idsFile }),

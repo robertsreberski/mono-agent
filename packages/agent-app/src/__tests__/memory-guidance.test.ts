@@ -78,6 +78,8 @@ describe("automatic labelled background", () => {
       findMemoryEntitiesByNames: () => [
         { id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00Z" },
         { id: "person:morgan-two", name: "Mórgan", createdAt: "2026-09-06T00:00:00Z" },
+        { id: "person:morgan-three", name: "Morgan", createdAt: "2026-09-06T00:00:00Z" },
+        { id: "person:morgan-four", name: "Mórgan", createdAt: "2026-09-06T00:00:00Z" },
       ],
     };
     expect(formatMemoryBackground(duplicated, "Morgan", "current", options, [])).toBeUndefined();

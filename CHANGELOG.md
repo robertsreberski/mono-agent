@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add labelled fact sheets and scoped guidance to explicit `MemoryRecall`, plus
+  read-only `memory labels` and `memory lessons --propose` operator views. Remote
+  recall backends and ordinary dated hits remain unchanged.
+
 - Add bounded, scoped working preferences and lessons plus sourced person cards
   to automatic BuJo recall. Conflicting facts prompt a question; direct-fact
   selection and remote memory stores retain their existing behavior.

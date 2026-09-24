@@ -11,6 +11,7 @@ export interface MemoryLabelHit extends IndexedMemoryLabel {
   readonly text: string;
   readonly status: string;
   readonly sourceFile?: string;
+  readonly sourceLine?: number;
   readonly createdAt: string;
   readonly active: boolean;
   readonly conflict: boolean;
@@ -64,7 +65,7 @@ export class MemoryDbLabels extends MemoryDbGraph {
   labelsForEntity(entityId: string, asOfDate?: string): readonly MemoryLabelHit[] {
     assertMemoryLabelEntity(entityId);
     if (asOfDate !== undefined) assertMemoryLabelDate(asOfDate);
-    const hits = this.labelHits("entity_id = ?", entityId);
+    const hits = this.labelHits("entity_id = ?", [entityId]);
     const active = hits.filter((hit) => hit.active && hit.label.kind === "fact");
     return hits.map((hit) => {
       const label = hit.label;
@@ -86,21 +87,39 @@ export class MemoryDbLabels extends MemoryDbGraph {
 
   guidanceForScope(scope: string): readonly MemoryLabelHit[] {
     assertMemoryLabelScope(scope);
-    return this.labelHits("scope = ?", scope);
+    return this.labelHits("scope = ?", [scope]);
   }
 
-  private labelHits(predicate: string, argument: string): MemoryLabelHit[] {
+  /** Bounded index-only operator inventory; includes inactive labels as history. */
+  listLabels(filters: { kind?: MemoryLabel["kind"]; entityId?: string; scope?: string } = {}, limit = 200):
+    { hits: readonly MemoryLabelHit[]; truncated: boolean } {
+    if (filters.entityId !== undefined) assertMemoryLabelEntity(filters.entityId);
+    if (filters.scope !== undefined) assertMemoryLabelScope(filters.scope);
+    if (filters.kind !== undefined && !["fact", "preference", "lesson"].includes(filters.kind)) throw new Error("memory-store: invalid label kind.");
+    const predicates: string[] = ["memory_id IS NOT NULL"];
+    const args: string[] = [];
+    for (const [column, value] of [["kind", filters.kind], ["entity_id", filters.entityId], ["scope", filters.scope]] as const) {
+      if (value !== undefined) { predicates.push(`${column} = ?`); args.push(value); }
+    }
+    const cap = Number.isInteger(limit) ? Math.max(1, Math.min(limit, 200)) : 200;
+    const rows = this.labelHits(predicates.join(" AND "), args, cap + 1);
+    return { hits: rows.slice(0, cap), truncated: rows.length > cap };
+  }
+
+  private labelHits(predicate: string, args: readonly string[], limit?: number): MemoryLabelHit[] {
     if (!this.tableExists("memory_labels")) return [];
     const rows = this.db.prepare(`SELECT l.memory_id AS memoryId, l.ordinal, l.payload,
-      m.text, m.status, m.source_file AS sourceFile, m.created_at AS createdAt
+      m.text, m.status, m.source_file AS sourceFile, m.source_line AS sourceLine, m.created_at AS createdAt
       FROM memory_labels l JOIN memories m ON m.id = l.memory_id WHERE l.${predicate}
-      ORDER BY l.memory_id COLLATE BINARY, l.ordinal`).all(argument) as Array<{
+      ORDER BY l.memory_id COLLATE BINARY, l.ordinal ${limit === undefined ? "" : "LIMIT ?"}`)
+      .all(...args, ...(limit === undefined ? [] : [limit])) as Array<{
         memoryId: string; ordinal: number; payload: string; text: string; status: string;
-        sourceFile: string | null; createdAt: string;
+        sourceFile: string | null; sourceLine: number | null; createdAt: string;
       }>;
     return rows.map((row) => ({ memoryId: row.memoryId, ordinal: row.ordinal,
       label: validateMemoryLabel(JSON.parse(row.payload) as unknown), text: row.text,
       status: row.status, ...(row.sourceFile === null ? {} : { sourceFile: row.sourceFile }),
+      ...(row.sourceLine === null ? {} : { sourceLine: row.sourceLine }),
       createdAt: row.createdAt, active: row.status !== "invalidated" && row.status !== "dropped", conflict: false }))
       .sort((a, b) => byteOrder(a.memoryId, b.memoryId) || a.ordinal - b.ordinal);
   }

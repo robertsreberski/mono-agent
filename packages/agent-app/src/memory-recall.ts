@@ -8,6 +8,8 @@ import type { MemoryStatus, MemoryType } from "@mono-agent/memory/store";
 import { isConversationRelativeQuery } from "@mono-agent/memory/bujo";
 import { normalizeOptionalString } from "@mono-agent/agent-contracts";
 import * as z from "zod/v4";
+import { readLabelSections, type LabelKind, type LabelSectionRequest, type LabelSections } from "./memory-label-sections.js";
+import type { LabelRecallStore } from "./memory-guidance.js";
 
 import type {
   MemoryRecallEmbeddings,
@@ -59,7 +61,8 @@ export interface MemoryRecallOutcome {
 }
 
 /** Read-only recall surface the MCP server formats. Both backend stores satisfy it structurally. */
-export interface RecallCapableStore {
+export interface RecallCapableStore extends LabelRecallStore {
+  labelSections?(request: LabelSectionRequest): LabelSections | undefined;
   recall(
     query: string,
     options?: { readonly topK?: number; readonly trackAccess?: boolean },
@@ -219,9 +222,15 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     ? `${baseDescription} When a rephrased targeted search loses relevant candidates, use original-query mode deliberately to inspect the current logical turn's unchanged automatic lookup question; this does not broaden automatic memory injection.`
     : baseDescription;
   const limitSchema = z.number().int().min(1).max(50).optional().describe("Max results (default 8).");
+  const labelArgs = {
+    kind: z.enum(["fact", "preference", "lesson"]).optional()
+      .describe("Filter labelled fact-sheet/guidance sections only, not ordinary dated hits. Available for local BuJo memory; ignored by remote stores."),
+    about: z.string().trim().min(1).max(160).optional()
+      .describe("Exact person entity ID or name for the local BuJo fact sheet. Ambiguous names show entity IDs; use an ID to disambiguate. Guidance is empty in about mode. Ordinary hits stay unchanged; remote stores ignore this option."),
+  };
   type ToolArgs =
-    | { readonly query: string; readonly useOriginalQuery?: false; readonly limit?: number }
-    | { readonly useOriginalQuery: true; readonly limit?: number };
+    | { readonly query: string; readonly useOriginalQuery?: false; readonly limit?: number; readonly kind?: LabelKind; readonly about?: string }
+    | { readonly useOriginalQuery: true; readonly limit?: number; readonly kind?: LabelKind; readonly about?: string };
 
   const handleRecall = async (args: ToolArgs) => {
     const originalMode = args.useOriginalQuery === true;
@@ -314,6 +323,22 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     // Explicit tool ranking only. Automatic recall consumes the original backend
     // scores, including its calibrated threshold and lexical-only abstention.
     hits = rankExplicitHits(effectiveQuery, hits);
+    let sections: LabelSections | undefined;
+    try {
+      sections = store.labelSections?.({ query: effectiveQuery,
+        ...(args.kind === undefined ? {} : { kind: args.kind }),
+        ...(args.about === undefined ? {} : { about: args.about }) })
+        ?? readLabelSections(store, { query: effectiveQuery,
+          ...(args.kind === undefined ? {} : { kind: args.kind }),
+          ...(args.about === undefined ? {} : { about: args.about }) });
+    } catch { /* A bad label cannot discard the normal dated hits. */ }
+    const sectionPrefix = sections?.text ? `${sections.text}\n\n` : "";
+    const sectionFields = sections === undefined ? {} : {
+      ...(sections.factSheet === undefined ? {} : { factSheet: sections.factSheet,
+        factSheetTruncated: sections.factSheetTruncated ?? false }),
+      ...(sections.preferencesAndLessons === undefined ? {} : { preferencesAndLessons: sections.preferencesAndLessons,
+        preferencesAndLessonsTruncated: sections.preferencesAndLessonsTruncated ?? false }),
+    };
     const degraded = degradation?.code === "embedding_unavailable";
     if (hits.length === 0) {
       const guidance = "If this request is to pick up, continue, or recover interrupted work and RunHistory is available, call RunHistory with {} first. Do not keep rephrasing MemoryRecall queries for exact prior-run evidence.";
@@ -321,9 +346,10 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         ? `Memory recall is degraded: semantic retrieval is unavailable and lexical-only search returned no matches. ${guidance}`
         : `No memories matched "${effectiveQuery}". ${guidance}`;
       return {
-        content: [{ type: "text" as const, text: `${originalPrefix}${text}` }],
+        content: [{ type: "text" as const, text: `${originalPrefix}${sectionPrefix}${text}` }],
         structuredContent: {
           hits: [],
+          ...sectionFields,
           ...originalMetadata,
           ...(degraded ? {
             degraded: true,
@@ -348,7 +374,7 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
       ? `Memory recall is degraded: showing lexical-only matches because semantic retrieval is unavailable.\n${hitText}`
       : hitText;
     return {
-      content: [{ type: "text" as const, text: `${originalPrefix}${text}` }],
+      content: [{ type: "text" as const, text: `${originalPrefix}${sectionPrefix}${text}` }],
       structuredContent: {
         hits: hits.map((hit) => ({
           id: hit.record.id,
@@ -362,6 +388,7 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
           ...(hit.record.validFrom === undefined ? {} : { validFrom: hit.record.validFrom }),
           ...(hit.record.validTo === undefined ? {} : { validTo: hit.record.validTo }),
         })),
+        ...sectionFields,
         ...originalMetadata,
         ...(degraded ? {
           degraded: true,
@@ -382,6 +409,7 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
           query: z.string().min(1).optional().describe("Natural-language description to recall; required unless useOriginalQuery is true."),
           useOriginalQuery: z.boolean().optional().describe("Use this logical turn's original automatic-lookup question; omit query when true."),
           limit: limitSchema,
+          ...labelArgs,
         }).strict().superRefine((value, context) => {
           if (value.useOriginalQuery === true ? value.query !== undefined : value.query === undefined) {
             context.addIssue({
@@ -402,6 +430,7 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         inputSchema: {
           query: z.string().min(1).describe("Natural-language description of what to recall."),
           limit: limitSchema,
+          ...labelArgs,
         },
       },
       (args) => handleRecall(args as ToolArgs),

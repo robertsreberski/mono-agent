@@ -260,6 +260,8 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     json: true,
     signature:
       "mono-agent memory [stats|today|show <date>|search <query>|top|audit|inspect [id]|retry [id]|resolve <id> <reason>|rebuild|rollback|adopt-replay]\n" +
+      "mono-agent memory labels [--kind fact|preference|lesson] [--about entity] [--scope scope] [--json]\n" +
+      "mono-agent memory lessons --propose [--json]\n" +
       "mono-agent memory forget prepare --ids-file <file> --reason <slug> --plan <file>\n" +
       "mono-agent memory forget apply --plan <file> | forget restore --backup <dir>\n" +
       "mono-agent memory export --bundle <dir> [--include-extras] [--allow-pending]\n" +
@@ -272,6 +274,8 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "memory block from mono-agent.config.json, not the standalone memory-bujo",
       "env workflow. Human-first output by default; audit --strict --json is a",
       "metadata-only health gate. Intake inspect/retry/resolve never print payload content.",
+      "labels and lessons --propose are read-only with a running agent; proposals",
+      "are source-linked snippets for manual copying, never automatic edits.",
       "adopt-replay is an explicit stopped-agent, SSH-safe BuJo trust-on-first-use",
       "operation. It returns metadata only and requires rebuild before restart.",
       "forget uses an explicit, content-free plan plus a full owner-private backup;",
