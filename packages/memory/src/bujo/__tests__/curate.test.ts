@@ -22,13 +22,18 @@ describe("curation preparation", () => {
     expect(curateEstimate(expanded, { focus: "Skip transient fictional status updates." }).inputTokens)
       .toBeGreaterThan(curateEstimate(snapshot).inputTokens);
   });
-  it("rejects unsupported legacy label authority and invalid rewrites", () => {
+  it("rejects unsupported legacy label authority and invalid rewrites", async () => {
     const path = root(); seed(path, "fictional-a", "Morgan completed the example.");
     const source = inspectCurateSource(path).lines[0]!;
     expect(() => validateCurateProposal({ source, action: "label", accepted: true, labels: [{ v: 1, kind: "lesson", scope: "agent", verified: true }] })).toThrow();
     expect(() => validateCurateProposal({ source, action: "label", accepted: true, labels: [{ v: 1, kind: "lesson", scope: "agent", verified: false }] })).toThrow();
     expect(() => validateCurateProposal({ source, action: "label", accepted: true, labels: [{ v: 1, kind: "fact", entityId: "person:maple", key: "preferred_name", value: { type: "text", text: "Morgan" }, attribution: "unknown" }] })).toThrow();
     expect(() => validateCurateProposal({ source, action: "rewrite", text: "Unsafe\ntext", accepted: true })).toThrow();
+    seed(path, "fictional-b", "Morgan visited yesterday.");
+    const dated = inspectCurateSource(path).lines.find(({ id }) => id === "fictional-b")!;
+    const { previewCurateMutations } = await import("../curate.js");
+    expect(() => previewCurateMutations(path, [{ source: dated, action: "rewrite", text: "Morgan visited on 2026-07-10.", accepted: true }]))
+      .toThrow(/unsupported date/u);
   });
   it("batches fake-model proposals and fails closed on unknown IDs", async () => {
     const path = root(); seed(path, "fictional-a", "Generic demo advice."); seed(path, "fictional-b", "Morgan completed the example.");

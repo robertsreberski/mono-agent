@@ -324,8 +324,8 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
         : "memory resolve reason must be a 1-64 character lowercase slug.";
     case "curate": {
       if (rest.length !== 1) return "Usage: mono-agent memory curate prepare|review|apply|restore.";
-      if (rest[0] === "prepare") return input.backupPath === undefined && input.curateAccept === undefined && input.curateReject === undefined
-        ? undefined : "Usage: mono-agent memory curate prepare [--plan file] [--limit N] [--model provider:model] [--dry-run].";
+      if (rest[0] === "prepare") return input.planPath !== undefined && input.backupPath === undefined && input.curateAccept === undefined && input.curateReject === undefined
+        ? undefined : "Usage: mono-agent memory curate prepare --plan file [--limit N] [--model provider:model] [--dry-run].";
       if (rest[0] === "review") return input.planPath !== undefined && input.backupPath === undefined && input.model === undefined && !input.dryRun
         ? undefined : "Usage: mono-agent memory curate review --plan file [--accept category,...] [--reject category,...].";
       if (rest[0] === "apply") return input.planPath !== undefined && input.backupPath === undefined && input.model === undefined && !input.dryRun
@@ -2943,8 +2943,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const proposals = await bujo.proposeCurate(snapshot, llm, memory.capture);
       bujo.previewCurateMutations(root, proposals);
       if (snapshot.fingerprint !== bujo.readBujoCanonicalSourceFingerprint(root)) throw new Error("source changed while preparing");
-      const planPath = await canonicalProspectivePath(resolve(context.cwd,
-        input.planPath ?? join(dirname(root), `.${basename(root)}-curate-plan-${Date.now().toString(36)}.json`)));
+      const planPath = await canonicalProspectivePath(resolve(context.cwd, input.planPath!));
       if (isSameOrUnderDirectory(root, planPath)) throw new Error("plan cannot be inside memory root");
       const payload = { schemaVersion: 1, operation: "curate", rootFingerprint: memoryRootFingerprint(root),
         sourceFingerprint: snapshot.fingerprint, model, createdAt: new Date().toISOString(), proposals } as const;

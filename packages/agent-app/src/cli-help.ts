@@ -262,7 +262,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "mono-agent memory [stats|today|show <date>|search <query>|top|audit|inspect [id]|retry [id]|resolve <id> <reason>|rebuild|rollback|adopt-replay]\n" +
       "mono-agent memory labels [--kind fact|preference|lesson] [--about entity] [--scope scope] [--json]\n" +
       "mono-agent memory lessons --propose [--json]\n" +
-      "mono-agent memory curate prepare [--model provider:model] [--plan <file>] [--limit N] [--dry-run]\n" +
+      "mono-agent memory curate prepare --plan <file> [--model provider:model] [--limit N] [--dry-run]\n" +
       "mono-agent memory curate review --plan <file> [--accept drop:generic-advice,label:*] [--reject id:<id>]\n" +
       "mono-agent memory curate apply --plan <file> | curate restore --backup <dir>\n" +
       "mono-agent memory forget prepare --ids-file <file> --reason <slug> --plan <file>\n" +

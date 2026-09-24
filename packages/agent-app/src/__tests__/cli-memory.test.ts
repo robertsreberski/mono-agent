@@ -2025,6 +2025,10 @@ describe("memory curate operator CLI", () => {
     const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
       embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
     const plan = join(dir, "plan.json");
+    const missing = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "curate", "prepare", "--dry-run",
+    ]))));
+    expect(missing.code).toBe(2);
     const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
       "memory", "curate", "prepare", "--plan", plan, "--dry-run", "--json",
     ]))));
