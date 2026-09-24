@@ -1,6 +1,7 @@
 import type { MemoryStatus, MemoryType } from "../store/index.js";
 
 import type { Bullet } from "./types.js";
+import { labelsOf } from "./labels.js";
 
 const MARKERS: Record<string, { type: MemoryType; status: MemoryStatus }> = {
   "[ ]": { type: "task", status: "open" },
@@ -74,10 +75,12 @@ export function parseBullet(line: string): Bullet | undefined {
     refs: fields.refs === undefined || fields.refs.length === 0 ? [] : fields.refs.split(","),
     ...(fields.due !== undefined ? { dueAt: fields.due } : {}),
   };
+  labelsOf(bullet);
   return bullet;
 }
 
 export function serializeBullet(bullet: Bullet): string {
+  labelsOf(bullet);
   if (/[\r\n\p{Zl}\p{Zp}]/u.test(bullet.text) || bullet.text.includes("<!--mem")) {
     throw new Error("memory-bujo: bullet text must not contain a newline or the '<!--mem' delimiter.");
   }

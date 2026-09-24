@@ -466,7 +466,9 @@ function planUpdate(
   }
   const before = requireCanonicalTarget(deps.root, target.source.file, targetId);
   const mergedText = decision.text ?? candidate.text;
-  const after: Bullet = { ...before, text: mergedText };
+  // A changed sentence cannot silently keep claims it may no longer support.
+  const after: Bullet = { ...before, text: mergedText,
+    refs: mergedText === before.text ? before.refs : before.refs.filter((ref) => !ref.startsWith("label:")) };
   return {
     action: { kind: "update", id: targetId },
     intent: {
@@ -507,7 +509,7 @@ function planSupersede(
     salience: candidate.salience,
     isInsight: candidate.isInsight,
     createdAt: effectiveAt.toISOString(),
-    refs: [],
+    refs: beforeOld.refs.filter((ref) => ref.startsWith("label:")),
   };
   const record = recordFor(bullet, deps.root, effectiveAt);
   const newSourceFile = record.source.file!;

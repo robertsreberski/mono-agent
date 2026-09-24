@@ -9,6 +9,7 @@ import type {
   MemoryRecord,
 } from "../store/index.js";
 import { appendBullet, dailyFilePath, rewriteBullet } from "./daily.js";
+import { labelsOf } from "./labels.js";
 import { findCanonicalMemoryBullet } from "./canonical-lookup.js";
 import { parseDailyFile } from "./grammar.js";
 import {
@@ -717,6 +718,11 @@ function applyReplay(
     for (const action of intent.actions) {
       if (action.kind === "supersede") db.markSuperseded(action.oldId, action.newId, action.at);
     }
+    for (const action of intent.actions) {
+      if (action.kind === "noop") continue;
+      const state = action.kind === "supersede" ? action.afterNew : action.after;
+      db.replaceMemoryLabels(state.bullet.id, labelsOf(state.bullet));
+    }
     db.replaceReplayProjection(replayProjectionDbReplacement(publishedReplay.projection));
     assertReplayProjectionMatchesDb(db, publishedReplay.projection);
     // The exact DB projection is part of intent completion. Recomputing the
@@ -1297,7 +1303,7 @@ function applyCanonicalAction(root: string, action: CaptureIntentAction): "appli
     if (after === "exact") return "applied";
     const before = bulletState(root, action.before);
     if (before !== "exact") return "conflict";
-    if (!rewriteBullet(root, action.after.file, action.id, { text: action.after.bullet.text })) return "conflict";
+    if (!rewriteBullet(root, action.after.file, action.id, { text: action.after.bullet.text, refs: action.after.bullet.refs })) return "conflict";
     return bulletState(root, action.after) === "exact" ? "applied" : "conflict";
   }
   if (action.kind === "noop") {

@@ -7,6 +7,7 @@ import type {
 } from "../store/index.js";
 
 import { hasPendingCaptureIntent } from "./capture-outbox.js";
+import type { IndexedMemoryLabel } from "../store/db-labels.js";
 import {
   CanonicalGraphValidationError,
   type CanonicalGraphIssueCode,
@@ -69,6 +70,7 @@ export interface CanonicalGraphParityResult {
   readonly relations: CanonicalGraphParitySection;
   readonly associations: CanonicalGraphParitySection;
   readonly supports: CanonicalGraphParitySection;
+  readonly labels: CanonicalGraphParitySection;
 }
 
 /**
@@ -153,8 +155,11 @@ export function auditCanonicalGraphParity(
     const entities = compareEntities(expected.entities, active.entities);
     const relations = compareRelations(expected.relations, active.relations);
     const associations = compareAssociations(expected.associations, active.associations);
+    let labels: CanonicalGraphParitySection;
+    try { labels = compareLabels(canonicalAfter.labels, db.labelProjection()); }
+    catch { return invalidResult(tier, { code: "active-index-invalid" }); }
     const supports = compareSupports(expected.collectionSupports, active);
-    const matches = sectionMatches(entities)
+    const matches = sectionMatches(labels) && sectionMatches(entities)
       && sectionMatches(relations)
       && sectionMatches(associations)
       && sectionMatches(supports);
@@ -169,6 +174,7 @@ export function auditCanonicalGraphParity(
       relations,
       associations,
       supports,
+      labels,
     };
   }
 
@@ -233,6 +239,7 @@ function invalidResult(tier: BujoTier, issue: CanonicalGraphParityIssue): Canoni
     relations: emptySection(),
     associations: emptySection(),
     supports: emptySection(),
+    labels: emptySection(),
   };
 }
 
@@ -247,6 +254,7 @@ function inProgressResult(tier: BujoTier, mutation: CanonicalGraphMutationState)
     relations: emptySection(),
     associations: emptySection(),
     supports: emptySection(),
+    labels: emptySection(),
   };
 }
 
@@ -280,6 +288,12 @@ function emptySection(): CanonicalGraphParitySection {
     timestampMismatches: 0,
     provenanceMismatches: 0,
   };
+}
+
+function compareLabels(canonical: readonly IndexedMemoryLabel[], active: readonly IndexedMemoryLabel[]): CanonicalGraphParitySection {
+  return compareByKey(canonical, active, (item) => `${item.memoryId}\0${item.ordinal}`, (left, right) => ({
+    payload: JSON.stringify(left.label) !== JSON.stringify(right.label), timestamp: false, provenance: false,
+  }));
 }
 
 function compareEntities(

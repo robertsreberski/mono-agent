@@ -789,7 +789,7 @@ export class MemoryDbCore {
       this.db.exec(
         `DELETE FROM memories; DELETE FROM memories_fts; DELETE FROM memories_vec; DELETE FROM edges;
          DELETE FROM memory_entities; DELETE FROM entities; DELETE FROM entity_relations;
-         DELETE FROM content_hashes; DELETE FROM index_metadata;`,
+         DELETE FROM memory_labels; DELETE FROM content_hashes; DELETE FROM index_metadata;`,
       );
     });
     tx();
