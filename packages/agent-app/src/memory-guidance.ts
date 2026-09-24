@@ -62,7 +62,8 @@ export function resolveMemoryEntities(store: LabelRecallStore, query: string, ab
     }
   }
   if (about && entities.length !== 1) return [];
-  return entities.slice(0, about ? 1 : 3);
+  // Preserve every bounded SQL match until ambiguity is checked by the caller.
+  return entities;
 }
 
 /** Only labelled, host-scoped background. Never alters the ordinary answer-evidence gate. */
