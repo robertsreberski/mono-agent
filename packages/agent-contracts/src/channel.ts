@@ -99,7 +99,11 @@ export type ProcessJobWakeDeliveryResult = HostWakeDeliveryResult;
  * proactive notification delivery.
  */
 export interface RunningProcessJobChannel {
-  update(input: Omit<ProcessJobWakeDeliveryInput, "text">): Promise<NotifyDeliveryResult>;
+  /**
+   * `retirementOnly` marks an update that only retires an already-published
+   * peer question: edit an existing card, but never post a fresh one for it.
+   */
+  update(input: Omit<ProcessJobWakeDeliveryInput, "text"> & { readonly retirementOnly?: boolean }): Promise<NotifyDeliveryResult>;
   wake(input: ProcessJobWakeDeliveryInput): Promise<ProcessJobWakeDeliveryResult>;
 }
 

@@ -20,6 +20,9 @@ export {
   isProcessJobErrorCode,
   isProcessJobState,
   isProcessJobSubagentProgress,
+  isPeerProcessJobQuestion,
+  describePeerQuestionForm,
+  peerQuestionStateLabel,
   isProcessJobSubagentRoute,
   parseProcessJobProjection,
   parseProcessJobProjections,
@@ -27,6 +30,8 @@ export {
 } from "./process-jobs.js";
 export type {
   InternalProcessJobTool,
+  PeerProcessJobQuestion,
+  PeerQuestionFormField,
   ProcessJobErrorCode,
   ProcessJobOperator,
   ProcessJobProjection,

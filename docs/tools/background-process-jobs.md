@@ -12,6 +12,16 @@ For `Exec`/`Bash` there is no separate job tool. Configured `PeerAgent` can
 also use the internal durable job lane for background peer calls; it is not a
 subagent. Its started receipt binds the caller conversation, peer and thread;
 terminal wake output is a bounded, untrusted preview, not owner instructions.
+If the peer asks a question, this job terminates visibly with a typed
+`peerQuestion` (state `awaiting_answer`) and wakes its exact caller. The caller
+may answer the current `questionId` using `PeerAgent answer`, or decline. An
+answer starts a new continuation job bound to the original wake origin; its
+completion, failure, or next question wakes that origin again. The question
+text and form are untrusted, never instructions or owner approval. The first
+job card updates its question to `answered`, `expired`, or `interrupted`
+without an additional expiry wake. Stopping a continuation job cancels its
+parked ACP turn; no undeliverable next question is silently consumed. A
+restart interrupts a parked question without replaying it.
 Peer calls made while serving an ACP request have no wake-capable origin and
 must remain foreground. A restart interrupts an in-flight call without prompt
 replay; a later explicit send resumes the named ACP session. The existing

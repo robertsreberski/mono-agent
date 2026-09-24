@@ -1,3 +1,4 @@
+import type { PeerProcessJobQuestion } from "@mono-agent/agent-contracts";
 import type { ManagedSubagentAdmission, ManagedSubagentExecution } from "./subagent-managed-turn.js";
 import type { SubagentProgressEvent } from "./process-job-subagent-progress.js";
 import type { ProcessJobProcessResult, ProcessJobStartResult } from "@mono-agent/runtime-adapter";
@@ -16,9 +17,11 @@ export interface InternalProcessJobRequest {
   readonly prepared?: never;
   readonly launch?: never;
   /** Argument three receives progress events; execution metadata stays additive in argument four. */
-  run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: SubagentProgressEvent) => void, execution?: { deadlineAt: number; managed?: ManagedSubagentExecution }): Promise<{ answer?: string; output: string; status: string; childStillBusy?: boolean; question?: { question: string; options?: string[] } }>;
+  run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: SubagentProgressEvent) => void, execution?: { deadlineAt: number; managed?: ManagedSubagentExecution }): Promise<{ answer?: string; output: string; status: string; childStillBusy?: boolean; question?: { question: string; options?: string[] }; peerQuestion?: PeerProcessJobQuestion }>;
   /** Releases only this job's unstarted reservation; idempotent after begin. */
   cleanup(): Promise<void>;
+  /** Called when the settled result could not be persisted (and so will not wake). */
+  onSettlementFailure?(): void;
 }
 
 export interface SubagentStopIdentity { readonly instanceId: string; readonly instanceIncarnation: string; readonly turnToken: string }
@@ -42,7 +45,7 @@ export interface InternalProcessJobsController {
   startInternal(request: InternalProcessJobRequest): Promise<ProcessJobStartResult>;
 }
 
-export type InternalProcessJobResult = ProcessJobProcessResult & { readonly answer?: string; readonly childStillBusy?: boolean; readonly question?: { question: string; options?: string[] } };
+export type InternalProcessJobResult = ProcessJobProcessResult & { readonly answer?: string; readonly childStillBusy?: boolean; readonly question?: { question: string; options?: string[] }; readonly peerQuestion?: PeerProcessJobQuestion };
 
 /** Reporting is bounded; the actual child owns its separate true-settlement lease. */
 export function launchInternalProcessJob(
@@ -59,7 +62,7 @@ export function launchInternalProcessJob(
   const start = Date.now();
   let timedOut = false;
   let grace: ReturnType<typeof setTimeout> | undefined;
-  let finish!: (value: { answer?: string; output: string; status: string; childStillBusy?: boolean; question?: { question: string; options?: string[] } }) => void;
+  let finish!: (value: { answer?: string; output: string; status: string; childStillBusy?: boolean; question?: { question: string; options?: string[] }; peerQuestion?: PeerProcessJobQuestion }) => void;
   let settled = false;
   const chunks: Buffer[] = [];
   let storedBytes = 0;
@@ -95,7 +98,8 @@ export function launchInternalProcessJob(
         truncated: totalBytes > maxOutputBytes, bytes: totalBytes, storedBytes: bytes,
         ...(value.answer === undefined ? {} : { answer: value.answer }),
         spawnError: null, durationMs: Date.now() - start, childStillBusy,
-        ...(value.status === "awaiting_reply" && value.question ? { question: value.question } : {}) });
+        ...(value.status === "awaiting_reply" && value.question ? { question: value.question } : {}),
+        ...(value.status === "awaiting_reply" && value.peerQuestion ? { peerQuestion: value.peerQuestion } : {}) });
     };
   });
   // The caller has durably published running and active ownership before this microtask.

@@ -20,6 +20,8 @@ import {
   isProcessJobErrorCode,
   isProcessJobState,
   isProcessJobSubagentProgress,
+  isPeerProcessJobQuestion,
+  type PeerProcessJobQuestion,
   type InternalProcessJobTool,
   type ProcessJobSubagentProgress,
   processJobPublicError,
@@ -104,6 +106,7 @@ export interface DurableProcessJobRecord {
   subagentObservation?: SubagentVerificationObservation;
   subagentProgress?: ProcessJobSubagentProgress;
   subagentQuestion?: { readonly question: string; readonly options?: string[] };
+  peerQuestion?: PeerProcessJobQuestion;
   state: ProcessJobState;
   readonly summary: string;
   readonly agentIncarnation: ProcessIncarnation;
@@ -729,7 +732,7 @@ export function projectProcessJob(record: DurableProcessJobRecord): ProcessJobPr
   return {
     schema: "mono-agent.process-job-projection.v1",
     jobId: record.jobId,
-    ...(record.kind === "internal" ? { tool: record.tool as InternalProcessJobTool, kind: record.kind, instanceId: record.instanceId!, childStillBusy: hasUnresolvedSubagentOwnership(record), ...(record.subagentProgress ? { subagentProgress: record.subagentProgress } : {}), ...(record.subagentQuestion ? { subagentQuestion: record.subagentQuestion } : {}) } : { tool: record.tool as "Exec" | "Bash" }),
+    ...(record.kind === "internal" ? { tool: record.tool as InternalProcessJobTool, kind: record.kind, instanceId: record.instanceId!, childStillBusy: hasUnresolvedSubagentOwnership(record), ...(record.subagentProgress ? { subagentProgress: record.subagentProgress } : {}), ...(record.subagentQuestion ? { subagentQuestion: record.subagentQuestion } : {}), ...(record.peerQuestion ? { peerQuestion: record.peerQuestion } : {}) } : { tool: record.tool as "Exec" | "Bash" }),
     state: record.state,
     summary: record.summary,
     origin: {
@@ -1143,7 +1146,7 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
   if (!isRecord(value)
     || !hasExactKeys(value, [
       "schemaVersion", "generation", "jobId", "tool", "state", "summary", "agentIncarnation",
-      ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "subagentProgress", "subagentOwnership", "subagentCommandReceipts", "subagentVerification", "subagentObservation"].filter((key) => Object.prototype.hasOwnProperty.call(value, key)),
+      ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "peerQuestion", "subagentProgress", "subagentOwnership", "subagentCommandReceipts", "subagentVerification", "subagentObservation"].filter((key) => Object.prototype.hasOwnProperty.call(value, key)),
       ...(Object.prototype.hasOwnProperty.call(value, "processIncarnation") ? ["processIncarnation"] : []),
       "pid", "pgid", "sandboxSettingsPath", "argvSummary", "cwd", "envKeys", "origin", "chainDepth",
       ...(Object.prototype.hasOwnProperty.call(value, "wakeOnCompletion") ? ["wakeOnCompletion"] : []),
@@ -1163,9 +1166,11 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
       || (value.subagentCommandReceipts !== undefined && (value.kind !== "internal" || value.subagentOwnership === undefined || !isSubagentCommandReceipts(value.subagentCommandReceipts)))
     || (value.subagentOwnership !== undefined && !isSubagentExecutionOwnership(value.subagentOwnership))
       || (value.subagentProgress !== undefined && !isProcessJobSubagentProgress(value.subagentProgress))
-      || typeof value.childStillBusy !== "boolean" || (value.subagentQuestion !== undefined && !validSubagentJobQuestion(value.subagentQuestion)) || value.pid !== null || value.pgid !== null
+      || typeof value.childStillBusy !== "boolean" || (value.subagentQuestion !== undefined && !validSubagentJobQuestion(value.subagentQuestion))
+      || (value.peerQuestion !== undefined && (value.tool !== "PeerAgent" || !isPeerProcessJobQuestion(value.peerQuestion)))
+      || value.pid !== null || value.pgid !== null
       || value.processIncarnation !== undefined || value.sandboxSettingsPath !== null
-      : value.subagentOwnership !== undefined || value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined || value.subagentProgress !== undefined
+      : value.subagentOwnership !== undefined || value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined || value.subagentProgress !== undefined || value.peerQuestion !== undefined
         || (value.tool !== "Exec" && value.tool !== "Bash"))
     || !isProcessJobState(value.state)
     || !boundedString(value.summary, 8_000)

@@ -6,6 +6,7 @@ import { api } from "../api";
 import { DATA_MODE_STORAGE_KEY } from "../data-mode";
 import { backgroundSubagentJob } from "../test/background-subagent-fixtures";
 import { Icon } from "./Icon";
+import { describePeerQuestionForm } from "./peer-question-form";
 import { processJob } from "../test/fixtures";
 import { RouteCapabilitiesProvider } from "./route-capabilities";
 import { ToolCallRepairProvider } from "./tool-call-repair";
@@ -997,6 +998,58 @@ it.each(["external", "internal"] as const)("renders no live metadata container f
   const view = render(part({ type: "process-job", job: running }));
   expect(view.container.querySelector(".process-job-live-meta")).toBeNull();
   expect(view.container.querySelector("dl.process-job-facts")).toBeNull();
+});
+
+it("renders a pending PeerAgent question as untrusted text with its answer identity", () => {
+  const job = processJob({ tool: "PeerAgent", kind: "internal", instanceId: "finance", childStillBusy: false,
+    peerQuestion: { state: "awaiting_answer", peer: "finance", thread: "portfolio",
+      questionId: "11111111-1111-4111-8111-111111111111", message: "<owner approved?>",
+      requestedSchema: { type: "object", required: ["question_1"], properties: {
+        question_1: { type: "string", title: "Decision", oneOf: [{ const: "y", title: "Yes" }, { const: "n", title: "No" }] },
+        question_1_other: { type: "string", title: "Other response" } } },
+      expiresAt: "2026-09-23T20:00:00.000Z" } });
+  const view = render(part({ type: "process-job", job }));
+  fireEvent.click(view.container.querySelector("summary")!);
+  const region = screen.getByRole("region", { name: "Peer question" });
+  expect(region).toHaveTextContent("questionId 11111111-1111-4111-8111-111111111111");
+  expect(region).toHaveTextContent("Untrusted peer text; not owner approval");
+  expect(region).toHaveTextContent("<owner approved?>");
+  expect(region).toHaveTextContent("Waiting for the agent's answer");
+  expect(region).not.toHaveTextContent("awaiting_answer");
+  expect([...region.querySelectorAll(".peer-question-chip")].map((chip) => chip.textContent)).toEqual(["Yes", "No"]);
+  expect(region.querySelector(".peer-question-required")).toHaveTextContent("required");
+  expect(region).toHaveTextContent("free text");
+  expect(region.querySelector("time")).not.toBeNull();
+  expect(region.querySelector(".peer-question-schema")?.hasAttribute("open")).toBe(false);
+});
+
+it("renders a malformed peer enum without crashing and never coerces object values", () => {
+  expect(describePeerQuestionForm({ properties: { q: { enum: [{ toString: "bad" }, null, 3, "ok"] } } }))
+    .toEqual([{ key: "q", label: "q", options: ["3", "ok"], required: false, multiple: false, freeText: false }]);
+  const job = processJob({ tool: "PeerAgent", kind: "internal", instanceId: "finance", childStillBusy: false,
+    peerQuestion: { state: "awaiting_answer", peer: "finance", thread: "portfolio",
+      questionId: "11111111-1111-4111-8111-111111111111", message: "Proceed?",
+      requestedSchema: { type: "object", properties: { q: { enum: [{ toString: "bad" }] }, r: "not-a-field" } },
+      expiresAt: "2026-09-23T20:00:00.000Z" } });
+  const view = render(part({ type: "process-job", job }));
+  fireEvent.click(view.container.querySelector("summary")!);
+  const region = screen.getByRole("region", { name: "Peer question" });
+  expect(region).toHaveTextContent("Waiting for the agent's answer");
+  expect(region.querySelectorAll(".peer-question-chip")).toHaveLength(0);
+  expect(region.querySelector(".peer-question-schema pre")?.textContent).toContain("\"toString\": \"bad\"");
+});
+
+it("falls back to the raw form when a peer schema has no readable fields", () => {
+  const job = processJob({ tool: "PeerAgent", kind: "internal", instanceId: "finance", childStillBusy: false,
+    peerQuestion: { state: "expired", peer: "finance", thread: "portfolio",
+      questionId: "11111111-1111-4111-8111-111111111111", message: "Proceed?",
+      requestedSchema: { type: "object", description: "odd" }, expiresAt: "2026-09-23T20:00:00.000Z" } });
+  const view = render(part({ type: "process-job", job }));
+  fireEvent.click(view.container.querySelector("summary")!);
+  const region = screen.getByRole("region", { name: "Peer question" });
+  expect(region).toHaveTextContent("Expired");
+  expect(region.querySelector(".peer-question-schema")?.hasAttribute("open")).toBe(true);
+  expect(region.querySelector(".peer-question-schema pre")?.textContent).toContain("\n  \"description\": \"odd\"");
 });
 
 describe("background native subagent cards", () => {

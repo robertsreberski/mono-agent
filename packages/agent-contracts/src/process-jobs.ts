@@ -235,10 +235,109 @@ const INTERNAL_PROCESS_JOB_TOOLS: readonly InternalProcessJobTool[] = ["Agent", 
  * it is the exact bound originating conversation and therefore the operator
  * projection's reply route, including any host-owned rollover bucket.
  */
+export interface PeerProcessJobQuestion {
+  readonly state: "awaiting_answer" | "answered" | "expired" | "interrupted";
+  readonly questionId: string;
+  readonly peer: string;
+  readonly thread: string;
+  readonly message: string;
+  readonly requestedSchema: Readonly<Record<string, unknown>>;
+  readonly expiresAt: string;
+}
+
+export function isPeerProcessJobQuestion(value: unknown): value is PeerProcessJobQuestion {
+  if (!isRecord(value) || !hasExactlyKeys(value, ["state", "questionId", "peer", "thread", "message", "requestedSchema", "expiresAt"])) return false;
+  if (!["awaiting_answer", "answered", "expired", "interrupted"].includes(String(value.state))
+    || !boundedNonEmptyString(value.questionId, 64)
+    || !boundedNonEmptyString(value.peer, 40) || !boundedNonEmptyString(value.thread, 40)
+    || !boundedNonEmptyString(value.message, 2_000) || !boundedNonEmptyString(value.expiresAt, 40)
+    || !isRecord(value.requestedSchema)) return false;
+  try { return JSON.stringify(value.requestedSchema).length <= 8_192 && Number.isFinite(Date.parse(value.expiresAt)); }
+  catch { return false; }
+}
+
+/** One bounded, display-only row derived from an untrusted peer ACP form schema. */
+export interface PeerQuestionFormField {
+  readonly key: string;
+  readonly label: string;
+  readonly description?: string;
+  readonly options: readonly string[];
+  readonly required: boolean;
+  readonly multiple: boolean;
+  readonly freeText: boolean;
+}
+
+const PEER_FORM_TEXT = 200;
+const PEER_FORM_FIELDS = 20;
+const PEER_FORM_OPTIONS = 12;
+
+function peerFormText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.replace(/\s+/gu, " ").trim();
+  return text.length === 0 ? undefined : text.length > PEER_FORM_TEXT ? `${text.slice(0, PEER_FORM_TEXT - 1)}…` : text;
+}
+
+function peerFormOptions(schema: Record<string, unknown>): string[] {
+  for (const key of ["oneOf", "anyOf"] as const) {
+    const choices = schema[key];
+    if (Array.isArray(choices)) {
+      return choices.flatMap((choice) => {
+        if (!isRecord(choice)) return [];
+        const label = peerFormText(choice.title) ?? peerFormText(typeof choice.const === "string" ? choice.const : undefined);
+        return label === undefined ? [] : [label];
+      });
+    }
+  }
+  if (Array.isArray(schema.enum)) {
+    const names = Array.isArray(schema.enumNames) ? schema.enumNames : [];
+    return schema.enum.flatMap((value, index) => {
+      // Only primitives are displayable; arbitrary JSON (objects, null) is skipped, never coerced.
+      const primitive = typeof value === "string" ? value
+        : typeof value === "number" || typeof value === "boolean" ? String(value) : undefined;
+      const label = peerFormText(names[index]) ?? peerFormText(primitive);
+      return label === undefined ? [] : [label];
+    });
+  }
+  return [];
+}
+
+/**
+ * Summarize a peer ACP form for humans: labels, choices, required and free-text
+ * hints. Output is bounded display text only; the peer bridge remains the sole
+ * validator of any answer. Returns no rows for a schema it cannot interpret.
+ */
+export function describePeerQuestionForm(schema: unknown): readonly PeerQuestionFormField[] {
+  if (!isRecord(schema) || !isRecord(schema.properties)) return [];
+  const required = new Set(Array.isArray(schema.required) ? schema.required.filter((key): key is string => typeof key === "string") : []);
+  return Object.entries(schema.properties).slice(0, PEER_FORM_FIELDS).flatMap(([key, property]): PeerQuestionFormField[] => {
+    if (!isRecord(property)) return [];
+    const multiple = property.type === "array";
+    const source = multiple && isRecord(property.items) ? property.items : property;
+    const all = peerFormOptions(source);
+    const options = all.length > PEER_FORM_OPTIONS ? [...all.slice(0, PEER_FORM_OPTIONS), `+${String(all.length - PEER_FORM_OPTIONS)} more`] : all;
+    const description = peerFormText(property.description);
+    return [{
+      key: peerFormText(key) ?? "field",
+      label: peerFormText(property.title) ?? peerFormText(key) ?? "field",
+      ...(description === undefined ? {} : { description }),
+      options,
+      required: required.has(key),
+      multiple,
+      freeText: options.length === 0 && (source.type === "string" || source.type === undefined),
+    }];
+  });
+}
+
+/** Human wording for a peer question lifecycle state. */
+export function peerQuestionStateLabel(state: PeerProcessJobQuestion["state"]): string {
+  return state === "awaiting_answer" ? "Waiting for the agent's answer"
+    : state === "answered" ? "Answered" : state === "expired" ? "Expired" : "Interrupted";
+}
+
 export type ProcessJobProjection = ProcessJobProjectionBase & (
   | { readonly tool: "Exec" | "Bash"; readonly kind?: never }
   | { readonly tool: InternalProcessJobTool; readonly kind: "internal"; readonly instanceId: string;
-      readonly childStillBusy: boolean; readonly subagentProgress?: ProcessJobSubagentProgress; readonly subagentQuestion?: { readonly question: string; readonly options?: string[] } }
+      readonly childStillBusy: boolean; readonly subagentProgress?: ProcessJobSubagentProgress; readonly subagentQuestion?: { readonly question: string; readonly options?: string[] }; readonly peerQuestion?: PeerProcessJobQuestion }
 );
 
 interface ProcessJobProjectionBase {
@@ -287,7 +386,7 @@ const PROJECTION_KEYS = [
 
 /** Strictly parse one projection, rejecting unknown keys at every depth. */
 export function parseProcessJobProjection(value: unknown): ProcessJobProjection {
-  if (!isRecord(value) || !hasExactlyKeys(value, [...PROJECTION_KEYS, ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "subagentProgress"].filter((key) => Object.prototype.hasOwnProperty.call(value, key))])) {
+  if (!isRecord(value) || !hasExactlyKeys(value, [...PROJECTION_KEYS, ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "subagentProgress", "peerQuestion"].filter((key) => Object.prototype.hasOwnProperty.call(value, key))])) {
     throw invalid("envelope");
   }
   if (value.schema !== "mono-agent.process-job-projection.v1"
@@ -295,9 +394,10 @@ export function parseProcessJobProjection(value: unknown): ProcessJobProjection 
     || (value.kind === "internal" ? !INTERNAL_PROCESS_JOB_TOOLS.includes(String(value.tool) as InternalProcessJobTool)
       || typeof value.instanceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(value.instanceId)
       || (value.tool === "PeerAgent" && (value.subagentProgress !== undefined || value.subagentQuestion !== undefined))
+      || (value.peerQuestion !== undefined && (value.tool !== "PeerAgent" || !isPeerProcessJobQuestion(value.peerQuestion)))
       || (value.subagentProgress !== undefined && !isProcessJobSubagentProgress(value.subagentProgress))
       || typeof value.childStillBusy !== "boolean" || (value.subagentQuestion !== undefined && !validSubagentJobQuestion(value.subagentQuestion))
-      : value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined || value.subagentProgress !== undefined
+      : value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined || value.subagentProgress !== undefined || value.peerQuestion !== undefined
         || (value.tool !== "Exec" && value.tool !== "Bash"))
     || !isProcessJobState(value.state)
     || !boundedString(value.summary, 8_000)

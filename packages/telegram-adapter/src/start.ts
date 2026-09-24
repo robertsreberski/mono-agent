@@ -96,7 +96,7 @@ export interface TelegramAdapterStartResult {
   updateProcessJob?(
     chatId: TelegramChatId,
     projection: ProcessJobProjection,
-    options?: { readonly silent?: boolean },
+    options?: { readonly silent?: boolean; readonly retirementOnly?: boolean },
   ): Promise<TelegramNotifyResult>;
   /** Post or edit-in-place a keyed tool-progress status line (best-effort). */
   postStatus(

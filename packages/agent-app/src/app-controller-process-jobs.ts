@@ -129,12 +129,13 @@ export function ensureProcessJobsService(
         ),
         // Routing logs every undelivered update once, with its reason. Throwing
         // here only added a second, reason-free warning from the service.
-        surfaceUpdate: async (projection) => {
+        surfaceUpdate: async (projection, updateOptions) => {
           await routeProcessJobSurfaceUpdate({
             conversationId: projection.origin.conversationId.split("#", 1)[0]
               ?? projection.origin.conversationId,
             deliveryKey: projection.wake.deliveryKey,
             projection,
+            ...(updateOptions?.retirementOnly === true ? { retirementOnly: true } : {}),
             drivers: controller.drivers,
             running: controller.running,
             ...(controller.logger === undefined ? {} : { logger: controller.logger }),

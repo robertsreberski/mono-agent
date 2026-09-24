@@ -86,7 +86,7 @@ export function createTelegramChannelDriver(
         summary: {},
         stop: () => result.stop(),
         processJobs: {
-          update: async ({ conversationId, processJob }) => {
+          update: async ({ conversationId, processJob, retirementOnly }) => {
             if (processJob.origin.channel !== "telegram"
               || conversationId !== baseConversationId(processJob.origin.conversationId)) {
               return {
@@ -111,10 +111,14 @@ export function createTelegramChannelDriver(
                 retryable: false,
               };
             }
+            const updateOptions = {
+              ...(silent ? { silent: true } : {}),
+              ...(retirementOnly === true ? { retirementOnly: true } : {}),
+            };
             return await result.updateProcessJob(
               chatId,
               processJob,
-              silent ? { silent: true } : undefined,
+              Object.keys(updateOptions).length === 0 ? undefined : updateOptions,
             );
           },
           wake: async ({ conversationId, text, deliveryKey, processJob }) => {

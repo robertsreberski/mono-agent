@@ -954,6 +954,55 @@ describe("SlackAdapter", () => {
     expect(api.postMessageCalls).toHaveLength(1);
   });
 
+  it("renders a bounded untrusted peer question and its current state", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({ api, allowAllChannels: true, responder: responderFrom(async () => ({ text: "unused" })) });
+    const internal: ProcessJobProjection = { ...processJobProjection("succeeded"), kind: "internal", tool: "PeerAgent",
+      instanceId: "finance", childStillBusy: false, peerQuestion: { state: "awaiting_answer",
+        questionId: "11111111-1111-4111-8111-111111111111", peer: "finance", thread: "portfolio",
+        message: "<!channel> choose?", expiresAt: "2026-09-23T20:00:00.000Z",
+        requestedSchema: { type: "object", properties: { question_1: { type: "string" } } } } };
+    await adapter.updateProcessJob("C1", "171.5", internal);
+    const update = api.postMessageCalls.at(-1)!;
+    expect(update.text).toContain("questionId 11111111-1111-4111-8111-111111111111");
+    expect(update.text).toContain("[untrusted; not owner approval]");
+    expect(update.text).toContain("Waiting for the agent's answer");
+    expect(update.text).toContain("• question_1: free text");
+    expect(update.text).not.toContain("<!channel>");
+    expect(update.text).not.toContain("\"properties\"");
+    const answered = { ...internal, peerQuestion: { ...internal.peerQuestion!, state: "answered" as const } };
+    await expect(adapter.updateProcessJob("C1", "171.5", answered)).resolves.toMatchObject({ code: "surface_updated" });
+    expect(api.postMessageCalls).toHaveLength(1);
+    expect(api.updateCalls.at(-1)?.text).toContain("Peer question from finance/portfolio: Answered");
+    await expect(adapter.updateProcessJob("C1", "171.5", answered)).resolves.toMatchObject({ code: "surface_unchanged" });
+    expect(api.updateCalls).toHaveLength(1);
+    // A stale awaiting_answer projection, or another question, never reverts a retired card.
+    await expect(adapter.updateProcessJob("C1", "171.5", internal)).resolves.toMatchObject({ code: "surface_unchanged" });
+    const other = { ...internal, peerQuestion: { ...internal.peerQuestion!, questionId: "22222222-2222-4222-8222-222222222222", state: "expired" as const } };
+    await expect(adapter.updateProcessJob("C1", "171.5", other)).resolves.toMatchObject({ code: "surface_unchanged" });
+    expect(api.updateCalls).toHaveLength(1);
+    expect(api.updateCalls.at(-1)?.text).toContain("Answered");
+  });
+
+  it("suppresses only explicit retirement-only updates without a known message, never a first terminal post", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({ api, allowAllChannels: true, responder: responderFrom(async () => ({ text: "unused" })) });
+    const retired: ProcessJobProjection = { ...processJobProjection("succeeded"), kind: "internal", tool: "PeerAgent",
+      instanceId: "finance", childStillBusy: false, peerQuestion: { state: "interrupted",
+        questionId: "11111111-1111-4111-8111-111111111111", peer: "finance", thread: "portfolio",
+        message: "Proceed?", expiresAt: "2026-09-23T20:00:00.000Z",
+        requestedSchema: { type: "object", properties: { question_1: { type: "string", oneOf: [
+          { const: "yes", title: "Yes" }, { const: "no", title: "No" }] } }, required: ["question_1"] } } };
+    await expect(adapter.updateProcessJob("C1", "171.5", retired, { retirementOnly: true }))
+      .resolves.toMatchObject({ code: "surface_unchanged" });
+    expect(api.postMessageCalls).toHaveLength(0);
+    expect(api.updateCalls).toHaveLength(0);
+    // Without the marker this is the job's first terminal delivery and posts normally.
+    await expect(adapter.updateProcessJob("C1", "171.5", retired)).resolves.toMatchObject({ delivered: true });
+    expect(api.postMessageCalls).toHaveLength(1);
+    expect(api.postMessageCalls[0]?.text).toContain("Interrupted");
+  });
+
   it("keeps the child-busy warning off a running job whose child is still working", async () => {
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({ api, allowAllChannels: true, responder: responderFrom(async () => ({ text: "unused" })) });

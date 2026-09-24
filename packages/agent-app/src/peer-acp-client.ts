@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Readable, Transform, Writable } from "node:stream";
 
-import { client, methods, ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
+import { client, methods, ndJsonStream, PROTOCOL_VERSION, type CreateElicitationResponse } from "@agentclientprotocol/sdk";
 
 import { makePeerHandoff } from "./peer-provenance.js";
 
@@ -40,6 +40,15 @@ export interface PeerAcpTurn {
   /** Persist before sending the prompt; a failed persistence must not dispatch. */
   onSession(sessionId: string): Promise<void>;
   onActive?(cancel: () => Promise<void>): void;
+  onQuestion?(question: PeerAcpQuestion): Promise<CreateElicitationResponse>;
+}
+
+export interface PeerAcpQuestion {
+  readonly message: string;
+  readonly requestedSchema: Readonly<Record<string, unknown>>;
+  readonly sessionId: string;
+  readonly toolCallId: string;
+  readonly expiresAt?: string;
 }
 
 function limitedFrames(): Transform {
@@ -65,6 +74,28 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
   // An async spawn failure otherwise emits an uncaught ChildProcess error.
   child.on("error", (error) => frames.destroy(error));
   const app = client({ name: "mono-agent-peer-client" });
+  const turnDeadlineAt = Date.now() + 30 * 60_000;
+  let questionsSeen = 0;
+  app.onRequest(methods.client.elicitation.create, async ({ params }) => {
+    if (options.onQuestion === undefined || params.mode !== "form" || ++questionsSeen > 8
+      || !("sessionId" in params) || params.sessionId !== sessionId || typeof params.toolCallId !== "string"
+      || typeof params.message !== "string" || typeof params.requestedSchema !== "object"
+      || params.requestedSchema === null || Buffer.byteLength(JSON.stringify(params.requestedSchema)) > 8_192
+      || Buffer.byteLength(params.message, "utf8") > 16_384) {
+      throw new Error("ACP peer question is unsupported, mismatched, or oversized.");
+    }
+    const messageBytes = Buffer.from(params.message, "utf8");
+    const boundedMessage = messageBytes.length <= 2_000 ? params.message
+      : `${messageBytes.subarray(0, 1_980).toString("utf8").replace(/�$/u, "")} [truncated]`;
+    try {
+      return await options.onQuestion({ message: boundedMessage, requestedSchema: params.requestedSchema as Readonly<Record<string, unknown>>,
+        sessionId: params.sessionId as string, toolCallId: params.toolCallId,
+        expiresAt: new Date(turnDeadlineAt).toISOString() });
+    } catch {
+      // Never forward caller-local diagnostics (paths, store errors) to the peer.
+      throw new Error("The calling agent could not hold this question; the peer turn is interrupted.");
+    }
+  });
   let answer = "";
   let oversized = false;
   app.onNotification(methods.client.session.update, ({ params }) => {
@@ -77,7 +108,7 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
     Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
     Readable.toWeb(frames) as ReadableStream<Uint8Array>,
   ));
-  const timeout = AbortSignal.timeout(30 * 60_000);
+  const timeout = AbortSignal.timeout(Math.max(1, turnDeadlineAt - Date.now()));
   let sessionId = options.sessionId;
   let cancelGrace: ReturnType<typeof setTimeout> | undefined;
   let forceKill: ReturnType<typeof setTimeout> | undefined;
@@ -105,7 +136,7 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
   try {
     if (options.signal.aborted) throw new Error("Peer turn was cancelled before startup.");
     const init = await connection.agent.request(methods.agent.initialize, {
-      protocolVersion: PROTOCOL_VERSION, clientCapabilities: {},
+      protocolVersion: PROTOCOL_VERSION, clientCapabilities: options.onQuestion === undefined ? {} : { elicitation: { form: {} } },
       clientInfo: { name: "mono-agent-peer-client", version: "1" },
     });
     const descriptor = init._meta?.["mono-agent"] as { sourceId?: unknown; workspace?: { path?: unknown }; compatible?: unknown } | undefined;
@@ -159,10 +190,14 @@ export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId:
     const code = typeof error === "object" && error !== null && "data" in error
       ? (error.data as { code?: unknown } | undefined)?.code : undefined;
     if (code === "peer_session_exhausted") throw new PeerSessionGoneError("peer_session_exhausted");
-    const safe = code === "interaction_required" || message.includes("requested AskUser")
-      ? "Peer AskUser interaction is unsupported: this ACP client does not relay questions (interaction_required)."
-      : /^(?:ACP peer|Peer turn)/u.test(message)
-        ? message.slice(0, 256) : "ACP bridge or operator transport failed (no prompt was replayed).";
+    const safe = code === "sensitive_elicitation_unsupported"
+      ? "Peer AskUser sensitive request was refused (sensitive_elicitation_unsupported)."
+      : code === "invalid_elicitation_response"
+        ? "Peer AskUser answer was rejected by ACP form validation (invalid_elicitation_response)."
+        : code === "interaction_required" || message.includes("requested AskUser")
+          ? "Peer AskUser interaction is unsupported (interaction_required)."
+          : /^(?:ACP peer|Peer turn)/u.test(message)
+            ? message.slice(0, 256) : "ACP bridge or operator transport failed (no prompt was replayed).";
     throw new Error(`Peer ACP turn failed: ${safe}`, { cause: error });
   } finally {
     options.signal.removeEventListener("abort", abort);

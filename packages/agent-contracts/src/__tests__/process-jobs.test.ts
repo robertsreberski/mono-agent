@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  describePeerQuestionForm,
+  peerQuestionStateLabel,
   isProcessJobErrorCode,
   isProcessJobState,
   isProcessJobSubagentProgress,
@@ -83,8 +85,36 @@ describe("process-job contracts", () => {
   it("parses a PeerAgent job without classifying it as a managed subagent", () => {
     const peer = { ...projection(), kind: "internal", tool: "PeerAgent", instanceId: "finance", childStillBusy: false };
     expect(parseProcessJobProjection(peer)).toEqual(peer);
+    const peerQuestion = { state: "awaiting_answer", questionId: "11111111-1111-4111-8111-111111111111",
+      peer: "finance", thread: "portfolio", message: "Proceed?", expiresAt: "2026-09-23T22:00:00.000Z",
+      requestedSchema: { type: "object", properties: { question_1: { type: "string" } } } };
+    expect(parseProcessJobProjection({ ...peer, peerQuestion })).toMatchObject({ peerQuestion });
+    expect(() => parseProcessJobProjection({ ...peer, peerQuestion: { ...peerQuestion, message: "x".repeat(2_001) } })).toThrow(TypeError);
+    expect(() => parseProcessJobProjection({ ...projection(), peerQuestion })).toThrow(TypeError);
     expect(() => parseProcessJobProjection({ ...peer, subagentQuestion: { question: "Owner approval?" } })).toThrow(TypeError);
     expect(() => parseProcessJobProjection({ ...peer, subagentProgress: {} })).toThrow(TypeError);
+  });
+
+  it("summarizes peer ACP form fields for display without trusting their shape", () => {
+    expect(describePeerQuestionForm({ type: "object", required: ["question_1"], properties: {
+      question_1: { type: "string", title: "Decision", description: "Proceed?", oneOf: [
+        { const: "yes", title: "Yes" }, { const: "__custom__", title: "Other" }] },
+      question_1_other: { type: "string", title: "Decision — Other response" },
+      tags: { type: "array", items: { enum: ["a", "b"], enumNames: ["Alpha"] } },
+      bad: "not-a-schema",
+    } })).toEqual([
+      { key: "question_1", label: "Decision", description: "Proceed?", options: ["Yes", "Other"], required: true, multiple: false, freeText: false },
+      { key: "question_1_other", label: "Decision — Other response", options: [], required: false, multiple: false, freeText: true },
+      { key: "tags", label: "tags", options: ["Alpha", "b"], required: false, multiple: true, freeText: false },
+    ]);
+    expect(describePeerQuestionForm({ type: "object" })).toEqual([]);
+    // Arbitrary JSON enum values never throw and are never coerced into labels.
+    expect(describePeerQuestionForm({ properties: { q: { enum: [{ toString: "bad" }, null, [1], 3, true, "ok"] } } }))
+      .toEqual([{ key: "q", label: "q", options: ["3", "true", "ok"], required: false, multiple: false, freeText: false }]);
+    expect(() => describePeerQuestionForm({ properties: { q: { oneOf: [{ const: { toString: "bad" } }, 7] }, r: null },
+      required: [{ toString: "bad" }] })).not.toThrow();
+    expect(describePeerQuestionForm("nope")).toEqual([]);
+    expect(peerQuestionStateLabel("awaiting_answer")).toBe("Waiting for the agent's answer");
   });
 
   it("still parses a stored projection carrying the legacy AgentSend tool name", () => {

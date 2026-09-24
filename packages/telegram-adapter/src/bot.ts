@@ -7,12 +7,15 @@ import { isAbsolute } from "node:path";
 import {
   MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES,
   createChannelUserCancelReason,
+  describePeerQuestionForm,
+  peerQuestionStateLabel,
   isAgentResponseCancelledError,
   isChannelUserCancelReason,
   type AgentLiveInputOffer,
   type ChannelAskSnapshot,
   type ChannelAskSubmission,
   type ChannelAskSubmissionResult,
+  type PeerProcessJobQuestion,
   type ProcessJobProjection,
   type ProcessJobState,
 } from "@mono-agent/agent-contracts";
@@ -108,6 +111,8 @@ interface TelegramProcessJobLifecycleState {
   ref: TelegramProcessJobMessageRef | undefined;
   terminalAttempted: boolean;
   retireable: boolean;
+  /** Last rendered PeerAgent question identity/state on the existing card. */
+  peerQuestion?: string | undefined;
 }
 
 function resolveTelegramAskAnswer(
@@ -499,7 +504,7 @@ export interface TelegramBotController {
   updateProcessJob(
     chatId: TelegramChatId,
     projection: ProcessJobProjection,
-    options?: { readonly silent?: boolean },
+    options?: { readonly silent?: boolean; readonly retirementOnly?: boolean },
   ): Promise<TelegramNotifyResult>;
   /**
    * Post (or edit in place) a short tool-progress status line, keyed per
@@ -2183,7 +2188,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   function updateProcessJob(
     chatId: TelegramChatId,
     projection: ProcessJobProjection,
-    updateOptions?: { readonly silent?: boolean },
+    updateOptions?: { readonly silent?: boolean; readonly retirementOnly?: boolean },
   ): Promise<TelegramNotifyResult> {
     const previous: Promise<TelegramNotifyResult> = processJobUpdateTails.get(projection.jobId)
       ?? Promise.resolve({ delivered: true });
@@ -2220,12 +2225,26 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
             retryable: false,
           };
         }
-        if (current.terminal || rank <= current.rank) {
+        // A terminal PeerAgent card may still retire its question (answered,
+        // expired, interrupted); that is an in-place edit, never a new message.
+        // Only forward, same-question retirements; stale projections never revert it.
+        const peerQuestionChanged = terminal && current.terminal
+          && isForwardPeerRetirement(lifecycle.peerQuestion, projection);
+        if ((current.terminal || rank <= current.rank) && !peerQuestionChanged) {
+          // Nothing was rendered: keep the fingerprint of what the card shows.
+          const shown = lifecycle.peerQuestion;
           rememberProcessJobMessage(lifecycle, current, projection, current.terminal);
+          lifecycle.peerQuestion = shown;
           return { delivered: true, code: "surface_unchanged", channelId: "telegram" };
         }
       }
       const text = renderProcessJobSurface(projection);
+      if (current === undefined && updateOptions?.retirementOnly === true) {
+        // An explicit retirement-only update with no known card (e.g. after
+        // restart) must not post a fresh message for an old job. Every other
+        // update, including a first terminal post, delivers normally.
+        return { delivered: true, code: "surface_unchanged", channelId: "telegram" };
+      }
       if (current === undefined) {
         if (terminal && !rememberTerminalFallbackAttempt(lifecycle)) {
           lifecycle.retireable ||= projection.wake.state !== "pending";
@@ -2261,7 +2280,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           deliveryId: `telegram:${String(current.chatId)}:${String(current.messageId)}`,
         };
       } catch (error) {
-        if (!terminal || current.terminalFallback) {
+        if (!terminal || current.terminalFallback || current.terminal) {
           logger?.debug?.("Telegram process-job lifecycle edit failed (best-effort).", {
             error: errorMessage(error),
           });
@@ -2370,6 +2389,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     terminalAttempted: boolean,
   ): void {
     lifecycle.ref = ref;
+    lifecycle.peerQuestion = peerQuestionFingerprint(projection);
     lifecycle.terminalAttempted ||= terminalAttempted;
     lifecycle.retireable ||= isTerminalProcessJobState(projection.state)
       && projection.wake.state !== "pending";
@@ -3340,6 +3360,33 @@ function processJobStateRank(state: ProcessJobState): number {
   return 3;
 }
 
+/** Identity/state of a rendered PeerAgent question; changes permit a terminal in-place edit. */
+function peerQuestionFingerprint(projection: ProcessJobProjection): string | undefined {
+  return projection.kind === "internal" && projection.peerQuestion
+    ? `${projection.peerQuestion.questionId}:${projection.peerQuestion.state}` : undefined;
+}
+
+/** awaiting_answer → answered/expired/interrupted for the card's own questionId only. */
+function isForwardPeerRetirement(previous: string | undefined, projection: ProcessJobProjection): boolean {
+  if (projection.kind !== "internal" || projection.peerQuestion === undefined) return false;
+  return previous === `${projection.peerQuestion.questionId}:awaiting_answer`
+    && projection.peerQuestion.state !== "awaiting_answer";
+}
+
+/** Plain, bounded question text with readable option labels; never raw or cut JSON. */
+function renderPeerQuestionLines(question: PeerProcessJobQuestion): string[] {
+  const fields = describePeerQuestionForm(question.requestedSchema);
+  return [
+    `Peer question from ${question.peer}/${question.thread}: ${peerQuestionStateLabel(question.state)} [untrusted; not owner approval]`,
+    question.message.slice(0, 1000),
+    ...fields.slice(0, 8).map((field) => `• ${field.label}${field.required ? " (required)" : ""}: ${
+      field.options.length > 0 ? field.options.join(" | ") : field.freeText ? "free text" : "value"}`),
+    ...(fields.length > 8 ? [`• +${String(fields.length - 8)} more fields`] : []),
+    ...(fields.length === 0 ? ["Form fields could not be summarized; see the web console."] : []),
+    `questionId ${question.questionId} · expires ${question.expiresAt}`,
+  ];
+}
+
 function renderProcessJobSurface(projection: ProcessJobProjection): string {
   const icon = projection.state === "succeeded"
     ? "✅"
@@ -3367,6 +3414,7 @@ function renderProcessJobSurface(projection: ProcessJobProjection): string {
         `Pending question (child text): ${JSON.stringify(projection.subagentQuestion.question.slice(0, 1000))}`,
         ...(projection.subagentQuestion.options ? [`Options: ${projection.subagentQuestion.options.slice(0, 5).map((option) => JSON.stringify(option.slice(0, 100))).join(", ")}`] : []),
       ] : []),
+      ...(projection.peerQuestion ? renderPeerQuestionLines(projection.peerQuestion) : []),
     ] : []),
     projection.summary,
   ];

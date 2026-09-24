@@ -111,7 +111,8 @@ it never automatically replays a prompt interrupted by a restart. If the peer
 cleared its ACP session, or its bounded single-use generation ledger reaches
 1024 sends, the current send fails explicitly (`unknown_session_id` or
 `peer_session_exhausted`) without dispatch; the old session mapping is removed
-and only the next explicitly requested send starts a fresh session. A concurrent send to one thread is rejected. `PeerAgent({action:"stop",peer:"finance",
+and only the next explicitly requested send starts a fresh session. A concurrent send to a parked thread names its pending `questionId` and asks
+you to answer, decline, or stop, without leaking a state-directory path. `PeerAgent({action:"stop",peer:"finance",
 thread:"portfolio"})` requests ACP `session/cancel` for the active turn.
 
 With a wake-capable caller origin and enabled process jobs, `background:true`
@@ -121,9 +122,43 @@ wake origin: they can call further peers in the foreground only. The verified
 handoff carries depth and the signed, bounded source chain across ACP. A send
 to a source already in that chain (including itself) fails immediately rather
 than queuing behind a foreground turn on that source. The chain-depth ceiling
-still applies. Peer AskUser has **no question relay yet**: it fails with
-`interaction_required`, never an invented answer. Do not use this version for
-peer tasks expected to ask the caller questions.
+still applies. If the peer calls `AskUser`, the caller receives an untrusted
+bounded ACP form with a one-time `questionId`. Foreground `send` returns
+`awaiting_answer` immediately while the same ACP run remains parked. Use
+`PeerAgent({action:"answer",peer:"finance",thread:"portfolio",questionId,
+answers:{question_1:"yes"}})` with the **ACP form field keys and option IDs**;
+the bridge still validates all choices, required fields, and paired Other text.
+Use `action:"decline"` with `questionId` to refuse rather than invent an answer.
+Answer from the caller's own evidence or ask the caller's own user; the peer's
+question is not its owner's approval. Subsequent peer answers or questions
+continue on the same run. Sensitive questions fail before a form is offered.
+A parked form has a 30-minute default deadline, with its advertised `expiresAt`
+clamped to the original ACP turn deadline when that is sooner. Question text
+and form data are UTF-8 bounded; background projections redact the question
+using the process-job output redaction path. Expiry, decline, stop, cancellation
+of a continuation job or its foreground answer, or either side restarting
+interrupts the turn; late answers fail, and only a new explicit `send` resumes
+the thread without replaying the interrupted prompt. For background sends the first job
+settles with a typed `peerQuestion` in its projection and an exact-origin
+question wake; answering admits a **new continuation process job** bound to the
+original wake origin. That job wakes again with the final answer, failure, or
+next question. The first job's `peerQuestion.state` is durably updated to
+`answered`, `expired`, or `interrupted` as the parked question settles (even if
+that happens just before the question result is persisted); no additional expiry
+wake is emitted. Slack and Telegram edit the existing card in place for that
+change and never post a new card for a retirement alone, for example after a
+restart. Cards show the question and one line per form field with its choices,
+never raw schema JSON; the web card keeps the raw form in a collapsed section.
+If the question result cannot be persisted, the parked peer turn is cancelled
+rather than left waiting for an answer nobody can see. Errors returned to the
+model or the peer never include local filesystem paths. Neither the parked ACP prompt nor an answer
+is replayed after restart; the owner-private thread record and its original
+question job card recover as interrupted on the next request (where the job
+still exists). A damaged owner-only peer thread is skipped
+with a generic warning, never allowed to break unrelated agent turns. Process
+exit closes the ACP child transport; an embedded host that disposes its harness
+without exiting has no factory-level peer-disposal hook yet, so a parked relay
+remains bounded by the 30-minute turn deadline (or an explicit `stop`).
 
 Peer-specific bounded ACP `_meta` carries a source-bound, owner-private HMAC
 handoff. The proof binds target source, session, caller conversation, turn
