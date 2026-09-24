@@ -291,7 +291,10 @@ function peerFormOptions(schema: Record<string, unknown>): string[] {
   if (Array.isArray(schema.enum)) {
     const names = Array.isArray(schema.enumNames) ? schema.enumNames : [];
     return schema.enum.flatMap((value, index) => {
-      const label = peerFormText(names[index]) ?? peerFormText(typeof value === "string" ? value : String(value));
+      // Only primitives are displayable; arbitrary JSON (objects, null) is skipped, never coerced.
+      const primitive = typeof value === "string" ? value
+        : typeof value === "number" || typeof value === "boolean" ? String(value) : undefined;
+      const label = peerFormText(names[index]) ?? peerFormText(primitive);
       return label === undefined ? [] : [label];
     });
   }

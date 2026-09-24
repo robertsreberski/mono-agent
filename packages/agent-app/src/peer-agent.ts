@@ -123,13 +123,16 @@ export function withoutLocalPaths(message: string): string {
   return message.replace(/(?:[A-Za-z]:)?[\\/](?:[^\s'"`\\/]+[\\/])+[^\s'"`]*/gu, "<path>");
 }
 
-async function reconcileInterruptedPeerThreads(config: MonoAgentConfig, service?: ProcessJobsServiceHandle): Promise<void> {
+const RECOVERY_PAGE_SIZE = 128;
+
+async function reconcileInterruptedPeerThreads(config: MonoAgentConfig, service?: ProcessJobsServiceHandle,
+  pageSize = RECOVERY_PAGE_SIZE): Promise<void> {
   const root = join(dirname(config.artifacts.dir), "peer-threads");
   let skipped = 0;
   try {
-    // Stream directory entries instead of loading the whole (unbounded) owner
-    // inventory into memory. A damaged peer record cannot break ordinary turns.
-    const directory = await opendir(root, { bufferSize: 128 });
+    // Stream directory entries a page at a time instead of loading the whole
+    // (unbounded) owner inventory. A damaged peer record cannot break ordinary turns.
+    const directory = await opendir(root, { bufferSize: pageSize });
     for await (const entry of directory) {
       if (!entry.isDirectory() || !/^[a-f0-9]{64}$/u.test(entry.name)) continue;
       const path = join(root, entry.name);
@@ -166,6 +169,8 @@ export interface PeerAgentExtensionOptions {
   /** Test seam for the spawned bridge; omitted in production. */
   cliPath?: string | undefined;
   env?: NodeJS.ProcessEnv | undefined;
+  /** Test seam: restart-recovery directory page size (production 128). */
+  recoveryPageSize?: number | undefined;
 }
 
 /** One app-owned server per request; active cancellations are bound to the private thread key. */
@@ -178,7 +183,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
     origin: ReturnType<typeof processJobOriginForRequest>; depth: number; setQuestionJobId(id: string): void }>();
   let recovery: Promise<void> | undefined;
   return async (input) => {
-    recovery ??= reconcileInterruptedPeerThreads(config, service);
+    recovery ??= reconcileInterruptedPeerThreads(config, service, options.recoveryPageSize);
     await recovery;
     const sources = await discoverOperatorAgents();
     if (registeredCaller(config, sources) === undefined) return { runtimeOptions: {}, cleanup: async () => {} };

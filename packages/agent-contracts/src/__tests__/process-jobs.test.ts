@@ -108,6 +108,11 @@ describe("process-job contracts", () => {
       { key: "tags", label: "tags", options: ["Alpha", "b"], required: false, multiple: true, freeText: false },
     ]);
     expect(describePeerQuestionForm({ type: "object" })).toEqual([]);
+    // Arbitrary JSON enum values never throw and are never coerced into labels.
+    expect(describePeerQuestionForm({ properties: { q: { enum: [{ toString: "bad" }, null, [1], 3, true, "ok"] } } }))
+      .toEqual([{ key: "q", label: "q", options: ["3", "true", "ok"], required: false, multiple: false, freeText: false }]);
+    expect(() => describePeerQuestionForm({ properties: { q: { oneOf: [{ const: { toString: "bad" } }, 7] }, r: null },
+      required: [{ toString: "bad" }] })).not.toThrow();
     expect(describePeerQuestionForm("nope")).toEqual([]);
     expect(peerQuestionStateLabel("awaiting_answer")).toBe("Waiting for the agent's answer");
   });
