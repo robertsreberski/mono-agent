@@ -75,7 +75,8 @@ The preset is part of the index identity: a non-`search` preset appends
 prefixes are never mixed. `search` keeps the historical `provider:model` identity.
 
 Upgrading never forces a rebuild. With the default `auto`, an index built before presets
-existed keeps serving with its original `search` prefixes; the next deliberate
+existed (managed, or a manifest-free legacy `memory.db` whose vectors all carry the
+legacy identity) keeps serving with its original `search` prefixes; the next deliberate
 `mono-agent memory rebuild` adopts the model's preset. Setting `instructions` explicitly
 is a configuration change like a model change: it requires the stopped-agent rebuild when
 it differs from the active index.
