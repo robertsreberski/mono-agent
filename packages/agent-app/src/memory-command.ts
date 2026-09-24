@@ -2929,7 +2929,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       if (Buffer.byteLength(JSON.stringify(snapshot.lines), "utf8") > MAX_CURATE_PLAN_BYTES / 2) {
         throw new Error("curate source exceeds private plan bound");
       }
-      const estimate = bujo.curateEstimate(snapshot);
+      const estimate = bujo.curateEstimate(snapshot, memory.capture);
       const model = input.model ?? memory.llm?.model;
       if (model === undefined) throw new Error("memory LLM not configured");
       const estimateText = `Curate estimate: ${estimate.lines} lines, ${estimate.calls} calls, ~${estimate.inputTokens} input / ~${estimate.outputTokens} output tokens; cost unknown.\n`;

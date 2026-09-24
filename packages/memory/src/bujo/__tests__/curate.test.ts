@@ -18,6 +18,9 @@ describe("curation preparation", () => {
     const snapshot = inspectCurateSource(path, 1);
     expect(snapshot.lines.map(({ id }) => id)).toEqual(["fictional-a"]);
     expect(curateEstimate(snapshot)).toMatchObject({ lines: 1, calls: 1, cost: "unknown" });
+    const expanded = { ...snapshot, entityNames: [{ id: "person:morgan", name: "Morgan Example Name" }] };
+    expect(curateEstimate(expanded, { focus: "Skip transient fictional status updates." }).inputTokens)
+      .toBeGreaterThan(curateEstimate(snapshot).inputTokens);
   });
   it("rejects unsupported legacy label authority and invalid rewrites", () => {
     const path = root(); seed(path, "fictional-a", "Morgan completed the example.");
