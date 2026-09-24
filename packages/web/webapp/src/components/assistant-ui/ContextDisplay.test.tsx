@@ -55,6 +55,14 @@ describe("ContextDisplay", () => {
     expect(alert).not.toHaveTextContent("Failed to fetch");
   });
 
+  it("explains when the selected model cannot compact the existing session", async () => {
+    apiMock.compactThread.mockResolvedValueOnce({ status: "skipped", operationId: "c3", trigger: "manual", reason: "model_changed" });
+    render(<ContextDisplay context={{ status: "unavailable" }} compactThreadId="thread-5" />);
+    fireEvent.click(screen.getByRole("button", { name: /context usage/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Compact" }));
+    expect(await screen.findByText("The selected model differs from this conversation's session; switch back to compact it.")).toBeVisible();
+  });
+
   it("disables compaction while the selected thread is running", () => {
     render(<ContextDisplay context={{ status: "unavailable" }} compactThreadId="thread-3" compactBlocked />);
     fireEvent.click(screen.getByRole("button", { name: /context usage/i }));

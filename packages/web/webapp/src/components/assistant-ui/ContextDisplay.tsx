@@ -290,7 +290,10 @@ export function ContextDisplay({
                 {compacting && <p role="status">Compacting conversation context…</p>}
                 {compactResult !== null && (
                   <p role={compactResult.status === "failed" ? "alert" : "status"}>
-                    {compactResult.status === "succeeded" ? "Context compacted" : compactResult.status === "skipped" ? "Nothing to compact" : "Compaction failed"}
+                    {compactResult.status === "succeeded" ? "Context compacted"
+                      : compactResult.status === "skipped" && compactResult.reason === "model_changed"
+                        ? "The selected model differs from this conversation's session; switch back to compact it."
+                        : compactResult.status === "skipped" ? "Nothing to compact" : "Compaction failed"}
                     {compactResult.tokensBefore !== undefined && compactResult.tokensAfter !== undefined
                       ? `: ${compactResult.tokenCountsExact === true ? "" : "~"}${formatTokenCount(compactResult.tokensBefore)} → ${compactResult.tokenCountsExact === true ? "" : "~"}${formatTokenCount(compactResult.tokensAfter)} tokens`
                       : ""}

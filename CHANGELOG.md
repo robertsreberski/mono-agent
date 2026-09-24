@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix the web console's Compact button for configured agents and explain when a
+  selected model cannot compact the conversation's existing session.
+
 - Add optional, host-verified speaker provenance to completed-turn memory
   admission. Keep legacy retries byte-compatible and treat absent or direct
   programmatic origins as unknown; this does not yet emit typed graph facts.
