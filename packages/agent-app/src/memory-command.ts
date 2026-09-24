@@ -163,6 +163,11 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       writeReplayAdoptionCliFailure(input.json, "replay_adoption_usage");
       return 2;
     }
+    if (input.positionals[0] === "curate") {
+      write(input.json, { operation: `curate-${input.positionals[1] ?? "unknown"}`, status: "failed", code: "curate_usage" },
+        () => `${usageError}\n`);
+      return 2;
+    }
     if (input.positionals[0] === "forget") {
       writeMemoryForgetFailure(input.json, input.positionals[1] ?? "unknown", "forget_usage");
       return 2;
@@ -196,7 +201,8 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       return 1;
     }
     if (subcommand === "curate") {
-      process.stderr.write(ui.errorLine("Memory curate requires a configured BuJo store."));
+      write(input.json, { operation: `curate-${rest[0] ?? "unknown"}`, status: "failed", code: "curate_requires_bujo" },
+        () => "Memory curate requires a configured BuJo store.\n");
       return 1;
     }
     if (subcommand === "forget") {
@@ -2918,7 +2924,8 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
   const operation = rest[0];
   const memory = context.config.memory;
   if (memory?.mode !== "bujo" || memory.embeddings === undefined) {
-    process.stderr.write(ui.errorLine("Memory curate requires a configured BuJo store with embeddings."));
+    write(input.json, { operation: `curate-${operation ?? "unknown"}`, status: "failed", code: "curate_requires_bujo" },
+      () => "Memory curate requires a configured BuJo store with embeddings.\n");
     return 1;
   }
   try {
@@ -3005,17 +3012,13 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const selected = plan.proposals.filter((proposal) => proposal.accepted && proposal.action !== "keep");
       const { createMemoryEmbeddingProvider } = await loadMemoryRecallModule();
       const embeddings = await createMemoryEmbeddingProvider(settings.embeddings);
-      try {
-        const result = await bujo.applyExplicitMemoryCurate({ root, proposals: selected,
-          expectedRootFingerprint: plan.rootFingerprint, expectedSourceFingerprint: plan.sourceFingerprint,
-          planDigest: createHash("sha256").update(JSON.stringify({ planDigest: plan.planDigest, selected })).digest("hex"),
-          embeddings, dimension: settings.embeddings.dim ?? 768 });
-        write(input.json, { operation: "curate-apply", status: "applied", count: result.changed, backupPath: result.backupPath },
-          () => `Curated ${result.changed} memory lines; restore backup: ${result.backupPath}.\n`);
-        return 0;
-      } catch (error) {
-        throw error;
-      }
+      const result = await bujo.applyExplicitMemoryCurate({ root, proposals: selected,
+        expectedRootFingerprint: plan.rootFingerprint, expectedSourceFingerprint: plan.sourceFingerprint,
+        planDigest: createHash("sha256").update(JSON.stringify({ planDigest: plan.planDigest, selected })).digest("hex"),
+        embeddings, dimension: settings.embeddings.dim ?? 768 });
+      write(input.json, { operation: "curate-apply", status: "applied", count: result.changed, backupPath: result.backupPath },
+        () => `Curated ${result.changed} memory lines; restore backup: ${result.backupPath}.\n`);
+      return 0;
     }
     await assertNoLiveConfiguredAgent(context.configPath, await memoryRegistryDirs(context));
     const result = await bujo.restoreExplicitMemoryCurate({ root, backupPath: resolve(context.cwd, input.backupPath!),
