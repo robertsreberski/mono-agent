@@ -13,6 +13,7 @@ import {
   type MemoryBundleMergeOptions,
 } from "../bundle-merge.js";
 import { serializeBullet } from "../grammar.js";
+import { deriveFactId } from "../fact-ledger.js";
 import type { CanonicalMergeSnapshot } from "../rebuild.js";
 import {
   emptyReplayProjection,
@@ -133,6 +134,17 @@ function merge(
 }
 
 describe("canonical memory bundle merge", () => {
+  it("refuses factful snapshots even when invoked directly outside bundle import", () => {
+    const empty = snapshot({});
+    const claim = { v: 1 as const, kind: "fact" as const, runId: "r", candidateIndex: 0, factOrdinal: 0,
+      entityId: "person:alice", key: "birth_date", value: { type: "date" as const, date: "2000-01-01" },
+      attribution: "unknown" as const, sourceMemoryId: "B-1", sourceTextSha256: "0".repeat(64),
+      recordedAt: "2026-09-24T00:00:00.000Z" };
+    const factBytes = Buffer.from(`${JSON.stringify({ ...claim, factId: deriveFactId(claim) })}\n`);
+    expect(() => mergeCanonicalMemoryBundles(empty, { ...empty, factsBytes: factBytes })).toThrow(/fact/);
+    expect(() => mergeCanonicalMemoryBundles({ ...empty, factsBytes: factBytes }, empty)).toThrow(/fact/);
+  });
+
   it("unions disjoint corpora and preserves bullets verbatim, refs included", () => {
     const destination = snapshot({ daily: { "daily/2026-07-30.md": [{ id: "A", text: "target fact" }] } });
     const incoming = snapshot({

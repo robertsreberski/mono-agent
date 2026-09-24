@@ -347,6 +347,9 @@ export class MemoryDbMaintenance extends MemoryDbCore {
         "entities",
         "entity_relations",
         "memory_entities",
+        "entity_facts",
+        "entity_fact_sources",
+        "entity_fact_supersedes",
         "content_hashes",
         "index_metadata",
       ]) {

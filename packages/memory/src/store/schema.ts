@@ -85,6 +85,32 @@ export function migrations(dim: number): readonly string[] {
       source_file TEXT NOT NULL,
       created_at TEXT NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS entity_facts (
+      fact_id TEXT PRIMARY KEY,
+      entity_id TEXT NOT NULL,
+      fact_key TEXT NOT NULL,
+      value_type TEXT NOT NULL,
+      value_json TEXT NOT NULL,
+      claim_json TEXT NOT NULL,
+      valid_from TEXT,
+      valid_to TEXT,
+      recorded_at TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_entity_facts_subject ON entity_facts(entity_id, fact_key)`,
+    `CREATE TABLE IF NOT EXISTS entity_fact_sources (
+      fact_id TEXT NOT NULL,
+      memory_id TEXT NOT NULL,
+      source_text_sha256 TEXT NOT NULL,
+      attribution TEXT NOT NULL,
+      recorded_at TEXT NOT NULL,
+      PRIMARY KEY (fact_id, memory_id, source_text_sha256)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_entity_fact_sources_memory ON entity_fact_sources(memory_id)`,
+    `CREATE TABLE IF NOT EXISTS entity_fact_supersedes (
+      old_fact_id TEXT PRIMARY KEY,
+      new_fact_id TEXT NOT NULL UNIQUE,
+      recorded_at TEXT NOT NULL
+    )`,
     `CREATE TABLE IF NOT EXISTS index_metadata (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL

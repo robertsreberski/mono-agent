@@ -10,6 +10,8 @@ import { exportMemoryBundle } from "../bundle-export.js";
 import { applyMemoryBundleImport, prepareMemoryBundleImport } from "../bundle-import.js";
 import { captureTurnStrict } from "../capture.js";
 import { normalizedContentHash } from "../daily.js";
+import { appendFactLines, deriveFactId, FACT_LEDGER_FILE, FACT_MARKER_FILE, readFactLedgerStrict, type FactClaim } from "../fact-ledger.js";
+import { writeCanonicalFileAtomic } from "../path-safety.js";
 import { applyExplicitMemoryForget } from "../explicit-forget.js";
 import { resolveActiveMemoryDbPath } from "../generations.js";
 import { parseDailyFile } from "../grammar.js";
@@ -81,6 +83,51 @@ async function exportAndImport(source: BujoFixture, destination: BujoFixture): P
 }
 
 describe("memory bundle round trip", { timeout: 60_000 }, () => {
+  it("imports a legacy and empty-ledger bundle, but refuses a nonempty fact ledger before mutation", async () => {
+    const source = await createBujoFixture({ prefix: "roundtrip-ledger", bullets: [] });
+    const destination = await createBujoFixture({ prefix: "roundtrip-ledger-target", bullets: [] });
+    const bundlePath = join(scratchDirectory("roundtrip-ledger-bundle"), "bundle");
+    await exportMemoryBundle({ root: source.root, bundlePath });
+    expect(prepareMemoryBundleImport({ root: destination.root, bundlePath }).counts.newMemories).toBe(0);
+
+    writeCanonicalFileAtomic(source.root, FACT_LEDGER_FILE, "");
+    writeCanonicalFileAtomic(source.root, FACT_MARKER_FILE, JSON.stringify({ schemaVersion: 1,
+      ledgerBytes: 0, ledgerSha256: createHash("sha256").update("").digest("hex") }));
+    expect(readFactLedgerStrict(source.root).lines).toEqual([]);
+    const emptyBundle = join(scratchDirectory("roundtrip-empty-ledger"), "bundle");
+    await exportMemoryBundle({ root: source.root, bundlePath: emptyBundle });
+    expect(readFileSync(join(emptyBundle, "source", FACT_LEDGER_FILE), "utf8")).toBe("");
+    expect(readFileSync(join(emptyBundle, "source", FACT_MARKER_FILE), "utf8")).toContain("ledgerBytes");
+    const emptyPreview = prepareMemoryBundleImport({ root: destination.root, bundlePath: emptyBundle });
+    expect(emptyPreview.counts.newMemories).toBe(0);
+    await applyMemoryBundleImport({ root: destination.root, bundlePath: emptyBundle,
+      expectedRootFingerprint: emptyPreview.rootFingerprint,
+      expectedSourceFingerprint: emptyPreview.destinationSourceFingerprint,
+      expectedBundleDigest: emptyPreview.bundleDigest,
+      expectedMergeDigest: emptyPreview.mergeDigest,
+      expectedMergedSourceFingerprint: emptyPreview.mergedSourceFingerprint,
+      planDigest: createHash("sha256").update("empty-facts-plan").digest("hex"),
+      embeddings: destination.embeddings, dimension: destination.dim });
+
+    const text = "Alice was born on 2000-02-29.";
+    const factSource = await createBujoFixture({ prefix: "roundtrip-typed-source", bullets: [{ id: "B-1", text }],
+      entities: [{ id: "person:alice", name: "Alice", type: "person", createdAt: "2026-07-30T00:00:00.000Z" }] });
+    const partial: Omit<FactClaim, "factId"> = { v: 1, kind: "fact", runId: "bundle-run", candidateIndex: 0, factOrdinal: 0,
+      entityId: "person:alice", key: "birth_date", value: { type: "date", date: "2000-02-29" },
+      attribution: "user-stated", sourceMemoryId: "B-1",
+      sourceTextSha256: createHash("sha256").update(text).digest("hex"), recordedAt: "2026-09-24T00:00:00.000Z" };
+    appendFactLines(factSource.root, [{ ...partial, factId: deriveFactId(partial) }]);
+    const factsBundle = join(scratchDirectory("roundtrip-facts-ledger"), "bundle");
+    await exportMemoryBundle({ root: factSource.root, bundlePath: factsBundle });
+    expect(readFileSync(join(factsBundle, "source", FACT_LEDGER_FILE), "utf8")).toContain("birth_date");
+    const before = readBujoCanonicalSourceFingerprint(destination.root);
+    expect(() => prepareMemoryBundleImport({ root: destination.root, bundlePath: factsBundle }))
+      .toThrow(/import_facts_not_supported/);
+    expect(readBujoCanonicalSourceFingerprint(destination.root)).toBe(before);
+    expect(() => prepareMemoryBundleImport({ root: factSource.root, bundlePath }))
+      .toThrow(/import_facts_not_supported/);
+  });
+
   it("reproduces every bullet field, refs included, in the destination markdown", async () => {
     const source = await richStore("roundtrip-source");
     const destination = await createBujoFixture({ prefix: "roundtrip-empty", bullets: [] });

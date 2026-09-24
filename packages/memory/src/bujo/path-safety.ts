@@ -167,7 +167,7 @@ export function assertCanonicalDailySourcePath(path: string): void {
 export function readCanonicalFileSnapshot(
   root: string,
   relativePath: string,
-  options: { readonly allowMissing?: boolean; readonly maxBytes?: number } = {},
+  options: { readonly allowMissing?: boolean; readonly maxBytes?: number; readonly strictUtf8?: boolean } = {},
 ): CanonicalFileSnapshot | undefined {
   let location: CanonicalLocation;
   try {
@@ -200,7 +200,9 @@ export function readCanonicalFileSnapshot(
     }
     assertStableDirectories(location.directories);
     assertPathMatchesFd(location.path, opened, relativePath);
-    const content = readFileSync(fd, "utf8");
+    const content = options.strictUtf8 === true
+      ? new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(fd))
+      : readFileSync(fd, "utf8");
     const after = fstatSync(fd);
     if (!sameFileSnapshot(opened, after)) {
       throw new Error(`memory-bujo: canonical file "${relativePath}" changed while it was read.`);

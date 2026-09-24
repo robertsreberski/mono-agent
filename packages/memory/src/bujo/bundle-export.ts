@@ -30,6 +30,7 @@ import {
 } from "./durable-root-swap.js";
 import { fsyncMaintenanceDirectory } from "./maintenance.js";
 import { hasPendingMigrateDecision } from "./migrate.js";
+import { FACT_LEDGER_FILE, FACT_MARKER_FILE } from "./fact-ledger.js";
 import { assertCanonicalDailySourcePath, canonicalMemoryRootPath } from "./path-safety.js";
 import { readCanonicalMergeSnapshot, validateCanonicalCorpus } from "./rebuild.js";
 import { readBujoCanonicalSourceFingerprint, REPLAY_PROJECTION_FILE } from "./replay-projection.js";
@@ -44,6 +45,7 @@ import { readBujoCanonicalSourceFingerprint, REPLAY_PROJECTION_FILE } from "./re
  */
 
 const GRAPH_FILE = "graph.jsonl";
+
 const EXTRA_DIRECTORIES = ["audit", "monthly", "legacy"] as const;
 const MAX_ATTEMPTS = 3;
 const MAX_STALE_STAGING_CANDIDATES = 32;
@@ -232,6 +234,10 @@ function copyCanonicalSources(root: string, sourcePath: string): string[] {
     dailyPaths.push(source.relativePath);
   }
   if (existsSync(join(root, GRAPH_FILE))) copyCanonicalFile(root, sourcePath, GRAPH_FILE);
+  // Copy both fact authority files. The source-fingerprint sandwich includes
+  // ledger bytes; strict marker validation additionally fences a torn pair.
+  if (existsSync(join(root, FACT_LEDGER_FILE))) copyCanonicalFile(root, sourcePath, FACT_LEDGER_FILE);
+  if (existsSync(join(root, FACT_MARKER_FILE))) copyCanonicalFile(root, sourcePath, FACT_MARKER_FILE);
   // A bujo corpus is unimportable without its replay authority; the planner
   // hard-refuses to infer lifecycle from SQLite, so this is never optional.
   if (!existsSync(join(root, REPLAY_PROJECTION_FILE))) {

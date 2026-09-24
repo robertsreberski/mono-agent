@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { EntityRecord, MemoryRecord } from "../store/index.js";
 
 import { parseDailyFile } from "./grammar.js";
+import { FACT_LEDGER_FILE, parseFactLedger } from "./fact-ledger.js";
 import {
   mergeEntityRecord,
   projectCanonicalGraph,
@@ -122,6 +123,10 @@ export function mergeCanonicalMemoryBundles(
   incoming: CanonicalMergeSnapshot,
   options: MemoryBundleMergeOptions = {},
 ): MemoryBundleMergePlan {
+  if (parseFactLedger(destination.factsBytes?.toString("utf8")).length > 0
+    || parseFactLedger(incoming.factsBytes?.toString("utf8")).length > 0) {
+    throw new Error("memory-bundle-merge: non-empty facts ledger cannot be merged until fact-aware import is available.");
+  }
   const onConflict = options.onConflict ?? "fail";
   const entityConflict = options.entityConflict ?? "target";
 
@@ -495,6 +500,7 @@ function expectedMergedSourceFingerprint(
   const entries = [
     ...dailyEntries,
     ...(graphBytes === undefined ? [] : [["graph.jsonl", graphBytes] as const]),
+    ...(destination.factsBytes === undefined ? [] : [[FACT_LEDGER_FILE, destination.factsBytes] as const]),
     ...(replayBytes === undefined ? [] : [[REPLAY_PROJECTION_FILE, replayBytes] as const]),
   ];
   const hash = createHash("sha256");

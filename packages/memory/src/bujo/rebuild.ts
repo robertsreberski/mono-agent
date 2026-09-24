@@ -22,6 +22,9 @@ import type { EmbeddingProvider } from "../search/index.js";
 import { normalizedContentHash } from "./daily.js";
 import { isRememberedMemoryId } from "./canonical-lookup.js";
 import { parseDailyFile } from "./grammar.js";
+import { FACT_LEDGER_FILE, parseFactLedger, readFactLedgerStrict } from "./fact-ledger.js";
+import { projectFactLedger } from "./fact-projection.js";
+import type { DbFactProjection } from "../store/db-facts.js";
 import {
   emptyCanonicalGraphProjection,
   isLegacyHostObservation,
@@ -232,6 +235,7 @@ interface SourceSnapshot {
   readonly fingerprint: string;
   readonly daily: readonly SourceFileSnapshot[];
   readonly graph?: SourceFileSnapshot;
+  readonly facts?: SourceFileSnapshot;
   readonly replay?: SourceFileSnapshot;
 }
 
@@ -239,6 +243,7 @@ interface BuildPlan {
   readonly records: readonly MemoryRecord[];
   readonly contentHashes: ReadonlyMap<string, string>;
   readonly graph: CanonicalGraphProjection;
+  readonly facts: DbFactProjection;
   readonly replay: ReplayProjectionV1;
   readonly skippedRawRecords: number;
   readonly skippedUnstructuredRecords: number;
@@ -254,6 +259,7 @@ interface BuildPlan {
 export interface CanonicalGraphAuditSourceSnapshot {
   readonly fingerprint: string;
   readonly graph: CanonicalGraphProjection;
+  readonly facts?: DbFactProjection;
 }
 
 /** Read the same identity-stable canonical daily+graph projection used by safe rebuild. */
@@ -268,7 +274,8 @@ export function readCanonicalGraphAuditSourceSnapshot(
   // This surface audits only graph projection. Replay absence is independently
   // owned by strict index health and must not turn an otherwise exact graph
   // comparison into a graph parse failure.
-  return { fingerprint: snapshot.fingerprint, graph: buildPlan(snapshot, tier, emptyReplayProjection()).graph };
+  const plan = buildPlan(snapshot, tier, emptyReplayProjection());
+  return { fingerprint: snapshot.fingerprint, graph: plan.graph, facts: plan.facts };
 }
 
 /** One canonical daily source file, exactly as the rebuild planner reads it. */
@@ -290,9 +297,11 @@ export interface CanonicalMergeSnapshot {
   readonly fingerprint: string;
   readonly daily: readonly CanonicalDailySource[];
   readonly graphBytes?: Buffer;
+  readonly factsBytes?: Buffer;
   readonly replayBytes?: Buffer;
   readonly records: readonly MemoryRecord[];
   readonly graph: CanonicalGraphRecords;
+  readonly facts?: DbFactProjection;
   readonly replay: ReplayProjectionV1;
 }
 
@@ -308,9 +317,11 @@ export function readCanonicalMergeSnapshot(root: string): CanonicalMergeSnapshot
     fingerprint: snapshot.fingerprint,
     daily: snapshot.daily.map((source) => ({ relativePath: source.relativePath, bytes: source.bytes })),
     ...(snapshot.graph === undefined ? {} : { graphBytes: snapshot.graph.bytes }),
+    ...(snapshot.facts === undefined ? {} : { factsBytes: snapshot.facts.bytes }),
     ...(snapshot.replay === undefined ? {} : { replayBytes: snapshot.replay.bytes }),
     records: plan.records,
     graph: parseCanonicalGraphStrict(snapshot.graph?.bytes.toString("utf8")),
+    facts: plan.facts,
     replay: plan.replay,
   };
 }
@@ -579,6 +590,10 @@ async function safeRebuildMemoryIndexWithLease(
   let activated = false;
   try {
     const root = lease.root;
+    if (options.tier !== "bujo" && readFactLedgerStrict(root).lines.length > 0) {
+      throw new Error("memory-rebuild: non-empty facts ledger requires the BuJo tier; restore the stopped-store backup before downgrading.");
+    }
+    readFactLedgerStrict(root);
     cleanupReplayProjectionTemporaryArtifacts(root);
     const rootIdentity = identityOf(root);
     const layoutState = captureManagedLayoutState(root);
@@ -840,6 +855,7 @@ async function safeRebuildMemoryIndexWithLease(
         );
       }
       db.replaceReplayProjection(replayProjectionDbReplacement(plan.replay));
+      db.replaceFactProjection(plan.facts);
       assertReplayProjectionMatchesDb(db, plan.replay);
       db.setIndexMetadata({
         schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
@@ -1195,11 +1211,25 @@ function snapshotCanonicalSources(root: string, tier: BujoTier): SourceSnapshot 
     files.push(readStableSourceFile(root, `daily/${name}`));
   }
   let graph: SourceFileSnapshot | undefined;
+  let facts: SourceFileSnapshot | undefined;
   let replay: SourceFileSnapshot | undefined;
   if (tier === "bujo") {
     const graphSnapshot = readCanonicalFileSnapshot(root, "graph.jsonl", { allowMissing: true });
     if (graphSnapshot !== undefined) {
       graph = { relativePath: "graph.jsonl", bytes: Buffer.from(graphSnapshot.content, "utf8") };
+    }
+    // Validate marker and ledger as one source snapshot; do not silently bless
+    // orphan or torn fact bytes while rebuilding an otherwise healthy graph.
+    const factAuthority = readFactLedgerStrict(root);
+    const factsSnapshot = readCanonicalFileSnapshot(root, FACT_LEDGER_FILE, { allowMissing: true, strictUtf8: true });
+    if ((factsSnapshot !== undefined) !== factAuthority.present) {
+      throw new Error("memory-rebuild: fact ledger appeared or disappeared during canonical source snapshot.");
+    }
+    if (factsSnapshot !== undefined) {
+      if (createHash("sha256").update(factsSnapshot.content).digest("hex") !== factAuthority.sha256) {
+        throw new Error("memory-rebuild: fact ledger changed during canonical source snapshot.");
+      }
+      facts = { relativePath: FACT_LEDGER_FILE, bytes: Buffer.from(factsSnapshot.content, "utf8") };
     }
     const replaySnapshot = readCanonicalFileSnapshot(root, REPLAY_PROJECTION_FILE, { allowMissing: true });
     if (replaySnapshot !== undefined) {
@@ -1214,6 +1244,7 @@ function snapshotCanonicalSources(root: string, tier: BujoTier): SourceSnapshot 
   for (const file of [
     ...files,
     ...(graph === undefined ? [] : [graph]),
+    ...(facts === undefined ? [] : [facts]),
     ...(replay === undefined ? [] : [replay]),
   ]) {
     hash.update(String(Buffer.byteLength(file.relativePath)));
@@ -1228,6 +1259,7 @@ function snapshotCanonicalSources(root: string, tier: BujoTier): SourceSnapshot 
     fingerprint: hash.digest("hex"),
     daily: files,
     ...(graph === undefined ? {} : { graph }),
+    ...(facts === undefined ? {} : { facts }),
     ...(replay === undefined ? {} : { replay }),
   };
 }
@@ -1338,6 +1370,9 @@ function buildPlan(
       : parseReplayProjectionStrict(snapshot.replay.bytes.toString("utf8"))
     : emptyReplayProjection());
   applyReplayProjectionToPlan(records, replay, tier);
+  const facts = tier === "bujo"
+    ? projectFactLedger(parseFactLedger(snapshot.facts?.bytes.toString("utf8")), graph.entities, [...records.values()])
+    : { claims: [], sources: [], supersedes: [] };
   const parsedSourceItems = rawRecords.length + skippedUnstructuredRecords
     + missingIdentityLocations.length + legacySourceLocations.length;
   const accountedSourceItems = records.size + skippedRawRecords + skippedUnstructuredRecords
@@ -1349,6 +1384,7 @@ function buildPlan(
     records: [...records.values()],
     contentHashes,
     graph,
+    facts,
     replay,
     skippedRawRecords,
     skippedUnstructuredRecords,
@@ -1511,6 +1547,9 @@ function buildPlanParityError(
 ): string | undefined {
   const memoryParityError = buildPlanCanonicalMemoryParityError(db, tier, plan, options);
   if (memoryParityError !== undefined) return memoryParityError;
+  if (JSON.stringify(db.factProjection()) !== JSON.stringify(plan.facts)) {
+    return "memory-rebuild: canonical fact projection differs from SQLite; run stopped-store rebuild.";
+  }
   const state = db.validationSnapshot();
   const memoryInventory = db.allMemories();
   const actualMemoryById = new Map(memoryInventory.map((record) => [record.id, record]));

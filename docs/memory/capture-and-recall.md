@@ -94,6 +94,30 @@ operator endpoint is not trusted for human attribution. Channel adapters must
 verify the sender before setting `human-turn`; a copied payload field is not
 verification. This provenance contract does not itself produce typed graph facts.
 
+### Typed-fact ledger foundation (not yet a capture feature)
+
+BuJo recognizes the optional root `graph-facts-v1.jsonl` ledger together with
+`graph-facts-v1.state.json` (`schemaVersion`, `ledgerBytes`, `ledgerSha256`).
+A root without either file remains a legacy zero-fact store with the same
+canonical fingerprint. A ledger and marker must be present together and agree
+exactly; truncated, extra, malformed, or unsafe bytes fail closed. The current
+bounded parser accepts at most 8 KiB per line and 32 MiB per ledger; the limit
+must be raised safely before production capture reaches that capacity. Both files are
+included in a full-root backup; portable export copies both. Offline BuJo
+rebuild projects typed claims and source memberships without a model call.
+SQLite computes live support at query time from each source's bullet status and
+text digest; competing live values remain conflicts and corrections keep old
+claims as history. Imports and merges with typed claims are refused until
+fact-aware bundle merge exists, while legacy/empty-ledger bundles retain their
+existing behavior. Capture does not write typed-fact records yet. The reserved future kinds `alias` and `same-as`
+are unsupported and rejected, not inferred from graph adjacency. Explicit
+`remember()` still creates a Markdown bullet, never an implicit typed fact.
+
+Do not downgrade a writer against a factful root: older binaries cannot enforce
+this companion ledger's integrity. Stop the store and restore a complete
+stopped-store backup from before fact writes instead. Do not manually remove a
+ledger or marker to make a mismatched store start.
+
 ### Direct integrations
 
 The harness, direct embedders, and offline calibration use `persistCompletedTurn`.

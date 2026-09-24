@@ -94,6 +94,30 @@ const CUMULATIVE_SCHEMA_BASELINE_DDL = [
     source_file TEXT NOT NULL,
     created_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS entity_facts (
+    fact_id TEXT PRIMARY KEY,
+    entity_id TEXT NOT NULL,
+    fact_key TEXT NOT NULL,
+    value_type TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    claim_json TEXT NOT NULL,
+    valid_from TEXT,
+    valid_to TEXT,
+    recorded_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS entity_fact_sources (
+    fact_id TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    source_text_sha256 TEXT NOT NULL,
+    attribution TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (fact_id, memory_id, source_text_sha256)
+  )`,
+  `CREATE TABLE IF NOT EXISTS entity_fact_supersedes (
+    old_fact_id TEXT PRIMARY KEY,
+    new_fact_id TEXT NOT NULL UNIQUE,
+    recorded_at TEXT NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS index_metadata (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -153,6 +177,22 @@ function quoteIdentifier(value: string): string {
 }
 
 describe("memory schema evolution", () => {
+  it("reads a pre-facts read-only index as zero facts without modifying its schema", () => {
+    const root = mkdtempSync(join(tmpdir(), "memory-legacy-facts-"));
+    const path = join(root, "old.db");
+    withRawDb(path, (db) => {
+      for (const sql of CUMULATIVE_SCHEMA_BASELINE_DDL) {
+        if (!sql.includes("entity_facts") && !sql.includes("entity_fact_sources")
+          && !sql.includes("entity_fact_supersedes")) db.exec(sql);
+      }
+    });
+    const before = readSchemaShape(path);
+    const db = openMemoryDb({ path, readOnly: true, dim: DIMENSION });
+    try { expect(db.factProjection()).toEqual({ claims: [], sources: [], supersedes: [] }); }
+    finally { db.close(); }
+    expect(readSchemaShape(path)).toEqual(before);
+  });
+
   it("represents every table, converges on first open, and remains idempotent", () => {
     const root = mkdtempSync(join(tmpdir(), "memory-schema-evolution-"));
     const baselinePath = join(root, "baseline.db");

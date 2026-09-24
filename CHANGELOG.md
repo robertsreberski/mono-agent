@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Validate and rebuild an optional typed-fact ledger with a byte marker and
+  query-time source support; keep legacy fingerprints unchanged and refuse
+  importing factful bundles until fact-aware merge ships. Capture emits none yet.
+
 - Add optional, host-verified speaker provenance to completed-turn memory
   admission. Keep legacy retries byte-compatible and treat absent or direct
   programmatic origins as unknown; this does not yet emit typed graph facts.

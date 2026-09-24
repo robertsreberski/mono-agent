@@ -182,6 +182,19 @@ are excluded in SQL, and raw `audit/` observations are never read. The app-owned
 pagination, privacy projection, and policy; this package does not expose
 arbitrary file browsing.
 
+### Optional typed-fact ledger foundation
+
+BuJo recognizes an owner-private `graph-facts-v1.jsonl` with a separate
+`graph-facts-v1.state.json` byte/SHA-256 marker. The pair must be exact when
+present; legacy roots with neither have zero typed facts and unchanged source
+fingerprints. This storage foundation does **not** yet emit or index typed
+claims: offline BuJo rebuild projects validated claims and sources without a
+model call, but regular capture does not emit facts yet. A non-empty ledger
+requires a matching BuJo SQLite projection; other tiers reject it. Portable
+exports include both files;
+imports and merges refuse non-empty claims. Downgrade by restoring a complete
+stopped-store backup from before any fact writes, not by deleting the marker.
+
 ### Strong completed-turn boundary
 
 Hosts with a stable provider-run id should use `persistCompletedTurn`. It resolves

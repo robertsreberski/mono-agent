@@ -7,6 +7,7 @@ import type {
   ReplayProjectionDbReplacement,
   ReplayProjectionDbSnapshot,
 } from "../store/db.js";
+import { FACT_LEDGER_FILE, readFactLedgerStrict } from "./fact-ledger.js";
 import {
   CANONICAL_FILE_MISSING,
   canonicalMemoryRootPath,
@@ -558,6 +559,8 @@ function readBujoSourceFingerprint(root: string, includeReplay: boolean): string
     include: (name) => name.endsWith(".md"),
   }));
   const graphPresent = readCanonicalFileSnapshot(root, "graph.jsonl", { allowMissing: true }) !== undefined;
+  // Optional like graph.jsonl: no new hash domain for legacy trees/bundles.
+  const factsPresent = readFactLedgerStrict(root).present;
   const replayPresent = includeReplay && readReplayProjectionStrict(root).state.kind === "present";
   const paths = [
     ...listCanonicalRootFileNames(root, {
@@ -565,6 +568,7 @@ function readBujoSourceFingerprint(root: string, includeReplay: boolean): string
     }),
     ...[...dailyNames].sort().map((name) => `daily/${name}`),
     ...(graphPresent ? ["graph.jsonl"] : []),
+    ...(factsPresent ? [FACT_LEDGER_FILE] : []),
     ...(replayPresent ? [REPLAY_PROJECTION_FILE] : []),
   ];
   const hash = createHash("sha256");

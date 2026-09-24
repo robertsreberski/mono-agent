@@ -53,6 +53,7 @@ import { acquireMemoryMaintenanceLease } from "./maintenance.js";
 import { hasPendingMigrateDecision } from "./migrate.js";
 import { recoverDurableMutationState } from "./mutation-lock.js";
 import { appendCanonicalFile } from "./path-safety.js";
+import { readFactLedgerStrict } from "./fact-ledger.js";
 import { writeIndex } from "./projections.js";
 import {
   assertCanonicalGraphRepairBaseParity,
@@ -162,6 +163,7 @@ export interface MemoryBundleImportRestoreResult {
 export type MemoryBundleImportErrorCode =
   | "import_bundle_invalid"
   | "import_bundle_incompatible"
+  | "import_facts_not_supported"
   | "import_derived_drift"
   | "import_pending_work"
   | "import_prepare_failed"
@@ -190,6 +192,10 @@ export function prepareMemoryBundleImport(
     const root = resolveMemoryBundleImportRoot(options.root);
     const verified = verifyBundle(options.bundlePath);
     const destination = readCanonicalMergeSnapshot(root);
+    if ((destination.facts?.claims.length ?? 0) > 0) {
+      throw new MemoryBundleImportError("import_facts_not_supported", undefined,
+        new Error("Non-empty destination facts ledger cannot be merged until fact-aware bundle merge is available."));
+    }
     const incoming = readCanonicalMergeSnapshot(verified.sourcePath);
     const onConflict = options.onConflict ?? "fail";
     const entityConflict = options.entityConflict ?? "target";
@@ -489,6 +495,10 @@ function verifyBundle(bundlePath: string): VerifiedBundle {
     assertNoCarriageReturns(sourcePath);
   } catch (error) {
     throw new MemoryBundleImportError("import_bundle_invalid", undefined, error);
+  }
+  if (readFactLedgerStrict(sourcePath).lines.length > 0) {
+    throw new MemoryBundleImportError("import_facts_not_supported", undefined,
+      new Error("Non-empty facts ledgers cannot be imported until fact-aware bundle merge is available."));
   }
   return { bundlePath: resolved, sourcePath, manifest };
 }

@@ -23,9 +23,11 @@ import { assertBoundedMemoryText } from "./text-safety.js";
 import { parseDailyFile } from "./grammar.js";
 import { serializeBullet } from "./grammar.js";
 import { replaceDbCanonicalGraphProjectionWithParity } from "./graph.js";
+import { readFactLedgerStrict } from "./fact-ledger.js";
 import {
   assertCanonicalGraphRepairBaseParity,
   auditCanonicalIndexHealth,
+  readCanonicalMergeSnapshot,
 } from "./rebuild.js";
 import {
   REPLAY_PROJECTION_FILE,
@@ -238,6 +240,10 @@ export class BujoMemoryStore implements MemoryStore {
         assertTierPrerequisites(tier, options);
       }
       this._tier = tier;
+      if (tier !== "bujo" && readFactLedgerStrict(this.root).lines.length > 0) {
+        throw new Error("memory-bujo: non-empty facts ledger requires BuJo fact projection; stop the store and rebuild as BuJo before opening another tier.");
+      }
+      if (tier === "bujo") readFactLedgerStrict(this.root);
       if (!this.readOnly) {
         this.rollbackRuntimeLease = registerManagedRollbackRuntime(this.root, managed);
       }
@@ -344,6 +350,12 @@ export class BujoMemoryStore implements MemoryStore {
           if (replay.terminals.length > 0 || replay.supersedes.length > 0 || replay.threads.length > 0) {
             throw new Error(`memory-bujo: ${this._tier} rejects BuJo replay-owned lifecycle and edges.`);
           }
+        }
+      }
+      if (this._tier === "bujo") {
+        const expected = readCanonicalMergeSnapshot(this.root).facts;
+        if (JSON.stringify(expected) !== JSON.stringify(opened.factProjection())) {
+          throw new Error("memory-bujo: SQLite fact projection differs from the canonical ledger; stop the store and run safe memory rebuild.");
         }
       }
       if (!this.readOnly) this.initializeCompletedTurnIntake();

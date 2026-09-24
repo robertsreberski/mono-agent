@@ -154,7 +154,13 @@ export function auditCanonicalGraphParity(
     const relations = compareRelations(expected.relations, active.relations);
     const associations = compareAssociations(expected.associations, active.associations);
     const supports = compareSupports(expected.collectionSupports, active);
-    const matches = sectionMatches(entities)
+    let factsMatch: boolean;
+    try {
+      factsMatch = tier !== "bujo" || JSON.stringify(canonicalAfter.facts) === JSON.stringify(db.factProjection());
+    } catch {
+      return invalidResult(tier, { code: "active-index-invalid" });
+    }
+    const matches = factsMatch && sectionMatches(entities)
       && sectionMatches(relations)
       && sectionMatches(associations)
       && sectionMatches(supports);
