@@ -20,6 +20,8 @@ export interface MemoryCaptureEvidence {
   readonly userText: string;
   /** Stable host-derived opaque sender token; absent when no sender id was verified. */
   readonly senderToken?: string;
+  /** Host-confirmed owner/operator turn; omitted for channels and legacy intake. */
+  readonly ownerTurn?: true;
   readonly toolOutcomes: readonly { readonly category: "read" | "write" | "edit" | "execute" | "search";
     readonly outcome: "failed" | "succeeded" }[];
 }
@@ -63,8 +65,6 @@ export interface MemoryLoadOptions {
   readonly senderToken?: string;
   /** Host observation date (UTC, matching capture's ISO timestamp). */
   readonly hostDate?: string;
-  /** Present only when the host knows the active project. */
-  readonly projectId?: string;
 }
 
 export interface MemoryStore {

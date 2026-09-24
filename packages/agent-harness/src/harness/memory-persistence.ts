@@ -84,6 +84,7 @@ export async function persistSuccessfulMemory(
     readonly source?: string;
     readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
     readonly sender?: AgentMessageSender;
+    readonly ownerTurn?: true;
     readonly trustedUserText?: string;
     readonly toolOutcomes?: MemoryCaptureEvidence["toolOutcomes"];
     readonly emit?: (event: RuntimeEventLike) => void;
@@ -195,6 +196,7 @@ function captureEvidence(options: MemoryTurnOptions): MemoryCaptureEvidence | un
     ? memorySenderToken(options.source, options.sender)
     : undefined;
   return { userText, ...(senderToken === undefined ? {} : { senderToken }),
+    ...(options.ownerTurn === true ? { ownerTurn: true as const } : {}),
     toolOutcomes: [...(options.toolOutcomes ?? [])] };
 }
 
@@ -213,6 +215,7 @@ interface MemoryTurnOptions {
   readonly source?: string;
   readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
   readonly sender?: AgentMessageSender;
+  readonly ownerTurn?: true;
   readonly trustedUserText?: string;
   readonly toolOutcomes?: MemoryCaptureEvidence["toolOutcomes"];
 }

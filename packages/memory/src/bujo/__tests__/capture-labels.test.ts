@@ -192,7 +192,10 @@ describe("host-validated capture labels", () => {
       .toEqual([{ ...preference, scope: `user:${token}` }]);
     const explicitAgent = { ...context, captureEvidence: evidence("The assistant should keep concise notes.", { senderToken: token }) };
     expect((await extract("Morgan keeps concise notes.", [preference], explicitAgent)).candidates[0]?.labels)
-      .toEqual([preference]);
+      .toEqual([{ ...preference, scope: `user:${token}` }]);
+    expect((await extract("Morgan keeps concise notes.", [preference], {
+      ...explicitAgent, captureEvidence: { ...explicitAgent.captureEvidence, ownerTurn: true as const },
+    })).candidates[0]?.labels).toEqual([preference]);
   });
 
   it("keeps only a uniquely host-proven successful retry; malformed label never drops the memory", async () => {

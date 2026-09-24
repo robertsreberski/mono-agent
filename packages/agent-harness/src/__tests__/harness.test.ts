@@ -2264,8 +2264,9 @@ describe("AgentHarness", () => {
           return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
             source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
         } } }).run({ conversationId: "conv-1", userMessage: "Please check the task.",
-      captureSpeakerKind: "human-turn", sender: { id: "fictional-sender" },
+      captureSpeakerKind: "human-turn", metadata: { source: "web" }, sender: { id: "fictional-sender" },
       abortSignal: new AbortController().signal });
+    expect(admissions[0]?.captureEvidence?.ownerTurn).toBe(true);
     expect(admissions[0]?.captureEvidence?.toolOutcomes).toEqual([
       { category: "execute", outcome: "failed" }, { category: "execute", outcome: "succeeded" },
     ]);

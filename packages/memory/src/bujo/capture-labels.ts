@@ -61,7 +61,8 @@ export function verifiedRetryCount(evidence: MemoryCaptureEvidence | undefined):
 function preferenceScope(proposed: string, user: string, context: CaptureLabelContext): string | undefined {
   const senderToken = context.captureEvidence?.senderToken;
   if (senderToken === undefined) return safeConversationScope(context.conversationId);
-  if (proposed === "agent" && /\b(agent|assistant|agente|assistent|asystent)\b/iu.test(normalize(user))) return "agent";
+  if (proposed === "agent" && context.captureEvidence?.ownerTurn === true
+    && /\b(agent|assistant|agente|assistent|asystent)\b/iu.test(normalize(user))) return "agent";
   return explicitProject(proposed, user) ?? `user:${senderToken}`;
 }
 function explicitProject(scope: string, user: string): string | undefined {

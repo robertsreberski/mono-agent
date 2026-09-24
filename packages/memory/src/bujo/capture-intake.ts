@@ -1918,7 +1918,7 @@ function validatePayload(value: MemoryCompletedTurn): IntakePayload {
 }
 
 function validateCaptureEvidence(value: unknown): MemoryCaptureEvidence {
-  if (!isRecord(value) || !hasOnlyKeys(value, ["userText", "senderToken", "toolOutcomes"])
+  if (!isRecord(value) || !hasOnlyKeys(value, ["userText", "senderToken", "ownerTurn", "toolOutcomes"])
     || !Array.isArray(value.toolOutcomes) || value.toolOutcomes.length > 16) {
     throw new Error("memory-bujo: capture evidence is invalid.");
   }
@@ -1927,6 +1927,9 @@ function validateCaptureEvidence(value: unknown): MemoryCaptureEvidence {
   const senderToken = value.senderToken;
   if (senderToken !== undefined && (typeof senderToken !== "string" || !/^[a-f0-9]{32}$/u.test(senderToken))) {
     throw new Error("memory-bujo: capture evidence sender is invalid.");
+  }
+  if (value.ownerTurn !== undefined && value.ownerTurn !== true) {
+    throw new Error("memory-bujo: capture evidence owner turn is invalid.");
   }
   const toolOutcomes = value.toolOutcomes.map((entry: unknown) => {
     if (!isRecord(entry) || !hasOnlyKeys(entry, ["category", "outcome"])
@@ -1937,7 +1940,8 @@ function validateCaptureEvidence(value: unknown): MemoryCaptureEvidence {
     return { category: entry.category as MemoryCaptureEvidence["toolOutcomes"][number]["category"],
       outcome: entry.outcome as "failed" | "succeeded" };
   });
-  return { userText, ...(senderToken === undefined ? {} : { senderToken }), toolOutcomes };
+  return { userText, ...(senderToken === undefined ? {} : { senderToken }),
+    ...(value.ownerTurn === true ? { ownerTurn: true as const } : {}), toolOutcomes };
 }
 
 function boundedText(value: unknown, label: string, maxBytes: number, allowLayoutWhitespace: boolean): string {
