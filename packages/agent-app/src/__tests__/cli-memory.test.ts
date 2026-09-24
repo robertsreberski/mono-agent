@@ -47,6 +47,42 @@ describe("memory label CLI flags", () => {
     expect(helpTopicText("memory")).toContain("memory lessons --propose");
   });
 
+  it("preserves command-specific JSON envelopes without an index", async () => {
+    const dir = await agentDir({ memory: { mode: "lite", path: join(await tempDir(), "empty"),
+      writeMode: "append-host-summary", recallTool: { enabled: false } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    expect(JSON.parse((await invoke(["memory", "labels", "--json"])).stdout))
+      .toEqual({ labels: [], truncated: false });
+    expect(JSON.parse((await invoke(["memory", "lessons", "--propose", "--json"])).stdout))
+      .toEqual({ proposals: [], truncated: false });
+  });
+
+  it("requires two distinct source lines, not two labels on one memory, for a proposal", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({ memory: { mode: "lite", path: memoryRoot,
+      writeMode: "append-host-summary", recallTool: { enabled: false } } });
+    await seedLocalStore(memoryRoot);
+    const db = openMemoryDb({ path: join(memoryRoot, "memory.db") });
+    try {
+      const record = db.topSalient(1)[0]!;
+      db.replaceMemoryLabels(record.id, [{ v: 1, kind: "lesson", scope: "agent", verified: true },
+        { v: 1, kind: "lesson", scope: "agent", verified: true }]);
+      const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "lessons", "--propose", "--json"]))));
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout).proposals).toEqual([]);
+      for (let index = 0; index < 201; index++) {
+        const id = `lesson:cap-${index}`;
+        db.upsertLexical({ ...record, id, text: `Unique lesson ${index}.`,
+          source: { file: "daily/2026-09-06.md", line: index + 1 } });
+        db.replaceMemoryLabels(id, [{ v: 1, kind: "lesson", scope: "agent", verified: true }]);
+      }
+      const capped = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "lessons", "--propose"]))));
+      expect(capped.stdout).toContain("Inventory truncated at 200; proposals may be incomplete.");
+    } finally { db.close(); }
+  });
+
   it("reads labelled history while a writer runs and proposes only repeated verified lessons", async () => {
     const memoryRoot = join(await tempDir(), "memory");
     const dir = await agentDir({ memory: { mode: "lite", path: memoryRoot,

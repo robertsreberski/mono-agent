@@ -1667,15 +1667,17 @@ async function readLabelIndex(context: MemoryCommandContext, input: RunMemoryCom
   try {
     const path = await resolveActiveMemoryDbPath(memory.path);
     if (!await exists(path)) {
-      write(input.json, { labels: [], proposals: [], truncated: false }, () => "No indexed labels.\n");
+      write(input.json, operation === "labels" ? { labels: [], truncated: false }
+        : { proposals: [], truncated: false }, () => "No indexed labels.\n");
       return 0;
     }
     const db = openMemoryDb({ path, readOnly: true });
     try {
       const about = input.labelAbout;
-      const entity = about === undefined ? undefined : resolveMemoryEntities({
+      const matched = about === undefined ? [] : resolveMemoryEntities({
         findMemoryEntitiesByNames: (names) => db.findEntitiesByNames(names),
-      }, about, true)[0];
+      }, about, true);
+      const entity = matched.length === 1 ? matched[0] : undefined;
       const filters = operation === "lessons" ? { kind: "lesson" as const }
         : { ...(input.labelKind === undefined ? {} : { kind: input.labelKind }),
           ...(input.labelScope === undefined ? {} : { scope: input.labelScope }),
@@ -1695,16 +1697,19 @@ async function readLabelIndex(context: MemoryCommandContext, input: RunMemoryCom
           if (!hit.active || hit.label.kind !== "lesson" || !hit.label.verified) continue;
           const normalized = safeLine(hit.text).normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
           const key = `${hit.label.scope}\0${normalized}`;
-          groups.set(key, [...(groups.get(key) ?? []), hit]);
+          const group = groups.get(key) ?? [];
+          if (!group.some((prior) => prior.memoryId === hit.memoryId)) groups.set(key, [...group, hit]);
         }
         const proposals = [...groups.values()].filter((group) => group.length >= 2).map((group) => ({
           scope: group[0]!.label.kind === "lesson" ? group[0]!.label.scope : "agent",
           snippet: `When applicable: ${safeLine(group[0]!.text)}`,
           sources: group.map((hit) => `${hit.sourceFile ?? hit.memoryId}${hit.sourceLine === undefined ? "" : `:${hit.sourceLine}`}`),
         }));
-        write(input.json, { proposals, truncated: inventory.truncated }, () => proposals.length === 0
-          ? "No repeated verified lessons to propose.\n"
-          : `${proposals.map((proposal) => `[${proposal.scope}] ${proposal.snippet}\nSources: ${proposal.sources.join(", ")}`).join("\n\n")}\n${inventory.truncated ? "Further labels omitted.\n" : ""}`);
+        write(input.json, { proposals, truncated: inventory.truncated }, () => {
+          const body = proposals.length === 0 ? "No repeated verified lessons to propose.\n"
+            : `${proposals.map((proposal) => `[${proposal.scope}] ${proposal.snippet}\nSources: ${proposal.sources.join(", ")}`).join("\n\n")}\n`;
+          return `${body}${inventory.truncated ? "Inventory truncated at 200; proposals may be incomplete.\n" : ""}`;
+        });
       }
       return 0;
     } finally { db.close(); }
