@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Stop a Pi-native turn that is aborted while proactive or mid-run compaction is
+  being prepared. It now returns cancelled before the provider request instead of
+  running the model and tools and rolling the turn back afterwards.
+
 - Let foreground child `Bash` and `Exec` exceed 120 seconds, bounded by
   `subagents.commandTimeoutMs` and remaining child turn time with a settlement
   reserve. Interactive parent turns retain the 120-second cap.
