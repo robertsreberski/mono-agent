@@ -75,6 +75,26 @@ describe("completed-turn durable intake", () => {
     intake.abortForShutdown(false);
   });
 
+  it("keeps the prior payload hash when evidence is absent, and commits evidence through retry", async () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot, { capture: async () => { throw new Error("retry"); }, maxAttempts: 1 });
+    const prior = intake.admit(turn({ runId: "legacy-evidence" }));
+    const bytes = readFileSync(prior.source, "utf8");
+    expect(bytes).not.toContain("captureEvidence");
+    expect(intake.admit(turn({ runId: "legacy-evidence" })).admissionStatus).toBe("duplicate");
+    const evidence = { userText: "Morgan prefers concise notes.", senderToken: "a".repeat(32),
+      toolOutcomes: [{ category: "read" as const, outcome: "failed" as const },
+        { category: "read" as const, outcome: "succeeded" as const }] };
+    expect(() => intake.admit(turn({ runId: "legacy-evidence", captureEvidence: evidence }))).toThrow(/conflicts/iu);
+    const newer = intake.admit(turn({ runId: "new-evidence", captureEvidence: evidence }));
+    await intake.flush();
+    intake.finishShutdown();
+    expect(retryCompletedTurnIntake(memoryRoot).retried).toBe(2);
+    const pending = JSON.parse(readFileSync(join(memoryRoot, ".capture-intake", "pending", `${newer.id}.json`), "utf8")) as Record<string, unknown>;
+    expect(pending.captureEvidence).toEqual(evidence);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(true);
+  });
+
   it("rejects a malformed provenance field before admitting a run", () => {
     const memoryRoot = root();
     const intake = manager(memoryRoot);

@@ -50,6 +50,7 @@ export type {
 export type {
   MemoryBlock,
   MemoryCaptureSpeakerKind,
+  MemoryCaptureEvidence,
   MemoryCompletedTurn,
   MemoryCompletedTurnAdmissionStatus,
   MemoryCompletedTurnResult,

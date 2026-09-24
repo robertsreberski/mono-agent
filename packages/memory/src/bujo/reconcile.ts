@@ -1,4 +1,5 @@
 import { relative } from "node:path";
+import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
 
 import type { MemoryDb, MemoryRecord, SimilarHit } from "../store/index.js";
 
@@ -54,7 +55,10 @@ export interface ReconcileDeps {
   /** Run-owned capture plans remain replayable until durable intake resolution. */
   readonly captureRetentionKey?: string;
   readonly canonicalGraphRepairGuard?: CanonicalGraphRepairGuard;
-  /** Internal, host-supplied label decision; capture never supplies labels in L1. */
+  readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
+  readonly captureEvidence?: MemoryCaptureEvidence;
+  readonly conversationId?: string;
+  /** Internal, host-validated label decision; undefined uses L1 retention defaults. */
   readonly labelsForAction?: (action: "add" | "update" | "supersede", candidate: CandidateMemory,
     previous?: Bullet) => readonly MemoryLabel[] | undefined;
 }

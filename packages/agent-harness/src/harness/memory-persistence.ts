@@ -1,4 +1,5 @@
-import { classifyNotifySuppression, type AgentMessageSender, type MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
+import { classifyNotifySuppression, type AgentMessageSender, type MemoryCaptureSpeakerKind, type MemoryCaptureEvidence } from "@mono-agent/agent-contracts";
+import { createHash } from "node:crypto";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
 import type { HistoryMessage } from "../context/index.js";
@@ -83,6 +84,8 @@ export async function persistSuccessfulMemory(
     readonly source?: string;
     readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
     readonly sender?: AgentMessageSender;
+    readonly trustedUserText?: string;
+    readonly toolOutcomes?: MemoryCaptureEvidence["toolOutcomes"];
     readonly emit?: (event: RuntimeEventLike) => void;
   },
 ): Promise<void> {
@@ -93,6 +96,7 @@ export async function persistSuccessfulMemory(
       }
       const memory = harnessOptions.memory;
       const summary = deterministicHostSummary(userMessage, assistantText, persistenceOptions);
+      const evidence = mode === "capture" ? captureEvidence(persistenceOptions) : undefined;
       try {
         // Harness construction guarantees write capability. Await the stable-run
         // admission boundary before returning the already-successful provider answer.
@@ -103,7 +107,8 @@ export async function persistSuccessfulMemory(
           ...(persistenceOptions.captureSpeakerKind === undefined || persistenceOptions.captureSpeakerKind === "unknown"
             ? {} : { captureSpeakerKind: persistenceOptions.captureSpeakerKind }),
           ...(mode === "capture"
-            ? { captureText: captureTurnText(userMessage, assistantText, persistenceOptions) }
+            ? { captureText: captureTurnText(userMessage, assistantText, persistenceOptions),
+              ...(evidence === undefined ? {} : { captureEvidence: evidence }) }
             : {}),
         });
       } catch {
@@ -160,9 +165,29 @@ function captureTurnText(
     // pretending that a scheduled instruction was a human statement.
     const trigger = options.source === "cron" ? "Scheduled task trigger"
       : options.source === "webhook" ? "Webhook trigger" : "Automated trigger";
-    return `${trigger} (not a user message; trigger text omitted):\nAssistant: ${assistantText}`;
+    return `${trigger} (not a user message; trigger text omitted):\nAssistant: ${assistantText}${toolOutcomeBlock(options)}`;
   }
-  return `User${speakerSuffix(options.sender)}: ${userMessage}\nAssistant: ${assistantText}`;
+  return `User${speakerSuffix(options.sender)}: ${userMessage}\nAssistant: ${assistantText}${toolOutcomeBlock(options)}`;
+}
+
+function toolOutcomeBlock(options: MemoryTurnOptions): string {
+  const outcomes = options.toolOutcomes ?? [];
+  if (!outcomes.some((item) => item.outcome === "failed")) return "";
+  return `\nHOST-OBSERVED TOOL OUTCOMES (categories only; not user text):\n${outcomes.slice(0, 16)
+    .map(({ category, outcome }) => `${category}: ${outcome}`).join("\n")}`;
+}
+
+function captureEvidence(options: MemoryTurnOptions): MemoryCaptureEvidence | undefined {
+  const userText = options.trustedUserText;
+  if (userText === undefined || userText.trim() === "" || Buffer.byteLength(userText, "utf8") > 16 * 1024
+    || /[\p{Cs}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(userText)) return undefined;
+  const id = options.sender?.id;
+  const senderToken = options.captureSpeakerKind === "human-turn" && typeof id === "string"
+    && id.length > 0 && Buffer.byteLength(id, "utf8") <= 256
+    ? createHash("sha256").update(`${options.source ?? "unknown"}\0${id}`).digest("hex").slice(0, 32)
+    : undefined;
+  return { userText, ...(senderToken === undefined ? {} : { senderToken }),
+    toolOutcomes: [...(options.toolOutcomes ?? [])] };
 }
 
 /**
@@ -180,6 +205,8 @@ interface MemoryTurnOptions {
   readonly source?: string;
   readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
   readonly sender?: AgentMessageSender;
+  readonly trustedUserText?: string;
+  readonly toolOutcomes?: MemoryCaptureEvidence["toolOutcomes"];
 }
 
 function isTriggerSource(source: string | undefined): boolean {

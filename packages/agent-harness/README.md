@@ -96,6 +96,10 @@ Each successful turn awaits one run-idempotent admission. The provider answer
 remains successful if admission rejects; the harness emits
 `memory_persistence_degraded` and invokes the configured warning sink.
 Read-only stores need only `load` and use `memoryWriteMode: "disabled"` or omit it.
+Capture-mode admission includes bounded, host-owned outer-user evidence and a
+category-only digest of observed tool outcomes when a failure occurred. Tool
+arguments, outputs, paths, URLs and raw errors are never included in that digest;
+absent evidence remains compatible with older completed-turn admissions.
 
 The built-in default soul adds only a compact evidence router: active dialogue
 for what was just said, `MemoryRecall` for a targeted durable fact or decision,

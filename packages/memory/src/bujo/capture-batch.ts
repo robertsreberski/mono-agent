@@ -7,6 +7,8 @@ import type { ExtractedEntity, ExtractedRelation } from "./entities.js";
 import { renderKnownEntityHints } from "./entity-reuse.js";
 import { MAX_MODEL_JSON_CHARS, parseJsonExact } from "./json.js";
 import type { LlmComplete } from "./llm.js";
+import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
+import { captureLabels } from "./capture-labels.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 
 export const MAX_CAPTURE_MEMORIES = 8;
@@ -23,6 +25,9 @@ export interface CapturePlan {
 export interface CaptureObservationContext {
   /** Canonical ISO 8601 UTC instant sampled when the completed turn was admitted. */
   readonly observedAt: string;
+  readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
+  readonly conversationId?: string;
+  readonly captureEvidence?: MemoryCaptureEvidence;
 }
 
 const SAFE_TEXT_SCHEMA = (maxLength: number): Readonly<Record<string, unknown>> => ({
@@ -58,6 +63,8 @@ export const STRICT_CAPTURE_OUTPUT_SCHEMA = {
             uniqueItems: true,
             items: { ...SAFE_TEXT_SCHEMA(96), pattern: "^[a-z][a-z0-9-]{0,31}:[a-z0-9]+(?:-[a-z0-9]+)*$" },
           },
+          // Deliberately permissive items: one invalid model label is dropped by the host.
+          labels: { type: "array", maxItems: 32, items: {} },
         },
       },
     },
@@ -117,13 +124,14 @@ const prompt = (
 ): string => `Extract one bounded, durable memory plan from the completed turn below.
 ${renderObservationContext(observationContext)}
 Return ONLY one exact JSON object with exactly these root keys:
-{"memories":[{"type":"note","text":"one atomic sentence","salience":0.8,"isInsight":false,"entityIds":["person:name"]}],"entities":[{"id":"person:name","name":"display name","type":"person"},{"id":"project:example","name":"example project","type":"project"}],"relations":[{"src":"person:name","dst":"project:example","relation":"works on"}]}
+{"memories":[{"type":"note","text":"one atomic sentence","salience":0.8,"isInsight":false,"entityIds":["person:morgan"],"labels":[{"v":1,"kind":"fact","entityId":"person:morgan","key":"birth_date","value":{"type":"date","date":"1990-05-17"},"attribution":"user-stated"}]}],"entities":[{"id":"person:name","name":"display name","type":"person"},{"id":"project:example","name":"example project","type":"project"}],"relations":[{"src":"person:name","dst":"project:example","relation":"works on"}]}
 
 Rules:
 - At most ${MAX_CAPTURE_MEMORIES} memories, ${MAX_CAPTURE_ENTITIES} entities, and ${MAX_CAPTURE_RELATIONS} relations.
 - Omit chit-chat and transient tool output.
 - All three root arrays are required, even when empty. Every shown object field is required; emit no other fields.
-- Every memory object has exactly type, text, salience, isInsight, and entityIds. type is task, event, or note; isInsight is a JSON boolean.
+- Every memory has type, text, salience, isInsight, entityIds, and optional labels ([] when none). Labels are L1 fact, preference, or lesson objects; do not invent claims or speaker/tool authority. type is task, event, or note; isInsight is boolean.
+- A fact label's value must occur in its memory sentence (including an unambiguous written civil date). A preference requires an outer human request; assistant recap or scheduled/webhook trigger is not a human request. A verified lesson requires a host-observed failed tool category followed by a successful retry in the HOST-OBSERVED TOOL OUTCOMES block; absence of that block means no verified lesson. Keep the existing speaker and relative-date rules below.
 - salience MUST be a finite JSON number from 0 to 1 inclusive, such as 0.8. Never use a 0-10, 0-100, or percentage scale.
 - LENGTH: every memory text is at most ${MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS} Unicode code points. Aim for ${Math.floor(MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS * 0.75)}. Text beyond the bound is trimmed by the host, so an overrun silently loses its own tail — split a long fact into two shorter facts, or keep only its durable half, rather than relying on the trim.
 - Every memory text is one distinct durable fact: non-empty, no leading/trailing whitespace, no control, formatting, surrogate, line-separator, or paragraph-separator characters, and no reserved <!--mem delimiter.
@@ -212,7 +220,7 @@ export async function extractCapturePlanStrict(
     if (relationKeys.has(key)) throw outputError("capture-extract", "relations must be unique");
     relationKeys.add(key);
   }
-  const parsedCandidates = parsed.memories.map((value, index) => strictCandidate(value, index, entityIds));
+  const parsedCandidates = parsed.memories.map((value, index) => strictCandidate(value, index, entityIds, observationContext));
   const candidates: CandidateMemory[] = [];
   const clampedTokenSets: string[][] = [];
   const fullTokenSets: string[][] = [];
@@ -260,8 +268,9 @@ function strictCandidate(
   value: unknown,
   index: number,
   entityIds: ReadonlySet<string>,
+  context: CaptureObservationContext | undefined,
 ): { candidate: CandidateMemory; fullText: string } {
-  if (!isRecord(value) || !hasExactKeys(value, ["type", "text", "salience", "isInsight", "entityIds"])) {
+  if (!isRecord(value) || !hasExactKeys(value, ["type", "text", "salience", "isInsight", "entityIds"], ["labels"])) {
     throw outputError("capture-extract", `memory ${index} has missing or unknown fields`);
   }
   if (value.type !== "task" && value.type !== "event" && value.type !== "note") {
@@ -285,8 +294,13 @@ function strictCandidate(
   if (new Set(associated).size !== associated.length) {
     throw outputError("capture-extract", `memory ${index} repeats an entity id`);
   }
+  if (value.labels !== undefined && (!Array.isArray(value.labels) || value.labels.length > 32)) {
+    throw outputError("capture-extract", `memory ${index} labels structure is invalid`);
+  }
+  const labels = captureLabels((value.labels ?? []) as readonly unknown[], text, context ?? {});
   return {
-    candidate: { type: value.type, text, salience: value.salience, isInsight: value.isInsight, entityIds: associated },
+    candidate: { type: value.type, text, salience: value.salience, isInsight: value.isInsight, entityIds: associated,
+      ...(labels.length === 0 ? {} : { labels }) },
     fullText,
   };
 }
@@ -344,10 +358,10 @@ function strictText(value: unknown, maxCodePoints: number, label: string): strin
   return value;
 }
 
-function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[], optional: readonly string[] = []): boolean {
+  const actual = Object.keys(value);
+  return expected.every((key) => Object.hasOwn(value, key))
+    && actual.every((key) => expected.includes(key) || optional.includes(key));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -2232,7 +2232,46 @@ describe("AgentHarness", () => {
         "Assistant: The build is green.",
       ].join("\n"),
       captureText: "User: Is the build ok?\nAssistant: The build is green.",
+      captureEvidence: { userText: "Is the build ok?", toolOutcomes: [] },
     }]);
+  });
+
+  it("admits only category outcomes, never tool arguments, outputs, paths or raw failures", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const admissions: MemoryCompletedTurn[] = [];
+    const runtime = createFakeRuntime(async (_prompt, options) => {
+      const observer = (options.observers as readonly unknown[] | undefined)?.find((value): value is {
+        recordToolLifecycle: (event: import("@mono-agent/runtime-adapter").RuntimeToolLifecycleEvent) => void
+      } => typeof value === "object" && value !== null && "recordToolLifecycle" in value);
+      expect(observer).toBeDefined();
+      const call = (toolCallId: string, state: "error" | "success") => {
+        observer!.recordToolLifecycle({ phase: "invocation", toolCallId, toolName: "Exec",
+          arguments: { command: "fictional-private-token", path: "/fictional/private/path" } });
+        observer!.recordToolLifecycle({ phase: "result", toolCallId, toolName: "Exec", state,
+          content: "fictional-output-secret", failureKind: "fictional-raw-failure", detailCode: "fictional-url" });
+      };
+      call("one", "error");
+      call("two", "success");
+      return { text: "A retry succeeded after the failed execution." };
+    });
+    await createAgentHarness({ identityPath, runtime: runtime.runtime, model,
+      memoryWriteMode: "capture", memory: { load: async () => undefined,
+        persistCompletedTurn: async (turn) => {
+          admissions.push(turn);
+          return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
+            source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
+        } } }).run({ conversationId: "conv-1", userMessage: "Please check the task.",
+      captureSpeakerKind: "human-turn", sender: { id: "fictional-sender" },
+      abortSignal: new AbortController().signal });
+    expect(admissions[0]?.captureEvidence?.toolOutcomes).toEqual([
+      { category: "execute", outcome: "failed" }, { category: "execute", outcome: "succeeded" },
+    ]);
+    expect(admissions[0]?.captureText).toContain("HOST-OBSERVED TOOL OUTCOMES");
+    const admitted = JSON.stringify(admissions);
+    for (const forbidden of ["fictional-private-token", "/fictional/private/path", "fictional-output-secret",
+      "fictional-raw-failure", "fictional-url", "fictional-sender"]) expect(admitted).not.toContain(forbidden);
   });
 
   it("uses only the host-stamped request provenance, never the display source", async () => {
