@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createChannelUserCancelReason } from "@mono-agent/agent-contracts";
+import { buildSuccessfulTurn, persistSuccessfulMemory } from "../harness/memory-persistence.js";
 import type {
   AgentContinuationOriginContext,
   MemoryCompletedTurn,
@@ -2232,7 +2233,7 @@ describe("AgentHarness", () => {
         "Assistant: The build is green.",
       ].join("\n"),
       captureText: "User: Is the build ok?\nAssistant: The build is green.",
-      captureEvidence: { userText: "Is the build ok?", toolOutcomes: [] },
+      captureEvidence: { userText: "", toolOutcomes: [] },
     }]);
   });
 
@@ -2272,6 +2273,42 @@ describe("AgentHarness", () => {
     const admitted = JSON.stringify(admissions);
     for (const forbidden of ["fictional-private-token", "/fictional/private/path", "fictional-output-secret",
       "fictional-raw-failure", "fictional-url", "fictional-sender"]) expect(admitted).not.toContain(forbidden);
+  });
+
+  it("never admits webhook trigger text as capture evidence", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const admissions: MemoryCompletedTurn[] = [];
+    await createAgentHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Retry worked." })).runtime,
+      model, memoryWriteMode: "capture", memory: { load: async () => undefined,
+        persistCompletedTurn: async (turn) => {
+          admissions.push(turn);
+          return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
+            source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
+        } } }).run({ conversationId: "webhook:fictional", userMessage: "fictional-webhook-secret",
+      captureSpeakerKind: "trigger", metadata: { source: "webhook" }, abortSignal: new AbortController().signal });
+    expect(admissions[0]?.captureEvidence?.userText).toBe("");
+    expect(JSON.stringify(admissions)).not.toContain("fictional-webhook-secret");
+  });
+
+  it("uses the same human follow-ups in trusted evidence and model-visible capture text", async () => {
+    const admissions: MemoryCompletedTurn[] = [];
+    const options = { identityPath: "fictional-identity", runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
+      model, memoryWriteMode: "capture" as const, memory: { load: async () => undefined,
+      persistCompletedTurn: async (turn: MemoryCompletedTurn) => {
+        admissions.push(turn);
+        return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
+          source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
+      } } } as Parameters<typeof buildSuccessfulTurn>[0];
+    const composed = await buildSuccessfulTurn(options, "conv-1", "Morgan prefers brief notes.", [
+      { id: "followup-1", text: "Also keep answers short.", receivedAt: "2026-07-12T09:00:00.000Z" },
+    ], "Noted.", "run-1");
+    await persistSuccessfulMemory(options, "conv-1", composed.userMemoryText, "Noted.", {
+      runId: "run-1", captureSpeakerKind: "human-turn", trustedUserText: composed.userMemoryText,
+    });
+    expect(admissions[0]?.captureEvidence?.userText).toContain("Live follow-up 1:\nAlso keep answers short.");
+    expect(admissions[0]?.captureText).toContain("Live follow-up 1:\nAlso keep answers short.");
   });
 
   it("uses only the host-stamped request provenance, never the display source", async () => {

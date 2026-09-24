@@ -383,7 +383,8 @@ export class UncommittedTurnCollector {
       }
       if (event.toolName !== undefined) call.toolName = boundedText(event.toolName, ID_MAX_BYTES);
       const category = captureToolCategory(call.toolName);
-      if (hadInvocation && category !== undefined && call.result === undefined) {
+      if (hadInvocation && category !== undefined && call.result === undefined
+        && ["success", "error", "exit_nonzero", "timeout"].includes(event.state)) {
         if (this.captureOutcomes.length >= 16) this.captureOutcomesOverflow = true;
         else this.captureOutcomes.push({ category, outcome: event.state === "success" ? "succeeded" : "failed" });
       }

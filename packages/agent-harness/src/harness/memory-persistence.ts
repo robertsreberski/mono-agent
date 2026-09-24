@@ -178,8 +178,11 @@ function toolOutcomeBlock(options: MemoryTurnOptions): string {
 }
 
 function captureEvidence(options: MemoryTurnOptions): MemoryCaptureEvidence | undefined {
-  const userText = options.trustedUserText;
-  if (userText === undefined || userText.trim() === "" || Buffer.byteLength(userText, "utf8") > 16 * 1024
+  // Only a host-stamped human turn may retain its outer message as evidence.
+  // Automated/webhook bodies never enter the intake, even when supplied by a caller.
+  const userText = options.captureSpeakerKind === "human-turn" && !isTriggerSource(options.source)
+    ? options.trustedUserText : "";
+  if (userText === undefined || Buffer.byteLength(userText, "utf8") > 16 * 1024
     || /[\p{Cs}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(userText)) return undefined;
   const id = options.sender?.id;
   const senderToken = options.captureSpeakerKind === "human-turn" && typeof id === "string"

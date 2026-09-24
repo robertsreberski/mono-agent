@@ -1922,7 +1922,8 @@ function validateCaptureEvidence(value: unknown): MemoryCaptureEvidence {
     || !Array.isArray(value.toolOutcomes) || value.toolOutcomes.length > 16) {
     throw new Error("memory-bujo: capture evidence is invalid.");
   }
-  const userText = boundedText(value.userText, "capture evidence userText", 16 * 1024, true);
+  const userText = value.userText === "" ? ""
+    : boundedText(value.userText, "capture evidence userText", 16 * 1024, true);
   const senderToken = value.senderToken;
   if (senderToken !== undefined && (typeof senderToken !== "string" || !/^[a-f0-9]{32}$/u.test(senderToken))) {
     throw new Error("memory-bujo: capture evidence sender is invalid.");

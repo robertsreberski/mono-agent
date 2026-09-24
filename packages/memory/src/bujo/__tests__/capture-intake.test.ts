@@ -95,6 +95,21 @@ describe("completed-turn durable intake", () => {
     expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(true);
   });
 
+  it("persists only outcome categories, never webhook trigger text, for a trigger turn", () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot);
+    const admitted = intake.admit(turn({ runId: "webhook-trigger-evidence", captureSpeakerKind: "trigger",
+      captureText: "Webhook trigger (trigger text omitted):\nAssistant: A retry worked.",
+      captureEvidence: { userText: "", toolOutcomes: [
+        { category: "execute", outcome: "failed" }, { category: "execute", outcome: "succeeded" },
+      ] } }));
+    const serialized = readFileSync(admitted.source, "utf8");
+    expect(JSON.parse(serialized)).toMatchObject({ captureEvidence: { userText: "" } });
+    expect(serialized).not.toContain("fictional-webhook-secret");
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(true);
+    intake.abortForShutdown(false);
+  });
+
   it("rejects a malformed provenance field before admitting a run", () => {
     const memoryRoot = root();
     const intake = manager(memoryRoot);
