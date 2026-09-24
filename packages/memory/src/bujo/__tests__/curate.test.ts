@@ -47,6 +47,12 @@ describe("curation preparation", () => {
     expect(proposals).toHaveLength(2);
     expect(proposals[0]).toMatchObject({ accepted: false, reason: "generic-advice" });
     await expect(proposeCurate(snapshot, { id: "fake", complete: async () => JSON.stringify([{ id: "outside", action: "keep" }, { id: "fictional-b", action: "keep" }]) })).rejects.toThrow();
+    const labelled = await proposeCurate(snapshot, { id: "fake", complete: async () => JSON.stringify([
+      { id: "fictional-a", action: "keep" }, { id: "fictional-b", action: "label", labels: [{ v: 1, kind: "fact", entityId: "person:morgan",
+        key: "preferred_name", value: { type: "text", text: "Morgan" }, attribution: "document" }] },
+    ]) });
+    expect(labelled[1]?.labels?.[0]).toMatchObject({ attribution: "assistant-inferred" });
+    expect(() => validateCurateProposal({ ...labelled[1]!, labels: [{ ...labelled[1]!.labels![0]!, attribution: "document" }] })).toThrow();
   });
 });
 

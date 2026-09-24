@@ -90,6 +90,7 @@ export function validateCurateProposal(proposal: CurateProposal): void {
     validateMemoryLabel(label);
     if (label.kind === "preference" || label.kind === "lesson"
       || (label.kind === "fact" && (!factSupported(label, source.text)
+        || label.attribution === "document"
         || label.attribution === "user-stated" && (!/\buser (?:said|stated|reported)\b/iu.test(source.text)
           || !valueSupported(label, source.text))))) {
       throw new Error("memory-curate: unsupported retrospective label");
@@ -143,7 +144,11 @@ export async function proposeCurate(snapshot: CurateSnapshot, llm: LlmComplete, 
       const proposal: CurateProposal = { source, action: entry.action as CurateAction, accepted: false,
         ...(entry.reason === undefined ? {} : { reason: entry.reason as CurateReason }),
         ...(entry.text === undefined ? {} : { text: entry.text as string }),
-        ...(entry.labels === undefined ? {} : { labels: entry.labels as MemoryLabel[] }),
+        ...(entry.labels === undefined ? {} : { labels: Array.isArray(entry.labels)
+          ? entry.labels.map((label: unknown) => label && typeof label === "object" && !Array.isArray(label)
+            && (label as { kind?: unknown }).kind === "fact" && (label as { attribution?: unknown }).attribution === "document"
+            ? { ...label, attribution: "assistant-inferred" } : label) as MemoryLabel[]
+          : entry.labels as MemoryLabel[] }),
         ...(entry.mergeEntity === undefined ? {} : { mergeEntity: entry.mergeEntity as { from: string; to: string } }) };
       validateCurateProposal(proposal);
       output.push(proposal);
