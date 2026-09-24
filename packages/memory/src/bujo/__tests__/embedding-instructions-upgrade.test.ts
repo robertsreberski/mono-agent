@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createEmbeddingProvider, type EmbeddingProvider } from "../../search/index.js";
+import { openMemoryDb } from "../../store/index.js";
 import {
   auditBujoMemoryHealth,
   createBujoMemoryStore,
@@ -60,6 +61,38 @@ describe("embedding instruction upgrade", () => {
     // Rolling back to the pre-preset generation stays accepted under `auto`.
     await rollbackMemoryIndex({ root, tier: "journal", embeddings: upgraded.provider, dim: 4 });
     expect(readManagedIndexManifest(root)?.active.embeddingModel).toBe("ollama:bge-m3:latest");
+  });
+
+  it("keeps a manifest-free legacy memory.db serving under auto and rejects mixed identities", async () => {
+    const root = seededRoot();
+    const legacy = recording("bge-m3:latest", "search");
+    const seed = openMemoryDb({ path: join(root, "memory.db"), embeddings: legacy.provider, dim: 4 });
+    await seed.upsert({
+      id: "M1", type: "note", status: "open", text: "Morgan was born on 1990-05-17.", salience: 0.5,
+      isInsight: false, createdAt: NOW, accessCount: 0, tags: [], source: {},
+    });
+    seed.close();
+    expect(readManagedIndexManifest(root)).toBeUndefined();
+
+    const upgraded = recording("bge-m3:latest");
+    const store = createBujoMemoryStore({ root, tier: "journal", embeddings: upgraded.provider, dim: 4 });
+    try {
+      const hits = await store.recall("When was Morgan born?", { trackAccess: false });
+      expect(hits.map((hit) => hit.record.id)).toContain("M1");
+    } finally {
+      await store.close();
+    }
+    expect(upgraded.sent).toEqual(["search_query: When was Morgan born?"]);
+
+    // A second vector under the new identity makes the store mixed: no adoption.
+    const mixed = openMemoryDb({ path: join(root, "memory.db"), embeddings: upgraded.provider, dim: 4 });
+    await mixed.upsert({
+      id: "M2", type: "note", status: "open", text: "Taylor was born on 1988-11-02.", salience: 0.5,
+      isInsight: false, createdAt: NOW, accessCount: 0, tags: [], source: {},
+    });
+    mixed.close();
+    expect(() => createBujoMemoryStore({ root, tier: "journal", embeddings: upgraded.provider, dim: 4 }))
+      .toThrow(/does not match configured/u);
   });
 
   it("health audit accepts a pre-preset index only through the legacy identity", async () => {

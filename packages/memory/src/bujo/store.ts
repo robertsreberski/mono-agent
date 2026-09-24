@@ -261,7 +261,7 @@ export class BujoMemoryStore implements MemoryStore {
       }
       // An index built before instruction presets keeps its historical
       // prefixes until a deliberate rebuild adopts the model preset.
-      const embeddings = options.embeddings === undefined
+      let embeddings = options.embeddings === undefined
         ? undefined
         : adoptEmbeddingIndexIdentity(options.embeddings, managed?.active.embeddingModel);
       if (!this.readOnly && managed !== undefined && (
@@ -285,6 +285,24 @@ export class BujoMemoryStore implements MemoryStore {
         clock: this.clock,
       });
       assertSafeSqlitePathState(this.root, dbPath, dbPathState, "memory database");
+      // A manifest-free legacy memory.db has no managed identity; adopt the
+      // legacy identity only when every stored vector carries exactly it.
+      // Mixed or missing identities are left for assertEmbeddingIdentity.
+      if (managed === undefined && embeddings?.legacyId !== undefined) {
+        const stored = opened.storedVectorEmbeddingModels();
+        if (stored.length === 1 && stored[0] === embeddings.legacyId) {
+          embeddings = adoptEmbeddingIndexIdentity(embeddings, embeddings.legacyId);
+          opened.close();
+          opened = openMemoryDb({
+            path: dbPath,
+            embeddings: this.instrumentEmbeddings(embeddings),
+            ...(options.dim !== undefined && { dim: options.dim }),
+            ...(this.readOnly ? { readOnly: true } : {}),
+            clock: this.clock,
+          });
+          assertSafeSqlitePathState(this.root, dbPath, dbPathState, "memory database");
+        }
+      }
       this.db = opened;
       if (this.readOnly && managed !== undefined && options.allowFtsFallback !== true) {
         const metadata = opened.indexMetadata();

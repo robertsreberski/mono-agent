@@ -481,6 +481,14 @@ export class MemoryDbMaintenance extends MemoryDbCore {
     ).get(name) !== undefined;
   }
 
+  /** Distinct embedding identities (null when missing) of the stored vectors. */
+  storedVectorEmbeddingModels(): Array<string | null> {
+    return (this.db.prepare(
+      `SELECT DISTINCT m.embedding_model AS model FROM memories m
+       JOIN memories_vec v ON v.rowid = m.seq`,
+    ).all() as Array<{ model: string | null }>).map((row) => row.model);
+  }
+
   assertEmbeddingIdentity(): void {
     if (this.embeddings === undefined) return;
     const ddlDimension = this.vectorDimension();
