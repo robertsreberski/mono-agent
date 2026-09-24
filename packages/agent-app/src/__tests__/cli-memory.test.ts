@@ -2109,6 +2109,15 @@ describe("curate crash recovery CLI", { timeout: 30_000 }, () => {
       proposals: payload.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
     await writeFile(planPath, JSON.stringify({ ...payload, planDigest }), { mode: 0o600 });
     const selectedDigest = createHash("sha256").update(JSON.stringify({ planDigest, selected: [proposal] })).digest("hex");
+    const competing = createBujoMemoryStore({ root: memoryRoot, tier: "bujo", embeddings, dim: 8,
+      llm: { id: "fake", complete: async () => "[]" } });
+    try {
+      const refused = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "curate", "apply", "--plan", planPath, "--json"]))));
+      expect(refused.code).toBe(1);
+      expect(JSON.parse(refused.stdout).code).toBe("curate_apply_failed");
+      expect(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot)).toBe(payload.sourceFingerprint);
+    } finally { await competing.close(); }
     await expect(bujoMemory.applyExplicitMemoryCurate({ root: memoryRoot, proposals: [proposal],
       expectedRootFingerprint: rootFingerprint, expectedSourceFingerprint: payload.sourceFingerprint,
       planDigest: selectedDigest, embeddings, dimension: 8,
