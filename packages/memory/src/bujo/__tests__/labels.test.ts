@@ -161,6 +161,22 @@ describe("labels on canonical bullets", () => {
     } finally { db.close(); }
   });
 
+  it("reads duplicated labelled refs metadata and diagnoses its source line", async () => {
+    const dir = root();
+    const labelled = withMemoryLabels(bullet("B1"), [birthday]);
+    appendBullet(dir, labelled, when);
+    const path = join(dir, "daily", "2026-07-11.md");
+    writeFileSync(path, readFileSync(path, "utf8").replace("refs=existing-reference,", "refs=existing-reference refs="));
+    const db = openMemoryDb({ path: join(dir, "memory.db") });
+    try {
+      await rebuildFromMarkdown(dir, db);
+      expect(db.labelsForEntity("person:morgan")).toHaveLength(1);
+      expect(auditCanonicalGraphParity(dir, db).issues).toEqual([
+        { code: "canonical-read-failed", file: "daily/2026-07-11.md", line: 3 },
+      ]);
+    } finally { db.close(); }
+  });
+
   it("safely rebuilds a BuJo source with malformed labels while auditing the line", async () => {
     const dir = root();
     const store = createBujoMemoryStore({ root: dir, tier: "bujo", clock: () => when,

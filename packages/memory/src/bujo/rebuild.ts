@@ -23,7 +23,7 @@ import { normalizedContentHash } from "./daily.js";
 import { labelsOf, readableLabelsOf } from "./labels.js";
 import type { IndexedMemoryLabel } from "../store/db-labels.js";
 import { isRememberedMemoryId } from "./canonical-lookup.js";
-import { parseDailyFile } from "./grammar.js";
+import { hasDuplicateLabelRefsMetadata, parseDailyFile } from "./grammar.js";
 import {
   emptyCanonicalGraphProjection,
   isLegacyHostObservation,
@@ -1298,8 +1298,10 @@ function buildPlan(
       }
       rawRecords.push(toRecord(line.bullet, source.relativePath, line.lineNumber));
       if (tier === "bujo") {
+        let invalid = hasDuplicateLabelRefsMetadata(line.raw);
         try { labelsOf(line.bullet); }
-        catch { invalidLabels.push({ file: source.relativePath, line: line.lineNumber }); }
+        catch { invalid = true; }
+        if (invalid) invalidLabels.push({ file: source.relativePath, line: line.lineNumber });
         labelsAtSource.set(`${source.relativePath}\0${line.lineNumber}`, readableLabelsOf(line.bullet));
       }
     }

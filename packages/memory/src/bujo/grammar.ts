@@ -166,11 +166,18 @@ export function parseDailyFile(content: string): DailyFile & { bullets: Bullet[]
   return { lines, bullets: lines.flatMap((l) => (l.bullet ? [l.bullet] : [])) };
 }
 
+export function hasDuplicateLabelRefsMetadata(raw: string): boolean {
+  const refs = [...raw.matchAll(/(?:^|\s)refs=(\S*)/gu)].map((match) => match[1] ?? "");
+  return refs.length > 1 && refs.some((value) => value.includes("label:"));
+}
+
 export function serializeDailyFile(file: DailyFile): string {
   return file.lines.map((line) => {
     if (line.bullet === undefined) return line.raw;
+    let damaged = hasDuplicateLabelRefsMetadata(line.raw);
     try { labelsOf(line.bullet); }
-    catch {
+    catch { damaged = true; }
+    if (damaged) {
       // Unchanged damaged source is readable, not silently repaired. Forgetting its
       // line removes invalid labels while preserving ordinary and healthy refs.
       if (JSON.stringify(parseBullet(line.raw)) === JSON.stringify(line.bullet)) return line.raw;
