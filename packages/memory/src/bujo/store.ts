@@ -36,7 +36,7 @@ import {
 } from "./replay-projection.js";
 import { repairLegacyCaptureClockDriftAtStartup } from "./capture-clock-repair.js";
 import type { LlmComplete } from "./llm.js";
-import type { EmbeddingProvider } from "../search/index.js";
+import { adoptEmbeddingIndexIdentity, type EmbeddingProvider } from "../search/index.js";
 import { captureTurnStrict } from "./capture.js";
 import {
   findRetainedCaptureIntent,
@@ -259,9 +259,14 @@ export class BujoMemoryStore implements MemoryStore {
       if (!this.readOnly) {
         this.rollbackRuntimeLease = registerManagedRollbackRuntime(this.root, managed);
       }
+      // An index built before instruction presets keeps its historical
+      // prefixes until a deliberate rebuild adopts the model preset.
+      const embeddings = options.embeddings === undefined
+        ? undefined
+        : adoptEmbeddingIndexIdentity(options.embeddings, managed?.active.embeddingModel);
       if (!this.readOnly && managed !== undefined && (
         managed.active.tier !== this._tier
-        || managed.active.embeddingModel !== options.embeddings?.id
+        || managed.active.embeddingModel !== embeddings?.id
         || managed.active.dimension !== options.dim
       )) {
         throw new Error(
@@ -274,7 +279,7 @@ export class BujoMemoryStore implements MemoryStore {
       const dbPathState = captureSafeSqlitePathState(this.root, dbPath, "memory database");
       opened = openMemoryDb({
         path: dbPath,
-        ...(options.embeddings !== undefined && { embeddings: this.instrumentEmbeddings(options.embeddings) }),
+        ...(embeddings !== undefined && { embeddings: this.instrumentEmbeddings(embeddings) }),
         ...(options.dim !== undefined && { dim: options.dim }),
         ...(this.readOnly ? { readOnly: true } : {}),
         clock: this.clock,
@@ -285,7 +290,7 @@ export class BujoMemoryStore implements MemoryStore {
         const metadata = opened.indexMetadata();
         if (metadata === undefined
           || metadata.tier !== this._tier
-          || metadata.embeddingModel !== options.embeddings?.id
+          || metadata.embeddingModel !== embeddings?.id
           || metadata.dimension !== options.dim) {
           throw new Error(
             `memory-bujo: managed read-only generation requires tier=${metadata?.tier ?? "unknown"}, `

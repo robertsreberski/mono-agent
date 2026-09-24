@@ -728,6 +728,21 @@
               "type": "integer",
               "default": 10000
             },
+            "instructions": {
+              "description": "Query/document instruction preset: auto (per model when an index is built; an existing index keeps its prefixes), search, none, query, or qwen3. Changing it requires the stopped-agent memory rebuild.",
+              "examples": [
+                "auto"
+              ],
+              "type": "string",
+              "default": "auto",
+              "enum": [
+                "auto",
+                "search",
+                "none",
+                "query",
+                "qwen3"
+              ]
+            },
             "circuitBreaker": {
               "type": "object",
               "additionalProperties": false,

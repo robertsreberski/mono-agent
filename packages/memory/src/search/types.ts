@@ -1,3 +1,5 @@
+import type { EmbeddingInstructionsSetting } from "./instructions.js";
+
 export type MemorySearchErrorCode =
   | "invalid_embedding_options"
   | "embedding_request_failed"
@@ -6,8 +8,16 @@ export type MemorySearchErrorCode =
 
 /** Turns text into dense vectors. Implementations: Ollama (default), LM Studio, OpenAI. */
 export interface EmbeddingProvider {
-  /** Stable identifier for diagnostics (e.g. "ollama:nomic-embed-text"). */
+  /**
+   * Stable index identity (e.g. "ollama:nomic-embed-text"). A
+   * `#instructions=<preset>` suffix selects the query/document prefixes.
+   */
   readonly id: string;
+  /**
+   * Pre-preset identity an existing index built by this model may keep
+   * serving with the historical prefixes (set only for `instructions: "auto"`).
+   */
+  readonly legacyId?: string;
   embed(texts: readonly string[]): Promise<number[][]>;
 }
 
@@ -19,4 +29,6 @@ export interface EmbeddingProviderConfig {
   readonly endpoint?: string;
   readonly apiKey?: string;
   readonly timeoutMs?: number;
+  /** Query/document instruction preset; default `auto` (per-model). */
+  readonly instructions?: EmbeddingInstructionsSetting;
 }

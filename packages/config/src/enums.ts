@@ -21,6 +21,9 @@ export const MEMORY_WRITE_MODES = ["disabled", "append-host-summary", "capture"]
 /** Embedding providers supported by the built-in memory backend. */
 export const MEMORY_EMBEDDINGS_PROVIDERS = ["ollama", "lmstudio", "openai"] as const;
 
+/** Embedding query/document instruction presets; `auto` selects per model at index build. */
+export const MEMORY_EMBEDDINGS_INSTRUCTIONS = ["auto", "search", "none", "query", "qwen3"] as const;
+
 /** Chat-LLM providers supported by BuJo capture. */
 export const MEMORY_LLM_PROVIDERS = ["ollama", "agent-host"] as const;
 

@@ -94,6 +94,7 @@ export const CORE_CONFIG_FIELD_IDS = {
   "memory.embeddings.apiKeyEnv": true,
   "memory.embeddings.dim": true,
   "memory.embeddings.timeoutMs": true,
+  "memory.embeddings.instructions": true,
   "memory.embeddings.circuitBreaker.failureThreshold": true,
   "memory.embeddings.circuitBreaker.cooldownMs": true,
   "memory.llm.provider": true,
@@ -605,6 +606,12 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
         label: "Embeddings timeout (ms)",
         value: embeddings.timeoutMs === undefined ? "default" : String(embeddings.timeoutMs),
         jsonPresent: json.memory?.embeddings?.timeoutMs !== undefined,
+      }),
+      toField({
+        id: "memory.embeddings.instructions",
+        label: "Embeddings instructions",
+        value: embeddings.instructions ?? "auto",
+        jsonPresent: json.memory?.embeddings?.instructions !== undefined,
       }),
       toField({
         id: "memory.embeddings.circuitBreaker.failureThreshold",

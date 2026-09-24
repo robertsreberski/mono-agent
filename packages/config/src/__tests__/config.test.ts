@@ -2839,6 +2839,23 @@ describe("resolveJsonMonoAgentConfig", () => {
     });
   });
 
+  it("loads an explicit memory embeddings instructions preset and rejects unknown presets", () => {
+    const load = (instructions: unknown) => resolveJsonMonoAgentConfig({
+      cwd: "/repo",
+      json: {
+        ...baseJson,
+        memory: { path: "memory", mode: "journal", embeddings: { provider: "ollama", model: "bge-m3:latest", instructions } },
+      },
+    });
+    expect(load("none").memory?.embeddings?.instructions).toBe("none");
+    expect(load("auto").memory?.embeddings?.instructions).toBe("auto");
+    expect(resolveJsonMonoAgentConfig({
+      cwd: "/repo",
+      json: { ...baseJson, memory: { path: "memory", mode: "journal", embeddings: { provider: "ollama" } } },
+    }).memory?.embeddings).not.toHaveProperty("instructions");
+    expect(() => load("search_query: ")).toThrow(/memory\.embeddings\.instructions/u);
+  });
+
   it("omits embeddings timeoutMs/circuitBreaker when unset and rejects invalid values", () => {
     const config = resolveJsonMonoAgentConfig({
       cwd: "/repo",

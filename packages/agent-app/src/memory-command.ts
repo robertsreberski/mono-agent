@@ -11,7 +11,11 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { MemorySearchError } from "@mono-agent/memory/search";
+import {
+  configuredEmbeddingIdentity,
+  effectiveEmbeddingIdentity,
+  MemorySearchError,
+} from "@mono-agent/memory/search";
 import type { MemorySearchErrorCode } from "@mono-agent/memory/search";
 import type { EntityRecord, IndexMetadata, MemoryDb, MemoryRecord, MemoryStoreAudit, MemoryStoreStats } from "@mono-agent/memory/store";
 import { listTraceSources } from "@mono-agent/observability";
@@ -30,6 +34,7 @@ import {
   resolveAppTraceRegistryDir,
   resolveGlobalTraceRegistryDir,
 } from "./app-config.js";
+import { legacyEmbeddingModelOption } from "./memory-embedding-identity.js";
 import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
 import { resolveMemoryEntities, safeLine } from "./memory-guidance.js";
 import type {
@@ -487,7 +492,7 @@ async function runMemoryBundleExport(
       ...(input.allowPending === true ? { allowPending: true } : {}),
       ...(memory.embeddings?.model === undefined
         ? {}
-        : { embeddingModel: `${memory.embeddings.provider}:${memory.embeddings.model}` }),
+        : { embeddingModel: configuredEmbeddingIdentity(memory.embeddings) }),
       dimension: memory.embeddings?.dim ?? 768,
     });
     const published = {
@@ -960,7 +965,7 @@ async function runReplayAdoption(
       writeReplayAdoptionCliFailure(json, "replay_adoption_agent_running");
       return 1;
     }
-    const { adoptLegacyReplayProjection } = await loadBujoModule();
+    const { adoptLegacyReplayProjection, readManagedIndexManifest } = await loadBujoModule();
     // Re-check after the lazy module load so a configured process cannot race
     // the SSH-only stopped-store precondition during setup. The package also
     // takes the memory-root writer lease and SQLite writer fence.
@@ -971,7 +976,13 @@ async function runReplayAdoption(
     const adopted = await adoptLegacyReplayProjection({
       root: memory.path,
       mode: "bujo",
-      embeddingModel: `${memory.embeddings.provider}:${memory.embeddings.model}`,
+      // A stopped legacy store predates instruction presets unless its
+      // managed generation was rebuilt with one.
+      embeddingModel: effectiveEmbeddingIdentity(
+        memory.embeddings,
+        readManagedIndexManifest(memory.path)?.active.embeddingModel
+          ?? `${memory.embeddings.provider}:${memory.embeddings.model}`,
+      ),
       dimension: memory.embeddings.dim ?? 768,
     });
     const result = publicReplayAdoptionResult(adopted);
@@ -1473,7 +1484,8 @@ async function runStrictAudit(context: MemoryCommandContext, json: boolean): Pro
       ...(memory.embeddings === undefined
         ? {}
         : {
-            configuredEmbeddingModel: `${memory.embeddings.provider}:${memory.embeddings.model}`,
+            configuredEmbeddingModel: configuredEmbeddingIdentity(memory.embeddings),
+            ...legacyEmbeddingModelOption(memory.embeddings),
             configuredDimension: memory.embeddings.dim ?? 768,
           }),
     });

@@ -2306,7 +2306,8 @@ function normalizeRollbackToPlan(path: string, plan: BuildPlan): void {
 
 function assertConfiguredIdentity(target: ManagedGeneration, options: SafeMemoryIndexOptions): void {
   if (target.tier !== options.tier
-    || target.embeddingModel !== options.embeddings?.id
+    || (target.embeddingModel !== options.embeddings?.id
+      && (target.embeddingModel === undefined || target.embeddingModel !== options.embeddings?.legacyId))
     || target.dimension !== options.dim) {
     throw new Error(
       `memory-rebuild: rollback target requires tier=${target.tier}, model=${target.embeddingModel ?? "none"}, `

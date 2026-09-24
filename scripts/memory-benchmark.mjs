@@ -630,6 +630,9 @@ async function embeddingProvider(kind, options, metrics) {
       provider: "ollama",
       model: process.env.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL ?? "nomic-embed-text:v1.5",
       endpoint: process.env.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT ?? "http://127.0.0.1:11434",
+      ...(process.env.MONO_AGENT_MEMORY_EMBEDDINGS_INSTRUCTIONS === undefined
+        ? {}
+        : { instructions: process.env.MONO_AGENT_MEMORY_EMBEDDINGS_INSTRUCTIONS }),
     });
   } else {
     throw new Error(`Unknown benchmark provider "${kind}" (expected deterministic or ollama).`);

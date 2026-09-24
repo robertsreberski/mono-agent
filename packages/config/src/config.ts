@@ -39,6 +39,7 @@ import {
   ALLOW_ALL_TOOLS,
   EFFORT_LEVELS,
   MEMORY_BACKENDS,
+  MEMORY_EMBEDDINGS_INSTRUCTIONS,
   MEMORY_EMBEDDINGS_PROVIDERS,
   MEMORY_LLM_PROVIDERS,
   MEMORY_MODES,
@@ -47,7 +48,7 @@ import {
   renamedToolName,
 } from "./enums.js";
 import type { MonoAgentConfigJson } from "./json-source.js";
-import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryWriteMode, MonoAgentConfig, PiNativeProviderConfig, RedactedMonoAgentConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentModelChoice, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
+import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsInstructions, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryWriteMode, MonoAgentConfig, PiNativeProviderConfig, RedactedMonoAgentConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentModelChoice, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
 const PEER_NAME = /^[a-z][a-z0-9-]{0,39}$/u;
 const PEER_SOURCE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
@@ -1638,7 +1639,7 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
   const consolidationJson = jsonRecord(memory.consolidation, "memory.consolidation");
   if (embeddingsJson !== undefined) {
     assertJsonScalarFields(embeddingsJson, "memory.embeddings", {
-      provider: "string", model: "string", endpoint: "string", apiKey: "string", apiKeyEnv: "string", dim: "number", timeoutMs: "number",
+      provider: "string", model: "string", endpoint: "string", apiKey: "string", apiKeyEnv: "string", dim: "number", timeoutMs: "number", instructions: "string",
     });
     const breaker = jsonRecord(embeddingsJson.circuitBreaker, "memory.embeddings.circuitBreaker");
     if (breaker !== undefined) assertJsonScalarFields(breaker, "memory.embeddings.circuitBreaker", { failureThreshold: "number", cooldownMs: "number" });
@@ -1670,6 +1671,7 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
       "memory.rememberTool.enabled",
       "memory.embeddings.dim",
       "memory.embeddings.timeoutMs",
+      "memory.embeddings.instructions",
       "memory.embeddings.circuitBreaker.failureThreshold",
       "memory.embeddings.circuitBreaker.cooldownMs",
       "memory.llm.provider",
@@ -1872,6 +1874,14 @@ function readMemoryEmbeddingsConfig(value: unknown): MemoryEmbeddingsConfig | un
     "memory.embeddings.timeoutMs",
     { min: 1, max: 600_000 },
   );
+  const instructions = embeddings.instructions === undefined
+    ? undefined
+    : jsonChoice<MemoryEmbeddingsInstructions>(
+      embeddings.instructions,
+      "memory.embeddings.instructions",
+      MEMORY_EMBEDDINGS_INSTRUCTIONS,
+      "auto",
+    );
   const circuitBreaker = readMemoryEmbeddingsCircuitBreakerConfig(embeddings.circuitBreaker);
   return {
     provider,
@@ -1881,6 +1891,7 @@ function readMemoryEmbeddingsConfig(value: unknown): MemoryEmbeddingsConfig | un
     ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
     ...(dim === undefined ? {} : { dim }),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    ...(instructions === undefined ? {} : { instructions }),
     ...(circuitBreaker === undefined ? {} : { circuitBreaker }),
   };
 }

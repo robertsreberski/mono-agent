@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { readMonoAgentConfigJson } from "@mono-agent/config";
 import type { MonoAgentConfigJson } from "@mono-agent/config";
+import { configuredEmbeddingIdentity } from "@mono-agent/memory/search";
 import type { RunSummaryStatus } from "@mono-agent/observability";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
@@ -223,7 +224,7 @@ async function seedPrivateConsumerMemoryGeneration(
     root: memoryRoot,
     tier: memory.mode,
     embeddings: {
-      id: `${embeddings.provider}:${embeddings.model}`,
+      id: configuredEmbeddingIdentity(embeddings),
       embed: async (texts) => texts.map(() => {
         const vector = new Array<number>(dimension).fill(0);
         vector[0] = 1;

@@ -40,6 +40,8 @@ function isRequest(value: unknown): value is MemoryHealthWorkerRequest {
   return typeof candidate.root === "string"
     && (candidate.mode === "lite" || candidate.mode === "journal" || candidate.mode === "bujo")
     && (candidate.configuredEmbeddingModel === undefined || typeof candidate.configuredEmbeddingModel === "string")
+    && (candidate.configuredLegacyEmbeddingModel === undefined
+      || typeof candidate.configuredLegacyEmbeddingModel === "string")
     && (candidate.configuredDimension === undefined || (typeof candidate.configuredDimension === "number" && Number.isSafeInteger(candidate.configuredDimension)))
     && (candidate.now === undefined || candidate.now instanceof Date)
     && (candidate.maxStabilityAttempts === undefined

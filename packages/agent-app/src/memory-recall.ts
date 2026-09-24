@@ -202,6 +202,7 @@ export async function createMemoryEmbeddingProvider(
     ...(embeddings.endpoint === undefined ? {} : { endpoint: embeddings.endpoint }),
     ...(embeddingsApiKey === undefined ? {} : { apiKey: embeddingsApiKey }),
     timeoutMs: embeddings.timeoutMs ?? DEFAULT_RECALL_EMBEDDINGS_TIMEOUT_MS,
+    ...(embeddings.instructions === undefined ? {} : { instructions: embeddings.instructions }),
   };
   const breakerOptions: CircuitBreakerEmbeddingOptions = {
     ...(embeddings.circuitBreaker?.failureThreshold === undefined

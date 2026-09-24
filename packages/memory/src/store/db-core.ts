@@ -29,7 +29,9 @@ import {
 import { lexicalEvidence, relevanceTokens } from "./db-relation-evidence.js";
 import { isCanonicalDailySourcePath } from "./journal-source.js";
 import {
+  embeddingPrefixesForIdentity,
   MemorySearchError,
+  type EmbeddingPrefixes,
   type EmbeddingProvider,
   type MemorySearchErrorCode,
 } from "../search/index.js";
@@ -50,6 +52,8 @@ function isEligibleEmbeddingFallback(error: unknown): error is MemorySearchError
 export class MemoryDbCore {
   protected readonly db: Database;
   protected readonly embeddings: EmbeddingProvider | undefined;
+  /** Query/document prefixes selected by the embedding identity. */
+  protected readonly prefixes: EmbeddingPrefixes;
   protected readonly dim: number;
   protected readonly k: number;
   protected readonly weights: RecallWeights;
@@ -88,6 +92,7 @@ export class MemoryDbCore {
       enforceOwnerOnlySqliteFamily(options.path);
     }
     this.embeddings = options.embeddings;
+    this.prefixes = embeddingPrefixesForIdentity(options.embeddings?.id ?? "");
     this.dim = vecDim;
     this.k = options.k ?? DEFAULT_RRF_K;
     this.weights = { ...DEFAULT_WEIGHTS, ...options.weights };
@@ -193,7 +198,7 @@ export class MemoryDbCore {
       if (this.embeddings === undefined) {
         vectors = batch.map(() => undefined);
       } else {
-        const embedded = await this.embeddings.embed(batch.map((record) => `search_document: ${record.text}`));
+        const embedded = await this.embeddings.embed(batch.map((record) => `${this.prefixes.document}${record.text}`));
         embeddingCalls += 1;
         if (embedded.length !== batch.length) {
           throw new Error(
@@ -220,7 +225,7 @@ export class MemoryDbCore {
   ): Promise<readonly (readonly number[] | undefined)[]> {
     if (this.embeddings === undefined) return records.map(() => undefined);
     if (records.length === 0) return [];
-    const vectors = await this.embeddings.embed(records.map((record) => `search_document: ${record.text}`));
+    const vectors = await this.embeddings.embed(records.map((record) => `${this.prefixes.document}${record.text}`));
     if (vectors.length !== records.length) {
       throw new Error(`memory-store: embedding provider returned ${vectors.length} vectors for ${records.length} records.`);
     }
@@ -277,7 +282,7 @@ export class MemoryDbCore {
     let embeddingCalls = 0;
     for (let offset = 0; offset < records.length; offset += batchSize) {
       const batch = records.slice(offset, offset + batchSize);
-      const vectors = await this.embeddings.embed(batch.map((record) => `search_document: ${record.text}`));
+      const vectors = await this.embeddings.embed(batch.map((record) => `${this.prefixes.document}${record.text}`));
       options.abortSignal?.throwIfAborted();
       embeddingCalls += 1;
       if (vectors.length !== batch.length) {
@@ -686,7 +691,7 @@ export class MemoryDbCore {
   ): Promise<Array<{ id: string; similarity: number }>> {
     abortSignal?.throwIfAborted();
     if (this.embeddings === undefined) return [];
-    const [vector] = await this.embeddings.embed([`search_query: ${query}`]);
+    const [vector] = await this.embeddings.embed([`${this.prefixes.query}${query}`]);
     abortSignal?.throwIfAborted();
     if (vector === undefined) return [];
     this.assertVectorDim(vector, "recall");
@@ -752,7 +757,7 @@ export class MemoryDbCore {
   ): Promise<SimilarHit[][]> {
     options.abortSignal?.throwIfAborted();
     if (this.embeddings === undefined || texts.length === 0) return texts.map(() => []);
-    const vectors = await this.embeddings.embed(texts.map((text) => `search_document: ${text}`));
+    const vectors = await this.embeddings.embed(texts.map((text) => `${this.prefixes.document}${text}`));
     options.abortSignal?.throwIfAborted();
     if (vectors.length !== texts.length) {
       throw new Error(`memory-store: embedding provider returned ${vectors.length} vectors for ${texts.length} similarity queries.`);

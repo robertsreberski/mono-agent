@@ -5,6 +5,7 @@ import type { RedactedSecretValue } from "@mono-agent/agent-contracts";
 import type {
   EFFORT_LEVELS,
   MEMORY_BACKENDS,
+  MEMORY_EMBEDDINGS_INSTRUCTIONS,
   MEMORY_EMBEDDINGS_PROVIDERS,
   MEMORY_LLM_PROVIDERS,
   MEMORY_MODES,
@@ -52,6 +53,7 @@ export interface MemoryConsolidationConfig {
   readonly cron?: string;
 }
 export type MemoryEmbeddingsProvider = (typeof MEMORY_EMBEDDINGS_PROVIDERS)[number];
+export type MemoryEmbeddingsInstructions = (typeof MEMORY_EMBEDDINGS_INSTRUCTIONS)[number];
 /** Circuit-breaker tuning for the embeddings provider used by journal/bujo recall. */
 export interface MemoryEmbeddingsCircuitBreakerConfig {
   /** Consecutive failures before the breaker trips OPEN (default 3). */
@@ -78,6 +80,12 @@ export interface MemoryEmbeddingsConfig {
   readonly dim?: number;
   /** Per-call embeddings timeout in ms (default 10000 in the host). */
   readonly timeoutMs?: number;
+  /**
+   * Query/document instruction preset. Absent means `auto`: an existing index
+   * keeps its prefixes and a rebuild adopts the model's preset. An explicit
+   * preset is part of the index identity and requires the safe rebuild.
+   */
+  readonly instructions?: MemoryEmbeddingsInstructions;
   /** Circuit-breaker overrides; unset fields fall back to the breaker defaults. */
   readonly circuitBreaker?: MemoryEmbeddingsCircuitBreakerConfig;
 }

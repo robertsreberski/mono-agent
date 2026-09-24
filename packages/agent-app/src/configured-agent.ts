@@ -2012,6 +2012,7 @@ async function createConfiguredMemoryInternal(
         ...(embeddingsConfig?.endpoint !== undefined && { endpoint: embeddingsConfig.endpoint }),
         ...(embeddingsApiKey !== undefined && { apiKey: embeddingsApiKey }),
         timeoutMs: embeddingsConfig?.timeoutMs ?? DEFAULT_EMBEDDINGS_TIMEOUT_MS,
+        ...(embeddingsConfig?.instructions === undefined ? {} : { instructions: embeddingsConfig.instructions }),
       }),
       {
         ...(embeddingsConfig?.circuitBreaker?.failureThreshold !== undefined && {
