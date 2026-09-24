@@ -4,6 +4,7 @@ import { parseDailyFile } from "./grammar.js";
 import { readCanonicalGraphStrictSnapshot } from "./graph.js";
 import { readBullet, rewriteBullet } from "./daily.js";
 import { isRememberedMemoryId } from "./canonical-lookup.js";
+import { factSupported, valueSupported } from "./capture-labels.js";
 import { forgetExplicitMemories, previewCanonicalExplicitForgetMemories } from "./migrate.js";
 import { writeCanonicalFileAtomic } from "./path-safety.js";
 import type { MemoryDb } from "../store/index.js";
@@ -87,10 +88,10 @@ export function validateCurateProposal(proposal: CurateProposal): void {
     || (action === "merge" && proposal.mergeEntity === undefined)) throw new Error("memory-curate: invalid proposal");
   for (const label of proposal.labels ?? []) {
     validateMemoryLabel(label);
-    if (label.kind === "preference" || (label.kind === "lesson" && label.verified)
-      || (label.kind === "fact" && (label.attribution === "user-stated" && !/\buser (?:said|stated|reported)\b/iu.test(source.text)
-        || label.value.type === "text" && !source.text.toLowerCase().includes(label.value.text.toLowerCase())
-        || label.value.type === "date" && !source.text.includes(label.value.date)))) {
+    if (label.kind === "preference" || label.kind === "lesson"
+      || (label.kind === "fact" && (!factSupported(label, source.text)
+        || label.attribution === "user-stated" && (!/\buser (?:said|stated|reported)\b/iu.test(source.text)
+          || !valueSupported(label, source.text))))) {
       throw new Error("memory-curate: unsupported retrospective label");
     }
   }
@@ -186,7 +187,9 @@ export function previewCurateMutations(root: string, proposals: readonly CurateP
     if (!bullet || bullet.id !== source.id || bullet.text !== source.text || bullet.createdAt !== source.createdAt
       || JSON.stringify(bullet.refs) !== JSON.stringify(source.refs)
       || bullet.status === "dropped" || bullet.status === "invalidated") throw new Error("memory-curate: stale source line");
+    if (proposal.action === "label") withMemoryLabels(bullet, [...labelsOf(bullet), ...proposal.labels!]);
     if (proposal.action === "rewrite") {
+      withMemoryLabels(bullet, labelsOf(bullet).filter((label) => label.kind === "fact" && factSupported(label, proposal.text!)));
       if (isRememberedMemoryId(source.id, source.text)) throw new Error("memory-curate: content-addressed Remember lines cannot be rewritten in place");
       // A legacy summary is not authority to change the speaker or invent dates.
       const before = source.text;
@@ -256,7 +259,9 @@ export async function applyCurateMutations(root: string, db: MemoryDb, proposals
     const { file, id } = proposal.source;
     const bullet = readBullet(root, file, id);
     if (!bullet) throw new Error("memory-curate: missing rewrite source");
-    const updated = proposal.action === "rewrite" ? { text: proposal.text!, refs: bullet.refs.filter((ref) => !ref.startsWith("label:")) }
+    const updated = proposal.action === "rewrite"
+      ? { text: proposal.text!, refs: withMemoryLabels(bullet,
+        labelsOf(bullet).filter((label) => label.kind === "fact" && factSupported(label, proposal.text!))).refs }
       : { text: bullet.text, refs: withMemoryLabels(bullet, [...labelsOf(bullet), ...proposal.labels!]).refs };
     if (!rewriteBullet(root, file, id, updated)) throw new Error("memory-curate: missing source");
   }

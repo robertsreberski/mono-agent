@@ -23,6 +23,8 @@ describe("curation preparation", () => {
     const path = root(); seed(path, "fictional-a", "Morgan completed the example.");
     const source = inspectCurateSource(path).lines[0]!;
     expect(() => validateCurateProposal({ source, action: "label", accepted: true, labels: [{ v: 1, kind: "lesson", scope: "agent", verified: true }] })).toThrow();
+    expect(() => validateCurateProposal({ source, action: "label", accepted: true, labels: [{ v: 1, kind: "lesson", scope: "agent", verified: false }] })).toThrow();
+    expect(() => validateCurateProposal({ source, action: "label", accepted: true, labels: [{ v: 1, kind: "fact", entityId: "person:maple", key: "preferred_name", value: { type: "text", text: "Morgan" }, attribution: "unknown" }] })).toThrow();
     expect(() => validateCurateProposal({ source, action: "rewrite", text: "Unsafe\ntext", accepted: true })).toThrow();
   });
   it("batches fake-model proposals and fails closed on unknown IDs", async () => {
@@ -150,5 +152,56 @@ describe("curate selection", { timeout: 20_000 }, () => {
     const db = openMemoryDb({ path: resolveActiveMemoryDbPath(path), readOnly: true, dim: 16 });
     try { expect(db.get("fictional-a")?.status).toBe("dropped"); expect(db.get("fictional-b")?.text).toBe("Morgan visited on 2026-07-11."); }
     finally { db.close(); }
+  });
+});
+
+describe("retrospective label support", { timeout: 20_000 }, () => {
+  it("keeps only facts still supported after an accepted rewrite", async () => {
+    const { mkdirSync, realpathSync } = await import("node:fs");
+    const { createHash } = await import("node:crypto");
+    const { initializeReplayProjection, readBujoCanonicalSourceFingerprint } = await import("../replay-projection.js");
+    const { safeRebuildMemoryIndex } = await import("../rebuild.js");
+    const { fakeEmbeddings } = await import("./helpers.js");
+    const { applyExplicitMemoryCurate } = await import("../explicit-curate.js");
+    const { encodeMemoryLabel, labelsOf } = await import("../labels.js");
+    const { rewriteBullet, readBullet } = await import("../daily.js");
+    const parent = root(); const path = join(parent, "memory"); mkdirSync(path, { mode: 0o700 });
+    initializeReplayProjection(path);
+    seed(path, "fictional-a", "Morgan used Maple and Brook as example names.");
+    const first = inspectCurateSource(path).lines[0]!;
+    rewriteBullet(path, first.file, first.id, { refs: [
+      encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:morgan", key: "preferred_name",
+        value: { type: "text", text: "Maple" }, attribution: "unknown" }),
+      encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:morgan", key: "other:alias",
+        value: { type: "text", text: "Brook" }, attribution: "unknown" }),
+    ] });
+    const embeddings = fakeEmbeddings(16);
+    await safeRebuildMemoryIndex({ root: path, tier: "bujo", embeddings, dim: 16 });
+    const source = inspectCurateSource(path).lines[0]!;
+    await applyExplicitMemoryCurate({ root: path, proposals: [{ source, action: "rewrite", accepted: true,
+      text: "Morgan used Maple as an example name." }],
+    expectedRootFingerprint: createHash("sha256").update(realpathSync(path)).digest("hex"),
+    expectedSourceFingerprint: readBujoCanonicalSourceFingerprint(path), planDigest: createHash("sha256").update("retained-fact").digest("hex"),
+    embeddings, dimension: 16 });
+    expect(labelsOf(readBullet(path, source.file, source.id)!)).toMatchObject([{ kind: "fact", key: "preferred_name" }]);
+  });
+});
+
+describe("curate preview label capacity", () => {
+  it("rejects duplicate or ninth label before mutation or backup", async () => {
+    const { rewriteBullet } = await import("../daily.js");
+    const { encodeMemoryLabel } = await import("../labels.js");
+    const { previewCurateMutations } = await import("../curate.js");
+    const path = root(); seed(path, "fictional-a", "Morgan used Maple as an alias.");
+    const source = inspectCurateSource(path).lines[0]!;
+    const label = { v: 1 as const, kind: "fact" as const, entityId: "person:morgan", key: "preferred_name",
+      value: { type: "text" as const, text: "Maple" }, attribution: "unknown" as const };
+    rewriteBullet(path, source.file, source.id, { refs: [encodeMemoryLabel(label)] });
+    const current = inspectCurateSource(path).lines[0]!;
+    expect(() => previewCurateMutations(path, [{ source: current, action: "label", labels: [label], accepted: true }])).toThrow();
+    const eight = Array.from({ length: 8 }, (_, index) => encodeMemoryLabel({ ...label, key: `other:alias${index}` }));
+    rewriteBullet(path, source.file, source.id, { refs: eight });
+    const full = inspectCurateSource(path).lines[0]!;
+    expect(() => previewCurateMutations(path, [{ source: full, action: "label", labels: [label], accepted: true }])).toThrow();
   });
 });

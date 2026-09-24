@@ -84,7 +84,7 @@ function preferenceSupported(text: string, user: string): boolean {
   const source = contentWords(user);
   return contentWords(text).some((word) => source.includes(word));
 }
-function factSupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string,
+export function factSupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string,
   names?: ReadonlyMap<string, string>): boolean {
   const slug = label.entityId.slice(label.entityId.indexOf(":") + 1);
   if (!subjectSupported(text, slug, names?.get(label.entityId))) return false;
@@ -94,7 +94,7 @@ function subjectSupported(text: string, slug: string, display?: string): boolean
   if (display !== undefined && includesPhrase(text, display)) return true;
   return slug.split("-").some((token) => words(token).some((word) => word.length >= 3 && words(text).includes(word)));
 }
-function valueSupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string): boolean {
+export function valueSupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string): boolean {
   const value = label.value;
   if (value.type === "date") return civilDateAppears(value.date, text);
   if (value.type === "text") return includesPhrase(text, value.text);
