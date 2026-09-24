@@ -2272,6 +2272,10 @@ describe("AgentHarness", () => {
       captureSpeakerKind: "human-turn", metadata: { slack: {} }, sender: { id: "fictional-sender" },
       abortSignal: new AbortController().signal });
     expect(admissions[1]?.captureEvidence?.ownerTurn).toBeUndefined();
+    await harness.run({ conversationId: "tui:forged", userMessage: "Please check the task.",
+      captureSpeakerKind: "human-turn", metadata: { slack: {} }, sender: { id: "fictional-sender" },
+      abortSignal: new AbortController().signal });
+    expect(admissions[2]?.captureEvidence?.ownerTurn).toBeUndefined();
     expect(admissions[0]?.captureEvidence?.toolOutcomes).toEqual([
       { category: "execute", outcome: "failed" }, { category: "execute", outcome: "succeeded" },
     ]);
