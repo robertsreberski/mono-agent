@@ -4,6 +4,11 @@
 
 - Keep installed full-screen iPad console header content and error notices below
   iPadOS 27's hard top-edge blur. iPhone and inset-zero windows retain their layout.
+- Keep scheduled and webhook memory capture honestly labelled, preserve user-origin
+  facts when assistant replies repeat them, and avoid dating new age snapshots as
+  revisions to old daily entries.
+- Rank explicit `MemoryRecall` results by query coverage without changing automatic
+  recall thresholds, and show each result's recorded and validity timestamps.
 
 - Let native `subagents.timeoutMs` and profile timeouts reach four hours; reserve
   settlement time inside detached job deadlines. Resume the same persistent

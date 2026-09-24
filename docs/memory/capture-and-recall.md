@@ -21,7 +21,7 @@ For tier selection (lite / journal / bujo) and embeddings setup, start at the [M
 
 The host deliberately skips memory writes for two low-signal successful turns, in every write mode: final answers that are `NOTHING_TO_REPORT` (the cron/webhook no-op sentinel), or that end with it on their final line, and tiny explicit test/ping probes such as `test` / `test ok`. Short contextual acknowledgements are not skipped by this default.
 
-Cron and webhook turns are also capture-hygienic: when they do write memory, only the assistant answer is written. The trigger prompt or webhook pre-instructions are never sent to the deterministic host summary or intelligent capture pipeline.
+Cron and webhook turns omit their trigger prompt and webhook pre-instructions from memory. Intelligent capture receives an honest scheduled-task or webhook source label (not `User`) plus the assistant answer; the deterministic host summary remains assistant-answer-only. The extractor must not treat an assistant recap as a first-party report. There is no deterministic recap classifier, so model-guided capture may still make mistakes; the no-op sentinel remains the deterministic skip.
 
 Memory persistence is **host-owned**. When a user says “remember this,” the agent should acknowledge the request normally and let the configured write mode decide whether and how to persist the completed turn after the reply succeeds. It must not use shell, filesystem, or database tools to edit `.mono-agent/memory`, canonical Markdown, SQLite rows, manifests, generations, or indexes directly. Operators should stop the agent and use the `mono-agent memory ...` maintenance commands when they need to rebuild, migrate, audit, or repair memory state. `memory export` is the one exception: it is strictly read-only and can back up a live agent. `memory import apply` and `import restore` do require a stopped agent.
 
@@ -180,6 +180,7 @@ Key properties:
 - **Reconcile is intelligent**, not append-only: the pipeline classifies each observation as `ADD` / `UPDATE` / `SUPERSEDE` / `NOOP` against existing memories to avoid duplication.
 - **Crash-idempotent semantic commit.** Run-derived fact ids, a retained semantic plan, and the exact replay projection make a post-commit/pre-receipt replay converge without another model call, duplicate fact, or unattested lifecycle/edge.
 - **Associations are precise.** Each curated fact carries only the entity IDs explicitly extracted for that fact; the implementation never creates a turn-wide memory/entity Cartesian product.
+- **Time is observation-grounded.** Capture asks the model to resolve unambiguous relative calendar dates against the immutable host-owned UTC admission instant, retain broad intervals when precision is unavailable, and express an age snapshot as historical (`was 7.5 months old as of 2026-09-08`), not a permanent current age. When the anchor is absent it must not fabricate one. Reconciliation converts a recognizably new age/current-status UPDATE to a newly dated ADD rather than rewriting an older daily bullet. These are model instructions plus a finite snapshot guard, not factual verification.
 
 This path uses a chat LLM, so `writeMode: "capture"` **requires
 `mode: "bujo"`** and fails config validation otherwise—there is no silent fallback
@@ -217,10 +218,7 @@ Recall returns live records, which includes completed, scheduled, and migrated
 items — not only open ones. Terminal `dropped`/`invalidated` records stay
 excluded. So that a finished or deferred item cannot read as a current fact, a
 result whose status is not `open` is prefixed with that status, for example
-`0.800  [done] Ship the 0.9 release.`; an ordinary open record is rendered
-exactly as before. Structured results carry `type` and `status` alongside `id`,
-`score`, and `text` whenever the backend supplies them — a remote backend that
-reports neither keeps its previous result shape unchanged.
+`0.800  [recorded 2026-07-06T12:00:00.000Z] [done] Ship the 0.9 release.`; an ordinary open record also includes the recorded timestamp when supplied. Explicit tool hits are reranked by coverage of the query terms present in the candidate set without changing automatic recall thresholds. Structured results carry optional `type`, `status`, `createdAt`, `validFrom`, and `validTo` alongside `id`, `score`, and `text` whenever the backend supplies them — a remote backend that reports none keeps its previous result shape unchanged. `createdAt` is the recording instant, not necessarily the event date.
 
 Questions about the active chat are intentionally not durable-memory queries. For
 unqualified prompts such as `What did you send in the last message?`, `What was your

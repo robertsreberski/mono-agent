@@ -98,6 +98,9 @@ interface SharedRecallHit {
     readonly type?: "task" | "event" | "note";
     readonly status?: "open" | "done" | "scheduled" | "migrated" | "dropped" | "invalidated";
     readonly isInsight?: boolean;
+    readonly createdAt?: string;
+    readonly validFrom?: string;
+    readonly validTo?: string;
   };
 }
 

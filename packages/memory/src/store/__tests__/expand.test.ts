@@ -56,6 +56,21 @@ describe("addEdge/expand", () => {
 });
 
 describe("expandEntityRelations", () => {
+  it("retains source and validity dates on an expanded hit for explicit tool rendering", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    try {
+      await db.upsert(note("seed", "Morgan leads a project."));
+      await db.upsert(note("dated", "Atlas was founded in June.", {
+        createdAt: "2026-06-15T09:00:00.000Z", validFrom: "2026-06-01T00:00:00.000Z",
+      }));
+      addEntity(db, "person:morgan", "Morgan"); addEntity(db, "project:atlas", "Atlas");
+      associate(db, "seed", "person:morgan"); associate(db, "dated", "project:atlas");
+      db.addEntityRelation("person:morgan", "project:atlas", "leads");
+      expect(db.expandEntityRelations(["seed"], { query: "What project does Morgan lead?" })[0]).toMatchObject({
+        id: "dated", createdAt: "2026-06-15T09:00:00.000Z", validFrom: "2026-06-01T00:00:00.000Z",
+      });
+    } finally { db.close(); }
+  });
   it("traverses an outgoing relation and the same stored relation in the incoming direction", async () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
     try {

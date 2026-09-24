@@ -352,7 +352,7 @@ function planBatchAction(
       // and hide it from recall. Keep the remembered evidence exactly as it is
       // and record the refinement as its own memory (threaded to its
       // neighbour by the shared ADD path).
-      if (isRememberedUpdateTarget(decision, deps)) {
+      if (isRememberedUpdateTarget(decision, deps) || isNewTimeSensitiveSnapshot(candidate, decision, deps)) {
         return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
       }
       return planUpdate(candidate, decision, deps);
@@ -432,6 +432,17 @@ function planNoop(
 function isRememberedUpdateTarget(decision: Classification, deps: ReconcileDeps): boolean {
   const target = deps.db.get(decision.targetId ?? "");
   return target !== undefined && isRememberedMemoryId(target.id, target.text);
+}
+
+// Finite, deliberately conservative age/current-state grammar. An UPDATE to a
+// different snapshot would falsely date the new assertion to the old bullet.
+const AGE_SNAPSHOT = /\b(?:\d+(?:[.,]\d+)?\s*(?:months?|years?)\s*old|(?:is|was)\s+\d+(?:[.,]\d+)?\s*(?:months?|years?)\b|(?:ha|aveva)\s+\d+(?:[.,]\d+)?\s*(?:mesi|anni)\b|(?:is|was|heeft)\s+\d+(?:[.,]\d+)?\s*(?:maanden?|jaar|jaren)\s*(?:oud)?\b)\b/iu;
+const CURRENT_SNAPSHOT = /\b(?:currently|as of today|at present|attualmente|al momento|momenteel|op dit moment)\b/iu;
+
+function isNewTimeSensitiveSnapshot(candidate: CandidateMemory, decision: Classification, deps: ReconcileDeps): boolean {
+  const old = deps.db.get(decision.targetId ?? "");
+  if (old === undefined || old.text === candidate.text) return false;
+  return AGE_SNAPSHOT.test(candidate.text) || CURRENT_SNAPSHOT.test(candidate.text);
 }
 
 function planUpdate(
@@ -625,10 +636,11 @@ Use exactly one of these decision object shapes:
 Rules:
 - add means genuinely new; noop means duplicate; update means refinement; supersede means contradiction.
 - Compare the meaning as well as the topic: speaker attribution, stated scope, evidence limits, temporal qualification, and correction-versus-state-change qualification are durable information.
-- Material dates, times, timezones, year/month boundaries, relative phrases, observation anchors, uncertainty, negation, speaker/event association, and event scope must survive update or supersede text. Never reinterpret a capture/observation anchor as the event time or invent a more exact event date than the input states.
+- Material dates, times, timezones, year/month boundaries, resolved calendar intervals, observation anchors, uncertainty, negation, speaker/event association, and event scope must survive update or supersede text. Resolve directly stated relative time against a supplied host-owned observation anchor when unambiguous; preserve the observation date for an age snapshot as 'was N months old as of YYYY-MM-DD'. Never reinterpret a capture/observation anchor as the event time or invent a more exact event date than the input and trusted anchor support. Do not rebase a stored old observation on the current capture clock.
 - Distinct repeated events remain distinct when their temporal qualifiers or anchors differ. Do not choose noop or merge them merely because their non-temporal wording is similar.
 - Replacement text must not turn an attributed or unchecked claim into an unqualified fact, turn an observed outcome into causal proof, or turn correction of an erroneous report into a former real-world state. Preserve an explicit rename or other real state change as history when material.
-- An explicit user report or preference may remain useful without outside proof; preserve its speaker and scope rather than discarding it for being unverified.
+- If the User stated a fact which the Assistant merely repeated, preserve the User's attribution rather than marking it an Assistant report. An explicit user report or preference may remain useful without outside proof; preserve its speaker and scope. Do not invent verification doubt, earlier-conversation claims, or durable facts from generic Assistant advice.
+- Update only the SAME observation; new age/current-status snapshots are ADD, while corrections of a stable value are SUPERSEDE.
 - Preserve every input index exactly once. N is the exact JSON integer from that input item.
 - For noop, update, and supersede, targetId is REQUIRED and copied byte-for-byte from that candidate's existing[].id. add MUST omit targetId.
 - A targetId may be selected by at most one decision in the whole batch.
@@ -808,7 +820,8 @@ a duplicate, a refinement, or a contradiction. Return ONLY JSON:
 - supersede: contradicts/replaces an existing memory; set targetId and text to the new sentence.
 - Compare speaker attribution, stated scope, evidence limits, and correction-versus-state-change meaning, not just topic similarity.
 - Merged or replacement text must not promote an attributed or unchecked claim to fact, infer a cause from an observed outcome, or describe an erroneous report as a former real-world state. Preserve an explicit rename or other real state change as history when material.
-- Explicit user reports and preferences may remain useful without outside proof; preserve their speaker and scope.
+- If the User stated a fact which the Assistant merely repeated, preserve the User's attribution rather than marking it an Assistant report. Explicit user reports and preferences may remain useful without outside proof; preserve their speaker and scope. Do not invent verification doubt, earlier-conversation claims, or durable facts from generic Assistant advice.
+- Update only the SAME observation; new age/current-status snapshots are ADD, while corrections of a stable value are SUPERSEDE.
 
 CANDIDATE: type=${candidate.type} text="${candidate.text}"
 

@@ -13,6 +13,46 @@ function planJson(texts: readonly string[]): string {
 }
 
 describe("extractCapturePlanStrict intra-turn precision", () => {
+  it("instructs fake extraction to retain user facts instead of assistant restatements or invented doubt", async () => {
+    const prompts: string[] = [];
+    for (const [turn, expected] of [
+      ["User: Morgan was born on 24 January 2026.\nAssistant: Morgan was born on 24 January 2026.", ["User reported Morgan was born on 24 January 2026."]],
+      ["Scheduled task trigger (not a user message; trigger text omitted):\nAssistant: Previously Morgan was born on 24 January 2026.", []],
+      ["User: How do I dress for rain?\nAssistant: Wear a raincoat.", []],
+    ] as const) {
+      const plan = await extractCapturePlanStrict(turn, {
+        id: "scripted-attribution",
+        complete: async (prompt) => {
+          prompts.push(prompt);
+          return planJson(expected);
+        },
+      });
+      expect(plan.candidates.map((candidate) => candidate.text)).toEqual(expected);
+    }
+    expect(prompts[0]).toContain("the Assistant merely repeats or recaps");
+    expect(prompts[0]).toContain("Do not add your own doubt");
+    expect(prompts[1]).toContain("NOT a User turn");
+    expect(prompts[2]).toContain("generic advice/explanations");
+  });
+  it("instructs anchored absolute dates rather than persistent relative claims", async () => {
+    const prompts: string[] = [];
+    for (const [text, stored] of [
+      ["User: Ambra is 7.5 months old.", "User reported Ambra was 7.5 months old as of 2026-09-08."],
+      ["User: The meeting is tomorrow.", "User reported the meeting is on 2026-09-09."],
+      ["User: The meeting is next Friday.", "User reported the meeting is next Friday (said on 2026-09-08)."],
+    ] as const) {
+      const plan = await extractCapturePlanStrict(text, {
+        id: "scripted-absolute-dates",
+        complete: async (prompt) => { prompts.push(prompt); return planJson([stored]); },
+      }, undefined, [], { observedAt: "2026-09-08T12:00:00.000Z" });
+      expect(plan.candidates[0]?.text).toBe(stored);
+    }
+    expect(prompts[0]).toContain("Do not store decaying relative time");
+    expect(prompts[0]).toContain("2026-09-08T12:00:00.000Z");
+    expect(prompts[1]).toContain("never guess an unstated timezone");
+    expect(prompts[2]).toContain("whose referent is ambiguous must retain the phrase");
+  });
+
   it("supplies claim attribution and correction semantics without trusting quoted roles", async () => {
     let seen = "";
     const plan = await extractCapturePlanStrict(

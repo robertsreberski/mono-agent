@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { MemorySearchError, type EmbeddingProvider } from "../../search/index.js";
+import { selectAutomaticRecallHits } from "../../bujo/recall.js";
 import { openMemoryDb } from "../db.js";
 import { fakeEmbeddings } from "./helpers.js";
 import type { MemoryRecord } from "../types.js";
@@ -30,6 +31,17 @@ function switchableEmbeddings(dim = 64): EmbeddingProvider & {
 }
 
 describe("recall", () => {
+  it("preserves the lexical-only automatic threshold for a long query", async () => {
+    const db = openMemoryDb({ path: ":memory:" });
+    try {
+      await db.upsert(note("answer", "Morgan selected cobalt as the deployment color."));
+      const hits = await db.recall("What deployment color did Morgan select for the launch rollout meeting today?", { trackAccess: false });
+      expect(hits[0]?.score).toBeGreaterThanOrEqual(0.65);
+      // The calibrated score gate remains eligible; the separate answer-bearing
+      // grammar may still abstain from this deliberately overlong question.
+      expect(selectAutomaticRecallHits(hits).some((hit) => hit.record.id === "answer")).toBe(true);
+    } finally { db.close(); }
+  });
   it("ranks the topically-matching memory first via hybrid search", async () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
     await db.upsert(note("a", "the cat sat on the mat"));

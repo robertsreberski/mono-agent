@@ -6,8 +6,9 @@ import { BUILD_POLICY } from "./memory-e2e-build.mjs";
 export const ARMS = Object.freeze(["recent-only", "full-history", "lite", "journal", "bujo"]);
 export const PROTOCOL = "memory-e2e-v1";
 export const LIMITS = Object.freeze({
-  development: { chatSteps: 46, embeddingCalls: 100, estimatedInputTokens: 250000, outputTokens: 50000, runtimeMs: 900000 },
-  evaluation: { chatSteps: 138, embeddingCalls: 300, estimatedInputTokens: 750000, outputTokens: 150000, runtimeMs: 2400000 },
+  // Capture/reconcile provenance and absolute-time guidance enlarges prompt reservations.
+  development: { chatSteps: 46, embeddingCalls: 100, estimatedInputTokens: 282000, outputTokens: 50000, runtimeMs: 900000 },
+  evaluation: { chatSteps: 138, embeddingCalls: 300, estimatedInputTokens: 846000, outputTokens: 150000, runtimeMs: 2400000 },
 });
 export const DEFAULT_EMBEDDING_TIMEOUT_MS = 30_000;
 

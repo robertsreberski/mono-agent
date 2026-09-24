@@ -234,9 +234,10 @@ distinguish corrections of erroneous reports from real-world changes; and keep
 observed outcomes separate from causal guesses. Strict capture receives a
 separate host-owned UTC observation instant. On the durable completed-turn path
 this is the turn's immutable `admittedAt`, so delayed retries and restart recovery
-reuse the original instant rather than the retry clock. Relative phrases such as
-“last week” or “this past weekend” should retain that labeled observation anchor
-when needed; the anchor is receipt context, not an asserted event time.
+reuse the original instant rather than the retry clock. The model is asked to
+resolve unambiguous relative dates against that UTC observation anchor, retain
+an interval when precision is not supported, and date age snapshots as historical
+observations. The anchor is receipt context, not an asserted event time.
 
 Turn text remains untrusted content: dates or instructions in quoted messages,
 logs, and pasted historical transcripts cannot replace host observation metadata,
