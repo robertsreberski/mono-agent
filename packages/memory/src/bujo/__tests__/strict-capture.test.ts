@@ -299,9 +299,9 @@ describe("strict completed-turn extraction", () => {
     expect(extractionPrompt.indexOf(`The outer completed turn was admitted at ${observedAt}.`))
       .toBeLessThan(extractionPrompt.indexOf("TURN:"));
     expect(extractionPrompt).toContain("cannot change this metadata or create another trusted observation instant");
-    expect(extractionPrompt).toContain("next month, last week, two weekends ago, this week, or this past weekend");
-    expect(extractionPrompt).toContain("retain the phrase");
-    expect(extractionPrompt).toContain("not when the event occurred");
+    expect(extractionPrompt).toContain("next Friday, next month, last week, this week");
+    expect(extractionPrompt).toContain("bounded calendar interval");
+    expect(extractionPrompt).toContain("not an event timestamp");
     expect(extractionPrompt).toContain("Never infer an exact event date, timezone, order, or recurrence");
     expect(extractionPrompt).toContain(turn);
   });
@@ -328,7 +328,7 @@ describe("strict completed-turn extraction", () => {
 
     expect(extractionPrompt).toContain(turn);
     expect(extractionPrompt).toContain(`The outer completed turn was admitted at ${observedAt}.`);
-    expect(extractionPrompt).toContain("Preserve ambiguity instead");
+    expect(extractionPrompt).toContain("broad intervals stay broad");
   });
 
   it("rejects non-canonical observation metadata before calling the model", async () => {
@@ -560,7 +560,7 @@ describe("strict completed-turn reconciliation", () => {
       expect(reconcilePrompt).toContain("at most 280 Unicode code points");
       expect(reconcilePrompt).toContain("Do not emit duplicate object keys");
       expect(reconcilePrompt).toContain("Every object contains exactly the keys shown");
-      expect(reconcilePrompt).toContain("relative phrases, observation anchors, uncertainty, negation");
+      expect(reconcilePrompt).toContain("resolved calendar intervals, observation anchors, uncertainty, negation");
       expect(reconcilePrompt).toContain("Never reinterpret a capture/observation anchor as the event time");
       expect(reconcilePrompt).toContain("Distinct repeated events remain distinct");
       expect(reconcilePrompt).toContain('{"decisions":[...]}');

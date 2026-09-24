@@ -152,7 +152,11 @@ function captureTurnText(
 ): string {
   // Richer than the compacted host summary: the distiller wants the real turn content.
   if (isTriggerSource(options.source)) {
-    return `Assistant: ${assistantText}`;
+    // Do not include the untrusted trigger body (especially webhook payloads).
+    // The source label gives the extractor the missing speaker context without
+    // pretending that a scheduled instruction was a human statement.
+    const trigger = options.source === "cron" ? "Scheduled task trigger" : "Webhook trigger";
+    return `${trigger} (not a user message; trigger text omitted):\nAssistant: ${assistantText}`;
   }
   return `User${speakerSuffix(options.sender)}: ${userMessage}\nAssistant: ${assistantText}`;
 }

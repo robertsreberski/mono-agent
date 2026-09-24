@@ -2536,7 +2536,7 @@ describe("AgentHarness", () => {
     ["cron", { cron: { jobId: "focus-scan", scheduledAt: "2026-07-05T08:00:00.000Z" } }],
     ["webhook", { webhook: { endpointName: "focus-scan", requestId: "req-1", mode: "sync" } }],
   ] as const) {
-    it(`writeMode 'capture' captures only the assistant answer for ${label} turns`, async () => {
+    it(`writeMode 'capture' labels the source without exposing the trigger prompt for ${label} turns`, async () => {
       const dir = await tempDir();
       const identityPath = join(dir, "IDENTITY.md");
       await writeFile(identityPath, "You are Mono.", "utf8");
@@ -2578,7 +2578,7 @@ describe("AgentHarness", () => {
       expect(summaries).toHaveLength(1);
       expect(summaries[0]).toContain(answer);
       expect(summaries[0]).not.toContain(prompt);
-      expect(captures).toEqual([`Assistant: ${answer}`]);
+      expect(captures).toEqual([`${label === "cron" ? "Scheduled task trigger" : "Webhook trigger"} (not a user message; trigger text omitted):\nAssistant: ${answer}`]);
       expect(captures[0]).not.toContain(prompt);
     });
   }

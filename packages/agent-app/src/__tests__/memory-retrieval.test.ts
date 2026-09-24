@@ -833,7 +833,8 @@ describe("shared MemoryRecall MCP", () => {
       const servedIds = (result.structuredContent as { hits: Array<{ id: string }> }).hits.map((hit) => hit.id);
       expect(store.queries).toEqual(["who manages taylor?"]);
       expect(expansionCalls).toBe(1);
-      expect(store.accesses).toEqual([servedIds]);
+      // Explicit-only coverage reranking can reorder the already accessed set.
+      expect(store.accesses.map((ids) => [...ids].sort())).toEqual([[...servedIds].sort()]);
       expect(servedIds).not.toContain("distractor-7");
     } finally {
       await client.close().catch(() => undefined);

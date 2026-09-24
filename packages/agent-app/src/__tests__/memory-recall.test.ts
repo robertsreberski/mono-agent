@@ -21,6 +21,7 @@ import {
   createMemoryEmbeddingProvider,
   createMemoryRecallServer,
   createRecallStore,
+  rankExplicitHits,
   resolveMemoryRecallSettings,
 } from "../memory-recall.js";
 import type { MemoryRecallBujoSettings, MemoryRecallSettings } from "../memory-recall.js";
@@ -612,7 +613,41 @@ function deterministicEmbeddings(id: string, dim: number): EmbeddingProvider {
   };
 }
 
+describe("explicit-only coverage scoring", () => {
+  it.each([
+    ["When is Ambra's birth date and age?", "Ambra's birth date is 24 January", "Ambra's age is uncertain"],
+    ["Quando è la data di nascita di Ambra?", "La data di nascita di Ambra è gennaio", "Ambra ha avuto un raffreddore"],
+    ["Wat is de geboortedatum van Ambra?", "De geboortedatum van Ambra is januari", "Ambra heeft een verkoudheid"],
+  ])("distinguishes multi-term coverage without changing original backend hits: %s", (query, complete, partial) => {
+    const hits = [
+      { score: 0.99, record: { id: "partial", text: partial } },
+      { score: 0.98, record: { id: "complete", text: complete } },
+    ];
+    const ranked = rankExplicitHits(query, hits);
+    expect(ranked[0]?.record.id).toBe("complete");
+    expect(ranked[0]!.score).toBeGreaterThan(ranked[1]!.score);
+    expect(hits[0]?.score).toBe(0.99);
+  });
+});
+
 describe("backend-agnostic recall server", () => {
+  it("renders source and validity dates on direct or graph-expanded records when supplied", async () => {
+    const store = {
+      recall: async () => [{ score: 0.9, record: { id: "a", text: "Ambra was born in January" } }],
+      expandGraph: async () => [{ score: 0.9, record: { id: "b", text: "Ambra birth date", createdAt: "2026-09-20T00:00:00.000Z", validFrom: "2026-01-24T00:00:00.000Z" } }],
+      close: async () => {},
+    };
+    const server = createMemoryRecallServer(store);
+    const client = new Client({ name: "dated-recall", version: "0.1.0" }, { capabilities: {} });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await server.connect(st); await client.connect(ct);
+    try {
+      const result = await client.callTool({ name: "MemoryRecall", arguments: { query: "Ambra birth date" } });
+      expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining("recorded 2026-09-20T00:00:00.000Z") })]);
+      expect(result.structuredContent).toMatchObject({ hits: [{ id: "b", createdAt: "2026-09-20T00:00:00.000Z", validFrom: "2026-01-24T00:00:00.000Z" }] });
+    } finally { await client.close(); await server.close(); }
+  });
+
   it("answers a tools/call against a recall-capable store (backend-agnostic server)", async () => {
     const fakeStore = {
       recall: async () => [{ score: 0.9, record: { id: "m1", text: "user prefers dark mode" } }],

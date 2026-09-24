@@ -46,6 +46,9 @@ export interface MemoryRecallHit {
     readonly type?: MemoryType;
     readonly status?: MemoryStatus;
     readonly isInsight?: boolean;
+    readonly createdAt?: string;
+    readonly validFrom?: string;
+    readonly validTo?: string;
   };
 }
 
@@ -139,6 +142,40 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
     embeddings: provider,
     dim: embeddings.dim ?? 768,
   });
+}
+
+// The denominator is the union of query terms actually present in the candidate
+// set, not every English/Italian/Dutch question word. Unicode tokenization keeps
+// accented names and multilingual facts from being penalized as ASCII fragments.
+const RECALL_FILLER = new Set([
+  "a", "an", "and", "are", "at", "de", "del", "der", "die", "do", "een", "en", "e", "het", "hoe", "il", "in", "is", "la", "le", "of", "on", "the", "van", "wat", "was", "what", "when", "waar", "welke", "wie", "zijn",
+]);
+function explicitTokens(text: string): ReadonlySet<string> {
+  return new Set((text.normalize("NFKC").toLocaleLowerCase("und").match(/[\p{L}\p{N}]+/gu) ?? [])
+    .filter((word) => word.length > 1 && !RECALL_FILLER.has(word)));
+}
+
+/** Rerank a served explicit set without changing automatic recall backend scores. */
+export function rankExplicitHits(query: string, hits: readonly MemoryRecallHit[]): MemoryRecallHit[] {
+  const queryTokens = explicitTokens(query);
+  const records = hits.map((hit) => explicitTokens(hit.record.text));
+  const covered = [...queryTokens].filter((word) => records.some((words) => words.has(word)));
+  if (covered.length === 0) return [...hits];
+  const matches = records.map((words) => covered.filter((word) => words.has(word)).length);
+  if (matches.every((count) => count === matches[0])) return [...hits];
+  return hits.map((hit, index) => ({
+    ...hit,
+    score: hit.score * 0.8 + 0.2 * ((matches[index] ?? 0) / covered.length),
+  })).sort((a, b) => b.score - a.score || a.record.id.localeCompare(b.record.id));
+}
+
+function formatHitDates(hit: MemoryRecallHit): string {
+  const parts = [
+    hit.record.createdAt === undefined ? undefined : `recorded ${hit.record.createdAt}`,
+    hit.record.validFrom === undefined ? undefined : `valid from ${hit.record.validFrom}`,
+    hit.record.validTo === undefined ? undefined : `valid to ${hit.record.validTo}`,
+  ].filter((part) => part !== undefined);
+  return parts.length === 0 ? "" : `[${parts.join("; ")}] `;
 }
 
 /** Build the configured embedding provider used by recall and safe index maintenance. */
@@ -274,6 +311,9 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         structuredContent: { hits: [], degraded: true, reason, ...originalMetadata },
       };
     }
+    // Explicit tool ranking only. Automatic recall consumes the original backend
+    // scores, including its calibrated threshold and lexical-only abstention.
+    hits = rankExplicitHits(effectiveQuery, hits);
     const degraded = degradation?.code === "embedding_unavailable";
     if (hits.length === 0) {
       const guidance = "If this request is to pick up, continue, or recover interrupted work and RunHistory is available, call RunHistory with {} first. Do not keep rephrasing MemoryRecall queries for exact prior-run evidence.";
@@ -302,7 +342,7 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
       };
     }
     const hitText = hits
-      .map((hit) => `${hit.score.toFixed(3)}  ${lifecyclePrefix(hit)}${hit.record.text}`)
+      .map((hit) => `${hit.score.toFixed(3)}  ${formatHitDates(hit)}${lifecyclePrefix(hit)}${hit.record.text}`)
       .join("\n");
     const text = degraded
       ? `Memory recall is degraded: showing lexical-only matches because semantic retrieval is unavailable.\n${hitText}`
@@ -318,6 +358,9 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
           // neither keeps exactly its previous result shape.
           ...(hit.record.type === undefined ? {} : { type: hit.record.type }),
           ...(hit.record.status === undefined ? {} : { status: hit.record.status }),
+          ...(hit.record.createdAt === undefined ? {} : { createdAt: hit.record.createdAt }),
+          ...(hit.record.validFrom === undefined ? {} : { validFrom: hit.record.validFrom }),
+          ...(hit.record.validTo === undefined ? {} : { validTo: hit.record.validTo }),
         })),
         ...originalMetadata,
         ...(degraded ? {

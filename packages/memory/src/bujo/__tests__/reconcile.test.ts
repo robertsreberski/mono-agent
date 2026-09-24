@@ -616,6 +616,52 @@ describe("reconcile", () => {
 });
 
 describe("reconcileBatch", () => {
+  it.each([
+    "Ambra is 7.5 months old", "Ambra ha 7,5 mesi", "Ambra is 7,5 maanden oud",
+  ])("converts a time-sensitive UPDATE to a new dated ADD without rewriting the original: %s", async (text) => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "OLD-AGE", "Ambra is 6 months old");
+    const oldSource = dailyContent(root);
+    db.findSimilarMany = async () => [[{ record: db.get("OLD-AGE")!, distance: 0.1 }]];
+    const candidate: CandidateMemory = { type: "note", text, salience: 0.8, isInsight: false };
+    const llm: ReconcileDeps["llm"] = { id: "snapshot", complete: async () => JSON.stringify([
+      { index: 0, action: "update", targetId: "OLD-AGE", text },
+    ]) };
+    const nextDay = new Date("2026-07-15T12:00:00.000Z");
+    const actions = await reconcileBatch([candidate], makeDeps(db, root, llm, {
+      now: () => nextDay,
+      nextId: () => "AGE-NEW",
+      strictModelOutput: true,
+    }));
+    expect(actions).toEqual([{ kind: "add", id: "AGE-NEW" }]);
+    expect(dailyContent(root)).toBe(oldSource);
+    expect(db.get("OLD-AGE")?.text).toBe("Ambra is 6 months old");
+    expect(db.get("AGE-NEW")?.createdAt).toBe(nextDay.toISOString());
+    expect(readFileSync(dailyFilePath(root, nextDay), "utf8")).toContain(text);
+  });
+  it("plans the same run-derived ADD identity on a deferred snapshot retry", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "AGE-OLD", "Ambra is 6 months old");
+    db.findSimilarMany = async () => [[{ record: db.get("AGE-OLD")!, distance: 0.1 }]];
+    const candidate: CandidateMemory = { type: "note", text: "Ambra is 7.5 months old", salience: 0.8, isInsight: false };
+    const llm: ReconcileDeps["llm"] = { id: "stable", complete: async () => JSON.stringify([
+      { index: 0, action: "update", targetId: "AGE-OLD", text: candidate.text },
+    ]) };
+    const intents: string[] = [];
+    const deps = makeDeps(db, root, llm, {
+      strictModelOutput: true, deferBatchCommit: true, nextId: () => "AGE-RUN-00",
+      beforeBatchCommit: (actions) => { intents.push(JSON.stringify(actions)); },
+    });
+    expect(await reconcileBatch([candidate], deps)).toEqual([{ kind: "add", id: "AGE-RUN-00" }]);
+    expect(await reconcileBatch([candidate], deps)).toEqual([{ kind: "add", id: "AGE-RUN-00" }]);
+    expect(intents).toHaveLength(2);
+    expect(intents[0]).toBe(intents[1]);
+    expect(db.get("AGE-OLD")?.text).toBe("Ambra is 6 months old");
+    expect(db.get("AGE-RUN-00")).toBeUndefined();
+  });
+
   it("publishes ADD/UPDATE/SUPERSEDE/NOOP together and commits prepared rows once", async () => {
     const root = newRoot();
     const db = openDb(root);
