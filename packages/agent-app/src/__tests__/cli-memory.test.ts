@@ -222,6 +222,37 @@ describe("runCli memory", () => {
     expect(stdout).toContain("No memory configured");
   });
 
+  it("labels an exported bundle with the active pre-preset embedding identity", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: {
+        mode: "bujo",
+        path: memoryRoot,
+        writeMode: "capture",
+        embeddings: { provider: "ollama", model: "bge-m3:latest", dim: 8 },
+        llm: { provider: "ollama", model: "test-capture" },
+      },
+    });
+    await seedLocalStore(memoryRoot);
+    await safeRebuildMemoryIndex({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: deterministicEmbeddings("ollama:bge-m3:latest", 8),
+      dim: 8,
+    });
+    const bundlePath = join(await tempDir(), "bundle");
+
+    const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "export", "--bundle", bundlePath, "--json",
+    ]))));
+
+    expect(result.code, result.stderr).toBe(0);
+    const manifest = JSON.parse(await readFile(join(bundlePath, "manifest.json"), "utf8")) as {
+      readonly embeddingModel?: string;
+    };
+    expect(manifest.embeddingModel).toBe("ollama:bge-m3:latest");
+  }, 15_000);
+
   it("surfaces a typed export destination failure without changing canonical memory", async () => {
     const memoryRoot = join(await tempDir(), "memory");
     const dir = await agentDir({

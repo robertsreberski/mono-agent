@@ -490,9 +490,17 @@ async function runMemoryBundleExport(
       bundlePath,
       scope: input.includeExtras === true ? "canonical+extras" : "canonical",
       ...(input.allowPending === true ? { allowPending: true } : {}),
+      // Label the bundle with the identity of the index actually serving the
+      // root: a pre-preset index keeps its legacy identity under `auto`.
       ...(memory.embeddings?.model === undefined
         ? {}
-        : { embeddingModel: configuredEmbeddingIdentity(memory.embeddings) }),
+        : {
+            embeddingModel: effectiveEmbeddingIdentity(
+              memory.embeddings,
+              bujo.readManagedIndexManifest(root)?.active.embeddingModel
+                ?? `${memory.embeddings.provider}:${memory.embeddings.model}`,
+            ),
+          }),
       dimension: memory.embeddings?.dim ?? 768,
     });
     const published = {
