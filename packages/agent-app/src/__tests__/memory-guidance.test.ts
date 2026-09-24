@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { MemoryLabelHit } from "@mono-agent/memory/store";
+import type { MemoryDb } from "@mono-agent/memory/store";
+type MemoryLabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
 import { formatMemoryBackground, type LabelRecallStore } from "../memory-guidance.js";
 import { MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
 

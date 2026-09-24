@@ -1,5 +1,4 @@
 export { DEFAULT_EMBEDDING_BATCH_SIZE, MemoryDb, openMemoryDb } from "./db.js";
-export type { MemoryLabelHit } from "./db-labels.js";
 export type { CanonicalGraphReplacement, CanonicalGraphReplacementSupport } from "./db.js";
 export type {
   CanonicalGraphMemoryRecord,

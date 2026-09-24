@@ -1,5 +1,7 @@
 import type { MemoryLoadOptions } from "@mono-agent/agent-contracts";
-import type { EntityRecord, MemoryLabelHit } from "@mono-agent/memory/store";
+import type { EntityRecord, MemoryDb } from "@mono-agent/memory/store";
+
+type MemoryLabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
 import type { MemoryRecallHit } from "./memory-recall.js";
 
 export interface LabelRecallStore {
