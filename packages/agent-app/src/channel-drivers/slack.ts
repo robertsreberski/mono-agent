@@ -224,8 +224,10 @@ export function createSlackChannelDriver(
                   reason: "The running Slack adapter does not support process-job lifecycle updates.",
                   retryable: false,
                 }
-              : await updater.call(result.adapter, target.channelId, target.threadTs, processJob,
-                retirementOnly === true ? { retirementOnly: true } : undefined);
+              : retirementOnly === true
+                ? await updater.call(result.adapter, target.channelId, target.threadTs, processJob,
+                  { retirementOnly: true })
+                : await updater.call(result.adapter, target.channelId, target.threadTs, processJob);
           },
           wake: async ({ conversationId, text, deliveryKey, processJob }) => {
             if (processJob.origin.channel !== "slack"
